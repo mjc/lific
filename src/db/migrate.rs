@@ -49,6 +49,11 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "api key id",
         include_str!("../../migrations/010_api_key_id.sql"),
     ),
+    (
+        11,
+        "default project lead",
+        include_str!("../../migrations/011_default_project_lead.sql"),
+    ),
 ];
 
 /// Ensure the migrations table exists and apply any pending migrations.

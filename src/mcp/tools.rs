@@ -714,6 +714,24 @@ impl LificMcp {
                 let Some(ref ident) = input.identifier else {
                     return "Error: identifier required".into();
                 };
+                // LIF-102: default the project lead to the MCP caller so the
+                // project isn't left unowned. Validate the user actually exists
+                // in this DB before assigning — MCP_REQUEST_USER is a process-
+                // global static and can hold stale state from prior sessions.
+                let lead_user_id = super::current_auth_user().and_then(|u| {
+                    self.read(|conn| {
+                        Ok(conn
+                            .query_row(
+                                "SELECT 1 FROM users WHERE id = ?1",
+                                rusqlite::params![u.id],
+                                |_| Ok(()),
+                            )
+                            .is_ok())
+                    })
+                    .ok()
+                    .filter(|exists| *exists)
+                    .map(|_| u.id)
+                });
                 match self.write(|conn| {
                     queries::create_project(
                         conn,
@@ -722,7 +740,7 @@ impl LificMcp {
                             identifier: ident.clone(),
                             description: input.description.clone().unwrap_or_default(),
                             emoji: None,
-                            lead_user_id: None,
+                            lead_user_id,
                         },
                     )
                 }) {

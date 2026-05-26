@@ -168,6 +168,12 @@ where
 /// Check if the authenticated user can manage a project (update settings, manage structure).
 /// Returns Ok(()) if: user is admin, or user is project lead.
 /// Default-deny: returns Forbidden when auth_user is None (OAuth tokens, legacy keys).
+///
+/// LIF-102: when `project.lead_user_id IS NULL`, only admins can edit. This
+/// prevents the previous behavior where `Some(user.id) == None` was always
+/// false and thus locked out every non-admin user. New projects default the
+/// lead to the creator (see `create_project`), and the 011 migration backfills
+/// existing unowned projects, so this branch should be rare in practice.
 fn require_project_lead(
     db: &DbPool,
     auth_user: &Option<AuthUser>,
@@ -182,12 +188,15 @@ fn require_project_lead(
         return Ok(());
     }
     let project = with_read(db, |conn| queries::get_project(conn, project_id))?;
-    if project.lead_user_id == Some(user.id) {
-        return Ok(());
+    match project.lead_user_id {
+        Some(lead) if lead == user.id => Ok(()),
+        Some(_) => Err(LificError::Forbidden(
+            "only the project lead or an admin can do this".into(),
+        )),
+        None => Err(LificError::Forbidden(
+            "this project has no lead — only an admin can edit it".into(),
+        )),
     }
-    Err(LificError::Forbidden(
-        "only the project lead or an admin can do this".into(),
-    ))
 }
 
 /// Check if the authenticated user is an admin.
@@ -226,10 +235,23 @@ pub(crate) mod test_helpers {
 
     pub fn test_app() -> Router {
         let db = crate::db::open_memory().expect("test db");
+        // Insert a real admin row so FK constraints (e.g. projects.lead_user_id
+        // now defaults to the creator — see LIF-102) pass. Direct SQL skips
+        // argon2 hashing, keeping the test fixture cheap.
+        let admin_id = {
+            let conn = db.write().unwrap();
+            conn.execute(
+                "INSERT INTO users (username, email, password_hash, display_name, is_admin, is_bot)
+                 VALUES ('test-admin', 'admin@test.local', 'x', 'Test Admin', 1, 0)",
+                [],
+            )
+            .expect("seed test admin");
+            conn.last_insert_rowid()
+        };
         super::router(db, &[])
             .layer(Extension(crate::config::AuthConfig { allow_signup: true }))
             .layer(Extension(Some(AuthUser {
-                id: 0,
+                id: admin_id,
                 username: "test-admin".into(),
                 display_name: "Test Admin".into(),
                 is_admin: true,

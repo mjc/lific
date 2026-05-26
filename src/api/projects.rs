@@ -23,8 +23,17 @@ pub(super) async fn get_project(
 
 pub(super) async fn create_project(
     State(db): State<DbPool>,
-    Json(input): Json<CreateProject>,
+    Extension(auth_user): Extension<Option<AuthUser>>,
+    Json(mut input): Json<CreateProject>,
 ) -> Result<Json<Project>, LificError> {
+    // LIF-102 fix #1: if no lead was supplied, default to the authenticated
+    // creator. This prevents the "unowned project" trap where require_project_lead
+    // rejects everyone except admins.
+    if input.lead_user_id.is_none()
+        && let Some(user) = &auth_user
+    {
+        input.lead_user_id = Some(user.id);
+    }
     with_write(&db, |conn| crate::db::queries::create_project(conn, &input)).map(Json)
 }
 
@@ -262,8 +271,26 @@ mod tests {
     #[tokio::test]
     async fn board_groups_by_module_resolves_names() {
         let db = crate::db::open_memory().expect("test db");
+        // Seed a real admin so create_project's lead-defaulting (LIF-102)
+        // can FK to a valid user row.
+        let admin_id = {
+            let conn = db.write().unwrap();
+            conn.execute(
+                "INSERT INTO users (username, email, password_hash, display_name, is_admin, is_bot)
+                 VALUES ('test-admin', 'admin@test.local', 'x', 'Test Admin', 1, 0)",
+                [],
+            )
+            .unwrap();
+            conn.last_insert_rowid()
+        };
         let app = crate::api::router(db.clone(), &[])
-            .layer(Extension(crate::config::AuthConfig { allow_signup: true }));
+            .layer(Extension(crate::config::AuthConfig { allow_signup: true }))
+            .layer(Extension(Some(AuthUser {
+                id: admin_id,
+                username: "test-admin".into(),
+                display_name: "Test Admin".into(),
+                is_admin: true,
+            })));
         let (project_id, _) = seed_project(&app).await;
 
         // Create a module via direct DB access
@@ -420,6 +447,138 @@ mod tests {
                     .method("DELETE")
                     .uri(format!("/api/projects/{project_id}"))
                     .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    // ── LIF-102: project edit blocked when project has no lead ────────────
+    //
+    // The previous behavior compared `Some(user.id)` to `project.lead_user_id`,
+    // which was `None`, so every non-admin user was rejected forever. The fix
+    // is two-part: default the creator as lead on create (so the unowned state
+    // is uncommon), and explicitly route the `None` case to admin-only access.
+
+    /// Create a project with `lead_user_id = NULL` via direct DB access,
+    /// bypassing the API's default-creator-as-lead behavior.
+    fn seed_unowned_project(db: &crate::db::DbPool) -> i64 {
+        let conn = db.write().unwrap();
+        crate::db::queries::create_project(
+            &conn,
+            &CreateProject {
+                name: "Unowned".into(),
+                identifier: "UNO".into(),
+                description: String::new(),
+                emoji: None,
+                lead_user_id: None,
+            },
+        )
+        .unwrap()
+        .id
+    }
+
+    #[tokio::test]
+    async fn non_admin_cannot_edit_unowned_project() {
+        let (db, _, _, regular, _) = setup_lead_test();
+        let project_id = seed_unowned_project(&db);
+        let app = app_as_user(db, &regular);
+
+        let update = serde_json::json!({"name": "Sneaky rename"});
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/api/projects/{project_id}"))
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(serde_json::to_vec(&update).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        let data = parse_json(resp).await;
+        // Distinct message tells the user *why* they can't edit: no lead exists.
+        assert!(
+            data["error"]
+                .as_str()
+                .unwrap_or("")
+                .contains("no lead"),
+            "expected 'no lead' in error, got: {}",
+            data["error"]
+        );
+    }
+
+    #[tokio::test]
+    async fn admin_can_edit_unowned_project() {
+        let (db, admin, _, _, _) = setup_lead_test();
+        let project_id = seed_unowned_project(&db);
+        let app = app_as_user(db, &admin);
+
+        let update = serde_json::json!({"name": "Renamed by admin"});
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/api/projects/{project_id}"))
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(serde_json::to_vec(&update).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let data = parse_json(resp).await;
+        assert_eq!(data["name"], "Renamed by admin");
+    }
+
+    #[tokio::test]
+    async fn create_project_defaults_lead_to_creator() {
+        // setup_lead_test gives us a real lead user we can authenticate as.
+        let (db, _, lead, _, _) = setup_lead_test();
+        let app = app_as_user(db, &lead);
+
+        let body = serde_json::json!({
+            "name": "My Project",
+            "identifier": "MINE",
+            "description": ""
+            // intentionally no lead_user_id
+        });
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/projects")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let data = parse_json(resp).await;
+        assert_eq!(
+            data["lead_user_id"].as_i64(),
+            Some(lead.id),
+            "expected lead defaulted to creator, got: {}",
+            data["lead_user_id"]
+        );
+
+        // And the creator can subsequently edit it (the whole point — no more trap).
+        let pid = data["id"].as_i64().unwrap();
+        let update = serde_json::json!({"name": "Renamed by creator"});
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/api/projects/{pid}"))
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(serde_json::to_vec(&update).unwrap()))
                     .unwrap(),
             )
             .await
