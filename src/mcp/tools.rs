@@ -30,6 +30,43 @@ pub(crate) fn fmt_issue(i: &models::Issue) -> String {
     s
 }
 
+/// Surgical string replacement for `edit_issue` / `edit_page`.
+///
+/// Mirrors the semantics of the Edit tool that coding agents already know:
+/// fail loudly when `old_string` is missing or ambiguous so the agent gets a
+/// clear error and can self-correct, rather than silently mangling content.
+///
+/// Returns the new content on success.
+fn apply_edit(
+    content: &str,
+    old: &str,
+    new: &str,
+    replace_all: bool,
+) -> Result<String, crate::error::LificError> {
+    if old.is_empty() {
+        return Err(crate::error::LificError::BadRequest(
+            "old_string cannot be empty".into(),
+        ));
+    }
+    if old == new {
+        return Err(crate::error::LificError::BadRequest(
+            "old_string and new_string must differ".into(),
+        ));
+    }
+
+    let count = content.matches(old).count();
+    match count {
+        0 => Err(crate::error::LificError::BadRequest(
+            "old_string not found in content; check exact whitespace and newlines".into(),
+        )),
+        1 => Ok(content.replacen(old, new, 1)),
+        _ if replace_all => Ok(content.replace(old, new)),
+        n => Err(crate::error::LificError::BadRequest(format!(
+            "old_string matches {n} locations; provide more surrounding context to make it unique, or set replace_all=true"
+        ))),
+    }
+}
+
 fn resolve_project(db: &Arc<DbPool>, ident: &str) -> Result<i64, String> {
     let conn = db.read().map_err(|e| e.to_string())?;
     queries::resolve_project_identifier(&conn, ident).map_err(|e| e.to_string())
@@ -302,6 +339,67 @@ impl LificMcp {
         }
     }
 
+    #[tool(
+        description = "Edit an issue by replacing an exact string. Targets the description field by default; pass field='title' to edit the title. Fails if old_string is not found or matches multiple places (unless replace_all=true). Cheaper than update_issue for small changes because the agent doesn't have to resend the whole field."
+    )]
+    fn edit_issue(&self, Parameters(input): Parameters<EditIssueInput>) -> String {
+        match self.write(|conn| {
+            let id = queries::resolve_identifier(conn, &input.identifier)?;
+            let issue = queries::get_issue(conn, id)?;
+
+            let field = input.field.as_deref().unwrap_or("description");
+            // Normalize string-field inputs through the same `\n`/`\t`
+            // unescape pass that `update_issue` applies, so an edit
+            // sourced from a double-escaping client matches stored content.
+            let (current, old_norm, new_norm) = match field {
+                "description" => (
+                    issue.description.clone(),
+                    queries::unescape_text(&input.old_string),
+                    queries::unescape_text(&input.new_string),
+                ),
+                "title" => (
+                    issue.title.clone(),
+                    input.old_string.clone(),
+                    input.new_string.clone(),
+                ),
+                other => {
+                    return Err(crate::error::LificError::BadRequest(format!(
+                        "invalid field '{other}'; expected 'description' or 'title'"
+                    )));
+                }
+            };
+
+            let updated = apply_edit(
+                &current,
+                &old_norm,
+                &new_norm,
+                input.replace_all.unwrap_or(false),
+            )?;
+
+            let mut patch = models::UpdateIssue {
+                title: None,
+                description: None,
+                status: None,
+                priority: None,
+                module_id: None,
+                sort_order: None,
+                start_date: None,
+                target_date: None,
+                labels: None,
+            };
+            match field {
+                "title" => patch.title = Some(updated),
+                "description" => patch.description = Some(updated),
+                _ => unreachable!(),
+            }
+
+            queries::update_issue(conn, id, &patch)
+        }) {
+            Ok(issue) => format!("Edited {}: {}", issue.identifier, fmt_issue(&issue)),
+            Err(e) => format!("Error: {e}"),
+        }
+    }
+
     #[tool(description = "Get board view of issues grouped by status, priority, or module")]
     fn get_board(&self, Parameters(input): Parameters<GetBoardInput>) -> String {
         let pid = match resolve_project(&self.db, &input.project) {
@@ -505,6 +603,61 @@ impl LificMcp {
             )
         }) {
             Ok(page) => format!("Updated {}: {}", page.identifier, page.title),
+            Err(e) => format!("Error: {e}"),
+        }
+    }
+
+    #[tool(
+        description = "Edit a page by replacing an exact string. Targets the content field by default; pass field='title' to edit the title. Fails if old_string is not found or matches multiple places (unless replace_all=true). Cheaper than update_page for small changes because the agent doesn't have to resend the whole field."
+    )]
+    fn edit_page(&self, Parameters(input): Parameters<EditPageInput>) -> String {
+        match self.write(|conn| {
+            let id = queries::resolve_page_identifier(conn, &input.identifier)?;
+            let page = queries::get_page(conn, id)?;
+
+            let field = input.field.as_deref().unwrap_or("content");
+            // Mirror update_page's `\n`/`\t` unescape on content so an
+            // edit from a double-escaping client matches stored content.
+            let (current, old_norm, new_norm) = match field {
+                "content" => (
+                    page.content.clone(),
+                    queries::unescape_text(&input.old_string),
+                    queries::unescape_text(&input.new_string),
+                ),
+                "title" => (
+                    page.title.clone(),
+                    input.old_string.clone(),
+                    input.new_string.clone(),
+                ),
+                other => {
+                    return Err(crate::error::LificError::BadRequest(format!(
+                        "invalid field '{other}'; expected 'content' or 'title'"
+                    )));
+                }
+            };
+
+            let updated = apply_edit(
+                &current,
+                &old_norm,
+                &new_norm,
+                input.replace_all.unwrap_or(false),
+            )?;
+
+            let mut patch = models::UpdatePage {
+                title: None,
+                content: None,
+                folder_id: None,
+                sort_order: None,
+            };
+            match field {
+                "title" => patch.title = Some(updated),
+                "content" => patch.content = Some(updated),
+                _ => unreachable!(),
+            }
+
+            queries::update_page(conn, id, &patch)
+        }) {
+            Ok(page) => format!("Edited {}: {}", page.identifier, page.title),
             Err(e) => format!("Error: {e}"),
         }
     }
@@ -2004,5 +2157,405 @@ mod tests {
             identifier: "DOC-1".into(),
         }));
         assert!(listing.contains("comment on workspace page"), "got: {listing}");
+    }
+
+    // ── LIF-113: edit_issue / edit_page (surgical string replacement) ────
+
+    // Pure-function tests of the apply_edit helper. Kept thin because the
+    // tool-level tests below exercise the same paths through the real DB.
+
+    #[test]
+    fn apply_edit_replaces_single_match() {
+        let result = apply_edit("hello world", "world", "there", false).unwrap();
+        assert_eq!(result, "hello there");
+    }
+
+    #[test]
+    fn apply_edit_rejects_empty_old_string() {
+        let err = apply_edit("foo", "", "bar", false).unwrap_err();
+        assert!(matches!(err, crate::error::LificError::BadRequest(_)));
+    }
+
+    #[test]
+    fn apply_edit_rejects_identical_old_and_new() {
+        let err = apply_edit("foo", "foo", "foo", false).unwrap_err();
+        assert!(matches!(err, crate::error::LificError::BadRequest(_)));
+    }
+
+    #[test]
+    fn apply_edit_rejects_no_match() {
+        let err = apply_edit("hello", "missing", "x", false).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("not found"), "got: {msg}");
+    }
+
+    #[test]
+    fn apply_edit_rejects_multiple_matches_without_replace_all() {
+        let err = apply_edit("foo foo foo", "foo", "bar", false).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("matches 3 locations"), "got: {msg}");
+        assert!(msg.contains("replace_all=true"), "got: {msg}");
+    }
+
+    #[test]
+    fn apply_edit_replace_all_substitutes_every_occurrence() {
+        let result = apply_edit("foo foo foo", "foo", "bar", true).unwrap();
+        assert_eq!(result, "bar bar bar");
+    }
+
+    #[test]
+    fn apply_edit_handles_unicode() {
+        // Make sure str::matches + str::replace are unicode-safe.
+        let result = apply_edit("café ☕ shop", "café ☕", "tea 🍵", false).unwrap();
+        assert_eq!(result, "tea 🍵 shop");
+    }
+
+    // ── edit_issue (MCP tool) ────
+
+    fn seed_issue_with_description(mcp: &LificMcp, project: &str, title: &str, desc: &str) -> String {
+        let result = mcp.create_issue(Parameters(CreateIssueInput {
+            project: project.into(),
+            title: title.into(),
+            description: Some(desc.into()),
+            status: None,
+            priority: None,
+            module: None,
+            labels: None,
+        }));
+        assert!(result.starts_with("Created"), "got: {result}");
+        result
+    }
+
+    #[test]
+    fn edit_issue_unique_match_succeeds() {
+        let m = mcp();
+        seed_project(&m, "Test", "EDI");
+        seed_issue_with_description(&m, "EDI", "T", "The quick brown fox");
+
+        let result = m.edit_issue(Parameters(EditIssueInput {
+            identifier: "EDI-1".into(),
+            old_string: "brown".into(),
+            new_string: "red".into(),
+            field: None,
+            replace_all: None,
+        }));
+        assert!(result.starts_with("Edited"), "got: {result}");
+
+        let detail = m.get_issue(Parameters(GetIssueInput {
+            identifier: "EDI-1".into(),
+        }));
+        assert!(detail.contains("The quick red fox"), "got: {detail}");
+        assert!(!detail.contains("brown"), "got: {detail}");
+    }
+
+    #[test]
+    fn edit_issue_no_match_fails_with_clear_error() {
+        let m = mcp();
+        seed_project(&m, "Test", "EDN");
+        seed_issue_with_description(&m, "EDN", "T", "hello world");
+
+        let result = m.edit_issue(Parameters(EditIssueInput {
+            identifier: "EDN-1".into(),
+            old_string: "missing".into(),
+            new_string: "x".into(),
+            field: None,
+            replace_all: None,
+        }));
+        assert!(result.starts_with("Error"), "got: {result}");
+        assert!(result.contains("not found"), "got: {result}");
+
+        // Original content untouched.
+        let detail = m.get_issue(Parameters(GetIssueInput {
+            identifier: "EDN-1".into(),
+        }));
+        assert!(detail.contains("hello world"), "got: {detail}");
+    }
+
+    #[test]
+    fn edit_issue_multiple_match_fails_without_replace_all() {
+        let m = mcp();
+        seed_project(&m, "Test", "EDM");
+        seed_issue_with_description(&m, "EDM", "T", "foo foo foo");
+
+        let result = m.edit_issue(Parameters(EditIssueInput {
+            identifier: "EDM-1".into(),
+            old_string: "foo".into(),
+            new_string: "bar".into(),
+            field: None,
+            replace_all: None,
+        }));
+        assert!(result.starts_with("Error"), "got: {result}");
+        assert!(result.contains("3 locations"), "got: {result}");
+        assert!(result.contains("replace_all"), "got: {result}");
+    }
+
+    #[test]
+    fn edit_issue_replace_all_succeeds_when_set() {
+        let m = mcp();
+        seed_project(&m, "Test", "EDA");
+        seed_issue_with_description(&m, "EDA", "T", "foo foo foo");
+
+        let result = m.edit_issue(Parameters(EditIssueInput {
+            identifier: "EDA-1".into(),
+            old_string: "foo".into(),
+            new_string: "bar".into(),
+            field: None,
+            replace_all: Some(true),
+        }));
+        assert!(result.starts_with("Edited"), "got: {result}");
+
+        let detail = m.get_issue(Parameters(GetIssueInput {
+            identifier: "EDA-1".into(),
+        }));
+        assert!(detail.contains("bar bar bar"), "got: {detail}");
+    }
+
+    #[test]
+    fn edit_issue_empty_old_string_fails() {
+        let m = mcp();
+        seed_project(&m, "Test", "EDE");
+        seed_issue_with_description(&m, "EDE", "T", "anything");
+
+        let result = m.edit_issue(Parameters(EditIssueInput {
+            identifier: "EDE-1".into(),
+            old_string: "".into(),
+            new_string: "x".into(),
+            field: None,
+            replace_all: None,
+        }));
+        assert!(result.starts_with("Error"), "got: {result}");
+        assert!(result.contains("empty"), "got: {result}");
+    }
+
+    #[test]
+    fn edit_issue_identical_old_new_fails() {
+        let m = mcp();
+        seed_project(&m, "Test", "EDS");
+        seed_issue_with_description(&m, "EDS", "T", "hello");
+
+        let result = m.edit_issue(Parameters(EditIssueInput {
+            identifier: "EDS-1".into(),
+            old_string: "hello".into(),
+            new_string: "hello".into(),
+            field: None,
+            replace_all: None,
+        }));
+        assert!(result.starts_with("Error"), "got: {result}");
+        assert!(result.contains("differ"), "got: {result}");
+    }
+
+    #[test]
+    fn edit_issue_title_field_works() {
+        let m = mcp();
+        seed_project(&m, "Test", "EDT");
+        seed_issue_with_description(&m, "EDT", "Old name here", "body");
+
+        let result = m.edit_issue(Parameters(EditIssueInput {
+            identifier: "EDT-1".into(),
+            old_string: "Old".into(),
+            new_string: "New".into(),
+            field: Some("title".into()),
+            replace_all: None,
+        }));
+        assert!(result.starts_with("Edited"), "got: {result}");
+        assert!(result.contains("New name here"), "got: {result}");
+
+        // Description untouched.
+        let detail = m.get_issue(Parameters(GetIssueInput {
+            identifier: "EDT-1".into(),
+        }));
+        assert!(detail.contains("body"), "got: {detail}");
+    }
+
+    #[test]
+    fn edit_issue_invalid_field_fails() {
+        let m = mcp();
+        seed_project(&m, "Test", "EDX");
+        seed_issue_with_description(&m, "EDX", "T", "body");
+
+        let result = m.edit_issue(Parameters(EditIssueInput {
+            identifier: "EDX-1".into(),
+            old_string: "body".into(),
+            new_string: "x".into(),
+            field: Some("status".into()),
+            replace_all: None,
+        }));
+        assert!(result.starts_with("Error"), "got: {result}");
+        assert!(result.contains("invalid field"), "got: {result}");
+    }
+
+    #[test]
+    fn edit_issue_preserves_other_fields() {
+        let m = mcp();
+        seed_project(&m, "Test", "EDP");
+        m.create_issue(Parameters(CreateIssueInput {
+            project: "EDP".into(),
+            title: "Stays".into(),
+            description: Some("change me".into()),
+            status: Some("active".into()),
+            priority: Some("high".into()),
+            module: None,
+            labels: None,
+        }));
+
+        m.edit_issue(Parameters(EditIssueInput {
+            identifier: "EDP-1".into(),
+            old_string: "change".into(),
+            new_string: "kept".into(),
+            field: None,
+            replace_all: None,
+        }));
+
+        let detail = m.get_issue(Parameters(GetIssueInput {
+            identifier: "EDP-1".into(),
+        }));
+        assert!(detail.contains("Stays"), "title preserved, got: {detail}");
+        assert!(detail.contains("active"), "status preserved, got: {detail}");
+        assert!(detail.contains("high"), "priority preserved, got: {detail}");
+        assert!(detail.contains("kept me"), "description edited, got: {detail}");
+    }
+
+    // ── edit_page (MCP tool) ────
+
+    #[test]
+    fn edit_page_content_works() {
+        let m = mcp();
+        seed_project(&m, "Test", "EPC");
+        m.create_page(Parameters(CreatePageInput {
+            project: Some("EPC".into()),
+            title: "Doc".into(),
+            content: Some("# Heading\nold body".into()),
+            folder: None,
+        }));
+
+        let result = m.edit_page(Parameters(EditPageInput {
+            identifier: "EPC-DOC-1".into(),
+            old_string: "old body".into(),
+            new_string: "new body".into(),
+            field: None,
+            replace_all: None,
+        }));
+        assert!(result.starts_with("Edited"), "got: {result}");
+
+        let detail = m.get_page(Parameters(GetPageInput {
+            identifier: "EPC-DOC-1".into(),
+        }));
+        assert!(detail.contains("new body"), "got: {detail}");
+        assert!(!detail.contains("old body"), "got: {detail}");
+    }
+
+    #[test]
+    fn edit_page_title_field_works() {
+        let m = mcp();
+        seed_project(&m, "Test", "EPT");
+        m.create_page(Parameters(CreatePageInput {
+            project: Some("EPT".into()),
+            title: "Draft Spec".into(),
+            content: Some("body".into()),
+            folder: None,
+        }));
+
+        let result = m.edit_page(Parameters(EditPageInput {
+            identifier: "EPT-DOC-1".into(),
+            old_string: "Draft".into(),
+            new_string: "Final".into(),
+            field: Some("title".into()),
+            replace_all: None,
+        }));
+        assert!(result.starts_with("Edited"), "got: {result}");
+        assert!(result.contains("Final Spec"), "got: {result}");
+    }
+
+    #[test]
+    fn edit_page_preserves_other_fields() {
+        let m = mcp();
+        seed_project(&m, "Test", "EPP");
+        // Folder so we can verify it's preserved.
+        m.manage_resource(Parameters(ManageResourceInput {
+            resource_type: "folder".into(),
+            action: "create".into(),
+            project: Some("EPP".into()),
+            name: Some("Specs".into()),
+            identifier: None,
+            description: None,
+            current_name: None,
+            status: None,
+            color: None,
+        }));
+        m.create_page(Parameters(CreatePageInput {
+            project: Some("EPP".into()),
+            title: "Original Title".into(),
+            content: Some("change me".into()),
+            folder: Some("Specs".into()),
+        }));
+
+        m.edit_page(Parameters(EditPageInput {
+            identifier: "EPP-DOC-1".into(),
+            old_string: "change".into(),
+            new_string: "kept".into(),
+            field: None,
+            replace_all: None,
+        }));
+
+        let detail = m.get_page(Parameters(GetPageInput {
+            identifier: "EPP-DOC-1".into(),
+        }));
+        // Title preserved, content edited.
+        assert!(detail.contains("Original Title"), "title preserved, got: {detail}");
+        assert!(detail.contains("kept me"), "content edited, got: {detail}");
+
+        // Folder preserved — verified via list_pages with the folder filter.
+        let listing = m.list_resources(Parameters(ListResourcesInput {
+            resource_type: "page".into(),
+            project: Some("EPP".into()),
+            folder: Some("Specs".into()),
+            limit: None,
+            offset: None,
+        }));
+        assert!(listing.contains("EPP-DOC-1"), "folder preserved, got: {listing}");
+    }
+
+    #[test]
+    fn edit_page_no_match_fails() {
+        let m = mcp();
+        seed_project(&m, "Test", "EPN");
+        m.create_page(Parameters(CreatePageInput {
+            project: Some("EPN".into()),
+            title: "Doc".into(),
+            content: Some("hello".into()),
+            folder: None,
+        }));
+
+        let result = m.edit_page(Parameters(EditPageInput {
+            identifier: "EPN-DOC-1".into(),
+            old_string: "missing".into(),
+            new_string: "x".into(),
+            field: None,
+            replace_all: None,
+        }));
+        assert!(result.starts_with("Error"), "got: {result}");
+        assert!(result.contains("not found"), "got: {result}");
+    }
+
+    #[test]
+    fn edit_page_invalid_field_fails() {
+        let m = mcp();
+        seed_project(&m, "Test", "EPX");
+        m.create_page(Parameters(CreatePageInput {
+            project: Some("EPX".into()),
+            title: "Doc".into(),
+            content: Some("body".into()),
+            folder: None,
+        }));
+
+        let result = m.edit_page(Parameters(EditPageInput {
+            identifier: "EPX-DOC-1".into(),
+            old_string: "body".into(),
+            new_string: "x".into(),
+            field: Some("folder".into()),
+            replace_all: None,
+        }));
+        assert!(result.starts_with("Error"), "got: {result}");
+        assert!(result.contains("invalid field"), "got: {result}");
     }
 }

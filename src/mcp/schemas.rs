@@ -133,6 +133,34 @@ pub struct UpdatePageInput {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct EditIssueInput {
+    #[schemars(description = "Issue identifier like PRO-42")]
+    pub identifier: String,
+    #[schemars(description = "Exact string to find. Must be unique unless replace_all is true.")]
+    pub old_string: String,
+    #[schemars(description = "Replacement string (must differ from old_string)")]
+    pub new_string: String,
+    #[schemars(description = "Field to edit: 'description' (default) or 'title'")]
+    pub field: Option<String>,
+    #[schemars(description = "Replace all occurrences (default false)")]
+    pub replace_all: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct EditPageInput {
+    #[schemars(description = "Page identifier like LIF-DOC-1")]
+    pub identifier: String,
+    #[schemars(description = "Exact string to find. Must be unique unless replace_all is true.")]
+    pub old_string: String,
+    #[schemars(description = "Replacement string (must differ from old_string)")]
+    pub new_string: String,
+    #[schemars(description = "Field to edit: 'content' (default) or 'title'")]
+    pub field: Option<String>,
+    #[schemars(description = "Replace all occurrences (default false)")]
+    pub replace_all: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct DeleteInput {
     #[schemars(
         description = "Type of thing to delete: issue, page, project, module, label, or folder"
