@@ -101,34 +101,6 @@ pub(crate) fn validate_redirect_uri(uri: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// Best-effort client IP extraction from common reverse-proxy headers,
-/// falling back to a global "unknown" bucket. Behind tailscale funnel /
-/// nginx the `X-Forwarded-For` header is set; for local connections the
-/// fallback bucket is fine because it just means *all* unknown sources
-/// share the same rate limit (still better than nothing).
-fn client_ip_for_rate_limit(headers: &HeaderMap) -> String {
-    if let Some(v) = headers.get("x-forwarded-for")
-        && let Ok(s) = v.to_str()
-    {
-        // First IP in the comma-separated list is the original client.
-        if let Some(first) = s.split(',').next() {
-            let trimmed = first.trim();
-            if !trimmed.is_empty() {
-                return trimmed.to_string();
-            }
-        }
-    }
-    if let Some(v) = headers.get("x-real-ip")
-        && let Ok(s) = v.to_str()
-    {
-        let trimmed = s.trim();
-        if !trimmed.is_empty() {
-            return trimmed.to_string();
-        }
-    }
-    "unknown".to_string()
-}
-
 pub fn router(state: OAuthState) -> Router {
     Router::new()
         .route(
@@ -208,7 +180,7 @@ async fn register_client(
     // ── Rate limit per source IP ──
     // /oauth/register is unauthenticated by spec (RFC 7591), so without this
     // anyone on the internet can mint unlimited clients.
-    let ip = client_ip_for_rate_limit(&headers);
+    let ip = crate::ratelimit::client_ip(&headers);
     let key = format!("oauth_register:{ip}");
     if !state.register_limiter.check(&key) {
         let retry = state.register_limiter.retry_after(&key);

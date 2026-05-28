@@ -102,14 +102,24 @@ pub(super) async fn auth_signup(
 pub(super) async fn auth_login(
     State(db): State<DbPool>,
     limiter: Option<Extension<std::sync::Arc<crate::ratelimit::RateLimiter>>>,
+    headers: HeaderMap,
     Json(input): Json<LoginRequest>,
 ) -> Result<impl IntoResponse, LificError> {
-    // Rate limit by identity (username/email)
-    let key = input.identity.to_lowercase();
+    // Rate limit logins on TWO independent keys (LIF-75):
+    //   • per-identity — slows targeted credential guessing for one account
+    //   • per-IP       — stops one host from spraying many usernames, and
+    //                    keeps a single attacker from being the only thing
+    //                    needed to lock a victim out
+    // We peek() (non-recording) here and record exactly one failure per
+    // failed attempt below, so a failed login costs one slot, not two — the
+    // old code called check() (records on pass) *and* record_failure(),
+    // halving the effective limit.
+    let id_key = format!("login_id:{}", input.identity.to_lowercase());
+    let ip_key = format!("login_ip:{}", crate::ratelimit::client_ip(&headers));
     if let Some(Extension(ref rl)) = limiter
-        && !rl.check(&key)
+        && (!rl.peek(&id_key) || !rl.peek(&ip_key))
     {
-        let retry = rl.retry_after(&key);
+        let retry = rl.retry_after(&id_key).max(rl.retry_after(&ip_key));
         return Err(LificError::BadRequest(format!(
             "too many login attempts — try again in {retry} seconds"
         )));
@@ -120,9 +130,10 @@ pub(super) async fn auth_login(
         match crate::db::queries::users::authenticate(&conn, &input.identity, &input.password) {
             Ok(u) => u,
             Err(e) => {
-                // Record the failure for rate limiting
+                // Record one failure against both the identity and IP buckets.
                 if let Some(Extension(ref rl)) = limiter {
-                    rl.record_failure(&key);
+                    rl.record_failure(&id_key);
+                    rl.record_failure(&ip_key);
                 }
                 return Err(e);
             }
@@ -516,5 +527,124 @@ mod tests {
 
         assert_eq!(data["user"]["username"], "metest");
         assert!(token.starts_with("lific_sess_"));
+    }
+
+    // ── LIF-75: login rate limiting (per-identity + per-IP, no double-count) ──
+
+    /// Build an app whose login route is guarded by a rate limiter capped
+    /// at `max` attempts within a 15-minute window.
+    fn login_app_with_limiter(max: usize) -> axum::Router {
+        let db = crate::db::open_memory().expect("test db");
+        let limiter = std::sync::Arc::new(crate::ratelimit::RateLimiter::new(
+            max,
+            std::time::Duration::from_secs(15 * 60),
+        ));
+        crate::api::router(db, &[])
+            .layer(axum::Extension(crate::config::AuthConfig {
+                allow_signup: true,
+            }))
+            .layer(axum::Extension(limiter))
+    }
+
+    /// Fire one wrong-password login for `identity` from source IP `xff`.
+    /// Returns the status and parsed JSON body so callers can distinguish an
+    /// ordinary auth failure from a rate-limit rejection (both are 400).
+    async fn login_attempt(
+        app: &axum::Router,
+        identity: &str,
+        xff: &str,
+    ) -> (StatusCode, serde_json::Value) {
+        use tower::ServiceExt;
+        let body = serde_json::json!({ "identity": identity, "password": "definitely-wrong-pw" });
+        let resp = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/login")
+                    .header("content-type", "application/json")
+                    .header("x-forwarded-for", xff)
+                    .body(axum::body::Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = resp.status();
+        (status, parse_json(resp).await)
+    }
+
+    fn is_rate_limited(body: &serde_json::Value) -> bool {
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("too many login attempts")
+    }
+
+    #[tokio::test]
+    async fn login_grants_full_per_identity_budget() {
+        // Regression for the double-counting bug: with max 5, exactly 5
+        // failed attempts must be allowed before the 6th is blocked. The old
+        // code (check() records + record_failure() records) only allowed ~3.
+        // Distinct IP per attempt so only the per-identity bucket accrues.
+        let app = login_app_with_limiter(5);
+        for i in 0..5 {
+            let (status, body) = login_attempt(&app, "victim", &format!("10.0.0.{i}")).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert!(
+                !is_rate_limited(&body),
+                "attempt {i} should be an auth failure, not rate-limited: {body}"
+            );
+        }
+        // 6th attempt (fresh IP) trips the per-identity limit.
+        let (status, body) = login_attempt(&app, "victim", "10.0.0.250").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            is_rate_limited(&body),
+            "6th attempt should be rate-limited by the identity bucket: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn login_rate_limit_applies_per_ip_across_identities() {
+        // Per-IP limiting (new in LIF-75): one host spraying many usernames
+        // gets throttled even though each identity is distinct. Previously
+        // impossible — the limiter was keyed solely on identity.
+        let app = login_app_with_limiter(5);
+        for i in 0..5 {
+            let (status, body) = login_attempt(&app, &format!("user{i}"), "203.0.113.5").await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert!(
+                !is_rate_limited(&body),
+                "attempt {i} should be an auth failure: {body}"
+            );
+        }
+        // 6th attempt: same IP, brand-new username → blocked by the IP bucket.
+        let (status, body) = login_attempt(&app, "user-brand-new", "203.0.113.5").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            is_rate_limited(&body),
+            "6th attempt from the same IP should be rate-limited: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn login_rate_limit_isolates_distinct_ips() {
+        // A victim identity is NOT locked out for an attacker on a different
+        // IP, as long as the victim comes from their own IP and the identity
+        // budget hasn't been exhausted. Sanity check that buckets are keyed
+        // independently and the IP key is actually in play.
+        let app = login_app_with_limiter(3);
+        // Attacker burns the identity budget would also block victim, so to
+        // isolate the IP dimension we use distinct identities here.
+        for i in 0..3 {
+            let (_, body) = login_attempt(&app, &format!("a{i}"), "198.51.100.1").await;
+            assert!(!is_rate_limited(&body), "setup attempt {i}: {body}");
+        }
+        // Attacker IP is now capped.
+        let (_, attacker) = login_attempt(&app, "a-extra", "198.51.100.1").await;
+        assert!(is_rate_limited(&attacker), "attacker IP should be capped: {attacker}");
+        // A different IP is unaffected.
+        let (_, other) = login_attempt(&app, "someone", "198.51.100.2").await;
+        assert!(!is_rate_limited(&other), "distinct IP should not be limited: {other}");
     }
 }
