@@ -231,6 +231,64 @@
   }
 }
 
+/*
+ * Toolbar pill — single-action sibling of the ModeToggle segmented
+ * control. Matches its outer dimensions (padding / type / icon /
+ * radius / border / track color / inset shadow) so two of these
+ * sitting side-by-side in a topbar read as one button family.
+ *
+ * Used by the Export action in PageDetail / IssueDetail / ModuleDetail
+ * topbars; available to any other single-action toolbar control that
+ * needs to live next to the ModeToggle without looking like a stray.
+ */
+.toolbar-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.4375rem 1rem;
+  font-family: var(--font-body);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: 0.005em;
+  color: var(--text-muted);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  /* Grounds the pill so it reads as the same "recessed track" tier
+     the ModeToggle uses. Anything that should lift above this (like
+     a sliding indicator) ships with its own shadow on top. */
+  box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.04);
+  cursor: pointer;
+  user-select: none;
+  transition:
+    color 0.18s var(--ease-out-expo),
+    background 0.18s var(--ease-out-expo),
+    border-color 0.18s var(--ease-out-expo),
+    box-shadow 0.18s var(--ease-out-expo);
+}
+.toolbar-pill:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--surface);
+  border-color: var(--text-faint);
+  /* Drop the inset, hint a tiny outset on hover — same motion the
+     ModeToggle's sliding pill plays into when it lands on the active
+     slot. Keeps the family coherent. */
+  box-shadow:
+    0 1px 2px rgb(0 0 0 / 0.04),
+    0 1px 3px rgb(0 0 0 / 0.05);
+}
+.toolbar-pill:focus-visible {
+  outline: none;
+  box-shadow:
+    inset 0 1px 2px rgb(0 0 0 / 0.04),
+    0 0 0 3px var(--accent-subtle);
+}
+.toolbar-pill:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* Issue detail: metadata column (avoids relying on Tailwind gap alone for label/value stacks) */
 .issue-meta-aside {
   display: flex;

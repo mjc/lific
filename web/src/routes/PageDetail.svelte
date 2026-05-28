@@ -479,14 +479,15 @@
           {/if}
         </span>
 
+        <!-- Toolbar pill: matches the ModeToggle's outer dimensions
+             (padding / type / icon / radius / border / track color)
+             so the two pills read as one button family side-by-side. -->
         <button
-          class="inline-flex items-center gap-1.5 text-[0.75rem] text-[var(--text-muted)]
-                 hover:text-[var(--text)] transition-colors rounded px-2 py-1
-                 hover:bg-[var(--bg-subtle)]"
+          class="toolbar-pill"
           onclick={exportMarkdown}
           disabled={exporting}
         >
-          <Download size={13} />
+          <Download size={14} />
           {exporting ? "Exporting..." : "Export"}
         </button>
 

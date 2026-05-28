@@ -298,14 +298,14 @@
         {#if saveSuccess}
           <span class="text-[0.8125rem] text-[var(--success)]">Saved</span>
         {/if}
+        <!-- Toolbar pill: shares the ModeToggle visual family so the
+             topbar reads as one button group across all routes. -->
         <button
-          class="inline-flex items-center gap-1.5 text-[0.75rem] text-[var(--text-muted)]
-                 hover:text-[var(--text)] transition-colors rounded px-2 py-1
-                 hover:bg-[var(--bg-subtle)]"
+          class="toolbar-pill"
           onclick={exportProject}
           disabled={exporting}
         >
-          <Download size={13} />
+          <Download size={14} />
           {exporting ? "Exporting..." : "Export"}
         </button>
         <button
