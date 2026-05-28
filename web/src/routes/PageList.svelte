@@ -399,7 +399,7 @@
         </button>
       </div>
     {:else}
-      <div class="max-w-[480px] px-6 py-4">
+      <div class="px-6 py-4">
         {@render treeLevel(null, 0)}
       </div>
     {/if}
