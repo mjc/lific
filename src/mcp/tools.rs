@@ -1167,9 +1167,13 @@ impl LificMcp {
         match self.write(|conn| {
             queries::comments::create_comment(conn, parent, user_id, &input.content)
         }) {
+            // Don't echo c.content back — the agent already supplied it in the
+            // tool args, so repeating it just duplicates tokens in context
+            // (LIF-115). The comment id is the useful new handle for any
+            // follow-up edit/delete.
             Ok(c) => format!(
-                "Comment added to {} by {} at {}: {}",
-                input.identifier, c.author, c.created_at, c.content
+                "Comment #{} added to {} by {} at {}",
+                c.id, input.identifier, c.author, c.created_at
             ),
             Err(e) => format!("Error: {e}"),
         }
@@ -2003,14 +2007,21 @@ mod tests {
             identifier: "PRJ-1".into(),
             content: "Hello from MCP".into(),
         }));
-        assert!(result.contains("Comment added"), "got: {result}");
+        assert!(result.starts_with("Comment #"), "got: {result}");
         assert!(result.contains("testuser"), "got: {result}");
+        // LIF-115: the response must NOT echo the comment body back — the
+        // agent already supplied it in the tool args, so repeating it just
+        // burns context tokens. The new contract leads with the comment id.
+        assert!(
+            !result.contains("Hello from MCP"),
+            "response should not echo content back: {result}"
+        );
 
         let result = m.add_comment(Parameters(AddCommentInput {
             identifier: "PRJ-1".into(),
             content: "Second comment".into(),
         }));
-        assert!(result.contains("Comment added"), "got: {result}");
+        assert!(result.starts_with("Comment #"), "got: {result}");
 
         let result = m.list_comments(Parameters(ListCommentsInput {
             identifier: "PRJ-1".into(),
@@ -2094,7 +2105,7 @@ mod tests {
             identifier: "PRJ-1".into(),
             content: "Comment via stdio fallback".into(),
         }));
-        assert!(result.contains("Comment added"), "got: {result}");
+        assert!(result.starts_with("Comment #"), "got: {result}");
         assert!(result.contains("admin"), "got: {result}");
     }
 
@@ -2117,7 +2128,7 @@ mod tests {
             identifier: "PGC-DOC-1".into(),
             content: "Comment on a page".into(),
         }));
-        assert!(result.contains("Comment added"), "got: {result}");
+        assert!(result.starts_with("Comment #"), "got: {result}");
         assert!(result.contains("PGC-DOC-1"), "got: {result}");
 
         let listing = m.list_comments(Parameters(ListCommentsInput {
@@ -2180,7 +2191,7 @@ mod tests {
             identifier: "DOC-1".into(),
             content: "comment on workspace page".into(),
         }));
-        assert!(result.contains("Comment added"), "got: {result}");
+        assert!(result.starts_with("Comment #"), "got: {result}");
 
         let listing = m.list_comments(Parameters(ListCommentsInput {
             identifier: "DOC-1".into(),
