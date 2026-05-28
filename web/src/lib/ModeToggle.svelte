@@ -64,7 +64,7 @@
     {disabled}
     onclick={() => pick("edit")}
   >
-    <Pencil size={size === "floating" ? 16 : 13} />
+    <Pencil size={14} />
     <span>Edit</span>
   </button>
 
@@ -78,7 +78,7 @@
     {disabled}
     onclick={() => pick("read")}
   >
-    <Eye size={size === "floating" ? 16 : 13} />
+    <Eye size={14} />
     <span>Preview</span>
   </button>
 </div>
@@ -156,19 +156,27 @@
     box-shadow: 0 0 0 3px var(--accent-subtle);
   }
 
-  /* ── Compact (toolbar) variant ───────────────────────── */
-  .mt--sm .mt__opt {
-    padding: 0.3125rem 0.75rem;
-    font-size: 0.75rem;
-    letter-spacing: 0.01em;
+  /*
+   * Both sizes share the same options dimensions on purpose — the two
+   * surfaces mirror each other exactly so the floating one and the
+   * toolbar one read as the same control just in different locations.
+   * The only difference is the floating variant's positioning + entrance
+   * animation; visual contrast (track / border / pill / type) is
+   * identical.
+   */
+  .mt__opt {
+    padding: 0.4375rem 1rem;
+    font-size: 0.8125rem;
+    letter-spacing: 0.005em;
   }
 
-  /* ── Floating variant ────────────────────────────────── */
-  /*
-   * Viewport-fixed bottom-right. Substantial size so the affordance
-   * reads as "the action zone for this surface." Strong two-stop
-   * shadow plus a backdrop-blur backstop so it doesn't visually merge
-   * with content scrolling underneath it.
+  /* ── Floating variant ─────────────────────────────────
+   *
+   * Viewport-fixed bottom-right. Visually mirrors the toolbar variant
+   * — same paddings, same colors, same type. Just gets a soft drop
+   * shadow so it reads as an element sitting on top of the content
+   * rather than embedded in it, and a gentle entrance so it doesn't
+   * pop into view abruptly on mount.
    *
    * z-index sits below modal dropdowns (which use z-20 internally) but
    * above ordinary content. If a dropdown ever overlaps, the dropdown
@@ -179,49 +187,22 @@
     bottom: 1.5rem;
     right: 1.5rem;
     z-index: 30;
-    padding: 5px;
-    /* Surface tier (not bg-subtle) so the floater reads as a chrome
-       element distinct from in-content cards. */
-    background: color-mix(in oklab, var(--surface) 92%, transparent);
-    border-color: var(--border);
+    /* Light single-stop shadow — enough to lift it off the page but
+       not so heavy that it visually competes with the toolbar twin. */
     box-shadow:
-      0 2px 6px rgb(0 0 0 / 0.06),
-      0 12px 32px rgb(0 0 0 / 0.12);
-    backdrop-filter: blur(14px) saturate(1.1);
-    -webkit-backdrop-filter: blur(14px) saturate(1.1);
-    /* Gentle entrance so the floater doesn't slam in when the surface
-       mounts. */
-    animation: mt-enter 0.32s var(--ease-out-expo);
-  }
-
-  .mt--floating .mt__opt {
-    padding: 0.6875rem 1.375rem;
-    font-size: 0.9375rem;
-    letter-spacing: -0.005em;
-  }
-
-  .mt--floating .mt__pill {
-    box-shadow:
-      0 1px 2px rgb(0 0 0 / 0.08),
-      0 2px 6px rgb(0 0 0 / 0.10);
+      0 1px 2px rgb(0 0 0 / 0.04),
+      0 4px 14px rgb(0 0 0 / 0.08);
+    animation: mt-enter 0.28s var(--ease-out-expo);
   }
 
   @keyframes mt-enter {
     from {
       opacity: 0;
-      transform: translateY(8px) scale(0.96);
+      transform: translateY(6px);
     }
     to {
       opacity: 1;
-      transform: translateY(0) scale(1);
-    }
-  }
-
-  /* Touch — bump up the floating one further so the hit targets feel
-     right under a thumb. */
-  @media (pointer: coarse) {
-    .mt--floating .mt__opt {
-      padding: 0.8125rem 1.5rem;
+      transform: translateY(0);
     }
   }
 
