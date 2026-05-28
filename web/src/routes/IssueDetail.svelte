@@ -13,8 +13,9 @@
     type Label,
     type Comment,
   } from "../lib/api";
-  import Markdown from "../lib/Markdown.svelte";
   import CommentThread from "../lib/CommentThread.svelte";
+  import EditableMarkdown from "../lib/EditableMarkdown.svelte";
+  import ModeToggle from "../lib/ModeToggle.svelte";
   import {
     ArrowLeft, Ellipsis, Trash2, Plus, X, Check,
     CircleCheck, CircleX, CircleAlert,
@@ -80,12 +81,12 @@
 
   // Editing states
   let editingTitle = $state(false);
-  let editingDescription = $state(false);
   let draftTitle = $state("");
-  let draftDescription = $state("");
-  let descriptionEl = $state<HTMLTextAreaElement | null>(null);
-  let descriptionWrapperEl = $state<HTMLElement | null>(null);
-  let preEditHeight = $state<number | null>(null);
+  // LIF-109: description editing now lives inside <EditableMarkdown>.
+  // Mode is bindable so the toolbar button + "E" keyboard shortcut
+  // share the same toggle as the floating bottom-right pill.
+  let descriptionMode = $state<"read" | "edit">("read");
+  let descriptionRef = $state<EditableMarkdown | null>(null);
 
   // Dropdown states
   let statusOpen = $state(false);
@@ -126,8 +127,7 @@
     const id = issueIdentifier;
     // Reset all editing state when switching issues
     editingTitle = false;
-    editingDescription = false;
-    preEditHeight = null;
+    descriptionMode = "read";
     menuOpen = false;
     confirmingDelete = false;
     statusOpen = false;
@@ -163,18 +163,43 @@
 
     // Auto-enter description edit mode if content is empty
     if (editable && issue && !issue.description.trim()) {
-      requestAnimationFrame(() => startEditDescription());
+      requestAnimationFrame(() => descriptionRef?.focus());
     }
   }
 
   // ── Keyboard shortcuts ──────────────────────────────
   function handleKeydown(e: KeyboardEvent) {
-    // Ctrl+S / Cmd+S — save whatever is being edited
+    // Ctrl+S / Cmd+S — save whatever is being edited.
+    // Title gets handled here; description's textarea handles its own
+    // Ctrl+S internally so it can capture the current draft cleanly.
     if ((e.ctrlKey || e.metaKey) && e.key === "s") {
-      e.preventDefault();
-      if (editingTitle) commitTitle();
-      if (editingDescription) commitDescription();
-      return;
+      if (editingTitle) {
+        e.preventDefault();
+        commitTitle();
+        return;
+      }
+    }
+
+    // LIF-109: "E" enters edit mode for the description from anywhere
+    // outside an input. Matches the affordance advertised by the
+    // toolbar Edit button and the floating pill.
+    if (e.key === "e" || e.key === "E") {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      const el = document.activeElement;
+      if (el) {
+        const tag = el.tagName;
+        if (
+          tag === "INPUT" ||
+          tag === "TEXTAREA" ||
+          tag === "SELECT" ||
+          (el as HTMLElement).isContentEditable
+        ) return;
+      }
+      if (editable && issue && descriptionMode === "read") {
+        e.preventDefault();
+        descriptionRef?.focus();
+        return;
+      }
     }
 
     if (e.key !== "Escape") return;
@@ -184,7 +209,7 @@
       const tag = el.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (el as HTMLElement).isContentEditable) return;
     }
-    if (editingTitle || editingDescription || statusOpen || priorityOpen || moduleOpen || labelsOpen || menuOpen) return;
+    if (editingTitle || descriptionMode === "edit" || statusOpen || priorityOpen || moduleOpen || labelsOpen || menuOpen) return;
     e.preventDefault();
     navigate(backRoute());
   }
@@ -260,41 +285,13 @@
     editingTitle = false;
   }
 
-  // ── Description editing ──────────────────────────────
+  // ── Description editing (delegated to EditableMarkdown) ──
 
-  function startEditDescription() {
-    if (!editable || !issue) return;
-    // Capture the rendered content height before swapping to textarea.
-    // This becomes the minimum height for the entire editing session so
-    // the shorter raw-markdown text never collapses the container.
-    if (descriptionWrapperEl) {
-      preEditHeight = descriptionWrapperEl.offsetHeight;
-    }
-    draftDescription = issue.description;
-    editingDescription = true;
-    requestAnimationFrame(() => autoResize());
-  }
-
-  function autoResize() {
-    const el = descriptionEl;
-    if (!el) return;
-    el.style.height = "0";
-    const floor = preEditHeight ?? 0;
-    el.style.height = Math.max(el.scrollHeight, floor) + "px";
-  }
-
-  async function commitDescription() {
+  async function saveDescription(next: string) {
     if (!issue) return;
-    editingDescription = false;
-    preEditHeight = null;
-    if (draftDescription !== issue.description) {
-      await saveField("description", draftDescription);
+    if (next !== issue.description) {
+      await saveField("description", next);
     }
-  }
-
-  function cancelDescription() {
-    editingDescription = false;
-    preEditHeight = null;
   }
 
   // ── Metadata updates ─────────────────────────────────
@@ -420,6 +417,19 @@
             Saved at {lastSaved}
           {/if}
         </div>
+
+        {#if editable && issue && issue.description.trim()}
+          <!-- LIF-109: compact segmented mode toggle. Both labels are
+               visible at once with a sliding indicator pill; matches
+               the larger floating segmented control rendered by
+               EditableMarkdown so the two surfaces stay in lockstep. -->
+          <ModeToggle
+            mode={descriptionMode}
+            size="sm"
+            disabled={saving}
+            onSelect={(next) => descriptionRef?.setMode(next)}
+          />
+        {/if}
       </div>
     </div>
 
@@ -470,69 +480,27 @@
             </h1>
           {/if}
 
-          <!-- Description -->
-          <section
-            class="mb-8"
-            style={preEditHeight != null ? `min-height: ${preEditHeight}px;` : ""}
-            bind:this={descriptionWrapperEl}
-          >
-            {#if editingDescription}
-              <div>
-                <!-- svelte-ignore a11y_autofocus -->
-                <textarea
-                  bind:value={draftDescription}
-                  bind:this={descriptionEl}
-                  class="w-full text-[0.875rem] leading-[1.7] text-[var(--text)]
-                         bg-transparent border-none outline-none resize-none
-                         p-0 m-0 font-[var(--font-body)]"
-                  style={preEditHeight != null ? `height: ${preEditHeight}px;` : ""}
-                  placeholder="Add a description... (markdown supported)"
-                  onkeydown={(e) => {
-                    if (e.key === "Escape") cancelDescription();
-                  }}
-                  oninput={autoResize}
-                  autofocus
-                ></textarea>
-                <div class="flex items-center gap-2 mt-3 pt-3 border-t border-[var(--border)]">
-                  <button
-                    class="text-[0.8125rem] font-medium text-[var(--accent-text)]
-                           bg-[var(--accent)] px-3 py-1.5 rounded-md
-                           hover:bg-[var(--accent-hover)] transition-colors"
-                    onclick={commitDescription}
-                  >
-                    Save
-                  </button>
-                  <button
-                    class="text-[0.8125rem] text-[var(--text-muted)] px-3 py-1.5
-                           rounded-md hover:bg-[var(--bg-subtle)] transition-colors"
-                    onclick={cancelDescription}
-                  >
-                    Cancel
-                  </button>
-                  <span class="text-[0.75rem] text-[var(--text-faint)] ml-auto">
-                    Markdown · Esc to cancel
-                  </span>
-                </div>
-              </div>
-            {:else}
-              <!-- svelte-ignore a11y_no_static_element_interactions -->
-              <div
-                class="transition-colors min-h-[60px]
-                       {editable ? 'cursor-text hover:bg-[var(--bg-subtle)] rounded-md' : ''}"
-                onclick={startEditDescription}
-                onkeydown={(e) => { if (e.key === "Enter") startEditDescription(); }}
-              >
-                {#if issue.description.trim()}
-                  <Markdown content={issue.description} />
-                {:else}
-                  <p
-                    class="text-[0.875rem] text-[var(--text-faint)] italic py-2"
-                  >
-                    {editable ? "Click to add a description..." : "No description"}
-                  </p>
-                {/if}
-              </div>
-            {/if}
+          <!--
+            Description (LIF-109). EditableMarkdown owns the read↔edit
+            toggle, the sticky bottom-right pill, the locked container
+            height across mode swaps, and anchor preservation so the
+            swap doesn't visually jump. The compact toolbar button
+            above and the route-level "E" shortcut both drive
+            `descriptionRef.toggle()` / `descriptionRef.focus()`.
+          -->
+          <section class="mb-8">
+            <EditableMarkdown
+              bind:this={descriptionRef}
+              bind:mode={descriptionMode}
+              value={issue.description}
+              {editable}
+              {saving}
+              placeholder="Add a description... (markdown supported)"
+              emptyEditCta="Click to add a description..."
+              emptyReadText="No description"
+              proseMinHeight="60px"
+              onSave={saveDescription}
+            />
           </section>
 
           <!-- Comments (shared with PageDetail via web/src/lib/CommentThread.svelte) -->

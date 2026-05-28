@@ -11,8 +11,9 @@
     type Comment,
     type Label,
   } from "../lib/api";
-  import Markdown from "../lib/Markdown.svelte";
   import CommentThread from "../lib/CommentThread.svelte";
+  import EditableMarkdown from "../lib/EditableMarkdown.svelte";
+  import ModeToggle from "../lib/ModeToggle.svelte";
   import { ArrowLeft, Download, Ellipsis, Trash2, Plus, X, Check } from "lucide-svelte";
 
   let {
@@ -38,12 +39,12 @@
 
   // Editing
   let editingTitle = $state(false);
-  let editingContent = $state(false);
   let draftTitle = $state("");
-  let draftContent = $state("");
-  let contentEl = $state<HTMLTextAreaElement | null>(null);
-  let contentWrapperEl = $state<HTMLElement | null>(null);
-  let preEditHeight = $state<number | null>(null);
+  // LIF-109: body editing now lives inside <EditableMarkdown>. Mode is
+  // bindable so the compact toolbar button and the route-level "E"
+  // keyboard shortcut can drive the same toggle.
+  let bodyMode = $state<"read" | "edit">("read");
+  let bodyRef = $state<EditableMarkdown | null>(null);
 
   // Save
   let saving = $state(false);
@@ -173,36 +174,38 @@
     }
   }
 
-  // ── Content ──────────────────────────────────────────
+  // ── Content (delegated to EditableMarkdown) ──────────
 
-  function startEditContent() {
-    if (!editable || !page) return;
-    if (contentWrapperEl) preEditHeight = contentWrapperEl.offsetHeight;
-    draftContent = page.content;
-    editingContent = true;
-    requestAnimationFrame(() => autoResize());
-  }
-
-  async function commitContent() {
+  async function saveBody(next: string) {
     if (!page) return;
-    editingContent = false;
-    preEditHeight = null;
-    if (draftContent !== page.content) {
-      await saveField("content", draftContent);
+    if (next !== page.content) {
+      await saveField("content", next);
     }
   }
 
-  function cancelContent() {
-    editingContent = false;
-    preEditHeight = null;
-  }
-
-  function autoResize() {
-    const el = contentEl;
-    if (!el) return;
-    el.style.height = "0";
-    const floor = preEditHeight ?? 0;
-    el.style.height = Math.max(el.scrollHeight, floor) + "px";
+  // ── Keyboard shortcuts ───────────────────────────────
+  //
+  // "E" enters edit mode for the page body when no input/textarea is
+  // focused. Esc bubbles through to the textarea inside the component.
+  function handleKeydown(e: KeyboardEvent) {
+    if (e.key !== "e" && e.key !== "E") return;
+    if (!editable || !page) return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    const el = document.activeElement;
+    if (el) {
+      const tag = el.tagName;
+      if (
+        tag === "INPUT" ||
+        tag === "TEXTAREA" ||
+        tag === "SELECT" ||
+        (el as HTMLElement).isContentEditable
+      ) {
+        return;
+      }
+    }
+    if (bodyMode === "edit") return;
+    e.preventDefault();
+    bodyRef?.focus();
   }
 
   function formatDate(iso: string): string {
@@ -217,7 +220,7 @@
   }
 </script>
 
-<svelte:window onclick={handleWindowClick} />
+<svelte:window onclick={handleWindowClick} onkeydown={handleKeydown} />
 
 {#if loading}
   <div class="h-full flex items-center justify-center">
@@ -280,6 +283,20 @@
             Saved at {lastSaved}
           {/if}
         </span>
+
+        {#if editable && page && page.content.trim()}
+          <!-- LIF-109: compact segmented mode toggle in the toolbar.
+               Mirrors the larger floating segmented control rendered
+               by EditableMarkdown; both surfaces drive the same
+               `bodyRef.setMode(...)` so the sliding indicator stays
+               in lockstep across them. -->
+          <ModeToggle
+            mode={bodyMode}
+            size="sm"
+            disabled={saving}
+            onSelect={(next) => bodyRef?.setMode(next)}
+          />
+        {/if}
 
         {#if editable}
           <div class="relative">
@@ -483,65 +500,26 @@
           </div>
         {/if}
 
-        <!-- Body content -->
-        <section
-          bind:this={contentWrapperEl}
-          style={preEditHeight != null ? `min-height: ${preEditHeight}px;` : ""}
-        >
-          {#if editingContent}
-            <!-- svelte-ignore a11y_autofocus -->
-            <textarea
-              bind:value={draftContent}
-              bind:this={contentEl}
-              class="w-full text-[0.875rem] leading-[1.7] text-[var(--text)]
-                     bg-transparent border-none outline-none resize-none
-                     p-0 m-0 font-[var(--font-body)]"
-              style={preEditHeight != null ? `height: ${preEditHeight}px;` : ""}
-              placeholder="Start writing... (markdown supported)"
-              onkeydown={(e) => { if (e.key === "Escape") cancelContent(); }}
-              oninput={autoResize}
-              autofocus
-            ></textarea>
-            <div class="flex items-center gap-2 mt-3 pt-3 border-t border-[var(--border)]">
-              <button
-                class="text-[0.8125rem] font-medium text-[var(--accent-text)]
-                       bg-[var(--accent)] px-3 py-1.5 rounded-md
-                       hover:bg-[var(--accent-hover)] transition-colors"
-                onclick={commitContent}
-              >
-                Save
-              </button>
-              <button
-                class="text-[0.8125rem] text-[var(--text-muted)] px-3 py-1.5
-                       rounded-md hover:bg-[var(--bg-subtle)] transition-colors"
-                onclick={cancelContent}
-              >
-                Cancel
-              </button>
-              <span class="text-[0.75rem] text-[var(--text-faint)] ml-auto">
-                Markdown · Esc to cancel
-              </span>
-            </div>
-          {:else}
-            <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <!-- Double-click to enter edit mode. Single clicks are
-                 preserved so users can interact with rendered markdown
-                 (links, checkboxes) without accidentally editing. -->
-            <div
-              class="transition-colors min-h-[120px]
-                     {editable ? 'cursor-text hover:bg-[var(--bg-subtle)] rounded-md' : ''}"
-              ondblclick={startEditContent}
-            >
-              {#if page.content.trim()}
-                <Markdown content={page.content} />
-              {:else}
-                <p class="text-[0.875rem] text-[var(--text-faint)] italic py-2">
-                  {editable ? "Double-click to start writing..." : "Empty page"}
-                </p>
-              {/if}
-            </div>
-          {/if}
-        </section>
+        <!--
+          Body content (LIF-109). EditableMarkdown owns the read↔edit
+          mode toggle, the sticky bottom-right pill, locked container
+          height across the swap, and anchor preservation so the swap
+          doesn't visually jump. The compact toolbar button above and
+          the route-level "E" shortcut both drive `bodyRef.toggle()` /
+          `bodyRef.focus()`.
+        -->
+        <EditableMarkdown
+          bind:this={bodyRef}
+          bind:mode={bodyMode}
+          value={page.content}
+          {editable}
+          {saving}
+          placeholder="Start writing... (markdown supported)"
+          emptyEditCta="Click to start writing..."
+          emptyReadText="Empty page"
+          proseMinHeight="120px"
+          onSave={saveBody}
+        />
 
         <!-- Comments (LIF-106). Same component IssueDetail uses. -->
         <div class="mt-10 pt-6 border-t border-[var(--border)]">
