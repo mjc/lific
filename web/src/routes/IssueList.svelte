@@ -22,6 +22,16 @@
   import { dndzone, type DndEvent } from "svelte-dnd-action";
   import { flip } from "svelte/animate";
   import { getContext } from "svelte";
+  import { fuzzyMatch, buildSnippet } from "../lib/fuzzy";
+
+  // LIF-119: search tuning, kept identical to the page list (LIF-118) so
+  // the two list views feel consistent. See web/src/lib/fuzzy.ts for the
+  // scorer and the rationale on each constant.
+  const SCORE_THRESHOLD = 0.25;
+  const RESULT_CAP = 50;
+  const CONTENT_SCAN_MAX = 4000;
+  const CONTENT_WEIGHT = 0.6;
+  const IDENTIFIER_WEIGHT = 0.9;
 
   const topbarCtx = getContext<{
     set: (s: import("svelte").Snippet | undefined) => void;
@@ -251,16 +261,63 @@
     }
   }
 
-  // Client-side search filter
-  let filteredIssues = $derived(
-    searchQuery
-      ? issues.filter(
-          (i) =>
-            i.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-            i.identifier.toLowerCase().includes(searchQuery.toLowerCase())
-        )
-      : issues
-  );
+  // LIF-119: fuzzy full-text search across title, identifier, and
+  // description. Stores per-issue score + optional content snippet in
+  // a Map so the comparator (for score-based ordering) and the row
+  // renderer (for snippet display) can both reach it without a second
+  // scoring pass.
+  interface SearchHit {
+    score: number;
+    snippet: string | null;
+  }
+  let issueSearchScores = $state<Map<number, SearchHit>>(new Map());
+
+  let filteredIssues = $derived.by<Issue[]>(() => {
+    const q = searchQuery.trim();
+    if (!q) {
+      // Reset the score map so compareIssues falls back to user sort.
+      if (issueSearchScores.size > 0) issueSearchScores = new Map();
+      return issues;
+    }
+
+    const scores = new Map<number, SearchHit>();
+    const hits: Array<{ issue: Issue; score: number }> = [];
+
+    for (const issue of issues) {
+      const titleHit = fuzzyMatch(q, issue.title);
+      const idHit = fuzzyMatch(q, issue.identifier);
+      const body = issue.description.slice(0, CONTENT_SCAN_MAX);
+      const descHit = fuzzyMatch(q, body);
+
+      const titleScore = titleHit?.score ?? 0;
+      const idScore = (idHit?.score ?? 0) * IDENTIFIER_WEIGHT;
+      const descScore = (descHit?.score ?? 0) * CONTENT_WEIGHT;
+
+      const best = Math.max(titleScore, idScore, descScore);
+      if (best < SCORE_THRESHOLD) continue;
+
+      const snippet =
+        descHit && descScore === best && best > 0
+          ? buildSnippet(body, descHit.matchStart, descHit.matchEnd)
+          : null;
+
+      scores.set(issue.id, { score: best, snippet });
+      hits.push({ issue, score: best });
+    }
+
+    hits.sort((a, b) => b.score - a.score);
+    const capped = hits.slice(0, RESULT_CAP);
+
+    // Keep the score map in sync with what we actually surface so
+    // dropped (over-cap) items don't get spurious relevance ordering.
+    const capIds = new Set(capped.map((h) => h.issue.id));
+    for (const id of scores.keys()) {
+      if (!capIds.has(id)) scores.delete(id);
+    }
+    issueSearchScores = scores;
+
+    return capped.map((h) => h.issue);
+  });
 
   // ── Sort ────────────────────────────────────────────
   // Topbar-controlled ordering. Applied after filter, before grouping —
@@ -286,6 +343,17 @@
   };
 
   function compareIssues(a: Issue, b: Issue): number {
+    // LIF-119: when search is active, relevance wins over the user's
+    // chosen sort field. Otherwise priority/age/number drives the
+    // ordering as before.
+    if (searchQuery.trim() && issueSearchScores.size > 0) {
+      const sa = issueSearchScores.get(a.id)?.score ?? 0;
+      const sb = issueSearchScores.get(b.id)?.score ?? 0;
+      if (sa !== sb) return sb - sa;
+      // Tie-break by identifier so the order is stable across keystrokes.
+      return a.identifier.localeCompare(b.identifier);
+    }
+
     let r = 0;
     switch (sortField) {
       case "priority":
@@ -1513,6 +1581,19 @@
           </button>
         {/if}
       </div>
+    {:else if searchQuery.trim()}
+      <!-- LIF-119: search-mode flat ranked list. Bypasses grouping —
+           when hunting for an issue by name or content, the status
+           buckets are just noise. Ordering is by relevance score
+           (set up in compareIssues). -->
+      {#if sortedIssues.length === RESULT_CAP}
+        <div class="text-[0.6875rem] text-[var(--text-faint)] uppercase tracking-widest font-semibold px-6 py-2 border-b border-[var(--border)] bg-[var(--surface)]">
+          Top {RESULT_CAP} matches — narrow the query for fewer results
+        </div>
+      {/if}
+      {#each sortedIssues as issue, i (issue.id)}
+        {@render issueRow(issue, i)}
+      {/each}
     {:else if groupedByStatus && !filterStatus}
       <!-- Grouped view -->
       {@const _groups = Object.entries(groupedByStatus)}
@@ -1554,6 +1635,7 @@
 
 {#snippet issueRow(issue: Issue, idx: number)}
   {@const isFocused = idx === focusedIndex}
+  {@const hitSnippet = issueSearchScores.get(issue.id)?.snippet ?? null}
   <div
     class="w-full flex items-center gap-3 px-6 py-2.5 text-left
            border-b border-[var(--border)] last:border-b-0
@@ -1636,15 +1718,26 @@
       {issue.identifier}
     </span>
 
-    <!-- Title -->
-    <span
-      class="flex-1 text-[0.875rem] text-[var(--text)] truncate
-             {issue.status === 'done' || issue.status === 'cancelled'
-        ? 'line-through text-[var(--text-muted)]'
-        : ''}"
-    >
-      {issue.title}
-    </span>
+    <!-- Title (and, in search mode, an optional content snippet below
+         it when the description was the reason this issue surfaced).
+         The column flexes vertically to stack the two lines while the
+         outer row stays items-center, so icons remain vertically
+         aligned to the title column as a whole. -->
+    <div class="flex-1 min-w-0 flex flex-col gap-0.5">
+      <span
+        class="text-[0.875rem] text-[var(--text)] truncate
+               {issue.status === 'done' || issue.status === 'cancelled'
+          ? 'line-through text-[var(--text-muted)]'
+          : ''}"
+      >
+        {issue.title}
+      </span>
+      {#if hitSnippet}
+        <span class="text-[0.75rem] text-[var(--text-muted)] truncate">
+          {hitSnippet}
+        </span>
+      {/if}
+    </div>
 
     <!-- Labels -->
     {#if issue.labels.length > 0}
