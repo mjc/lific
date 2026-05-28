@@ -23,9 +23,14 @@
   let {
     navigate,
     projectIdentifier,
+    defaultModuleId = null,
   }: {
     navigate: (path: string) => void;
     projectIdentifier: string;
+    /** LIF-121: pre-fill the module assignment from a query param so
+     *  "+ Issue" on a module page lands here with that module already
+     *  selected. */
+    defaultModuleId?: number | null;
   } = $props();
 
   let project = $state<Project | null>(null);
@@ -40,7 +45,7 @@
   let description = $state("");
   let status = $state("backlog");
   let priority = $state("none");
-  let moduleId = $state<number | null>(null);
+  let moduleId = $state<number | null>(defaultModuleId);
   let selectedLabels = $state<string[]>([]);
 
   // Dropdown states

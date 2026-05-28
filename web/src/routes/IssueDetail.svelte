@@ -20,7 +20,7 @@
     ArrowLeft, Ellipsis, Trash2, Plus, X, Check,
     CircleCheck, CircleX, CircleAlert,
     Circle, CircleDot, CircleDashed, CircleCheckBig,
-    Download,
+    Download, ArrowUpRight,
   } from "lucide-svelte";
   import { getContext } from "svelte";
 
@@ -632,23 +632,47 @@
               </div>
             {/if}
           </div></div><div class="issue-meta-field">{@render sidebarField("Module")}<div class="relative">
-            <button
-              class="flex items-center gap-2 text-[0.8125rem] rounded-md
-                     px-2 py-1 -mx-2 transition-colors w-full text-left
-                     {editable ? 'hover:bg-[var(--bg-subtle)] cursor-pointer' : 'cursor-default'}"
-              onclick={(e) => {
-                if (!editable) return;
-                e.stopPropagation();
-                moduleOpen = !moduleOpen;
-                statusOpen = false;
-                priorityOpen = false;
-                labelsOpen = false;
-              }}
-            >
-              <span class="text-[var(--text)] {issue.module_id ? '' : 'text-[var(--text-faint)]'}">
-                {moduleName(issue.module_id)}
-              </span>
-            </button>
+            <!-- Assignment dropdown trigger + jump-to-module link.
+                 LIF-121: with a real module detail page now in place,
+                 clicking the chip text opens the assignment dropdown
+                 (existing behavior) but the arrow icon at the right
+                 jumps to the module's detail page so users can pivot
+                 from "what module is this in" to "what else is in
+                 this module" without breaking the read flow. -->
+            <div class="flex items-center -mx-2">
+              <button
+                class="flex items-center gap-2 text-[0.8125rem] rounded-md
+                       px-2 py-1 transition-colors flex-1 text-left
+                       {editable ? 'hover:bg-[var(--bg-subtle)] cursor-pointer' : 'cursor-default'}"
+                onclick={(e) => {
+                  if (!editable) return;
+                  e.stopPropagation();
+                  moduleOpen = !moduleOpen;
+                  statusOpen = false;
+                  priorityOpen = false;
+                  labelsOpen = false;
+                }}
+              >
+                <span class="text-[var(--text)] {issue.module_id ? '' : 'text-[var(--text-faint)]'}">
+                  {moduleName(issue.module_id)}
+                </span>
+              </button>
+              {#if issue.module_id}
+                {@const targetModuleId = issue.module_id}
+                <button
+                  class="size-6 flex items-center justify-center rounded
+                         text-[var(--text-faint)] hover:text-[var(--accent)]
+                         hover:bg-[var(--bg-subtle)] transition-colors shrink-0"
+                  onclick={(e) => {
+                    e.stopPropagation();
+                    navigate(`/${projectIdentifier}/modules/${targetModuleId}`);
+                  }}
+                  title="Open module"
+                >
+                  <ArrowUpRight size={13} />
+                </button>
+              {/if}
+            </div>
             {#if moduleOpen}
               <div
                 class="absolute left-0 top-full mt-1 z-20 w-[180px]

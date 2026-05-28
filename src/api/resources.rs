@@ -25,6 +25,13 @@ pub(super) async fn list_modules(
     .map(Json)
 }
 
+pub(super) async fn get_module(
+    State(db): State<DbPool>,
+    Path(id): Path<i64>,
+) -> Result<Json<Module>, LificError> {
+    with_read(&db, |conn| crate::db::queries::get_module(conn, id)).map(Json)
+}
+
 pub(super) async fn create_module(
     State(db): State<DbPool>,
     Extension(auth_user): Extension<Option<AuthUser>>,

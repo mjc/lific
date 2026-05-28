@@ -379,6 +379,43 @@ export async function listModules(projectId: number) {
   return request<Module[]>(`/modules?project_id=${projectId}`);
 }
 
+export async function getModule(id: number) {
+  return request<Module>(`/modules/${id}`);
+}
+
+export interface CreateModuleInput {
+  project_id: number;
+  name: string;
+  description?: string;
+  status?: string;
+}
+
+export async function createModule(input: CreateModuleInput) {
+  return request<Module>(`/modules`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export interface UpdateModuleInput {
+  name?: string;
+  description?: string;
+  status?: string;
+}
+
+export async function updateModule(id: number, input: UpdateModuleInput) {
+  return request<Module>(`/modules/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function deleteModule(id: number) {
+  return request<{ deleted: boolean }>(`/modules/${id}`, {
+    method: "DELETE",
+  });
+}
+
 // ── Labels ──────────────────────────────────────────────────
 
 export interface Label {

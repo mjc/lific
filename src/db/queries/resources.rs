@@ -98,6 +98,33 @@ pub fn get_module_name(conn: &Connection, id: i64) -> Result<String, LificError>
     })
 }
 
+/// Fetch a single module by id. Used by the web detail route and any
+/// client that already knows the id but not the project — list_modules
+/// requires the project_id up front, which makes URL→data resolution
+/// awkward when you don't have it in hand.
+pub fn get_module(conn: &Connection, id: i64) -> Result<Module, LificError> {
+    conn.query_row(
+        "SELECT id, project_id, name, description, status, created_at, updated_at
+         FROM modules WHERE id = ?1",
+        params![id],
+        |row| Ok(Module {
+            id: row.get(0)?,
+            project_id: row.get(1)?,
+            name: row.get(2)?,
+            description: row.get(3)?,
+            status: row.get(4)?,
+            created_at: row.get(5)?,
+            updated_at: row.get(6)?,
+        }),
+    )
+    .map_err(|e| match e {
+        rusqlite::Error::QueryReturnedNoRows => {
+            LificError::NotFound(format!("module {id} not found"))
+        }
+        _ => e.into(),
+    })
+}
+
 pub fn list_modules(conn: &Connection, project_id: i64) -> Result<Vec<Module>, LificError> {
     let mut stmt = conn.prepare(
         "SELECT id, project_id, name, description, status, created_at, updated_at
@@ -386,6 +413,39 @@ mod tests {
 
         delete_module(&conn, module.id).unwrap();
         assert_eq!(list_modules(&conn, pid).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn get_module_by_id_round_trip() {
+        let pool = test_db();
+        let conn = pool.write().unwrap();
+        let pid = seed_project(&conn);
+
+        let created = create_module(
+            &conn,
+            &CreateModule {
+                project_id: pid,
+                name: "Auth".into(),
+                description: "Login + tokens".into(),
+                status: "planned".into(),
+            },
+        )
+        .unwrap();
+
+        let fetched = get_module(&conn, created.id).unwrap();
+        assert_eq!(fetched.id, created.id);
+        assert_eq!(fetched.name, "Auth");
+        assert_eq!(fetched.description, "Login + tokens");
+        assert_eq!(fetched.status, "planned");
+        assert_eq!(fetched.project_id, pid);
+    }
+
+    #[test]
+    fn get_module_not_found_returns_404_kind() {
+        let pool = test_db();
+        let conn = pool.write().unwrap();
+        let err = get_module(&conn, 99_999).unwrap_err();
+        assert!(matches!(err, LificError::NotFound(_)));
     }
 
     #[test]

@@ -9,6 +9,8 @@
   import ProjectSettings from "./routes/ProjectSettings.svelte";
   import PageList from "./routes/PageList.svelte";
   import PageDetail from "./routes/PageDetail.svelte";
+  import ModuleList from "./routes/ModuleList.svelte";
+  import ModuleDetail from "./routes/ModuleDetail.svelte";
   import Layout from "./lib/Layout.svelte";
   import { hasSession, listProjects } from "./lib/api";
 
@@ -60,13 +62,22 @@
     | { type: "app"; page: "project-settings"; project: string }
     | { type: "app"; page: "issues"; project: string }
     | { type: "app"; page: "board"; project: string }
-    | { type: "app"; page: "issue-new"; project: string }
+    | { type: "app"; page: "issue-new"; project: string; defaultModuleId: number | null }
     | { type: "app"; page: "issue-detail"; project: string; identifier: string }
     | { type: "app"; page: "pages"; project: string }
     | { type: "app"; page: "page-detail"; project: string; pageId: number }
+    | { type: "app"; page: "modules"; project: string }
+    | { type: "app"; page: "module-detail"; project: string; moduleId: number }
     | { type: "loading" };
 
-  function parseRoute(r: string): ParsedRoute {
+  function parseRoute(input: string): ParsedRoute {
+    // Strip a "?key=value" query string from the route before pattern-
+    // matching. The path portion drives the page selection; the query
+    // is parsed separately for routes that opt into it (currently
+    // issue-new for `?module={id}` prefill — LIF-121).
+    const [r, queryString] = input.split("?");
+    const query = new URLSearchParams(queryString ?? "");
+
     if (r === "/login" || r === "/signup") {
       return { type: "auth", page: r.slice(1) as "login" | "signup" };
     }
@@ -95,10 +106,19 @@
       return { type: "app", page: "board", project: boardMatch[1] };
     }
 
-    // Project-scoped: /{IDENTIFIER}/issues/new
+    // Project-scoped: /{IDENTIFIER}/issues/new (optional ?module={id} prefill)
     const issueNewMatch = r.match(/^\/([A-Za-z][A-Za-z0-9_-]*)\/issues\/new$/i);
     if (issueNewMatch) {
-      return { type: "app", page: "issue-new", project: issueNewMatch[1] };
+      const moduleParam = query.get("module");
+      const defaultModuleId = moduleParam && /^\d+$/.test(moduleParam)
+        ? parseInt(moduleParam)
+        : null;
+      return {
+        type: "app",
+        page: "issue-new",
+        project: issueNewMatch[1],
+        defaultModuleId,
+      };
     }
 
     // Project-scoped: /{IDENTIFIER}/issues/{ISSUE-ID}
@@ -128,6 +148,23 @@
         page: "page-detail",
         project: pageDetailMatch[1],
         pageId: parseInt(pageDetailMatch[2]),
+      };
+    }
+
+    // Project-scoped: /{IDENTIFIER}/modules
+    const moduleListMatch = r.match(/^\/([A-Za-z][A-Za-z0-9_-]*)\/modules$/i);
+    if (moduleListMatch) {
+      return { type: "app", page: "modules", project: moduleListMatch[1] };
+    }
+
+    // Project-scoped: /{IDENTIFIER}/modules/{ID}
+    const moduleDetailMatch = r.match(/^\/([A-Za-z][A-Za-z0-9_-]*)\/modules\/(\d+)$/i);
+    if (moduleDetailMatch) {
+      return {
+        type: "app",
+        page: "module-detail",
+        project: moduleDetailMatch[1],
+        moduleId: parseInt(moduleDetailMatch[2]),
       };
     }
 
@@ -168,7 +205,11 @@
         layout="board"
       />
     {:else if parsed.page === "issue-new"}
-      <IssueNew {navigate} projectIdentifier={parsed.project} />
+      <IssueNew
+        {navigate}
+        projectIdentifier={parsed.project}
+        defaultModuleId={parsed.defaultModuleId}
+      />
     {:else if parsed.page === "issue-detail"}
       <IssueDetail
         {navigate}
@@ -179,6 +220,14 @@
       <PageList {navigate} projectIdentifier={parsed.project} />
     {:else if parsed.page === "page-detail"}
       <PageDetail {navigate} projectIdentifier={parsed.project} pageId={parsed.pageId} />
+    {:else if parsed.page === "modules"}
+      <ModuleList {navigate} projectIdentifier={parsed.project} />
+    {:else if parsed.page === "module-detail"}
+      <ModuleDetail
+        {navigate}
+        projectIdentifier={parsed.project}
+        moduleId={parsed.moduleId}
+      />
     {/if}
   </Layout>
 {/if}

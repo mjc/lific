@@ -9,7 +9,7 @@
   } from "./api";
   import ThemeToggle from "./ThemeToggle.svelte";
   import ProjectIcon from "./ProjectIcon.svelte";
-  import { Settings, LogOut, List, LayoutGrid, FileText, Plus } from "lucide-svelte";
+  import { Settings, LogOut, List, LayoutGrid, FileText, Plus, Layers } from "lucide-svelte";
   import { setContext } from "svelte";
 
   let {
@@ -258,6 +258,11 @@
                     `/${project.identifier}/board`,
                     "Board",
                     LayoutGrid,
+                  )}
+                  {@render subItem(
+                    `/${project.identifier}/modules`,
+                    "Modules",
+                    Layers,
                   )}
                   {@render subItem(
                     `/${project.identifier}/pages`,

@@ -98,7 +98,9 @@ pub fn router(db: DbPool, cors_origins: &[String]) -> Router {
         )
         .route(
             "/api/modules/{id}",
-            put(resources::update_module).delete(resources::delete_module_handler),
+            get(resources::get_module)
+                .put(resources::update_module)
+                .delete(resources::delete_module_handler),
         )
         // Labels
         .route(
