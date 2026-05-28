@@ -48,7 +48,7 @@
         Lightweight issue tracking built for AI-driven development.<br />Single binary. MCP built in.
       </p>
       <div class="flex items-center gap-2 mt-10 text-[0.8125rem] text-[var(--panel-muted)]">
-        <span>v1.1.2</span>
+        <span>v{__APP_VERSION__}</span>
         <span class="w-4 h-px bg-[var(--panel-muted)]"></span>
         <span>Designed for prolific projects</span>
       </div>
