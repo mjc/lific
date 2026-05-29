@@ -16,7 +16,7 @@
 
 ---
 
-Lific's full MCP schema fits in ~2,500 tokens. It uses human-readable identifiers (`APP-42`, not UUIDs), runs as a single binary with an embedded SQLite database, and includes a web UI for when you want to look at things yourself.
+Lific's full MCP schema fits in roughly 3,000 tokens. It uses human-readable identifiers (`APP-42`, not UUIDs), runs as a single binary with an embedded SQLite database, and includes a web UI for when you want to look at things yourself.
 
 ## Install
 
@@ -95,14 +95,16 @@ Each connection creates a bot identity tied to your account. Changes show up att
 | `list_issues` | Filter by status, priority, module, label, or workable |
 | `get_issue` | Full issue details with relations, labels, and comments |
 | `create_issue` / `update_issue` | Create or partially update by identifier |
+| `edit_issue` / `edit_page` | Targeted find-and-replace edits without resending the whole body |
 | `get_board` | Board view grouped by status, priority, or module |
-| `search` | Full-text search across issues and pages |
+| `search` | Fuzzy full-text search across issues and pages |
 | `link_issues` / `unlink_issues` | Dependency tracking (blocks, relates_to, duplicate) |
-| `get_page` / `create_page` / `update_page` | Markdown documents in folders |
-| `add_comment` / `list_comments` | Comments on issues |
+| `get_page` / `create_page` / `update_page` | Markdown documents in folders, with labels and lifecycle status |
+| `add_comment` / `list_comments` | Threaded comments on issues and pages |
 | `list_resources` | Discover projects, modules, labels, folders |
-| `manage_resource` | Create/update projects, modules, labels, folders |
+| `manage_resource` | Create/update projects, modules (with icons), labels, folders |
 | `delete` | Delete anything by identifier |
+| `export_issue` / `export_page` / `export_project` | Export to portable markdown |
 
 Everything uses human-readable identifiers: `project="APP"` not `project_id=7`.
 
@@ -112,16 +114,16 @@ Everything uses human-readable identifiers: `project="APP"` not `project_id=7`.
 
 | Category | What you get |
 |----------|-------------|
-| **Issue tracking** | Status, priority, modules, labels, relations, comments, board view |
-| **Documentation** | Markdown pages in recursive folders |
-| **MCP interface** | 16 tools, ~2,500 token schema, human-readable identifiers |
+| **Issue tracking** | Status, priority, modules with icons, labels, relations, comments, board view, fuzzy search, sort by recent activity |
+| **Documentation** | Markdown pages in recursive folders, with comments, labels, lifecycle status, full-text search, and Mermaid diagrams |
+| **MCP interface** | 21 tools, ~3,000-token schema, human-readable identifiers |
 | **REST API** | Full CRUD for all resources, search, board view |
-| **Web UI** | Inline editing, drag-and-drop, dark/light theme |
+| **Web UI** | Markdown editing with live preview, drag-and-drop board, Mermaid and code-copy, dark/light theme |
 | **User accounts** | Individual auth, per-tool bot identities, project lead permissions |
-| **OAuth 2.1** | PKCE, dynamic client registration, token revocation |
+| **OAuth 2.1** | PKCE, dynamic client registration, token revocation, per-user token identity |
 | **Backups** | Automatic SQLite snapshots with configurable retention |
 | **CLI** | Full CRUD for issues, projects, pages, modules, labels, folders. No server needed |
-| **Single binary** | No runtime dependencies, embedded SQLite, ~15MB |
+| **Single binary** | No runtime dependencies, embedded SQLite, ~16MB |
 
 ## Configuration
 
