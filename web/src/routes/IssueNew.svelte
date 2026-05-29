@@ -8,7 +8,8 @@
     type Module,
     type Label,
   } from "../lib/api";
-  import { ArrowLeft, Plus, X, Check } from "lucide-svelte";
+  import { ArrowLeft } from "lucide-svelte";
+  import LabelEditor from "../lib/LabelEditor.svelte";
   import { getContext } from "svelte";
 
   const topbarCtx = getContext<{
@@ -213,231 +214,175 @@
           </section>
         </div>
 
-        <!-- Sidebar -->
+        <!-- Sidebar. Same issue-meta-* spacing system as IssueDetail so
+             the field rhythm matches the detail page exactly (LIF-126). -->
         <aside
-          class="w-[220px] shrink-0 border-l border-[var(--border)]
-                 py-6 px-5 space-y-5"
+          class="w-[220px] shrink-0 border-l border-[var(--border)] py-6 px-5"
         >
-          <!-- Status -->
-          {@render sidebarField("Status")}
-          <div class="relative">
-            <button
-              class="flex items-center gap-2 text-[0.8125rem] rounded-md
-                     px-2 py-1 -mx-2 transition-colors w-full text-left
-                     hover:bg-[var(--bg-subtle)] cursor-pointer"
-              onclick={(e) => {
-                e.stopPropagation();
-                statusOpen = !statusOpen;
-                priorityOpen = false;
-                moduleOpen = false;
-                labelsOpen = false;
-              }}
-            >
-              <span class="size-2.5 rounded-full {statusDotClass(status)}"></span>
-              <span class="capitalize text-[var(--text)]">{status}</span>
-            </button>
-            {#if statusOpen}
-              <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
-              <div
-                class="absolute left-0 top-full mt-1 z-20 w-[180px]
-                       bg-[var(--surface)] border border-[var(--border)]
-                       rounded-md shadow-lg py-1"
-                onclick={(e) => e.stopPropagation()}
-              >
-                {#each STATUSES as s}
-                  <button
-                    class="w-full flex items-center gap-2 px-3 py-1.5 text-left
-                           text-[0.8125rem] transition-colors
-                           {s.value === status
-                      ? 'text-[var(--accent)] bg-[var(--accent-subtle)]'
-                      : 'text-[var(--text)] hover:bg-[var(--bg-subtle)]'}"
-                    onclick={() => { status = s.value; statusOpen = false; }}
-                  >
-                    <span class="size-2 rounded-full {statusDotClass(s.value)}"></span>
-                    {s.label}
-                  </button>
-                {/each}
-              </div>
-            {/if}
-          </div>
-
-          <!-- Priority -->
-          {@render sidebarField("Priority")}
-          <div class="relative -mt-4">
-            <button
-              class="flex items-center gap-2 text-[0.8125rem] rounded-md
-                     px-2 py-1 -mx-2 transition-colors w-full text-left
-                     hover:bg-[var(--bg-subtle)] cursor-pointer"
-              onclick={(e) => {
-                e.stopPropagation();
-                priorityOpen = !priorityOpen;
-                statusOpen = false;
-                moduleOpen = false;
-                labelsOpen = false;
-              }}
-            >
-              <span class="text-[var(--text)] {priorityTextClass(priority)}">
-                {priority === "none" ? "No priority" : priority.charAt(0).toUpperCase() + priority.slice(1)}
-              </span>
-            </button>
-            {#if priorityOpen}
-              <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
-              <div
-                class="absolute left-0 top-full mt-1 z-20 w-[180px]
-                       bg-[var(--surface)] border border-[var(--border)]
-                       rounded-md shadow-lg py-1"
-                onclick={(e) => e.stopPropagation()}
-              >
-                {#each PRIORITIES as p}
-                  <button
-                    class="w-full flex items-center gap-2 px-3 py-1.5 text-left
-                           text-[0.8125rem] transition-colors
-                           {p.value === priority
-                      ? 'text-[var(--accent)] bg-[var(--accent-subtle)]'
-                      : 'text-[var(--text)] hover:bg-[var(--bg-subtle)]'}"
-                    onclick={() => { priority = p.value; priorityOpen = false; }}
-                  >
-                    {p.label}
-                  </button>
-                {/each}
-              </div>
-            {/if}
-          </div>
-
-          <!-- Module -->
-          {#if modules.length > 0}
-            {@render sidebarField("Module")}
-            <div class="relative -mt-4">
-              <button
-                class="flex items-center gap-2 text-[0.8125rem] rounded-md
-                       px-2 py-1 -mx-2 transition-colors w-full text-left
-                       hover:bg-[var(--bg-subtle)] cursor-pointer"
-                onclick={(e) => {
-                  e.stopPropagation();
-                  moduleOpen = !moduleOpen;
-                  statusOpen = false;
-                  priorityOpen = false;
-                  labelsOpen = false;
-                }}
-              >
-                <span class="text-[var(--text)] {moduleId ? '' : 'text-[var(--text-faint)]'}">
-                  {moduleName(moduleId)}
-                </span>
-              </button>
-              {#if moduleOpen}
-                <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
-                <div
-                  class="absolute left-0 top-full mt-1 z-20 w-[180px]
-                         bg-[var(--surface)] border border-[var(--border)]
-                         rounded-md shadow-lg py-1"
-                  onclick={(e) => e.stopPropagation()}
-                >
-                  <button
-                    class="w-full px-3 py-1.5 text-left text-[0.8125rem]
-                           text-[var(--text-faint)] hover:bg-[var(--bg-subtle)]
-                           transition-colors"
-                    onclick={() => { moduleId = null; moduleOpen = false; }}
-                  >
-                    None
-                  </button>
-                  {#each modules as mod}
-                    <button
-                      class="w-full px-3 py-1.5 text-left text-[0.8125rem]
-                             transition-colors
-                             {mod.id === moduleId
-                        ? 'text-[var(--accent)] bg-[var(--accent-subtle)]'
-                        : 'text-[var(--text)] hover:bg-[var(--bg-subtle)]'}"
-                      onclick={() => { moduleId = mod.id; moduleOpen = false; }}
-                    >
-                      {mod.name}
-                    </button>
-                  {/each}
-                </div>
-              {/if}
-            </div>
-          {/if}
-
-          <!-- Labels -->
-          {#if labels.length > 0}
-            {@render sidebarField("Labels")}
-            <div class="relative -mt-4">
-              <div class="flex flex-wrap gap-1.5 items-center">
-                {#if selectedLabels.length > 0}
-                  {#each selectedLabels as lbl}
-                    {@const labelObj = labels.find((l) => l.name === lbl)}
-                    <span
-                      class="inline-flex items-center gap-1 text-[0.75rem]
-                             font-medium px-2 py-0.5 rounded-full border"
-                      style={labelObj
-                        ? `color: ${labelObj.color}; border-color: ${labelObj.color}40; background: ${labelObj.color}10;`
-                        : ""}
-                    >
-                      {lbl}
-                      <button
-                        class="size-3 rounded-full hover:bg-[var(--bg-subtle)]
-                               inline-flex items-center justify-center opacity-60
-                               hover:opacity-100 transition-opacity"
-                        onclick={(e) => { e.stopPropagation(); toggleLabel(lbl); }}
-                        title="Remove label"
-                      >
-                        <X size={10} />
-                      </button>
-                    </span>
-                  {/each}
-                {:else}
-                  <span class="text-[0.8125rem] text-[var(--text-faint)]">None</span>
-                {/if}
-
+          <div class="issue-meta-aside">
+            <!-- Status -->
+            <div class="issue-meta-field">
+              {@render sidebarField("Status")}
+              <div class="relative">
                 <button
-                  class="size-5 rounded border border-dashed border-[var(--border)]
-                         text-[var(--text-faint)] hover:border-[var(--accent)]
-                         hover:text-[var(--accent)] flex items-center justify-center
-                         transition-colors"
-                  title="Add label"
+                  class="flex items-center gap-2 text-[0.8125rem] rounded-md
+                         px-2 py-1 -mx-2 transition-colors w-full text-left
+                         hover:bg-[var(--bg-subtle)] cursor-pointer"
                   onclick={(e) => {
                     e.stopPropagation();
-                    labelsOpen = !labelsOpen;
+                    statusOpen = !statusOpen;
+                    priorityOpen = false;
+                    moduleOpen = false;
+                    labelsOpen = false;
+                  }}
+                >
+                  <span class="size-2.5 rounded-full {statusDotClass(status)}"></span>
+                  <span class="capitalize text-[var(--text)]">{status}</span>
+                </button>
+                {#if statusOpen}
+                  <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
+                  <div
+                    class="absolute left-0 top-full mt-1 z-20 w-[180px]
+                           bg-[var(--surface)] border border-[var(--border)]
+                           rounded-md shadow-lg py-1"
+                    onclick={(e) => e.stopPropagation()}
+                  >
+                    {#each STATUSES as s}
+                      <button
+                        class="w-full flex items-center gap-2 px-3 py-1.5 text-left
+                               text-[0.8125rem] transition-colors
+                               {s.value === status
+                          ? 'text-[var(--accent)] bg-[var(--accent-subtle)]'
+                          : 'text-[var(--text)] hover:bg-[var(--bg-subtle)]'}"
+                        onclick={() => { status = s.value; statusOpen = false; }}
+                      >
+                        <span class="size-2 rounded-full {statusDotClass(s.value)}"></span>
+                        {s.label}
+                      </button>
+                    {/each}
+                  </div>
+                {/if}
+              </div>
+            </div>
+
+            <!-- Priority -->
+            <div class="issue-meta-field">
+              {@render sidebarField("Priority")}
+              <div class="relative">
+                <button
+                  class="flex items-center gap-2 text-[0.8125rem] rounded-md
+                         px-2 py-1 -mx-2 transition-colors w-full text-left
+                         hover:bg-[var(--bg-subtle)] cursor-pointer"
+                  onclick={(e) => {
+                    e.stopPropagation();
+                    priorityOpen = !priorityOpen;
+                    statusOpen = false;
+                    moduleOpen = false;
+                    labelsOpen = false;
+                  }}
+                >
+                  <span class="text-[var(--text)] {priorityTextClass(priority)}">
+                    {priority === "none" ? "No priority" : priority.charAt(0).toUpperCase() + priority.slice(1)}
+                  </span>
+                </button>
+                {#if priorityOpen}
+                  <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
+                  <div
+                    class="absolute left-0 top-full mt-1 z-20 w-[180px]
+                           bg-[var(--surface)] border border-[var(--border)]
+                           rounded-md shadow-lg py-1"
+                    onclick={(e) => e.stopPropagation()}
+                  >
+                    {#each PRIORITIES as p}
+                      <button
+                        class="w-full flex items-center gap-2 px-3 py-1.5 text-left
+                               text-[0.8125rem] transition-colors
+                               {p.value === priority
+                          ? 'text-[var(--accent)] bg-[var(--accent-subtle)]'
+                          : 'text-[var(--text)] hover:bg-[var(--bg-subtle)]'}"
+                        onclick={() => { priority = p.value; priorityOpen = false; }}
+                      >
+                        {p.label}
+                      </button>
+                    {/each}
+                  </div>
+                {/if}
+              </div>
+            </div>
+
+            <!-- Module -->
+            {#if modules.length > 0}
+              <div class="issue-meta-field">
+                {@render sidebarField("Module")}
+                <div class="relative">
+                  <button
+                    class="flex items-center gap-2 text-[0.8125rem] rounded-md
+                           px-2 py-1 -mx-2 transition-colors w-full text-left
+                           hover:bg-[var(--bg-subtle)] cursor-pointer"
+                    onclick={(e) => {
+                      e.stopPropagation();
+                      moduleOpen = !moduleOpen;
+                      statusOpen = false;
+                      priorityOpen = false;
+                      labelsOpen = false;
+                    }}
+                  >
+                    <span class="text-[var(--text)] {moduleId ? '' : 'text-[var(--text-faint)]'}">
+                      {moduleName(moduleId)}
+                    </span>
+                  </button>
+                  {#if moduleOpen}
+                    <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
+                    <div
+                      class="absolute left-0 top-full mt-1 z-20 w-[180px]
+                             bg-[var(--surface)] border border-[var(--border)]
+                             rounded-md shadow-lg py-1"
+                      onclick={(e) => e.stopPropagation()}
+                    >
+                      <button
+                        class="w-full px-3 py-1.5 text-left text-[0.8125rem]
+                               text-[var(--text-faint)] hover:bg-[var(--bg-subtle)]
+                               transition-colors"
+                        onclick={() => { moduleId = null; moduleOpen = false; }}
+                      >
+                        None
+                      </button>
+                      {#each modules as mod}
+                        <button
+                          class="w-full px-3 py-1.5 text-left text-[0.8125rem]
+                                 transition-colors
+                                 {mod.id === moduleId
+                            ? 'text-[var(--accent)] bg-[var(--accent-subtle)]'
+                            : 'text-[var(--text)] hover:bg-[var(--bg-subtle)]'}"
+                          onclick={() => { moduleId = mod.id; moduleOpen = false; }}
+                        >
+                          {mod.name}
+                        </button>
+                      {/each}
+                    </div>
+                  {/if}
+                </div>
+              </div>
+            {/if}
+
+            <!-- Labels (shared with IssueDetail via LabelEditor) -->
+            {#if labels.length > 0}
+              <div class="issue-meta-field">
+                {@render sidebarField("Labels")}
+                <LabelEditor
+                  attached={selectedLabels}
+                  all={labels}
+                  onToggle={toggleLabel}
+                  bind:open={labelsOpen}
+                  onOpen={() => {
                     statusOpen = false;
                     priorityOpen = false;
                     moduleOpen = false;
                   }}
-                >
-                  <Plus size={12} />
-                </button>
+                />
               </div>
-
-              {#if labelsOpen}
-                <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
-                <div
-                  class="absolute left-0 top-full mt-1 z-20 w-[180px]
-                         bg-[var(--surface)] border border-[var(--border)]
-                         rounded-md shadow-lg py-1"
-                  onclick={(e) => e.stopPropagation()}
-                >
-                  {#each labels as label}
-                    {@const isAttached = selectedLabels.includes(label.name)}
-                    <button
-                      class="w-full flex items-center gap-2 px-3 py-1.5 text-left
-                             text-[0.8125rem] transition-colors
-                             hover:bg-[var(--bg-subtle)]"
-                      onclick={() => toggleLabel(label.name)}
-                    >
-                      <span
-                        class="size-2.5 rounded-full shrink-0"
-                        style="background: {label.color};"
-                      ></span>
-                      <span class="flex-1 {isAttached ? 'font-medium' : ''}">
-                        {label.name}
-                      </span>
-                      {#if isAttached}
-                        <Check size={14} class="text-[var(--accent)]" />
-                      {/if}
-                    </button>
-                  {/each}
-                </div>
-              {/if}
-            </div>
-          {/if}
+            {/if}
+          </div>
         </aside>
       </div>
     </div>
@@ -488,12 +433,7 @@
 {/snippet}
 
 {#snippet sidebarField(label: string)}
-  <p
-    class="text-[0.6875rem] font-semibold uppercase tracking-widest
-           text-[var(--text-faint)] mb-1"
-  >
-    {label}
-  </p>
+  <p class="issue-meta-field-label">{label}</p>
 {/snippet}
 
 <script lang="ts" module>
