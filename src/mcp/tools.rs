@@ -990,6 +990,7 @@ impl LificMcp {
                             name: name.clone(),
                             description: input.description.clone().unwrap_or_default(),
                             status: input.status.clone().unwrap_or("active".into()),
+                            emoji: None,
                         },
                     )
                 }) {
@@ -1020,6 +1021,7 @@ impl LificMcp {
                             name: input.name.clone(),
                             description: input.description.clone(),
                             status: input.status.clone(),
+                            emoji: None,
                         },
                     )
                 }) {

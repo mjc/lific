@@ -302,6 +302,7 @@ mod tests {
                 name: "Backend".into(),
                 description: String::new(),
                 status: "active".into(),
+                emoji: None,
             },
         )
         .unwrap();

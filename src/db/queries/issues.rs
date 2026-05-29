@@ -434,6 +434,7 @@ mod tests {
                 name: name.into(),
                 description: String::new(),
                 status: "active".into(),
+                emoji: None,
             },
         )
         .unwrap()

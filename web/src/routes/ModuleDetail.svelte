@@ -23,6 +23,8 @@
   import EditableMarkdown from "../lib/EditableMarkdown.svelte";
   import ModeToggle from "../lib/ModeToggle.svelte";
   import DeleteMenu from "../lib/DeleteMenu.svelte";
+  import IconPicker from "../lib/IconPicker.svelte";
+  import ProjectIcon from "../lib/ProjectIcon.svelte";
   import { formatDate } from "../lib/format";
   import {
     ArrowLeft, Plus, ChevronDown,
@@ -310,43 +312,64 @@
       <div class="max-w-[1120px] mx-auto flex gap-0 min-h-full">
         <!-- Main column -->
         <div class="flex-1 min-w-0 px-8 py-6">
-          <!-- Name -->
-          {#if editingName}
-            <!-- svelte-ignore a11y_autofocus -->
-            <input
-              type="text"
-              bind:value={draftName}
-              class="w-full text-[1.75rem] font-display tracking-tight
-                     bg-transparent border-none outline-none
-                     text-[var(--text)] py-1 mb-3"
-              onblur={commitName}
-              onkeydown={(e) => {
-                if (e.key === "Enter") commitName();
-                if (e.key === "Escape") { editingName = false; }
-              }}
-              autofocus
-            />
-          {:else if editable}
-            <button
-              type="button"
-              class="text-[1.75rem] font-display tracking-tight text-[var(--text)]
-                     py-1 mb-3 rounded transition-colors w-full text-left
-                     bg-transparent border-0 p-0 cursor-text hover:bg-[var(--bg-subtle)]"
-              onclick={startEditName}
-              onkeydown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  startEditName();
-                }
-              }}
-            >
-              {mod.name}
-            </button>
-          {:else}
-            <h1 class="text-[1.75rem] font-display tracking-tight text-[var(--text)] py-1 mb-3">
-              {mod.name}
-            </h1>
-          {/if}
+          <!-- Name + icon. The icon mirrors projects (LIF-124): same
+               IconPicker, same lucide/emoji vocabulary. -->
+          <div class="flex items-center gap-3 mb-3">
+            {#if editable}
+              <div class="shrink-0">
+                <IconPicker
+                  value={mod.emoji ?? ""}
+                  onchange={(v) => saveField("emoji", v || null)}
+                />
+              </div>
+            {:else if mod.emoji}
+              <div
+                class="shrink-0 size-10 rounded-lg border border-[var(--border)]
+                       bg-[var(--bg-subtle)] flex items-center justify-center"
+              >
+                <ProjectIcon value={mod.emoji} size={20} class="text-[var(--text)]" />
+              </div>
+            {/if}
+
+            <div class="flex-1 min-w-0">
+              {#if editingName}
+                <!-- svelte-ignore a11y_autofocus -->
+                <input
+                  type="text"
+                  bind:value={draftName}
+                  class="w-full text-[1.75rem] font-display tracking-tight
+                         bg-transparent border-none outline-none
+                         text-[var(--text)] py-1"
+                  onblur={commitName}
+                  onkeydown={(e) => {
+                    if (e.key === "Enter") commitName();
+                    if (e.key === "Escape") { editingName = false; }
+                  }}
+                  autofocus
+                />
+              {:else if editable}
+                <button
+                  type="button"
+                  class="text-[1.75rem] font-display tracking-tight text-[var(--text)]
+                         py-1 rounded transition-colors w-full text-left
+                         bg-transparent border-0 p-0 cursor-text hover:bg-[var(--bg-subtle)]"
+                  onclick={startEditName}
+                  onkeydown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      startEditName();
+                    }
+                  }}
+                >
+                  {mod.name}
+                </button>
+              {:else}
+                <h1 class="text-[1.75rem] font-display tracking-tight text-[var(--text)] py-1">
+                  {mod.name}
+                </h1>
+              {/if}
+            </div>
+          </div>
 
           <!-- Description -->
           <section class="mb-10">

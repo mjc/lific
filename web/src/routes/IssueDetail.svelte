@@ -15,6 +15,7 @@
   } from "../lib/api";
   import DocumentDetail from "../lib/DocumentDetail.svelte";
   import LabelEditor from "../lib/LabelEditor.svelte";
+  import ProjectIcon from "../lib/ProjectIcon.svelte";
   import { formatDate } from "../lib/format";
   import {
     CircleAlert, Circle, CircleDot, CircleDashed, CircleCheckBig, CircleX,
@@ -238,6 +239,11 @@
     if (!id) return "None";
     return modules.find((m) => m.id === id)?.name ?? "Unknown";
   }
+
+  function moduleEmoji(id: number | null): string | null {
+    if (!id) return null;
+    return modules.find((m) => m.id === id)?.emoji ?? null;
+  }
 </script>
 
 <svelte:window onclick={handleWindowClick} />
@@ -388,6 +394,9 @@
                   labelsOpen = false;
                 }}
               >
+                {#if moduleEmoji(issue.module_id)}
+                  <ProjectIcon value={moduleEmoji(issue.module_id)} size={14} class="text-[var(--text-muted)] shrink-0" />
+                {/if}
                 <span class="text-[var(--text)] {issue.module_id ? '' : 'text-[var(--text-faint)]'}">
                   {moduleName(issue.module_id)}
                 </span>
@@ -427,13 +436,16 @@
                 </button>
                 {#each modules as mod}
                   <button
-                    class="w-full px-3 py-1.5 text-left text-[0.8125rem]
-                           transition-colors
+                    class="w-full flex items-center gap-2 px-3 py-1.5 text-left
+                           text-[0.8125rem] transition-colors
                            {mod.id === issue.module_id
                       ? 'text-[var(--accent)] bg-[var(--accent-subtle)]'
                       : 'text-[var(--text)] hover:bg-[var(--bg-subtle)]'}"
                     onclick={() => setModule(mod.id)}
                   >
+                    {#if mod.emoji}
+                      <ProjectIcon value={mod.emoji} size={14} class="shrink-0" />
+                    {/if}
                     {mod.name}
                   </button>
                 {/each}

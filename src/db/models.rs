@@ -123,6 +123,8 @@ pub struct Module {
     pub name: String,
     pub description: String,
     pub status: String,
+    /// Icon: "lucide:<Name>" or a literal emoji char. Mirrors Project.emoji.
+    pub emoji: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -135,6 +137,7 @@ pub struct CreateModule {
     pub description: String,
     #[serde(default = "default_module_status")]
     pub status: String,
+    pub emoji: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -142,6 +145,10 @@ pub struct UpdateModule {
     pub name: Option<String>,
     pub description: Option<String>,
     pub status: Option<String>,
+    /// LIF-124: tristate so clients can clear the icon back to NULL.
+    /// None = absent (don't change), Some(None) = NULL, Some(Some(s)) = set.
+    #[serde(default, deserialize_with = "crate::db::models::deserialize_nullable")]
+    pub emoji: Option<Option<String>>,
 }
 
 fn default_module_status() -> String {

@@ -69,6 +69,11 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "oauth user binding",
         include_str!("../../migrations/014_oauth_user_id.sql"),
     ),
+    (
+        15,
+        "module icon",
+        include_str!("../../migrations/015_module_icon.sql"),
+    ),
 ];
 
 /// Ensure the migrations table exists and apply any pending migrations.

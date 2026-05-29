@@ -21,6 +21,7 @@
   } from "../lib/api";
   import { Layers, Plus, ChevronRight, CircleDot, Pause, CircleCheck, CircleX, CircleDashed, Circle } from "lucide-svelte";
   import Tooltip from "../lib/Tooltip.svelte";
+  import ProjectIcon from "../lib/ProjectIcon.svelte";
   import { getContext } from "svelte";
 
   const topbarCtx = getContext<{
@@ -309,7 +310,13 @@
                     navigate(`/${projectIdentifier}/modules/${mod.id}`)}
                 >
                   <div class="flex items-start gap-3">
-                    <Layers size={18} class="shrink-0 text-[var(--text-faint)] mt-0.5" />
+                    {#if mod.emoji}
+                      <span class="shrink-0 mt-0.5 size-[18px] flex items-center justify-center text-[var(--text-muted)]">
+                        <ProjectIcon value={mod.emoji} size={18} />
+                      </span>
+                    {:else}
+                      <Layers size={18} class="shrink-0 text-[var(--text-faint)] mt-0.5" />
+                    {/if}
                     <div class="flex-1 min-w-0">
                       <div class="flex items-center gap-2">
                         <span class="text-[0.9375rem] font-medium text-[var(--text)] truncate">

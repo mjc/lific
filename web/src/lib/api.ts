@@ -371,6 +371,8 @@ export interface Module {
   name: string;
   description: string;
   status: string;
+  /** Icon: "lucide:<Name>" or a literal emoji char. Null = no icon. */
+  emoji: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -388,6 +390,7 @@ export interface CreateModuleInput {
   name: string;
   description?: string;
   status?: string;
+  emoji?: string;
 }
 
 export async function createModule(input: CreateModuleInput) {
@@ -401,6 +404,9 @@ export interface UpdateModuleInput {
   name?: string;
   description?: string;
   status?: string;
+  // LIF-124: nullable so clients can clear the icon. Omit = no change,
+  // null = clear, string = set.
+  emoji?: string | null;
 }
 
 export async function updateModule(id: number, input: UpdateModuleInput) {

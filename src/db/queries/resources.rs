@@ -104,7 +104,7 @@ pub fn get_module_name(conn: &Connection, id: i64) -> Result<String, LificError>
 /// awkward when you don't have it in hand.
 pub fn get_module(conn: &Connection, id: i64) -> Result<Module, LificError> {
     conn.query_row(
-        "SELECT id, project_id, name, description, status, created_at, updated_at
+        "SELECT id, project_id, name, description, status, emoji, created_at, updated_at
          FROM modules WHERE id = ?1",
         params![id],
         |row| Ok(Module {
@@ -113,8 +113,9 @@ pub fn get_module(conn: &Connection, id: i64) -> Result<Module, LificError> {
             name: row.get(2)?,
             description: row.get(3)?,
             status: row.get(4)?,
-            created_at: row.get(5)?,
-            updated_at: row.get(6)?,
+            emoji: row.get(5)?,
+            created_at: row.get(6)?,
+            updated_at: row.get(7)?,
         }),
     )
     .map_err(|e| match e {
@@ -127,7 +128,7 @@ pub fn get_module(conn: &Connection, id: i64) -> Result<Module, LificError> {
 
 pub fn list_modules(conn: &Connection, project_id: i64) -> Result<Vec<Module>, LificError> {
     let mut stmt = conn.prepare(
-        "SELECT id, project_id, name, description, status, created_at, updated_at
+        "SELECT id, project_id, name, description, status, emoji, created_at, updated_at
          FROM modules WHERE project_id = ?1 ORDER BY name",
     )?;
     let rows = stmt.query_map(params![project_id], |row| {
@@ -137,8 +138,9 @@ pub fn list_modules(conn: &Connection, project_id: i64) -> Result<Vec<Module>, L
             name: row.get(2)?,
             description: row.get(3)?,
             status: row.get(4)?,
-            created_at: row.get(5)?,
-            updated_at: row.get(6)?,
+            emoji: row.get(5)?,
+            created_at: row.get(6)?,
+            updated_at: row.get(7)?,
         })
     })?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -146,21 +148,23 @@ pub fn list_modules(conn: &Connection, project_id: i64) -> Result<Vec<Module>, L
 
 pub fn create_module(conn: &Connection, input: &CreateModule) -> Result<Module, LificError> {
     conn.execute(
-        "INSERT INTO modules (project_id, name, description, status) VALUES (?1, ?2, ?3, ?4)",
+        "INSERT INTO modules (project_id, name, description, status, emoji) VALUES (?1, ?2, ?3, ?4, ?5)",
         params![
             input.project_id,
             input.name,
             unescape_text(&input.description),
-            input.status
+            input.status,
+            input.emoji,
         ],
     )?;
     let id = conn.last_insert_rowid();
     conn.query_row(
-        "SELECT id, project_id, name, description, status, created_at, updated_at FROM modules WHERE id = ?1",
+        "SELECT id, project_id, name, description, status, emoji, created_at, updated_at FROM modules WHERE id = ?1",
         params![id],
         |row| Ok(Module {
             id: row.get(0)?, project_id: row.get(1)?, name: row.get(2)?,
-            description: row.get(3)?, status: row.get(4)?, created_at: row.get(5)?, updated_at: row.get(6)?,
+            description: row.get(3)?, status: row.get(4)?, emoji: row.get(5)?,
+            created_at: row.get(6)?, updated_at: row.get(7)?,
         }),
     ).map_err(Into::into)
 }
@@ -189,14 +193,22 @@ pub fn update_module(
                 params![status, id],
             )?;
         }
+        // Tristate: Some(None) clears to NULL, Some(Some) sets, None skips.
+        if let Some(emoji) = &input.emoji {
+            conn.execute(
+                "UPDATE modules SET emoji = ?1 WHERE id = ?2",
+                params![emoji.as_ref(), id],
+            )?;
+        }
         Ok(())
     })?;
     conn.query_row(
-        "SELECT id, project_id, name, description, status, created_at, updated_at FROM modules WHERE id = ?1",
+        "SELECT id, project_id, name, description, status, emoji, created_at, updated_at FROM modules WHERE id = ?1",
         params![id],
         |row| Ok(Module {
             id: row.get(0)?, project_id: row.get(1)?, name: row.get(2)?,
-            description: row.get(3)?, status: row.get(4)?, created_at: row.get(5)?, updated_at: row.get(6)?,
+            description: row.get(3)?, status: row.get(4)?, emoji: row.get(5)?,
+            created_at: row.get(6)?, updated_at: row.get(7)?,
         }),
     ).map_err(|e| match e { rusqlite::Error::QueryReturnedNoRows => LificError::NotFound(format!("module {id} not found")), _ => e.into() })
 }
@@ -389,6 +401,7 @@ mod tests {
                 name: "Core".into(),
                 description: "The core".into(),
                 status: "active".into(),
+                emoji: None,
             },
         )
         .unwrap();
@@ -402,6 +415,7 @@ mod tests {
                 name: Some("Core DB".into()),
                 description: None,
                 status: Some("done".into()),
+                emoji: None,
             },
         )
         .unwrap();
@@ -428,6 +442,7 @@ mod tests {
                 name: "Auth".into(),
                 description: "Login + tokens".into(),
                 status: "planned".into(),
+                emoji: None,
             },
         )
         .unwrap();
@@ -460,6 +475,7 @@ mod tests {
                 name: "Authentication".into(),
                 description: String::new(),
                 status: "active".into(),
+                emoji: None,
             },
         )
         .unwrap();
@@ -491,6 +507,7 @@ mod tests {
                 name: "MCP Server".into(),
                 description: String::new(),
                 status: "active".into(),
+                emoji: None,
             },
         )
         .unwrap();
@@ -672,9 +689,78 @@ mod tests {
                 name: "Test".into(),
                 description: "line1\\nline2".into(),
                 status: "active".into(),
+                emoji: None,
             },
         )
         .unwrap();
         assert_eq!(module.description, "line1\nline2");
+    }
+
+    #[test]
+    fn module_emoji_set_and_clear() {
+        let pool = test_db();
+        let conn = pool.write().unwrap();
+        let pid = seed_project(&conn);
+
+        // Create with an icon.
+        let module = create_module(
+            &conn,
+            &CreateModule {
+                project_id: pid,
+                name: "Icons".into(),
+                description: String::new(),
+                status: "active".into(),
+                emoji: Some("lucide:Rocket".into()),
+            },
+        )
+        .unwrap();
+        assert_eq!(module.emoji.as_deref(), Some("lucide:Rocket"));
+        // Survives a round-trip read.
+        assert_eq!(
+            get_module(&conn, module.id).unwrap().emoji.as_deref(),
+            Some("lucide:Rocket")
+        );
+
+        // Change to a literal emoji.
+        let updated = update_module(
+            &conn,
+            module.id,
+            &UpdateModule {
+                name: None,
+                description: None,
+                status: None,
+                emoji: Some(Some("🚀".into())),
+            },
+        )
+        .unwrap();
+        assert_eq!(updated.emoji.as_deref(), Some("🚀"));
+
+        // Absent emoji field preserves the existing value.
+        let preserved = update_module(
+            &conn,
+            module.id,
+            &UpdateModule {
+                name: Some("Icons!".into()),
+                description: None,
+                status: None,
+                emoji: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(preserved.emoji.as_deref(), Some("🚀"));
+
+        // Explicit null clears it.
+        let cleared = update_module(
+            &conn,
+            module.id,
+            &UpdateModule {
+                name: None,
+                description: None,
+                status: None,
+                emoji: Some(None),
+            },
+        )
+        .unwrap();
+        assert_eq!(cleared.emoji, None);
     }
 }

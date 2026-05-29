@@ -740,6 +740,7 @@ fn module(
                     name: name.clone(),
                     description: description.clone(),
                     status: status.clone(),
+                    emoji: None,
                 },
             )?;
 
@@ -770,6 +771,7 @@ fn module(
                     name: new_name.clone(),
                     description: description.clone(),
                     status: status.clone(),
+                    emoji: None,
                 },
             )?;
 
