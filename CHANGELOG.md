@@ -34,7 +34,7 @@ The biggest release yet. Pages become first-class documents with comments, label
 
 ### Integrations
 
-- New tools for agents to make targeted find-and-replace edits to issue descriptions and page bodies, instead of resending the whole field.
+- New `edit_issue` and `edit_page` tools let agents make targeted find-and-replace edits to an issue description or page body, instead of resending the whole field.
 - Pages are now fully accessible to connected tools, including their comments, status, and labels, and module icons are exposed too.
 - Adding a comment returns a leaner response (an id and metadata) instead of echoing the whole comment back.
 
