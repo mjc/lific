@@ -13,12 +13,13 @@
   } from "../lib/api";
   import {
     Plus, Search, ChevronRight, CircleCheckBig, CircleX, X,
-    Circle, CircleDot, CircleDashed, Layers, SignalHigh, SignalMedium, SignalLow, Signal, AlertTriangle,
+    Circle, CircleDot, CircleDashed, Layers, Signal,
     List as ListIcon, LayoutGrid, SlidersHorizontal, HelpCircle,
     ArrowDownUp, ArrowDown, ArrowUp, Hash, Clock, History,
   } from "lucide-svelte";
   import Select from "../lib/Select.svelte";
   import Tooltip from "../lib/Tooltip.svelte";
+  import PriorityIcon from "../lib/PriorityIcon.svelte";
   import { dndzone, type DndEvent } from "svelte-dnd-action";
   import { flip } from "svelte/animate";
   import { getContext } from "svelte";
@@ -924,7 +925,7 @@
         {#snippet renderSelected(opt)}
           <span class="flex items-center gap-1.5 text-[0.8125rem]">
             {#if opt.value}
-              {@render priorityIcon(String(opt.value), 13)}
+              <PriorityIcon priority={String(opt.value)} size={13} />
               <span class="capitalize" style="color: {priorityCssColor(String(opt.value))}">{opt.label}</span>
             {:else}
               <span class="text-[var(--text-muted)]">{opt.label}</span>
@@ -934,7 +935,7 @@
         {#snippet renderOption(opt, isSelected)}
           <span class="flex items-center gap-2 text-[0.8125rem] {isSelected ? 'font-medium' : ''}">
             {#if opt.value}
-              {@render priorityIcon(String(opt.value), 14)}
+              <PriorityIcon priority={String(opt.value)} size={14} />
               <span class="{isSelected ? 'text-[var(--accent)]' : 'text-[var(--text)]'} capitalize">{opt.label}</span>
             {:else}
               <span class="text-[var(--text-muted)]">{opt.label}</span>
@@ -1405,7 +1406,7 @@
                         content={issue.priority[0].toUpperCase() +
                           issue.priority.slice(1)}
                       >
-                        {@render priorityIcon(issue.priority, 14)}
+                        <PriorityIcon priority={issue.priority} size={14} />
                       </Tooltip>
                     {/if}
                   </div>
@@ -1781,7 +1782,7 @@
         <Tooltip
           content={issue.priority[0].toUpperCase() + issue.priority.slice(1)}
         >
-          {@render priorityIcon(issue.priority, 28)}
+          <PriorityIcon priority={issue.priority} size={28} />
         </Tooltip>
       {/if}
     </span>
@@ -1807,18 +1808,6 @@
   {/if}
 {/snippet}
 
-{#snippet priorityIcon(priority: string, size: number)}
-  {#if priority === "urgent"}
-    <AlertTriangle {size} style="color: {priorityCssColor(priority)}" />
-  {:else if priority === "high"}
-    <SignalHigh {size} style="color: {priorityCssColor(priority)}" />
-  {:else if priority === "medium"}
-    <SignalMedium {size} style="color: {priorityCssColor(priority)}" />
-  {:else if priority === "low"}
-    <SignalLow {size} style="color: {priorityCssColor(priority)}" />
-  {:else}
-    <Signal {size} style="color: {priorityCssColor(priority)}" />
-  {/if}
-{/snippet}
+
 
 

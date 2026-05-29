@@ -10,6 +10,7 @@
   } from "../lib/api";
   import { ArrowLeft } from "lucide-svelte";
   import LabelEditor from "../lib/LabelEditor.svelte";
+  import PriorityIcon from "../lib/PriorityIcon.svelte";
   import { getContext } from "svelte";
 
   const topbarCtx = getContext<{
@@ -281,6 +282,7 @@
                     labelsOpen = false;
                   }}
                 >
+                  <PriorityIcon {priority} />
                   <span class="text-[var(--text)] {priorityTextClass(priority)}">
                     {priority === "none" ? "No priority" : priority.charAt(0).toUpperCase() + priority.slice(1)}
                   </span>
@@ -302,6 +304,7 @@
                           : 'text-[var(--text)] hover:bg-[var(--bg-subtle)]'}"
                         onclick={() => { priority = p.value; priorityOpen = false; }}
                       >
+                        <PriorityIcon priority={p.value} />
                         {p.label}
                       </button>
                     {/each}

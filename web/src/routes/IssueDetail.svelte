@@ -16,9 +16,10 @@
   import DocumentDetail from "../lib/DocumentDetail.svelte";
   import LabelEditor from "../lib/LabelEditor.svelte";
   import ProjectIcon from "../lib/ProjectIcon.svelte";
+  import PriorityIcon from "../lib/PriorityIcon.svelte";
   import { formatDate } from "../lib/format";
   import {
-    CircleAlert, Circle, CircleDot, CircleDashed, CircleCheckBig, CircleX,
+    Circle, CircleDot, CircleDashed, CircleCheckBig, CircleX,
     ArrowUpRight,
   } from "lucide-svelte";
 
@@ -343,7 +344,7 @@
                 labelsOpen = false;
               }}
             >
-              {@render priorityIcon(issue.priority)}
+              <PriorityIcon priority={issue.priority} />
               <span class="text-[var(--text)] {priorityTextClass(issue.priority)}">
                 {issue.priority === "none" ? "No priority" : issue.priority.charAt(0).toUpperCase() + issue.priority.slice(1)}
               </span>
@@ -366,7 +367,7 @@
                       : 'text-[var(--text)] hover:bg-[var(--bg-subtle)]'}"
                     onclick={() => setPriority(p.value)}
                   >
-                    {@render priorityIcon(p.value)}
+                    <PriorityIcon priority={p.value} />
                     {p.label}
                   </button>
                 {/each}
@@ -549,25 +550,7 @@
   <p class="issue-meta-field-label">{label}</p>
 {/snippet}
 
-{#snippet priorityIcon(priority: string)}
-  {#if priority === "urgent"}
-    <CircleAlert size={14} class="text-[var(--error)]" />
-  {:else if priority === "high"}
-    <svg class="size-3.5 text-orange-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-      <line x1="5" y1="12" x2="19" y2="12"/><line x1="5" y1="6" x2="19" y2="6"/><line x1="5" y1="18" x2="19" y2="18"/>
-    </svg>
-  {:else if priority === "medium"}
-    <svg class="size-3.5 text-[var(--accent)]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-      <line x1="5" y1="9" x2="19" y2="9"/><line x1="5" y1="15" x2="19" y2="15"/>
-    </svg>
-  {:else if priority === "low"}
-    <svg class="size-3.5 text-[var(--text-muted)]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-      <line x1="5" y1="12" x2="19" y2="12"/>
-    </svg>
-  {:else}
-    <span class="size-3.5"></span>
-  {/if}
-{/snippet}
+
 
 {#snippet statusIcon(status: string, size: number)}
   {#if status === "done"}

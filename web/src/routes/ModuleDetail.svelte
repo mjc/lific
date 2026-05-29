@@ -25,11 +25,11 @@
   import DeleteMenu from "../lib/DeleteMenu.svelte";
   import IconPicker from "../lib/IconPicker.svelte";
   import ProjectIcon from "../lib/ProjectIcon.svelte";
+  import PriorityIcon from "../lib/PriorityIcon.svelte";
   import { formatDate } from "../lib/format";
   import {
     ArrowLeft, Plus, ChevronDown,
     CircleDot, Pause, CircleCheck, CircleX, CircleDashed, Circle,
-    CircleAlert,
   } from "lucide-svelte";
   import { getContext } from "svelte";
 
@@ -452,7 +452,7 @@
                       {issue.title}
                     </span>
                     {#if issue.priority && issue.priority !== "none"}
-                      {@render priorityIcon(issue.priority)}
+                      <PriorityIcon priority={issue.priority} size={13} />
                     {/if}
                   </button>
                 {/each}
@@ -570,20 +570,4 @@
   {/if}
 {/snippet}
 
-{#snippet priorityIcon(priority: string)}
-  {#if priority === "urgent"}
-    <CircleAlert size={13} class="text-[var(--error)] shrink-0" />
-  {:else if priority === "high"}
-    <svg class="size-3 text-orange-500 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-      <line x1="5" y1="12" x2="19" y2="12"/><line x1="5" y1="6" x2="19" y2="6"/><line x1="5" y1="18" x2="19" y2="18"/>
-    </svg>
-  {:else if priority === "medium"}
-    <svg class="size-3 text-[var(--accent)] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-      <line x1="5" y1="9" x2="19" y2="9"/><line x1="5" y1="15" x2="19" y2="15"/>
-    </svg>
-  {:else if priority === "low"}
-    <svg class="size-3 text-[var(--text-muted)] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-      <line x1="5" y1="12" x2="19" y2="12"/>
-    </svg>
-  {/if}
-{/snippet}
+
