@@ -31,6 +31,7 @@
   import Tooltip from "../lib/Tooltip.svelte";
   import { fuzzyMatch, buildSnippet } from "../lib/fuzzy";
   import { getContext } from "svelte";
+  import { startAutoRefresh } from "../lib/autoRefresh.svelte";
 
   // Register the toolbar with Layout's chrome topbar slot so it sits in
   // the same --chrome zone as the sidebar instead of as a banded strip
@@ -254,6 +255,29 @@
     );
     if (res.ok) pages = res.data;
   }
+
+  // ── LIF-129: auto-refresh ────────────────────────────
+  // Background poll (15s) + revalidate on tab focus so the page tree picks
+  // up pages created/edited/deleted out-of-band. Vetoed while dragging a
+  // page/folder, while an inline create input is open, or while the
+  // search box is focused — refreshing under any of those would yank the
+  // user's interaction. Only re-pulls pages (folders/labels change rarely
+  // and reconcile on the next mount/navigation).
+  function autoRefreshBusy(): boolean {
+    return (
+      draggedId !== null ||
+      createTarget !== null ||
+      (searchExpanded && document.activeElement === searchInputEl)
+    );
+  }
+
+  $effect(() =>
+    startAutoRefresh({
+      refresh: reloadPages,
+      isBusy: autoRefreshBusy,
+      intervalMs: 15_000,
+    }),
+  );
 
   // Tree helpers
   function childFolders(parentId: number | null): Folder[] {

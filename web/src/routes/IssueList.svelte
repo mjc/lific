@@ -24,6 +24,7 @@
   import { flip } from "svelte/animate";
   import { getContext } from "svelte";
   import { fuzzyMatch, buildSnippet } from "../lib/fuzzy";
+  import { startAutoRefresh } from "../lib/autoRefresh.svelte";
 
   // LIF-119: search tuning, kept identical to the page list (LIF-118) so
   // the two list views feel consistent. See web/src/lib/fuzzy.ts for the
@@ -262,6 +263,59 @@
     }
   }
 
+  // ── LIF-129: auto-refresh ────────────────────────────
+  // Background poll (15s) + revalidate on tab focus so the list/board
+  // converges on server state after out-of-band changes (MCP agent, API,
+  // another tab). Both modes share this one loop — it's the same dataset.
+  //
+  // `mutationsInFlight` pauses refresh while a write is pending so a poll
+  // can't land stale server data on top of an optimistic change that the
+  // PUT hasn't acknowledged yet (the card-snaps-back race). `dragActive`
+  // covers the drag itself. Open popovers / inline create / a focused
+  // search box also veto a tick so we never yank UI out from under input.
+  let mutationsInFlight = $state(0);
+  let dragActive = $state(false);
+
+  async function trackMutation<T>(p: Promise<T>): Promise<T> {
+    mutationsInFlight++;
+    try {
+      return await p;
+    } finally {
+      mutationsInFlight--;
+    }
+  }
+
+  function autoRefreshBusy(): boolean {
+    return (
+      dragActive ||
+      mutationsInFlight > 0 ||
+      sortOpen ||
+      hintsOpen ||
+      displayOpen ||
+      inlineCreateActive ||
+      statusDropdownId !== null ||
+      // Don't refetch while the user is typing in the search box.
+      (searchExpanded && document.activeElement === searchInputEl)
+    );
+  }
+
+  // Refresh just the issue rows. Modules/labels feed the filter dropdowns
+  // and change rarely; a full project reload on every tick would be
+  // wasteful and could flash the loading spinner, so we only re-pull
+  // issues here. New modules/labels reconcile on the next mount/navigation.
+  async function refreshIssues() {
+    if (!project) return;
+    await loadIssues();
+  }
+
+  $effect(() =>
+    startAutoRefresh({
+      refresh: refreshIssues,
+      isBusy: autoRefreshBusy,
+      intervalMs: 15_000,
+    }),
+  );
+
   // LIF-119: fuzzy full-text search across title, identifier, and
   // description. We compute the filtered set AND the per-issue score map
   // in a single derived so we never have to write a $state from inside
@@ -486,6 +540,8 @@
   });
 
   function handleConsider(status: string, e: CustomEvent<DndEvent<Issue>>) {
+    // A drag is in progress — veto auto-refresh until finalize.
+    dragActive = true;
     columnItems[status] = e.detail.items as Issue[];
   }
 
@@ -501,7 +557,10 @@
     const moved = newItems.find((i) => i.status !== status);
     columnItems[status] = newItems;
 
-    if (!moved) return;
+    if (!moved) {
+      dragActive = false;
+      return;
+    }
 
     // Optimistic: stamp the new status onto the master issues list so
     // sortedIssues and the cell stay coherent until the API resolves.
@@ -512,7 +571,10 @@
       );
     }
 
-    const res = await updateIssue(moved.id, { status });
+    // trackMutation keeps auto-refresh paused until the PUT resolves;
+    // clear dragActive only after, so no poll lands between drop and ack.
+    const res = await trackMutation(updateIssue(moved.id, { status }));
+    dragActive = false;
     if (!res.ok) {
       // Rollback by re-fetching. Simpler than trying to undo the local
       // mutation surgically — drop failures should be rare.
@@ -671,7 +733,7 @@
           const target = issues.find((i) => i.id === statusDropdownId);
           if (target && picked !== target.status) {
             skipFocusReset = true;
-            updateIssue(target.id, { status: picked }).then((res) => {
+            trackMutation(updateIssue(target.id, { status: picked })).then((res) => {
               if (res.ok) {
                 target.status = picked;
                 issues = [...issues];
@@ -748,7 +810,7 @@
           const nextStatus = STATUSES[(sIdx + 1) % STATUSES.length];
           skipFocusReset = true;
           statusUpdating = true;
-          updateIssue(focusedIssue.id, { status: nextStatus }).then((res) => {
+          trackMutation(updateIssue(focusedIssue.id, { status: nextStatus })).then((res) => {
             statusUpdating = false;
             if (res.ok) {
               focusedIssue.status = nextStatus;

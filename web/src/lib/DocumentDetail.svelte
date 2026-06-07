@@ -67,6 +67,10 @@
     sidebar,
     belowTitle,
     metaFooter,
+    // LIF-129: body read/edit mode, surfaced upward (bindable) so a route
+    // can pause auto-refresh while the user is editing. Defaults to "read"
+    // and is fully optional — IssueDetail doesn't bind it.
+    bodyMode = $bindable<"read" | "edit">("read"),
   }: {
     navigate: (path: string) => void;
     loading?: boolean;
@@ -100,6 +104,7 @@
     sidebar?: Snippet;
     belowTitle?: Snippet;
     metaFooter?: Snippet;
+    bodyMode?: "read" | "edit";
   } = $props();
 
   // Register our topbar with Layout's chrome slot — same pattern the
@@ -114,9 +119,9 @@
     return () => topbarCtx?.set(undefined);
   });
 
-  // Body read/edit mode lives here so the topbar toggle + "E" shortcut
-  // can drive the same EditableMarkdown instance.
-  let bodyMode = $state<"read" | "edit">("read");
+  // Body read/edit mode is a bindable prop (LIF-129) so a route can read
+  // it to pause auto-refresh mid-edit; it still drives EditableMarkdown
+  // via the topbar toggle + "E" shortcut here.
   let bodyRef = $state<EditableMarkdown | null>(null);
 
   // LIF-111 — refs for the quote-in-comment selection helper. `contentEl`

@@ -15,6 +15,7 @@
   import LabelEditor from "../lib/LabelEditor.svelte";
   import Select from "../lib/Select.svelte";
   import { formatDate } from "../lib/format";
+  import { startAutoRefresh } from "../lib/autoRefresh.svelte";
   import {
     PenLine,
     CircleDot,
@@ -73,6 +74,30 @@
     lastSaved = null;
     loadPage(id);
   });
+
+  // ── LIF-129: auto-refresh ────────────────────────────
+  // Focus-only (no interval): the page body is an inline editor, so a
+  // periodic poll mid-read is more disruptive than it's worth. Refetching
+  // when the tab regains focus covers the real case — the agent edited a
+  // page while you were elsewhere. We never refetch while editing or
+  // while a save is in flight, so unsaved keystrokes can't be clobbered.
+  // `bodyMode` is bound up from DocumentDetail's EditableMarkdown.
+  let bodyMode = $state<"read" | "edit">("read");
+
+  async function refreshPage() {
+    if (!page) return;
+    const res = await getPage(page.id);
+    if (res.ok) page = res.data;
+  }
+
+  $effect(() =>
+    startAutoRefresh({
+      refresh: refreshPage,
+      isBusy: () => bodyMode === "edit" || saving,
+      // Focus-only — no background interval for the page editor.
+      intervalMs: 0,
+    }),
+  );
 
   async function loadPage(id: number) {
     loading = true;
@@ -224,6 +249,7 @@
   {comments}
   onNewComment={handleNewComment}
   layout="wide"
+  bind:bodyMode
 >
   {#snippet belowTitle()}
     <!-- LIF-112 + LIF-105: lifecycle status picker and labels strip. Both
