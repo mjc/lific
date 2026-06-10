@@ -812,21 +812,6 @@
         {page.title}
       </span>
 
-      <!-- LIF-112: status badge. Only rendered for non-default lifecycle
-           stages — every row carrying an identical "Active" pill was
-           noise; Draft/Complete/Archived are the actual signals. -->
-      {#if page.status !== "active"}
-        <span
-          class="flex items-center gap-1 shrink-0 text-[0.6875rem] font-medium
-                 px-1.5 py-0.5 rounded-full border border-[var(--border)]
-                 text-[var(--text-muted)]"
-          title={sMeta.label}
-        >
-          <sMeta.icon size={11} class="shrink-0" />
-          {sMeta.label}
-        </span>
-      {/if}
-
       <!-- LIF-105: label chips. Up to 2 then a "+N" overflow, matching
            the IssueList row layout so the visual vocabulary stays
            consistent across both list types. -->
@@ -850,9 +835,32 @@
         </div>
       {/if}
 
-      <span class="text-[0.8125rem] text-[var(--text-faint)] shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+      <!-- Updated time. Always visible at faint strength (it's reference
+           info, not a secret), sharpening on hover. Sits LEFT of the
+           status pill: its width is dynamic ("today" vs "May 12"), so
+           anchoring the pill at the row edge keeps pills vertically
+           aligned across rows instead of jittering with date width. -->
+      <span
+        class="text-[0.8125rem] text-[var(--text-faint)] shrink-0 tabular-nums
+               group-hover:text-[var(--text-muted)] transition-colors"
+      >
         {formatRelative(page.updated_at)}
       </span>
+
+      <!-- LIF-112: status badge. Only rendered for non-default lifecycle
+           stages — every row carrying an identical "Active" pill was
+           noise; Draft/Complete/Archived are the actual signals. -->
+      {#if page.status !== "active"}
+        <span
+          class="flex items-center gap-1 shrink-0 text-[0.6875rem] font-medium
+                 px-1.5 py-0.5 rounded-full border border-[var(--border)]
+                 text-[var(--text-muted)]"
+          title={sMeta.label}
+        >
+          <sMeta.icon size={11} class="shrink-0" />
+          {sMeta.label}
+        </span>
+      {/if}
     </button>
   {/each}
 
