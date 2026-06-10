@@ -1363,7 +1363,7 @@
               <span
                 class="tabular-nums text-[0.6875rem]
                        {visible
-                  ? 'text-[var(--text-faint)]'
+                  ? 'text-[var(--text-muted)]'
                   : 'text-[var(--text-faint)]'}"
               >
                 {count}
