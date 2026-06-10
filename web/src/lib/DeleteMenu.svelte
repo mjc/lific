@@ -100,7 +100,7 @@
       </p>
       <div class="flex items-center gap-2">
         <button
-          class="text-[0.8125rem] font-medium text-white
+          class="text-[0.8125rem] font-medium text-[var(--error-text)]
                  bg-[var(--error)] px-3 py-1.5 rounded-md
                  hover:opacity-90 transition-opacity
                  disabled:opacity-50 disabled:cursor-not-allowed"

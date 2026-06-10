@@ -241,7 +241,7 @@
               {/if}
               <div class="flex items-center gap-3">
                 <button
-                  class="text-[0.875rem] font-medium text-white
+                  class="text-[0.875rem] font-medium text-[var(--error-text)]
                          bg-[var(--error)] px-4 py-2 rounded-md
                          hover:opacity-90 transition-opacity
                          disabled:opacity-40 disabled:cursor-not-allowed"

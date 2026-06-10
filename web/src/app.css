@@ -76,6 +76,9 @@
 
   --error: var(--color-red-600);
   --error-bg: var(--color-red-bg);
+  /* Text on an --error-filled surface. Mirrors --accent-text: white on
+     the deep light-mode red, near-black on the light dark-mode red. */
+  --error-text: #fff;
   --success: var(--color-green-600);
   --success-bg: var(--color-green-bg);
   --warn: var(--color-orange-600);
@@ -113,6 +116,7 @@
 
   --error: var(--color-red-400);
   --error-bg: var(--color-red-bg-dark);
+  --error-text: var(--color-stone-950);
   --success: var(--color-green-400);
   --success-bg: var(--color-green-bg-dark);
   --warn: var(--color-orange-400);
