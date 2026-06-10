@@ -86,6 +86,20 @@ impl LificMcp {
         F: FnOnce(&rusqlite::Connection) -> Result<T, crate::error::LificError>,
     {
         let conn = self.db.write().map_err(|e| e.to_string())?;
+        // LIF-155: re-stamp the audit actor from the MCP request-user
+        // global. The task-local stamped by DbPool::write() does NOT
+        // survive rmcp's internal task spawns (verified in production:
+        // tool writes attributed to 'system'), but MCP_REQUEST_USER does
+        // — it's a global guarded by the serialization lock, so it is
+        // exactly this request's identity.
+        let user = current_auth_user();
+        crate::actor::stamp(
+            &conn,
+            &crate::actor::ActorCtx {
+                user_id: user.map(|u| u.id),
+                transport: crate::actor::Transport::Mcp,
+            },
+        );
         f(&conn).map_err(|e| e.to_string())
     }
 }

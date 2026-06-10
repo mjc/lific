@@ -3479,4 +3479,61 @@ mod tests {
             "got: {out}"
         );
     }
+
+    /// Regression (LIF-155): rmcp executes tools on internally-spawned
+    /// tasks, where tokio task-locals set around `service.handle()` are
+    /// invisible. Attribution must therefore come from the serialized
+    /// MCP_REQUEST_USER global via LificMcp::write()'s explicit re-stamp.
+    /// This test reproduces the boundary with a literal tokio::spawn.
+    #[tokio::test]
+    async fn mcp_attribution_survives_task_spawn() {
+        let m = mcp();
+        seed_project(&m, "Audit", "TST");
+
+        let bot_id = {
+            let conn = m.db.write().unwrap();
+            conn.execute(
+                "INSERT INTO users (username, email, password_hash, display_name, is_admin, is_bot)
+                 VALUES ('opencode-blake', 'oc@test.local', 'x', 'opencode-blake', 0, 1)",
+                [],
+            )
+            .unwrap();
+            conn.last_insert_rowid()
+        };
+        let user = crate::db::models::AuthUser {
+            id: bot_id,
+            username: "opencode-blake".into(),
+            display_name: "opencode-blake".into(),
+            is_admin: false,
+        };
+
+        crate::mcp::with_request_user(Some(user), || async {
+            let m2 = m.clone();
+            // The spawned task has NO task-local actor — like production.
+            tokio::spawn(async move {
+                let result = m2.create_issue(Parameters(CreateIssueInput {
+                    project: "TST".into(),
+                    title: "Spawned write".into(),
+                    description: None,
+                    status: None,
+                    priority: None,
+                    module: None,
+                    labels: None,
+                }));
+                assert!(result.starts_with("Created"), "got: {result}");
+            })
+            .await
+            .unwrap();
+        })
+        .await;
+
+        let out = m.get_activity(Parameters(GetActivityInput {
+            identifier: "TST-1".into(),
+            ..Default::default()
+        }));
+        assert!(
+            out.contains("opencode-blake (agent) via mcp"),
+            "spawned tool write must still attribute: {out}"
+        );
+    }
 }
