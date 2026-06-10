@@ -201,10 +201,11 @@
                   <span
                     class="size-5 rounded
                            border border-[var(--border)] bg-[var(--bg-subtle)]
-                           text-[var(--text-muted)]
                            flex items-center justify-center text-[0.625rem]
                            font-semibold tracking-tight shrink-0
-                           {isProjectActive ? 'text-[var(--text)]' : ''}"
+                           {isProjectActive
+                      ? 'text-[var(--text)]'
+                      : 'text-[var(--text-muted)]'}"
                   >
                     {project.identifier.slice(0, 2)}
                   </span>

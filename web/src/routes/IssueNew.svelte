@@ -283,7 +283,7 @@
                   }}
                 >
                   <PriorityIcon {priority} />
-                  <span class="text-[var(--text)] {priorityTextClass(priority)}">
+                  <span class={priorityTextClass(priority)}>
                     {priority === "none" ? "No priority" : priority.charAt(0).toUpperCase() + priority.slice(1)}
                   </span>
                 </button>
@@ -330,7 +330,7 @@
                       labelsOpen = false;
                     }}
                   >
-                    <span class="text-[var(--text)] {moduleId ? '' : 'text-[var(--text-faint)]'}">
+                    <span class={moduleId ? "text-[var(--text)]" : "text-[var(--text-faint)]"}>
                       {moduleName(moduleId)}
                     </span>
                   </button>
@@ -456,7 +456,7 @@
       case "urgent": return "text-[var(--error)]";
       case "high": return "text-orange-500";
       case "medium": return "text-[var(--accent)]";
-      default: return "";
+      default: return "text-[var(--text)]";
     }
   }
 </script>

@@ -357,7 +357,7 @@
               }}
             >
               <PriorityIcon priority={issue.priority} />
-              <span class="text-[var(--text)] {priorityTextClass(issue.priority)}">
+              <span class={priorityTextClass(issue.priority)}>
                 {issue.priority === "none" ? "No priority" : issue.priority.charAt(0).toUpperCase() + issue.priority.slice(1)}
               </span>
             </button>
@@ -410,7 +410,7 @@
                 {#if moduleEmoji(issue.module_id)}
                   <ProjectIcon value={moduleEmoji(issue.module_id)} size={14} class="text-[var(--text-muted)] shrink-0" />
                 {/if}
-                <span class="text-[var(--text)] {issue.module_id ? '' : 'text-[var(--text-faint)]'}">
+                <span class={issue.module_id ? "text-[var(--text)]" : "text-[var(--text-faint)]"}>
                   {moduleName(issue.module_id)}
                 </span>
               </button>
@@ -584,7 +584,7 @@
       case "urgent": return "text-[var(--error)]";
       case "high": return "text-orange-500";
       case "medium": return "text-[var(--accent)]";
-      default: return "";
+      default: return "text-[var(--text)]";
     }
   }
 </script>
