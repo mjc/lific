@@ -279,6 +279,18 @@
   onNewComment={handleNewComment}
   layout="two-column"
 >
+  {#snippet breadcrumbExtra()}
+    {#if issue}
+      <span class="text-[var(--text-faint)]">/</span>
+      <span class="flex items-center gap-1.5 text-[0.8125rem]">
+        {@render statusIcon(issue.status, 13)}
+        <span class="capitalize" style="color: {statusCssColor(issue.status)}">
+          {issue.status}
+        </span>
+      </span>
+    {/if}
+  {/snippet}
+
   {#snippet sidebar()}
     {#if issue}
       <div class="issue-meta-aside">

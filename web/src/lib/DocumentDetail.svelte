@@ -67,6 +67,10 @@
     sidebar,
     belowTitle,
     metaFooter,
+    // Optional extra content rendered in the topbar breadcrumb, right
+    // after the identifier (e.g. IssueDetail's status badge). PageDetail
+    // omits it.
+    breadcrumbExtra,
     // LIF-129: body read/edit mode, surfaced upward (bindable) so a route
     // can pause auto-refresh while the user is editing. Defaults to "read"
     // and is fully optional — IssueDetail doesn't bind it.
@@ -104,6 +108,7 @@
     sidebar?: Snippet;
     belowTitle?: Snippet;
     metaFooter?: Snippet;
+    breadcrumbExtra?: Snippet;
     bodyMode?: "read" | "edit";
   } = $props();
 
@@ -276,6 +281,7 @@
         <span class="text-[0.8125rem] font-mono text-[var(--text-muted)]">
           {identifier}
         </span>
+        {#if breadcrumbExtra}{@render breadcrumbExtra()}{/if}
       </div>
 
       <!-- Right zone: mode toggle + save indicator + export + menu -->
