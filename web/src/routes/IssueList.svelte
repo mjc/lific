@@ -107,7 +107,7 @@
   function priorityCssColor(p: string): string {
     switch (p) {
       case "urgent": return "var(--error)";
-      case "high": return "#f97316";
+      case "high": return "var(--warn)";
       case "medium": return "var(--accent)";
       case "low": return "var(--text-muted)";
       case "none": return "var(--text-faint)";

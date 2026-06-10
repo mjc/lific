@@ -46,6 +46,9 @@
   --color-green-400: #4ade80;
   --color-green-bg: #f0fdf4;
   --color-green-bg-dark: #142a1b;
+
+  --color-orange-600: #ea580c;
+  --color-orange-400: #fb923c;
 }
 
 /* ── Light mode (default) ────────────────────────────── */
@@ -75,6 +78,7 @@
   --error-bg: var(--color-red-bg);
   --success: var(--color-green-600);
   --success-bg: var(--color-green-bg);
+  --warn: var(--color-orange-600);
 
   /* Shadow cast by the elevated chrome onto the recessed content panel.
      Applied as an inset shadow on the panel's top/left edges so the
@@ -111,6 +115,7 @@
   --error-bg: var(--color-red-bg-dark);
   --success: var(--color-green-400);
   --success-bg: var(--color-green-bg-dark);
+  --warn: var(--color-orange-400);
 
   /* Heavier in dark mode — the same alpha that's subtle on white reads
      as nothing against a near-black panel. */

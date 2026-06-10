@@ -15,7 +15,7 @@
   <svg
     width={size}
     height={size}
-    class="text-orange-500 shrink-0"
+    class="text-[var(--warn)] shrink-0"
     viewBox="0 0 24 24"
     fill="none"
     stroke="currentColor"

@@ -454,7 +454,7 @@
   function priorityTextClass(p: string): string {
     switch (p) {
       case "urgent": return "text-[var(--error)]";
-      case "high": return "text-orange-500";
+      case "high": return "text-[var(--warn)]";
       case "medium": return "text-[var(--accent)]";
       default: return "text-[var(--text)]";
     }
