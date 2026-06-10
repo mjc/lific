@@ -1,3 +1,4 @@
+mod activity;
 mod auth;
 mod comments;
 mod export;
@@ -84,6 +85,16 @@ pub fn router(db: DbPool, cors_origins: &[String]) -> Router {
         .route(
             "/api/issues/resolve/{identifier}",
             get(issues::resolve_issue),
+        )
+        // Activity (audit log read surface — LIF-156)
+        .route(
+            "/api/issues/{id}/activity",
+            get(activity::issue_activity),
+        )
+        .route("/api/pages/{id}/activity", get(activity::page_activity))
+        .route(
+            "/api/projects/{id}/activity",
+            get(activity::project_activity),
         )
         .route("/api/export/issues/{identifier}", get(export::export_issue))
         .route("/api/export/pages/{identifier}", get(export::export_page))

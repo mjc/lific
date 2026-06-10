@@ -69,6 +69,20 @@ pub struct GetIssueInput {
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct GetActivityInput {
+    #[schemars(
+        description = "What to read history for: an issue identifier (PRO-42), a page identifier (PRO-DOC-3 or DOC-3), or a bare project identifier (PRO) for the whole project's feed"
+    )]
+    pub identifier: String,
+    #[schemars(description = "Max entries (default 30, cap 200)")]
+    pub limit: Option<i64>,
+    #[schemars(
+        description = "Zero-indexed offset for paging. Output appends a hint when more entries exist."
+    )]
+    pub offset: Option<i64>,
+}
+
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct CreateIssueInput {
     #[schemars(description = "Project identifier (e.g. LIF)")]
     pub project: String,

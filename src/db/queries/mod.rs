@@ -39,7 +39,8 @@ where
 }
 
 // Re-export everything so callers don't need to know the internal split.
-pub use activity::*;
+// (activity is accessed via queries::activity:: directly, like users —
+// its names are only used by the API/MCP read surface.)
 pub use issues::*;
 pub use pages::*;
 pub use projects::*;

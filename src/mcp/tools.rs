@@ -116,6 +116,69 @@ fn append_pagination_hint(out: &mut String, has_more: bool, next_offset: i64) {
     }
 }
 
+/// Truncate long values (descriptions, page bodies) for one-line activity
+/// rendering. Newlines collapse so an entry never spans lines.
+fn truncate_value(v: &str, max: usize) -> String {
+    let flat = v.replace('\n', " ");
+    if flat.chars().count() <= max {
+        flat
+    } else {
+        let cut: String = flat.chars().take(max).collect();
+        format!("{cut}…")
+    }
+}
+
+/// Render one audit entry as a compact line:
+/// `[ts] actor via transport — LABEL action detail`
+fn fmt_activity(a: &models::Activity) -> String {
+    let who = match (&a.actor_display_name, &a.actor_username) {
+        (Some(d), _) if !d.is_empty() => d.clone(),
+        (_, Some(u)) => u.clone(),
+        _ => "system".into(),
+    };
+    let agent = if a.actor_is_bot { " (agent)" } else { "" };
+    let label = a.entity_label.as_deref().unwrap_or("?");
+
+    let detail = match a.action.as_str() {
+        "create" => format!(
+            "created {} {}: {}",
+            a.entity_type,
+            label,
+            truncate_value(a.new_value.as_deref().unwrap_or(""), 60)
+        ),
+        "delete" => format!(
+            "deleted {} {} ({})",
+            a.entity_type,
+            label,
+            truncate_value(a.old_value.as_deref().unwrap_or(""), 60)
+        ),
+        "update" => format!(
+            "{} {}: {} → {}",
+            label,
+            a.field.as_deref().unwrap_or("?"),
+            truncate_value(a.old_value.as_deref().unwrap_or("(none)"), 60),
+            truncate_value(a.new_value.as_deref().unwrap_or("(none)"), 60)
+        ),
+        "attach" => format!("{} +label {}", label, a.new_value.as_deref().unwrap_or("?")),
+        "detach" => format!("{} -label {}", label, a.old_value.as_deref().unwrap_or("?")),
+        "link" => format!(
+            "{} {} → {}",
+            label,
+            a.field.as_deref().unwrap_or("relates_to"),
+            a.new_value.as_deref().unwrap_or("?")
+        ),
+        "unlink" => format!(
+            "{} un-{} → {}",
+            label,
+            a.field.as_deref().unwrap_or("relates_to"),
+            a.old_value.as_deref().unwrap_or("?")
+        ),
+        other => format!("{label} {other}"),
+    };
+
+    format!("[{}] {}{} via {} — {}", a.ts, who, agent, a.transport, detail)
+}
+
 #[tool_router]
 impl LificMcp {
     #[tool(description = "Search across all issues and pages by text")]
@@ -158,6 +221,53 @@ impl LificMcp {
                     ));
                 }
                 append_pagination_hint(&mut out, has_more, offset + limit);
+                out
+            }
+            Err(e) => format!("Error: {e}"),
+        }
+    }
+
+    #[tool(
+        description = "Read the audit log: who changed what, when, and through which door (web UI, MCP, API, CLI). Accepts an issue identifier (PRO-42) for that issue's history including comments/labels/relations, a page identifier (PRO-DOC-3), or a bare project identifier (PRO) for the whole project's feed. Entries are newest-first with old → new values per changed field. Perfect for 'what changed while I was gone'."
+    )]
+    fn get_activity(&self, Parameters(input): Parameters<GetActivityInput>) -> String {
+        let limit = input.limit.unwrap_or(30).clamp(1, 200);
+        let offset = input.offset.unwrap_or(0).max(0);
+        let ident = input.identifier.trim();
+
+        // Resolve the identifier shape: page → issue → project. Pages are
+        // unambiguous (DOC segment); issue resolution requires a numeric
+        // tail, so a bare project identifier falls through cleanly.
+        let scope = if looks_like_page_identifier(ident) {
+            match self.read(|conn| queries::resolve_page_identifier(conn, ident)) {
+                Ok(id) => queries::activity::ActivityScope::Page(id),
+                Err(e) => return format!("Error: {e}"),
+            }
+        } else if let Ok(id) = self.read(|conn| queries::resolve_identifier(conn, ident)) {
+            queries::activity::ActivityScope::Issue(id)
+        } else {
+            match self.read(|conn| queries::resolve_project_identifier(conn, ident)) {
+                Ok(id) => queries::activity::ActivityScope::Project(id),
+                Err(_) => {
+                    return format!(
+                        "Error: '{ident}' is not a known issue, page, or project identifier"
+                    );
+                }
+            }
+        };
+
+        match self.read(|conn| {
+            queries::activity::list_activity(conn, scope, Some(limit), Some(offset))
+        }) {
+            Ok(feed) if feed.items.is_empty() && offset == 0 => {
+                format!("No recorded activity for {ident} yet.")
+            }
+            Ok(feed) => {
+                let mut out = format!("{} activity entries for {ident}:\n", feed.items.len());
+                for a in &feed.items {
+                    out.push_str(&format!("- {}\n", fmt_activity(a)));
+                }
+                append_pagination_hint(&mut out, feed.has_more, offset + limit);
                 out
             }
             Err(e) => format!("Error: {e}"),
@@ -3269,5 +3379,104 @@ mod tests {
             ..Default::default()
         }));
         assert!(bad.contains("Error"), "got: {bad}");
+    }
+
+    // ── get_activity (LIF-156) ──
+
+    #[test]
+    fn get_activity_renders_issue_history() {
+        let m = mcp();
+        seed_project(&m, "Audit", "TST");
+        seed_issue(&m, "TST", "Watched issue");
+
+        let result = m.update_issue(Parameters(UpdateIssueInput {
+            identifier: "TST-1".into(),
+            status: Some("active".into()),
+            ..Default::default()
+        }));
+        assert!(result.contains("Updated"), "got: {result}");
+
+        let out = m.get_activity(Parameters(GetActivityInput {
+            identifier: "TST-1".into(),
+            ..Default::default()
+        }));
+        assert!(out.contains("status: backlog → active"), "got: {out}");
+        assert!(out.contains("created issue TST-1"), "got: {out}");
+    }
+
+    #[test]
+    fn get_activity_project_feed_pages_with_hint() {
+        let m = mcp();
+        seed_project(&m, "Audit", "TST");
+        for i in 0..4 {
+            seed_issue(&m, "TST", &format!("issue {i}"));
+        }
+
+        let out = m.get_activity(Parameters(GetActivityInput {
+            identifier: "TST".into(),
+            limit: Some(2),
+            ..Default::default()
+        }));
+        assert!(out.contains("2 activity entries"), "got: {out}");
+        assert!(out.contains("offset=2"), "paging hint expected: {out}");
+
+        let next = m.get_activity(Parameters(GetActivityInput {
+            identifier: "TST".into(),
+            limit: Some(50),
+            offset: Some(2),
+        }));
+        // 5 total (project create + 4 issues) − 2 already seen = 3.
+        assert!(next.contains("3 activity entries"), "got: {next}");
+        assert!(!next.contains("offset="), "no further hint: {next}");
+    }
+
+    #[test]
+    fn get_activity_rejects_unknown_identifier() {
+        let m = mcp();
+        seed_project(&m, "Audit", "TST");
+        let out = m.get_activity(Parameters(GetActivityInput {
+            identifier: "NOPE-999".into(),
+            ..Default::default()
+        }));
+        assert!(out.starts_with("Error"), "got: {out}");
+    }
+
+    #[tokio::test]
+    async fn get_activity_attributes_mcp_actor() {
+        let m = mcp();
+        seed_project(&m, "Audit", "TST");
+
+        // Seed a bot user, then act through the production MCP identity
+        // wrapper — the audit entry must say "<bot> (agent) via mcp".
+        let bot_id = {
+            let conn = m.db.write().unwrap();
+            conn.execute(
+                "INSERT INTO users (username, email, password_hash, display_name, is_admin, is_bot)
+                 VALUES ('opencode-blake', 'oc@test.local', 'x', 'opencode-blake', 0, 1)",
+                [],
+            )
+            .unwrap();
+            conn.last_insert_rowid()
+        };
+        let user = crate::db::models::AuthUser {
+            id: bot_id,
+            username: "opencode-blake".into(),
+            display_name: "opencode-blake".into(),
+            is_admin: false,
+        };
+
+        crate::mcp::with_request_user(Some(user), || async {
+            seed_issue(&m, "TST", "Agent-made");
+        })
+        .await;
+
+        let out = m.get_activity(Parameters(GetActivityInput {
+            identifier: "TST-1".into(),
+            ..Default::default()
+        }));
+        assert!(
+            out.contains("opencode-blake (agent) via mcp"),
+            "got: {out}"
+        );
     }
 }
