@@ -32,7 +32,7 @@
   // Redirect logic
   $effect(() => {
     if (hasSession()) {
-      if (route === "/" || route === "/login" || route === "/signup" || route === "/home") {
+      if (route === "/" || route === "/login" || route === "/signup") {
         redirectToDefault();
       }
     } else {

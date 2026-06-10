@@ -18,7 +18,7 @@
 
     if (result.ok) {
       saveSession(result.data.token);
-      navigate("/home");
+      navigate("/settings");
     } else {
       error = result.error;
       loading = false;
