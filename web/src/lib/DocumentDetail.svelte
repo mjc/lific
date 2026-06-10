@@ -27,6 +27,7 @@
   import { ArrowLeft, Download } from "lucide-svelte";
   import { getContext, type Snippet } from "svelte";
   import type { Activity, Comment } from "./api";
+  import type { PaletteAction, PaletteContext } from "./palette";
 
   let {
     navigate,
@@ -66,6 +67,10 @@
     // Activity timeline (optional — LIF-157). The route owns fetching;
     // this shell just renders it between the body and the comments.
     activity,
+    // LIF-159: route-specific palette actions (status/priority/module/
+    // labels). DocumentDetail appends the shared ones (rename, edit
+    // description, add comment) and registers the lot with Layout.
+    paletteActions = [],
     // Layout
     layout = "two-column",
     sidebar,
@@ -109,6 +114,7 @@
     comments?: Comment[];
     onNewComment?: (content: string) => Promise<Comment | null>;
     activity?: Activity[];
+    paletteActions?: PaletteAction[];
     layout?: "two-column" | "wide";
     sidebar?: Snippet;
     belowTitle?: Snippet;
@@ -127,6 +133,47 @@
   $effect(() => {
     topbarCtx?.set(topbar);
     return () => topbarCtx?.set(undefined);
+  });
+
+  // LIF-159: register palette actions — the route's specialized ones
+  // plus the shared trio every document supports. Re-registers whenever
+  // the title or route actions change so hints stay current.
+  const paletteCtx = getContext<PaletteContext | undefined>("lific:palette");
+
+  $effect(() => {
+    if (!editable || loading || error) {
+      paletteCtx?.set(undefined);
+      return;
+    }
+    const noun = deleteNoun ?? "document";
+    const shared: PaletteAction[] = [
+      {
+        id: "rename",
+        title: `Rename ${noun}…`,
+        hint: title,
+        prompt: {
+          placeholder: `New ${noun} title`,
+          initial: title,
+          submit: (v) => void onSaveTitle(v),
+        },
+      },
+      {
+        id: "edit-body",
+        title: "Edit description",
+        run: () => bodyRef?.focus(),
+      },
+      ...(onNewComment
+        ? [
+            {
+              id: "add-comment",
+              title: "Add comment",
+              run: () => commentsRef?.focusComposer(),
+            },
+          ]
+        : []),
+    ];
+    paletteCtx?.set([...paletteActions, ...shared]);
+    return () => paletteCtx?.set(undefined);
   });
 
   // Body read/edit mode is a bindable prop (LIF-129) so a route can read

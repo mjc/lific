@@ -28,14 +28,36 @@
   import ProjectIcon from "./ProjectIcon.svelte";
   import {
     Search, CircleDot, FileText, Layers, FolderClosed, Box, CornerDownLeft,
+    Zap, ChevronRight,
   } from "lucide-svelte";
   import { tick } from "svelte";
+  import StatusIcon from "./StatusIcon.svelte";
+  import PriorityIcon from "./PriorityIcon.svelte";
+  import type { PaletteAction, PaletteActionChild } from "./palette";
 
-  let { navigate }: { navigate: (path: string) => void } = $props();
+  let {
+    navigate,
+    actions = [],
+  }: {
+    navigate: (path: string) => void;
+    /** Context-aware actions registered by the current route (via
+     *  Layout's "lific:palette" context → DocumentDetail). */
+    actions?: PaletteAction[];
+  } = $props();
 
-  // ── Open/close ───────────────────────────────────────
+  // ── Open/close + modes ───────────────────────────────
+  //
+  // root    — navigation search + action list
+  // submenu — an action's children (statuses, labels, modules…)
+  // prompt  — text input feeding an action (rename)
+
+  type Mode =
+    | { type: "root" }
+    | { type: "submenu"; action: PaletteAction }
+    | { type: "prompt"; action: PaletteAction };
 
   let open = $state(false);
+  let mode = $state<Mode>({ type: "root" });
   let query = $state("");
   let inputEl = $state<HTMLInputElement | null>(null);
   let listEl = $state<HTMLDivElement | null>(null);
@@ -43,6 +65,7 @@
 
   async function show() {
     open = true;
+    mode = { type: "root" };
     query = "";
     selectedIdx = 0;
     await tick();
@@ -55,10 +78,47 @@
 
   function hide() {
     open = false;
+    mode = { type: "root" };
+  }
+
+  /** Esc / backspace-on-empty: submenu/prompt step back; root closes. */
+  function stepBack() {
+    if (mode.type === "root") {
+      hide();
+      return;
+    }
+    mode = { type: "root" };
+    query = "";
+    selectedIdx = 0;
+    void runSearch("");
+    inputEl?.focus();
+  }
+
+  function enterAction(a: PaletteAction) {
+    if (a.run) {
+      hide();
+      a.run();
+      return;
+    }
+    if (a.children) {
+      mode = { type: "submenu", action: a };
+      query = "";
+      selectedIdx = 0;
+      inputEl?.focus();
+      return;
+    }
+    if (a.prompt) {
+      mode = { type: "prompt", action: a };
+      query = a.prompt.initial ?? "";
+      selectedIdx = 0;
+      tick().then(() => inputEl?.select());
+    }
   }
 
   function onWindowKeydown(e: KeyboardEvent) {
-    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+    // cmd/ctrl+K and cmd/ctrl+P both summon the palette (P overrides
+    // the browser print dialog — jumping beats printing).
+    if ((e.metaKey || e.ctrlKey) && ["k", "p"].includes(e.key.toLowerCase())) {
       e.preventDefault();
       if (open) hide();
       else void show();
@@ -68,7 +128,7 @@
     if (e.key === "Escape") {
       e.preventDefault();
       e.stopPropagation();
-      hide();
+      stepBack();
     }
   }
 
@@ -144,9 +204,33 @@
   let searching = $state(false);
   let searchGen = 0;
 
+  // Context actions matched against the query (root mode only). Empty
+  // query lists them all — they're the most likely intent on a detail
+  // page, so they render above navigation results.
+  let actionHits = $derived.by(() => {
+    if (mode.type !== "root") return [] as PaletteAction[];
+    const q = query.trim();
+    if (!q) return actions;
+    return actions
+      .map((a) => ({ a, m: fuzzyMatch(q, a.title) }))
+      .filter((x) => x.m !== null && x.m.score >= 0.3)
+      .sort((x, y) => y.m!.score - x.m!.score)
+      .map((x) => x.a);
+  });
+
+  // Submenu children filtered by the query.
+  let childHits = $derived.by(() => {
+    if (mode.type !== "submenu") return [] as PaletteActionChild[];
+    const all = mode.action.children?.() ?? [];
+    const q = query.trim();
+    if (!q) return all;
+    return all.filter((c) => (fuzzyMatch(q, c.title)?.score ?? 0) >= 0.3);
+  });
+
   let grouped = $derived.by(() => {
     const out: { label: string; entries: { r: PaletteResult; flatIdx: number }[] }[] = [];
-    let flatIdx = 0;
+    // Nav results sit after the action list in the flat selection order.
+    let flatIdx = mode.type === "root" ? actionHits.length : 0;
     for (const kind of GROUP_ORDER) {
       const entries = results
         .filter((r) => r.kind === kind)
@@ -354,23 +438,59 @@
   // Debounced search on keystroke.
   let debounce: ReturnType<typeof setTimeout> | null = null;
   function onInput() {
+    if (mode.type === "prompt") return; // prompt input isn't a search
+    if (mode.type === "submenu") {
+      selectedIdx = 0; // childHits derives from query directly
+      return;
+    }
     if (debounce) clearTimeout(debounce);
     debounce = setTimeout(() => runSearch(query), 120);
   }
 
-  // ── Selection + navigation ───────────────────────────
+  // ── Selection + dispatch ─────────────────────────────
 
-  let flat = $derived(grouped.flatMap((g) => g.entries.map((e) => e.r)));
+  type FlatItem =
+    | { t: "action"; a: PaletteAction }
+    | { t: "nav"; r: PaletteResult }
+    | { t: "child"; c: PaletteActionChild };
 
-  function pick(r: PaletteResult) {
-    hide();
-    navigate(r.route);
+  let flatItems = $derived.by<FlatItem[]>(() => {
+    if (mode.type === "submenu") {
+      return childHits.map((c) => ({ t: "child" as const, c }));
+    }
+    if (mode.type === "prompt") return [];
+    return [
+      ...actionHits.map((a) => ({ t: "action" as const, a })),
+      ...grouped.flatMap((g) => g.entries.map((e) => ({ t: "nav" as const, r: e.r }))),
+    ];
+  });
+
+  function pickItem(it: FlatItem) {
+    if (it.t === "nav") {
+      hide();
+      navigate(it.r.route);
+    } else if (it.t === "action") {
+      enterAction(it.a);
+    } else {
+      hide();
+      it.c.run();
+    }
   }
 
   function onInputKeydown(e: KeyboardEvent) {
+    if (mode.type === "prompt") {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        const submit = mode.action.prompt?.submit;
+        const value = query.trim();
+        hide();
+        if (submit && value) submit(value);
+      }
+      return;
+    }
     if (e.key === "ArrowDown") {
       e.preventDefault();
-      selectedIdx = Math.min(selectedIdx + 1, flat.length - 1);
+      selectedIdx = Math.min(selectedIdx + 1, flatItems.length - 1);
       scrollSelectedIntoView();
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
@@ -378,8 +498,11 @@
       scrollSelectedIntoView();
     } else if (e.key === "Enter") {
       e.preventDefault();
-      const r = flat[selectedIdx];
-      if (r) pick(r);
+      const it = flatItems[selectedIdx];
+      if (it) pickItem(it);
+    } else if (e.key === "Backspace" && !query && mode.type === "submenu") {
+      e.preventDefault();
+      stepBack();
     }
   }
 
@@ -409,14 +532,30 @@
     >
       <!-- Input row -->
       <div class="flex items-center gap-2.5 px-4 py-3 border-b border-[var(--border)]">
-        <Search size={15} class="shrink-0 text-[var(--text-faint)]" />
+        {#if mode.type === "root"}
+          <Search size={15} class="shrink-0 text-[var(--text-faint)]" />
+        {:else}
+          <Zap size={15} class="shrink-0 text-[var(--accent)]" />
+          <!-- Breadcrumb chip: which action's submenu/prompt this is. -->
+          <span
+            class="shrink-0 text-[0.75rem] font-medium text-[var(--accent)]
+                   bg-[var(--accent-subtle)] px-2 py-0.5 rounded-full
+                   whitespace-nowrap"
+          >
+            {mode.action.title.replace(/…$/, "")}
+          </span>
+        {/if}
         <input
           bind:this={inputEl}
           bind:value={query}
           type="text"
           class="flex-1 bg-transparent border-0 outline-none text-[0.9375rem]
                  text-[var(--text)] placeholder:text-[var(--text-faint)]"
-          placeholder="Jump to… (try OMN156, doc 3, or any text)"
+          placeholder={mode.type === "prompt"
+            ? (mode.action.prompt?.placeholder ?? "Type a value…")
+            : mode.type === "submenu"
+              ? "Filter…"
+              : "Jump or act… (try OMN156, doc 3, or “status”)"}
           oninput={onInput}
           onkeydown={onInputKeydown}
         />
@@ -430,16 +569,99 @@
       </div>
 
       <!-- Results -->
+      {#if mode.type === "prompt"}
+        <p class="px-4 py-3 text-[0.75rem] text-[var(--text-faint)]">
+          Enter to save · Esc to cancel
+        </p>
+      {:else}
       <div class="max-h-[420px] overflow-y-auto py-1.5" bind:this={listEl}>
-        {#if flat.length === 0}
+        {#if flatItems.length === 0}
           <p class="px-4 py-6 text-center text-[0.8125rem] text-[var(--text-faint)]">
             {searching
               ? "Searching…"
               : query.trim()
                 ? `Nothing matches “${query.trim()}”`
-                : "No projects yet"}
+                : mode.type === "submenu"
+                  ? "Nothing here"
+                  : "No projects yet"}
           </p>
+        {:else if mode.type === "submenu"}
+          {#each childHits as c, i (c.title)}
+            <button
+              class="w-full flex items-center gap-2.5 px-4 py-2 text-left
+                     transition-colors
+                     {i === selectedIdx
+                ? 'bg-[var(--accent-subtle)]'
+                : 'hover:bg-[var(--bg-subtle)]'}"
+              data-flat-idx={i}
+              onclick={() => pickItem({ t: "child", c })}
+              onmouseenter={() => { selectedIdx = i; }}
+            >
+              <span class="size-5 flex items-center justify-center shrink-0">
+                {#if c.status !== undefined}
+                  <StatusIcon status={c.status} size={14} />
+                {:else if c.priority !== undefined}
+                  <PriorityIcon priority={c.priority} size={14} />
+                {:else if c.color}
+                  <span
+                    class="size-2.5 rounded-full"
+                    style="background: {c.color}"
+                  ></span>
+                {/if}
+              </span>
+              <span class="flex-1 text-[0.875rem] text-[var(--text)] capitalize truncate">
+                {c.title}
+              </span>
+              {#if c.hint}
+                <span class="text-[0.6875rem] text-[var(--text-faint)] shrink-0">
+                  {c.hint}
+                </span>
+              {/if}
+              {#if i === selectedIdx}
+                <CornerDownLeft size={12} class="shrink-0 text-[var(--text-faint)]" />
+              {/if}
+            </button>
+          {/each}
         {:else}
+          <!-- Context actions first: on a detail page they're the most
+               likely intent. -->
+          {#if actionHits.length > 0}
+            <div
+              class="px-4 pt-2 pb-1 text-[0.625rem] font-semibold uppercase
+                     tracking-widest text-[var(--text-faint)]"
+            >
+              Actions
+            </div>
+            {#each actionHits as a, i (a.id)}
+              <button
+                class="w-full flex items-center gap-2.5 px-4 py-2 text-left
+                       transition-colors
+                       {i === selectedIdx
+                  ? 'bg-[var(--accent-subtle)]'
+                  : 'hover:bg-[var(--bg-subtle)]'}"
+                data-flat-idx={i}
+                onclick={() => pickItem({ t: "action", a })}
+                onmouseenter={() => { selectedIdx = i; }}
+              >
+                <span class="size-5 flex items-center justify-center shrink-0 text-[var(--accent)]">
+                  <Zap size={14} />
+                </span>
+                <span class="flex-1 text-[0.875rem] text-[var(--text)] truncate">
+                  {a.title}
+                </span>
+                {#if a.hint}
+                  <span class="text-[0.6875rem] text-[var(--text-faint)] capitalize shrink-0">
+                    {a.hint}
+                  </span>
+                {/if}
+                {#if a.children}
+                  <ChevronRight size={12} class="shrink-0 text-[var(--text-faint)]" />
+                {:else if i === selectedIdx}
+                  <CornerDownLeft size={12} class="shrink-0 text-[var(--text-faint)]" />
+                {/if}
+              </button>
+            {/each}
+          {/if}
           {#each grouped as group (group.label)}
             <div
               class="px-4 pt-2 pb-1 text-[0.625rem] font-semibold uppercase
@@ -455,7 +677,7 @@
                   ? 'bg-[var(--accent-subtle)]'
                   : 'hover:bg-[var(--bg-subtle)]'}"
                 data-flat-idx={flatIdx}
-                onclick={() => pick(r)}
+                onclick={() => pickItem({ t: "nav", r })}
                 onmouseenter={() => { selectedIdx = flatIdx; }}
               >
                 <!-- Kind icon (project/module emoji wins when set) -->
@@ -499,6 +721,7 @@
           {/each}
         {/if}
       </div>
+      {/if}
     </div>
   </div>
 {/if}

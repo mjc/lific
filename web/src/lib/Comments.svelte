@@ -74,6 +74,15 @@
       .join("");
   }
 
+  // LIF-159 — palette "Add comment" action: scroll the composer into
+  // view and put the caret in it.
+  export function focusComposer() {
+    const el = textareaEl;
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    el.focus();
+  }
+
   // LIF-111 — called by the quote-in-comment toolbar (via DocumentDetail).
   // Prepends a markdown blockquote of the selected text to the composer,
   // then focuses it, resizes, drops the caret at the end, and scrolls the

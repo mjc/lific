@@ -246,6 +246,42 @@
     }
     return false;
   }
+
+  // ── LIF-159: palette actions ─────────────────────────
+  let paletteActions = $derived.by<import("../lib/palette").PaletteAction[]>(() => {
+    if (!page) return [];
+    const p = page;
+    return [
+      {
+        id: "set-status",
+        title: "Set status…",
+        hint: p.status,
+        children: () =>
+          PAGE_STATUSES.map((s) => ({
+            title: s.label,
+            hint: s.value === p.status ? "current" : undefined,
+            // Setting the local mirror persists via the LIF-112 effect.
+            run: () => { statusValue = s.value; },
+          })),
+      },
+      ...(p.project_id !== null && labels.length > 0
+        ? [
+            {
+              id: "toggle-label",
+              title: "Add or remove label…",
+              hint: p.labels.length > 0 ? p.labels.join(", ") : undefined,
+              children: () =>
+                labels.map((l) => ({
+                  title: l.name,
+                  color: l.color,
+                  hint: p.labels.includes(l.name) ? "remove" : "add",
+                  run: () => void toggleLabel(l.name),
+                })),
+            },
+          ]
+        : []),
+    ];
+  });
 </script>
 
 <DocumentDetail
@@ -276,6 +312,7 @@
   {comments}
   onNewComment={handleNewComment}
   {activity}
+  {paletteActions}
   layout="wide"
   bind:bodyMode
 >

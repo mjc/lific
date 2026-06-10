@@ -243,6 +243,77 @@
     return modules.find((m) => m.id === id)?.name ?? "Unknown";
   }
 
+  // ── LIF-159: palette actions ─────────────────────────
+  // Specialized commands for the issue view, surfaced through cmd+k /
+  // ctrl+p. Derived so hints (current status/priority/…) stay live.
+  let paletteActions = $derived.by<import("../lib/palette").PaletteAction[]>(() => {
+    if (!issue) return [];
+    const i = issue;
+    return [
+      {
+        id: "set-status",
+        title: "Set status…",
+        hint: i.status,
+        children: () =>
+          STATUSES.map((s) => ({
+            title: s.label,
+            status: s.value,
+            hint: s.value === i.status ? "current" : undefined,
+            run: () => void setStatus(s.value),
+          })),
+      },
+      {
+        id: "set-priority",
+        title: "Set priority…",
+        hint: i.priority,
+        children: () =>
+          PRIORITIES.map((p) => ({
+            title: p.label,
+            priority: p.value,
+            hint: p.value === i.priority ? "current" : undefined,
+            run: () => void setPriority(p.value),
+          })),
+      },
+      ...(modules.length > 0
+        ? [
+            {
+              id: "set-module",
+              title: "Set module…",
+              hint: moduleName(i.module_id),
+              children: () => [
+                {
+                  title: "None",
+                  hint: i.module_id === null ? "current" : undefined,
+                  run: () => void setModule(null),
+                },
+                ...modules.map((m) => ({
+                  title: m.name,
+                  hint: m.id === i.module_id ? "current" : undefined,
+                  run: () => void setModule(m.id),
+                })),
+              ],
+            },
+          ]
+        : []),
+      ...(labels.length > 0
+        ? [
+            {
+              id: "toggle-label",
+              title: "Add or remove label…",
+              hint: i.labels.length > 0 ? i.labels.join(", ") : undefined,
+              children: () =>
+                labels.map((l) => ({
+                  title: l.name,
+                  color: l.color,
+                  hint: i.labels.includes(l.name) ? "remove" : "add",
+                  run: () => void toggleLabel(l.name),
+                })),
+            },
+          ]
+        : []),
+    ];
+  });
+
   function moduleEmoji(id: number | null): string | null {
     if (!id) return null;
     return modules.find((m) => m.id === id)?.emoji ?? null;
@@ -280,6 +351,7 @@
   {comments}
   onNewComment={handleNewComment}
   {activity}
+  {paletteActions}
   layout="two-column"
 >
   {#snippet breadcrumbExtra()}

@@ -36,6 +36,15 @@
     },
   });
 
+  // Routes register context-aware command-palette actions here (same
+  // lifecycle pattern as the topbar): set on mount, clear on unmount.
+  let paletteActions = $state<import("./palette").PaletteAction[]>([]);
+  setContext("lific:palette", {
+    set: (a: import("./palette").PaletteAction[] | undefined) => {
+      paletteActions = a ?? [];
+    },
+  });
+
   // Expose refreshProjects to parent so it can pass it to child routes
   $effect(() => {
     onProjectChange = refreshProjects;
@@ -395,7 +404,7 @@
     </div>
   </div>
 
-  <!-- LIF-159: cmd+k jump-anywhere. Mounted here (once, above routes)
-       so its session catalog cache survives navigation. -->
-  <CommandPalette {navigate} />
+  <!-- LIF-159: cmd+k / ctrl+p jump-anywhere. Mounted here (once, above
+       routes) so its session catalog cache survives navigation. -->
+  <CommandPalette {navigate} actions={paletteActions} />
 {/if}
