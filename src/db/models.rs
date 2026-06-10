@@ -404,6 +404,41 @@ pub struct SearchResult {
     pub project_id: Option<i64>,
 }
 
+// ── Audit log (LIF-155/156) ──────────────────────────────────
+
+/// One audit-log entry, joined with the actor's user row at read time.
+/// The LEFT JOIN means a deleted user degrades to None fields rather
+/// than losing history.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Activity {
+    pub id: i64,
+    pub ts: String,
+    pub actor_user_id: Option<i64>,
+    pub actor_username: Option<String>,
+    pub actor_display_name: Option<String>,
+    pub actor_is_bot: bool,
+    /// web | mcp | api | cli | system
+    pub transport: String,
+    pub entity_type: String,
+    pub entity_id: i64,
+    pub entity_label: Option<String>,
+    pub project_id: Option<i64>,
+    pub issue_id: Option<i64>,
+    pub page_id: Option<i64>,
+    /// create | update | delete | attach | detach | link | unlink
+    pub action: String,
+    pub field: Option<String>,
+    pub old_value: Option<String>,
+    pub new_value: Option<String>,
+}
+
+/// A page of activity plus a "there's more" hint for clients.
+#[derive(Debug, serde::Serialize)]
+pub struct ActivityFeed {
+    pub items: Vec<Activity>,
+    pub has_more: bool,
+}
+
 /// Deserializes a JSON field as Option<Option<T>>:
 /// - absent key → None (don't change)
 /// - "field": null → Some(None) (set to null)

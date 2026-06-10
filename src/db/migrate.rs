@@ -84,6 +84,11 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "issue activity triggers",
         include_str!("../../migrations/017_issue_activity_triggers.sql"),
     ),
+    (
+        18,
+        "audit log",
+        include_str!("../../migrations/018_audit_log.sql"),
+    ),
 ];
 
 /// Ensure the migrations table exists and apply any pending migrations.

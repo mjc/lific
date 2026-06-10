@@ -236,8 +236,18 @@ pub async fn require_api_key(
                     display_name: u.display_name,
                     is_admin: u.is_admin,
                 };
+                // LIF-155: session tokens are the browser — audit as 'web'
+                // (or 'mcp' if a session token is ever pointed at /mcp).
+                let actor = crate::actor::ActorCtx {
+                    user_id: Some(auth_user.id),
+                    transport: if is_mcp_request {
+                        crate::actor::Transport::Mcp
+                    } else {
+                        crate::actor::Transport::Web
+                    },
+                };
                 request.extensions_mut().insert(Some(auth_user));
-                return next.run(request).await;
+                return crate::actor::scope(actor, next.run(request)).await;
             }
             Err(_) => {
                 return (
@@ -270,8 +280,18 @@ pub async fn require_api_key(
                     display_name: u.display_name,
                     is_admin: u.is_admin,
                 });
+            // LIF-155: OAuth tokens are programmatic access — 'mcp' when
+            // aimed at /mcp (the normal case), 'api' against REST.
+            let actor = crate::actor::ActorCtx {
+                user_id: auth_user.as_ref().map(|u| u.id),
+                transport: if is_mcp_request {
+                    crate::actor::Transport::Mcp
+                } else {
+                    crate::actor::Transport::Api
+                },
+            };
             request.extensions_mut().insert(auth_user);
-            return next.run(request).await;
+            return crate::actor::scope(actor, next.run(request)).await;
         }
         if is_mcp_request {
             warn!("/mcp rejected: OAuth token invalid or expired");
@@ -384,8 +404,18 @@ pub async fn require_api_key(
                         is_admin: u.is_admin,
                     })
             });
+            // LIF-155: API keys are programmatic — 'mcp' on the /mcp
+            // path, 'api' for direct REST usage.
+            let actor = crate::actor::ActorCtx {
+                user_id: auth_user.as_ref().map(|u| u.id),
+                transport: if is_mcp_request {
+                    crate::actor::Transport::Mcp
+                } else {
+                    crate::actor::Transport::Api
+                },
+            };
             request.extensions_mut().insert(auth_user);
-            next.run(request).await
+            crate::actor::scope(actor, next.run(request)).await
         }
         _ => {
             warn!("API key hash verification failed");

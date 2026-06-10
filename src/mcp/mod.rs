@@ -26,16 +26,25 @@ static MCP_REQUEST_USER: Mutex<Option<AuthUser>> = Mutex::new(None);
 
 /// Acquire the MCP handler lock, set the user, run the provided future,
 /// then clean up. Guarantees no identity confusion between concurrent requests.
+///
+/// LIF-155: also scopes the audit actor context (transport = mcp) around
+/// the handler so every DB write a tool performs is attributed to this
+/// user via MCP — both the OAuth /mcp route and the authless /mcp/<token>
+/// route funnel through here.
 pub async fn with_request_user<F, Fut, R>(user: Option<AuthUser>, f: F) -> R
 where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = R>,
 {
     let _guard = MCP_HANDLER_LOCK.lock().await;
+    let actor = crate::actor::ActorCtx {
+        user_id: user.as_ref().map(|u| u.id),
+        transport: crate::actor::Transport::Mcp,
+    };
     *MCP_REQUEST_USER
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = user;
-    let result = f().await;
+    let result = crate::actor::scope(actor, f()).await;
     *MCP_REQUEST_USER
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;

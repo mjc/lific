@@ -1,3 +1,4 @@
+mod actor;
 mod api;
 mod auth;
 mod backup;
@@ -113,6 +114,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Handle CRUD commands (direct database access, no server needed)
     if is_crud_command(&cli.command) {
+        // LIF-155: CLI mutations run outside any request task — audit
+        // them via the process-default transport.
+        actor::set_default_transport(actor::Transport::Cli);
         let pool = db::open(&cfg.database.path)?;
         return cli::exec::run(&pool, &cli.command, cli.json);
     }

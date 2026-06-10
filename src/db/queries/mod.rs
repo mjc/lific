@@ -1,3 +1,4 @@
+pub(crate) mod activity;
 pub(crate) mod comments;
 mod issues;
 mod pages;
@@ -38,6 +39,7 @@ where
 }
 
 // Re-export everything so callers don't need to know the internal split.
+pub use activity::*;
 pub use issues::*;
 pub use pages::*;
 pub use projects::*;

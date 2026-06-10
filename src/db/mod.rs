@@ -68,10 +68,19 @@ impl DbPool {
     }
 
     /// Acquire the exclusive write connection.
+    ///
+    /// LIF-155: stamps the current actor context (task-local set by the
+    /// REST middleware / MCP wrapper / CLI default) onto `_actor_state`
+    /// so the audit triggers attribute every write that follows. The
+    /// exclusive guard makes the stamp race-free: nobody else can write
+    /// between the stamp and the mutation.
     pub fn write(&self) -> Result<std::sync::MutexGuard<'_, Connection>, LificError> {
-        self.writer
+        let guard = self
+            .writer
             .lock()
-            .map_err(|e| LificError::Internal(format!("write lock poisoned: {e}")))
+            .map_err(|e| LificError::Internal(format!("write lock poisoned: {e}")))?;
+        crate::actor::stamp(&guard, &crate::actor::current());
+        Ok(guard)
     }
 }
 
@@ -160,6 +169,17 @@ pub fn open(path: &Path) -> Result<DbPool, LificError> {
     let writer = Connection::open(path)?;
     apply_pragmas(&writer)?;
     migrate::run(&writer)?;
+
+    // LIF-155: clear any actor left over from a previous process (the
+    // `_actor_state` row persists). Writes before the first request stamp
+    // must read as 'system', not as whoever acted last before restart.
+    crate::actor::stamp(
+        &writer,
+        &crate::actor::ActorCtx {
+            user_id: None,
+            transport: crate::actor::Transport::System,
+        },
+    );
 
     // Pre-fill read pool
     let readers = ArrayQueue::new(READ_POOL_SIZE);
