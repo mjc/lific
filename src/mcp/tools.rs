@@ -127,18 +127,28 @@ impl LificMcp {
             },
             None => None,
         };
+        let limit = input.limit.unwrap_or(20).max(1);
+        let offset = input.offset.unwrap_or(0).max(0);
+        // Over-fetch by one to detect whether more results exist beyond this page.
         match self.read(|conn| {
             queries::search(
                 conn,
                 &models::SearchQuery {
                     query: input.query.clone(),
                     project_id,
-                    limit: input.limit,
+                    result_type: input.result_type.clone(),
+                    sort: input.sort.clone(),
+                    limit: Some(limit + 1),
+                    offset: Some(offset),
                 },
             )
         }) {
             Ok(results) if results.is_empty() => "No results found.".into(),
-            Ok(results) => {
+            Ok(mut results) => {
+                let has_more = results.len() as i64 > limit;
+                if has_more {
+                    results.truncate(limit as usize);
+                }
                 let mut out = format!("{} results:\n", results.len());
                 for r in &results {
                     let ident = r.identifier.as_deref().unwrap_or("");
@@ -147,6 +157,7 @@ impl LificMcp {
                         r.result_type, ident, r.title, r.snippet
                     ));
                 }
+                append_pagination_hint(&mut out, has_more, offset + limit);
                 out
             }
             Err(e) => format!("Error: {e}"),
@@ -181,6 +192,12 @@ impl LificMcp {
                     module_id,
                     label: input.label.clone(),
                     workable: input.workable,
+                    created_since: input.created_since.clone(),
+                    created_until: input.created_until.clone(),
+                    updated_since: input.updated_since.clone(),
+                    updated_until: input.updated_until.clone(),
+                    order_by: input.order_by.clone(),
+                    order: input.order.clone(),
                     limit: Some(limit + 1),
                     offset: Some(offset),
                 },
@@ -241,6 +258,8 @@ impl LificMcp {
                     queries::comments::list_comments(
                         conn,
                         queries::comments::CommentParent::Issue(issue.id),
+                        None,
+                        None,
                     )
                 }) && !comments.is_empty()
                 {
@@ -412,14 +431,9 @@ impl LificMcp {
                 conn,
                 &models::ListIssuesQuery {
                     project_id: Some(pid),
-                    status: None,
-                    priority: None,
-                    module_id: None,
-                    label: None,
-                    workable: None,
                     // Over-fetch by one to detect truncation.
                     limit: Some(BOARD_CAP + 1),
-                    offset: None,
+                    ..Default::default()
                 },
             )
         }) {
@@ -524,10 +538,23 @@ impl LificMcp {
     fn get_page(&self, Parameters(input): Parameters<GetPageInput>) -> String {
         match self.read(|conn| {
             let id = queries::resolve_page_identifier(conn, &input.identifier)?;
-            queries::get_page(conn, id)
+            let page = queries::get_page(conn, id)?;
+            let folder_name = match page.folder_id {
+                Some(fid) => Some(queries::get_folder_name(conn, fid)?),
+                None => None,
+            };
+            Ok((page, folder_name))
         }) {
-            Ok(page) => {
-                let mut out = format!("{} — {}\n", page.identifier, page.title);
+            Ok((page, folder_name)) => {
+                let mut out = format!(
+                    "{} — {}\nStatus: {} | Folder: {}\nCreated: {} | Updated: {}\n",
+                    page.identifier,
+                    page.title,
+                    page.status,
+                    folder_name.as_deref().unwrap_or("none"),
+                    page.created_at,
+                    page.updated_at
+                );
                 if !page.labels.is_empty() {
                     out.push_str(&format!("Labels: {}\n", page.labels.join(", ")));
                 }
@@ -790,13 +817,9 @@ impl LificMcp {
                         conn,
                         &models::ListIssuesQuery {
                             project_id: Some(pid),
-                            status: None,
-                            priority: None,
-                            module_id: None,
-                            label: None,
-                            workable: None,
                             limit: Some(limit + 1),
                             offset: Some(offset),
+                            ..Default::default()
                         },
                     )
                 }) {
@@ -835,10 +858,25 @@ impl LificMcp {
                     _ => None,
                 };
                 let label = input.label.as_deref();
-                match self.read(|conn| queries::list_pages(conn, project_id, folder_id, label, None))
-                {
-                    Ok(pages) if pages.is_empty() => "No pages found.".into(),
-                    Ok(pages) => {
+                let status = input.status.as_deref();
+                let order_by = input.order_by.as_deref();
+                let order = input.order.as_deref();
+                match self.read(|conn| {
+                    let pages =
+                        queries::list_pages(conn, project_id, folder_id, label, status, order_by, order)?;
+                    // One folders round-trip for the whole listing — folders
+                    // are project-scoped, so workspace pages never have one.
+                    let folder_names: std::collections::HashMap<i64, String> = match project_id {
+                        Some(pid) => queries::list_folders(conn, pid)?
+                            .into_iter()
+                            .map(|f| (f.id, f.name))
+                            .collect(),
+                        None => std::collections::HashMap::new(),
+                    };
+                    Ok((pages, folder_names))
+                }) {
+                    Ok((pages, _)) if pages.is_empty() => "No pages found.".into(),
+                    Ok((pages, folder_names)) => {
                         let mut out = format!("{} pages:\n", pages.len());
                         for p in &pages {
                             // Mirror `fmt_issue`: only suffix the label
@@ -849,9 +887,18 @@ impl LificMcp {
                             } else {
                                 format!(" [{}]", p.labels.join(", "))
                             };
+                            let folder = p
+                                .folder_id
+                                .and_then(|fid| folder_names.get(&fid))
+                                .map(|name| format!(" (folder: {name})"))
+                                .unwrap_or_default();
+                            // Timestamps are "YYYY-MM-DD HH:MM:SS"; the date
+                            // part keeps list lines scannable. Full stamps
+                            // live on get_page.
+                            let updated = p.updated_at.split(' ').next().unwrap_or(&p.updated_at);
                             out.push_str(&format!(
-                                "- {} | {}{}\n",
-                                p.identifier, p.title, labels
+                                "- {} | {} | {}{}{} — updated {}\n",
+                                p.identifier, p.status, p.title, labels, folder, updated
                             ));
                         }
                         out
@@ -1216,7 +1263,14 @@ impl LificMcp {
             Err(e) => return format!("Error: {e}"),
         };
 
-        match self.read(|conn| queries::comments::list_comments(conn, parent)) {
+        match self.read(|conn| {
+            queries::comments::list_comments(
+                conn,
+                parent,
+                input.author.as_deref(),
+                input.order.as_deref(),
+            )
+        }) {
             Ok(comments) if comments.is_empty() => {
                 format!("No comments on {}.", input.identifier)
             }
@@ -1528,6 +1582,7 @@ mod tests {
             workable: None,
             limit: None,
             offset: None,
+            ..Default::default()
         }));
         assert!(result.contains("1 issues"), "got: {result}");
         assert!(result.contains("Todo one"), "got: {result}");
@@ -1546,6 +1601,7 @@ mod tests {
             workable: None,
             limit: None,
             offset: None,
+            ..Default::default()
         }));
         assert_eq!(result, "No issues found.");
     }
@@ -1562,6 +1618,7 @@ mod tests {
             workable: None,
             limit: None,
             offset: None,
+            ..Default::default()
         }));
         assert!(result.starts_with("Error"), "got: {result}");
     }
@@ -1583,6 +1640,7 @@ mod tests {
             workable: None,
             limit: Some(2),
             offset: None,
+            ..Default::default()
         }));
         assert!(page1.contains("2 issues"), "got: {page1}");
         assert!(
@@ -1600,6 +1658,7 @@ mod tests {
             workable: None,
             limit: Some(2),
             offset: Some(2),
+            ..Default::default()
         }));
         assert!(page2.contains("2 issues"), "got: {page2}");
         assert!(
@@ -1617,6 +1676,7 @@ mod tests {
             workable: None,
             limit: Some(2),
             offset: Some(4),
+            ..Default::default()
         }));
         assert!(page3.contains("1 issues"), "got: {page3}");
         assert!(
@@ -1639,6 +1699,7 @@ mod tests {
             workable: None,
             limit: Some(10),
             offset: None,
+            ..Default::default()
         }));
         assert!(result.contains("1 issues"), "got: {result}");
         assert!(
@@ -1854,6 +1915,7 @@ mod tests {
             query: "searchterm".into(),
             project: None,
             limit: None,
+            ..Default::default()
         }));
         assert!(result.contains("1 results"), "got: {result}");
         assert!(result.contains("searchterm"), "got: {result}");
@@ -1866,6 +1928,7 @@ mod tests {
             query: "nonexistent_gibberish_zzz".into(),
             project: None,
             limit: None,
+            ..Default::default()
         }));
         assert_eq!(result, "No results found.");
     }
@@ -1885,6 +1948,7 @@ mod tests {
             label: None,
             limit: None,
             offset: None,
+            ..Default::default()
         }));
         assert!(result.contains("2 projects"), "got: {result}");
         assert!(result.contains("AAA"), "got: {result}");
@@ -1902,6 +1966,7 @@ mod tests {
                 label: None,
                 limit: None,
                 offset: None,
+                ..Default::default()
             }));
             assert!(result.contains("project required"), "{rt} got: {result}");
         }
@@ -1917,6 +1982,7 @@ mod tests {
             label: None,
             limit: None,
             offset: None,
+            ..Default::default()
         }));
         assert!(result.contains("Unknown type"), "got: {result}");
     }
@@ -1935,6 +2001,7 @@ mod tests {
             label: None,
             limit: Some(2),
             offset: None,
+            ..Default::default()
         }));
         assert!(result.contains("2 issues"), "got: {result}");
         assert!(result.contains("offset=2"), "got: {result}");
@@ -2122,6 +2189,7 @@ mod tests {
 
         let result = m.list_comments(Parameters(ListCommentsInput {
             identifier: "PRJ-1".into(),
+            ..Default::default()
         }));
         assert!(result.contains("2 comment(s)"), "got: {result}");
         assert!(result.contains("Hello from MCP"), "got: {result}");
@@ -2155,6 +2223,7 @@ mod tests {
 
         let result = m.list_comments(Parameters(ListCommentsInput {
             identifier: "PRJ-1".into(),
+            ..Default::default()
         }));
         assert!(result.contains("No comments"), "got: {result}");
     }
@@ -2231,6 +2300,7 @@ mod tests {
 
         let listing = m.list_comments(Parameters(ListCommentsInput {
             identifier: "PGC-DOC-1".into(),
+            ..Default::default()
         }));
         assert!(listing.contains("1 comment(s)"), "got: {listing}");
         assert!(listing.contains("Comment on a page"), "got: {listing}");
@@ -2262,12 +2332,14 @@ mod tests {
 
         let issue_listing = m.list_comments(Parameters(ListCommentsInput {
             identifier: "MIX-1".into(),
+            ..Default::default()
         }));
         assert!(issue_listing.contains("issue thread"), "got: {issue_listing}");
         assert!(!issue_listing.contains("page thread"), "got: {issue_listing}");
 
         let page_listing = m.list_comments(Parameters(ListCommentsInput {
             identifier: "MIX-DOC-1".into(),
+            ..Default::default()
         }));
         assert!(page_listing.contains("page thread"), "got: {page_listing}");
         assert!(!page_listing.contains("issue thread"), "got: {page_listing}");
@@ -2295,6 +2367,7 @@ mod tests {
 
         let listing = m.list_comments(Parameters(ListCommentsInput {
             identifier: "DOC-1".into(),
+            ..Default::default()
         }));
         assert!(listing.contains("comment on workspace page"), "got: {listing}");
     }
@@ -2658,6 +2731,7 @@ mod tests {
             label: None,
             limit: None,
             offset: None,
+            ..Default::default()
         }));
         assert!(listing.contains("EPP-DOC-1"), "folder preserved, got: {listing}");
     }
@@ -2783,8 +2857,9 @@ mod tests {
 
     #[test]
     fn mcp_list_resources_pages_renders_label_brackets() {
-        // The MCP page list line is `- {id} | {title}[ [labels]]` —
-        // matches the issue list formatter so an agent reading both
+        // The MCP page list line is
+        // `- {id} | {status} | {title}[ [labels]][ (folder: F)] — updated {date}`
+        // — matches the issue list formatter so an agent reading both
         // surfaces sees one mental model.
         let m = mcp();
         seed_labels_for_pages(&m, "PLI", "Page List");
@@ -2812,11 +2887,13 @@ mod tests {
             label: None,
             limit: None,
             offset: None,
+            ..Default::default()
         }));
         assert!(listing.contains("Tagged [design]"), "got: {listing}");
         // Bare page should NOT carry an empty `[]` bracket — keeps the
-        // common case terse.
-        assert!(listing.contains("| Bare\n"), "got: {listing}");
+        // common case terse. The line continues with the updated stamp.
+        assert!(listing.contains("| Bare — updated"), "got: {listing}");
+        assert!(!listing.contains("Bare []"), "got: {listing}");
     }
 
     #[test]
@@ -2847,6 +2924,7 @@ mod tests {
             label: Some("design".into()),
             limit: None,
             offset: None,
+            ..Default::default()
         }));
         assert!(filtered.contains("Designy"), "got: {filtered}");
         assert!(!filtered.contains("Plain"), "got: {filtered}");
@@ -2873,5 +2951,323 @@ mod tests {
         }));
         // No `Labels:` line present.
         assert!(!detail.contains("Labels:"), "got: {detail}");
+    }
+
+    // ── Page metadata surfacing + filters (status/folder/timestamps) ──────
+
+    #[test]
+    fn mcp_get_page_surfaces_status_folder_and_timestamps() {
+        let m = mcp();
+        seed_project(&m, "Meta", "MET");
+        m.manage_resource(Parameters(ManageResourceInput {
+            resource_type: "folder".into(),
+            action: "create".into(),
+            project: Some("MET".into()),
+            name: Some("Specs".into()),
+            identifier: None,
+            description: None,
+            current_name: None,
+            status: None,
+            color: None,
+        }));
+        m.create_page(Parameters(CreatePageInput {
+            project: Some("MET".into()),
+            title: "Spec doc".into(),
+            content: Some("Body text".into()),
+            folder: Some("Specs".into()),
+            status: Some("active".into()),
+            labels: None,
+        }));
+
+        let detail = m.get_page(Parameters(GetPageInput {
+            identifier: "MET-DOC-1".into(),
+        }));
+        assert!(detail.contains("Status: active | Folder: Specs"), "got: {detail}");
+        assert!(detail.contains("Created: "), "got: {detail}");
+        assert!(detail.contains("Updated: "), "got: {detail}");
+        // Metadata header comes BEFORE the content.
+        let header_pos = detail.find("Status: active").unwrap();
+        let body_pos = detail.find("Body text").unwrap();
+        assert!(header_pos < body_pos, "metadata must precede content: {detail}");
+    }
+
+    #[test]
+    fn mcp_get_page_without_folder_says_none() {
+        let m = mcp();
+        seed_project(&m, "Meta", "MET");
+        m.create_page(Parameters(CreatePageInput {
+            project: Some("MET".into()),
+            title: "Loose doc".into(),
+            content: None,
+            folder: None,
+            status: None,
+            labels: None,
+        }));
+
+        let detail = m.get_page(Parameters(GetPageInput {
+            identifier: "MET-DOC-1".into(),
+        }));
+        assert!(detail.contains("Status: draft | Folder: none"), "got: {detail}");
+    }
+
+    #[test]
+    fn mcp_list_resources_pages_filters_by_status() {
+        let m = mcp();
+        seed_project(&m, "Stat", "STA");
+        m.create_page(Parameters(CreatePageInput {
+            project: Some("STA".into()),
+            title: "Live".into(),
+            content: None,
+            folder: None,
+            status: Some("active".into()),
+            labels: None,
+        }));
+        m.create_page(Parameters(CreatePageInput {
+            project: Some("STA".into()),
+            title: "Old".into(),
+            content: None,
+            folder: None,
+            status: Some("archived".into()),
+            labels: None,
+        }));
+
+        let active = m.list_resources(Parameters(ListResourcesInput {
+            resource_type: "page".into(),
+            project: Some("STA".into()),
+            status: Some("active".into()),
+            ..Default::default()
+        }));
+        assert!(active.contains("Live"), "got: {active}");
+        assert!(!active.contains("Old"), "got: {active}");
+        // Status is also visible on each listing line.
+        assert!(active.contains("| active |"), "got: {active}");
+    }
+
+    #[test]
+    fn mcp_list_resources_pages_orders_by_title_desc() {
+        let m = mcp();
+        seed_project(&m, "Ord", "ORD");
+        for title in ["Alpha", "Zulu", "Mike"] {
+            m.create_page(Parameters(CreatePageInput {
+                project: Some("ORD".into()),
+                title: title.into(),
+                content: None,
+                folder: None,
+                status: None,
+                labels: None,
+            }));
+        }
+
+        let listing = m.list_resources(Parameters(ListResourcesInput {
+            resource_type: "page".into(),
+            project: Some("ORD".into()),
+            order_by: Some("title".into()),
+            order: Some("desc".into()),
+            ..Default::default()
+        }));
+        let zulu = listing.find("Zulu").unwrap();
+        let mike = listing.find("Mike").unwrap();
+        let alpha = listing.find("Alpha").unwrap();
+        assert!(zulu < mike && mike < alpha, "got: {listing}");
+    }
+
+    #[test]
+    fn mcp_list_resources_pages_shows_folder_name() {
+        let m = mcp();
+        seed_project(&m, "Fold", "FOL");
+        m.manage_resource(Parameters(ManageResourceInput {
+            resource_type: "folder".into(),
+            action: "create".into(),
+            project: Some("FOL".into()),
+            name: Some("Design".into()),
+            identifier: None,
+            description: None,
+            current_name: None,
+            status: None,
+            color: None,
+        }));
+        m.create_page(Parameters(CreatePageInput {
+            project: Some("FOL".into()),
+            title: "Foldered".into(),
+            content: None,
+            folder: Some("Design".into()),
+            status: None,
+            labels: None,
+        }));
+
+        let listing = m.list_resources(Parameters(ListResourcesInput {
+            resource_type: "page".into(),
+            project: Some("FOL".into()),
+            ..Default::default()
+        }));
+        assert!(listing.contains("(folder: Design)"), "got: {listing}");
+    }
+
+    // ── list_comments author filter + sort ────────────────────────────────
+
+    #[test]
+    fn mcp_list_comments_author_filter() {
+        let m = mcp();
+        seed_project(&m, "Proj", "PRJ");
+        seed_issue(&m, "PRJ", "Authored");
+        seed_user(&m);
+        m.add_comment(Parameters(AddCommentInput {
+            identifier: "PRJ-1".into(),
+            content: "Mine".into(),
+        }));
+
+        let mine = m.list_comments(Parameters(ListCommentsInput {
+            identifier: "PRJ-1".into(),
+            author: Some("testuser".into()),
+            order: None,
+        }));
+        assert!(mine.contains("Mine"), "got: {mine}");
+
+        let ghost = m.list_comments(Parameters(ListCommentsInput {
+            identifier: "PRJ-1".into(),
+            author: Some("ghost".into()),
+            order: None,
+        }));
+        assert!(ghost.contains("No comments"), "got: {ghost}");
+    }
+
+    #[test]
+    fn mcp_list_comments_desc_order() {
+        let m = mcp();
+        seed_project(&m, "Proj", "PRJ");
+        seed_issue(&m, "PRJ", "Threaded");
+        seed_user(&m);
+        m.add_comment(Parameters(AddCommentInput {
+            identifier: "PRJ-1".into(),
+            content: "first".into(),
+        }));
+        m.add_comment(Parameters(AddCommentInput {
+            identifier: "PRJ-1".into(),
+            content: "second".into(),
+        }));
+
+        // Same-second timestamps tiebreak on id, so desc puts the later
+        // comment first.
+        let listing = m.list_comments(Parameters(ListCommentsInput {
+            identifier: "PRJ-1".into(),
+            author: None,
+            order: Some("desc".into()),
+        }));
+        let second = listing.find("second").unwrap();
+        let first = listing.find("first").unwrap();
+        assert!(second < first, "desc must list newest first: {listing}");
+
+        let bad = m.list_comments(Parameters(ListCommentsInput {
+            identifier: "PRJ-1".into(),
+            author: None,
+            order: Some("newest".into()),
+        }));
+        assert!(bad.contains("Error"), "got: {bad}");
+    }
+
+    // ── search result_type filter, sort validation, pagination ────────────
+
+    #[test]
+    fn mcp_search_result_type_filter() {
+        let m = mcp();
+        seed_project(&m, "Proj", "PRJ");
+        seed_issue(&m, "PRJ", "findable widget issue");
+        m.create_page(Parameters(CreatePageInput {
+            project: Some("PRJ".into()),
+            title: "findable widget page".into(),
+            content: None,
+            folder: None,
+            status: None,
+            labels: None,
+        }));
+
+        let issues_only = m.search(Parameters(SearchInput {
+            query: "findable".into(),
+            result_type: Some("issue".into()),
+            ..Default::default()
+        }));
+        assert!(issues_only.contains("[issue]"), "got: {issues_only}");
+        assert!(!issues_only.contains("[page]"), "got: {issues_only}");
+
+        let bad = m.search(Parameters(SearchInput {
+            query: "findable".into(),
+            result_type: Some("comment".into()),
+            ..Default::default()
+        }));
+        assert!(bad.contains("Error"), "got: {bad}");
+    }
+
+    #[test]
+    fn mcp_search_pagination_emits_has_more_hint() {
+        let m = mcp();
+        seed_project(&m, "Proj", "PRJ");
+        for i in 0..3 {
+            seed_issue(&m, "PRJ", &format!("paginated result {i}"));
+        }
+
+        let page1 = m.search(Parameters(SearchInput {
+            query: "paginated".into(),
+            limit: Some(2),
+            ..Default::default()
+        }));
+        assert!(page1.contains("offset=2"), "got: {page1}");
+
+        let page2 = m.search(Parameters(SearchInput {
+            query: "paginated".into(),
+            limit: Some(2),
+            offset: Some(2),
+            ..Default::default()
+        }));
+        assert!(!page2.contains("more results available"), "got: {page2}");
+    }
+
+    // ── list_issues date filters + sort control ───────────────────────────
+
+    #[test]
+    fn mcp_list_issues_date_filters() {
+        let m = mcp();
+        let ident = seed_project(&m, "Dated", "DAT");
+        seed_issue(&m, &ident, "Recent issue");
+
+        // Everything was just created, so a far-future since excludes all…
+        let none = m.list_issues(Parameters(ListIssuesInput {
+            project: ident.clone(),
+            created_since: Some("2099-01-01".into()),
+            ..Default::default()
+        }));
+        assert!(none.contains("No issues"), "got: {none}");
+
+        // …and a far-past since includes them.
+        let all = m.list_issues(Parameters(ListIssuesInput {
+            project: ident,
+            created_since: Some("2000-01-01".into()),
+            ..Default::default()
+        }));
+        assert!(all.contains("Recent issue"), "got: {all}");
+    }
+
+    #[test]
+    fn mcp_list_issues_order_by_sequence_desc() {
+        let m = mcp();
+        let ident = seed_project(&m, "Sorted", "SRT");
+        seed_issue(&m, &ident, "Oldest");
+        seed_issue(&m, &ident, "Newest");
+
+        let listing = m.list_issues(Parameters(ListIssuesInput {
+            project: ident.clone(),
+            order_by: Some("sequence".into()),
+            order: Some("desc".into()),
+            ..Default::default()
+        }));
+        let newest = listing.find("Newest").unwrap();
+        let oldest = listing.find("Oldest").unwrap();
+        assert!(newest < oldest, "got: {listing}");
+
+        let bad = m.list_issues(Parameters(ListIssuesInput {
+            project: ident,
+            order_by: Some("votes".into()),
+            ..Default::default()
+        }));
+        assert!(bad.contains("Error"), "got: {bad}");
     }
 }

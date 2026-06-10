@@ -96,7 +96,7 @@ pub struct UpdateIssue {
     pub labels: Option<Vec<String>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct ListIssuesQuery {
     pub project_id: Option<i64>,
     pub status: Option<String>,
@@ -104,6 +104,19 @@ pub struct ListIssuesQuery {
     pub module_id: Option<i64>,
     pub label: Option<String>,
     pub workable: Option<bool>,
+    /// Inclusive lower bound on `created_at` (ISO date or datetime).
+    pub created_since: Option<String>,
+    /// Exclusive upper bound on `created_at`.
+    pub created_until: Option<String>,
+    /// Inclusive lower bound on `updated_at`.
+    pub updated_since: Option<String>,
+    /// Exclusive upper bound on `updated_at`.
+    pub updated_until: Option<String>,
+    /// Sort column: sort_order (default), sequence, created, updated.
+    /// Whitelisted in `list_issues` — never interpolated raw.
+    pub order_by: Option<String>,
+    /// Sort direction: asc (default) or desc.
+    pub order: Option<String>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
 }
@@ -368,11 +381,17 @@ pub struct UpdateComment {
 
 // ── Search ───────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct SearchQuery {
     pub query: String,
     pub project_id: Option<i64>,
+    /// Restrict to one entity type: "issue" or "page".
+    pub result_type: Option<String>,
+    /// Sort mode: "relevance" (default, BM25 rank) or "recent"
+    /// (most recently updated first).
+    pub sort: Option<String>,
     pub limit: Option<i64>,
+    pub offset: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]

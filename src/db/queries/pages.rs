@@ -90,6 +90,8 @@ pub fn list_pages(
     folder_id: Option<i64>,
     label: Option<&str>,
     status: Option<&str>,
+    order_by: Option<&str>,
+    order: Option<&str>,
 ) -> Result<Vec<Page>, LificError> {
     // Build the query incrementally so the optional label filter can
     // graft on a JOIN. Using DISTINCT shields against a page joining
@@ -139,7 +141,30 @@ pub fn list_pages(
         sql.push_str(" WHERE ");
         sql.push_str(&conditions.join(" AND "));
     }
-    sql.push_str(" ORDER BY pg.sort_order");
+    // Whitelisted ORDER BY — user input selects from fixed SQL fragments,
+    // it is never interpolated directly. `pg.id` tiebreaks for stability.
+    let dir = match order {
+        None | Some("asc") => "ASC",
+        Some("desc") => "DESC",
+        Some(other) => {
+            return Err(LificError::BadRequest(format!(
+                "invalid order '{other}'. Use asc or desc."
+            )));
+        }
+    };
+    let order_col = match order_by {
+        None | Some("sort_order") => "pg.sort_order",
+        Some("title") => "pg.title COLLATE NOCASE",
+        Some("status") => "pg.status",
+        Some("created") | Some("created_at") => "pg.created_at",
+        Some("updated") | Some("updated_at") => "pg.updated_at",
+        Some(other) => {
+            return Err(LificError::BadRequest(format!(
+                "invalid order_by '{other}'. Use sort_order, title, status, created, or updated."
+            )));
+        }
+    };
+    sql.push_str(&format!(" ORDER BY {order_col} {dir}, pg.id {dir}"));
 
     let params_refs: Vec<&dyn rusqlite::types::ToSql> =
         param_values.iter().map(|p| p.as_ref()).collect();
@@ -713,7 +738,7 @@ mod tests {
         )
         .unwrap();
 
-        let pages = list_pages(&conn, Some(pid), None, None, None).unwrap();
+        let pages = list_pages(&conn, Some(pid), None, None, None, None, None).unwrap();
         let by_title: std::collections::HashMap<_, _> =
             pages.into_iter().map(|p| (p.title.clone(), p)).collect();
         assert_eq!(by_title["One"].labels, vec!["a".to_string()]);
@@ -744,7 +769,7 @@ mod tests {
         .unwrap();
         create_page(&conn, &blank_page(Some(pid), "Plain")).unwrap();
 
-        let filtered = list_pages(&conn, Some(pid), None, Some("design"), None).unwrap();
+        let filtered = list_pages(&conn, Some(pid), None, Some("design"), None, None, None).unwrap();
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].title, "Designy");
     }
@@ -923,13 +948,78 @@ mod tests {
         )
         .unwrap();
 
-        let archived = list_pages(&conn, Some(pid), None, None, Some("archived")).unwrap();
+        let archived = list_pages(&conn, Some(pid), None, None, Some("archived"), None, None).unwrap();
         assert_eq!(archived.len(), 1);
         assert_eq!(archived[0].title, "Archived doc");
 
-        let drafts = list_pages(&conn, Some(pid), None, None, Some("draft")).unwrap();
+        let drafts = list_pages(&conn, Some(pid), None, None, Some("draft"), None, None).unwrap();
         assert_eq!(drafts.len(), 1);
         assert_eq!(drafts[0].title, "Drafty");
+    }
+
+    // ── Sort control (order_by / order) ───────────────────────
+
+    /// Pin a page's timestamps so ordering tests don't race the clock.
+    /// The `pages_updated` trigger rewrites updated_at to now on every
+    /// UPDATE, which would silently overwrite the pin — drop it first.
+    fn pin_page_timestamps(conn: &rusqlite::Connection, page_id: i64, created: &str, updated: &str) {
+        conn.execute_batch("DROP TRIGGER IF EXISTS pages_updated;")
+            .unwrap();
+        conn.execute(
+            "UPDATE pages SET created_at = ?1, updated_at = ?2 WHERE id = ?3",
+            params![created, updated, page_id],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn list_pages_orders_by_title() {
+        let pool = test_db();
+        let conn = pool.write().unwrap();
+        let pid = seed_project(&conn, "TST");
+        create_page(&conn, &blank_page(Some(pid), "banana")).unwrap();
+        create_page(&conn, &blank_page(Some(pid), "Apple")).unwrap();
+        create_page(&conn, &blank_page(Some(pid), "cherry")).unwrap();
+
+        // COLLATE NOCASE: "Apple" sorts before "banana" despite case.
+        let asc = list_pages(&conn, Some(pid), None, None, None, Some("title"), None).unwrap();
+        let titles: Vec<&str> = asc.iter().map(|p| p.title.as_str()).collect();
+        assert_eq!(titles, vec!["Apple", "banana", "cherry"]);
+
+        let desc =
+            list_pages(&conn, Some(pid), None, None, None, Some("title"), Some("desc")).unwrap();
+        let titles: Vec<&str> = desc.iter().map(|p| p.title.as_str()).collect();
+        assert_eq!(titles, vec!["cherry", "banana", "Apple"]);
+    }
+
+    #[test]
+    fn list_pages_orders_by_updated_desc() {
+        let pool = test_db();
+        let conn = pool.write().unwrap();
+        let pid = seed_project(&conn, "TST");
+        let stale = create_page(&conn, &blank_page(Some(pid), "Stale")).unwrap();
+        let fresh = create_page(&conn, &blank_page(Some(pid), "Fresh")).unwrap();
+        pin_page_timestamps(&conn, stale.id, "2026-01-01 00:00:00", "2026-01-02 00:00:00");
+        pin_page_timestamps(&conn, fresh.id, "2026-01-01 00:00:00", "2026-06-01 00:00:00");
+
+        let pages =
+            list_pages(&conn, Some(pid), None, None, None, Some("updated"), Some("desc")).unwrap();
+        let titles: Vec<&str> = pages.iter().map(|p| p.title.as_str()).collect();
+        assert_eq!(titles, vec!["Fresh", "Stale"]);
+    }
+
+    #[test]
+    fn list_pages_rejects_invalid_order_params() {
+        let pool = test_db();
+        let conn = pool.write().unwrap();
+        let pid = seed_project(&conn, "TST");
+        create_page(&conn, &blank_page(Some(pid), "P")).unwrap();
+
+        assert!(
+            list_pages(&conn, Some(pid), None, None, None, Some("content; --"), None).is_err(),
+            "unknown order_by must error, not be interpolated"
+        );
+        assert!(list_pages(&conn, Some(pid), None, None, None, None, Some("up")).is_err());
     }
 
     #[test]

@@ -98,6 +98,22 @@ pub fn get_module_name(conn: &Connection, id: i64) -> Result<String, LificError>
     })
 }
 
+/// Folder id → name. Used by MCP page output to surface the folder a
+/// page lives in without callers juggling a `list_folders` round-trip.
+pub fn get_folder_name(conn: &Connection, id: i64) -> Result<String, LificError> {
+    conn.query_row(
+        "SELECT name FROM folders WHERE id = ?1",
+        params![id],
+        |row| row.get(0),
+    )
+    .map_err(|e| match e {
+        rusqlite::Error::QueryReturnedNoRows => {
+            LificError::NotFound(format!("folder {id} not found"))
+        }
+        _ => e.into(),
+    })
+}
+
 /// Fetch a single module by id. Used by the web detail route and any
 /// client that already knows the id but not the project — list_modules
 /// requires the project_id up front, which makes URL→data resolution

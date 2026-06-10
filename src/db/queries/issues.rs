@@ -169,6 +169,20 @@ pub fn list_issues(conn: &Connection, q: &ListIssuesQuery) -> Result<Vec<Issue>,
         conditions.push(format!("l.name = ?{}", param_values.len() + 1));
         param_values.push(Box::new(label.clone()));
     }
+    // Date-window filters. `since` is inclusive, `until` exclusive. Stored
+    // timestamps use SQLite's "YYYY-MM-DD HH:MM:SS" form; normalize an ISO
+    // 'T' separator so "2026-06-10T12:00:00" compares correctly against it.
+    for (col, op, value) in [
+        ("i.created_at", ">=", &q.created_since),
+        ("i.created_at", "<", &q.created_until),
+        ("i.updated_at", ">=", &q.updated_since),
+        ("i.updated_at", "<", &q.updated_until),
+    ] {
+        if let Some(v) = value {
+            conditions.push(format!("{col} {op} ?{}", param_values.len() + 1));
+            param_values.push(Box::new(v.replace('T', " ")));
+        }
+    }
     if q.workable == Some(true) {
         conditions.push(
             "NOT EXISTS (
@@ -188,7 +202,29 @@ pub fn list_issues(conn: &Connection, q: &ListIssuesQuery) -> Result<Vec<Issue>,
         sql.push_str(&conditions.join(" AND "));
     }
 
-    sql.push_str(" ORDER BY i.sort_order, i.sequence");
+    // Whitelisted ORDER BY — user input selects from fixed SQL fragments,
+    // it is never interpolated directly.
+    let dir = match q.order.as_deref() {
+        None | Some("asc") => "ASC",
+        Some("desc") => "DESC",
+        Some(other) => {
+            return Err(LificError::BadRequest(format!(
+                "invalid order '{other}'. Use asc or desc."
+            )));
+        }
+    };
+    let order_clause = match q.order_by.as_deref() {
+        None | Some("sort_order") => format!("i.sort_order {dir}, i.sequence {dir}"),
+        Some("sequence") => format!("i.sequence {dir}"),
+        Some("created") | Some("created_at") => format!("i.created_at {dir}, i.sequence {dir}"),
+        Some("updated") | Some("updated_at") => format!("i.updated_at {dir}, i.sequence {dir}"),
+        Some(other) => {
+            return Err(LificError::BadRequest(format!(
+                "invalid order_by '{other}'. Use sort_order, sequence, created, or updated."
+            )));
+        }
+    };
+    sql.push_str(&format!(" ORDER BY {order_clause}"));
 
     let limit = q.limit.unwrap_or(50);
     let offset = q.offset.unwrap_or(0);
@@ -629,6 +665,7 @@ mod tests {
                 workable: None,
                 limit: None,
                 offset: None,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -655,6 +692,7 @@ mod tests {
                 workable: None,
                 limit: None,
                 offset: None,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -696,6 +734,7 @@ mod tests {
                 workable: None,
                 limit: None,
                 offset: None,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -737,6 +776,7 @@ mod tests {
                 workable: None,
                 limit: None,
                 offset: None,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -764,6 +804,7 @@ mod tests {
                 workable: Some(true),
                 limit: None,
                 offset: None,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -791,6 +832,7 @@ mod tests {
                 workable: Some(true),
                 limit: None,
                 offset: None,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -818,6 +860,7 @@ mod tests {
                 workable: Some(true),
                 limit: None,
                 offset: None,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -970,6 +1013,7 @@ mod tests {
                 workable: None,
                 limit: Some(3),
                 offset: None,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -1040,5 +1084,155 @@ mod tests {
             after > before,
             "expected detaching a label to bump issue updated_at: before={before}, after={after}"
         );
+    }
+
+    // ── Date-window filters + sort control ───────────────────
+
+    /// Pin an issue's created_at/updated_at to explicit values so date
+    /// filter and ordering tests don't depend on wall-clock timing. The
+    /// `issues_updated` trigger rewrites updated_at to now on every UPDATE,
+    /// which would silently overwrite the pin — drop it first.
+    fn pin_timestamps(conn: &rusqlite::Connection, issue_id: i64, created: &str, updated: &str) {
+        conn.execute_batch("DROP TRIGGER IF EXISTS issues_updated;")
+            .unwrap();
+        conn.execute(
+            "UPDATE issues SET created_at = ?1, updated_at = ?2 WHERE id = ?3",
+            params![created, updated, issue_id],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn list_filters_by_created_window() {
+        let pool = test_db();
+        let conn = pool.write().unwrap();
+        let pid = seed_project(&conn, "TST");
+        let old = quick_issue(&conn, pid, "Old", "todo", "none");
+        let new = quick_issue(&conn, pid, "New", "todo", "none");
+        pin_timestamps(&conn, old.id, "2026-01-05 10:00:00", "2026-01-05 10:00:00");
+        pin_timestamps(&conn, new.id, "2026-03-20 10:00:00", "2026-03-20 10:00:00");
+
+        let since = list_issues(
+            &conn,
+            &ListIssuesQuery {
+                project_id: Some(pid),
+                created_since: Some("2026-02-01".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(since.len(), 1);
+        assert_eq!(since[0].title, "New");
+
+        // `until` is exclusive: a bound equal to the row's timestamp drops it.
+        let until = list_issues(
+            &conn,
+            &ListIssuesQuery {
+                project_id: Some(pid),
+                created_until: Some("2026-03-20 10:00:00".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(until.len(), 1);
+        assert_eq!(until[0].title, "Old");
+    }
+
+    #[test]
+    fn list_filters_by_updated_window() {
+        let pool = test_db();
+        let conn = pool.write().unwrap();
+        let pid = seed_project(&conn, "TST");
+        let stale = quick_issue(&conn, pid, "Stale", "todo", "none");
+        let fresh = quick_issue(&conn, pid, "Fresh", "todo", "none");
+        pin_timestamps(&conn, stale.id, "2026-01-01 00:00:00", "2026-01-02 00:00:00");
+        pin_timestamps(&conn, fresh.id, "2026-01-01 00:00:00", "2026-06-01 12:00:00");
+
+        let recent = list_issues(
+            &conn,
+            &ListIssuesQuery {
+                project_id: Some(pid),
+                updated_since: Some("2026-05-01".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].title, "Fresh");
+    }
+
+    // Stored timestamps use a space separator ("2026-06-01 12:00:00") while
+    // agents tend to send ISO 8601 with a 'T'. The filter must treat both
+    // identically — 'T' (0x54) sorts after ' ' (0x20), so without
+    // normalization a same-day ISO bound would skew the comparison.
+    #[test]
+    fn list_date_filter_normalizes_iso_t_separator() {
+        let pool = test_db();
+        let conn = pool.write().unwrap();
+        let pid = seed_project(&conn, "TST");
+        let issue = quick_issue(&conn, pid, "Edge", "todo", "none");
+        pin_timestamps(&conn, issue.id, "2026-06-01 12:00:00", "2026-06-01 12:00:00");
+
+        let hit = list_issues(
+            &conn,
+            &ListIssuesQuery {
+                project_id: Some(pid),
+                created_since: Some("2026-06-01T12:00:00".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(hit.len(), 1, "inclusive bound equal to row timestamp must match");
+    }
+
+    #[test]
+    fn list_orders_by_created_desc() {
+        let pool = test_db();
+        let conn = pool.write().unwrap();
+        let pid = seed_project(&conn, "TST");
+        let a = quick_issue(&conn, pid, "First", "todo", "none");
+        let b = quick_issue(&conn, pid, "Second", "todo", "none");
+        pin_timestamps(&conn, a.id, "2026-01-01 00:00:00", "2026-01-01 00:00:00");
+        pin_timestamps(&conn, b.id, "2026-02-01 00:00:00", "2026-02-01 00:00:00");
+
+        let issues = list_issues(
+            &conn,
+            &ListIssuesQuery {
+                project_id: Some(pid),
+                order_by: Some("created".into()),
+                order: Some("desc".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let titles: Vec<&str> = issues.iter().map(|i| i.title.as_str()).collect();
+        assert_eq!(titles, vec!["Second", "First"]);
+    }
+
+    #[test]
+    fn list_rejects_invalid_order_params() {
+        let pool = test_db();
+        let conn = pool.write().unwrap();
+        let pid = seed_project(&conn, "TST");
+
+        let bad_col = list_issues(
+            &conn,
+            &ListIssuesQuery {
+                project_id: Some(pid),
+                order_by: Some("priority; DROP TABLE issues".into()),
+                ..Default::default()
+            },
+        );
+        assert!(bad_col.is_err(), "unknown order_by must error, not be interpolated");
+
+        let bad_dir = list_issues(
+            &conn,
+            &ListIssuesQuery {
+                project_id: Some(pid),
+                order: Some("sideways".into()),
+                ..Default::default()
+            },
+        );
+        assert!(bad_dir.is_err());
     }
 }

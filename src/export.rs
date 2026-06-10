@@ -29,6 +29,8 @@ pub fn export_issue(conn: &Connection, identifier: &str) -> Result<ExportBundle,
     let comments = queries::comments::list_comments(
         conn,
         queries::comments::CommentParent::Issue(issue.id),
+        None,
+        None,
     )?;
     let path = format!(
         "{}/issues/{}.md",
@@ -76,22 +78,19 @@ pub fn export_project(conn: &Connection, identifier: &str) -> Result<ExportBundl
         conn,
         &crate::db::models::ListIssuesQuery {
             project_id: Some(project.id),
-            status: None,
-            priority: None,
-            module_id: None,
-            label: None,
-            workable: None,
             limit: Some(10_000),
-            offset: None,
+            ..Default::default()
         },
     )?;
-    let pages = queries::list_pages(conn, Some(project.id), None, None, None)?;
+    let pages = queries::list_pages(conn, Some(project.id), None, None, None, None, None)?;
 
     let mut files = Vec::new();
     for issue in issues {
         let comments = queries::comments::list_comments(
             conn,
             queries::comments::CommentParent::Issue(issue.id),
+            None,
+            None,
         )?;
         files.push(ExportFile {
             path: format!(

@@ -15,6 +15,11 @@ pub(super) struct PageQuery {
     /// LIF-112: filter pages by lifecycle status. Mirrors `?status=` on
     /// the issue list endpoint.
     status: Option<String>,
+    /// Sort column: sort_order (default), title, status, created, updated.
+    /// Whitelisted in `list_pages`.
+    order_by: Option<String>,
+    /// Sort direction: asc (default) or desc.
+    order: Option<String>,
 }
 
 pub(super) async fn list_pages_handler(
@@ -28,6 +33,8 @@ pub(super) async fn list_pages_handler(
             q.folder_id,
             q.label.as_deref(),
             q.status.as_deref(),
+            q.order_by.as_deref(),
+            q.order.as_deref(),
         )
     })
     .map(Json)

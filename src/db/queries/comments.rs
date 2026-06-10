@@ -93,33 +93,50 @@ pub fn get_comment(conn: &Connection, id: i64) -> Result<Comment, LificError> {
     })
 }
 
-/// List comments for an issue or page, ordered chronologically.
+/// List comments for an issue or page, ordered chronologically (oldest
+/// first by default; pass `order = Some("desc")` for newest first).
+/// `author` filters by exact username (case-insensitive).
 pub fn list_comments(
     conn: &Connection,
     parent: CommentParent,
+    author: Option<&str>,
+    order: Option<&str>,
 ) -> Result<Vec<Comment>, LificError> {
-    let (sql, id) = match parent {
-        CommentParent::Issue(id) => (
-            "SELECT c.id, c.issue_id, c.page_id, c.user_id, u.username, u.display_name,
-                    c.content, c.created_at, c.updated_at
-             FROM comments c
-             JOIN users u ON u.id = c.user_id
-             WHERE c.issue_id = ?1
-             ORDER BY c.created_at ASC",
-            id,
-        ),
-        CommentParent::Page(id) => (
-            "SELECT c.id, c.issue_id, c.page_id, c.user_id, u.username, u.display_name,
-                    c.content, c.created_at, c.updated_at
-             FROM comments c
-             JOIN users u ON u.id = c.user_id
-             WHERE c.page_id = ?1
-             ORDER BY c.created_at ASC",
-            id,
-        ),
+    let dir = match order {
+        None | Some("asc") => "ASC",
+        Some("desc") => "DESC",
+        Some(other) => {
+            return Err(LificError::BadRequest(format!(
+                "invalid order '{other}'. Use asc or desc."
+            )));
+        }
     };
-    let mut stmt = conn.prepare(sql)?;
-    let rows = stmt.query_map(params![id], row_to_comment)?;
+    let (parent_col, id) = match parent {
+        CommentParent::Issue(id) => ("c.issue_id", id),
+        CommentParent::Page(id) => ("c.page_id", id),
+    };
+    let mut sql = format!(
+        "SELECT c.id, c.issue_id, c.page_id, c.user_id, u.username, u.display_name,
+                c.content, c.created_at, c.updated_at
+         FROM comments c
+         JOIN users u ON u.id = c.user_id
+         WHERE {parent_col} = ?1"
+    );
+    let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(id)];
+    if let Some(username) = author {
+        sql.push_str(&format!(
+            " AND u.username = ?{} COLLATE NOCASE",
+            param_values.len() + 1
+        ));
+        param_values.push(Box::new(username.to_string()));
+    }
+    // `dir` comes from the two-value whitelist above, never raw input.
+    sql.push_str(&format!(" ORDER BY c.created_at {dir}, c.id {dir}"));
+
+    let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+        param_values.iter().map(|p| p.as_ref()).collect();
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_refs.as_slice(), row_to_comment)?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
 
@@ -247,7 +264,7 @@ mod tests {
 
         create_comment(&conn, CommentParent::Issue(issue_id), user_id, "Second").unwrap();
 
-        let comments = list_comments(&conn, CommentParent::Issue(issue_id)).unwrap();
+        let comments = list_comments(&conn, CommentParent::Issue(issue_id), None, None).unwrap();
         assert_eq!(comments.len(), 2);
         assert_eq!(comments[0].content, "First");
         assert_eq!(comments[1].content, "Second");
@@ -265,10 +282,83 @@ mod tests {
 
         create_comment(&conn, CommentParent::Page(page_id), user_id, "Another").unwrap();
 
-        let comments = list_comments(&conn, CommentParent::Page(page_id)).unwrap();
+        let comments = list_comments(&conn, CommentParent::Page(page_id), None, None).unwrap();
         assert_eq!(comments.len(), 2);
         assert_eq!(comments[0].content, "Hello page");
         assert_eq!(comments[1].content, "Another");
+    }
+
+    // ── Author filter + sort direction ────────────────────────
+
+    #[test]
+    fn list_comments_filters_by_author() {
+        let (pool, issue_id, _, user_id) = setup();
+        let conn = pool.write().unwrap();
+        let other = queries::users::create_user(
+            &conn,
+            &CreateUser {
+                username: "ada".into(),
+                email: "ada@test.com".into(),
+                password: "testpassword1".into(),
+                display_name: Some("Ada".into()),
+                is_admin: false,
+                is_bot: true,
+            },
+        )
+        .unwrap();
+
+        create_comment(&conn, CommentParent::Issue(issue_id), user_id, "from blake").unwrap();
+        create_comment(&conn, CommentParent::Issue(issue_id), other.id, "from ada").unwrap();
+
+        let ada_only =
+            list_comments(&conn, CommentParent::Issue(issue_id), Some("ada"), None).unwrap();
+        assert_eq!(ada_only.len(), 1);
+        assert_eq!(ada_only[0].content, "from ada");
+
+        // Username match is case-insensitive — agents shouldn't have to
+        // know the stored casing.
+        let ada_caps =
+            list_comments(&conn, CommentParent::Issue(issue_id), Some("ADA"), None).unwrap();
+        assert_eq!(ada_caps.len(), 1);
+
+        let nobody =
+            list_comments(&conn, CommentParent::Issue(issue_id), Some("ghost"), None).unwrap();
+        assert!(nobody.is_empty());
+    }
+
+    #[test]
+    fn list_comments_desc_returns_newest_first() {
+        let (pool, issue_id, _, user_id) = setup();
+        let conn = pool.write().unwrap();
+        let c1 = create_comment(&conn, CommentParent::Issue(issue_id), user_id, "oldest").unwrap();
+        let c2 = create_comment(&conn, CommentParent::Issue(issue_id), user_id, "newest").unwrap();
+        // datetime('now') is 1-second resolution, so both rows likely share
+        // a timestamp; pin them apart to make the assertion meaningful.
+        conn.execute(
+            "UPDATE comments SET created_at = '2026-01-01 00:00:00' WHERE id = ?1",
+            params![c1.id],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE comments SET created_at = '2026-02-01 00:00:00' WHERE id = ?1",
+            params![c2.id],
+        )
+        .unwrap();
+
+        let desc =
+            list_comments(&conn, CommentParent::Issue(issue_id), None, Some("desc")).unwrap();
+        assert_eq!(desc[0].content, "newest");
+        assert_eq!(desc[1].content, "oldest");
+
+        let asc = list_comments(&conn, CommentParent::Issue(issue_id), None, Some("asc")).unwrap();
+        assert_eq!(asc[0].content, "oldest");
+    }
+
+    #[test]
+    fn list_comments_rejects_invalid_order() {
+        let (pool, issue_id, _, _) = setup();
+        let conn = pool.read().unwrap();
+        assert!(list_comments(&conn, CommentParent::Issue(issue_id), None, Some("newest")).is_err());
     }
 
     #[test]
@@ -279,8 +369,8 @@ mod tests {
         create_comment(&conn, CommentParent::Issue(issue_id), user_id, "Issue thread").unwrap();
         create_comment(&conn, CommentParent::Page(page_id), user_id, "Page thread").unwrap();
 
-        let issue_comments = list_comments(&conn, CommentParent::Issue(issue_id)).unwrap();
-        let page_comments = list_comments(&conn, CommentParent::Page(page_id)).unwrap();
+        let issue_comments = list_comments(&conn, CommentParent::Issue(issue_id), None, None).unwrap();
+        let page_comments = list_comments(&conn, CommentParent::Page(page_id), None, None).unwrap();
 
         assert_eq!(issue_comments.len(), 1);
         assert_eq!(issue_comments[0].content, "Issue thread");
@@ -425,7 +515,7 @@ mod tests {
         let (pool, issue_id, _, _) = setup();
         let conn = pool.read().unwrap();
 
-        let comments = list_comments(&conn, CommentParent::Issue(issue_id)).unwrap();
+        let comments = list_comments(&conn, CommentParent::Issue(issue_id), None, None).unwrap();
         assert!(comments.is_empty());
     }
 
@@ -434,7 +524,7 @@ mod tests {
         let (pool, _, page_id, _) = setup();
         let conn = pool.read().unwrap();
 
-        let comments = list_comments(&conn, CommentParent::Page(page_id)).unwrap();
+        let comments = list_comments(&conn, CommentParent::Page(page_id), None, None).unwrap();
         assert!(comments.is_empty());
     }
 
@@ -508,7 +598,7 @@ mod tests {
         create_comment(&conn, CommentParent::Issue(issue_id), user1_id, "Blake says hi").unwrap();
         create_comment(&conn, CommentParent::Issue(issue_id), user2.id, "Ada responds").unwrap();
 
-        let comments = list_comments(&conn, CommentParent::Issue(issue_id)).unwrap();
+        let comments = list_comments(&conn, CommentParent::Issue(issue_id), None, None).unwrap();
         assert_eq!(comments.len(), 2);
         assert_eq!(comments[0].author, "blake");
         assert_eq!(comments[1].author, "ada");

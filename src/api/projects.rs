@@ -80,13 +80,8 @@ pub(super) async fn get_board(
             conn,
             &ListIssuesQuery {
                 project_id: Some(project_id),
-                status: None,
-                priority: None,
-                module_id: None,
-                label: None,
-                workable: None,
                 limit: Some(500),
-                offset: None,
+                ..Default::default()
             },
         )
     })?;

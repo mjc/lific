@@ -5,6 +5,30 @@ use crate::error::LificError;
 
 pub fn search(conn: &Connection, q: &SearchQuery) -> Result<Vec<SearchResult>, LificError> {
     let limit = q.limit.unwrap_or(20);
+    let offset = q.offset.unwrap_or(0).max(0);
+
+    // Validate enum-ish params up front so a typo'd filter errors instead
+    // of silently returning everything.
+    if let Some(ref rt) = q.result_type
+        && rt != "issue"
+        && rt != "page"
+    {
+        return Err(LificError::BadRequest(format!(
+            "invalid result_type '{rt}'. Use issue or page."
+        )));
+    }
+    // "relevance" = BM25 rank (FTS5 default). "recent" = most recently
+    // updated entity first; both joins are LEFT so COALESCE picks whichever
+    // side matched. Fixed fragments only — never interpolated user input.
+    let order_clause = match q.sort.as_deref() {
+        None | Some("relevance") => "ORDER BY rank",
+        Some("recent") => "ORDER BY COALESCE(i.updated_at, pg.updated_at) DESC, rank",
+        Some(other) => {
+            return Err(LificError::BadRequest(format!(
+                "invalid sort '{other}'. Use relevance or recent."
+            )));
+        }
+    };
 
     let fts_query: String = q
         .query
@@ -35,21 +59,24 @@ pub fn search(conn: &Connection, q: &SearchQuery) -> Result<Vec<SearchResult>, L
          LEFT JOIN pages pg ON s.entity_type = 'page' AND pg.id = s.entity_id
          LEFT JOIN projects p ON p.id = s.project_id";
 
-    let (sql, params): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(pid) =
-        q.project_id
-    {
-        (
-            format!(
-                "{base_sql} WHERE search_index MATCH ?1 AND s.project_id = ?2 ORDER BY rank LIMIT ?3"
-            ),
-            vec![Box::new(fts_query.clone()), Box::new(pid), Box::new(limit)],
-        )
-    } else {
-        (
-            format!("{base_sql} WHERE search_index MATCH ?1 ORDER BY rank LIMIT ?2"),
-            vec![Box::new(fts_query.clone()), Box::new(limit)],
-        )
-    };
+    let mut conditions = vec!["search_index MATCH ?1".to_string()];
+    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(fts_query.clone())];
+    if let Some(pid) = q.project_id {
+        conditions.push(format!("s.project_id = ?{}", params.len() + 1));
+        params.push(Box::new(pid));
+    }
+    if let Some(ref rt) = q.result_type {
+        conditions.push(format!("s.entity_type = ?{}", params.len() + 1));
+        params.push(Box::new(rt.clone()));
+    }
+    let sql = format!(
+        "{base_sql} WHERE {} {order_clause} LIMIT ?{} OFFSET ?{}",
+        conditions.join(" AND "),
+        params.len() + 1,
+        params.len() + 2,
+    );
+    params.push(Box::new(limit));
+    params.push(Box::new(offset));
 
     let params_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
     let mut stmt = conn.prepare(&sql)?;
@@ -135,6 +162,7 @@ mod tests {
                 query: "authentication".into(),
                 project_id: None,
                 limit: None,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -174,6 +202,7 @@ mod tests {
                     query: query.into(),
                     project_id: None,
                     limit: None,
+                    ..Default::default()
                 },
             )
             .unwrap_or_else(|e| panic!("query {query:?} must not error: {e}"));
@@ -205,6 +234,7 @@ mod tests {
                 query: "websocket".into(),
                 project_id: None,
                 limit: None,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -241,6 +271,7 @@ mod tests {
                 query: "auth".into(),
                 project_id: None,
                 limit: None,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -290,6 +321,7 @@ mod tests {
                 query: "feature".into(),
                 project_id: Some(p1),
                 limit: None,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -324,11 +356,171 @@ mod tests {
                 query: "rendering".into(),
                 project_id: None,
                 limit: None,
+                ..Default::default()
             },
         )
         .unwrap();
         assert!(!results.is_empty());
         // Snippet should contain something (falls back to title)
         assert!(!results[0].snippet.is_empty());
+    }
+
+    // ── result_type filter, sort, offset ──────────────────────
+
+    /// Seed one issue and one page that both match the word "shared".
+    fn seed_mixed_results(conn: &rusqlite::Connection, pid: i64) {
+        issues::create_issue(
+            conn,
+            &CreateIssue {
+                project_id: pid,
+                title: "shared concern in the API".into(),
+                description: String::new(),
+                status: "backlog".into(),
+                priority: "none".into(),
+                module_id: None,
+                start_date: None,
+                target_date: None,
+                labels: vec![],
+            },
+        )
+        .unwrap();
+        pages::create_page(
+            conn,
+            &CreatePage {
+                project_id: Some(pid),
+                folder_id: None,
+                title: "shared design notes".into(),
+                content: String::new(),
+                status: "draft".into(),
+                labels: vec![],
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn search_filters_by_result_type() {
+        let pool = test_db();
+        let conn = pool.write().unwrap();
+        let pid = seed_project(&conn, "TST");
+        seed_mixed_results(&conn, pid);
+
+        let issues_only = search(
+            &conn,
+            &SearchQuery {
+                query: "shared".into(),
+                result_type: Some("issue".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(issues_only.len(), 1);
+        assert_eq!(issues_only[0].result_type, "issue");
+
+        let pages_only = search(
+            &conn,
+            &SearchQuery {
+                query: "shared".into(),
+                result_type: Some("page".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(pages_only.len(), 1);
+        assert_eq!(pages_only[0].result_type, "page");
+    }
+
+    #[test]
+    fn search_rejects_invalid_enum_params() {
+        let pool = test_db();
+        let conn = pool.write().unwrap();
+        seed_project(&conn, "TST");
+
+        let bad_type = search(
+            &conn,
+            &SearchQuery {
+                query: "anything".into(),
+                result_type: Some("comment".into()),
+                ..Default::default()
+            },
+        );
+        assert!(bad_type.is_err(), "unknown result_type must error");
+
+        let bad_sort = search(
+            &conn,
+            &SearchQuery {
+                query: "anything".into(),
+                sort: Some("oldest".into()),
+                ..Default::default()
+            },
+        );
+        assert!(bad_sort.is_err(), "unknown sort must error");
+    }
+
+    #[test]
+    fn search_offset_pages_through_results() {
+        let pool = test_db();
+        let conn = pool.write().unwrap();
+        let pid = seed_project(&conn, "TST");
+        seed_mixed_results(&conn, pid); // two matches for "shared"
+
+        let first = search(
+            &conn,
+            &SearchQuery {
+                query: "shared".into(),
+                limit: Some(1),
+                offset: Some(0),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let second = search(
+            &conn,
+            &SearchQuery {
+                query: "shared".into(),
+                limit: Some(1),
+                offset: Some(1),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(first.len(), 1);
+        assert_eq!(second.len(), 1);
+        assert_ne!(
+            (first[0].result_type.clone(), first[0].id),
+            (second[0].result_type.clone(), second[0].id),
+            "offset must advance past the first result"
+        );
+    }
+
+    #[test]
+    fn search_recent_sort_orders_by_updated() {
+        let pool = test_db();
+        let conn = pool.write().unwrap();
+        let pid = seed_project(&conn, "TST");
+        seed_mixed_results(&conn, pid);
+        // Pin the page fresher than the issue, regardless of insert order.
+        // The *_updated triggers rewrite updated_at to now on UPDATE, which
+        // would clobber the pins — drop them first.
+        conn.execute_batch(
+            "DROP TRIGGER IF EXISTS issues_updated;
+             DROP TRIGGER IF EXISTS pages_updated;
+             UPDATE issues SET updated_at = '2026-01-01 00:00:00';
+             UPDATE pages SET updated_at = '2026-06-01 00:00:00';",
+        )
+        .unwrap();
+
+        let results = search(
+            &conn,
+            &SearchQuery {
+                query: "shared".into(),
+                sort: Some("recent".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].result_type, "page", "fresher entity must rank first");
+        assert_eq!(results[1].result_type, "issue");
     }
 }

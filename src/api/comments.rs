@@ -14,7 +14,7 @@ pub(super) async fn list_comments(
     Path(issue_id): Path<i64>,
 ) -> Result<Json<Vec<Comment>>, LificError> {
     with_read(&db, |conn| {
-        crate::db::queries::comments::list_comments(conn, CommentParent::Issue(issue_id))
+        crate::db::queries::comments::list_comments(conn, CommentParent::Issue(issue_id), None, None)
     })
     .map(Json)
 }
@@ -44,7 +44,7 @@ pub(super) async fn list_page_comments(
     Path(page_id): Path<i64>,
 ) -> Result<Json<Vec<Comment>>, LificError> {
     with_read(&db, |conn| {
-        crate::db::queries::comments::list_comments(conn, CommentParent::Page(page_id))
+        crate::db::queries::comments::list_comments(conn, CommentParent::Page(page_id), None, None)
     })
     .map(Json)
 }

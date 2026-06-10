@@ -121,7 +121,7 @@ fn issue(
                     label: label.clone(),
                     workable: if *workable { Some(true) } else { None },
                     limit: *limit,
-                    offset: None,
+                    ..Default::default()
                 },
             )?;
 
@@ -417,7 +417,8 @@ fn page(pool: &DbPool, action: &PageAction, json: bool) -> Result<(), Box<dyn st
                 None
             };
 
-            let pages = queries::list_pages(&conn, project_id, folder_id, label.as_deref(), None)?;
+            let pages =
+                queries::list_pages(&conn, project_id, folder_id, label.as_deref(), None, None, None)?;
 
             if json {
                 print_json(&pages);
@@ -592,6 +593,7 @@ fn search(
             query: query.to_string(),
             project_id,
             limit,
+            ..Default::default()
         },
     )?;
 
@@ -633,6 +635,8 @@ fn comment(
             let comments = queries::comments::list_comments(
                 &conn,
                 queries::comments::CommentParent::Issue(id),
+                None,
+                None,
             )?;
 
             if json {

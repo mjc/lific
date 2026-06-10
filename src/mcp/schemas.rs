@@ -2,17 +2,27 @@ use rmcp::schemars;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct SearchInput {
     #[schemars(description = "Text to search for across issues and pages")]
     pub query: String,
     #[schemars(description = "Filter to a specific project (e.g. LIF)")]
     pub project: Option<String>,
+    #[schemars(description = "Restrict results to one type: issue or page")]
+    pub result_type: Option<String>,
+    #[schemars(
+        description = "Sort mode: relevance (default, best match first) or recent (most recently updated first)"
+    )]
+    pub sort: Option<String>,
     #[schemars(description = "Max results (default 20)")]
     pub limit: Option<i64>,
+    #[schemars(
+        description = "Zero-indexed offset for paging. Output appends a hint when more results exist."
+    )]
+    pub offset: Option<i64>,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct ListIssuesInput {
     #[schemars(description = "Project identifier (e.g. LIF)")]
     pub project: String,
@@ -26,6 +36,24 @@ pub struct ListIssuesInput {
     pub label: Option<String>,
     #[schemars(description = "Only return issues with no unresolved blockers")]
     pub workable: Option<bool>,
+    #[schemars(
+        description = "Only issues created at/after this ISO date or datetime (e.g. 2026-06-01)"
+    )]
+    pub created_since: Option<String>,
+    #[schemars(description = "Only issues created before this ISO date or datetime (exclusive)")]
+    pub created_until: Option<String>,
+    #[schemars(
+        description = "Only issues updated at/after this ISO date or datetime. Handy for 'what changed recently'."
+    )]
+    pub updated_since: Option<String>,
+    #[schemars(description = "Only issues updated before this ISO date or datetime (exclusive)")]
+    pub updated_until: Option<String>,
+    #[schemars(
+        description = "Sort column: sort_order (default), sequence, created, or updated"
+    )]
+    pub order_by: Option<String>,
+    #[schemars(description = "Sort direction: asc (default) or desc")]
+    pub order: Option<String>,
     #[schemars(description = "Max results (default 50)")]
     pub limit: Option<i64>,
     #[schemars(
@@ -34,13 +62,13 @@ pub struct ListIssuesInput {
     pub offset: Option<i64>,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct GetIssueInput {
     #[schemars(description = "Issue identifier like PRO-42 or ADA-7")]
     pub identifier: String,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct CreateIssueInput {
     #[schemars(description = "Project identifier (e.g. LIF)")]
     pub project: String,
@@ -58,7 +86,7 @@ pub struct CreateIssueInput {
     pub labels: Option<Vec<String>>,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct UpdateIssueInput {
     #[schemars(description = "Issue identifier like PRO-42")]
     pub identifier: String,
@@ -76,7 +104,7 @@ pub struct UpdateIssueInput {
     pub labels: Option<Vec<String>>,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct GetBoardInput {
     #[schemars(description = "Project identifier (e.g. LIF)")]
     pub project: String,
@@ -84,7 +112,7 @@ pub struct GetBoardInput {
     pub group_by: Option<String>,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct LinkIssuesInput {
     #[schemars(description = "Source issue identifier (e.g. PRO-1)")]
     pub source: String,
@@ -94,7 +122,7 @@ pub struct LinkIssuesInput {
     pub relation_type: String,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct UnlinkIssuesInput {
     #[schemars(description = "First issue identifier")]
     pub source: String,
@@ -102,13 +130,13 @@ pub struct UnlinkIssuesInput {
     pub target: String,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct GetPageInput {
     #[schemars(description = "Page identifier like LIF-DOC-1")]
     pub identifier: String,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct CreatePageInput {
     #[schemars(description = "Project identifier (e.g. LIF). Omit for workspace-level page.")]
     pub project: Option<String>,
@@ -126,7 +154,7 @@ pub struct CreatePageInput {
     pub labels: Option<Vec<String>>,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct UpdatePageInput {
     #[schemars(description = "Page identifier like LIF-DOC-1")]
     pub identifier: String,
@@ -144,7 +172,7 @@ pub struct UpdatePageInput {
     pub labels: Option<Vec<String>>,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct EditIssueInput {
     #[schemars(description = "Issue identifier like PRO-42")]
     pub identifier: String,
@@ -158,7 +186,7 @@ pub struct EditIssueInput {
     pub replace_all: Option<bool>,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct EditPageInput {
     #[schemars(description = "Page identifier like LIF-DOC-1")]
     pub identifier: String,
@@ -172,7 +200,7 @@ pub struct EditPageInput {
     pub replace_all: Option<bool>,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct DeleteInput {
     #[schemars(
         description = "Type of thing to delete: issue, page, project, module, label, or folder"
@@ -188,7 +216,7 @@ pub struct DeleteInput {
     pub project: Option<String>,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct ListResourcesInput {
     #[schemars(description = "Resource type: project, module, label, folder, page, or issue")]
     pub resource_type: String,
@@ -198,6 +226,16 @@ pub struct ListResourcesInput {
     pub folder: Option<String>,
     #[schemars(description = "Label name (for issue or page filtering — LIF-105)")]
     pub label: Option<String>,
+    #[schemars(
+        description = "Status filter (for page lists): draft, active, complete, or archived"
+    )]
+    pub status: Option<String>,
+    #[schemars(
+        description = "Sort column (for page lists): sort_order (default), title, status, created, or updated"
+    )]
+    pub order_by: Option<String>,
+    #[schemars(description = "Sort direction (for page lists): asc (default) or desc")]
+    pub order: Option<String>,
     #[schemars(description = "Max results (applies to issue/page lists; default 100 for issues)")]
     pub limit: Option<i64>,
     #[schemars(
@@ -206,7 +244,7 @@ pub struct ListResourcesInput {
     pub offset: Option<i64>,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct ManageResourceInput {
     #[schemars(description = "Resource type: project, module, label, or folder")]
     pub resource_type: String,
@@ -230,7 +268,7 @@ pub struct ManageResourceInput {
     pub color: Option<String>,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct AddCommentInput {
     #[schemars(description = "Issue identifier (e.g. LIF-1)")]
     pub identifier: String,
@@ -238,25 +276,31 @@ pub struct AddCommentInput {
     pub content: String,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct ListCommentsInput {
     #[schemars(description = "Issue identifier (e.g. LIF-1)")]
     pub identifier: String,
+    #[schemars(description = "Filter to comments by this author username")]
+    pub author: Option<String>,
+    #[schemars(
+        description = "Sort direction by creation time: asc (default, oldest first) or desc (newest first)"
+    )]
+    pub order: Option<String>,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct ExportIssueInput {
     #[schemars(description = "Issue identifier like PRO-42")]
     pub identifier: String,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct ExportPageInput {
     #[schemars(description = "Page identifier like LIF-DOC-1")]
     pub identifier: String,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct ExportProjectInput {
     #[schemars(description = "Project identifier (e.g. LIF)")]
     pub project: String,
