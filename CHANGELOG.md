@@ -1,5 +1,54 @@
 # Changelog
 
+## v1.5.0 (2026-06-10)
+
+Lific learns to remember and to listen. Every change is now recorded in an audit log — who did it, what changed, and whether it came through the web UI, an agent over MCP, the API, or the CLI — with activity surfaces across the app to read that history. A command palette puts every issue, page, project, and action one keystroke away. The issue list gains multi-select with bulk editing, connected tools get much richer query controls, and a sweep of UI fixes lands across every view.
+
+### Audit log and activity
+
+- **Every mutation is recorded**: issue, page, project, module, label, folder, and comment changes land in an append-only audit log with per-field old → new values. Edits to titles, descriptions, statuses, priorities, modules, labels, relations, and more are captured individually — no opaque blobs.
+- **Full actor attribution**: each entry records who acted and through which door — a person in the web UI, an agent over MCP (shown as its bot identity, e.g. `opencode-blake · agent · via mcp`), a direct API call, or the CLI. Trustworthy answers to "did the agent do this, or did I?"
+- **Capture is at the database layer**, so every write path is covered uniformly — including future ones. History survives entity deletion (deleted issues keep their identifier in the log), module/folder/lead changes record names rather than ids, and rolled-back transactions are never recorded.
+- **Project Activity page**: a new "Activity" view in each project's sidebar shows everything that happened, newest first, grouped by day. Entries link to their entities, expand to show exact timestamps (local and UTC), full old → new values, and the actor's standing in the project ("412 actions · 2nd most active · last seen 3m ago"). An actor rail ranks everyone who has touched the project — humans and agents — by action count, each a one-click feed filter. The feed updates live.
+- **Activity timelines on issue and page detail**: a quiet history between the description and comments — status and priority changes with their icons, expandable description-diff blocks, label and relation events, agent badges, and "via web/mcp/api/cli" attribution. Updates immediately after your own edits.
+- **For integrations**: a new `get_activity` tool answers "what changed while I was gone" for any issue, page, or whole project, and the REST API gains `/activity` endpoints for issues, pages, and projects plus a per-project actor rollup.
+
+### Command palette
+
+- **`Cmd+K` or `Ctrl+P` from anywhere** opens a jump-to-anything palette covering projects, issues, pages, modules, and folders.
+- **It understands identifiers**: `OMN156`, `omn 156`, and `OMN-156` all resolve to issue OMN-156; `lif doc 3` finds the page; a bare `156` is probed across every project and lists all hits.
+- Free text searches issues and pages full-text, merged with fuzzy matches over projects, modules, and folders. The best-matching group leads the list, typing a project's name takes you to it, and an empty query doubles as a project switcher.
+- **Context actions**: on an issue, the palette offers Set status, Set priority, Set module, Add or remove label (with current values shown), Rename, Edit description, and Add comment — submenus are filterable, rename turns the palette into a prefilled prompt, and every action lands in the audit log like any other edit. Pages get their lifecycle status and labels. Creating a project is available from every view.
+
+### Issue list: multi-select and bulk editing
+
+- Select with `x`, extend with `shift+↑/↓` (or `shift+j/k`), shift-click for ranges, ctrl/cmd-click to toggle — then apply status, priority, module, or a label to everything at once from a floating action bar, or delete behind a confirm. Triage that used to be N round-trips through the detail page is now one pass.
+- Selection is keyboard-cheatsheet documented, pauses auto-refresh while active, and survives background updates.
+- The board's per-column "+" now creates the issue in that column's status instead of silently defaulting to backlog.
+
+### Integrations
+
+- `search` supports filtering by result type (issue or page), relevance or most-recent sorting, and offset paging with has-more hints.
+- `list_issues` supports created/updated date windows (`created_since`, `updated_until`, …) and explicit ordering by sort order, sequence, created, or updated — ascending or descending.
+- Page listings gain the same ordering controls plus the status filter; page lines and `get_page` now include status, folder, and timestamps.
+- `list_comments` can filter by author and sort in either direction.
+- All ordering values are strictly whitelisted — invalid values error instead of being interpolated.
+
+### Web fixes and polish
+
+- Issue status icons are now one shared vocabulary everywhere — the new-issue form's mismatched colored dots are gone, and module pages use the same glyphs as the rest of the app.
+- The high-priority orange and destructive-action colors are theme-aware tokens: "high" reads correctly in both modes, and red Delete buttons are no longer unreadable in dark mode.
+- An issue's status now shows in the detail-page breadcrumb.
+- Clicking a title to rename it shows the intended accent underline again, and priority icons in issue rows are properly sized.
+- Pages list: the count matches what's shown when archived pages are hidden, the status pill only appears for non-default stages (Draft/Complete/Archived) instead of on every row, and the updated date is always visible — without jittering the status pill's position.
+- Folders can no longer be dragged into each other — the move looked successful but was never persisted. Page drag-and-drop is unchanged.
+- The breadcrumb says "Board" on the board view, board column visibility pills show their counts correctly, and shift-click range selection no longer sweeps text selection across rows.
+- Signing in goes straight to Settings without a redirect flash, and ~450 lines of dead pre-1.4 UI code are gone.
+
+### Upgrading
+
+- The database upgrades itself automatically on first launch (one new migration). Upgrading from any 1.x is safe and needs no manual steps. Audit history begins at the moment of upgrade — earlier changes were not recorded and cannot be backfilled.
+
 ## v1.4.1 (2026-06-09)
 
 A maintenance release: a sweep of correctness and security fixes across the database, auth, and MCP layers, plus server and web improvements that landed after v1.4.0.
