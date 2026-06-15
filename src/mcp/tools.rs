@@ -30,6 +30,50 @@ pub(crate) fn fmt_issue(i: &models::Issue) -> String {
     s
 }
 
+/// Render a plan + its step tree compactly for get_plan / create_plan output.
+/// Step lines carry `#<id>` so the agent can target edits, and issue-linked
+/// steps show provenance ("via LIF-42" / "reopened — LIF-42 reopened").
+pub(crate) fn fmt_plan(p: &models::Plan) -> String {
+    let anchor = p
+        .anchor_identifier
+        .as_ref()
+        .map(|a| format!(" — anchor {a}"))
+        .unwrap_or_default();
+    let mut out = format!(
+        "{} [{}] {}{} — {}/{} done\n",
+        p.identifier, p.status, p.title, anchor, p.done_count, p.step_count
+    );
+    fmt_steps(&p.steps, 0, &mut out);
+    out
+}
+
+fn fmt_steps(nodes: &[models::PlanStepNode], depth: usize, out: &mut String) {
+    for n in nodes {
+        let indent = "  ".repeat(depth);
+        let check = if n.done { "x" } else { " " };
+        // Provenance suffix for issue-linked steps.
+        let suffix = match (&n.issue_identifier, n.issue_status.as_deref()) {
+            (Some(iss), Some("done")) if n.done => format!(" (via {iss})"),
+            (Some(iss), _) if n.reopened_via_issue_at.is_some() && !n.done => {
+                format!(" (reopened — {iss} reopened)")
+            }
+            (Some(iss), Some(st)) => format!(" [{iss}: {st}]"),
+            (Some(iss), None) => format!(" [{iss}]"),
+            _ => String::new(),
+        };
+        out.push_str(&format!(
+            "{indent}- [{check}] #{} {}{}\n",
+            n.id, n.title, suffix
+        ));
+        if !n.description.is_empty() {
+            out.push_str(&format!("{indent}    {}\n", truncate_value(&n.description, 100)));
+        }
+        if !n.children.is_empty() {
+            fmt_steps(&n.children, depth + 1, out);
+        }
+    }
+}
+
 /// Surgical string replacement for `edit_issue` / `edit_page`.
 ///
 /// Mirrors the semantics of the Edit tool that coding agents already know:
@@ -831,7 +875,7 @@ impl LificMcp {
     }
 
     #[tool(
-        description = "Delete any resource by type and identifier. Types: issue, page, project, module, label, folder."
+        description = "Delete any resource by type and identifier. Types: issue, page, plan, project, module, label, folder."
     )]
     fn delete(&self, Parameters(input): Parameters<DeleteInput>) -> String {
         match input.resource_type.as_str() {
@@ -840,6 +884,13 @@ impl LificMcp {
                 queries::delete_issue(conn, id)
             }) {
                 Ok(()) => format!("Deleted issue {}", input.identifier),
+                Err(e) => format!("Error: {e}"),
+            },
+            "plan" => match self.write(|conn| {
+                let id = queries::plans::resolve_plan_identifier(conn, &input.identifier)?;
+                queries::plans::delete_plan(conn, id)
+            }) {
+                Ok(()) => format!("Deleted plan {}", input.identifier),
                 Err(e) => format!("Error: {e}"),
             },
             "page" => match self.write(|conn| {
@@ -894,10 +945,50 @@ impl LificMcp {
     }
 
     #[tool(
-        description = "List resources by type: project, module, label, folder, page, or issue. Most types need a project identifier."
+        description = "List resources by type: project, module, label, folder, page, issue, or plan. Most types need a project identifier."
     )]
     fn list_resources(&self, Parameters(input): Parameters<ListResourcesInput>) -> String {
         match input.resource_type.as_str() {
+            "plan" => {
+                let Some(ref proj) = input.project else {
+                    return "Error: project required".into();
+                };
+                let pid = match resolve_project(&self.db, proj) {
+                    Ok(id) => id,
+                    Err(e) => return format!("Error: {e}"),
+                };
+                let limit = input.limit.unwrap_or(50).clamp(1, 500);
+                let offset = input.offset.unwrap_or(0).max(0);
+                match self.read(|conn| {
+                    queries::plans::list_plans(
+                        conn,
+                        &models::ListPlansQuery {
+                            project_id: Some(pid),
+                            status: input.status.clone(),
+                            limit: Some(limit),
+                            offset: Some(offset),
+                        },
+                    )
+                }) {
+                    Ok(plans) if plans.is_empty() => "No plans found.".into(),
+                    Ok(plans) => {
+                        let mut out = format!("{} plans:\n", plans.len());
+                        for p in &plans {
+                            let anchor = p
+                                .anchor_identifier
+                                .as_ref()
+                                .map(|a| format!(" — anchor {a}"))
+                                .unwrap_or_default();
+                            out.push_str(&format!(
+                                "- {} | {} | {} ({}/{} done){}\n",
+                                p.identifier, p.status, p.title, p.done_count, p.step_count, anchor
+                            ));
+                        }
+                        out
+                    }
+                    Err(e) => format!("Error: {e}"),
+                }
+            }
             "project" => match self.read(queries::list_projects) {
                 Ok(ps) => {
                     let mut out = format!("{} projects:\n", ps.len());
@@ -1397,6 +1488,216 @@ impl LificMcp {
             Err(e) => format!("Error: {e}"),
         }
     }
+
+    #[tool(
+        description = "Persist a step-by-step plan that survives across sessions and context compaction. Use it to break a goal or issue into an ordered, nestable tree of steps the next session can resume. Steps can mirror issues (set `issue`): closing the issue auto-completes the step, and marking the step done closes the issue. Author the whole nested tree in one call via `steps`."
+    )]
+    fn create_plan(&self, Parameters(input): Parameters<CreatePlanInput>) -> String {
+        let pid = match resolve_project(&self.db, &input.project) {
+            Ok(id) => id,
+            Err(e) => return format!("Error: {e}"),
+        };
+        match self.write(|conn| {
+            let anchor = match &input.anchor_issue {
+                Some(ident) => Some(queries::resolve_identifier(conn, ident)?),
+                None => None,
+            };
+            let mut steps = Vec::new();
+            if let Some(input_steps) = &input.steps {
+                for s in input_steps {
+                    steps.push(build_create_step(conn, s)?);
+                }
+            }
+            queries::plans::create_plan(
+                conn,
+                &models::CreatePlan {
+                    project_id: pid,
+                    title: input.title.clone(),
+                    issue_id: anchor,
+                    steps,
+                },
+            )
+        }) {
+            Ok(plan) => format!("Created {}\n{}", plan.identifier, fmt_plan(&plan)),
+            Err(e) => format!("Error: {e}"),
+        }
+    }
+
+    #[tool(
+        description = "Rehydrate a plan and its full nested step tree (e.g. LIF-PLAN-3). Call this when resuming work to recover the plan a previous session created. Step lines show `#id` (use with edit_plan_step / update_plan_step), done state, and issue provenance like 'via LIF-42' or 'reopened — LIF-42 reopened'."
+    )]
+    fn get_plan(&self, Parameters(input): Parameters<GetPlanInput>) -> String {
+        match self.read(|conn| {
+            let id = queries::plans::resolve_plan_identifier(conn, &input.plan)?;
+            queries::plans::get_plan(conn, id)
+        }) {
+            Ok(plan) => fmt_plan(&plan),
+            Err(e) => format!("Error: {e}"),
+        }
+    }
+
+    #[tool(
+        description = "Edit a plan step's text by exact string replacement (mirrors edit_issue/edit_page). Targets description by default; pass field='title'. Fails if old_string is missing or matches multiple places unless replace_all=true."
+    )]
+    fn edit_plan_step(&self, Parameters(input): Parameters<EditPlanStepInput>) -> String {
+        let field = input.field.clone().unwrap_or_else(|| "description".into());
+        match self.write(|conn| {
+            let plan_id = queries::plans::resolve_plan_identifier(conn, &input.plan)?;
+            queries::plans::assert_step_in_plan(conn, plan_id, input.step_id)?;
+            let (find, replace) = if field == "description" {
+                (
+                    queries::unescape_text(&input.old_string),
+                    queries::unescape_text(&input.new_string),
+                )
+            } else {
+                (input.old_string.clone(), input.new_string.clone())
+            };
+            queries::plans::edit_step_text(
+                conn,
+                input.step_id,
+                &field,
+                &find,
+                &replace,
+                input.replace_all.unwrap_or(false),
+            )?;
+            queries::plans::get_plan(conn, plan_id)
+        }) {
+            Ok(plan) => format!("Edited step #{} in {}\n{}", input.step_id, plan.identifier, fmt_plan(&plan)),
+            Err(e) => format!("Error: {e}"),
+        }
+    }
+
+    #[tool(
+        description = "Mutate a plan or one of its steps. With `step_id`: toggle done (marking done closes a linked issue — the result reports it), attach/detach an issue, rename, add a child step, move/reorder, or delete. WITHOUT step_id: update the plan itself (status active/done/archived, title, anchor issue). Marking a plan done never closes its anchor issue."
+    )]
+    fn update_plan_step(&self, Parameters(input): Parameters<UpdatePlanStepInput>) -> String {
+        match self.write(|conn| {
+            let plan_id = queries::plans::resolve_plan_identifier(conn, &input.plan)?;
+            let mut notes: Vec<String> = Vec::new();
+
+            match input.step_id {
+                // ── Plan-level update ──
+                None => {
+                    let anchor = match (&input.anchor_issue, input.clear_anchor) {
+                        (Some(ident), _) => Some(Some(queries::resolve_identifier(conn, ident)?)),
+                        (None, Some(true)) => Some(None),
+                        _ => None,
+                    };
+                    queries::plans::update_plan(
+                        conn,
+                        plan_id,
+                        &models::UpdatePlan {
+                            title: input.title.clone(),
+                            status: input.status.clone(),
+                            issue_id: anchor,
+                        },
+                    )?;
+                    notes.push("Updated plan".into());
+                }
+                // ── Step-level update ──
+                Some(step_id) => {
+                    queries::plans::assert_step_in_plan(conn, plan_id, step_id)?;
+                    if input.delete.unwrap_or(false) {
+                        queries::plans::delete_step(conn, step_id)?;
+                        notes.push(format!("Deleted step #{step_id} (and its subtree)"));
+                    } else {
+                        if let Some(ref t) = input.title {
+                            queries::plans::set_step_title(conn, step_id, t)?;
+                            notes.push(format!("Renamed step #{step_id}"));
+                        }
+                        if let Some(ref ident) = input.attach_issue {
+                            let iid = queries::resolve_identifier(conn, ident)?;
+                            queries::plans::set_step_issue(conn, step_id, Some(iid))?;
+                            notes.push(format!("Attached {ident} to step #{step_id}"));
+                        }
+                        if input.detach_issue.unwrap_or(false) {
+                            queries::plans::set_step_issue(conn, step_id, None)?;
+                            notes.push(format!("Detached issue from step #{step_id}"));
+                        }
+                        if let Some(done) = input.done {
+                            let effect = queries::plans::set_step_done(conn, step_id, done)?;
+                            let mut msg = format!(
+                                "Step #{step_id} {}",
+                                if done { "marked done" } else { "reopened" }
+                            );
+                            if let Some(iss) = &effect.issue_identifier {
+                                if effect.issue_status_changed {
+                                    msg.push_str(&format!(" → {iss} marked done"));
+                                } else if done {
+                                    msg.push_str(&format!(" (linked {iss} already done)"));
+                                }
+                            }
+                            notes.push(msg);
+                        }
+                        if let Some(ref child_title) = input.add_child_title {
+                            let child_issue = match &input.add_child_issue {
+                                Some(ident) => Some(queries::resolve_identifier(conn, ident)?),
+                                None => None,
+                            };
+                            let child_id = queries::plans::add_step(
+                                conn,
+                                plan_id,
+                                Some(step_id),
+                                child_title,
+                                input.add_child_description.as_deref().unwrap_or(""),
+                                child_issue,
+                            )?;
+                            notes.push(format!("Added child step #{child_id}"));
+                        }
+                        if input.move_to_root.unwrap_or(false)
+                            || input.move_parent_step_id.is_some()
+                            || input.move_position.is_some()
+                        {
+                            let new_parent = if input.move_to_root.unwrap_or(false) {
+                                None
+                            } else if let Some(p) = input.move_parent_step_id {
+                                Some(p)
+                            } else {
+                                queries::plans::step_parent(conn, step_id)?
+                            };
+                            queries::plans::move_step(conn, step_id, new_parent, input.move_position)?;
+                            notes.push(format!("Moved step #{step_id}"));
+                        }
+                        if notes.is_empty() {
+                            notes.push("No changes specified".into());
+                        }
+                    }
+                }
+            }
+
+            let plan = queries::plans::get_plan(conn, plan_id)?;
+            Ok((notes, plan))
+        }) {
+            Ok((notes, plan)) => format!("{}\n{}", notes.join("; "), fmt_plan(&plan)),
+            Err(e) => format!("Error: {e}"),
+        }
+    }
+}
+
+/// Recursively resolve an MCP PlanStepInput (issue identifiers → ids) into a
+/// query-layer CreatePlanStep, so create_plan can author the whole tree in one
+/// transaction.
+fn build_create_step(
+    conn: &rusqlite::Connection,
+    s: &PlanStepInput,
+) -> Result<models::CreatePlanStep, crate::error::LificError> {
+    let issue_id = match &s.issue {
+        Some(ident) => Some(queries::resolve_identifier(conn, ident)?),
+        None => None,
+    };
+    let mut steps = Vec::new();
+    if let Some(children) = &s.steps {
+        for c in children {
+            steps.push(build_create_step(conn, c)?);
+        }
+    }
+    Ok(models::CreatePlanStep {
+        title: s.title.clone(),
+        description: s.description.clone().unwrap_or_default(),
+        issue_id,
+        done: s.done.unwrap_or(false),
+        steps,
+    })
 }
 
 #[cfg(test)]
@@ -3535,5 +3836,169 @@ mod tests {
             out.contains("opencode-blake (agent) via mcp"),
             "spawned tool write must still attribute: {out}"
         );
+    }
+
+    // ── Plans (LIF-168/169/170/171) ──
+
+    #[test]
+    fn create_plan_authors_nested_tree_and_get_plan_rehydrates() {
+        let m = mcp();
+        seed_project(&m, "Plans", "PLN");
+
+        let created = m.create_plan(Parameters(CreatePlanInput {
+            project: "PLN".into(),
+            title: "Ship feature".into(),
+            anchor_issue: None,
+            steps: Some(vec![
+                PlanStepInput {
+                    title: "Backend".into(),
+                    steps: Some(vec![
+                        PlanStepInput { title: "schema".into(), ..Default::default() },
+                        PlanStepInput { title: "queries".into(), ..Default::default() },
+                    ]),
+                    ..Default::default()
+                },
+                PlanStepInput { title: "Frontend".into(), ..Default::default() },
+            ]),
+        }));
+        assert!(created.contains("PLN-PLAN-1"), "got: {created}");
+        assert!(created.contains("Backend"));
+        assert!(created.contains("schema"));
+
+        let got = m.get_plan(Parameters(GetPlanInput { plan: "PLN-PLAN-1".into() }));
+        assert!(got.contains("Frontend"), "get_plan should rehydrate tree: {got}");
+        assert!(got.contains("0/4 done"), "header should count steps: {got}");
+    }
+
+    #[test]
+    fn update_plan_step_done_closes_linked_issue_and_narrates() {
+        let m = mcp();
+        seed_project(&m, "Plans", "PLN");
+        seed_issue(&m, "PLN", "Real work"); // PLN-1
+
+        let created = m.create_plan(Parameters(CreatePlanInput {
+            project: "PLN".into(),
+            title: "Plan".into(),
+            anchor_issue: None,
+            steps: Some(vec![PlanStepInput {
+                title: "mirror".into(),
+                issue: Some("PLN-1".into()),
+                ..Default::default()
+            }]),
+        }));
+        // Pull the step id from the rendered "#N".
+        let step_id: i64 = created
+            .split('#')
+            .nth(1)
+            .and_then(|s| s.split(|c: char| !c.is_ascii_digit()).next())
+            .and_then(|s| s.parse().ok())
+            .expect("step id in output");
+
+        let out = m.update_plan_step(Parameters(UpdatePlanStepInput {
+            plan: "PLN-PLAN-1".into(),
+            step_id: Some(step_id),
+            done: Some(true),
+            ..Default::default()
+        }));
+        assert!(
+            out.contains("→ PLN-1 marked done"),
+            "must narrate the issue side effect: {out}"
+        );
+
+        // The issue is actually closed.
+        let issue = m.get_issue(Parameters(GetIssueInput { identifier: "PLN-1".into() }));
+        assert!(issue.contains("done"), "issue should be done: {issue}");
+    }
+
+    #[test]
+    fn edit_plan_step_find_replace() {
+        let m = mcp();
+        seed_project(&m, "Plans", "PLN");
+        let created = m.create_plan(Parameters(CreatePlanInput {
+            project: "PLN".into(),
+            title: "Plan".into(),
+            anchor_issue: None,
+            steps: Some(vec![PlanStepInput {
+                title: "step".into(),
+                description: Some("old text".into()),
+                ..Default::default()
+            }]),
+        }));
+        let step_id: i64 = created
+            .split('#')
+            .nth(1)
+            .and_then(|s| s.split(|c: char| !c.is_ascii_digit()).next())
+            .and_then(|s| s.parse().ok())
+            .unwrap();
+
+        let out = m.edit_plan_step(Parameters(EditPlanStepInput {
+            plan: "PLN-PLAN-1".into(),
+            step_id,
+            old_string: "old text".into(),
+            new_string: "new text".into(),
+            field: None,
+            replace_all: None,
+        }));
+        assert!(out.contains("Edited step"), "got: {out}");
+        let got = m.get_plan(Parameters(GetPlanInput { plan: "PLN-PLAN-1".into() }));
+        assert!(got.contains("new text"), "edit should persist: {got}");
+    }
+
+    #[test]
+    fn plan_level_update_archives_and_lists() {
+        let m = mcp();
+        seed_project(&m, "Plans", "PLN");
+        m.create_plan(Parameters(CreatePlanInput {
+            project: "PLN".into(),
+            title: "Plan".into(),
+            anchor_issue: None,
+            steps: None,
+        }));
+
+        // Plan-level status change (no step_id).
+        let out = m.update_plan_step(Parameters(UpdatePlanStepInput {
+            plan: "PLN-PLAN-1".into(),
+            step_id: None,
+            status: Some("archived".into()),
+            ..Default::default()
+        }));
+        assert!(out.contains("archived"), "got: {out}");
+
+        // Listing via list_resources filters by status.
+        let active = m.list_resources(Parameters(ListResourcesInput {
+            resource_type: "plan".into(),
+            project: Some("PLN".into()),
+            status: Some("active".into()),
+            ..Default::default()
+        }));
+        assert!(active.contains("No plans found."), "archived plan must not show as active: {active}");
+
+        let archived = m.list_resources(Parameters(ListResourcesInput {
+            resource_type: "plan".into(),
+            project: Some("PLN".into()),
+            status: Some("archived".into()),
+            ..Default::default()
+        }));
+        assert!(archived.contains("PLN-PLAN-1"), "got: {archived}");
+    }
+
+    #[test]
+    fn delete_plan_via_delete_tool() {
+        let m = mcp();
+        seed_project(&m, "Plans", "PLN");
+        m.create_plan(Parameters(CreatePlanInput {
+            project: "PLN".into(),
+            title: "Doomed".into(),
+            anchor_issue: None,
+            steps: None,
+        }));
+        let out = m.delete(Parameters(DeleteInput {
+            resource_type: "plan".into(),
+            identifier: "PLN-PLAN-1".into(),
+            project: None,
+        }));
+        assert!(out.contains("Deleted plan"), "got: {out}");
+        let got = m.get_plan(Parameters(GetPlanInput { plan: "PLN-PLAN-1".into() }));
+        assert!(got.contains("Error"), "deleted plan should not be found: {got}");
     }
 }

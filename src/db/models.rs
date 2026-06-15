@@ -469,6 +469,110 @@ pub struct ActorStat {
     pub top_transport: String,
 }
 
+// ── Plans (LIF-165/166) ──────────────────────────────────────
+//
+// A plan is a project-level tree of steps that survives across sessions.
+// Issues stay flat; the hierarchy lives here. A step optionally mirrors a
+// flat issue (plan_steps.issue_id). Storage is an adjacency list; the nested
+// `steps` tree is assembled in the query layer.
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Plan {
+    pub id: i64,
+    pub project_id: i64,
+    pub sequence: i64,
+    /// Computed: "{project.identifier}-PLAN-{sequence}"
+    pub identifier: String,
+    /// Anchor issue: the issue this plan decomposes (optional).
+    pub issue_id: Option<i64>,
+    /// Computed identifier of the anchor issue, when set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anchor_identifier: Option<String>,
+    pub title: String,
+    pub status: String,
+    pub created_at: String,
+    pub updated_at: String,
+    /// Nested step tree (populated on read for get_plan). Empty in list views.
+    #[serde(default)]
+    pub steps: Vec<PlanStepNode>,
+    /// Step counts (populated for list views and headers).
+    #[serde(default)]
+    pub step_count: i64,
+    #[serde(default)]
+    pub done_count: i64,
+}
+
+/// A node in a plan's step tree. `children` makes the adjacency-list rows
+/// nested for rendering.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanStepNode {
+    pub id: i64,
+    pub plan_id: i64,
+    pub parent_step_id: Option<i64>,
+    pub position: i64,
+    pub title: String,
+    pub description: String,
+    pub issue_id: Option<i64>,
+    /// Computed identifier of the referenced issue, when set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub issue_identifier: Option<String>,
+    /// Current status of the referenced issue (so renderers can show
+    /// "done (via LIF-42)" provenance). None when no issue is linked.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub issue_status: Option<String>,
+    pub done: bool,
+    /// Set when an issue reopen auto-unchecked this step (LIF-167).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reopened_via_issue_at: Option<String>,
+    pub created_at: String,
+    pub edited_at: Option<String>,
+    #[serde(default)]
+    pub children: Vec<PlanStepNode>,
+}
+
+/// Create a plan, optionally anchored to an issue, with a full nested step
+/// tree authored in one call. Issue references are pre-resolved to ids by the
+/// MCP/REST layer.
+#[derive(Debug, Deserialize)]
+pub struct CreatePlan {
+    pub project_id: i64,
+    pub title: String,
+    pub issue_id: Option<i64>,
+    #[serde(default)]
+    pub steps: Vec<CreatePlanStep>,
+}
+
+/// A step in a create_plan tree. Recursive via `steps`.
+#[derive(Debug, Deserialize)]
+pub struct CreatePlanStep {
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
+    pub issue_id: Option<i64>,
+    #[serde(default)]
+    pub done: bool,
+    #[serde(default)]
+    pub steps: Vec<CreatePlanStep>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct UpdatePlan {
+    pub title: Option<String>,
+    pub status: Option<String>,
+    /// Tristate anchor issue: None = don't change, Some(None) = clear,
+    /// Some(Some(id)) = set.
+    #[serde(default, deserialize_with = "crate::db::models::deserialize_nullable")]
+    pub issue_id: Option<Option<i64>>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct ListPlansQuery {
+    pub project_id: Option<i64>,
+    pub status: Option<String>,
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
 /// Deserializes a JSON field as Option<Option<T>>:
 /// - absent key → None (don't change)
 /// - "field": null → Some(None) (set to null)

@@ -2,6 +2,7 @@ pub(crate) mod activity;
 pub(crate) mod comments;
 mod issues;
 mod pages;
+pub(crate) mod plans;
 mod projects;
 mod resources;
 mod search;

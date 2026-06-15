@@ -302,6 +302,104 @@ pub struct ListCommentsInput {
     pub order: Option<String>,
 }
 
+// ── Plans (LIF-168/169/170/171) ──────────────────────────────
+
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct PlanStepInput {
+    #[schemars(description = "Step title — short and imperative")]
+    pub title: String,
+    #[schemars(description = "Optional longer notes/description for this step")]
+    pub description: Option<String>,
+    #[schemars(
+        description = "Issue identifier this step mirrors (e.g. LIF-42). When set, the step auto-completes when the issue is closed, and marking the step done closes the issue."
+    )]
+    pub issue: Option<String>,
+    #[schemars(description = "Pre-mark this step done (default false)")]
+    pub done: Option<bool>,
+    #[schemars(description = "Nested child steps (any depth)")]
+    pub steps: Option<Vec<PlanStepInput>>,
+}
+
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct CreatePlanInput {
+    #[schemars(description = "Project identifier (e.g. LIF)")]
+    pub project: String,
+    #[schemars(description = "Plan title — what this plan accomplishes")]
+    pub title: String,
+    #[schemars(
+        description = "Optional anchor issue this plan decomposes (e.g. LIF-42). Closing it auto-archives the plan."
+    )]
+    pub anchor_issue: Option<String>,
+    #[schemars(
+        description = "The full nested step tree, authored in one call. Each step: {title, description?, issue?, done?, steps?[]}."
+    )]
+    pub steps: Option<Vec<PlanStepInput>>,
+}
+
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct GetPlanInput {
+    #[schemars(description = "Plan identifier like LIF-PLAN-3")]
+    pub plan: String,
+}
+
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct EditPlanStepInput {
+    #[schemars(description = "Plan identifier like LIF-PLAN-3")]
+    pub plan: String,
+    #[schemars(description = "Numeric step id (the #N shown by get_plan)")]
+    pub step_id: i64,
+    #[schemars(description = "Exact string to find. Must be unique unless replace_all is true.")]
+    pub old_string: String,
+    #[schemars(description = "Replacement string")]
+    pub new_string: String,
+    #[schemars(description = "Field to edit: 'description' (default) or 'title'")]
+    pub field: Option<String>,
+    #[schemars(description = "Replace all occurrences (default false)")]
+    pub replace_all: Option<bool>,
+}
+
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct UpdatePlanStepInput {
+    #[schemars(description = "Plan identifier like LIF-PLAN-3")]
+    pub plan: String,
+    #[schemars(
+        description = "Numeric step id to operate on (the #N from get_plan). OMIT to operate on the plan itself (status/title/anchor)."
+    )]
+    pub step_id: Option<i64>,
+    #[schemars(description = "New title for the targeted step or plan")]
+    pub title: Option<String>,
+    // ── Plan-level (step_id omitted) ──
+    #[schemars(description = "Plan status: active, done, or archived (plan-level; omit step_id)")]
+    pub status: Option<String>,
+    #[schemars(description = "Set the plan's anchor issue (plan-level; omit step_id)")]
+    pub anchor_issue: Option<String>,
+    #[schemars(description = "Clear the plan's anchor issue (plan-level; omit step_id)")]
+    pub clear_anchor: Option<bool>,
+    // ── Step-level (step_id set) ──
+    #[schemars(
+        description = "Mark the step done/undone. Marking done also closes a linked issue; the result text reports the side effect."
+    )]
+    pub done: Option<bool>,
+    #[schemars(description = "Attach an issue (e.g. LIF-42) to the step")]
+    pub attach_issue: Option<String>,
+    #[schemars(description = "Detach the step's issue reference")]
+    pub detach_issue: Option<bool>,
+    #[schemars(description = "Add a child step with this title under the targeted step")]
+    pub add_child_title: Option<String>,
+    #[schemars(description = "Description for the added child step")]
+    pub add_child_description: Option<String>,
+    #[schemars(description = "Issue identifier for the added child step")]
+    pub add_child_issue: Option<String>,
+    #[schemars(description = "Reparent the step under this step id")]
+    pub move_parent_step_id: Option<i64>,
+    #[schemars(description = "Reparent the step to the plan root")]
+    pub move_to_root: Option<bool>,
+    #[schemars(description = "New position among siblings (0-based)")]
+    pub move_position: Option<i64>,
+    #[schemars(description = "Delete the step and its whole subtree")]
+    pub delete: Option<bool>,
+}
+
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct ExportIssueInput {
     #[schemars(description = "Issue identifier like PRO-42")]
