@@ -76,6 +76,11 @@
     sidebar,
     belowTitle,
     metaFooter,
+    // LIF-177: when provided, this replaces the EditableMarkdown body
+    // entirely (used by PlanDetail to render its step tree while keeping
+    // the title / sidebar / activity / chrome). The body-editor props are
+    // ignored in this mode.
+    bodyContent,
     // Optional extra content rendered in the topbar breadcrumb, right
     // after the identifier (e.g. IssueDetail's status badge). PageDetail
     // omits it.
@@ -120,6 +125,7 @@
     belowTitle?: Snippet;
     metaFooter?: Snippet;
     breadcrumbExtra?: Snippet;
+    bodyContent?: Snippet;
     bodyMode?: "read" | "edit";
   } = $props();
 
@@ -157,11 +163,15 @@
           submit: (v) => void onSaveTitle(v),
         },
       },
-      {
-        id: "edit-body",
-        title: "Edit description",
-        run: () => bodyRef?.focus(),
-      },
+      ...(bodyContent
+        ? []
+        : [
+            {
+              id: "edit-body",
+              title: "Edit description",
+              run: () => bodyRef?.focus(),
+            },
+          ]),
       ...(onNewComment
         ? [
             {
@@ -295,18 +305,22 @@
 
   {#if belowTitle}{@render belowTitle()}{/if}
 
-  <EditableMarkdown
-    bind:this={bodyRef}
-    bind:mode={bodyMode}
-    value={body}
-    {editable}
-    {saving}
-    placeholder={bodyPlaceholder}
-    emptyEditCta={bodyEmptyEditCta}
-    emptyReadText={bodyEmptyReadText}
-    proseMinHeight={bodyProseMinHeight}
-    onSave={onSaveBody}
-  />
+  {#if bodyContent}
+    {@render bodyContent()}
+  {:else}
+    <EditableMarkdown
+      bind:this={bodyRef}
+      bind:mode={bodyMode}
+      value={body}
+      {editable}
+      {saving}
+      placeholder={bodyPlaceholder}
+      emptyEditCta={bodyEmptyEditCta}
+      emptyReadText={bodyEmptyReadText}
+      proseMinHeight={bodyProseMinHeight}
+      onSave={onSaveBody}
+    />
+  {/if}
 
   {#if activity && activity.length > 0}
     <ActivityTimeline items={activity} />
@@ -346,7 +360,7 @@
           <span class="text-[0.75rem] text-[var(--error)]">{exportError}</span>
         {/if}
 
-        {#if editable && body.trim()}
+        {#if editable && body.trim() && !bodyContent}
           <ModeToggle
             mode={bodyMode}
             size="sm"

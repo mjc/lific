@@ -147,6 +147,7 @@ pub fn router(db: DbPool, cors_origins: &[String]) -> Router {
                 .delete(plans::delete_plan_handler),
         )
         .route("/api/plans/resolve/{identifier}", get(plans::resolve_plan))
+        .route("/api/plans/{id}/activity", get(activity::plan_activity))
         .route("/api/plans/{id}/steps", post(plans::add_step))
         .route(
             "/api/plans/{plan_id}/steps/{step_id}",

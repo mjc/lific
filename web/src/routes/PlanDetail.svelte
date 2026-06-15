@@ -1,6 +1,8 @@
 <script lang="ts">
-  // LIF-173 — Plan detail: the nested step tree. Done toggles, add/edit/
-  // delete steps, plan status, and issue-link chips with provenance.
+  // LIF-177 — Plan detail, brought up to Issue/Page parity. Uses the shared
+  // DocumentDetail shell (editable title, metadata sidebar, Activity timeline,
+  // delete kebab, chrome) with the step tree injected as the custom body.
+  // Each step now has an expandable markdown description editor.
 
   import {
     getPlan,
@@ -9,21 +11,25 @@
     addPlanStep,
     updatePlanStep,
     deletePlanStep,
+    listPlanActivity,
+    resolveIssue,
     type Plan,
     type PlanStep,
+    type Activity,
   } from "../lib/api";
+  import DocumentDetail from "../lib/DocumentDetail.svelte";
+  import Markdown from "../lib/Markdown.svelte";
   import { startAutoRefresh } from "../lib/autoRefresh.svelte";
-  import { ChevronRight, Plus, Check, Trash2, X } from "lucide-svelte";
-  import { getContext } from "svelte";
-
-  const topbarCtx = getContext<{
-    set: (s: import("svelte").Snippet | undefined) => void;
-  } | undefined>("lific:topbar");
-
-  $effect(() => {
-    topbarCtx?.set(topbarContent);
-    return () => topbarCtx?.set(undefined);
-  });
+  import { formatDate } from "../lib/format";
+  import {
+    Check,
+    Plus,
+    X,
+    Trash2,
+    ChevronRight,
+    ChevronDown,
+    ArrowUpRight,
+  } from "lucide-svelte";
 
   let {
     navigate,
@@ -36,16 +42,23 @@
   } = $props();
 
   let plan = $state<Plan | null>(null);
+  let activity = $state<Activity[]>([]);
   let loading = $state(true);
   let error = $state("");
   let notice = $state("");
-  let mutating = $state(false);
+  let saving = $state(false);
+  let lastSaved = $state<string | null>(null);
 
   // Inline UI state.
-  let addingChildOf = $state<number | null>(null); // step id, or -1 for root
+  let mutating = $state(false);
+  let addingChildOf = $state<number | null>(null); // step id, -1 = root
   let childTitle = $state("");
-  let editingStep = $state<number | null>(null);
-  let editTitle = $state("");
+  let editingTitleOf = $state<number | null>(null);
+  let titleDraft = $state("");
+  let editingDescOf = $state<number | null>(null);
+  let descDraft = $state("");
+  let collapsed = $state<Set<number>>(new Set());
+  let statusOpen = $state(false);
 
   const STATUSES = ["active", "done", "archived"];
 
@@ -57,7 +70,12 @@
   $effect(() =>
     startAutoRefresh({
       refresh: reload,
-      isBusy: () => mutating || addingChildOf !== null || editingStep !== null,
+      isBusy: () =>
+        mutating ||
+        statusOpen ||
+        addingChildOf !== null ||
+        editingTitleOf !== null ||
+        editingDescOf !== null,
       intervalMs: 15_000,
     }),
   );
@@ -66,29 +84,94 @@
     loading = true;
     error = "";
     const res = await getPlan(id);
-    if (res.ok) plan = res.data;
-    else error = res.error;
+    if (!res.ok) { error = res.error; loading = false; return; }
+    plan = res.data;
+    const act = await listPlanActivity(id);
+    if (act.ok) activity = act.data.items;
     loading = false;
   }
 
   async function reload() {
     if (!plan) return;
-    const res = await getPlan(plan.id);
-    if (res.ok) plan = res.data;
+    const [p, a] = await Promise.all([getPlan(plan.id), listPlanActivity(plan.id)]);
+    if (p.ok) plan = p.data;
+    if (a.ok) activity = a.data.items;
   }
+
+  async function refreshActivity() {
+    if (!plan) return;
+    const a = await listPlanActivity(plan.id);
+    if (a.ok) activity = a.data.items;
+  }
+
+  function flash(msg: string) {
+    notice = msg;
+    if (msg) setTimeout(() => (notice = ""), 4000);
+  }
+
+  function markSaved() {
+    lastSaved = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
+
+  // ── Plan-level ──
+
+  async function saveTitle(next: string) {
+    if (!plan || next === plan.title) return;
+    saving = true;
+    const res = await updatePlan(plan.id, { title: next });
+    saving = false;
+    if (res.ok) { plan = res.data; markSaved(); refreshActivity(); }
+  }
+
+  async function setStatus(status: string) {
+    statusOpen = false;
+    if (!plan || status === plan.status) return;
+    mutating = true;
+    const res = await updatePlan(plan.id, { status });
+    mutating = false;
+    if (res.ok) { plan = res.data; refreshActivity(); }
+  }
+
+  async function setAnchor() {
+    if (!plan) return;
+    const ident = window.prompt("Anchor issue identifier (e.g. LIF-42):", plan.anchor_identifier ?? "");
+    if (ident === null) return;
+    mutating = true;
+    if (ident.trim() === "") {
+      const res = await updatePlan(plan.id, { issue_id: null });
+      if (res.ok) plan = res.data;
+    } else {
+      const issue = await resolveIssue(ident.trim());
+      if (!issue.ok) { error = issue.error; mutating = false; return; }
+      const res = await updatePlan(plan.id, { issue_id: issue.data.id });
+      if (res.ok) plan = res.data;
+    }
+    mutating = false;
+    refreshActivity();
+  }
+
+  async function removePlan(): Promise<boolean> {
+    if (!plan) return false;
+    const res = await deletePlan(plan.id);
+    if (res.ok) { navigate(`/${projectIdentifier}/plans`); return true; }
+    error = res.error;
+    return false;
+  }
+
+  // ── Step-level ──
 
   async function toggleDone(step: PlanStep) {
     if (!plan) return;
     mutating = true;
-    notice = "";
     const res = await updatePlanStep(plan.id, step.id, { done: !step.done });
     mutating = false;
     if (res.ok) {
       plan = res.data.plan;
       const eff = res.data.effect;
       if (eff?.issue_status_changed && eff.issue_identifier) {
-        notice = `${eff.issue_identifier} marked done`;
+        flash(`${eff.issue_identifier} marked done`);
       }
+      refreshActivity();
     } else error = res.error;
   }
 
@@ -96,37 +179,48 @@
     addingChildOf = stepId;
     childTitle = "";
   }
-
   async function commitAddChild() {
-    if (!plan || addingChildOf === null || !childTitle.trim()) {
-      addingChildOf = null;
-      return;
-    }
+    if (!plan || addingChildOf === null || !childTitle.trim()) { addingChildOf = null; return; }
     mutating = true;
     const parent = addingChildOf === -1 ? undefined : addingChildOf;
     const res = await addPlanStep(plan.id, { parent_step_id: parent, title: childTitle.trim() });
     mutating = false;
     addingChildOf = null;
-    if (res.ok) plan = res.data;
+    if (res.ok) { plan = res.data; refreshActivity(); }
     else error = res.error;
   }
 
-  function startEdit(step: PlanStep) {
-    editingStep = step.id;
-    editTitle = step.title;
+  function startEditTitle(step: PlanStep) {
+    editingTitleOf = step.id;
+    titleDraft = step.title;
   }
-
-  async function commitEdit() {
-    if (!plan || editingStep === null || !editTitle.trim()) {
-      editingStep = null;
-      return;
-    }
+  async function commitEditTitle() {
+    if (!plan || editingTitleOf === null || !titleDraft.trim()) { editingTitleOf = null; return; }
     mutating = true;
-    const res = await updatePlanStep(plan.id, editingStep, { title: editTitle.trim() });
+    const res = await updatePlanStep(plan.id, editingTitleOf, { title: titleDraft.trim() });
     mutating = false;
-    editingStep = null;
-    if (res.ok) plan = res.data.plan;
+    editingTitleOf = null;
+    if (res.ok) { plan = res.data.plan; refreshActivity(); }
     else error = res.error;
+  }
+
+  function startEditDesc(step: PlanStep) {
+    editingDescOf = step.id;
+    descDraft = step.description;
+    expand(step.id);
+  }
+  async function commitEditDesc() {
+    if (!plan || editingDescOf === null) { editingDescOf = null; return; }
+    const id = editingDescOf;
+    mutating = true;
+    const res = await updatePlanStep(plan.id, id, { description: descDraft });
+    mutating = false;
+    editingDescOf = null;
+    if (res.ok) { plan = res.data.plan; refreshActivity(); }
+    else error = res.error;
+  }
+  function cancelEditDesc() {
+    editingDescOf = null;
   }
 
   async function removeStep(step: PlanStep) {
@@ -134,94 +228,137 @@
     mutating = true;
     const res = await deletePlanStep(plan.id, step.id);
     mutating = false;
-    if (res.ok) plan = res.data;
+    if (res.ok) { plan = res.data; refreshActivity(); }
     else error = res.error;
   }
 
-  async function changeStatus(status: string) {
+  async function detachIssue(step: PlanStep) {
     if (!plan) return;
     mutating = true;
-    const res = await updatePlan(plan.id, { status });
+    const res = await updatePlanStep(plan.id, step.id, { issue_id: null });
     mutating = false;
-    if (res.ok) plan = res.data;
-    else error = res.error;
+    if (res.ok) { plan = res.data.plan; refreshActivity(); }
   }
-
-  async function removePlan() {
+  async function attachIssue(step: PlanStep) {
     if (!plan) return;
-    if (!confirm("Delete this plan and all its steps?")) return;
-    const res = await deletePlan(plan.id);
-    if (res.ok) navigate(`/${projectIdentifier}/plans`);
-    else error = res.error;
+    const ident = window.prompt("Link issue identifier (e.g. LIF-42):", "");
+    if (!ident || !ident.trim()) return;
+    const issue = await resolveIssue(ident.trim());
+    if (!issue.ok) { error = issue.error; return; }
+    mutating = true;
+    const res = await updatePlanStep(plan.id, step.id, { issue_id: issue.data.id });
+    mutating = false;
+    if (res.ok) { plan = res.data.plan; refreshActivity(); }
   }
 
-  // Provenance label for an issue-linked step.
+  // ── Expand/collapse ──
+
+  function isExpanded(step: PlanStep): boolean {
+    // Steps with content/children default open; user can collapse.
+    if (collapsed.has(step.id)) return false;
+    return true;
+  }
+  function toggleExpand(id: number) {
+    const next = new Set(collapsed);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    collapsed = next;
+  }
+  function expand(id: number) {
+    if (collapsed.has(id)) {
+      const next = new Set(collapsed);
+      next.delete(id);
+      collapsed = next;
+    }
+  }
+
   function provenance(step: PlanStep): { text: string; tone: string } | null {
     if (!step.issue_identifier) return null;
-    if (step.done && step.issue_status === "done") {
-      return { text: `via ${step.issue_identifier}`, tone: "muted" };
-    }
-    if (!step.done && step.reopened_via_issue_at) {
-      return { text: `reopened — ${step.issue_identifier} reopened`, tone: "warn" };
-    }
+    if (step.done && step.issue_status === "done") return { text: `via ${step.issue_identifier}`, tone: "muted" };
+    if (!step.done && step.reopened_via_issue_at) return { text: `reopened — ${step.issue_identifier} reopened`, tone: "warn" };
     return { text: `${step.issue_identifier}: ${step.issue_status ?? "?"}`, tone: "link" };
   }
+
+  let progress = $derived(plan && plan.step_count > 0 ? plan.done_count / plan.step_count : 0);
 </script>
 
-{#snippet topbarContent()}
-  <div class="flex items-center gap-3 px-6 py-2 w-full">
-    <div class="flex items-center gap-1.5 shrink-0 min-w-0">
-      <button
-        class="text-[0.8125rem] font-mono font-medium text-[var(--text-muted)] hover:text-[var(--text)]"
-        onclick={() => navigate(`/${projectIdentifier}/settings`)}
-      >
-        {projectIdentifier}
-      </button>
-      <ChevronRight size={12} class="text-[var(--text-faint)]" />
-      <button
-        class="text-[0.8125rem] font-medium text-[var(--text-muted)] hover:text-[var(--text)]"
-        onclick={() => navigate(`/${projectIdentifier}/plans`)}
-      >
-        Plans
-      </button>
-      <ChevronRight size={12} class="text-[var(--text-faint)]" />
-      <span class="text-[0.8125rem] font-mono text-[var(--text)] truncate">
-        {plan?.identifier ?? ""}
-      </span>
-    </div>
-    {#if plan}
-      <div class="ml-auto flex items-center gap-2 shrink-0">
-        <select
-          class="text-[0.8125rem] bg-[var(--bg-subtle)] border border-[var(--border)]
-                 rounded-md px-2 py-1 text-[var(--text)] outline-none"
-          value={plan.status}
-          onchange={(e) => changeStatus((e.target as HTMLSelectElement).value)}
-        >
-          {#each STATUSES as s}
-            <option value={s}>{s}</option>
-          {/each}
-        </select>
-        <button
-          class="p-1.5 rounded-md text-[var(--text-faint)] hover:text-[var(--error)] hover:bg-[var(--bg-subtle)]"
-          title="Delete plan"
-          onclick={removePlan}
-        >
-          <Trash2 size={14} />
-        </button>
+<DocumentDetail
+  {navigate}
+  {loading}
+  {error}
+  identifier={plan?.identifier ?? `PLAN-${planId}`}
+  backRoute={`/${projectIdentifier}/plans`}
+  backLabel="Plans"
+  title={plan?.title ?? ""}
+  titleSize="md"
+  onSaveTitle={saveTitle}
+  body=""
+  onSaveBody={() => {}}
+  {saving}
+  {lastSaved}
+  deleteNoun="plan"
+  deleteLabel={plan?.identifier ?? ""}
+  onDelete={removePlan}
+  {activity}
+  {bodyContent}
+  {sidebar}
+  layout="two-column"
+/>
+
+{#snippet bodyContent()}
+  {#if plan}
+    {#if notice}
+      <div class="mb-3 text-[0.8125rem] text-[var(--accent)] bg-[var(--accent-subtle)] rounded-md px-3 py-1.5">
+        {notice}
       </div>
     {/if}
-  </div>
+
+    <div class="flex flex-col gap-0.5 mt-2">
+      {#each plan.steps as step (step.id)}
+        {@render stepNode(step, 0)}
+      {/each}
+    </div>
+
+    {#if addingChildOf === -1}
+      <div class="flex items-center gap-2 py-1 mt-2 pl-1">
+        <input
+          class="flex-1 bg-transparent outline-none text-[0.875rem] text-[var(--text)] border-b border-[var(--accent)]"
+          placeholder="Step title…"
+          bind:value={childTitle}
+          autofocus
+          onkeydown={(e) => { if (e.key === "Enter") commitAddChild(); if (e.key === "Escape") addingChildOf = null; }}
+          onblur={commitAddChild}
+        />
+      </div>
+    {:else}
+      <button
+        class="mt-3 flex items-center gap-1.5 text-[0.8125rem] text-[var(--text-muted)] hover:text-[var(--text)]"
+        onclick={() => startAddChild(-1)}
+      >
+        <Plus size={14} /> Add step
+      </button>
+    {/if}
+  {/if}
 {/snippet}
 
 {#snippet stepNode(step: PlanStep, depth: number)}
   {@const prov = provenance(step)}
+  {@const expanded = isExpanded(step)}
+  {@const hasBody = step.description.trim().length > 0}
   <div class="flex flex-col">
-    <div
-      class="group flex items-center gap-2 py-1.5 rounded-md hover:bg-[var(--bg-subtle)]"
-      style="padding-left: {depth * 1.5 + 0.25}rem"
-    >
+    <div class="group flex items-start gap-2 py-1 rounded-md hover:bg-[var(--bg-subtle)]" style="padding-left: {depth * 1.5}rem">
+      <!-- caret -->
       <button
-        class="size-4 shrink-0 rounded border flex items-center justify-center transition-colors
+        class="mt-0.5 size-4 shrink-0 flex items-center justify-center text-[var(--text-faint)] hover:text-[var(--text)]"
+        onclick={() => toggleExpand(step.id)}
+        title={expanded ? "Collapse" : "Expand"}
+      >
+        {#if expanded}<ChevronDown size={13} />{:else}<ChevronRight size={13} />{/if}
+      </button>
+
+      <!-- checkbox -->
+      <button
+        class="mt-0.5 size-4 shrink-0 rounded border flex items-center justify-center transition-colors
                {step.done
                  ? 'bg-[var(--accent)] border-[var(--accent)] text-[var(--accent-text)]'
                  : 'border-[var(--border-strong)] hover:border-[var(--accent)]'}"
@@ -231,150 +368,177 @@
         {#if step.done}<Check size={11} />{/if}
       </button>
 
-      {#if editingStep === step.id}
-        <input
-          class="flex-1 bg-transparent outline-none text-[0.875rem] text-[var(--text)] border-b border-[var(--accent)]"
-          bind:value={editTitle}
-          autofocus
-          onkeydown={(e) => {
-            if (e.key === "Enter") commitEdit();
-            if (e.key === "Escape") editingStep = null;
-          }}
-          onblur={commitEdit}
-        />
-      {:else}
-        <button
-          class="flex-1 text-left text-[0.875rem] truncate {step.done ? 'text-[var(--text-faint)] line-through' : 'text-[var(--text)]'}"
-          ondblclick={() => startEdit(step)}
-          title="Double-click to rename"
-        >
-          {step.title}
-        </button>
-      {/if}
-
-      {#if prov}
-        <button
-          class="shrink-0 text-[0.6875rem] font-mono px-1.5 py-0.5 rounded
-                 {prov.tone === 'warn'
-                   ? 'text-[var(--warning)] bg-[var(--warning-bg)]'
-                   : prov.tone === 'muted'
-                     ? 'text-[var(--text-faint)] bg-[var(--bg-subtle)]'
-                     : 'text-[var(--accent)] bg-[var(--accent-subtle)]'}"
-          onclick={() => step.issue_identifier && navigate(`/${projectIdentifier}/issues/${step.issue_identifier}`)}
-        >
-          {prov.text}
-        </button>
-      {/if}
-
-      <div class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
-        <button
-          class="p-1 rounded text-[var(--text-faint)] hover:text-[var(--text)]"
-          title="Add sub-step"
-          onclick={() => startAddChild(step.id)}
-        >
-          <Plus size={13} />
-        </button>
-        <button
-          class="p-1 rounded text-[var(--text-faint)] hover:text-[var(--error)]"
-          title="Delete step"
-          onclick={() => removeStep(step)}
-        >
-          <X size={13} />
-        </button>
-      </div>
-    </div>
-
-    {#if step.description}
-      <div class="text-[0.75rem] text-[var(--text-faint)] pb-1" style="padding-left: {depth * 1.5 + 1.9}rem">
-        {step.description}
-      </div>
-    {/if}
-
-    {#if addingChildOf === step.id}
-      <div class="flex items-center gap-2 py-1" style="padding-left: {(depth + 1) * 1.5 + 0.25}rem">
-        <input
-          class="flex-1 bg-transparent outline-none text-[0.875rem] text-[var(--text)] border-b border-[var(--accent)]"
-          placeholder="Sub-step title…"
-          bind:value={childTitle}
-          autofocus
-          onkeydown={(e) => {
-            if (e.key === "Enter") commitAddChild();
-            if (e.key === "Escape") addingChildOf = null;
-          }}
-          onblur={commitAddChild}
-        />
-      </div>
-    {/if}
-
-    {#each step.children as child (child.id)}
-      {@render stepNode(child, depth + 1)}
-    {/each}
-  </div>
-{/snippet}
-
-<div class="h-full flex flex-col">
-  <div class="flex-1 overflow-y-auto">
-    {#if loading}
-      <div class="flex items-center justify-center py-20">
-        <div class="size-6 rounded-full border-2 border-[var(--border)] border-t-[var(--accent)] animate-spin"></div>
-      </div>
-    {:else if error}
-      <div class="flex items-center justify-center py-20">
-        <p class="text-[var(--error)] text-[0.875rem]">{error}</p>
-      </div>
-    {:else if plan}
-      <div class="max-w-[820px] mx-auto px-6 py-6">
-        <div class="mb-1 flex items-center gap-3">
-          <h1 class="text-[1.25rem] font-semibold text-[var(--text)]">{plan.title}</h1>
-          <span class="text-[0.75rem] text-[var(--text-muted)] tabular-nums">
-            {plan.done_count}/{plan.step_count} done
-          </span>
-        </div>
-        {#if plan.anchor_identifier}
-          <div class="mb-4 text-[0.8125rem] text-[var(--text-muted)]">
-            Anchored to
-            <button class="font-mono text-[var(--accent)] hover:underline" onclick={() => navigate(`/${projectIdentifier}/issues/${plan?.anchor_identifier}`)}>
-              {plan.anchor_identifier}
-            </button>
-          </div>
-        {/if}
-
-        {#if notice}
-          <div class="mb-3 text-[0.8125rem] text-[var(--accent)] bg-[var(--accent-subtle)] rounded-md px-3 py-1.5">
-            {notice}
-          </div>
-        {/if}
-
-        <div class="flex flex-col">
-          {#each plan.steps as step (step.id)}
-            {@render stepNode(step, 0)}
-          {/each}
-        </div>
-
-        {#if addingChildOf === -1}
-          <div class="flex items-center gap-2 py-1 mt-1">
+      <!-- title + meta -->
+      <div class="flex-1 min-w-0">
+        <div class="flex items-center gap-2">
+          {#if editingTitleOf === step.id}
             <input
               class="flex-1 bg-transparent outline-none text-[0.875rem] text-[var(--text)] border-b border-[var(--accent)]"
-              placeholder="Step title…"
+              bind:value={titleDraft}
+              autofocus
+              onkeydown={(e) => { if (e.key === "Enter") commitEditTitle(); if (e.key === "Escape") editingTitleOf = null; }}
+              onblur={commitEditTitle}
+            />
+          {:else}
+            <button
+              class="text-left text-[0.875rem] truncate {step.done ? 'text-[var(--text-faint)] line-through' : 'text-[var(--text)]'}"
+              ondblclick={() => startEditTitle(step)}
+              title="Double-click to rename"
+            >
+              {step.title}
+            </button>
+          {/if}
+
+          {#if prov}
+            <button
+              class="shrink-0 text-[0.6875rem] font-mono px-1.5 py-0.5 rounded inline-flex items-center gap-1
+                     {prov.tone === 'warn'
+                       ? 'text-[var(--warning)] bg-[var(--warning-bg)]'
+                       : prov.tone === 'muted'
+                         ? 'text-[var(--text-faint)] bg-[var(--bg-subtle)]'
+                         : 'text-[var(--accent)] bg-[var(--accent-subtle)]'}"
+              onclick={() => step.issue_identifier && navigate(`/${projectIdentifier}/issues/${step.issue_identifier}`)}
+            >
+              {prov.text}<ArrowUpRight size={10} />
+            </button>
+          {/if}
+
+          <!-- row actions -->
+          <div class="ml-auto flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+            {#if step.issue_identifier}
+              <button class="p-1 rounded text-[var(--text-faint)] hover:text-[var(--text)] text-[0.6875rem]" title="Detach issue" onclick={() => detachIssue(step)}>unlink</button>
+            {:else}
+              <button class="p-1 rounded text-[var(--text-faint)] hover:text-[var(--text)] text-[0.6875rem]" title="Link an issue" onclick={() => attachIssue(step)}>link</button>
+            {/if}
+            <button class="p-1 rounded text-[var(--text-faint)] hover:text-[var(--text)]" title="Add sub-step" onclick={() => startAddChild(step.id)}><Plus size={13} /></button>
+            <button class="p-1 rounded text-[var(--text-faint)] hover:text-[var(--error)]" title="Delete step" onclick={() => removeStep(step)}><X size={13} /></button>
+          </div>
+        </div>
+
+        {#if expanded}
+          <!-- description body -->
+          <div class="mt-1 mb-1">
+            {#if editingDescOf === step.id}
+              <textarea
+                class="w-full bg-transparent outline-none text-[0.8125rem] leading-relaxed text-[var(--text)]
+                       border border-[var(--border)] rounded-md p-2 resize-y min-h-[80px]"
+                bind:value={descDraft}
+                autofocus
+                placeholder="Describe this step… (markdown supported)"
+                onkeydown={(e) => { if (e.key === 'Escape') cancelEditDesc(); if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); commitEditDesc(); } }}
+              ></textarea>
+              <div class="flex items-center gap-2 mt-1">
+                <button class="text-[0.75rem] font-medium text-[var(--accent-text)] bg-[var(--accent)] px-2 py-1 rounded-md hover:bg-[var(--accent-hover)]" onclick={commitEditDesc}>Save</button>
+                <button class="text-[0.75rem] text-[var(--text-muted)] px-2 py-1 rounded-md hover:bg-[var(--bg-subtle)]" onclick={cancelEditDesc}>Cancel</button>
+                <span class="text-[0.6875rem] text-[var(--text-faint)] ml-auto">Markdown · Esc to cancel · ⌘S to save</span>
+              </div>
+            {:else if hasBody}
+              <button class="block w-full text-left prose-step" onclick={() => startEditDesc(step)} title="Click to edit">
+                <Markdown content={step.description} />
+              </button>
+            {:else}
+              <button class="text-[0.8125rem] italic text-[var(--text-faint)] hover:text-[var(--text-muted)]" onclick={() => startEditDesc(step)}>
+                Add details…
+              </button>
+            {/if}
+          </div>
+        {/if}
+
+        {#if addingChildOf === step.id}
+          <div class="flex items-center gap-2 py-1">
+            <input
+              class="flex-1 bg-transparent outline-none text-[0.875rem] text-[var(--text)] border-b border-[var(--accent)]"
+              placeholder="Sub-step title…"
               bind:value={childTitle}
               autofocus
-              onkeydown={(e) => {
-                if (e.key === "Enter") commitAddChild();
-                if (e.key === "Escape") addingChildOf = null;
-              }}
+              onkeydown={(e) => { if (e.key === "Enter") commitAddChild(); if (e.key === "Escape") addingChildOf = null; }}
               onblur={commitAddChild}
             />
           </div>
-        {:else}
-          <button
-            class="mt-2 flex items-center gap-1.5 text-[0.8125rem] text-[var(--text-muted)] hover:text-[var(--text)]"
-            onclick={() => startAddChild(-1)}
-          >
-            <Plus size={14} />
-            Add step
-          </button>
         {/if}
       </div>
+    </div>
+
+    {#if expanded}
+      {#each step.children as child (child.id)}
+        {@render stepNode(child, depth + 1)}
+      {/each}
     {/if}
   </div>
-</div>
+{/snippet}
+
+{#snippet sidebar()}
+  {#if plan}
+    <div class="issue-meta-aside">
+      <!-- Status -->
+      <div class="issue-meta-field">
+        <p class="issue-meta-field-label">Status</p>
+        <div class="relative">
+          <button
+            class="flex items-center gap-2 text-[0.8125rem] rounded-md px-2 py-1 -mx-2 w-full text-left hover:bg-[var(--bg-subtle)]"
+            onclick={(e) => { e.stopPropagation(); statusOpen = !statusOpen; }}
+          >
+            <span class="size-2 rounded-full {plan.status === 'active' ? 'bg-[var(--accent)]' : plan.status === 'done' ? 'bg-[var(--success)]' : 'bg-[var(--text-faint)]'}"></span>
+            <span class="capitalize text-[var(--text)]">{plan.status}</span>
+          </button>
+          {#if statusOpen}
+            <div class="absolute left-0 top-full mt-1 z-20 w-[160px] bg-[var(--surface)] border border-[var(--border)] rounded-md shadow-lg py-1"
+                 role="presentation" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()}>
+              {#each STATUSES as s}
+                <button
+                  class="w-full flex items-center gap-2 px-3 py-1.5 text-left text-[0.8125rem] capitalize
+                         {s === plan.status ? 'text-[var(--accent)] bg-[var(--accent-subtle)]' : 'text-[var(--text)] hover:bg-[var(--bg-subtle)]'}"
+                  onclick={() => setStatus(s)}
+                >
+                  {s}
+                </button>
+              {/each}
+            </div>
+          {/if}
+        </div>
+      </div>
+
+      <!-- Progress -->
+      <div class="issue-meta-field">
+        <p class="issue-meta-field-label">Progress</p>
+        <div class="flex items-center gap-2">
+          <div class="flex-1 h-1.5 rounded-full bg-[var(--bg-subtle)] overflow-hidden">
+            <div class="h-full bg-[var(--accent)] rounded-full transition-all" style="width: {progress * 100}%"></div>
+          </div>
+          <span class="text-[0.75rem] text-[var(--text-muted)] tabular-nums">{plan.done_count}/{plan.step_count}</span>
+        </div>
+      </div>
+
+      <!-- Anchor issue -->
+      <div class="issue-meta-field">
+        <p class="issue-meta-field-label">Anchor issue</p>
+        <div class="flex items-center gap-1.5 -mx-2 px-2">
+          {#if plan.anchor_identifier}
+            <button class="text-[0.8125rem] font-mono text-[var(--accent)] hover:underline flex items-center gap-1"
+                    onclick={() => navigate(`/${projectIdentifier}/issues/${plan?.anchor_identifier}`)}>
+              {plan.anchor_identifier}<ArrowUpRight size={12} />
+            </button>
+            <button class="ml-auto text-[var(--text-faint)] hover:text-[var(--text)] text-[0.75rem]" onclick={setAnchor}>change</button>
+          {:else}
+            <button class="text-[0.8125rem] text-[var(--text-faint)] hover:text-[var(--text)]" onclick={setAnchor}>Set anchor…</button>
+          {/if}
+        </div>
+      </div>
+
+      <div class="border-t border-[var(--border)] -mx-5 px-5 py-0 my-1"></div>
+
+      <div class="issue-meta-dates">
+        <div class="issue-meta-field">
+          <p class="issue-meta-field-label">Created</p>
+          <p class="text-[0.8125rem] text-[var(--text-muted)] leading-snug m-0">{formatDate(plan.created_at)}</p>
+        </div>
+        <div class="issue-meta-field">
+          <p class="issue-meta-field-label">Updated</p>
+          <p class="text-[0.8125rem] text-[var(--text-muted)] leading-snug m-0">{formatDate(plan.updated_at)}</p>
+        </div>
+      </div>
+    </div>
+  {/if}
+{/snippet}
+
+<svelte:window onclick={() => (statusOpen = false)} />

@@ -85,6 +85,7 @@ pub(super) async fn add_step(
 #[derive(serde::Deserialize)]
 pub(super) struct UpdateStepRequest {
     pub title: Option<String>,
+    pub description: Option<String>,
     pub done: Option<bool>,
     /// Tristate issue link: absent = no change, null = detach, id = attach.
     #[serde(default, deserialize_with = "crate::db::models::deserialize_nullable")]
@@ -112,6 +113,9 @@ pub(super) async fn update_step(
         plans::assert_step_in_plan(conn, plan_id, step_id)?;
         if let Some(ref t) = input.title {
             plans::set_step_title(conn, step_id, t)?;
+        }
+        if let Some(ref d) = input.description {
+            plans::set_step_description(conn, step_id, d)?;
         }
         if let Some(issue) = input.issue_id {
             plans::set_step_issue(conn, step_id, issue)?;
@@ -242,5 +246,64 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn step_description_edit_and_plan_activity() {
+        let app = test_app();
+        let (project_id, _) = seed_project(&app).await;
+
+        let plan = body_json(
+            json_post(
+                &app,
+                "/api/plans",
+                serde_json::json!({
+                    "project_id": project_id,
+                    "title": "Doc plan",
+                    "steps": [{"title": "step"}]
+                }),
+            )
+            .await,
+        )
+        .await;
+        let plan_id = plan["id"].as_i64().unwrap();
+        let step_id = plan["steps"][0]["id"].as_i64().unwrap();
+
+        // Set the step's description (the previously-missing capability).
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/api/plans/{plan_id}/steps/{step_id}"))
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(
+                        serde_json::to_vec(&serde_json::json!({"description": "the body"})).unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let out = body_json(resp).await;
+        assert_eq!(out["plan"]["steps"][0]["description"], "the body");
+
+        // Plan activity feed includes plan + step rows.
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/plans/{plan_id}/activity"))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let feed = body_json(resp).await;
+        let items = feed["items"].as_array().unwrap();
+        assert!(items.iter().any(|a| a["entity_type"] == "plan" && a["action"] == "create"));
+        assert!(
+            items.iter().any(|a| a["entity_type"] == "plan_step" && a["field"] == "description"),
+            "step description edit must show in plan activity: {feed}"
+        );
     }
 }

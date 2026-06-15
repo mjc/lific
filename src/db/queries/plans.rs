@@ -339,6 +339,22 @@ pub fn set_step_title(conn: &Connection, step_id: i64, title: &str) -> Result<()
     Ok(())
 }
 
+/// Directly set a step's description (the web UI body editor — LIF-177).
+pub fn set_step_description(
+    conn: &Connection,
+    step_id: i64,
+    description: &str,
+) -> Result<(), LificError> {
+    let changed = conn.execute(
+        "UPDATE plan_steps SET description = ?1, edited_at = datetime('now') WHERE id = ?2",
+        params![unescape_text(description), step_id],
+    )?;
+    if changed == 0 {
+        return Err(LificError::NotFound(format!("plan step {step_id} not found")));
+    }
+    Ok(())
+}
+
 /// Read a step's current parent (for position-only moves).
 pub fn step_parent(conn: &Connection, step_id: i64) -> Result<Option<i64>, LificError> {
     conn.query_row(

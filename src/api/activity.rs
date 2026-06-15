@@ -43,6 +43,19 @@ pub(super) async fn page_activity(
     .map(Json)
 }
 
+/// GET /api/plans/{id}/activity — the plan's own edits plus every step
+/// create/edit/done/move/delete and the issue-driven cascade rows.
+pub(super) async fn plan_activity(
+    State(db): State<DbPool>,
+    Path(id): Path<i64>,
+    Query(q): Query<ActivityQuery>,
+) -> Result<Json<ActivityFeed>, LificError> {
+    with_read(&db, |conn| {
+        list_activity(conn, ActivityScope::Plan(id), q.limit, q.offset)
+    })
+    .map(Json)
+}
+
 /// GET /api/projects/{id}/activity — everything in the project, newest
 /// first: issues, pages, comments, modules, labels, folders.
 pub(super) async fn project_activity(

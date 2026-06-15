@@ -503,6 +503,10 @@ export async function listPageActivity(pageId: number, limit = 100) {
   return request<ActivityFeed>(`/pages/${pageId}/activity?limit=${limit}`);
 }
 
+export async function listPlanActivity(planId: number, limit = 100) {
+  return request<ActivityFeed>(`/plans/${planId}/activity?limit=${limit}`);
+}
+
 export async function listProjectActivity(projectId: number, limit = 50, offset = 0) {
   return request<ActivityFeed>(
     `/projects/${projectId}/activity?limit=${limit}&offset=${offset}`,
@@ -891,6 +895,7 @@ export async function addPlanStep(planId: number, input: AddStepInput) {
 
 export interface UpdateStepInput {
   title?: string;
+  description?: string;
   done?: boolean;
   issue_id?: number | null;
   move_parent_step_id?: number;

@@ -19,6 +19,10 @@ pub enum ActivityScope {
     Issue(i64),
     Page(i64),
     Project(i64),
+    /// A plan and all of its steps. Step rows are matched by the plan's
+    /// PROJ-PLAN-n identifier (stored as their `entity_label`), so the feed
+    /// includes step history even after a step row is deleted.
+    Plan(i64),
 }
 
 const MAX_LIMIT: i64 = 200;
@@ -35,11 +39,45 @@ pub fn list_activity(
     let limit = limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
     let offset = offset.unwrap_or(0).max(0);
 
-    let (where_clause, scope_id) = match scope {
-        ActivityScope::Issue(id) => ("a.issue_id = ?1", id),
-        ActivityScope::Page(id) => ("a.page_id = ?1", id),
-        ActivityScope::Project(id) => ("a.project_id = ?1", id),
+    // Scope params come first (?1, optionally ?2 for plans); limit/offset are
+    // appended after, so their placeholder indices depend on the scope arity.
+    let mut sp: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    let where_clause: String = match scope {
+        ActivityScope::Issue(id) => {
+            sp.push(Box::new(id));
+            "a.issue_id = ?1".into()
+        }
+        ActivityScope::Page(id) => {
+            sp.push(Box::new(id));
+            "a.page_id = ?1".into()
+        }
+        ActivityScope::Project(id) => {
+            sp.push(Box::new(id));
+            "a.project_id = ?1".into()
+        }
+        ActivityScope::Plan(id) => {
+            use rusqlite::OptionalExtension;
+            let ident: String = conn
+                .query_row(
+                    "SELECT p.identifier || '-PLAN-' || pl.sequence
+                     FROM plans pl JOIN projects p ON p.id = pl.project_id
+                     WHERE pl.id = ?1",
+                    rusqlite::params![id],
+                    |r| r.get(0),
+                )
+                .optional()?
+                .unwrap_or_default();
+            sp.push(Box::new(id));
+            sp.push(Box::new(ident));
+            "((a.entity_type = 'plan' AND a.entity_id = ?1) \
+              OR (a.entity_type = 'plan_step' AND a.entity_label = ?2))"
+                .into()
+        }
     };
+
+    let n = sp.len();
+    sp.push(Box::new(limit + 1));
+    sp.push(Box::new(offset));
 
     let sql = format!(
         "SELECT a.id, a.ts, a.actor_user_id, u.username, u.display_name,
@@ -50,14 +88,14 @@ pub fn list_activity(
          LEFT JOIN users u ON u.id = a.actor_user_id
          WHERE {where_clause}
          ORDER BY a.id DESC
-         LIMIT ?2 OFFSET ?3"
+         LIMIT ?{} OFFSET ?{}",
+        n + 1,
+        n + 2,
     );
 
+    let refs: Vec<&dyn rusqlite::types::ToSql> = sp.iter().map(|p| p.as_ref()).collect();
     let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(
-        rusqlite::params![scope_id, limit + 1, offset],
-        row_to_activity,
-    )?;
+    let rows = stmt.query_map(refs.as_slice(), row_to_activity)?;
     let mut items: Vec<Activity> = rows.collect::<Result<Vec<_>, _>>()?;
 
     let has_more = items.len() as i64 > limit;
