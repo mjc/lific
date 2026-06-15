@@ -101,7 +101,9 @@ Each connection creates a bot identity tied to your account. Changes show up att
 | `link_issues` / `unlink_issues` | Dependency tracking (blocks, relates_to, duplicate) |
 | `get_page` / `create_page` / `update_page` | Markdown documents in folders, with labels and lifecycle status |
 | `add_comment` / `list_comments` | Threaded comments on issues and pages |
-| `list_resources` | Discover projects, modules, labels, folders |
+| `create_plan` / `get_plan` | Persisted, nestable step plans that survive across sessions; steps can mirror issues |
+| `edit_plan_step` / `update_plan_step` | Edit a step, toggle done (closing a mirrored issue), add/move/delete steps |
+| `list_resources` | Discover projects, modules, labels, folders, plans |
 | `manage_resource` | Create/update projects, modules (with icons), labels, folders |
 | `delete` | Delete anything by identifier |
 | `export_issue` / `export_page` / `export_project` | Export to portable markdown |
@@ -110,13 +112,25 @@ Everything uses human-readable identifiers: `project="APP"` not `project_id=7`.
 
 **Workable filter:** `list_issues(project="APP", workable=true)` returns only issues with all blockers resolved. One call can answer "what can I work on right now?"
 
+## Plans
+
+An agent's plan shouldn't die when its context does. A **plan** is an ordered, arbitrarily-nestable tree of steps that **persists across sessions and compaction** — start a new session and the plan is still there, ready to resume.
+
+- **Steps can mirror issues.** Link a step to an issue and the two stay in sync: close the issue and the step checks itself; mark the step done and the issue closes. Reopen the issue and the step reopens, with a note of why.
+- **Authored in one call.** `create_plan` builds a full nested tree at once; `get_plan` rehydrates it for the next session; `edit_plan_step` and `update_plan_step` keep it current.
+- **First-class in the UI.** A Plans tab sits alongside Issues, Board, Modules, and Pages — a real tree view with done toggles, per-step markdown notes, issue chips, and an activity timeline.
+- **Fully tracked.** Every plan and step change lands in the audit log, including the issue-driven cascades.
+
+Issues stay flat and lateral; the hierarchy lives on the plan. It's the difference between an issue tracker and a project planner.
+
 ## Features
 
 | Category | What you get |
 |----------|-------------|
 | **Issue tracking** | Status, priority, modules with icons, labels, relations, comments, board view, fuzzy search, sort by recent activity |
+| **Plans** | Persisted, nestable step trees that outlive a session; steps mirror issues with two-way done/close sync; first-class tree view and activity history |
 | **Documentation** | Markdown pages in recursive folders, with comments, labels, lifecycle status, full-text search, and Mermaid diagrams |
-| **MCP interface** | 21 tools, ~3,000-token schema, human-readable identifiers |
+| **MCP interface** | 25 tools, human-readable identifiers, compact schema |
 | **REST API** | Full CRUD for all resources, search, board view |
 | **Web UI** | Markdown editing with live preview, drag-and-drop board, Mermaid and code-copy, dark/light theme |
 | **User accounts** | Individual auth, per-tool bot identities, project lead permissions |

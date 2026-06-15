@@ -1,5 +1,24 @@
 # Changelog
 
+## v1.6.0 (2026-06-15)
+
+Lific gets a planning layer. Plans turn a goal into an ordered, arbitrarily-nestable tree of steps that persists across sessions and context compaction — the thing that separates an issue tracker from a project planner. Steps can mirror issues, so closing an issue checks its step and completing a step closes its issue, all recorded in the audit log.
+
+### Plans
+
+- **Persisted, nestable step trees.** A plan is a first-class, project-scoped tree of steps (steps containing steps, any depth) that survives across agent sessions and compaction. Issues stay flat and lateral; the hierarchy lives on the plan.
+- **Steps mirror issues, both ways.** Link a step to an issue and the two stay in sync: closing the issue checks the step (anywhere it appears), and marking a step done closes its issue. Reopening an issue reopens its steps in active plans, stamped with the reason. Closing a plan's anchor issue auto-archives the plan. Done flows down from issues, never silently up from plans.
+- **Authored in one call.** Four MCP tools: `create_plan` builds a full nested tree at once, `get_plan` rehydrates it for the next session, and `edit_plan_step` / `update_plan_step` handle surgical edits, done toggles, issue links, and structure changes — with every side effect reported back in the result.
+- **First-class in the web UI.** A Plans tab alongside Issues, Board, Modules, and Pages: a list grouped by status and a detail view with a real nested tree — done toggles, per-step markdown descriptions, issue chips with provenance, an anchor issue, a progress bar, and an activity timeline. Built on the same shell as the issue and page views.
+- **Fully audited.** Every plan and step mutation lands in the audit log with actor attribution, including the issue-driven cascades (recorded as system-driven via the triggering issue). A new `/api/plans/{id}/activity` surface and plan support across `list_resources` and `delete`.
+- **REST + CLI.** Full `/api/plans` CRUD plus step operations, identifiers as `PROJ-PLAN-n`.
+
+### Issue list
+
+- **Accurate per-status tallies in the topbar.** The count was previously `filteredIssues.length` over a fetch capped at 200, so it silently undercounted once a project grew past that. A new `count_issues_by_status` query (a single indexed `GROUP BY`) and `GET /api/projects/{id}/issue-counts` endpoint return true per-status counts and a real total.
+- **Click a status count to toggle that filter**, with narrowed views rendering "shown of total" so the number is always honest.
+- **List fetch limit raised 200 → 1000** so rows don't truncate as early.
+
 ## v1.5.0 (2026-06-10)
 
 Lific learns to remember and to listen. Every change is now recorded in an audit log — who did it, what changed, and whether it came through the web UI, an agent over MCP, the API, or the CLI — with activity surfaces across the app to read that history. A command palette puts every issue, page, project, and action one keystroke away. The issue list gains multi-select with bulk editing, connected tools get much richer query controls, and a sweep of UI fixes lands across every view.
