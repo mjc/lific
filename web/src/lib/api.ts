@@ -784,3 +784,136 @@ export const TOOL_TEMPLATES: ToolTemplate[] = [
       `[mcp_servers.lific]\ntransport.type = "http"\ntransport.url = "${MCP_URL}"\ntransport.bearer_token_env_var = "LIFIC_API_KEY"\n\n# Set this environment variable:\n# export LIFIC_API_KEY="${key}"`,
   },
 ];
+
+// ── Plans (LIF-173) ─────────────────────────────────────────
+
+export interface PlanStep {
+  id: number;
+  plan_id: number;
+  parent_step_id: number | null;
+  position: number;
+  title: string;
+  description: string;
+  issue_id: number | null;
+  issue_identifier?: string;
+  issue_status?: string;
+  done: boolean;
+  reopened_via_issue_at?: string;
+  created_at: string;
+  edited_at: string | null;
+  children: PlanStep[];
+}
+
+export interface Plan {
+  id: number;
+  project_id: number;
+  sequence: number;
+  identifier: string;
+  issue_id: number | null;
+  anchor_identifier?: string;
+  title: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+  steps: PlanStep[];
+  step_count: number;
+  done_count: number;
+}
+
+export interface StepDoneEffect {
+  step_id: number;
+  done: boolean;
+  issue_identifier?: string;
+  issue_status_changed: boolean;
+  issue_new_status?: string;
+}
+
+export async function listPlans(projectId: number, status?: string) {
+  const params = new URLSearchParams({ project_id: String(projectId) });
+  if (status) params.set("status", status);
+  return request<Plan[]>(`/plans?${params}`);
+}
+
+export async function getPlan(id: number) {
+  return request<Plan>(`/plans/${id}`);
+}
+
+export async function resolvePlan(identifier: string) {
+  return request<Plan>(`/plans/resolve/${identifier}`);
+}
+
+export interface CreatePlanStepInput {
+  title: string;
+  description?: string;
+  issue_id?: number | null;
+  done?: boolean;
+  steps?: CreatePlanStepInput[];
+}
+
+export interface CreatePlanInput {
+  project_id: number;
+  title: string;
+  issue_id?: number | null;
+  steps?: CreatePlanStepInput[];
+}
+
+export async function createPlan(input: CreatePlanInput) {
+  return request<Plan>("/plans", { method: "POST", body: JSON.stringify(input) });
+}
+
+export interface UpdatePlanInput {
+  title?: string;
+  status?: string;
+  issue_id?: number | null;
+}
+
+export async function updatePlan(id: number, input: UpdatePlanInput) {
+  return request<Plan>(`/plans/${id}`, { method: "PUT", body: JSON.stringify(input) });
+}
+
+export async function deletePlan(id: number) {
+  return request<{ deleted: boolean }>(`/plans/${id}`, { method: "DELETE" });
+}
+
+export interface AddStepInput {
+  parent_step_id?: number | null;
+  title: string;
+  description?: string;
+  issue_id?: number | null;
+}
+
+export async function addPlanStep(planId: number, input: AddStepInput) {
+  return request<Plan>(`/plans/${planId}/steps`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export interface UpdateStepInput {
+  title?: string;
+  done?: boolean;
+  issue_id?: number | null;
+  move_parent_step_id?: number;
+  move_to_root?: boolean;
+  move_position?: number;
+}
+
+export interface StepUpdateResponse {
+  plan: Plan;
+  effect?: StepDoneEffect;
+}
+
+export async function updatePlanStep(
+  planId: number,
+  stepId: number,
+  input: UpdateStepInput,
+) {
+  return request<StepUpdateResponse>(`/plans/${planId}/steps/${stepId}`, {
+    method: "PUT",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function deletePlanStep(planId: number, stepId: number) {
+  return request<Plan>(`/plans/${planId}/steps/${stepId}`, { method: "DELETE" });
+}

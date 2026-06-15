@@ -1,5 +1,6 @@
 <script lang="ts">
   import { marked } from "marked";
+  import DOMPurify from "dompurify";
 
   let { content, class: className = "" }: { content: string; class?: string } =
     $props();
@@ -57,7 +58,21 @@
     marked.parse(normalized, { breaks: true, gfm: true, renderer }) as string
   );
 
-  let html = $derived(linkIdentifiers(rendered));
+  // SECURITY (stored XSS): `marked` passes raw inline HTML through verbatim —
+  // it does NOT sanitize. Markdown bodies and comments are authored by users
+  // and by MCP agents (which can be prompt-injected), so unsanitized output fed
+  // to `{@html}` lets `<img onerror>`, `<svg onload>`, `javascript:` hrefs, etc.
+  // run in a viewer's session — and since the SPA keeps its bearer token in
+  // localStorage, that is full account takeover. DOMPurify strips event
+  // handlers, scripts, and dangerous URL schemes while preserving the markup we
+  // generate (identifier <a href="#/...">, the mermaid/code wrapper <div>s with
+  // their class + data-* attributes, GFM tables, task-list checkboxes).
+  let html = $derived(
+    DOMPurify.sanitize(linkIdentifiers(rendered), {
+      // Keep the data-mermaid / data-lang hooks the post-render effects read.
+      ADD_ATTR: ["data-mermaid", "data-lang"],
+    })
+  );
 
   let containerEl = $state<HTMLDivElement | null>(null);
 

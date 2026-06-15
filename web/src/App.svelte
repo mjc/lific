@@ -11,6 +11,8 @@
   import PageDetail from "./routes/PageDetail.svelte";
   import ModuleList from "./routes/ModuleList.svelte";
   import ModuleDetail from "./routes/ModuleDetail.svelte";
+  import PlanList from "./routes/PlanList.svelte";
+  import PlanDetail from "./routes/PlanDetail.svelte";
   import ProjectActivity from "./routes/ProjectActivity.svelte";
   import Layout from "./lib/Layout.svelte";
   import { hasSession } from "./lib/api";
@@ -68,6 +70,8 @@
     | { type: "app"; page: "page-detail"; project: string; pageId: number }
     | { type: "app"; page: "modules"; project: string }
     | { type: "app"; page: "module-detail"; project: string; moduleId: number }
+    | { type: "app"; page: "plans"; project: string }
+    | { type: "app"; page: "plan-detail"; project: string; planId: number }
     | { type: "app"; page: "activity"; project: string }
     | { type: "loading" };
 
@@ -161,6 +165,23 @@
       };
     }
 
+    // Project-scoped: /{IDENTIFIER}/plans
+    const planListMatch = r.match(/^\/([A-Za-z][A-Za-z0-9_-]*)\/plans$/i);
+    if (planListMatch) {
+      return { type: "app", page: "plans", project: planListMatch[1] };
+    }
+
+    // Project-scoped: /{IDENTIFIER}/plans/{ID}
+    const planDetailMatch = r.match(/^\/([A-Za-z][A-Za-z0-9_-]*)\/plans\/(\d+)$/i);
+    if (planDetailMatch) {
+      return {
+        type: "app",
+        page: "plan-detail",
+        project: planDetailMatch[1],
+        planId: parseInt(planDetailMatch[2]),
+      };
+    }
+
     // Project-scoped: /{IDENTIFIER}/activity (audit log feed — LIF-158)
     const activityMatch = r.match(/^\/([A-Za-z][A-Za-z0-9_-]*)\/activity$/i);
     if (activityMatch) {
@@ -245,6 +266,10 @@
         projectIdentifier={parsed.project}
         moduleId={parsed.moduleId}
       />
+    {:else if parsed.page === "plans"}
+      <PlanList {navigate} projectIdentifier={parsed.project} />
+    {:else if parsed.page === "plan-detail"}
+      <PlanDetail {navigate} projectIdentifier={parsed.project} planId={parsed.planId} />
     {:else if parsed.page === "activity"}
       <ProjectActivity {navigate} projectIdentifier={parsed.project} />
     {/if}

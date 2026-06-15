@@ -10,7 +10,7 @@
   import ThemeToggle from "./ThemeToggle.svelte";
   import ProjectIcon from "./ProjectIcon.svelte";
   import CommandPalette from "./CommandPalette.svelte";
-  import { Settings, LogOut, List, LayoutGrid, FileText, Plus, Layers, History } from "lucide-svelte";
+  import { Settings, LogOut, List, LayoutGrid, FileText, Plus, Layers, History, ListChecks } from "lucide-svelte";
   import { setContext } from "svelte";
 
   let {
@@ -279,6 +279,11 @@
                     `/${project.identifier}/pages`,
                     "Pages",
                     FileText,
+                  )}
+                  {@render subItem(
+                    `/${project.identifier}/plans`,
+                    "Plans",
+                    ListChecks,
                   )}
                   {@render subItem(
                     `/${project.identifier}/activity`,

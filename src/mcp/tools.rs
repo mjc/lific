@@ -3982,6 +3982,37 @@ mod tests {
         assert!(archived.contains("PLN-PLAN-1"), "got: {archived}");
     }
 
+    // LIF-175: end-to-end across surfaces — a plan authored via MCP, then the
+    // linked issue closed via the issue tool, must show the step auto-completed
+    // with provenance when the plan is rehydrated.
+    #[test]
+    fn closing_issue_autocompletes_step_visible_in_get_plan() {
+        let m = mcp();
+        seed_project(&m, "Plans", "PLN");
+        seed_issue(&m, "PLN", "Mirrored work"); // PLN-1
+        m.create_plan(Parameters(CreatePlanInput {
+            project: "PLN".into(),
+            title: "Plan".into(),
+            anchor_issue: None,
+            steps: Some(vec![PlanStepInput {
+                title: "mirror".into(),
+                issue: Some("PLN-1".into()),
+                ..Default::default()
+            }]),
+        }));
+
+        // Close the issue through the normal issue tool.
+        m.update_issue(Parameters(UpdateIssueInput {
+            identifier: "PLN-1".into(),
+            status: Some("done".into()),
+            ..Default::default()
+        }));
+
+        let got = m.get_plan(Parameters(GetPlanInput { plan: "PLN-PLAN-1".into() }));
+        assert!(got.contains("[x]"), "step should be auto-completed: {got}");
+        assert!(got.contains("via PLN-1"), "provenance should show: {got}");
+    }
+
     #[test]
     fn delete_plan_via_delete_tool() {
         let m = mcp();
