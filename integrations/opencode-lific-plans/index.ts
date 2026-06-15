@@ -315,9 +315,6 @@ export const LificPlans: Plugin = async ({ client, worktree, directory }, option
           const todos = (args.todos ?? []) as Todo[];
           const incomplete = todos.filter((t) => t.status !== "completed").length;
 
-          // Native render: the TUI reads metadata.todos.
-          context.metadata({ title: `${incomplete} todos`, metadata: { todos } });
-
           let footer = "";
           const lf = lific;
           const c = cfg;
@@ -341,7 +338,20 @@ export const LificPlans: Plugin = async ({ client, worktree, directory }, option
               throw new Error(`Lific planning failed — is Lific reachable at ${c.url}? (${String(err)})`);
             }
           }
-          return JSON.stringify(todos, null, 2) + footer;
+
+          // CRITICAL: plugin tools must set rendered metadata via the RETURN
+          // value, not context.metadata() — opencode's registry takes a bare
+          // string return as metadata={}, which left the native todo block
+          // stuck on "Updating todos…". Returning the same { title, output,
+          // metadata: { todos } } shape the builtin uses makes the TUI render
+          // the # Todos block (it's gated on metadata.todos). Cast because the
+          // public tool() type declares a string return although the runtime
+          // accepts this object (registry.ts handles both).
+          return {
+            title: `${incomplete} todos`,
+            output: JSON.stringify(todos, null, 2) + footer,
+            metadata: { todos },
+          } as unknown as string;
         },
       }),
     },
