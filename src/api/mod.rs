@@ -4,6 +4,7 @@ mod comments;
 mod export;
 mod issues;
 mod pages;
+mod plans;
 mod projects;
 mod resources;
 
@@ -133,6 +134,23 @@ pub fn router(db: DbPool, cors_origins: &[String]) -> Router {
             get(pages::get_page)
                 .put(pages::update_page)
                 .delete(pages::delete_page_handler),
+        )
+        // Plans (LIF-172)
+        .route(
+            "/api/plans",
+            get(plans::list_plans).post(plans::create_plan),
+        )
+        .route(
+            "/api/plans/{id}",
+            get(plans::get_plan)
+                .put(plans::update_plan)
+                .delete(plans::delete_plan_handler),
+        )
+        .route("/api/plans/resolve/{identifier}", get(plans::resolve_plan))
+        .route("/api/plans/{id}/steps", post(plans::add_step))
+        .route(
+            "/api/plans/{plan_id}/steps/{step_id}",
+            put(plans::update_step).delete(plans::delete_step_handler),
         )
         // Folders
         .route(

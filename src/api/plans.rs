@@ -1,0 +1,246 @@
+use axum::extract::{Json, Path, Query, State};
+
+use crate::db::queries::plans::{self, StepDoneEffect};
+use crate::db::{models::*, DbPool};
+use crate::error::LificError;
+
+use super::{with_read, with_write};
+
+pub(super) async fn list_plans(
+    State(db): State<DbPool>,
+    Query(q): Query<ListPlansQuery>,
+) -> Result<Json<Vec<Plan>>, LificError> {
+    with_read(&db, |conn| plans::list_plans(conn, &q)).map(Json)
+}
+
+pub(super) async fn get_plan(
+    State(db): State<DbPool>,
+    Path(id): Path<i64>,
+) -> Result<Json<Plan>, LificError> {
+    with_read(&db, |conn| plans::get_plan(conn, id)).map(Json)
+}
+
+pub(super) async fn resolve_plan(
+    State(db): State<DbPool>,
+    Path(identifier): Path<String>,
+) -> Result<Json<Plan>, LificError> {
+    with_read(&db, |conn| {
+        let id = plans::resolve_plan_identifier(conn, &identifier)?;
+        plans::get_plan(conn, id)
+    })
+    .map(Json)
+}
+
+pub(super) async fn create_plan(
+    State(db): State<DbPool>,
+    Json(input): Json<CreatePlan>,
+) -> Result<Json<Plan>, LificError> {
+    with_write(&db, |conn| plans::create_plan(conn, &input)).map(Json)
+}
+
+pub(super) async fn update_plan(
+    State(db): State<DbPool>,
+    Path(id): Path<i64>,
+    Json(input): Json<UpdatePlan>,
+) -> Result<Json<Plan>, LificError> {
+    with_write(&db, |conn| plans::update_plan(conn, id, &input)).map(Json)
+}
+
+pub(super) async fn delete_plan_handler(
+    State(db): State<DbPool>,
+    Path(id): Path<i64>,
+) -> Result<Json<serde_json::Value>, LificError> {
+    with_write(&db, |conn| plans::delete_plan(conn, id))?;
+    Ok(Json(serde_json::json!({"deleted": true})))
+}
+
+#[derive(serde::Deserialize)]
+pub(super) struct AddStepRequest {
+    pub parent_step_id: Option<i64>,
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
+    pub issue_id: Option<i64>,
+}
+
+pub(super) async fn add_step(
+    State(db): State<DbPool>,
+    Path(plan_id): Path<i64>,
+    Json(input): Json<AddStepRequest>,
+) -> Result<Json<Plan>, LificError> {
+    with_write(&db, |conn| {
+        plans::add_step(
+            conn,
+            plan_id,
+            input.parent_step_id,
+            &input.title,
+            &input.description,
+            input.issue_id,
+        )?;
+        plans::get_plan(conn, plan_id)
+    })
+    .map(Json)
+}
+
+#[derive(serde::Deserialize)]
+pub(super) struct UpdateStepRequest {
+    pub title: Option<String>,
+    pub done: Option<bool>,
+    /// Tristate issue link: absent = no change, null = detach, id = attach.
+    #[serde(default, deserialize_with = "crate::db::models::deserialize_nullable")]
+    pub issue_id: Option<Option<i64>>,
+    pub move_parent_step_id: Option<i64>,
+    pub move_to_root: Option<bool>,
+    pub move_position: Option<i64>,
+}
+
+#[derive(serde::Serialize)]
+pub(super) struct StepUpdateResponse {
+    pub plan: Plan,
+    /// Set when the request toggled `done`, so the UI can surface the
+    /// issue side effect (e.g. "LIF-42 marked done").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effect: Option<StepDoneEffect>,
+}
+
+pub(super) async fn update_step(
+    State(db): State<DbPool>,
+    Path((plan_id, step_id)): Path<(i64, i64)>,
+    Json(input): Json<UpdateStepRequest>,
+) -> Result<Json<StepUpdateResponse>, LificError> {
+    let resp = with_write(&db, |conn| {
+        plans::assert_step_in_plan(conn, plan_id, step_id)?;
+        if let Some(ref t) = input.title {
+            plans::set_step_title(conn, step_id, t)?;
+        }
+        if let Some(issue) = input.issue_id {
+            plans::set_step_issue(conn, step_id, issue)?;
+        }
+        let mut effect = None;
+        if let Some(done) = input.done {
+            effect = Some(plans::set_step_done(conn, step_id, done)?);
+        }
+        if input.move_to_root.unwrap_or(false)
+            || input.move_parent_step_id.is_some()
+            || input.move_position.is_some()
+        {
+            let new_parent = if input.move_to_root.unwrap_or(false) {
+                None
+            } else if let Some(p) = input.move_parent_step_id {
+                Some(p)
+            } else {
+                plans::step_parent(conn, step_id)?
+            };
+            plans::move_step(conn, step_id, new_parent, input.move_position)?;
+        }
+        let plan = plans::get_plan(conn, plan_id)?;
+        Ok(StepUpdateResponse { plan, effect })
+    })?;
+    Ok(Json(resp))
+}
+
+pub(super) async fn delete_step_handler(
+    State(db): State<DbPool>,
+    Path((plan_id, step_id)): Path<(i64, i64)>,
+) -> Result<Json<Plan>, LificError> {
+    with_write(&db, |conn| {
+        plans::assert_step_in_plan(conn, plan_id, step_id)?;
+        plans::delete_step(conn, step_id)?;
+        plans::get_plan(conn, plan_id)
+    })
+    .map(Json)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::api::test_helpers::*;
+    use axum::http::{Request, StatusCode};
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    async fn body_json(resp: axum::response::Response) -> serde_json::Value {
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn plan_crud_and_step_cascade() {
+        let app = test_app();
+        let (project_id, _) = seed_project(&app).await;
+
+        // Seed an issue to mirror.
+        let issue = json_post(
+            &app,
+            "/api/issues",
+            serde_json::json!({"project_id": project_id, "title": "Work", "status": "todo"}),
+        )
+        .await;
+        let issue = body_json(issue).await;
+        let issue_id = issue["id"].as_i64().unwrap();
+
+        // Create a plan with one issue-linked step.
+        let resp = json_post(
+            &app,
+            "/api/plans",
+            serde_json::json!({
+                "project_id": project_id,
+                "title": "Ship it",
+                "steps": [{"title": "mirror", "issue_id": issue_id}]
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let plan = body_json(resp).await;
+        let plan_id = plan["id"].as_i64().unwrap();
+        assert_eq!(plan["identifier"], "TST-PLAN-1");
+        let step_id = plan["steps"][0]["id"].as_i64().unwrap();
+
+        // Mark the step done → issue should close, effect reported.
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/api/plans/{plan_id}/steps/{step_id}"))
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(
+                        serde_json::to_vec(&serde_json::json!({"done": true})).unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let out = body_json(resp).await;
+        assert_eq!(out["effect"]["issue_status_changed"], true);
+        assert_eq!(out["plan"]["steps"][0]["done"], true);
+
+        // List filtered by status.
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/plans?project_id={project_id}&status=active"))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let list = body_json(resp).await;
+        assert_eq!(list.as_array().unwrap().len(), 1);
+
+        // Delete.
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/api/plans/{plan_id}"))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+}
