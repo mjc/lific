@@ -1,19 +1,21 @@
 <script lang="ts">
-  // LIF-193: shared error surface — the "Oops" mascot + a title, an optional
-  // message, and caller-supplied action buttons. Rendered at the same mascot
-  // scale (0.25) as every other empty/quiet state so errors feel like part of
-  // the product, not a raw stack trace.
+  // LIF-193: shared error surface. Deliberately NOT the centered vertical
+  // stack used by empty states — here the copy sits left and the "Oops"
+  // mascot bolts off toward the right edge (tilted + bleeding past the
+  // frame), so an error reads as "Lizzy ran off with it" rather than a calm
+  // empty room. No animation: the artwork already implies the motion, so a
+  // static tilt + exit does the work.
   //
-  // IMPORTANT (no server-state leak): callers decide what `message` to show.
-  // Use deliberate, server-authored API error strings (res.error) for expected
-  // failures; for UNEXPECTED exceptions (error boundary) pass a generic line
-  // and NEVER the raw Error/stack.
+  // IMPORTANT (no server-state leak): callers choose `message`. Use the
+  // backend's deliberate API error strings for expected failures; for
+  // UNEXPECTED exceptions (error boundary) pass generic copy, never raw
+  // Error/stack text.
   import Mascot from "./Mascot.svelte";
 
   let {
     title,
     message = "",
-    scale = 0.25,
+    scale = 0.42,
     children,
   }: {
     title: string;
@@ -24,15 +26,30 @@
   } = $props();
 </script>
 
-<div class="h-full min-h-[55vh] flex flex-col items-center justify-center gap-4 px-6 text-center">
-  <Mascot src="/LizzyOops.png" nativeW={742} nativeH={488} {scale} />
-  <div class="flex flex-col items-center gap-1.5 max-w-[440px]">
-    <p class="text-[1.0625rem] font-medium text-[var(--text)]">{title}</p>
+<div class="h-full min-h-[55vh] relative overflow-hidden flex items-center">
+  <!-- Copy, anchored left -->
+  <div class="relative z-10 max-w-[440px] pl-8 sm:pl-14 pr-6 py-12">
+    <p class="font-display text-[1.375rem] tracking-tight text-[var(--text)] leading-tight">
+      {title}
+    </p>
     {#if message}
-      <p class="text-[0.875rem] text-[var(--text-muted)] leading-relaxed">{message}</p>
+      <p class="text-[0.875rem] text-[var(--text-muted)] leading-relaxed mt-2 max-w-[42ch]">
+        {message}
+      </p>
+    {/if}
+    {#if children}
+      <div class="flex items-center gap-2 mt-5">{@render children()}</div>
     {/if}
   </div>
-  {#if children}
-    <div class="flex items-center gap-2 mt-1">{@render children()}</div>
-  {/if}
+
+  <!-- Lizzy bolting for the exit: low-right, tilted into the run, and
+       translated so she's already half off the frame (clipped by the
+       container's overflow-hidden). -->
+  <div
+    aria-hidden="true"
+    class="pointer-events-none absolute right-0 bottom-[14%] z-0
+           rotate-[7deg] translate-x-[18%]"
+  >
+    <Mascot src="/LizzyOops.png" nativeW={742} nativeH={488} {scale} />
+  </div>
 </div>
