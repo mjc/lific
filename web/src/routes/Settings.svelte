@@ -684,16 +684,19 @@
                     <!-- Same shape as the API-key card: content row on top,
                          full-width copy bar underneath. No floating button
                          overlapping a single line of scrolling text. -->
-                    <div class="rounded-md border border-[var(--border)] bg-[var(--bg)] overflow-hidden">
-                      <pre class="px-3 py-2 text-[0.75rem] font-mono text-[var(--text)] overflow-x-auto whitespace-pre">{step.command}</pre>
+                    <div class="rounded-lg bg-[var(--bg)] overflow-hidden ring-1 ring-[var(--border)]">
+                      <pre class="px-3 py-2.5 text-[0.75rem] font-mono text-[var(--text)] overflow-x-auto whitespace-pre">{step.command}</pre>
+                      <!-- Separator matches the bar's own bg so no seam fights
+                           the rounded container. Green-tinted bar + green text:
+                           lively and on-brand without a loud solid button. -->
                       <button
-                        class="w-full flex items-center justify-center gap-1.5 py-1.5 text-[0.6875rem] font-semibold border-t border-[var(--border)] transition-colors
+                        class="w-full flex items-center justify-center gap-1.5 py-2 text-[0.75rem] font-semibold transition-colors
                                {noteCopiedIdx === i
                           ? 'bg-[var(--success-bg)] text-[var(--success)]'
-                          : 'bg-[var(--bg-subtle)] text-[var(--text-muted)] hover:text-[var(--text)]'}"
+                          : 'bg-[color-mix(in_oklab,var(--btn-success)_14%,var(--bg))] text-[var(--success)] hover:bg-[color-mix(in_oklab,var(--btn-success)_22%,var(--bg))]'}"
                         onclick={() => copyNote(i, step.command!)}
                       >
-                        {#if noteCopiedIdx === i}<Check size={12} /> Copied{:else}<Copy size={12} /> Copy{/if}
+                        {#if noteCopiedIdx === i}<Check size={13} /> Copied{:else}<Copy size={13} /> Copy command{/if}
                       </button>
                     </div>
                   {/if}
