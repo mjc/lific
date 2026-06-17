@@ -203,7 +203,7 @@
               class="group w-full flex items-center gap-1.5 pl-1.5 pr-2 py-1.5 rounded-md
                      text-left text-[0.8125rem] transition-all
                      {isProjectActive
-                ? 'text-[var(--text)] bg-[var(--surface)] shadow-[0_1px_2px_rgba(0,0,0,0.06)] font-medium'
+                ? 'text-[var(--text)] bg-[var(--bg-subtle)] font-medium'
                 : 'text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--bg-subtle)]'}"
               onclick={() => navigate(`/${project.identifier}/overview`)}
             >
