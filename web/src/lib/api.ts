@@ -716,24 +716,49 @@ export async function getBoard(
 
 // ── Tool config templates ───────────────────────────────────
 
+/** Per-OS config-file locations. When all three are identical the modal
+ *  collapses them to a single line; Claude Desktop is the only tool whose
+ *  paths genuinely differ per OS. Windows paths use %USERPROFILE%/%APPDATA%
+ *  (the ~ shorthand isn't a Windows concept). */
+export interface OsPaths {
+  linux: string;
+  mac: string;
+  windows: string;
+}
+
 export interface ToolTemplate {
   id: string;
   name: string;
   description: string;
-  configPath: string;
+  /** Config-file location per OS. Content (generateConfig) is OS-identical. */
+  configPath: OsPaths;
   configNote?: string;
   generateConfig: (url: string, key: string) => string;
+  /** True when the tool reads the key from an env var rather than embedding
+   *  it in the config block — the modal then surfaces the key + export line
+   *  separately so it's never hidden (LIF connect-flow fix). */
+  usesEnvKey?: boolean;
+  /** Env var the tool expects the key in (when usesEnvKey). */
+  envVar?: string;
 }
 
 const MCP_URL = window.location.origin + "/mcp";
+
+/** Helper: same path on every OS bar the Windows home prefix. */
+function home(unix: string, windows: string): OsPaths {
+  return { linux: unix, mac: unix, windows };
+}
 
 export const TOOL_TEMPLATES: ToolTemplate[] = [
   {
     id: "opencode",
     name: "OpenCode",
     description: "Anomaly's open-source agentic coding CLI",
-    configPath: "~/.config/opencode/opencode.json",
-    configNote: "Add to the \"mcp\" section of your config",
+    configPath: home(
+      "~/.config/opencode/opencode.json",
+      "%USERPROFILE%\\.config\\opencode\\opencode.json"
+    ),
+    configNote: 'Add to the "mcp" section of your config.',
     generateConfig: (_url, key) =>
       JSON.stringify(
         {
@@ -751,8 +776,11 @@ export const TOOL_TEMPLATES: ToolTemplate[] = [
     id: "cursor",
     name: "Cursor",
     description: "AI-first code editor by Anysphere",
-    configPath: ".cursor/mcp.json (project) or ~/.cursor/mcp.json (global)",
-    configNote: "Add to the \"mcpServers\" section",
+    configPath: home(
+      "~/.cursor/mcp.json (global) · .cursor/mcp.json (project)",
+      "%USERPROFILE%\\.cursor\\mcp.json (global) · .cursor\\mcp.json (project)"
+    ),
+    configNote: 'Add to the "mcpServers" section. Reload Cursor after saving.',
     generateConfig: (_url, key) =>
       JSON.stringify(
         {
@@ -769,9 +797,11 @@ export const TOOL_TEMPLATES: ToolTemplate[] = [
     id: "claude-code",
     name: "Claude Code",
     description: "Anthropic's CLI coding agent",
-    configPath: "~/.claude/mcp.json (global) or .mcp.json (project)",
+    configPath: home("~/.claude.json (user scope)", "%USERPROFILE%\\.claude.json (user scope)"),
     configNote:
-      'Add to the "mcpServers" section. Or run: claude mcp add lific --transport http ' + MCP_URL,
+      "Easiest: run  claude mcp add --transport http --scope user lific " +
+      MCP_URL +
+      ' --header "Authorization: Bearer <key>"  — or add the block below to the "mcpServers" section.',
     generateConfig: (_url, key) =>
       JSON.stringify(
         {
@@ -789,10 +819,14 @@ export const TOOL_TEMPLATES: ToolTemplate[] = [
     id: "claude",
     name: "Claude Desktop",
     description: "Anthropic's desktop client for Claude",
-    configPath:
-      "~/.config/Claude/claude_desktop_config.json (Linux) or ~/Library/Application Support/Claude/claude_desktop_config.json (macOS)",
+    // The one tool with genuinely OS-specific paths.
+    configPath: {
+      linux: "~/.config/Claude/claude_desktop_config.json",
+      mac: "~/Library/Application Support/Claude/claude_desktop_config.json",
+      windows: "%APPDATA%\\Claude\\claude_desktop_config.json",
+    },
     configNote:
-      "Requires mcp-remote (npm). Add to the \"mcpServers\" section. Restart Claude Desktop after editing.",
+      'Requires mcp-remote (npm). Add to the "mcpServers" section, then fully restart Claude Desktop.',
     generateConfig: (_url, key) =>
       JSON.stringify(
         {
@@ -810,20 +844,24 @@ export const TOOL_TEMPLATES: ToolTemplate[] = [
     id: "codex",
     name: "Codex",
     description: "OpenAI's CLI coding agent",
-    configPath: "~/.codex/config.toml",
+    configPath: home("~/.codex/config.toml", "%USERPROFILE%\\.codex\\config.toml"),
     configNote:
-      'Add to config.toml under [mcp_servers]. Set the env var LIFIC_API_KEY to the key below.',
-    generateConfig: (_url, key) =>
-      `[mcp_servers.lific]\ntransport.type = "http"\ntransport.url = "${MCP_URL}"\ntransport.bearer_token_env_var = "LIFIC_API_KEY"\n\n# Set this environment variable:\n# export LIFIC_API_KEY="${key}"`,
+      "Add to config.toml under [mcp_servers]. The key is read from the LIFIC_API_KEY env var — set it with the export line below.",
+    usesEnvKey: true,
+    envVar: "LIFIC_API_KEY",
+    generateConfig: (_url, _key) =>
+      `[mcp_servers.lific]\ntransport.type = "http"\ntransport.url = "${MCP_URL}"\ntransport.bearer_token_env_var = "LIFIC_API_KEY"`,
   },
   {
     id: "pi",
     name: "Pi",
     description: "Pi coding agent (via pi-mcp-adapter)",
-    configPath: "~/.pi/agent/mcp.json",
+    configPath: home("~/.pi/agent/mcp.json", "%USERPROFILE%\\.pi\\agent\\mcp.json"),
     configNote:
-      'Install the adapter first: pi install npm:pi-mcp-adapter, then restart Pi. Add this to the "mcpServers" section and set the LIFIC_API_KEY env var to the key below (export LIFIC_API_KEY="…").',
-    generateConfig: (_url, key) =>
+      "Install the adapter first:  pi install npm:pi-mcp-adapter  then restart Pi. Add the block below to the \"mcpServers\" section — the key is read from the LIFIC_API_KEY env var (set it with the export line below).",
+    usesEnvKey: true,
+    envVar: "LIFIC_API_KEY",
+    generateConfig: (_url, _key) =>
       JSON.stringify(
         {
           lific: {

@@ -45,6 +45,41 @@
   let connecting = $state(false);
   let connectError = $state("");
   let copied = $state(false);
+  let keyCopied = $state(false);
+  let exportCopied = $state(false);
+
+  // OS selector for the config-path display. Best-effort default from the
+  // browser; the user can override since they may be configuring a tool on a
+  // different machine than the one viewing this page.
+  type Os = "linux" | "mac" | "windows";
+  const OS_LABELS: Record<Os, string> = { linux: "Linux", mac: "macOS", windows: "Windows" };
+  function detectOs(): Os {
+    const p = `${navigator.platform} ${navigator.userAgent}`.toLowerCase();
+    if (p.includes("win")) return "windows";
+    if (p.includes("mac")) return "mac";
+    return "linux";
+  }
+  let selectedOs = $state<Os>(detectOs());
+
+  // The path for the active OS, plus whether the tool's paths are identical
+  // across OSes (so the modal can hide the OS toggle when it'd be redundant).
+  let pathsDiffer = $derived(
+    connectTool != null &&
+      !(
+        connectTool.configPath.linux === connectTool.configPath.mac &&
+        connectTool.configPath.mac === connectTool.configPath.windows
+      ),
+  );
+  let activePath = $derived(connectTool ? connectTool.configPath[selectedOs] : "");
+
+  // The export line for env-var tools (OS-aware: PowerShell vs POSIX shell).
+  let exportLine = $derived.by(() => {
+    if (!connectTool?.usesEnvKey || !connectKey) return "";
+    const v = connectTool.envVar ?? "LIFIC_API_KEY";
+    return selectedOs === "windows"
+      ? `setx ${v} "${connectKey}"`
+      : `export ${v}="${connectKey}"`;
+  });
 
   let busyId = $state<number | null>(null);
 
@@ -164,6 +199,9 @@
     connectKey = null;
     connectError = "";
     copied = false;
+    keyCopied = false;
+    exportCopied = false;
+    selectedOs = detectOs();
     connecting = true;
     const res = await createBot(template.id);
     if (res.ok) {
@@ -185,13 +223,16 @@
     if (!connectTool || !connectKey) return "";
     return connectTool.generateConfig(window.location.origin + "/mcp", connectKey);
   }
-  async function copyConfig() {
+  async function copyToClipboard(text: string, flag: (v: boolean) => void) {
     try {
-      await navigator.clipboard.writeText(configText());
-      copied = true;
-      window.setTimeout(() => { copied = false; }, 1500);
+      await navigator.clipboard.writeText(text);
+      flag(true);
+      window.setTimeout(() => flag(false), 1500);
     } catch { /* clipboard blocked */ }
   }
+  const copyConfig = () => copyToClipboard(configText(), (v) => (copied = v));
+  const copyKey = () => connectKey && copyToClipboard(connectKey, (v) => (keyCopied = v));
+  const copyExport = () => copyToClipboard(exportLine, (v) => (exportCopied = v));
 
   async function handleDisconnect(id: number) {
     busyId = id;
@@ -497,9 +538,51 @@
             <span>{connectError}</span>
           </div>
         {:else if connectKey}
-          <p class="text-[0.8125rem] text-[var(--text-muted)] mb-1">
-            Add this to <code class="font-mono text-[0.75rem] bg-[var(--bg-subtle)] px-1.5 py-0.5 rounded text-[var(--text)]">{connectTool.configPath}</code>
-          </p>
+          <!-- API KEY — shown once, surfaced explicitly so env-var tools
+               (Pi, Codex) never hide it inside an unexpanded config. -->
+          <div class="mb-4">
+            <div class="flex items-center justify-between mb-1.5">
+              <span class="text-[0.6875rem] font-semibold uppercase tracking-widest text-[var(--text-faint)]">
+                Your API key
+              </span>
+              <span class="inline-flex items-center gap-1 text-[0.6875rem] text-[var(--warn)]">
+                <AlertTriangle size={11} /> shown once
+              </span>
+            </div>
+            <div class="relative">
+              <code class="block bg-[var(--bg)] border border-[var(--border)] rounded-lg px-3.5 py-2.5 pr-20 text-[0.75rem] font-mono text-[var(--text)] overflow-x-auto whitespace-nowrap">{connectKey}</code>
+              <button
+                class="absolute top-1/2 -translate-y-1/2 right-2 inline-flex items-center gap-1 text-[0.6875rem] font-semibold
+                       px-2 py-1 rounded-md bg-[var(--surface)] border border-[var(--border)]
+                       {keyCopied ? 'text-[var(--success)]' : 'text-[var(--text-muted)] hover:text-[var(--text)]'} transition-colors"
+                onclick={copyKey}
+              >
+                {#if keyCopied}<Check size={12} /> Copied{:else}<Copy size={12} /> Copy{/if}
+              </button>
+            </div>
+          </div>
+
+          <!-- Config path, with OS toggle only when paths actually differ. -->
+          <div class="flex items-center justify-between gap-3 mb-1 flex-wrap">
+            <p class="text-[0.8125rem] text-[var(--text-muted)]">
+              Add this to <code class="font-mono text-[0.75rem] bg-[var(--bg-subtle)] px-1.5 py-0.5 rounded text-[var(--text)] break-all">{activePath}</code>
+            </p>
+            {#if pathsDiffer}
+              <div class="inline-flex p-0.5 rounded-md bg-[var(--bg)] shrink-0">
+                {#each ["linux", "mac", "windows"] as os (os)}
+                  <button
+                    class="px-2 py-0.5 rounded text-[0.6875rem] font-medium transition-colors
+                           {selectedOs === os
+                      ? 'bg-[var(--surface)] text-[var(--text)]'
+                      : 'text-[var(--text-faint)] hover:text-[var(--text)]'}"
+                    onclick={() => (selectedOs = os as Os)}
+                  >
+                    {OS_LABELS[os as Os]}
+                  </button>
+                {/each}
+              </div>
+            {/if}
+          </div>
           {#if connectTool.configNote}
             <p class="text-[0.75rem] text-[var(--text-faint)] mb-3 leading-relaxed">{connectTool.configNote}</p>
           {/if}
@@ -516,9 +599,28 @@
             </button>
           </div>
 
+          <!-- Env-var tools: the key isn't in the config block, so give the
+               user the exact shell command to set it (OS-aware). -->
+          {#if connectTool.usesEnvKey}
+            <p class="text-[0.75rem] text-[var(--text-muted)] mt-3 mb-1">
+              Then set the key in your environment ({OS_LABELS[selectedOs]}):
+            </p>
+            <div class="relative">
+              <pre class="bg-[var(--bg)] border border-[var(--border)] rounded-lg p-3 pr-12 text-[0.75rem] font-mono text-[var(--text)] overflow-x-auto">{exportLine}</pre>
+              <button
+                class="absolute top-2 right-2 inline-flex items-center gap-1 text-[0.6875rem] font-semibold
+                       px-2 py-1 rounded-md bg-[var(--surface)] border border-[var(--border)]
+                       {exportCopied ? 'text-[var(--success)]' : 'text-[var(--text-muted)] hover:text-[var(--text)]'} transition-colors"
+                onclick={copyExport}
+              >
+                {#if exportCopied}<Check size={12} /> Copied{:else}<Copy size={12} /> Copy{/if}
+              </button>
+            </div>
+          {/if}
+
           <div class="mt-3 flex items-start gap-2 text-[0.75rem] text-[var(--warn)]">
             <AlertTriangle size={14} class="shrink-0 mt-0.5" />
-            <span>Copy this now — the API key won't be shown again. You can always reconnect to mint a fresh one.</span>
+            <span>Copy the key now — it won't be shown again. You can always reconnect to mint a fresh one.</span>
           </div>
         {/if}
       </div>
