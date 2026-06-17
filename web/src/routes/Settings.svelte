@@ -684,7 +684,7 @@
                     <div class="relative">
                       <pre class="bg-[var(--bg)] border border-[var(--border)] rounded-md py-2 pl-3 pr-12 text-[0.75rem] font-mono text-[var(--text)] overflow-x-auto whitespace-pre">{step.command}</pre>
                       <button
-                        class="absolute top-1.5 right-1.5 inline-flex items-center gap-1 text-[0.6875rem] font-semibold
+                        class="absolute top-1/2 -translate-y-1/2 right-1.5 inline-flex items-center gap-1 text-[0.6875rem] font-semibold
                                px-2 py-1 rounded-md bg-[var(--surface)] border border-[var(--border)]
                                {noteCopiedIdx === i ? 'text-[var(--success)]' : 'text-[var(--text-muted)] hover:text-[var(--text)]'} transition-colors"
                         onclick={() => copyNote(i, step.command!)}
