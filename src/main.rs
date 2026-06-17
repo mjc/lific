@@ -403,7 +403,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }),
                 )
                 .layer(axum::Extension(login_limiter))
-                .layer(axum::Extension(cfg.auth.clone()))
+                .layer(axum::Extension(crate::config::AuthConfig::from_server(
+                    cfg.auth.allow_signup,
+                    cfg.server.public_url.as_deref(),
+                )))
                 .layer(axum::Extension(manager_ext))
                 .layer(middleware::from_fn_with_state(
                     auth_state,

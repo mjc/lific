@@ -296,7 +296,7 @@ pub(crate) mod test_helpers {
             conn.last_insert_rowid()
         };
         super::router(db, &[])
-            .layer(Extension(crate::config::AuthConfig { allow_signup: true }))
+            .layer(Extension(crate::config::AuthConfig { allow_signup: true, secure_cookies: false }))
             .layer(Extension(Some(AuthUser {
                 id: admin_id,
                 username: "test-admin".into(),
@@ -356,7 +356,7 @@ pub(crate) mod test_helpers {
     /// Build a test app authenticated as a specific user.
     pub fn app_as_user(db: DbPool, user: &User) -> Router {
         super::router(db, &[])
-            .layer(Extension(crate::config::AuthConfig { allow_signup: true }))
+            .layer(Extension(crate::config::AuthConfig { allow_signup: true, secure_cookies: false }))
             .layer(Extension(Some(AuthUser {
                 id: user.id,
                 username: user.username.clone(),

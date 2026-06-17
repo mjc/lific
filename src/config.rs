@@ -20,11 +20,42 @@ pub struct Config {
 pub struct AuthConfig {
     /// Allow self-service signup via the API. If false, only admins can create users via CLI.
     pub allow_signup: bool,
+    /// Emit the session cookie with the `Secure` attribute (HTTPS-only).
+    ///
+    /// LIF-207: `Secure` is correct in production (Tailscale Funnel = HTTPS),
+    /// but browsers silently DROP a `Secure` cookie sent over plain `http://`
+    /// (except `http://localhost` in some browsers). A local-first deployment
+    /// reached over plain HTTP would lose the cookie — which breaks the OAuth
+    /// approve flow (the one place the cookie is read). This is derived at
+    /// startup from whether `server.public_url` is `https://` (see
+    /// `AuthConfig::from_server`), defaulting to `true` (secure-by-default) so
+    /// nothing is weakened unless an HTTP deployment is explicitly configured.
+    #[serde(skip)]
+    pub secure_cookies: bool,
 }
 
 impl Default for AuthConfig {
     fn default() -> Self {
-        Self { allow_signup: true }
+        Self {
+            allow_signup: true,
+            secure_cookies: true,
+        }
+    }
+}
+
+impl AuthConfig {
+    /// Build the runtime auth config, deriving `secure_cookies` from the
+    /// server's public URL scheme. Only an explicit `http://` public_url turns
+    /// `Secure` off; everything else (https, or unset) stays secure-by-default.
+    pub fn from_server(allow_signup: bool, public_url: Option<&str>) -> Self {
+        let secure_cookies = match public_url {
+            Some(url) => !url.trim().to_ascii_lowercase().starts_with("http://"),
+            None => true,
+        };
+        Self {
+            allow_signup,
+            secure_cookies,
+        }
     }
 }
 
@@ -280,5 +311,19 @@ enabled = false
         let toml_str = Config::default_toml();
         let parsed: Config = toml::from_str(&toml_str).expect("default toml should parse");
         assert_eq!(parsed.server.port, 3456);
+    }
+
+    // LIF-207: Secure cookie flag is derived from the public_url scheme.
+    #[test]
+    fn auth_config_secure_cookies_from_scheme() {
+        // HTTPS public URL → Secure on.
+        assert!(AuthConfig::from_server(true, Some("https://lific.example")).secure_cookies);
+        // Explicit HTTP → Secure off (otherwise the browser drops the cookie).
+        assert!(!AuthConfig::from_server(true, Some("http://localhost:3456")).secure_cookies);
+        assert!(!AuthConfig::from_server(true, Some("HTTP://Localhost")).secure_cookies);
+        // Unset → secure-by-default (don't weaken when we don't know).
+        assert!(AuthConfig::from_server(true, None).secure_cookies);
+        // allow_signup is passed through untouched.
+        assert!(!AuthConfig::from_server(false, None).allow_signup);
     }
 }

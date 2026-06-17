@@ -11,7 +11,12 @@ use crate::error::LificError;
 use super::{with_read, with_write};
 
 /// Build a Set-Cookie header for the session token with security flags.
-fn session_cookie(token: &str, expires_at: &str) -> String {
+///
+/// LIF-207: `secure` gates the `Secure` attribute. It's on by default and only
+/// disabled for an explicitly-`http://` deployment, because browsers silently
+/// drop a `Secure` cookie over plain HTTP — which would break the OAuth approve
+/// flow (the one place the cookie is actually read) on a local-first install.
+fn session_cookie(token: &str, expires_at: &str, secure: bool) -> String {
     use chrono::DateTime;
     // Parse expiry for Max-Age calculation; fall back to 30 days
     let max_age = DateTime::parse_from_rfc3339(expires_at)
@@ -21,9 +26,15 @@ fn session_cookie(token: &str, expires_at: &str) -> String {
         })
         .unwrap_or(30 * 24 * 3600);
 
-    format!(
-        "lific_token={token}; Path=/; Max-Age={max_age}; HttpOnly; Secure; SameSite=Lax"
-    )
+    let secure_attr = if secure { "; Secure" } else { "" };
+    format!("lific_token={token}; Path=/; Max-Age={max_age}; HttpOnly{secure_attr}; SameSite=Lax")
+}
+
+/// Build the Set-Cookie that clears the session cookie. Mirrors the `Secure`
+/// flag of the set path so the browser reliably matches and removes it.
+fn clear_cookie(secure: bool) -> String {
+    let secure_attr = if secure { "; Secure" } else { "" };
+    format!("lific_token=; Path=/; Max-Age=0; HttpOnly{secure_attr}; SameSite=Lax")
 }
 
 // ── Auth endpoints ───────────────────────────────────────────
@@ -78,7 +89,7 @@ pub(super) async fn auth_signup(
     let mut headers = HeaderMap::new();
     headers.insert(
         "set-cookie",
-        session_cookie(&session.token, &session.expires_at)
+        session_cookie(&session.token, &session.expires_at, auth_cfg.secure_cookies)
             .parse()
             .unwrap(),
     );
@@ -101,6 +112,7 @@ pub(super) async fn auth_signup(
 
 pub(super) async fn auth_login(
     State(db): State<DbPool>,
+    Extension(auth_cfg): Extension<crate::config::AuthConfig>,
     limiter: Option<Extension<std::sync::Arc<crate::ratelimit::RateLimiter>>>,
     headers: HeaderMap,
     Json(input): Json<LoginRequest>,
@@ -143,7 +155,7 @@ pub(super) async fn auth_login(
     let mut headers = HeaderMap::new();
     headers.insert(
         "set-cookie",
-        session_cookie(&session.token, &session.expires_at)
+        session_cookie(&session.token, &session.expires_at, auth_cfg.secure_cookies)
             .parse()
             .unwrap(),
     );
@@ -166,6 +178,7 @@ pub(super) async fn auth_login(
 
 pub(super) async fn auth_logout(
     State(db): State<DbPool>,
+    Extension(auth_cfg): Extension<crate::config::AuthConfig>,
     headers: axum::http::HeaderMap,
 ) -> Result<impl IntoResponse, LificError> {
     let token = headers
@@ -184,9 +197,7 @@ pub(super) async fn auth_logout(
     let mut resp_headers = HeaderMap::new();
     resp_headers.insert(
         "set-cookie",
-        "lific_token=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax"
-            .parse()
-            .unwrap(),
+        clear_cookie(auth_cfg.secure_cookies).parse().unwrap(),
     );
 
     Ok((resp_headers, Json(serde_json::json!({"logged_out": true}))))
@@ -252,13 +263,20 @@ pub(super) struct ChangePasswordRequest {
 
 /// POST /api/auth/me/password — change password after verifying the current
 /// one. LIF-190.
+///
+/// LIF-205: a password change invalidates **all** of the user's sessions
+/// (the "I've been compromised, lock it down" expectation), then mints a
+/// fresh session for the current browser so the legitimate caller stays
+/// logged in instead of being bounced to /login. Any stolen `lific_sess_`
+/// token is dead the moment this returns.
 pub(super) async fn change_password(
     State(db): State<DbPool>,
+    Extension(auth_cfg): Extension<crate::config::AuthConfig>,
     Extension(auth_user): Extension<Option<AuthUser>>,
     Json(input): Json<ChangePasswordRequest>,
-) -> Result<Json<serde_json::Value>, LificError> {
+) -> Result<impl IntoResponse, LificError> {
     let user = auth_user.ok_or_else(|| LificError::BadRequest("authentication required".into()))?;
-    with_write(&db, |conn| {
+    let session = with_write(&db, |conn| {
         let full = crate::db::queries::users::get_user_by_id(conn, user.id)?;
         let ok = crate::db::queries::users::verify_password(
             &input.current_password,
@@ -267,15 +285,36 @@ pub(super) async fn change_password(
         if !ok {
             return Err(LificError::BadRequest("current password is incorrect".into()));
         }
-        crate::db::queries::users::update_password(conn, user.id, &input.new_password)
+        crate::db::queries::users::update_password(conn, user.id, &input.new_password)?;
+        // Kill every existing session (including any an attacker holds), then
+        // issue a fresh one for this browser.
+        crate::db::queries::users::delete_all_sessions(conn, user.id)?;
+        crate::db::queries::users::create_session(conn, user.id, None)
     })?;
-    Ok(Json(serde_json::json!({ "ok": true })))
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "set-cookie",
+        session_cookie(&session.token, &session.expires_at, auth_cfg.secure_cookies)
+            .parse()
+            .unwrap(),
+    );
+
+    Ok((
+        headers,
+        Json(serde_json::json!({
+            "ok": true,
+            "token": session.token,
+            "expires_at": session.expires_at,
+        })),
+    ))
 }
 
 /// DELETE /api/auth/me/sessions — sign out of every session (this one too).
 /// Clears the cookie so the current browser drops to logged-out. LIF-190.
 pub(super) async fn revoke_all_sessions(
     State(db): State<DbPool>,
+    Extension(auth_cfg): Extension<crate::config::AuthConfig>,
     Extension(auth_user): Extension<Option<AuthUser>>,
 ) -> Result<impl IntoResponse, LificError> {
     let user = auth_user.ok_or_else(|| LificError::BadRequest("authentication required".into()))?;
@@ -285,9 +324,7 @@ pub(super) async fn revoke_all_sessions(
     let mut resp_headers = HeaderMap::new();
     resp_headers.insert(
         "set-cookie",
-        "lific_token=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax"
-            .parse()
-            .unwrap(),
+        clear_cookie(auth_cfg.secure_cookies).parse().unwrap(),
     );
     Ok((resp_headers, Json(serde_json::json!({ "revoked": true }))))
 }
@@ -495,6 +532,27 @@ mod tests {
     use crate::api::test_helpers::*;
     use axum::http::StatusCode;
 
+    // LIF-207: the Secure attribute is gated; everything else stays constant.
+    #[test]
+    fn session_cookie_gates_secure_flag() {
+        let secure = super::session_cookie("lific_sess_x", "2099-01-01T00:00:00Z", true);
+        assert!(secure.contains("; Secure"));
+        assert!(secure.contains("HttpOnly"));
+        assert!(secure.contains("SameSite=Lax"));
+
+        let insecure = super::session_cookie("lific_sess_x", "2099-01-01T00:00:00Z", false);
+        assert!(!insecure.contains("Secure"), "http deploy must omit Secure: {insecure}");
+        assert!(insecure.contains("HttpOnly"));
+        assert!(insecure.contains("SameSite=Lax"));
+    }
+
+    #[test]
+    fn clear_cookie_mirrors_secure_flag() {
+        assert!(super::clear_cookie(true).contains("; Secure"));
+        assert!(!super::clear_cookie(false).contains("Secure"));
+        assert!(super::clear_cookie(true).contains("Max-Age=0"));
+    }
+
     #[tokio::test]
     async fn auth_signup_creates_user_and_returns_session() {
         let app = test_app();
@@ -533,6 +591,7 @@ mod tests {
         let db = crate::db::open_memory().expect("test db");
         let app = crate::api::router(db, &[]).layer(axum::Extension(crate::config::AuthConfig {
             allow_signup: false,
+            secure_cookies: false,
         }));
 
         let body = serde_json::json!({
@@ -661,6 +720,72 @@ mod tests {
             serde_json::json!({ "current_password": "originalpass123", "new_password": "newpassword123" });
         let resp = json_post(&app, "/api/auth/me/password", right).await;
         assert_eq!(resp.status(), StatusCode::OK);
+        // LIF-205: a successful change returns a fresh session token so the
+        // current browser stays logged in after the old sessions are killed.
+        let data = parse_json(resp).await;
+        assert!(
+            data["token"].as_str().unwrap_or("").starts_with("lific_sess_"),
+            "password change should mint a new session token: {data}"
+        );
+        assert!(data["expires_at"].as_str().is_some());
+    }
+
+    // LIF-205: changing the password must invalidate every pre-existing
+    // session, so a stolen token dies the moment the user "locks it down."
+    // Exercised at the query layer because the test HTTP harness injects the
+    // AuthUser directly and never runs the session-validating middleware.
+    #[tokio::test]
+    async fn change_password_invalidates_existing_sessions() {
+        use crate::db::queries::users;
+        let db = crate::db::open_memory().expect("test db");
+        let user = {
+            let conn = db.write().unwrap();
+            users::create_user(
+                &conn,
+                &crate::db::models::CreateUser {
+                    username: "rotate".into(),
+                    email: "rotate@test.com".into(),
+                    password: "originalpass123".into(),
+                    display_name: None,
+                    is_admin: false,
+                    is_bot: false,
+                },
+            )
+            .unwrap()
+        };
+
+        // An attacker's stolen session.
+        let stolen = {
+            let conn = db.write().unwrap();
+            users::create_session(&conn, user.id, None).unwrap()
+        };
+        {
+            let conn = db.write().unwrap();
+            assert!(
+                users::validate_session(&conn, &stolen.token).is_ok(),
+                "session should be valid before the password change"
+            );
+        }
+
+        let app = crate::api::test_helpers::app_as_user(db.clone(), &user);
+        let body = serde_json::json!({
+            "current_password": "originalpass123",
+            "new_password": "newpassword123"
+        });
+        let resp = json_post(&app, "/api/auth/me/password", body).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let data = parse_json(resp).await;
+        let fresh = data["token"].as_str().unwrap();
+
+        let conn = db.write().unwrap();
+        assert!(
+            users::validate_session(&conn, &stolen.token).is_err(),
+            "stolen session must be invalid after a password change"
+        );
+        assert!(
+            users::validate_session(&conn, fresh).is_ok(),
+            "the freshly-minted session must be usable"
+        );
     }
 
     #[tokio::test]
@@ -696,6 +821,7 @@ mod tests {
         crate::api::router(db, &[])
             .layer(axum::Extension(crate::config::AuthConfig {
                 allow_signup: true,
+                secure_cookies: false,
             }))
             .layer(axum::Extension(limiter))
     }
