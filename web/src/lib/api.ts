@@ -896,6 +896,59 @@ export const TOOL_TEMPLATES: ToolTemplate[] = [
         2
       ),
   },
+  {
+    id: "vscode",
+    name: "VS Code",
+    description: "GitHub Copilot agent mode in VS Code",
+    configPath: home(
+      "~/.config/Code/User/mcp.json (user) · .vscode/mcp.json (workspace)",
+      "%APPDATA%\\Code\\User\\mcp.json (user) · .vscode\\mcp.json (workspace)"
+    ),
+    configNote: [
+      { text: 'Add this to the "servers" section. Or run the command palette action:' },
+      { command: "MCP: Open User Configuration" },
+      { text: "VS Code 1.101+ with GitHub Copilot is required." },
+    ],
+    generateConfig: (_url, key) =>
+      JSON.stringify(
+        {
+          servers: {
+            lific: {
+              type: "http",
+              url: MCP_URL,
+              headers: { Authorization: `Bearer ${key}` },
+            },
+          },
+        },
+        null,
+        2
+      ),
+  },
+  {
+    id: "zed",
+    name: "Zed",
+    description: "High-performance Rust-based editor",
+    configPath: home(
+      "~/.config/zed/settings.json",
+      "%APPDATA%\\Zed\\settings.json"
+    ),
+    configNote: [
+      { text: 'Add this to the "context_servers" section of your Zed settings (Command Palette: zed: open settings).' },
+    ],
+    generateConfig: (_url, key) =>
+      JSON.stringify(
+        {
+          context_servers: {
+            lific: {
+              url: MCP_URL,
+              headers: { Authorization: `Bearer ${key}` },
+            },
+          },
+        },
+        null,
+        2
+      ),
+  },
 ];
 
 // ── Plans (LIF-173) ─────────────────────────────────────────

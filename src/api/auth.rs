@@ -401,7 +401,8 @@ pub(super) async fn list_bots(
 
 #[derive(serde::Deserialize)]
 pub(super) struct CreateBotRequest {
-    /// Tool identifier (e.g. "opencode", "cursor", "claude", "codex", "pi")
+    /// Tool identifier (e.g. "opencode", "cursor", "claude", "codex", "pi",
+    /// "vscode", "zed")
     tool: String,
 }
 
@@ -421,6 +422,8 @@ pub(super) async fn create_bot(
         "claude" => "Claude Desktop",
         "codex" => "Codex",
         "pi" => "Pi",
+        "vscode" => "VS Code",
+        "zed" => "Zed",
         _ => return Err(LificError::BadRequest(format!("unknown tool: {tool}"))),
     };
 
