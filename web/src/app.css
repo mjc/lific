@@ -61,23 +61,22 @@
      Keep these visually distinct so an in-content card never visually
      merges with the chrome it sits adjacent to.
 
-     Values are custom warm-tinted hexes, NOT raw stone scale steps.
-     The stock stone-50/100/200 ramp clusters within ~2.5% luminance —
-     the three tiers collapsed to flat mush and borders vanished against
-     bg-subtle. These widen the gaps so elevation, borders, and cast
-     shadows all actually read. No pure white anywhere. */
-  --bg: #f0ece3;
-  --bg-subtle: #e6e0d4;
-  --surface: #faf8f5;
-  --chrome: #fdfcf9;
-  --text: var(--color-stone-900);
-  /* stone-600/500 instead of 500/400: the old values failed WCAG AA.
-     muted was 4.3:1 on bg (need 4.5); faint was 2.2:1 (invisible). */
-  --text-muted: var(--color-stone-600);
-  --text-faint: var(--color-stone-500);
-  /* Darker than bg-subtle so borders are visible on every surface,
-     not just the lightest one. */
-  --border: #d8d1c4;
+     Green-tinted neutral ramp: low-saturation sage-gray (hue ~150) so
+     the whole UI quietly echoes the brand/lizard green instead of
+     reading as warm beige. NOT minty — saturation stays under ~20%.
+     Tiers are spaced widely enough that elevation, borders, and cast
+     shadows all read. No pure white anywhere. */
+  --bg: #eef4f1;
+  --bg-subtle: #e1eae6;
+  --surface: #f7faf9;
+  --chrome: #fafcfb;
+  --text: #18201d;
+  /* Green-tinted dark grays for text; both clear WCAG AA on bg/surface
+     (muted ~6.4:1, faint ~4.4:1). */
+  --text-muted: #495a53;
+  --text-faint: #64786e;
+  /* Darker, green-tinted border — visible on every surface. */
+  --border: #d0dcd6;
 
   --accent: var(--color-indigo-600);
   --accent-hover: var(--color-indigo-700);
@@ -89,7 +88,13 @@
   /* Text on an --error-filled surface. Mirrors --accent-text: white on
      the deep light-mode red, near-black on the light dark-mode red. */
   --error-text: #fff;
-  --success: var(--color-green-600);
+  /* Vibrant grass green for graphics — progress rings, "done" status
+     icons, success ticks. The old green-700 #15803d read as dark/muddy
+     forest on the light sage bg. This is meaningfully brighter (G 128→160)
+     while staying ~3:1 against the panel so a thin ring stroke is still
+     visible. (Bright green on a light bg can't go higher without
+     vanishing; rings also carry a center % label.) */
+  --success: #15a046;
   --success-bg: var(--color-green-bg);
   /* Bright lizard green + dark text. With dark (stone-950) text a
      BRIGHTER green raises contrast, so there's lots of headroom: this
@@ -104,9 +109,9 @@
   /* Shadow cast by the elevated chrome onto the recessed content panel.
      Applied as an inset shadow on the panel's top/left edges so the
      "chrome floats above" effect reads without a hard border line.
-     Warm-tinted and strong enough to actually see — the old 2% black
-     was imperceptible. */
-  --shadow-recess: rgba(30, 25, 20, 0.07);
+     Green-tinted dark and strong enough to actually see — the old 2%
+     black was imperceptible. */
+  --shadow-recess: rgba(18, 30, 25, 0.07);
 
   /* The dark panel on auth pages */
   --panel-bg: var(--color-stone-900);
@@ -119,15 +124,17 @@
 .dark {
   /* Three-tier elevation, same roles as light mode. --surface is
      intentionally BRIGHTER than --chrome here: cards inside the
-     content panel are the focal layer; the outer chrome recedes. */
-  --bg: var(--color-stone-975);
-  --bg-subtle: var(--color-stone-900);
-  --surface: var(--color-stone-800);
-  --chrome: var(--color-stone-850);
-  --text: var(--color-stone-200);
-  --text-muted: var(--color-stone-400);
-  --text-faint: var(--color-stone-600);
-  --border: var(--color-stone-700);
+     content panel are the focal layer; the outer chrome recedes.
+     Green-tinted dark neutrals (hue ~150) to match light mode's sage
+     direction — near-black floor warmed toward the brand green. */
+  --bg: #0d1110;
+  --bg-subtle: #171c1a;
+  --surface: #252c29;
+  --chrome: #1c221f;
+  --text: #e3e8e6;
+  --text-muted: #9ea9a3;
+  --text-faint: #5f6d66;
+  --border: #3d4842;
 
   --accent: var(--color-indigo-400);
   --accent-hover: var(--color-indigo-500);
