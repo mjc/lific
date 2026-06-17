@@ -18,9 +18,8 @@
     Plus, Search, ChevronRight, ChevronDown, X, Layers, Signal,
     List as ListIcon, LayoutGrid, SlidersHorizontal, HelpCircle,
     ArrowDownUp, ArrowDown, ArrowUp, Hash, Clock, History,
-    Check, Trash2, Zap, PenLine,
+    Check, Zap, PenLine,
   } from "lucide-svelte";
-  import { fly } from "svelte/transition";
   import Select from "../lib/Select.svelte";
   import Tooltip from "../lib/Tooltip.svelte";
   import PriorityIcon from "../lib/PriorityIcon.svelte";
@@ -58,6 +57,9 @@
     saveHiddenStatuses,
   } from "../lib/issues/persistence";
   import IssueCard from "../lib/issues/IssueCard.svelte";
+  import BulkActionBar, {
+    type BulkMenu,
+  } from "../lib/issues/BulkActionBar.svelte";
 
   const topbarCtx = getContext<{
     set: (s: import("svelte").Snippet | undefined) => void;
@@ -611,7 +613,7 @@
   let selectedIds = $state<Set<number>>(new Set());
   let lastSelectedIdx = $state(-1);
   // Which action-bar menu is open (popovers open upward from the bar).
-  let bulkMenu = $state<"status" | "priority" | "module" | "label" | "delete" | null>(null);
+  let bulkMenu = $state<BulkMenu>(null);
   let bulkBusy = $state(false);
 
   function toggleSelect(id: number, idx: number) {
@@ -2063,221 +2065,21 @@
     {/if}
   </div>
 
-  <!-- ── LIF-149: floating bulk-action bar ─────────────────
-       Appears while anything is selected. Menus open upward. The outer
-       div owns viewport centering; the inner div owns the entrance fly
-       so the two transforms don't fight. -->
+  <!-- LIF-149: floating bulk-action bar (component in lib/issues). Appears
+       while anything is selected. bulkMenu is bound so the parent's Escape
+       handler and outside-click can close the open menu. -->
   {#if selectedIds.size > 0}
-    <div class="fixed bottom-6 left-1/2 -translate-x-1/2 z-40">
-      <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
-      <div
-        class="flex items-center gap-0.5 pl-3 pr-1.5 py-1.5
-               bg-[var(--surface)] border border-[var(--border)]
-               rounded-xl shadow-[0_8px_28px_rgba(0,0,0,0.18)]"
-        in:fly={{ y: 8, duration: 180 }}
-        onclick={(e) => e.stopPropagation()}
-      >
-        <span class="text-[0.8125rem] font-medium text-[var(--text)] tabular-nums pr-1">
-          {selectedIds.size} selected
-        </span>
-        {#if bulkBusy}
-          <span class="text-[0.75rem] text-[var(--text-faint)] animate-pulse pr-1">
-            Applying...
-          </span>
-        {/if}
-        <div class="w-px h-4 bg-[var(--border)] mx-1"></div>
-
-        {#snippet bulkTrigger(menu: "status" | "priority" | "module" | "label", label: string)}
-          <button
-            class="text-[0.8125rem] px-2 py-1 rounded-md transition-colors
-                   disabled:opacity-50 disabled:cursor-not-allowed
-                   {bulkMenu === menu
-              ? 'text-[var(--text)] bg-[var(--bg-subtle)]'
-              : 'text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--bg-subtle)]'}"
-            disabled={bulkBusy}
-            onclick={(e) => {
-              e.stopPropagation();
-              bulkMenu = bulkMenu === menu ? null : menu;
-            }}
-          >
-            {label}
-          </button>
-        {/snippet}
-
-        <!-- Status -->
-        <div class="relative">
-          {@render bulkTrigger("status", "Status")}
-          {#if bulkMenu === "status"}
-            <div
-              class="absolute bottom-full mb-1.5 left-0 w-[160px]
-                     bg-[var(--surface)] border border-[var(--border)]
-                     rounded-lg shadow-lg py-1.5"
-            >
-              {#each STATUSES as s}
-                <button
-                  class="w-full flex items-center gap-2 px-3 py-1.5 text-left
-                         text-[0.8125rem] text-[var(--text)] capitalize
-                         hover:bg-[var(--bg-subtle)] transition-colors"
-                  onclick={() => bulkUpdate({ status: s })}
-                >
-                  <StatusIcon status={s} size={14} />
-                  {s}
-                </button>
-              {/each}
-            </div>
-          {/if}
-        </div>
-
-        <!-- Priority -->
-        <div class="relative">
-          {@render bulkTrigger("priority", "Priority")}
-          {#if bulkMenu === "priority"}
-            <div
-              class="absolute bottom-full mb-1.5 left-0 w-[160px]
-                     bg-[var(--surface)] border border-[var(--border)]
-                     rounded-lg shadow-lg py-1.5"
-            >
-              {#each PRIORITIES as p}
-                <button
-                  class="w-full flex items-center gap-2 px-3 py-1.5 text-left
-                         text-[0.8125rem] text-[var(--text)] capitalize
-                         hover:bg-[var(--bg-subtle)] transition-colors"
-                  onclick={() => bulkUpdate({ priority: p })}
-                >
-                  <PriorityIcon priority={p} size={14} />
-                  {p}
-                </button>
-              {/each}
-            </div>
-          {/if}
-        </div>
-
-        <!-- Module (only when the project has modules) -->
-        {#if modules.length > 0}
-          <div class="relative">
-            {@render bulkTrigger("module", "Module")}
-            {#if bulkMenu === "module"}
-              <div
-                class="absolute bottom-full mb-1.5 left-0 w-[180px]
-                       bg-[var(--surface)] border border-[var(--border)]
-                       rounded-lg shadow-lg py-1.5 max-h-[40vh] overflow-y-auto"
-              >
-                <button
-                  class="w-full px-3 py-1.5 text-left text-[0.8125rem]
-                         text-[var(--text-faint)] hover:bg-[var(--bg-subtle)]
-                         transition-colors"
-                  onclick={() => bulkUpdate({ module_id: null })}
-                >
-                  None
-                </button>
-                {#each modules as mod (mod.id)}
-                  <button
-                    class="w-full px-3 py-1.5 text-left text-[0.8125rem]
-                           text-[var(--text)] hover:bg-[var(--bg-subtle)]
-                           transition-colors truncate"
-                    onclick={() => bulkUpdate({ module_id: mod.id })}
-                  >
-                    {mod.name}
-                  </button>
-                {/each}
-              </div>
-            {/if}
-          </div>
-        {/if}
-
-        <!-- Add label (only when the project has labels) -->
-        {#if labels.length > 0}
-          <div class="relative">
-            {@render bulkTrigger("label", "Label")}
-            {#if bulkMenu === "label"}
-              <div
-                class="absolute bottom-full mb-1.5 left-0 w-[180px]
-                       bg-[var(--surface)] border border-[var(--border)]
-                       rounded-lg shadow-lg py-1.5 max-h-[40vh] overflow-y-auto"
-              >
-                {#each labels as lbl (lbl.id)}
-                  <button
-                    class="w-full flex items-center gap-2 px-3 py-1.5 text-left
-                           text-[0.8125rem] text-[var(--text)]
-                           hover:bg-[var(--bg-subtle)] transition-colors"
-                    onclick={() => bulkAddLabel(lbl.name)}
-                  >
-                    <span
-                      class="size-2.5 rounded-full shrink-0"
-                      style="background: {lbl.color}"
-                    ></span>
-                    <span class="truncate">{lbl.name}</span>
-                  </button>
-                {/each}
-              </div>
-            {/if}
-          </div>
-        {/if}
-
-        <div class="w-px h-4 bg-[var(--border)] mx-1"></div>
-
-        <!-- Delete (confirm popover) -->
-        <div class="relative">
-          <button
-            class="size-7 flex items-center justify-center rounded-md
-                   text-[var(--error)] hover:bg-[var(--error-bg)]
-                   transition-colors disabled:opacity-50"
-            title="Delete selected"
-            disabled={bulkBusy}
-            onclick={(e) => {
-              e.stopPropagation();
-              bulkMenu = bulkMenu === "delete" ? null : "delete";
-            }}
-          >
-            <Trash2 size={14} />
-          </button>
-          {#if bulkMenu === "delete"}
-            <div
-              class="absolute bottom-full mb-1.5 right-0 w-[240px]
-                     bg-[var(--surface)] border border-[var(--border)]
-                     rounded-lg shadow-lg p-3"
-            >
-              <p class="text-[0.8125rem] font-medium text-[var(--text)] mb-1">
-                Delete {selectedIds.size} issue{selectedIds.size === 1 ? "" : "s"}?
-              </p>
-              <p class="text-[0.75rem] text-[var(--text-muted)] mb-3">
-                This can't be undone.
-              </p>
-              <div class="flex items-center gap-2">
-                <button
-                  class="text-[0.8125rem] font-medium text-[var(--error-text)]
-                         bg-[var(--error)] px-3 py-1.5 rounded-md
-                         hover:opacity-90 transition-opacity
-                         disabled:opacity-50 disabled:cursor-not-allowed"
-                  disabled={bulkBusy}
-                  onclick={bulkDelete}
-                >
-                  {bulkBusy ? "Deleting..." : "Delete"}
-                </button>
-                <button
-                  class="text-[0.8125rem] text-[var(--text-muted)] px-3 py-1.5
-                         rounded-md hover:bg-[var(--bg-subtle)] transition-colors"
-                  onclick={() => { bulkMenu = null; }}
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          {/if}
-        </div>
-
-        <!-- Clear -->
-        <button
-          class="size-7 flex items-center justify-center rounded-md
-                 text-[var(--text-muted)] hover:text-[var(--text)]
-                 hover:bg-[var(--bg-subtle)] transition-colors"
-          title="Clear selection  ·  Esc"
-          onclick={clearSelection}
-        >
-          <X size={14} />
-        </button>
-      </div>
-    </div>
+    <BulkActionBar
+      selectedCount={selectedIds.size}
+      {bulkBusy}
+      bind:bulkMenu
+      {modules}
+      {labels}
+      onUpdate={bulkUpdate}
+      onAddLabel={bulkAddLabel}
+      onDelete={bulkDelete}
+      onClear={clearSelection}
+    />
   {/if}
 </div>
 {/if}
