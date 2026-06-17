@@ -21,7 +21,7 @@
   } from "../lib/theme";
   import {
     Plug, Check, Copy, X, AlertTriangle, Sun, Moon, Monitor,
-    Palette, Lock, LogOut,
+    Palette, Lock, LogOut, Eye, EyeOff, KeyRound, FileCode2, Terminal,
   } from "lucide-svelte";
   import { getContext } from "svelte";
 
@@ -47,6 +47,19 @@
   let copied = $state(false);
   let keyCopied = $state(false);
   let exportCopied = $state(false);
+  // The minted key is sensitive — hidden by default, revealed on demand.
+  let keyRevealed = $state(false);
+
+  // Masked rendering: keep the non-secret prefix (e.g. "lific_sk-live-")
+  // legible so the user can sanity-check the key shape, dot out the rest.
+  let maskedKey = $derived.by(() => {
+    if (!connectKey) return "";
+    const m = connectKey.match(/^(lific_sk-live-|lific_sk-test-|lific_sk-|sk-live-|sk-)/);
+    const prefix = m ? m[0] : connectKey.slice(0, 6);
+    const hiddenLen = Math.max(connectKey.length - prefix.length, 0);
+    return prefix + "•".repeat(Math.min(hiddenLen, 40));
+  });
+  let displayKey = $derived(keyRevealed ? (connectKey ?? "") : maskedKey);
 
   // OS selector for the config-path display. Best-effort default from the
   // browser; the user can override since they may be configuring a tool on a
@@ -201,6 +214,7 @@
     copied = false;
     keyCopied = false;
     exportCopied = false;
+    keyRevealed = false;
     selectedOs = detectOs();
     connecting = true;
     const res = await createBot(template.id);
@@ -223,6 +237,13 @@
     if (!connectTool || !connectKey) return "";
     return connectTool.generateConfig(window.location.origin + "/mcp", connectKey);
   }
+  // What's rendered in the config block. Masks the embedded key to match
+  // Step 1's hide-by-default behavior; copy always uses the real configText().
+  let displayConfig = $derived.by(() => {
+    const text = configText();
+    if (keyRevealed || !connectKey) return text;
+    return text.split(connectKey).join(maskedKey);
+  });
   async function copyToClipboard(text: string, flag: (v: boolean) => void) {
     try {
       await navigator.clipboard.writeText(text);
@@ -538,90 +559,125 @@
             <span>{connectError}</span>
           </div>
         {:else if connectKey}
-          <!-- API KEY — shown once, surfaced explicitly so env-var tools
-               (Pi, Codex) never hide it inside an unexpanded config. -->
-          <div class="mb-4">
-            <div class="flex items-center justify-between mb-1.5">
-              <span class="text-[0.6875rem] font-semibold uppercase tracking-widest text-[var(--text-faint)]">
-                Your API key
-              </span>
-              <span class="inline-flex items-center gap-1 text-[0.6875rem] text-[var(--warn)]">
-                <AlertTriangle size={11} /> shown once
+          {@const stepCount = connectTool.usesEnvKey ? 3 : 2}
+
+          <!-- ── STEP 1 · API KEY ───────────────────────────────
+               Shown once; hidden behind a mask by default. Surfaced as its
+               own first-class step so env-var tools (Pi, Codex) never bury
+               the secret inside a config the user might not read. -->
+          <section class="mb-5">
+            <div class="flex items-center gap-2.5 mb-2">
+              <span class="size-5 shrink-0 grid place-items-center rounded-full bg-[var(--accent)] text-[var(--accent-text)] text-[0.6875rem] font-bold tabular-nums">1</span>
+              <h4 class="flex items-center gap-1.5 text-[0.8125rem] font-semibold text-[var(--text)]">
+                <KeyRound size={13} class="text-[var(--text-muted)]" /> Copy your API key
+              </h4>
+              <span class="ml-auto inline-flex items-center gap-1 text-[0.625rem] font-medium uppercase tracking-wide text-[var(--warn)] bg-[color-mix(in_oklab,var(--warn)_12%,transparent)] px-1.5 py-0.5 rounded-full">
+                <AlertTriangle size={10} /> shown once
               </span>
             </div>
-            <div class="relative">
-              <code class="block bg-[var(--bg)] border border-[var(--border)] rounded-lg px-3.5 py-2.5 pr-20 text-[0.75rem] font-mono text-[var(--text)] overflow-x-auto whitespace-nowrap">{connectKey}</code>
+
+            <div class="rounded-lg border border-[var(--accent)] bg-[color-mix(in_oklab,var(--accent)_6%,var(--bg))] overflow-hidden">
+              <div class="flex items-center gap-2 px-3 py-2.5">
+                <code class="flex-1 min-w-0 text-[0.8125rem] font-mono text-[var(--text)] overflow-x-auto whitespace-nowrap leading-none py-0.5">{displayKey}</code>
+                <button
+                  class="shrink-0 size-7 grid place-items-center rounded-md text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--bg-subtle)] transition-colors"
+                  onclick={() => (keyRevealed = !keyRevealed)}
+                  title={keyRevealed ? "Hide key" : "Reveal key"}
+                  aria-label={keyRevealed ? "Hide key" : "Reveal key"}
+                >
+                  {#if keyRevealed}<EyeOff size={15} />{:else}<Eye size={15} />{/if}
+                </button>
+              </div>
               <button
-                class="absolute top-1/2 -translate-y-1/2 right-2 inline-flex items-center gap-1 text-[0.6875rem] font-semibold
-                       px-2 py-1 rounded-md bg-[var(--surface)] border border-[var(--border)]
-                       {keyCopied ? 'text-[var(--success)]' : 'text-[var(--text-muted)] hover:text-[var(--text)]'} transition-colors"
+                class="w-full flex items-center justify-center gap-1.5 py-2 text-[0.8125rem] font-semibold border-t border-[color-mix(in_oklab,var(--accent)_30%,transparent)] transition-colors
+                       {keyCopied
+                  ? 'bg-[var(--success-bg)] text-[var(--success)]'
+                  : 'bg-[var(--accent)] text-[var(--accent-text)] hover:bg-[var(--accent-hover)]'}"
                 onclick={copyKey}
               >
-                {#if keyCopied}<Check size={12} /> Copied{:else}<Copy size={12} /> Copy{/if}
+                {#if keyCopied}<Check size={14} /> Copied to clipboard{:else}<Copy size={14} /> Copy key{/if}
               </button>
             </div>
-          </div>
+          </section>
 
-          <!-- Config path, with OS toggle only when paths actually differ. -->
-          <div class="flex items-center justify-between gap-3 mb-1 flex-wrap">
-            <p class="text-[0.8125rem] text-[var(--text-muted)]">
-              Add this to <code class="font-mono text-[0.75rem] bg-[var(--bg-subtle)] px-1.5 py-0.5 rounded text-[var(--text)] break-all">{activePath}</code>
-            </p>
-            {#if pathsDiffer}
-              <div class="inline-flex p-0.5 rounded-md bg-[var(--bg)] shrink-0">
+          <!-- ── STEP 2 · CONFIG ────────────────────────────────── -->
+          <section class="mb-5">
+            <div class="flex items-center gap-2.5 mb-2">
+              <span class="size-5 shrink-0 grid place-items-center rounded-full bg-[var(--accent)] text-[var(--accent-text)] text-[0.6875rem] font-bold tabular-nums">2</span>
+              <h4 class="flex items-center gap-1.5 text-[0.8125rem] font-semibold text-[var(--text)]">
+                <FileCode2 size={13} class="text-[var(--text-muted)]" /> Add to your config
+              </h4>
+            </div>
+
+            <!-- OS selector — full-width segmented row of its own. Always
+                 present, but disabled-looking hint when the path is the same
+                 everywhere so the control still teaches "this is per-OS". -->
+            <div class="flex items-center gap-2 mb-2">
+              <div class="inline-flex flex-1 p-0.5 rounded-lg bg-[var(--bg)] shadow-[inset_0_1px_2px_rgba(0,0,0,0.08)]">
                 {#each ["linux", "mac", "windows"] as os (os)}
                   <button
-                    class="px-2 py-0.5 rounded text-[0.6875rem] font-medium transition-colors
+                    class="flex-1 px-2 py-1.5 rounded-md text-[0.75rem] font-medium transition-all
                            {selectedOs === os
-                      ? 'bg-[var(--surface)] text-[var(--text)]'
-                      : 'text-[var(--text-faint)] hover:text-[var(--text)]'}"
+                      ? 'bg-[var(--surface)] text-[var(--text)] shadow-[0_1px_2px_rgba(0,0,0,0.10)]'
+                      : 'text-[var(--text-muted)] hover:text-[var(--text)]'}"
                     onclick={() => (selectedOs = os as Os)}
                   >
                     {OS_LABELS[os as Os]}
                   </button>
                 {/each}
               </div>
-            {/if}
-          </div>
-          {#if connectTool.configNote}
-            <p class="text-[0.75rem] text-[var(--text-faint)] mb-3 leading-relaxed">{connectTool.configNote}</p>
-          {/if}
+              {#if !pathsDiffer}
+                <span class="text-[0.6875rem] text-[var(--text-faint)] shrink-0">same on all OSes</span>
+              {/if}
+            </div>
 
-          <div class="relative">
-            <pre class="bg-[var(--bg)] border border-[var(--border)] rounded-lg p-3.5 pr-12 text-[0.75rem] font-mono text-[var(--text)] overflow-x-auto leading-relaxed">{configText()}</pre>
-            <button
-              class="absolute top-2 right-2 inline-flex items-center gap-1 text-[0.6875rem] font-semibold
-                     px-2 py-1 rounded-md bg-[var(--surface)] border border-[var(--border)]
-                     {copied ? 'text-[var(--success)]' : 'text-[var(--text-muted)] hover:text-[var(--text)]'} transition-colors"
-              onclick={copyConfig}
-            >
-              {#if copied}<Check size={12} /> Copied{:else}<Copy size={12} /> Copy{/if}
-            </button>
-          </div>
-
-          <!-- Env-var tools: the key isn't in the config block, so give the
-               user the exact shell command to set it (OS-aware). -->
-          {#if connectTool.usesEnvKey}
-            <p class="text-[0.75rem] text-[var(--text-muted)] mt-3 mb-1">
-              Then set the key in your environment ({OS_LABELS[selectedOs]}):
+            <p class="text-[0.75rem] text-[var(--text-muted)] mb-1.5">
+              File: <code class="font-mono text-[0.75rem] bg-[var(--bg-subtle)] px-1.5 py-0.5 rounded text-[var(--text)] break-all">{activePath}</code>
             </p>
+            {#if connectTool.configNote}
+              <p class="text-[0.75rem] text-[var(--text-faint)] mb-2 leading-relaxed">{connectTool.configNote}</p>
+            {/if}
+
             <div class="relative">
-              <pre class="bg-[var(--bg)] border border-[var(--border)] rounded-lg p-3 pr-12 text-[0.75rem] font-mono text-[var(--text)] overflow-x-auto">{exportLine}</pre>
+              <pre class="bg-[var(--bg)] border border-[var(--border)] rounded-lg p-3.5 pr-12 text-[0.75rem] font-mono text-[var(--text)] overflow-x-auto leading-relaxed">{displayConfig}</pre>
               <button
                 class="absolute top-2 right-2 inline-flex items-center gap-1 text-[0.6875rem] font-semibold
                        px-2 py-1 rounded-md bg-[var(--surface)] border border-[var(--border)]
-                       {exportCopied ? 'text-[var(--success)]' : 'text-[var(--text-muted)] hover:text-[var(--text)]'} transition-colors"
-                onclick={copyExport}
+                       {copied ? 'text-[var(--success)]' : 'text-[var(--text-muted)] hover:text-[var(--text)]'} transition-colors"
+                onclick={copyConfig}
               >
-                {#if exportCopied}<Check size={12} /> Copied{:else}<Copy size={12} /> Copy{/if}
+                {#if copied}<Check size={12} /> Copied{:else}<Copy size={12} /> Copy{/if}
               </button>
             </div>
+          </section>
+
+          <!-- ── STEP 3 · ENV VAR (env-key tools only) ──────────── -->
+          {#if connectTool.usesEnvKey}
+            <section class="mb-5">
+              <div class="flex items-center gap-2.5 mb-2">
+                <span class="size-5 shrink-0 grid place-items-center rounded-full bg-[var(--accent)] text-[var(--accent-text)] text-[0.6875rem] font-bold tabular-nums">3</span>
+                <h4 class="flex items-center gap-1.5 text-[0.8125rem] font-semibold text-[var(--text)]">
+                  <Terminal size={13} class="text-[var(--text-muted)]" /> Set the env var
+                  <span class="font-normal text-[var(--text-faint)]">· {OS_LABELS[selectedOs]}</span>
+                </h4>
+              </div>
+              <div class="relative">
+                <pre class="bg-[var(--bg)] border border-[var(--border)] rounded-lg p-3 pr-12 text-[0.75rem] font-mono text-[var(--text)] overflow-x-auto">{keyRevealed ? exportLine : exportLine.replace(connectKey, maskedKey)}</pre>
+                <button
+                  class="absolute top-2 right-2 inline-flex items-center gap-1 text-[0.6875rem] font-semibold
+                         px-2 py-1 rounded-md bg-[var(--surface)] border border-[var(--border)]
+                         {exportCopied ? 'text-[var(--success)]' : 'text-[var(--text-muted)] hover:text-[var(--text)]'} transition-colors"
+                  onclick={copyExport}
+                >
+                  {#if exportCopied}<Check size={12} /> Copied{:else}<Copy size={12} /> Copy{/if}
+                </button>
+              </div>
+            </section>
           {/if}
 
-          <div class="mt-3 flex items-start gap-2 text-[0.75rem] text-[var(--warn)]">
-            <AlertTriangle size={14} class="shrink-0 mt-0.5" />
-            <span>Copy the key now — it won't be shown again. You can always reconnect to mint a fresh one.</span>
-          </div>
+          <p class="text-[0.6875rem] text-[var(--text-faint)] text-center leading-relaxed">
+            The key is shown only this once — copy it now. You can reconnect any time to mint a fresh one.
+          </p>
         {/if}
       </div>
 
