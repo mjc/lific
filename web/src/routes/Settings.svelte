@@ -681,12 +681,16 @@
                     <p class="text-[0.8125rem] text-[var(--text)] leading-snug">{step.text}</p>
                   {/if}
                   {#if step.command}
-                    <div class="relative">
-                      <pre class="bg-[var(--bg)] border border-[var(--border)] rounded-md py-2 pl-3 pr-12 text-[0.75rem] font-mono text-[var(--text)] overflow-x-auto whitespace-pre">{step.command}</pre>
+                    <!-- Same shape as the API-key card: content row on top,
+                         full-width copy bar underneath. No floating button
+                         overlapping a single line of scrolling text. -->
+                    <div class="rounded-md border border-[var(--border)] bg-[var(--bg)] overflow-hidden">
+                      <pre class="px-3 py-2 text-[0.75rem] font-mono text-[var(--text)] overflow-x-auto whitespace-pre">{step.command}</pre>
                       <button
-                        class="absolute top-1/2 -translate-y-1/2 right-1.5 inline-flex items-center gap-1 text-[0.6875rem] font-semibold
-                               px-2 py-1 rounded-md bg-[var(--surface)] border border-[var(--border)]
-                               {noteCopiedIdx === i ? 'text-[var(--success)]' : 'text-[var(--text-muted)] hover:text-[var(--text)]'} transition-colors"
+                        class="w-full flex items-center justify-center gap-1.5 py-1.5 text-[0.6875rem] font-semibold border-t border-[var(--border)] transition-colors
+                               {noteCopiedIdx === i
+                          ? 'bg-[var(--success-bg)] text-[var(--success)]'
+                          : 'bg-[var(--bg-subtle)] text-[var(--text-muted)] hover:text-[var(--text)]'}"
                         onclick={() => copyNote(i, step.command!)}
                       >
                         {#if noteCopiedIdx === i}<Check size={12} /> Copied{:else}<Copy size={12} /> Copy{/if}
