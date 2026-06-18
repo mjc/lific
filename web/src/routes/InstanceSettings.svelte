@@ -39,6 +39,7 @@
   let fDomains = $state("");
   let fSession = $state(30);
   let fMessage = $state("");
+  let fAutoLogin = $state(false);
 
   let saving = $state(false);
   let saveError = $state("");
@@ -51,6 +52,7 @@
     fDomains = s.signup_email_domains.join(", ");
     fSession = s.session_lifetime_days;
     fMessage = s.login_message ?? "";
+    fAutoLogin = s.web_auto_login;
   }
 
   onMount(async () => {
@@ -68,36 +70,63 @@
     return csv.split(/[,\s]+/).map((d) => d.trim()).filter(Boolean);
   }
 
-  const dirty = $derived.by(() => {
-    if (!settings) return false;
-    return (
-      fName.trim() !== (settings.instance_name ?? "") ||
-      fSignups !== settings.allow_signup ||
-      parseDomains(fDomains).join(",") !== settings.signup_email_domains.join(",") ||
-      fSession !== settings.session_lifetime_days ||
-      fMessage.trim() !== (settings.login_message ?? "")
-    );
-  });
-
-  async function save() {
-    if (saving || !dirty) return;
+  // ── Field-level autosave (no Save button) ───────────────
+  // Mirrors ProjectSettings: every control commits its own field — text inputs
+  // on blur, toggles on click. We re-sync only the fields named in the patch
+  // from the normalized server response, so an in-progress edit in a different
+  // field is never clobbered.
+  async function commit(patch: InstanceSettingsPatch) {
+    if (saving) return;
     saving = true;
     saveError = "";
-    const patch: InstanceSettingsPatch = {
-      instance_name: fName.trim(),
-      allow_signup: fSignups,
-      signup_email_domains: parseDomains(fDomains),
-      session_lifetime_days: fSession,
-      login_message: fMessage.trim(),
-    };
     const res = await updateInstanceSettings(patch);
     saving = false;
     if (res.ok) {
-      hydrate(res.data);
+      settings = res.data;
+      if (patch.instance_name !== undefined) fName = res.data.instance_name ?? "";
+      if (patch.signup_email_domains !== undefined)
+        fDomains = res.data.signup_email_domains.join(", ");
+      if (patch.session_lifetime_days !== undefined) fSession = res.data.session_lifetime_days;
+      if (patch.login_message !== undefined) fMessage = res.data.login_message ?? "";
+      if (patch.allow_signup !== undefined) fSignups = res.data.allow_signup;
+      if (patch.web_auto_login !== undefined) fAutoLogin = res.data.web_auto_login;
       savedAt = Date.now();
       window.setTimeout(() => { if (Date.now() - savedAt >= 1900) savedAt = 0; }, 2000);
     } else {
       saveError = res.error;
+    }
+  }
+
+  // Per-field commits: only write when the value actually changed, so a blur
+  // with no edit (or re-clicking the already-active toggle) is a no-op.
+  function commitName() {
+    if (settings && fName.trim() !== (settings.instance_name ?? ""))
+      commit({ instance_name: fName.trim() });
+  }
+  function commitDomains() {
+    if (settings && parseDomains(fDomains).join(",") !== settings.signup_email_domains.join(","))
+      commit({ signup_email_domains: parseDomains(fDomains) });
+  }
+  function commitSession() {
+    // Guard against an emptied number input (NaN/null) — the server would
+    // treat it as "no change" anyway, but don't bother round-tripping it.
+    if (settings && Number.isFinite(fSession) && fSession !== settings.session_lifetime_days)
+      commit({ session_lifetime_days: fSession });
+  }
+  function commitMessage() {
+    if (settings && fMessage.trim() !== (settings.login_message ?? ""))
+      commit({ login_message: fMessage.trim() });
+  }
+  function setSignups(v: boolean) {
+    if (settings && v !== fSignups) {
+      fSignups = v;
+      commit({ allow_signup: v });
+    }
+  }
+  function setAutoLogin(v: boolean) {
+    if (settings && v !== fAutoLogin) {
+      fAutoLogin = v;
+      commit({ web_auto_login: v });
     }
   }
 
@@ -160,21 +189,22 @@
           <div class="flex flex-col gap-6 max-w-[560px]">
             <!-- Name -->
             <label class="block">
-              <span class="block text-[0.6875rem] font-semibold uppercase tracking-widest text-[var(--text-faint)] mb-1.5">Instance name</span>
+              <span class="block text-[0.6875rem] font-semibold uppercase tracking-widest text-[var(--text)] mb-1.5">Instance name</span>
               <input
                 bind:value={fName}
+                onblur={commitName}
                 placeholder={host}
                 maxlength="60"
                 class="w-full px-3 py-2 text-[0.875rem] rounded-md border border-[var(--border)] bg-[var(--bg)] text-[var(--text)]
                        outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
               />
-              <span class="block text-[0.75rem] text-[var(--text-muted)] mt-1.5">Shown on the sign-in screen. Leave blank to use the host.</span>
+              <span class="block text-[0.75rem] text-[var(--text)] mt-1.5">Shown on the sign-in screen. Leave blank to use the host.</span>
             </label>
 
             <!-- Signups: a real status, so each state carries its own color
                  (green = open/permissive, amber = gated) + an icon. -->
             <div>
-              <span class="block text-[0.6875rem] font-semibold uppercase tracking-widest text-[var(--text-faint)] mb-1.5">Sign-ups</span>
+              <span class="block text-[0.6875rem] font-semibold uppercase tracking-widest text-[var(--text)] mb-1.5">Sign-ups</span>
               <div class="inline-flex gap-1 p-1 rounded-xl bg-[var(--bg)] shadow-[inset_0_1px_2px_rgba(0,0,0,0.10)]">
                 <button
                   type="button"
@@ -183,8 +213,8 @@
                          motion-safe:active:scale-[0.98]
                          {fSignups
                     ? 'bg-[var(--success-bg)] text-[var(--success)] shadow-[0_1px_2px_rgba(0,0,0,0.10)] ring-1 ring-[color-mix(in_oklab,var(--success)_38%,transparent)]'
-                    : 'text-[var(--text-faint)] hover:text-[var(--text-muted)]'}"
-                  onclick={() => (fSignups = true)}
+                    : 'text-[var(--text-muted)] hover:text-[var(--text)]'}"
+                  onclick={() => setSignups(true)}
                 >
                   <DoorOpen size={16} class="shrink-0" />
                   Open
@@ -195,15 +225,15 @@
                   class="flex items-center gap-2 px-4 py-2 rounded-lg text-[0.8125rem] font-semibold transition-all
                          motion-safe:active:scale-[0.98]
                          {!fSignups
-                    ? 'bg-[color-mix(in_oklab,var(--warn)_15%,var(--bg))] text-[var(--warn)] shadow-[0_1px_2px_rgba(0,0,0,0.10)] ring-1 ring-[color-mix(in_oklab,var(--warn)_38%,transparent)]'
-                    : 'text-[var(--text-faint)] hover:text-[var(--text-muted)]'}"
-                  onclick={() => (fSignups = false)}
+                    ? 'bg-[color-mix(in_oklab,var(--warn)_15%,var(--bg))] text-[var(--warn-text)] shadow-[0_1px_2px_rgba(0,0,0,0.10)] ring-1 ring-[color-mix(in_oklab,var(--warn)_38%,transparent)]'
+                    : 'text-[var(--text-muted)] hover:text-[var(--text)]'}"
+                  onclick={() => setSignups(false)}
                 >
                   <DoorClosed size={16} class="shrink-0" />
                   Closed
                 </button>
               </div>
-              <span class="block text-[0.75rem] text-[var(--text-muted)] mt-2 leading-relaxed">
+              <span class="block text-[0.75rem] text-[var(--text)] mt-2 leading-relaxed">
                 {#if fSignups}
                   Anyone can create their own account{parseDomains(fDomains).length ? " from an allowed domain" : ""}.
                 {:else}
@@ -214,63 +244,118 @@
 
             <!-- Email domain allowlist -->
             <label class="block">
-              <span class="block text-[0.6875rem] font-semibold uppercase tracking-widest text-[var(--text-faint)] mb-1.5">Allowed signup domains</span>
+              <span class="block text-[0.6875rem] font-semibold uppercase tracking-widest text-[var(--text)] mb-1.5">Allowed signup domains</span>
               <input
                 bind:value={fDomains}
-                placeholder="acme.com, sub.acme.com"
+                onblur={commitDomains}
+                placeholder="snake.com, sub.snake.com"
                 class="w-full px-3 py-2 text-[0.875rem] font-mono rounded-md border border-[var(--border)] bg-[var(--bg)] text-[var(--text)]
                        outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
               />
-              <span class="block text-[0.75rem] text-[var(--text-muted)] mt-1.5">Comma-separated. Leave blank to allow any email domain.</span>
+              <span class="block text-[0.75rem] text-[var(--text)] mt-1.5">Comma-separated. Leave blank to allow any email domain.</span>
             </label>
 
             <!-- Session lifetime -->
             <label class="block">
-              <span class="block text-[0.6875rem] font-semibold uppercase tracking-widest text-[var(--text-faint)] mb-1.5">Session lifetime</span>
+              <span class="block text-[0.6875rem] font-semibold uppercase tracking-widest text-[var(--text)] mb-1.5">Session lifetime</span>
               <div class="flex items-center gap-2">
                 <input
                   type="number"
                   bind:value={fSession}
+                  onblur={commitSession}
                   min="1"
                   max="365"
                   class="w-24 px-3 py-2 text-[0.875rem] rounded-md border border-[var(--border)] bg-[var(--bg)] text-[var(--text)]
                          outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
                 />
-                <span class="text-[0.875rem] text-[var(--text-muted)]">days</span>
+                <span class="text-[0.875rem] text-[var(--text)]">days</span>
               </div>
-              <span class="block text-[0.75rem] text-[var(--text-muted)] mt-1.5">How long a sign-in stays valid before re-authenticating (1 to 365).</span>
+              <span class="block text-[0.75rem] text-[var(--text)] mt-1.5">How long a sign-in stays valid before re-authenticating (1 to 365).</span>
             </label>
 
             <!-- Login message -->
             <label class="block">
-              <span class="block text-[0.6875rem] font-semibold uppercase tracking-widest text-[var(--text-faint)] mb-1.5">Login message</span>
+              <span class="block text-[0.6875rem] font-semibold uppercase tracking-widest text-[var(--text)] mb-1.5">Login message</span>
               <textarea
                 bind:value={fMessage}
+                onblur={commitMessage}
                 rows="2"
                 maxlength="280"
-                placeholder="e.g. Acme's tracker. Ask #it for access."
+                placeholder="Lific Issue tracker. Ask I.T. for access"
                 class="w-full px-3 py-2 text-[0.875rem] rounded-md border border-[var(--border)] bg-[var(--bg)] text-[var(--text)]
                        outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] resize-none"
               ></textarea>
-              <span class="block text-[0.75rem] text-[var(--text-muted)] mt-1.5">A short note shown on the sign-in screen. Leave blank for none.</span>
+              <span class="block text-[0.75rem] text-[var(--text)] mt-1.5">A short note shown on the sign-in screen. Leave blank for none.</span>
             </label>
+
+            <!-- Single-user mode (LIF-215): auto-sign-in the web UI as the
+                 admin. A real auth bypass, so it's set apart with a divider and
+                 a stronger (--text) section label, carries a loud warning when
+                 on, and is scoped to the browser (REST/MCP still need tokens).
+                 The danger is signalled by the divider + amber toggle/warning
+                 box, NOT by tinting this 11px label amber — orange-600 is only
+                 ~3.4:1 on the light surface and would fail AA. -->
+            <div class="pt-6 mt-1 border-t border-[var(--border)]">
+              <span class="block text-[0.6875rem] font-semibold uppercase tracking-widest text-[var(--text)] mb-1.5">Single-user mode</span>
+              <div class="inline-flex gap-1 p-1 rounded-xl bg-[var(--bg)] shadow-[inset_0_1px_2px_rgba(0,0,0,0.10)]">
+                <button
+                  type="button"
+                  aria-pressed={!fAutoLogin}
+                  class="flex items-center gap-2 px-4 py-2 rounded-lg text-[0.8125rem] font-semibold transition-all
+                         motion-safe:active:scale-[0.98]
+                         {!fAutoLogin
+                    ? 'bg-[var(--surface)] text-[var(--text)] shadow-[0_1px_2px_rgba(0,0,0,0.10)] ring-1 ring-[var(--border)]'
+                    : 'text-[var(--text-muted)] hover:text-[var(--text)]'}"
+                  onclick={() => setAutoLogin(false)}
+                >
+                  <DoorClosed size={16} class="shrink-0" />
+                  Require sign-in
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={fAutoLogin}
+                  class="flex items-center gap-2 px-4 py-2 rounded-lg text-[0.8125rem] font-semibold transition-all
+                         motion-safe:active:scale-[0.98]
+                         {fAutoLogin
+                    ? 'bg-[color-mix(in_oklab,var(--warn)_15%,var(--bg))] text-[var(--warn-text)] shadow-[0_1px_2px_rgba(0,0,0,0.10)] ring-1 ring-[color-mix(in_oklab,var(--warn)_38%,transparent)]'
+                    : 'text-[var(--text-muted)] hover:text-[var(--text)]'}"
+                  onclick={() => setAutoLogin(true)}
+                >
+                  <DoorOpen size={16} class="shrink-0" />
+                  Skip web sign-in
+                </button>
+              </div>
+              <span class="block text-[0.75rem] text-[var(--text)] mt-2 leading-relaxed">
+                {#if fAutoLogin}
+                  The web UI signs in as the admin automatically — no login screen.
+                {:else}
+                  Everyone signs in with their account as normal.
+                {/if}
+              </span>
+              {#if fAutoLogin}
+                <div class="flex items-start gap-2 text-[0.75rem] text-[var(--warn-text)] bg-[color-mix(in_oklab,var(--warn)_12%,var(--bg))] px-3 py-2 rounded-lg mt-2 max-w-[42ch]">
+                  <AlertTriangle size={13} class="shrink-0 mt-0.5" />
+                  <span>Anyone who can reach this site becomes admin without a password. Only enable on a private or local instance. REST and MCP are unaffected.</span>
+                </div>
+              {/if}
+            </div>
           </div>
 
           {#if saveError}
             <p class="text-[0.75rem] text-[var(--error)] mt-4 flex items-center gap-1"><AlertTriangle size={12} /> {saveError}</p>
           {/if}
 
-          <div class="flex items-center gap-3 mt-5">
-            <button
-              class="text-[0.8125rem] font-medium text-[var(--btn-success-text)] bg-[var(--btn-success)] px-3 py-1.5 rounded-md
-                     hover:bg-[var(--btn-success-hover)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-              disabled={!dirty || saving}
-              onclick={save}
-            >
-              {saving ? "Saving…" : "Save changes"}
-            </button>
-            {#if savedAt}
-              <span class="inline-flex items-center gap-1 text-[0.8125rem] text-[var(--success)]" aria-live="polite"><Check size={13} /> Saved</span>
+          <!-- Autosave status (no Save button — each field commits on change). -->
+          <div class="flex items-center gap-2 mt-5 h-5 text-[0.8125rem]" aria-live="polite">
+            {#if saving}
+              <span class="inline-flex items-center gap-1.5 text-[var(--text-muted)]">
+                <span class="size-3 rounded-full border-2 border-[var(--border)] border-t-[var(--accent)] animate-spin"></span>
+                Saving…
+              </span>
+            {:else if savedAt}
+              <span class="inline-flex items-center gap-1 text-[var(--success)]"><Check size={13} /> Saved</span>
+            {:else if !saveError}
+              <span class="text-[var(--text-muted)]">Changes save automatically.</span>
             {/if}
           </div>
         </section>

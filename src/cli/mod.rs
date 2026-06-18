@@ -608,6 +608,12 @@ pub enum InstanceAction {
         /// Short message shown on the auth screen (pass "" to clear)
         #[arg(long = "login-message")]
         login_message: Option<String>,
+
+        /// Single-user mode: auto-sign-in the web UI as the admin (no login
+        /// screen). Browser-only; REST/MCP still need tokens. Dangerous if the
+        /// instance is publicly reachable.
+        #[arg(long = "auto-login")]
+        auto_login: Option<bool>,
     },
 }
 
@@ -771,6 +777,7 @@ mod tests {
             "--signup-domains", "acme.com,sub.acme.com",
             "--session-days", "14",
             "--login-message", "Ask #it for access",
+            "--auto-login", "true",
         ])
         .unwrap();
         match cli.command {
@@ -782,6 +789,7 @@ mod tests {
                         signup_domains,
                         session_days,
                         login_message,
+                        auto_login,
                     },
             } => {
                 assert_eq!(name, Some("Acme Eng".into()));
@@ -789,6 +797,7 @@ mod tests {
                 assert_eq!(signup_domains, Some("acme.com,sub.acme.com".into()));
                 assert_eq!(session_days, Some(14));
                 assert_eq!(login_message, Some("Ask #it for access".into()));
+                assert_eq!(auto_login, Some(true));
             }
             _ => panic!("expected Instance Set"),
         }

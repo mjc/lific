@@ -94,6 +94,9 @@ export interface InstanceInfo {
   instance_name: string | null;
   /** Short admin message to show on the auth screen, or null. */
   login_message: string | null;
+  /** LIF-215: single-user mode — the web app should auto-sign-in as the admin
+   *  instead of showing the login form. */
+  web_auto_login: boolean;
 }
 
 export async function getInstance() {
@@ -107,6 +110,7 @@ export interface InstanceSettings {
   signup_email_domains: string[];
   session_lifetime_days: number;
   login_message: string | null;
+  web_auto_login: boolean;
 }
 
 export interface InstanceSettingsPatch {
@@ -117,6 +121,7 @@ export interface InstanceSettingsPatch {
   session_lifetime_days?: number;
   /** "" clears. */
   login_message?: string;
+  web_auto_login?: boolean;
 }
 
 export async function getInstanceSettings() {
@@ -146,6 +151,12 @@ export async function login(identity: string, password: string) {
     method: "POST",
     body: JSON.stringify({ identity, password }),
   });
+}
+
+/** Single-user mode (LIF-215): mint an admin session without a password when
+ *  the instance has `web_auto_login` enabled. Returns 403 when it's off. */
+export async function autoLogin() {
+  return request<AuthResponse>("/auth/auto-login", { method: "POST" });
 }
 
 export async function logout() {

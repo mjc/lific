@@ -203,6 +203,65 @@ pub(super) async fn auth_login(
     ))
 }
 
+/// POST /api/auth/auto-login — single-user mode (LIF-215).
+///
+/// When the instance has `web_auto_login` enabled, mint a session for the
+/// first admin account *without a password* so the web UI can sign in
+/// automatically and a solo operator never sees a login screen. Returns the
+/// same shape as `/api/auth/login`.
+///
+/// SECURITY: this endpoint is unauthenticated by design — it is the thing that
+/// *produces* a session — so the **only** gate is the instance flag. It is
+/// therefore default-deny: `Forbidden` whenever `web_auto_login` is off. It is
+/// also strictly a browser convenience; REST and MCP still require real bearer
+/// tokens. On a publicly-reachable instance this is equivalent to handing
+/// admin to anyone who can load the page, which is why it is off by default and
+/// surfaced with a warning in the admin UI.
+pub(super) async fn auth_auto_login(
+    State(db): State<DbPool>,
+    Extension(auth_cfg): Extension<crate::config::AuthConfig>,
+) -> Result<impl IntoResponse, LificError> {
+    let conn = db.write()?;
+    let settings = crate::db::queries::settings::get(&conn)?;
+    if !settings.web_auto_login {
+        return Err(LificError::Forbidden(
+            "single-user auto-login is not enabled on this instance".into(),
+        ));
+    }
+
+    let admin = crate::db::queries::users::first_admin(&conn)?.ok_or_else(|| {
+        LificError::BadRequest("no admin account exists to sign in as".into())
+    })?;
+
+    let session = crate::db::queries::users::create_session(
+        &conn,
+        admin.id,
+        Some(settings.session_lifetime_days * 24),
+    )?;
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "set-cookie",
+        session_cookie(&session.token, &session.expires_at, auth_cfg.secure_cookies)
+            .parse()
+            .unwrap(),
+    );
+
+    Ok((
+        headers,
+        Json(serde_json::json!({
+            "user": {
+                "id": admin.id,
+                "username": admin.username,
+                "display_name": admin.display_name,
+                "is_admin": admin.is_admin,
+            },
+            "token": session.token,
+            "expires_at": session.expires_at,
+        })),
+    ))
+}
+
 pub(super) async fn auth_logout(
     State(db): State<DbPool>,
     Extension(auth_cfg): Extension<crate::config::AuthConfig>,
@@ -256,6 +315,9 @@ pub(super) async fn instance_info(
         "has_users": has_users,
         "instance_name": settings.instance_name,
         "login_message": settings.login_message,
+        // LIF-215: tells the unauthenticated web app to silently sign in as the
+        // admin (single-user mode) instead of showing the login form.
+        "web_auto_login": settings.web_auto_login,
     })))
 }
 
@@ -267,6 +329,7 @@ fn settings_json(s: &crate::db::queries::settings::InstanceSettings) -> serde_js
         "signup_email_domains": s.signup_email_domains,
         "session_lifetime_days": s.session_lifetime_days,
         "login_message": s.login_message,
+        "web_auto_login": s.web_auto_login,
     })
 }
 
@@ -287,6 +350,7 @@ pub(super) struct InstanceSettingsPatchReq {
     signup_email_domains: Option<Vec<String>>,
     session_lifetime_days: Option<i64>,
     login_message: Option<String>,
+    web_auto_login: Option<bool>,
 }
 
 /// PATCH /api/instance/settings — partial update, admin only.
@@ -302,6 +366,7 @@ pub(super) async fn instance_settings_patch(
         signup_email_domains: input.signup_email_domains,
         session_lifetime_days: input.session_lifetime_days,
         login_message: input.login_message,
+        web_auto_login: input.web_auto_login,
     };
     let s = with_write(&db, move |conn| crate::db::queries::settings::update(conn, patch))?;
     Ok(Json(settings_json(&s)))
@@ -852,6 +917,56 @@ mod tests {
                 .status(),
             StatusCode::FORBIDDEN
         );
+    }
+
+    // ── LIF-215: single-user web auto-login ──
+
+    #[tokio::test]
+    async fn auto_login_disabled_by_default_is_forbidden() {
+        // Default-deny: the flag is off until an admin enables it.
+        let app = test_app();
+        let resp = json_post(&app, "/api/auth/auto-login", serde_json::json!({})).await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn auto_login_enabled_mints_admin_session() {
+        let app = test_app(); // seeded admin + authed as admin for the PATCH
+        let patch = json_patch(
+            &app,
+            "/api/instance/settings",
+            serde_json::json!({ "web_auto_login": true }),
+        )
+        .await;
+        assert_eq!(patch.status(), StatusCode::OK);
+        assert_eq!(parse_json(patch).await["web_auto_login"], true);
+
+        let resp = json_post(&app, "/api/auth/auto-login", serde_json::json!({})).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let data = parse_json(resp).await;
+        assert!(
+            data["token"].as_str().unwrap().starts_with("lific_sess_"),
+            "auto-login must mint a real session token: {data}"
+        );
+        assert_eq!(data["user"]["is_admin"], true);
+        assert_eq!(data["user"]["username"], "test-admin");
+    }
+
+    #[tokio::test]
+    async fn instance_info_exposes_web_auto_login() {
+        let app = test_app();
+        let before = parse_json(json_get(&app, "/api/instance").await).await;
+        assert_eq!(before["web_auto_login"], false, "off by default");
+
+        json_patch(
+            &app,
+            "/api/instance/settings",
+            serde_json::json!({ "web_auto_login": true }),
+        )
+        .await;
+
+        let after = parse_json(json_get(&app, "/api/instance").await).await;
+        assert_eq!(after["web_auto_login"], true);
     }
 
     #[tokio::test]

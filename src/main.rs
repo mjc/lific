@@ -45,7 +45,7 @@ use rmcp::{
     },
 };
 use rust_embed::Embed;
-use tracing::info;
+use tracing::{info, warn};
 
 /// Embedded frontend assets compiled from web/dist/.
 /// Falls back gracefully if dist/ doesn't exist (e.g. dev builds without frontend).
@@ -149,6 +149,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     signup_domains,
                     session_days,
                     login_message,
+                    auto_login,
                 } => {
                     let patch = db::queries::settings::InstanceSettingsPatch {
                         allow_signup: signups,
@@ -161,6 +162,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }),
                         session_lifetime_days: session_days,
                         login_message,
+                        web_auto_login: auto_login,
                     };
                     let conn = pool.write()?;
                     db::queries::settings::update(&conn, patch)?;
@@ -393,6 +395,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             {
                 let conn = pool.write()?;
                 db::queries::settings::ensure(&conn, cfg.auth.allow_signup)?;
+
+                // LIF-215: single-user web auto-login hands an admin session to
+                // anyone who can load the page. That's fine on a private/local
+                // instance but dangerous when the server is publicly reachable.
+                // Use an https public_url as the "exposed" heuristic and shout.
+                if db::queries::settings::get(&conn)
+                    .map(|s| s.web_auto_login)
+                    .unwrap_or(false)
+                    && cfg
+                        .server
+                        .public_url
+                        .as_deref()
+                        .is_some_and(|u| u.trim().to_ascii_lowercase().starts_with("https://"))
+                {
+                    warn!(
+                        "web_auto_login is ENABLED while public_url is https — anyone who can \
+                         reach this instance gets an admin session without a password. Only \
+                         enable single-user mode on a private/local instance."
+                    );
+                }
             }
 
             // Key manager for auth
@@ -736,6 +758,7 @@ async fn auth_middleware_wrapper(
         || path == "/api/instance"
         || path == "/api/auth/signup"
         || path == "/api/auth/login"
+        || path == "/api/auth/auto-login"
         || path.starts_with("/.well-known/")
         || path.starts_with("/oauth/")
         || path == "/register"

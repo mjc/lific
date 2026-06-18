@@ -110,6 +110,11 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "instance settings",
         include_str!("../../migrations/023_instance_settings.sql"),
     ),
+    (
+        24,
+        "web auto-login",
+        include_str!("../../migrations/024_web_auto_login.sql"),
+    ),
 ];
 
 /// Ensure the migrations table exists and apply any pending migrations.

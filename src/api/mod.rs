@@ -41,6 +41,10 @@ pub fn router(db: DbPool, cors_origins: &[String]) -> Router {
         // Auth
         .route("/api/auth/signup", post(auth::auth_signup))
         .route("/api/auth/login", post(auth::auth_login))
+        // Single-user mode: mint an admin session without a password when the
+        // instance flag is set. Public (the carve-out in auth_middleware_wrapper
+        // must include this path) and default-deny when disabled. LIF-215.
+        .route("/api/auth/auto-login", post(auth::auth_auto_login))
         .route("/api/auth/logout", post(auth::auth_logout))
         .route("/api/auth/me", get(auth::auth_me).patch(auth::update_me))
         .route("/api/auth/me/password", post(auth::change_password))

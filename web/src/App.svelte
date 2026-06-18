@@ -17,9 +17,28 @@
   import ProjectActivity from "./routes/ProjectActivity.svelte";
   import Layout from "./lib/Layout.svelte";
   import ErrorState from "./lib/ErrorState.svelte";
-  import { hasSession } from "./lib/api";
+  import { hasSession, getInstance, autoLogin, saveSession } from "./lib/api";
+  import { onMount } from "svelte";
 
   let route = $state(window.location.hash.slice(1) || "/");
+
+  // LIF-215: single-user mode. On a cold load with no session, ask the
+  // instance whether web auto-login is enabled; if so, silently mint an admin
+  // session before the redirect logic can bounce us to /login. We start
+  // "bootstrapping" only when there's no session, so the logged-in common case
+  // never shows a spinner.
+  let bootstrapping = $state(!hasSession());
+
+  onMount(async () => {
+    if (!hasSession()) {
+      const inst = await getInstance();
+      if (inst.ok && inst.data.web_auto_login) {
+        const res = await autoLogin();
+        if (res.ok) saveSession(res.data.token);
+      }
+    }
+    bootstrapping = false;
+  });
 
   function navigate(path: string) {
     window.location.hash = path;
@@ -36,6 +55,9 @@
 
   // Redirect logic
   $effect(() => {
+    // Hold off until the single-user auto-login probe resolves, so we don't
+    // flash /login and then bounce into the app once the session lands.
+    if (bootstrapping) return;
     if (hasSession()) {
       if (route === "/" || route === "/login" || route === "/signup") {
         redirectToDefault();
@@ -224,7 +246,14 @@
   let onProjectChange = $state<(() => void) | undefined>();
 </script>
 
-{#if parsed.type === "auth"}
+{#if bootstrapping}
+  <div class="min-h-dvh flex items-center justify-center">
+    <div
+      class="size-6 rounded-full border-2 border-[var(--border)]
+             border-t-[var(--accent)] animate-spin"
+    ></div>
+  </div>
+{:else if parsed.type === "auth"}
   {#if parsed.page === "signup"}
     <Signup {navigate} />
   {:else}
