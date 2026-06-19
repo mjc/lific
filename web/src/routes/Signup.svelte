@@ -168,7 +168,7 @@
         type="button"
         onclick={() => navigate("/login")}
         class="rounded-lg bg-[var(--btn-success)] text-[var(--btn-success-text)]
-               text-[0.9375rem] font-medium py-2.5 px-5 transition-all duration-200
+               text-body-lg font-medium py-2.5 px-5 transition-all duration-200
                hover:bg-[var(--btn-success-hover)] motion-safe:active:scale-[0.98]
                focus-visible:ring-2 focus-visible:ring-[var(--btn-success)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)]"
       >
@@ -210,7 +210,7 @@
           spellcheck="false"
           aria-invalid={usernameError ? "true" : undefined}
           aria-describedby={usernameError ? "signup-username-err" : undefined}
-          class="input-field rounded-lg px-3.5 py-2.5 text-[0.9375rem]"
+          class="input-field rounded-lg px-3.5 py-2.5 text-body-lg"
         />
         {#if usernameError}
           <p id="signup-username-err" class="text-caption text-[var(--error)]">
@@ -239,7 +239,7 @@
           spellcheck="false"
           aria-invalid={emailError ? "true" : undefined}
           aria-describedby={emailError ? "signup-email-err" : undefined}
-          class="input-field rounded-lg px-3.5 py-2.5 text-[0.9375rem]"
+          class="input-field rounded-lg px-3.5 py-2.5 text-body-lg"
         />
         {#if emailError}
           <p id="signup-email-err" class="text-caption text-[var(--error)]">
@@ -265,7 +265,7 @@
             oninput={() => (passwordTouched = true)}
             autocomplete="new-password"
             aria-describedby="signup-password-reqs"
-            class="input-field w-full rounded-lg pl-3.5 pr-11 py-2.5 text-[0.9375rem]"
+            class="input-field w-full rounded-lg pl-3.5 pr-11 py-2.5 text-body-lg"
           />
           <button
             type="button"
@@ -339,7 +339,7 @@
         type="submit"
         disabled={loading || !canSubmit}
         class="mt-1 rounded-lg bg-[var(--btn-success)] text-[var(--btn-success-text)]
-               text-[0.9375rem] font-medium py-2.5 px-5
+               text-body-lg font-medium py-2.5 px-5
                transition-all duration-200
                hover:bg-[var(--btn-success-hover)] motion-safe:active:scale-[0.98]
                focus-visible:ring-2 focus-visible:ring-[var(--btn-success)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)]

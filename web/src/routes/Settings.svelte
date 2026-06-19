@@ -366,7 +366,7 @@
       <section class="rounded-xl bg-[var(--surface)] shadow-[0_1px_2px_rgba(0,0,0,0.06)] p-5 animate-reveal delay-250">
         <div class="flex items-center gap-2 mb-1">
           <Palette size={15} class="text-[var(--text-muted)]" />
-          <h2 class="text-[0.9375rem] font-semibold text-[var(--text)]">Appearance</h2>
+          <h2 class="text-body-lg font-semibold text-[var(--text)]">Appearance</h2>
         </div>
         <p class="text-body-sm text-[var(--text-muted)] mb-3.5">System follows your OS.</p>
         <div class="inline-flex p-0.5 rounded-lg bg-[var(--bg)] shadow-[inset_0_1px_2px_rgba(0,0,0,0.10)]">
@@ -512,7 +512,7 @@
         <div class="mt-8 pt-6 border-t border-[var(--border)]">
           <div class="flex items-center gap-2 mb-3.5">
             <Lock size={15} class="text-[var(--text-muted)]" />
-            <h3 class="text-[0.9375rem] font-semibold text-[var(--text)]">Password</h3>
+            <h3 class="text-body-lg font-semibold text-[var(--text)]">Password</h3>
           </div>
           <div class="max-w-[480px] flex flex-col gap-2.5">
             <input
@@ -547,7 +547,7 @@
 
         <!-- Sessions (sign out) — the very bottom of the page -->
         <div class="mt-8 pt-6 border-t border-[var(--border)]">
-          <h3 class="text-[0.9375rem] font-semibold text-[var(--text)] mb-1">Sessions</h3>
+          <h3 class="text-body-lg font-semibold text-[var(--text)] mb-1">Sessions</h3>
           <p class="text-body-sm text-[var(--text-muted)] mb-3.5 leading-relaxed">
             Sign out of this device, or revoke every active session everywhere.
           </p>
@@ -592,7 +592,7 @@
           <ToolIcon tool={connectTool.id} size={18} />
         </div>
         <div class="flex-1 min-w-0">
-          <h3 class="text-[0.9375rem] font-semibold text-[var(--text)] leading-tight">Connect {connectTool.name}</h3>
+          <h3 class="text-body-lg font-semibold text-[var(--text)] leading-tight">Connect {connectTool.name}</h3>
           <p class="text-caption text-[var(--text-muted)] truncate">{connectTool.description}</p>
         </div>
         <button class="size-7 grid place-items-center rounded-md text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--bg-subtle)] transition-colors" onclick={closeConnect} aria-label="Close">

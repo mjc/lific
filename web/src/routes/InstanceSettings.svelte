@@ -182,7 +182,7 @@
         <section class="rounded-xl bg-[var(--surface)] shadow-[0_1px_2px_rgba(0,0,0,0.06)] p-5 animate-reveal delay-250">
           <div class="flex items-center gap-2 mb-5">
             <SlidersHorizontal size={15} class="text-[var(--text-muted)]" />
-            <h2 class="text-[0.9375rem] font-semibold text-[var(--text)]">Settings</h2>
+            <h2 class="text-body-lg font-semibold text-[var(--text)]">Settings</h2>
             <span class="font-mono text-micro text-[var(--text-faint)] px-1.5 py-0.5 rounded bg-[var(--bg-subtle)]">v{__APP_VERSION__}</span>
           </div>
 

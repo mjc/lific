@@ -123,7 +123,7 @@
         spellcheck="false"
         aria-invalid={identityError ? "true" : undefined}
         aria-describedby={identityError ? "login-identity-err" : undefined}
-        class="input-field rounded-lg px-3.5 py-2.5 text-[0.9375rem]"
+        class="input-field rounded-lg px-3.5 py-2.5 text-body-lg"
       />
       {#if identityError}
         <p id="login-identity-err" class="text-caption text-[var(--error)]">
@@ -147,7 +147,7 @@
           type={showPassword ? "text" : "password"}
           bind:value={password}
           autocomplete="current-password"
-          class="input-field w-full rounded-lg pl-3.5 pr-11 py-2.5 text-[0.9375rem]"
+          class="input-field w-full rounded-lg pl-3.5 pr-11 py-2.5 text-body-lg"
         />
         <button
           type="button"
@@ -173,7 +173,7 @@
       type="submit"
       disabled={loading || !canSubmit}
       class="mt-1 rounded-lg bg-[var(--btn-success)] text-[var(--btn-success-text)]
-             text-[0.9375rem] font-medium py-2.5 px-5
+             text-body-lg font-medium py-2.5 px-5
              transition-all duration-200
              hover:bg-[var(--btn-success-hover)] motion-safe:active:scale-[0.98]
              focus-visible:ring-2 focus-visible:ring-[var(--btn-success)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)]

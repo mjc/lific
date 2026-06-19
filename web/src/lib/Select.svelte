@@ -95,7 +95,7 @@
       {@render renderSelected(selected)}
     {:else}
       <span
-        class="{sm ? 'text-body-sm' : 'text-[0.9375rem]'}
+        class="{sm ? 'text-body-sm' : 'text-body-lg'}
                {selected ? 'text-[var(--text)]' : 'text-[var(--text-muted)]'}"
       >
         {selected?.label ?? placeholder}

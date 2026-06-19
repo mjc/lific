@@ -347,7 +347,7 @@
     {:else if items.length === 0}
       <div class="flex flex-col items-center py-20 gap-3 px-6 max-w-[480px] mx-auto text-center">
         <History size={32} class="text-[var(--text-faint)]" />
-        <p class="text-[0.9375rem] text-[var(--text-muted)]">No activity yet</p>
+        <p class="text-body-lg text-[var(--text-muted)]">No activity yet</p>
         <p class="text-body-sm text-[var(--text-faint)] leading-relaxed">
           Every change in this project lands here — who did it, what
           changed, and whether it came through the web UI, an agent over

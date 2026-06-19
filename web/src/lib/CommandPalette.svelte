@@ -584,7 +584,7 @@
           bind:this={inputEl}
           bind:value={query}
           type="text"
-          class="flex-1 bg-transparent border-0 outline-none text-[0.9375rem]
+          class="flex-1 bg-transparent border-0 outline-none text-body-lg
                  text-[var(--text)] placeholder:text-[var(--text-faint)]"
           placeholder={mode.type === "prompt"
             ? (mode.action.prompt?.placeholder ?? "Type a value…")

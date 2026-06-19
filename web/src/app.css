@@ -32,6 +32,7 @@
   --text-caption: 0.75rem;    /* 12px — compact button text, sort/display pills */
   --text-body-sm: 0.8125rem;  /* 13px — dense UI workhorse (sidebar, menus, filters) */
   --text-body: 0.875rem;      /* 14px — prose / paragraphs, ErrorState body */
+  --text-body-lg: 0.9375rem;  /* 15px — form fields (Select md), auth buttons */
 
   /* named colors for palette reference */
   --color-stone-50: #faf8f5;

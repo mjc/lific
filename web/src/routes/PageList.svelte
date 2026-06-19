@@ -916,7 +916,7 @@
         {#if filteredPages.length === 0}
           <div class="flex flex-col items-center py-16 gap-3">
             <Mascot src="/LizzyReading.png" nativeW={487} nativeH={714} scale={0.16} />
-            <p class="text-[0.9375rem] text-[var(--text-muted)]">
+            <p class="text-body-lg text-[var(--text-muted)]">
               No pages match "{searchQuery}"
             </p>
             <button
@@ -943,7 +943,7 @@
                 <span class="shrink-0" style="color: {statusColor(hit.page.status)}" title={hMeta.label}>
                   <hMeta.icon size={17} />
                 </span>
-                <span class="text-[0.9375rem] text-[var(--text)] truncate flex-1">
+                <span class="text-body-lg text-[var(--text)] truncate flex-1">
                   {hit.page.title}
                 </span>
                 <span class="text-caption font-mono text-[var(--text-faint)] shrink-0">
@@ -1194,7 +1194,7 @@
       <input
         type="text"
         bind:value={createName}
-        class="flex-1 px-2 py-1 text-[0.9375rem] rounded
+        class="flex-1 px-2 py-1 text-body-lg rounded
                border border-[var(--btn-success)] bg-transparent
                text-[var(--text)] outline-none"
         placeholder={createTarget.type === "folder" ? "Folder name" : "Page title"}
@@ -1238,7 +1238,7 @@
         {:else}
           <FolderClosed size={18} class="shrink-0 text-[var(--text-muted)]" />
         {/if}
-        <span class="text-[0.9375rem] font-medium text-[var(--text)] flex-1 truncate">
+        <span class="text-body-lg font-medium text-[var(--text)] flex-1 truncate">
           {folder.name}
         </span>
         <!-- Hover actions -->
@@ -1306,7 +1306,7 @@
       </span>
       <div class="flex-1 min-w-0">
         <div class="flex items-center gap-2">
-          <span class="text-[0.9375rem] text-[var(--text)] truncate flex-1">
+          <span class="text-body-lg text-[var(--text)] truncate flex-1">
             {page.title}
           </span>
 

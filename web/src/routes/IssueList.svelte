@@ -1283,7 +1283,7 @@
              filter/search, so we keep the recovery affordance. -->
         <div class="flex flex-col items-center justify-center py-20 gap-3">
           <Mascot src="/LizzySleep2.png" nativeW={1000} nativeH={420} scale={0.16} />
-          <p class="text-[var(--text-muted)] text-[0.9375rem]">
+          <p class="text-[var(--text-muted)] text-body-lg">
             No issues match your filters
           </p>
           <button

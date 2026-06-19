@@ -214,7 +214,7 @@
           bind:this={inputEl}
           bind:value={query}
           type="text"
-          class="flex-1 bg-transparent border-0 outline-none text-[0.9375rem]
+          class="flex-1 bg-transparent border-0 outline-none text-body-lg
                  text-[var(--text)] placeholder:text-[var(--text-faint)]"
           placeholder={`Search ${projectIdentifier} issues or type ${projectIdentifier}-42…`}
           oninput={onInput}

@@ -345,7 +345,7 @@
               <input
                 type="text"
                 bind:value={createName}
-                class="w-full text-[0.9375rem] font-medium bg-transparent
+                class="w-full text-body-lg font-medium bg-transparent
                        border-none outline-none text-[var(--text)]
                        placeholder:text-[var(--text-faint)]"
                 placeholder="Module name (e.g. Q1 Launch, Auth, Search rework)"
@@ -437,7 +437,7 @@
                             <ProjectIcon value={mod.emoji} size={15} />
                           </span>
                         {/if}
-                        <span class="text-[0.9375rem] font-medium text-[var(--text)] truncate">
+                        <span class="text-body-lg font-medium text-[var(--text)] truncate">
                           {mod.name}
                         </span>
                       </div>

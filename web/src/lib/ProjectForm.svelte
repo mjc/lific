@@ -93,7 +93,7 @@
       id="project-name"
       type="text"
       bind:value={name}
-      class="w-full rounded-md px-3 py-2.5 text-[0.9375rem]
+      class="w-full rounded-md px-3 py-2.5 text-body-lg
              border border-[var(--border)] bg-[var(--bg-subtle)]
              text-[var(--text)] placeholder:text-[var(--text-faint)]
              outline-none transition-colors
@@ -118,7 +118,7 @@
         bind:value={identifier}
         oninput={() => { identifierTouched = true; }}
         disabled={identifierLocked}
-        class="w-[120px] rounded-md px-3 py-2.5 text-[0.9375rem] font-mono
+        class="w-[120px] rounded-md px-3 py-2.5 text-body-lg font-mono
                uppercase tracking-wide
                border border-[var(--border)] bg-[var(--bg-subtle)]
                text-[var(--text)] placeholder:text-[var(--text-faint)]
@@ -181,7 +181,7 @@
     <textarea
       id="project-desc"
       bind:value={description}
-      class="w-full rounded-md px-3 py-2.5 text-[0.9375rem] min-h-[100px]
+      class="w-full rounded-md px-3 py-2.5 text-body-lg min-h-[100px]
              border border-[var(--border)] bg-[var(--bg-subtle)]
              text-[var(--text)] placeholder:text-[var(--text-faint)]
              outline-none resize-y transition-colors
@@ -202,7 +202,7 @@
         {userInitials(opt.label)}
       </div>
     {/if}
-    <span class="text-[0.9375rem] text-[var(--text)]">{opt.label}</span>
+    <span class="text-body-lg text-[var(--text)]">{opt.label}</span>
   </div>
 {/snippet}
 
