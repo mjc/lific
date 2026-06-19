@@ -46,7 +46,7 @@
   <!-- Summary -->
   <div class="grid grid-cols-2 gap-3 mb-5">
     <div>
-      <p class="text-[1.375rem] font-display tracking-tight tabular-nums text-[var(--text)] leading-none">
+      <p class="text-title font-display tracking-tight tabular-nums text-[var(--text)] leading-none">
         {stats.total}
       </p>
       <p class="text-micro font-semibold uppercase tracking-widest text-[var(--text-faint)] mt-1">
@@ -54,7 +54,7 @@
       </p>
     </div>
     <div>
-      <p class="text-[1.375rem] font-display tracking-tight tabular-nums text-[var(--text)] leading-none">
+      <p class="text-title font-display tracking-tight tabular-nums text-[var(--text)] leading-none">
         {stats.active}
       </p>
       <p class="text-micro font-semibold uppercase tracking-widest text-[var(--text-faint)] mt-1">

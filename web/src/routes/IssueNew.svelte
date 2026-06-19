@@ -205,7 +205,7 @@
           <input
             type="text"
             bind:value={title}
-            class="w-full text-[1.5rem] font-display tracking-tight
+            class="w-full text-title font-display tracking-tight
                    bg-transparent border-none outline-none
                    text-[var(--text)] py-1 mb-4
                    placeholder:text-[var(--text-faint)]"

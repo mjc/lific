@@ -32,7 +32,7 @@
 <div class="w-full flex-1 h-full min-h-[55vh] relative overflow-hidden flex items-center">
   <!-- Copy, anchored left -->
   <div class="relative z-10 max-w-[440px] pl-8 sm:pl-14 pr-6 py-12">
-    <p class="font-display text-[1.375rem] tracking-tight text-[var(--text)] leading-tight">
+    <p class="font-display text-title tracking-tight text-[var(--text)] leading-tight">
       {title}
     </p>
     {#if message}

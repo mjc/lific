@@ -34,6 +34,7 @@
   --text-body: 0.875rem;      /* 14px — prose / paragraphs, ErrorState body */
   --text-body-lg: 0.9375rem;  /* 15px — form fields (Select md), auth buttons */
   --text-heading: 1.125rem;   /* 18px — small headings, brand wordmark, empty-state titles. Absorbs old 17px (1.0625rem) */
+  --text-title: 1.375rem;     /* 22px — page h1s, ErrorState title, large stat numerals. Absorbs old 20px (1.25rem) and 24px (1.5rem) */
 
   /* named colors for palette reference */
   --color-stone-50: #faf8f5;

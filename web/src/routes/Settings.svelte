@@ -343,11 +343,11 @@
 
       <!-- ── IDENTITY HERO (read-only) ────────────────── -->
       <section class="flex items-center gap-4 mb-8 animate-reveal delay-100">
-        <div class="size-14 shrink-0 rounded-full bg-[var(--accent)] text-[var(--accent-text)] grid place-items-center font-display text-[1.25rem] tracking-tight">
+        <div class="size-14 shrink-0 rounded-full bg-[var(--accent)] text-[var(--accent-text)] grid place-items-center font-display text-title tracking-tight">
           {initials(user.display_name || user.username)}
         </div>
         <div class="min-w-0">
-          <h1 class="font-display text-[1.5rem] tracking-tight text-[var(--text)] leading-none truncate">
+          <h1 class="font-display text-title tracking-tight text-[var(--text)] leading-none truncate">
             {user.display_name || user.username}
           </h1>
           <div class="flex items-center gap-2 mt-1.5 flex-wrap text-body-sm">

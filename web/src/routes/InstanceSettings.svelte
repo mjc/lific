@@ -171,7 +171,7 @@
         </div>
       {:else}
         <section class="mb-8 animate-reveal delay-100">
-          <h1 class="font-display text-[1.5rem] tracking-tight text-[var(--text)] leading-none">Instance</h1>
+          <h1 class="font-display text-title tracking-tight text-[var(--text)] leading-none">Instance</h1>
           <p class="text-body text-[var(--text-muted)] mt-2">
             Settings for the Lific instance at <span class="font-mono text-[var(--text)]">{host}</span>.
             Changes apply immediately.

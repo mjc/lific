@@ -160,7 +160,7 @@
   <!-- Trigger button -->
   <button
     class="size-10 rounded-lg border border-[var(--border)] bg-[var(--bg-subtle)]
-           flex items-center justify-center text-[1.25rem]
+           flex items-center justify-center text-title
            hover:border-[var(--accent)] transition-colors"
     onclick={toggle}
     title="Choose icon"

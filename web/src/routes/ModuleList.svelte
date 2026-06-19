@@ -474,7 +474,7 @@
 <!-- Portfolio hero stat: big number over an uppercase label. -->
 {#snippet heroStat(value: number, label: string)}
   <div>
-    <p class="text-[1.375rem] font-display tracking-tight tabular-nums text-[var(--text)] leading-none">
+    <p class="text-title font-display tracking-tight tabular-nums text-[var(--text)] leading-none">
       {value}
     </p>
     <p class="text-micro font-semibold uppercase tracking-widest text-[var(--text-faint)] mt-1">
