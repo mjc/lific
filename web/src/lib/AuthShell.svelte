@@ -122,7 +122,7 @@
     <div class="px-3 pt-3 pb-2">
       <div class="flex items-center gap-2.5 px-1 py-1">
         <img src="/logo.webp" alt="" width="26" height="26" class="rounded-md shrink-0" />
-        <span class="font-display text-[1.125rem] tracking-tight text-[var(--text)] leading-none flex-1">
+        <span class="font-display text-heading tracking-tight text-[var(--text)] leading-none flex-1">
           Lific
         </span>
         <span class="font-mono text-micro tracking-tight text-[var(--text-faint)] px-1.5 py-0.5 rounded-md bg-[var(--bg-subtle)]">

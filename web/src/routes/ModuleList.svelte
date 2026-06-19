@@ -287,7 +287,7 @@
       <div class="flex flex-col items-center py-20 gap-4 px-6 max-w-[480px] mx-auto text-center">
         <Mascot src="/LizzySleep2.png" nativeW={1000} nativeH={420} scale={0.25} />
         <div class="flex flex-col items-center gap-1.5">
-          <p class="text-[1.0625rem] font-medium text-[var(--text)]">No moving parts yet</p>
+          <p class="text-heading font-medium text-[var(--text)]">No moving parts yet</p>
           <p class="text-body-sm text-[var(--text-muted)] leading-relaxed">
             Modules gather related issues into a single arc of work: a feature,
             a release, an effort. Spin one up to start organizing.

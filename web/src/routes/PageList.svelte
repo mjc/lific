@@ -889,7 +889,7 @@
       <div class="flex flex-col items-center py-16 gap-4 px-6 max-w-[460px] mx-auto text-center">
         <Mascot src="/LizzyReading.png" nativeW={487} nativeH={714} />
         <div class="flex flex-col items-center gap-1.5">
-          <p class="text-[1.0625rem] font-medium text-[var(--text)]">A blank page</p>
+          <p class="text-heading font-medium text-[var(--text)]">A blank page</p>
           <p class="text-body-sm text-[var(--text-muted)] leading-relaxed">
             Pages are your project's docs: specs, notes, decisions. Start the
             first one and give the ideas a home.

@@ -1300,7 +1300,7 @@
         <div class="flex flex-col items-center justify-center py-20 gap-4">
           <Mascot src="/LizzySleep2.png" nativeW={1000} nativeH={420} scale={0.25} />
           <div class="flex flex-col items-center gap-1.5 text-center">
-            <p class="text-[var(--text)] text-[1.0625rem] font-medium">
+            <p class="text-[var(--text)] text-heading font-medium">
               All quiet here
             </p>
             <p class="text-[var(--text-muted)] text-body">

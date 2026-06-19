@@ -148,7 +148,7 @@
           class="group flex items-center gap-2.5 px-1 py-1 rounded-lg hover:bg-[var(--bg-subtle)] transition-colors"
         >
           <img src="/logo.webp" alt="" width="26" height="26" class="rounded-md shrink-0" />
-          <span class="font-display text-[1.125rem] tracking-tight text-[var(--text)] leading-none flex-1">
+          <span class="font-display text-heading tracking-tight text-[var(--text)] leading-none flex-1">
             Lific
           </span>
           <span

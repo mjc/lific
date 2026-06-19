@@ -33,6 +33,7 @@
   --text-body-sm: 0.8125rem;  /* 13px — dense UI workhorse (sidebar, menus, filters) */
   --text-body: 0.875rem;      /* 14px — prose / paragraphs, ErrorState body */
   --text-body-lg: 0.9375rem;  /* 15px — form fields (Select md), auth buttons */
+  --text-heading: 1.125rem;   /* 18px — small headings, brand wordmark, empty-state titles. Absorbs old 17px (1.0625rem) */
 
   /* named colors for palette reference */
   --color-stone-50: #faf8f5;

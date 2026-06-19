@@ -289,7 +289,7 @@
               >
                 {#each filteredEmojis.slice(emojiVirt.startIdx, emojiVirt.endIdx) as item (item.emoji)}
                   <button
-                    class="size-9 rounded-md flex items-center justify-center text-[1.125rem]
+                    class="size-9 rounded-md flex items-center justify-center text-heading
                            transition-colors hover:bg-[var(--bg-subtle)]
                            {value === item.emoji ? 'bg-[var(--accent-subtle)]' : ''}"
                     title={item.name}
@@ -305,7 +305,7 @@
             <div class="p-2 grid grid-cols-8 gap-0.5">
               {#each filteredEmojis as item (item.emoji)}
                 <button
-                  class="size-9 rounded-md flex items-center justify-center text-[1.125rem]
+                  class="size-9 rounded-md flex items-center justify-center text-heading
                          transition-colors hover:bg-[var(--bg-subtle)]
                          {value === item.emoji ? 'bg-[var(--accent-subtle)]' : ''}"
                   title={item.name}
