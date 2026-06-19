@@ -477,8 +477,8 @@
                 onkeydown={(e) => { if (e.key === 'Escape') cancelEditDesc(); if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); commitEditDesc(); } }}
               ></textarea>
               <div class="flex items-center gap-2 mt-1">
-                <button class="text-[0.75rem] font-medium text-[var(--accent-text)] bg-[var(--accent)] px-2 py-1 rounded-md hover:bg-[var(--accent-hover)]" onclick={commitEditDesc}>Save</button>
-                <button class="text-[0.75rem] text-[var(--text-muted)] px-2 py-1 rounded-md hover:bg-[var(--bg-subtle)]" onclick={cancelEditDesc}>Cancel</button>
+                <button class="text-caption font-medium text-[var(--accent-text)] bg-[var(--accent)] px-2 py-1 rounded-md hover:bg-[var(--accent-hover)]" onclick={commitEditDesc}>Save</button>
+                <button class="text-caption text-[var(--text-muted)] px-2 py-1 rounded-md hover:bg-[var(--bg-subtle)]" onclick={cancelEditDesc}>Cancel</button>
                 <span class="text-micro text-[var(--text-faint)] ml-auto">Markdown · Esc to cancel · ⌘S to save</span>
               </div>
             {:else if hasBody}
@@ -554,7 +554,7 @@
           <div class="flex-1 h-1.5 rounded-full bg-[var(--bg-subtle)] overflow-hidden">
             <div class="h-full bg-[var(--accent)] rounded-full transition-all" style="width: {progress * 100}%"></div>
           </div>
-          <span class="text-[0.75rem] text-[var(--text-muted)] tabular-nums">{plan.done_count}/{plan.step_count}</span>
+          <span class="text-caption text-[var(--text-muted)] tabular-nums">{plan.done_count}/{plan.step_count}</span>
         </div>
       </div>
 
@@ -567,7 +567,7 @@
                     onclick={() => navigate(`/${projectIdentifier}/issues/${plan?.anchor_identifier}`)}>
               {plan.anchor_identifier}<ArrowUpRight size={12} />
             </button>
-            <button class="ml-auto text-[var(--text-faint)] hover:text-[var(--text)] text-[0.75rem]" onclick={setAnchor}>change</button>
+            <button class="ml-auto text-[var(--text-faint)] hover:text-[var(--text)] text-caption" onclick={setAnchor}>change</button>
           {:else}
             <button class="text-[0.8125rem] text-[var(--text-faint)] hover:text-[var(--text)]" onclick={setAnchor}>Set anchor…</button>
           {/if}

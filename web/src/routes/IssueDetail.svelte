@@ -566,7 +566,7 @@
                 <div class="flex flex-wrap gap-1.5">
                   {#each issue.blocked_by as rel}
                     <button
-                      class="text-[0.75rem] font-mono text-[var(--error)]
+                      class="text-caption font-mono text-[var(--error)]
                              bg-[var(--error-bg)] px-1.5 py-0.5 rounded
                              hover:underline transition-colors"
                       onclick={() => navigate(`/${projectIdentifier}/issues/${rel}`)}
@@ -583,7 +583,7 @@
                 <div class="flex flex-wrap gap-1.5">
                   {#each issue.blocks as rel}
                     <button
-                      class="text-[0.75rem] font-mono text-[var(--accent)]
+                      class="text-caption font-mono text-[var(--accent)]
                              bg-[var(--accent-subtle)] px-1.5 py-0.5 rounded
                              hover:underline transition-colors"
                       onclick={() => navigate(`/${projectIdentifier}/issues/${rel}`)}
@@ -600,7 +600,7 @@
                 <div class="flex flex-wrap gap-1.5">
                   {#each issue.relates_to as rel}
                     <button
-                      class="text-[0.75rem] font-mono text-[var(--text-muted)]
+                      class="text-caption font-mono text-[var(--text-muted)]
                              bg-[var(--bg-subtle)] px-1.5 py-0.5 rounded
                              hover:underline transition-colors"
                       onclick={() => navigate(`/${projectIdentifier}/issues/${rel}`)}

@@ -126,7 +126,7 @@
         class="input-field rounded-lg px-3.5 py-2.5 text-[0.9375rem]"
       />
       {#if identityError}
-        <p id="login-identity-err" class="text-[0.75rem] text-[var(--error)]">
+        <p id="login-identity-err" class="text-caption text-[var(--error)]">
           {identityError}
         </p>
       {/if}

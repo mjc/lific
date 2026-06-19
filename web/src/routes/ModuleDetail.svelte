@@ -267,7 +267,7 @@
           />
         {/if}
 
-        <span class="text-[0.75rem] text-[var(--text-faint)] min-w-[5rem] text-right">
+        <span class="text-caption text-[var(--text-faint)] min-w-[5rem] text-right">
           {#if saving}
             <span class="animate-pulse">Saving...</span>
           {:else if lastSaved}
@@ -481,7 +481,7 @@
                     onclick={() => navigate(`/${projectIdentifier}/issues/${issue.identifier}`)}
                   >
                     <StatusIcon status={issue.status} size={14} />
-                    <span class="text-[0.75rem] font-mono text-[var(--text-faint)] shrink-0 tabular-nums w-[60px]">
+                    <span class="text-caption font-mono text-[var(--text-faint)] shrink-0 tabular-nums w-[60px]">
                       {issue.identifier}
                     </span>
                     <span class="text-[0.875rem] text-[var(--text)] truncate flex-1">

@@ -91,7 +91,7 @@
            shadow-[inset_0_1px_2px_rgba(0,0,0,0.10)]"
   >
     <button
-      class="flex items-center gap-1 px-2.5 py-1 rounded text-[0.75rem] font-medium transition-all
+      class="flex items-center gap-1 px-2.5 py-1 rounded text-caption font-medium transition-all
              {mode === 'login'
         ? 'bg-[var(--surface)] text-[var(--text)] shadow-[0_1px_2px_rgba(0,0,0,0.16),0_1px_1px_rgba(0,0,0,0.10)]'
         : 'text-[var(--text-muted)] hover:text-[var(--text)]'}"
@@ -102,7 +102,7 @@
       Sign in
     </button>
     <button
-      class="flex items-center gap-1 px-2.5 py-1 rounded text-[0.75rem] font-medium transition-all
+      class="flex items-center gap-1 px-2.5 py-1 rounded text-caption font-medium transition-all
              {mode === 'signup'
         ? 'bg-[var(--surface)] text-[var(--text)] shadow-[0_1px_2px_rgba(0,0,0,0.16),0_1px_1px_rgba(0,0,0,0.10)]'
         : 'text-[var(--text-muted)] hover:text-[var(--text)]'}"

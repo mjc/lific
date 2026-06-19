@@ -201,13 +201,13 @@
       {issue.title}
     </span>
     {#if hitSnippet}
-      <span class="text-[0.75rem] text-[var(--text-muted)] truncate">
+      <span class="text-caption text-[var(--text-muted)] truncate">
         {hitSnippet}
       </span>
     {:else if density === "comfortable"}
       {@const prev = descriptionPreview(issue.description)}
       {#if prev}
-        <span class="text-[0.75rem] text-[var(--text-faint)] truncate">{prev}</span>
+        <span class="text-caption text-[var(--text-faint)] truncate">{prev}</span>
       {/if}
     {/if}
   </div>
@@ -297,7 +297,7 @@
   </div>
 
   <!-- Updated time -->
-  <span class="text-[0.75rem] text-[var(--text-faint)] shrink-0 w-[60px] text-right">
+  <span class="text-caption text-[var(--text-faint)] shrink-0 w-[60px] text-right">
     {formatRelative(issue.updated_at)}
   </span>
 </div>

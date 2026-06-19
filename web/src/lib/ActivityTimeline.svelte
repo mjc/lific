@@ -178,7 +178,7 @@
             {:else if a.action === "update" && a.field === "done"}
               <!-- verb already reads "completed/reopened a step" -->
             {:else if a.action === "update" && (a.field === "issue" || a.field === "anchor_issue")}
-              <span class="font-mono text-[0.75rem] text-[var(--accent)]">{a.new_value ?? a.old_value}</span>
+              <span class="font-mono text-caption text-[var(--accent)]">{a.new_value ?? a.old_value}</span>
             {:else if a.action === "update" && a.field === "status" && a.entity_type === "plan"}
               <span class="capitalize text-[var(--text)] mx-0.5">{a.new_value}</span>
             {:else if a.action === "update" && a.field === "status"}
@@ -203,7 +203,7 @@
               </span>
             {:else if a.action === "update" && isLongField(a)}
               <button
-                class="text-[0.75rem] text-[var(--accent)] hover:underline
+                class="text-caption text-[var(--accent)] hover:underline
                        inline-flex items-center gap-0.5 align-baseline"
                 onclick={() => toggleValue(a.id)}
               >
@@ -225,7 +225,7 @@
                 {a.action === "attach" ? a.new_value : a.old_value}
               </span>
             {:else if a.action === "link" || a.action === "unlink"}
-              <span class="font-mono text-[0.75rem] text-[var(--accent)]">
+              <span class="font-mono text-caption text-[var(--accent)]">
                 {a.action === "link" ? a.new_value : a.old_value}
               </span>
             {:else if a.action === "create" && a.entity_type === "comment"}
@@ -236,7 +236,7 @@
 
             <!-- Time + transport, quiet, at the end of the line -->
             <span
-              class="text-[0.75rem] text-[var(--text-faint)] whitespace-nowrap"
+              class="text-caption text-[var(--text-faint)] whitespace-nowrap"
               title="{formatDate(a.ts)} · via {a.transport}"
             >
               · {formatRelative(a.ts)} via {a.transport}
@@ -247,13 +247,13 @@
           {#if a.action === "update" && isLongField(a) && openValues.has(a.id)}
             <div class="mt-2 mb-1 flex flex-col gap-1.5 max-w-[640px]">
               <div
-                class="text-[0.75rem] leading-relaxed px-3 py-2 rounded-md
+                class="text-caption leading-relaxed px-3 py-2 rounded-md
                        border border-[var(--border)] bg-[var(--error-bg)]
                        text-[var(--text-muted)] whitespace-pre-wrap break-words
                        max-h-[200px] overflow-y-auto"
               >{a.old_value || "(empty)"}</div>
               <div
-                class="text-[0.75rem] leading-relaxed px-3 py-2 rounded-md
+                class="text-caption leading-relaxed px-3 py-2 rounded-md
                        border border-[var(--border)] bg-[var(--success-bg)]
                        text-[var(--text)] whitespace-pre-wrap break-words
                        max-h-[200px] overflow-y-auto"
@@ -266,7 +266,7 @@
 
     {#if items.length > initialCount}
       <button
-        class="mt-2 ml-5 text-[0.75rem] text-[var(--text-muted)]
+        class="mt-2 ml-5 text-caption text-[var(--text-muted)]
                hover:text-[var(--text)] inline-flex items-center gap-1
                transition-colors"
         onclick={() => { expanded = !expanded; }}

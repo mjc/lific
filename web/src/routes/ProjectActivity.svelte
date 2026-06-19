@@ -300,7 +300,7 @@
       {@const active = actors.find((s) => s.actor_user_id === filterActor)}
       <div class="flex items-center gap-1.5">
         <span
-          class="flex items-center gap-1.5 text-[0.75rem] font-medium
+          class="flex items-center gap-1.5 text-caption font-medium
                  text-[var(--accent)] bg-[var(--accent-subtle)]
                  pl-2.5 pr-1 py-0.5 rounded-full"
         >
@@ -409,14 +409,14 @@
                       {verb(a)}
                       {#if dest}
                         <button
-                          class="font-mono text-[0.75rem] text-[var(--accent)]
+                          class="font-mono text-caption text-[var(--accent)]
                                  hover:underline"
                           onclick={(e) => { e.stopPropagation(); navigate(dest); }}
                         >
                           {a.entity_label ?? `#${a.entity_id}`}
                         </button>
                       {:else}
-                        <span class="font-mono text-[0.75rem]">
+                        <span class="font-mono text-caption">
                           {a.entity_label ?? `#${a.entity_id}`}
                         </span>
                       {/if}
@@ -445,7 +445,7 @@
                           {a.action === "attach" ? a.new_value : a.old_value}
                         </span>
                       {:else if a.action === "link" || a.action === "unlink"}
-                        <span class="font-mono text-[0.75rem] text-[var(--accent)]">
+                        <span class="font-mono text-caption text-[var(--accent)]">
                           {a.action === "link" ? a.new_value : a.old_value}
                         </span>
                       {:else if a.action === "create" && a.entity_type === "comment"}
@@ -528,13 +528,13 @@
                           <p class="text-[0.8125rem] text-[var(--text)] m-0 flex items-center gap-1.5 flex-wrap">
                             {@render entityIcon(a.entity_type, 13)}
                             <span class="capitalize">{a.entity_type}</span>
-                            <span class="font-mono text-[0.75rem] text-[var(--text-muted)]">
+                            <span class="font-mono text-caption text-[var(--text-muted)]">
                               {a.entity_label ?? `#${a.entity_id}`}
                             </span>
                             <span class="text-[var(--text-muted)]">— {a.action}{a.field ? ` · ${a.field}` : ""}</span>
                             {#if dest}
                               <button
-                                class="inline-flex items-center gap-0.5 text-[0.75rem]
+                                class="inline-flex items-center gap-0.5 text-caption
                                        text-[var(--accent)] hover:underline"
                                 onclick={(e) => { e.stopPropagation(); navigate(dest); }}
                               >
@@ -549,7 +549,7 @@
                           <div class="sm:col-span-2 flex flex-col gap-1.5">
                             {#if a.old_value !== null}
                               <div
-                                class="text-[0.75rem] leading-relaxed px-3 py-2 rounded-md
+                                class="text-caption leading-relaxed px-3 py-2 rounded-md
                                        border border-[var(--border)] bg-[var(--error-bg)]
                                        text-[var(--text-muted)] whitespace-pre-wrap break-words
                                        max-h-[240px] overflow-y-auto"
@@ -557,7 +557,7 @@
                             {/if}
                             {#if a.new_value !== null}
                               <div
-                                class="text-[0.75rem] leading-relaxed px-3 py-2 rounded-md
+                                class="text-caption leading-relaxed px-3 py-2 rounded-md
                                        border border-[var(--border)] bg-[var(--success-bg)]
                                        text-[var(--text)] whitespace-pre-wrap break-words
                                        max-h-[240px] overflow-y-auto"
@@ -575,7 +575,7 @@
 
           {#if hasMore && filterActor === undefined}
             <button
-              class="mt-2 text-[0.75rem] text-[var(--text-muted)]
+              class="mt-2 text-caption text-[var(--text-muted)]
                      hover:text-[var(--text)] inline-flex items-center gap-1
                      transition-colors px-2.5 py-1 rounded-md
                      hover:bg-[var(--bg-subtle)]"
@@ -644,7 +644,7 @@
                       via {s.top_transport} · {formatRelative(s.last_ts)}
                     </div>
                   </div>
-                  <span class="text-[0.75rem] text-[var(--text-muted)] tabular-nums shrink-0">
+                  <span class="text-caption text-[var(--text-muted)] tabular-nums shrink-0">
                     {s.actions.toLocaleString()}
                   </span>
                 </div>

@@ -134,7 +134,7 @@
         {mode === "edit" ? "Issue prefix" : "Issues become"}
       </p>
       <span
-        class="inline-block font-mono text-[0.75rem] font-medium
+        class="inline-block font-mono text-caption font-medium
                text-[var(--accent)] bg-[var(--accent-subtle)]
                px-1.5 py-0.5 rounded mt-0.5"
       >
@@ -176,7 +176,7 @@
       >
         Description
       </label>
-      <span class="text-[0.75rem] text-[var(--text-faint)]">optional</span>
+      <span class="text-caption text-[var(--text-faint)]">optional</span>
     </div>
     <textarea
       id="project-desc"
@@ -237,7 +237,7 @@
             </span>
           {/if}
         </div>
-        <span class="text-[0.75rem] text-[var(--text-faint)]">
+        <span class="text-caption text-[var(--text-faint)]">
           Member since {formatMemberSince(opt.created_at as string)}
         </span>
       </div>

@@ -92,7 +92,7 @@
     >
       <button
         class="flex items-center gap-1 px-2 py-0.5 rounded
-               text-[0.75rem] font-medium transition-all
+               text-caption font-medium transition-all
                {layout === 'list'
           ? 'bg-[var(--surface)] text-[var(--text)] shadow-[0_1px_2px_rgba(0,0,0,0.16),0_1px_1px_rgba(0,0,0,0.10)]'
           : 'text-[var(--text-muted)] hover:text-[var(--text)]'}"
@@ -104,7 +104,7 @@
       </button>
       <button
         class="flex items-center gap-1 px-2 py-0.5 rounded
-               text-[0.75rem] font-medium transition-all
+               text-caption font-medium transition-all
                {layout === 'board'
           ? 'bg-[var(--surface)] text-[var(--text)] shadow-[0_1px_2px_rgba(0,0,0,0.16),0_1px_1px_rgba(0,0,0,0.10)]'
           : 'text-[var(--text-muted)] hover:text-[var(--text)]'}"
@@ -253,7 +253,7 @@
 
     {#if view.hasActiveFilters()}
       <button
-        class="flex items-center gap-1 text-[0.75rem] text-[var(--text-muted)]
+        class="flex items-center gap-1 text-caption text-[var(--text-muted)]
                hover:text-[var(--text)] px-1.5 py-1 rounded-md
                hover:bg-[var(--bg-subtle)] transition-colors"
         onclick={() => view.clearFilters()}
@@ -287,7 +287,7 @@
       >
         <button
           class="h-7 flex items-center gap-1 px-2 rounded-md
-                 text-[0.75rem] font-medium
+                 text-caption font-medium
                  text-[var(--text-muted)] hover:text-[var(--text)]
                  hover:bg-[var(--bg-subtle)] transition-colors
                  {view.sortOpen ? 'text-[var(--text)] bg-[var(--bg-subtle)]' : ''}"

@@ -418,7 +418,7 @@
                     </span>
                   {/if}
                 </div>
-                <p class="text-[0.75rem] text-[var(--text-muted)] truncate mt-0.5">{template.description}</p>
+                <p class="text-caption text-[var(--text-muted)] truncate mt-0.5">{template.description}</p>
               </div>
               <div class="shrink-0 flex items-center gap-1.5">
                 {#if st === "connected" && bot}
@@ -492,7 +492,7 @@
           </div>
         </div>
         {#if profileError}
-          <p class="text-[0.75rem] text-[var(--error)] mt-2.5 flex items-center gap-1"><AlertTriangle size={12} /> {profileError}</p>
+          <p class="text-caption text-[var(--error)] mt-2.5 flex items-center gap-1"><AlertTriangle size={12} /> {profileError}</p>
         {/if}
         <div class="flex items-center gap-3 mt-4">
           <button
@@ -528,7 +528,7 @@
             />
           </div>
           {#if pwError}
-            <p class="text-[0.75rem] text-[var(--error)] mt-2 flex items-center gap-1"><AlertTriangle size={12} /> {pwError}</p>
+            <p class="text-caption text-[var(--error)] mt-2 flex items-center gap-1"><AlertTriangle size={12} /> {pwError}</p>
           {/if}
           <div class="flex items-center gap-3 mt-3">
             <button
@@ -593,7 +593,7 @@
         </div>
         <div class="flex-1 min-w-0">
           <h3 class="text-[0.9375rem] font-semibold text-[var(--text)] leading-tight">Connect {connectTool.name}</h3>
-          <p class="text-[0.75rem] text-[var(--text-muted)] truncate">{connectTool.description}</p>
+          <p class="text-caption text-[var(--text-muted)] truncate">{connectTool.description}</p>
         </div>
         <button class="size-7 grid place-items-center rounded-md text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--bg-subtle)] transition-colors" onclick={closeConnect} aria-label="Close">
           <X size={16} />
@@ -670,7 +670,7 @@
                 {#each osGroups as group (group.label)}
                   {@const active = group.oses.includes(selectedOs)}
                   <button
-                    class="flex-1 px-2 py-1.5 rounded-md text-[0.75rem] font-medium transition-all
+                    class="flex-1 px-2 py-1.5 rounded-md text-caption font-medium transition-all
                            {active
                       ? 'bg-[var(--btn-success)] text-[var(--btn-success-text)] shadow-[0_1px_2px_rgba(0,0,0,0.12)]'
                       : 'text-[var(--text-muted)] hover:text-[var(--text)]'}"
@@ -687,7 +687,7 @@
 
             <div class="flex items-center gap-2 mb-2.5">
               <span class="text-micro font-semibold uppercase tracking-wide text-[var(--text-muted)] shrink-0">File</span>
-              <code class="flex-1 min-w-0 font-mono text-[0.75rem] bg-[var(--bg-subtle)] px-2 py-1 rounded text-[var(--text)] overflow-x-auto whitespace-nowrap">{activePath}</code>
+              <code class="flex-1 min-w-0 font-mono text-caption bg-[var(--bg-subtle)] px-2 py-1 rounded text-[var(--text)] overflow-x-auto whitespace-nowrap">{activePath}</code>
             </div>
 
             {#if connectTool.configNote}
@@ -701,12 +701,12 @@
                          full-width copy bar underneath. No floating button
                          overlapping a single line of scrolling text. -->
                     <div class="rounded-lg bg-[var(--bg)] overflow-hidden ring-1 ring-[var(--border)]">
-                      <pre class="px-3 py-2.5 text-[0.75rem] font-mono text-[var(--text)] overflow-x-auto whitespace-pre">{step.command}</pre>
+                      <pre class="px-3 py-2.5 text-caption font-mono text-[var(--text)] overflow-x-auto whitespace-pre">{step.command}</pre>
                       <!-- Separator matches the bar's own bg so no seam fights
                            the rounded container. Green-tinted bar + green text:
                            lively and on-brand without a loud solid button. -->
                       <button
-                        class="w-full flex items-center justify-center gap-1.5 py-2 text-[0.75rem] font-semibold transition-colors
+                        class="w-full flex items-center justify-center gap-1.5 py-2 text-caption font-semibold transition-colors
                                {noteCopiedIdx === i
                           ? 'bg-[var(--success-bg)] text-[var(--success)]'
                           : 'bg-[color-mix(in_oklab,var(--btn-success)_14%,var(--bg))] text-[var(--success)] hover:bg-[color-mix(in_oklab,var(--btn-success)_22%,var(--bg))]'}"
@@ -722,7 +722,7 @@
 
             <div class="relative">
               <pre
-                class="bg-[var(--bg)] border border-[var(--border)] rounded-lg p-3.5 pr-12 text-[0.75rem] font-mono text-[var(--text)] overflow-x-auto leading-relaxed
+                class="bg-[var(--bg)] border border-[var(--border)] rounded-lg p-3.5 pr-12 text-caption font-mono text-[var(--text)] overflow-x-auto leading-relaxed
                        {keyRevealed ? '' : 'select-none'}"
               >{displayConfig}</pre>
               <button
@@ -748,7 +748,7 @@
               </div>
               <div class="relative">
                 <pre
-                  class="bg-[var(--bg)] border border-[var(--border)] rounded-lg p-3 pr-12 text-[0.75rem] font-mono text-[var(--text)] overflow-x-auto
+                  class="bg-[var(--bg)] border border-[var(--border)] rounded-lg p-3 pr-12 text-caption font-mono text-[var(--text)] overflow-x-auto
                          {keyRevealed ? '' : 'select-none'}"
                 >{keyRevealed ? exportLine : exportLine.split(connectKey).join(maskedKey)}</pre>
                 <button

@@ -369,7 +369,7 @@
       <!-- Right zone: mode toggle + save indicator + export + menu -->
       <div class="ml-auto flex items-center gap-2 shrink-0">
         {#if exportError}
-          <span class="text-[0.75rem] text-[var(--error)]">{exportError}</span>
+          <span class="text-caption text-[var(--error)]">{exportError}</span>
         {/if}
 
         {#if editable && body.trim() && !bodyContent}
@@ -381,7 +381,7 @@
           />
         {/if}
 
-        <span class="text-[0.75rem] text-[var(--text-faint)] min-w-[5rem] text-right">
+        <span class="text-caption text-[var(--text-faint)] min-w-[5rem] text-right">
           {#if saving}
             <span class="animate-pulse">Saving...</span>
           {:else if lastSaved}

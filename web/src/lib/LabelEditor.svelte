@@ -62,7 +62,7 @@
       {#each attached as name}
         {@const obj = all.find((l) => l.name === name)}
         <span
-          class="inline-flex items-center gap-1 text-[0.75rem]
+          class="inline-flex items-center gap-1 text-caption
                  font-medium px-2 py-0.5 rounded-full border"
           style={obj
             ? `color: ${obj.color}; border-color: ${obj.color}40; background: ${obj.color}10;`

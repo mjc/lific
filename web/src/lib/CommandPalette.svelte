@@ -573,7 +573,7 @@
           <Zap size={15} class="shrink-0 text-[var(--accent)]" />
           <!-- Breadcrumb chip: which action's submenu/prompt this is. -->
           <span
-            class="shrink-0 text-[0.75rem] font-medium text-[var(--accent)]
+            class="shrink-0 text-caption font-medium text-[var(--accent)]
                    bg-[var(--accent-subtle)] px-2 py-0.5 rounded-full
                    whitespace-nowrap"
           >
@@ -605,7 +605,7 @@
 
       <!-- Results -->
       {#if mode.type === "prompt"}
-        <p class="px-4 py-3 text-[0.75rem] text-[var(--text-faint)]">
+        <p class="px-4 py-3 text-caption text-[var(--text-faint)]">
           Enter to save · Esc to cancel
         </p>
       {:else}
@@ -737,7 +737,7 @@
                     {r.title}
                   </span>
                   {#if r.sub}
-                    <span class="text-[0.75rem] text-[var(--text-faint)] truncate shrink-[2]">
+                    <span class="text-caption text-[var(--text-faint)] truncate shrink-[2]">
                       {r.sub}
                     </span>
                   {/if}

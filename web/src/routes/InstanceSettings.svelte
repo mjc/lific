@@ -198,7 +198,7 @@
                 class="w-full px-3 py-2 text-[0.875rem] rounded-md border border-[var(--border)] bg-[var(--bg)] text-[var(--text)]
                        outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
               />
-              <span class="block text-[0.75rem] text-[var(--text)] mt-1.5">Shown on the sign-in screen. Leave blank to use the host.</span>
+              <span class="block text-caption text-[var(--text)] mt-1.5">Shown on the sign-in screen. Leave blank to use the host.</span>
             </label>
 
             <!-- Signups: a real status, so each state carries its own color
@@ -233,7 +233,7 @@
                   Closed
                 </button>
               </div>
-              <span class="block text-[0.75rem] text-[var(--text)] mt-2 leading-relaxed">
+              <span class="block text-caption text-[var(--text)] mt-2 leading-relaxed">
                 {#if fSignups}
                   Anyone can create their own account{parseDomains(fDomains).length ? " from an allowed domain" : ""}.
                 {:else}
@@ -252,7 +252,7 @@
                 class="w-full px-3 py-2 text-[0.875rem] font-mono rounded-md border border-[var(--border)] bg-[var(--bg)] text-[var(--text)]
                        outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
               />
-              <span class="block text-[0.75rem] text-[var(--text)] mt-1.5">Comma-separated. Leave blank to allow any email domain.</span>
+              <span class="block text-caption text-[var(--text)] mt-1.5">Comma-separated. Leave blank to allow any email domain.</span>
             </label>
 
             <!-- Session lifetime -->
@@ -270,7 +270,7 @@
                 />
                 <span class="text-[0.875rem] text-[var(--text)]">days</span>
               </div>
-              <span class="block text-[0.75rem] text-[var(--text)] mt-1.5">How long a sign-in stays valid before re-authenticating (1 to 365).</span>
+              <span class="block text-caption text-[var(--text)] mt-1.5">How long a sign-in stays valid before re-authenticating (1 to 365).</span>
             </label>
 
             <!-- Login message -->
@@ -285,7 +285,7 @@
                 class="w-full px-3 py-2 text-[0.875rem] rounded-md border border-[var(--border)] bg-[var(--bg)] text-[var(--text)]
                        outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] resize-none"
               ></textarea>
-              <span class="block text-[0.75rem] text-[var(--text)] mt-1.5">A short note shown on the sign-in screen. Leave blank for none.</span>
+              <span class="block text-caption text-[var(--text)] mt-1.5">A short note shown on the sign-in screen. Leave blank for none.</span>
             </label>
 
             <!-- Single-user mode (LIF-215): auto-sign-in the web UI as the
@@ -325,7 +325,7 @@
                   Skip web sign-in
                 </button>
               </div>
-              <span class="block text-[0.75rem] text-[var(--text)] mt-2 leading-relaxed">
+              <span class="block text-caption text-[var(--text)] mt-2 leading-relaxed">
                 {#if fAutoLogin}
                   The web UI signs in as the admin automatically — no login screen.
                 {:else}
@@ -333,7 +333,7 @@
                 {/if}
               </span>
               {#if fAutoLogin}
-                <div class="flex items-start gap-2 text-[0.75rem] text-[var(--warn-text)] bg-[color-mix(in_oklab,var(--warn)_12%,var(--bg))] px-3 py-2 rounded-lg mt-2 max-w-[42ch]">
+                <div class="flex items-start gap-2 text-caption text-[var(--warn-text)] bg-[color-mix(in_oklab,var(--warn)_12%,var(--bg))] px-3 py-2 rounded-lg mt-2 max-w-[42ch]">
                   <AlertTriangle size={13} class="shrink-0 mt-0.5" />
                   <span>Anyone who can reach this site becomes admin without a password. Only enable on a private or local instance. REST and MCP are unaffected.</span>
                 </div>
@@ -342,7 +342,7 @@
           </div>
 
           {#if saveError}
-            <p class="text-[0.75rem] text-[var(--error)] mt-4 flex items-center gap-1"><AlertTriangle size={12} /> {saveError}</p>
+            <p class="text-caption text-[var(--error)] mt-4 flex items-center gap-1"><AlertTriangle size={12} /> {saveError}</p>
           {/if}
 
           <!-- Autosave status (no Save button — each field commits on change). -->
@@ -378,7 +378,7 @@
                 </div>
                 <div class="flex-1 min-w-0">
                   <div class="text-[0.875rem] text-[var(--text)] truncate leading-tight">{u.display_name || u.username}</div>
-                  <div class="text-[0.75rem] font-mono text-[var(--text-faint)] truncate leading-tight mt-0.5">@{u.username}</div>
+                  <div class="text-caption font-mono text-[var(--text-faint)] truncate leading-tight mt-0.5">@{u.username}</div>
                 </div>
                 <span
                   class="text-micro font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded-full shrink-0
@@ -388,7 +388,7 @@
                 >
                   {u.is_admin ? "Admin" : "Member"}
                 </span>
-                <span class="hidden sm:block text-[0.75rem] text-[var(--text-faint)] tabular-nums shrink-0 w-[5.5rem] text-right">
+                <span class="hidden sm:block text-caption text-[var(--text-faint)] tabular-nums shrink-0 w-[5.5rem] text-right">
                   {formatRelative(u.created_at)}
                 </span>
               </div>

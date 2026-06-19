@@ -241,11 +241,11 @@
                     </ProgressRing>
                     <div class="flex-1 min-w-0">
                       <div class="text-[0.875rem] text-[var(--text)] truncate">{plan.title}</div>
-                      <div class="text-[0.75rem] text-[var(--text-faint)] font-mono">
+                      <div class="text-caption text-[var(--text-faint)] font-mono">
                         {plan.identifier}{plan.anchor_identifier ? ` · anchor ${plan.anchor_identifier}` : ""}
                       </div>
                     </div>
-                    <div class="text-[0.75rem] text-[var(--text-muted)] tabular-nums shrink-0">
+                    <div class="text-caption text-[var(--text-muted)] tabular-nums shrink-0">
                       {plan.done_count}/{plan.step_count}
                     </div>
                   </button>

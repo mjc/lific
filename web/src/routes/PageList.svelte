@@ -650,7 +650,7 @@
         </Select>
         {#if filterLabel}
           <button
-            class="flex items-center gap-1 text-[0.75rem] text-[var(--text-muted)]
+            class="flex items-center gap-1 text-caption text-[var(--text-muted)]
                    hover:text-[var(--text)] px-1.5 py-1 rounded-md
                    hover:bg-[var(--bg-subtle)] transition-colors"
             onclick={() => { filterLabel = ""; }}
@@ -946,7 +946,7 @@
                 <span class="text-[0.9375rem] text-[var(--text)] truncate flex-1">
                   {hit.page.title}
                 </span>
-                <span class="text-[0.75rem] font-mono text-[var(--text-faint)] shrink-0">
+                <span class="text-caption font-mono text-[var(--text-faint)] shrink-0">
                   {hit.page.identifier}
                 </span>
                 {#if hit.page.status !== "active"}
@@ -1063,7 +1063,7 @@
                         </span>
                       </div>
                       {#if prev}
-                        <p class="text-[0.75rem] text-[var(--text-faint)] line-clamp-1 mt-0.5">{prev}</p>
+                        <p class="text-caption text-[var(--text-faint)] line-clamp-1 mt-0.5">{prev}</p>
                       {/if}
                       <div class="flex items-center gap-2 mt-1.5 text-micro text-[var(--text-faint)]">
                         {#if fName}<span class="truncate">{fName}</span><span>·</span>{/if}
@@ -1117,7 +1117,7 @@
       <div class="flex flex-col gap-1 mb-5">
         {#each PAGE_STATUSES as s}
           {#if statusTally[s.value] > 0}
-            <div class="flex items-center gap-2 text-[0.75rem]">
+            <div class="flex items-center gap-2 text-caption">
               <s.icon size={13} style="color: {statusColor(s.value)}" class="shrink-0" />
               <span class="flex-1 text-[var(--text-muted)]">{s.label}</span>
               <span class="tabular-nums text-[var(--text-faint)]">{statusTally[s.value]}</span>
@@ -1361,7 +1361,7 @@
 
         <!-- Content preview — turns the tree into something scannable. -->
         {#if preview}
-          <p class="text-[0.75rem] text-[var(--text-faint)] truncate mt-0.5 pr-6">
+          <p class="text-caption text-[var(--text-faint)] truncate mt-0.5 pr-6">
             {preview}
           </p>
         {/if}

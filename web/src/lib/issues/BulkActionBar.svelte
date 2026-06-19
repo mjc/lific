@@ -66,7 +66,7 @@
       {selectedCount} selected
     </span>
     {#if bulkBusy}
-      <span class="text-[0.75rem] text-[var(--text-faint)] animate-pulse pr-1">
+      <span class="text-caption text-[var(--text-faint)] animate-pulse pr-1">
         Applying...
       </span>
     {/if}
@@ -225,7 +225,7 @@
           <p class="text-[0.8125rem] font-medium text-[var(--text)] mb-1">
             Delete {selectedCount} issue{selectedCount === 1 ? "" : "s"}?
           </p>
-          <p class="text-[0.75rem] text-[var(--text-muted)] mb-3">
+          <p class="text-caption text-[var(--text-muted)] mb-3">
             This can't be undone.
           </p>
           <div class="flex items-center gap-2">

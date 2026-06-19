@@ -95,7 +95,7 @@
       <p class="text-[0.8125rem] text-[var(--text)] mb-1 font-medium">
         Delete {label}?
       </p>
-      <p class="text-[0.75rem] text-[var(--text-muted)] mb-3">
+      <p class="text-caption text-[var(--text-muted)] mb-3">
         {confirmBody}
       </p>
       <div class="flex items-center gap-2">

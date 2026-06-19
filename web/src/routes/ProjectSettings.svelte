@@ -349,7 +349,7 @@
               </button>
             {/if}
 
-            <div class="flex items-center gap-3 mt-2.5 text-[0.75rem] text-[var(--text-faint)] tabular-nums">
+            <div class="flex items-center gap-3 mt-2.5 text-caption text-[var(--text-faint)] tabular-nums">
               <span>Created {formatDate(project.created_at)}</span>
               {#if activity[0]}<span>·</span><span>Active {formatRelative(activity[0].ts)}</span>{/if}
             </div>
@@ -369,7 +369,7 @@
           <div class="flex items-baseline justify-between mb-3">
             <h2 class="text-[0.8125rem] font-semibold text-[var(--text)]">Needs attention</h2>
             {#if moreCount > 0}
-              <button class="text-[0.75rem] text-[var(--text-muted)] hover:text-[var(--text)] transition-colors flex items-center gap-1" onclick={gotoOpenIssues}>
+              <button class="text-caption text-[var(--text-muted)] hover:text-[var(--text)] transition-colors flex items-center gap-1" onclick={gotoOpenIssues}>
                 +{moreCount} more open <ArrowRight size={11} />
               </button>
             {/if}
@@ -422,7 +422,7 @@
           <section>
             <div class="flex items-baseline justify-between mb-3">
               <h2 class="text-[0.8125rem] font-semibold text-[var(--text)]">Recent activity</h2>
-              <button class="text-[0.75rem] text-[var(--text-muted)] hover:text-[var(--text)] transition-colors flex items-center gap-1" onclick={() => navigate(`/${projectIdentifier}/activity`)}>
+              <button class="text-caption text-[var(--text-muted)] hover:text-[var(--text)] transition-colors flex items-center gap-1" onclick={() => navigate(`/${projectIdentifier}/activity`)}>
                 <History size={11} /> Full log
               </button>
             </div>
@@ -461,7 +461,7 @@
               <div class="flex items-center gap-3">
                 <div class="flex-1">
                   <p class="text-[0.8125rem] font-medium text-[var(--text)]">Project lead</p>
-                  <p class="text-[0.75rem] text-[var(--text-muted)]">Who owns this project.</p>
+                  <p class="text-caption text-[var(--text-muted)]">Who owns this project.</p>
                 </div>
                 <select
                   bind:value={leadValue}
@@ -479,7 +479,7 @@
               <!-- Change identifier -->
               <div>
                 <p class="text-[0.8125rem] font-medium text-[var(--text)]">Change identifier</p>
-                <p class="text-[0.75rem] text-[var(--text-muted)] mt-0.5 mb-2 leading-relaxed">
+                <p class="text-caption text-[var(--text-muted)] mt-0.5 mb-2 leading-relaxed">
                   Re-keys every issue, page, and plan. Existing references to <span class="font-mono">{project.identifier}-NNN</span>
                   written inside other issues/pages will no longer resolve. This cannot be undone automatically.
                 </p>
@@ -500,7 +500,7 @@
                     {renaming ? "Renaming…" : "Rename"}
                   </button>
                 </div>
-                {#if identError}<p class="text-[0.75rem] text-[var(--error)] mt-1.5">{identError}</p>{/if}
+                {#if identError}<p class="text-caption text-[var(--error)] mt-1.5">{identError}</p>{/if}
               </div>
 
               <div class="h-px" style="background: color-mix(in oklab, var(--error) 18%, transparent)"></div>
@@ -516,7 +516,7 @@
                     Delete this project
                   </button>
                 {:else}
-                  <p class="text-[0.75rem] text-[var(--text-muted)] mt-1 mb-2">
+                  <p class="text-caption text-[var(--text-muted)] mt-1 mb-2">
                     Permanently deletes the project and all <strong>{total}</strong> issue{total !== 1 ? 's' : ''}, modules, labels, folders, pages, and plans.
                     Type <strong class="font-mono">{project.identifier}</strong> to confirm.
                   </p>
@@ -540,7 +540,7 @@
                       Cancel
                     </button>
                   </div>
-                  {#if deleteError}<p class="text-[0.75rem] text-[var(--error)] mt-1.5">{deleteError}</p>{/if}
+                  {#if deleteError}<p class="text-caption text-[var(--error)] mt-1.5">{deleteError}</p>{/if}
                 {/if}
               </div>
             </div>

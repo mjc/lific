@@ -357,14 +357,14 @@
                 onblur={handleCreateBlur}
               />
               {#if createError}
-                <p class="text-[0.75rem] text-[var(--error)] mt-1">{createError}</p>
+                <p class="text-caption text-[var(--error)] mt-1">{createError}</p>
               {/if}
               <p class="text-micro text-[var(--text-faint)] mt-1">
                 Enter to create · Esc to cancel · status defaults to Active
               </p>
             </div>
             {#if createSaving}
-              <div class="text-[0.75rem] text-[var(--text-faint)] mt-1">Saving...</div>
+              <div class="text-caption text-[var(--text-faint)] mt-1">Saving...</div>
             {/if}
           </div>
         {/if}
@@ -441,7 +441,7 @@
                           {mod.name}
                         </span>
                       </div>
-                      <p class="text-[0.75rem] text-[var(--text-muted)] tabular-nums mt-1">
+                      <p class="text-caption text-[var(--text-muted)] tabular-nums mt-1">
                         {#if prog.total > 0}
                           {prog.done}/{prog.total} done
                         {:else}

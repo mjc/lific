@@ -161,7 +161,7 @@
     role="tooltip"
     class="fixed z-[1000] pointer-events-none
            px-2 py-1 rounded-md
-           text-[0.75rem] font-medium whitespace-nowrap
+           text-caption font-medium whitespace-nowrap
            bg-[var(--surface)] text-[var(--text)]
            border border-[var(--border)]
            shadow-[0_4px_12px_rgba(0,0,0,0.18)]

@@ -213,7 +213,7 @@
           class="input-field rounded-lg px-3.5 py-2.5 text-[0.9375rem]"
         />
         {#if usernameError}
-          <p id="signup-username-err" class="text-[0.75rem] text-[var(--error)]">
+          <p id="signup-username-err" class="text-caption text-[var(--error)]">
             {usernameError}
           </p>
         {/if}
@@ -242,7 +242,7 @@
           class="input-field rounded-lg px-3.5 py-2.5 text-[0.9375rem]"
         />
         {#if emailError}
-          <p id="signup-email-err" class="text-[0.75rem] text-[var(--error)]">
+          <p id="signup-email-err" class="text-caption text-[var(--error)]">
             {emailError}
           </p>
         {/if}
@@ -312,7 +312,7 @@
             <ul class="flex flex-col gap-1">
               {#each reqs as req (req.label)}
                 <li
-                  class="flex items-center gap-2 text-[0.75rem] transition-colors duration-200"
+                  class="flex items-center gap-2 text-caption transition-colors duration-200"
                   style="color: {req.met ? 'var(--success)' : 'var(--text-faint)'}"
                 >
                   <span

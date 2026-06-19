@@ -1018,7 +1018,7 @@
           >
             <button
               class="flex items-center gap-1.5 px-2 py-1 rounded
-                     text-[0.75rem] font-medium transition-colors
+                     text-caption font-medium transition-colors
                      {visible
                 ? 'bg-[var(--chrome)] text-[var(--text)] shadow-[0_1px_2px_rgba(0,0,0,0.08)]'
                 : 'text-[var(--text-faint)] hover:text-[var(--text-muted)]'}"
@@ -1080,12 +1080,12 @@
             >
               <StatusIcon status={status} size={14} />
               <span
-                class="text-[0.75rem] font-semibold uppercase tracking-widest
+                class="text-caption font-semibold uppercase tracking-widest
                        text-[var(--text-muted)]"
               >
                 {status}
               </span>
-              <span class="text-[0.75rem] text-[var(--text-faint)] tabular-nums">
+              <span class="text-caption text-[var(--text-faint)] tabular-nums">
                 {colIssues.length}
               </span>
               <div class="flex-1"></div>
@@ -1118,7 +1118,7 @@
                          gap-1.5 pt-4 pb-2"
                 >
                   <Mascot src="/LizzySleep2.png" nativeW={1000} nativeH={420} scale={0.1} />
-                  <span class="text-[0.75rem] text-[var(--text-faint)]">
+                  <span class="text-caption text-[var(--text-faint)]">
                     All quiet
                   </span>
                 </div>
@@ -1248,7 +1248,7 @@
           }}
         />
         {#if inlineCreateSaving}
-          <span class="text-[0.75rem] text-[var(--text-faint)]">Creating...</span>
+          <span class="text-caption text-[var(--text-faint)]">Creating...</span>
         {/if}
       </div>
   {/if}
@@ -1361,10 +1361,10 @@
                 <Layers size={14} class="text-[var(--text-faint)]" />
               {/if}
             {/if}
-            <span class="text-[0.75rem] font-semibold uppercase tracking-widest text-[var(--text-muted)] truncate">
+            <span class="text-caption font-semibold uppercase tracking-widest text-[var(--text-muted)] truncate">
               {g.label}
             </span>
-            <span class="text-[0.75rem] text-[var(--text-faint)] tabular-nums">{g.issues.length}</span>
+            <span class="text-caption text-[var(--text-faint)] tabular-nums">{g.issues.length}</span>
           </button>
           {#if !collapsed}
             {#each g.issues as issue, si (issue.id)}
