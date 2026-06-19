@@ -398,7 +398,7 @@
     {#if page}
       <div class="mt-10 pt-6 border-t border-[var(--border)] flex gap-8">
         <div>
-          <span class="block text-[0.6875rem] font-semibold uppercase tracking-widest text-[var(--text-faint)] mb-0.5">
+          <span class="block text-micro font-semibold uppercase tracking-widest text-[var(--text-faint)] mb-0.5">
             Created
           </span>
           <span class="text-[0.8125rem] text-[var(--text-muted)]">
@@ -406,7 +406,7 @@
           </span>
         </div>
         <div>
-          <span class="block text-[0.6875rem] font-semibold uppercase tracking-widest text-[var(--text-faint)] mb-0.5">
+          <span class="block text-micro font-semibold uppercase tracking-widest text-[var(--text-faint)] mb-0.5">
             Updated
           </span>
           <span class="text-[0.8125rem] text-[var(--text-muted)]">

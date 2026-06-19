@@ -354,7 +354,7 @@
             <span class="font-mono text-[var(--text-muted)]">@{user.username}</span>
             <span class="text-[var(--text-faint)]">·</span>
             <span class="text-[var(--text-muted)]">{user.email}</span>
-            <span class="text-[0.6875rem] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded-full
+            <span class="text-micro font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded-full
                          {user.is_admin ? 'text-[var(--accent)] bg-[var(--accent-subtle)]' : 'text-[var(--text-muted)] bg-[var(--bg-subtle)]'}">
               {user.is_admin ? "Admin" : "Member"}
             </span>
@@ -408,12 +408,12 @@
                 <div class="flex items-center gap-2">
                   <span class="text-[0.875rem] font-medium text-[var(--text)]">{template.name}</span>
                   {#if st === "connected"}
-                    <span class="inline-flex items-center gap-1 text-[0.625rem] font-semibold uppercase tracking-wide
+                    <span class="inline-flex items-center gap-1 text-micro font-semibold uppercase tracking-wide
                                  text-[var(--success)] bg-[var(--success-bg)] px-1.5 py-0.5 rounded-full">
                       <span class="size-1.5 rounded-full bg-[var(--success)]"></span> Connected
                     </span>
                   {:else if st === "disconnected"}
-                    <span class="text-[0.625rem] font-semibold uppercase tracking-wide text-[var(--warn)] bg-[color-mix(in_oklab,var(--warn)_14%,transparent)] px-1.5 py-0.5 rounded-full">
+                    <span class="text-micro font-semibold uppercase tracking-wide text-[var(--warn)] bg-[color-mix(in_oklab,var(--warn)_14%,transparent)] px-1.5 py-0.5 rounded-full">
                       Disconnected
                     </span>
                   {/if}
@@ -470,7 +470,7 @@
         <!-- Profile (proper labeled form) -->
         <div class="max-w-[480px] flex flex-col gap-3.5">
           <label class="block">
-            <span class="block text-[0.6875rem] font-semibold uppercase tracking-widest text-[var(--text-faint)] mb-1.5">Display name</span>
+            <span class="block text-micro font-semibold uppercase tracking-widest text-[var(--text-faint)] mb-1.5">Display name</span>
             <input
               bind:value={profileName}
               class="w-full px-3 py-2 text-[0.875rem] rounded-md border border-[var(--border)] bg-[var(--bg)] text-[var(--text)]
@@ -478,7 +478,7 @@
             />
           </label>
           <label class="block">
-            <span class="block text-[0.6875rem] font-semibold uppercase tracking-widest text-[var(--text-faint)] mb-1.5">Email</span>
+            <span class="block text-micro font-semibold uppercase tracking-widest text-[var(--text-faint)] mb-1.5">Email</span>
             <input
               bind:value={profileEmail}
               type="email"
@@ -487,7 +487,7 @@
             />
           </label>
           <div>
-            <span class="block text-[0.6875rem] font-semibold uppercase tracking-widest text-[var(--text-faint)] mb-1.5">Username</span>
+            <span class="block text-micro font-semibold uppercase tracking-widest text-[var(--text-faint)] mb-1.5">Username</span>
             <p class="text-[0.875rem] font-mono text-[var(--text-muted)]">@{user.username}</p>
           </div>
         </div>
@@ -620,7 +620,7 @@
                the secret inside a config the user might not read. -->
           <section class="mb-5">
             <div class="flex items-center gap-2.5 mb-2">
-              <span class="size-5 shrink-0 grid place-items-center rounded-full bg-[var(--btn-success)] text-[var(--btn-success-text)] text-[0.6875rem] font-bold tabular-nums">1</span>
+              <span class="size-5 shrink-0 grid place-items-center rounded-full bg-[var(--btn-success)] text-[var(--btn-success-text)] text-micro font-bold tabular-nums">1</span>
               <h4 class="flex items-center gap-1.5 text-[0.875rem] font-semibold text-[var(--text)]">
                 <KeyRound size={14} class="text-[var(--text-muted)]" /> Copy your API key
               </h4>
@@ -656,7 +656,7 @@
           <!-- ── STEP 2 · CONFIG ────────────────────────────────── -->
           <section class="mb-5">
             <div class="flex items-center gap-2.5 mb-2">
-              <span class="size-5 shrink-0 grid place-items-center rounded-full bg-[var(--btn-success)] text-[var(--btn-success-text)] text-[0.6875rem] font-bold tabular-nums">2</span>
+              <span class="size-5 shrink-0 grid place-items-center rounded-full bg-[var(--btn-success)] text-[var(--btn-success-text)] text-micro font-bold tabular-nums">2</span>
               <h4 class="flex items-center gap-1.5 text-[0.875rem] font-semibold text-[var(--text)]">
                 <FileCode2 size={14} class="text-[var(--text-muted)]" /> Add to your config
               </h4>
@@ -681,12 +681,12 @@
                 {/each}
               </div>
               {#if !pathsDiffer}
-                <span class="text-[0.6875rem] text-[var(--text-muted)] shrink-0">same everywhere</span>
+                <span class="text-micro text-[var(--text-muted)] shrink-0">same everywhere</span>
               {/if}
             </div>
 
             <div class="flex items-center gap-2 mb-2.5">
-              <span class="text-[0.6875rem] font-semibold uppercase tracking-wide text-[var(--text-muted)] shrink-0">File</span>
+              <span class="text-micro font-semibold uppercase tracking-wide text-[var(--text-muted)] shrink-0">File</span>
               <code class="flex-1 min-w-0 font-mono text-[0.75rem] bg-[var(--bg-subtle)] px-2 py-1 rounded text-[var(--text)] overflow-x-auto whitespace-nowrap">{activePath}</code>
             </div>
 
@@ -726,7 +726,7 @@
                        {keyRevealed ? '' : 'select-none'}"
               >{displayConfig}</pre>
               <button
-                class="absolute top-2 right-2 inline-flex items-center gap-1 text-[0.6875rem] font-semibold
+                class="absolute top-2 right-2 inline-flex items-center gap-1 text-micro font-semibold
                        px-2 py-1 rounded-md bg-[var(--surface)] border border-[var(--border)]
                        {copied ? 'text-[var(--success)]' : 'text-[var(--text-muted)] hover:text-[var(--text)]'} transition-colors"
                 onclick={copyConfig}
@@ -740,7 +740,7 @@
           {#if connectTool.usesEnvKey}
             <section class="mb-5">
               <div class="flex items-center gap-2.5 mb-2">
-                <span class="size-5 shrink-0 grid place-items-center rounded-full bg-[var(--btn-success)] text-[var(--btn-success-text)] text-[0.6875rem] font-bold tabular-nums">3</span>
+                <span class="size-5 shrink-0 grid place-items-center rounded-full bg-[var(--btn-success)] text-[var(--btn-success-text)] text-micro font-bold tabular-nums">3</span>
                 <h4 class="flex items-center gap-1.5 text-[0.875rem] font-semibold text-[var(--text)]">
                   <Terminal size={14} class="text-[var(--text-muted)]" /> Set the env var
                   <span class="font-normal text-[var(--text-muted)]">· {OS_LABELS[selectedOs]}</span>
@@ -752,7 +752,7 @@
                          {keyRevealed ? '' : 'select-none'}"
                 >{keyRevealed ? exportLine : exportLine.split(connectKey).join(maskedKey)}</pre>
                 <button
-                  class="absolute top-2 right-2 inline-flex items-center gap-1 text-[0.6875rem] font-semibold
+                  class="absolute top-2 right-2 inline-flex items-center gap-1 text-micro font-semibold
                          px-2 py-1 rounded-md bg-[var(--surface)] border border-[var(--border)]
                          {exportCopied ? 'text-[var(--success)]' : 'text-[var(--text-muted)] hover:text-[var(--text)]'} transition-colors"
                   onclick={copyExport}
@@ -760,11 +760,11 @@
                   {#if exportCopied}<Check size={12} /> Copied{:else}<Copy size={12} /> Copy{/if}
                 </button>
               </div>
-              <p class="text-[0.6875rem] text-[var(--text-muted)] mt-1.5 leading-relaxed">{persistHint}</p>
+              <p class="text-micro text-[var(--text-muted)] mt-1.5 leading-relaxed">{persistHint}</p>
             </section>
           {/if}
 
-          <p class="text-[0.6875rem] text-[var(--text-muted)] text-center leading-relaxed">
+          <p class="text-micro text-[var(--text-muted)] text-center leading-relaxed">
             The key is shown only this once, so copy it now. You can reconnect any time to mint a fresh one.
           </p>
         {/if}

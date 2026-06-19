@@ -608,7 +608,7 @@
       </span>
       {#if !loading}
         <span
-          class="ml-1 text-[0.6875rem] text-[var(--text-faint)] font-medium
+          class="ml-1 text-micro text-[var(--text-faint)] font-medium
                  tabular-nums"
         >
           {visiblePages.length}
@@ -820,7 +820,7 @@
             </button>
 
             <div class="my-1 h-px bg-[var(--border)]"></div>
-            <div class="px-3 pb-1 pt-0.5 text-[0.625rem] uppercase tracking-widest
+            <div class="px-3 pb-1 pt-0.5 text-micro uppercase tracking-widest
                         font-semibold text-[var(--text-faint)]">
               New page as
             </div>
@@ -928,7 +928,7 @@
           </div>
         {:else}
           {#if filteredPages.length === RESULT_CAP}
-            <div class="text-[0.6875rem] text-[var(--text-faint)] uppercase tracking-widest font-semibold mb-2 px-1.5">
+            <div class="text-micro text-[var(--text-faint)] uppercase tracking-widest font-semibold mb-2 px-1.5">
               Top {RESULT_CAP} matches — narrow the query for fewer results
             </div>
           {/if}
@@ -951,7 +951,7 @@
                 </span>
                 {#if hit.page.status !== "active"}
                   <span
-                    class="flex items-center gap-1 shrink-0 text-[0.6875rem] font-medium
+                    class="flex items-center gap-1 shrink-0 text-micro font-medium
                            px-1.5 py-0.5 rounded-full border border-[var(--border)]
                            text-[var(--text-muted)]"
                     title={hMeta.label}
@@ -965,7 +965,7 @@
                     {#each hit.page.labels.slice(0, 2) as lbl}
                       {@const labelObj = labels.find((l) => l.name === lbl)}
                       <span
-                        class="text-[0.6875rem] font-medium px-1.5 py-0.5 rounded-full
+                        class="text-micro font-medium px-1.5 py-0.5 rounded-full
                                border border-[var(--border)]"
                         style={labelObj ? `color: ${labelObj.color}; border-color: ${labelObj.color}40;` : ""}
                       >
@@ -973,7 +973,7 @@
                       </span>
                     {/each}
                     {#if hit.page.labels.length > 2}
-                      <span class="text-[0.6875rem] text-[var(--text-faint)]">
+                      <span class="text-micro text-[var(--text-faint)]">
                         +{hit.page.labels.length - 2}
                       </span>
                     {/if}
@@ -1018,10 +1018,10 @@
           <section class="mb-6">
             <div class="flex items-center gap-1.5 mb-2 px-1">
               <Pin size={12} class="text-[var(--text-faint)]" />
-              <h2 class="text-[0.6875rem] font-semibold uppercase tracking-widest text-[var(--text-muted)]">
+              <h2 class="text-micro font-semibold uppercase tracking-widest text-[var(--text-muted)]">
                 Pinned
               </h2>
-              <span class="text-[0.6875rem] text-[var(--text-faint)] tabular-nums">
+              <span class="text-micro text-[var(--text-faint)] tabular-nums">
                 {pinnedPages.length}
               </span>
             </div>
@@ -1065,7 +1065,7 @@
                       {#if prev}
                         <p class="text-[0.75rem] text-[var(--text-faint)] line-clamp-1 mt-0.5">{prev}</p>
                       {/if}
-                      <div class="flex items-center gap-2 mt-1.5 text-[0.6875rem] text-[var(--text-faint)]">
+                      <div class="flex items-center gap-2 mt-1.5 text-micro text-[var(--text-faint)]">
                         {#if fName}<span class="truncate">{fName}</span><span>·</span>{/if}
                         <span class="tabular-nums shrink-0">{formatRelative(page.updated_at)}</span>
                         {#if page.status !== "active"}
@@ -1099,7 +1099,7 @@
           <p class="text-[1.375rem] font-display tracking-tight tabular-nums text-[var(--text)] leading-none">
             {visiblePages.length}
           </p>
-          <p class="text-[0.625rem] font-semibold uppercase tracking-widest text-[var(--text-faint)] mt-1">
+          <p class="text-micro font-semibold uppercase tracking-widest text-[var(--text-faint)] mt-1">
             {visiblePages.length === 1 ? "Page" : "Pages"}
           </p>
         </div>
@@ -1107,7 +1107,7 @@
           <p class="text-[1.375rem] font-display tracking-tight tabular-nums text-[var(--text)] leading-none">
             {folders.length}
           </p>
-          <p class="text-[0.625rem] font-semibold uppercase tracking-widest text-[var(--text-faint)] mt-1">
+          <p class="text-micro font-semibold uppercase tracking-widest text-[var(--text-faint)] mt-1">
             {folders.length === 1 ? "Folder" : "Folders"}
           </p>
         </div>
@@ -1129,7 +1129,7 @@
       <div class="h-px bg-[var(--border)] -mx-4 mb-4"></div>
 
       <!-- Folder navigator -->
-      <p class="text-[0.625rem] font-semibold uppercase tracking-widest text-[var(--text-faint)] mb-2 px-1">
+      <p class="text-micro font-semibold uppercase tracking-widest text-[var(--text-faint)] mb-2 px-1">
         Folders
       </p>
       <div class="flex flex-col gap-0.5">
@@ -1143,7 +1143,7 @@
         >
           <FileText size={14} class="shrink-0 text-[var(--text-faint)]" />
           <span class="flex-1 truncate">All pages</span>
-          <span class="tabular-nums text-[0.6875rem] text-[var(--text-faint)]">{visiblePages.length}</span>
+          <span class="tabular-nums text-micro text-[var(--text-faint)]">{visiblePages.length}</span>
         </button>
         {#each sidebarFolders as folder (folder.id)}
           {@const depth = folderDepth(folder)}
@@ -1162,7 +1162,7 @@
               <FolderClosed size={14} class="shrink-0 text-[var(--text-faint)]" />
             {/if}
             <span class="flex-1 truncate">{folder.name}</span>
-            <span class="tabular-nums text-[0.6875rem] text-[var(--text-faint)]">
+            <span class="tabular-nums text-micro text-[var(--text-faint)]">
               {folderPageCount(folder.id)}
             </span>
           </button>
@@ -1316,7 +1316,7 @@
               {#each page.labels.slice(0, 2) as lbl}
                 {@const labelObj = labels.find((l) => l.name === lbl)}
                 <span
-                  class="text-[0.6875rem] font-medium px-1.5 py-0.5 rounded-full
+                  class="text-micro font-medium px-1.5 py-0.5 rounded-full
                          border border-[var(--border)]"
                   style={labelObj ? `color: ${labelObj.color}; border-color: ${labelObj.color}40;` : ""}
                 >
@@ -1324,7 +1324,7 @@
                 </span>
               {/each}
               {#if page.labels.length > 2}
-                <span class="text-[0.6875rem] text-[var(--text-faint)]">
+                <span class="text-micro text-[var(--text-faint)]">
                   +{page.labels.length - 2}
                 </span>
               {/if}

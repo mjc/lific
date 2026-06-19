@@ -131,12 +131,12 @@
     <div class="flex items-center gap-2 mb-4 pb-2 border-b border-[var(--border)]">
       <History size={13} class="text-[var(--text-faint)]" />
       <h2
-        class="text-[0.6875rem] font-semibold uppercase tracking-widest
+        class="text-micro font-semibold uppercase tracking-widest
                text-[var(--text-muted)]"
       >
         Activity
       </h2>
-      <span class="text-[0.6875rem] text-[var(--text-faint)] tabular-nums">
+      <span class="text-micro text-[var(--text-faint)] tabular-nums">
         {items.length}
       </span>
     </div>
@@ -163,7 +163,7 @@
             <span class="font-medium text-[var(--text)]">{actorName(a)}</span>
             {#if a.actor_is_bot}
               <span
-                class="inline-block align-middle text-[0.5625rem] font-semibold
+                class="inline-block align-middle text-micro font-semibold
                        uppercase tracking-wider px-1 py-px rounded
                        bg-[var(--accent-subtle)] text-[var(--accent)] mx-0.5"
               >
@@ -219,7 +219,7 @@
               <span class="text-[var(--text)]">{shortValue(a.new_value, 40)}</span>
             {:else if a.action === "attach" || a.action === "detach"}
               <span
-                class="text-[0.6875rem] font-medium px-1.5 py-0.5 rounded-full
+                class="text-micro font-medium px-1.5 py-0.5 rounded-full
                        border border-[var(--border)] align-middle"
               >
                 {a.action === "attach" ? a.new_value : a.old_value}

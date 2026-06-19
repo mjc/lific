@@ -129,7 +129,7 @@
             >
               <button
                 class="h-6 flex items-center gap-1 px-1.5 rounded
-                       text-[0.6875rem] font-medium tabular-nums
+                       text-micro font-medium tabular-nums
                        transition-colors
                        {view.filterStatus === status
                   ? 'bg-[var(--bg-subtle)] text-[var(--text)]'
@@ -270,7 +270,7 @@
 
     <!-- Issue count. Reserved min-width so the brief load frame can't reflow. -->
     <span
-      class="mr-1.5 min-w-[2ch] text-right text-[0.6875rem] tabular-nums
+      class="mr-1.5 min-w-[2ch] text-right text-micro tabular-nums
              font-medium text-[var(--text-faint)]"
     >
       {countLabel}
@@ -323,7 +323,7 @@
           onclick={(e) => e.stopPropagation()}
         >
           <div class="px-3 pt-1 pb-1.5 text-[var(--text-faint)]
-                      text-[0.6875rem] uppercase tracking-widest
+                      text-micro uppercase tracking-widest
                       font-semibold">
             Sort by
           </div>
@@ -356,7 +356,7 @@
           {@render sortRow("age", "Age", Clock)}
           {@render sortRow("updated", "Updated", History)}
           {@render sortRow("number", "Issue number", Hash)}
-          <div class="px-3 pt-2 pb-1 mt-1 text-[0.6875rem]
+          <div class="px-3 pt-2 pb-1 mt-1 text-micro
                       text-[var(--text-faint)] border-t
                       border-[var(--border)] leading-snug">
             Click the active row to flip direction.
@@ -387,7 +387,7 @@
                  rounded-lg shadow-lg py-1.5 text-[0.8125rem]"
           onclick={(e) => e.stopPropagation()}
         >
-          <div class="px-3 pt-1 pb-1.5 text-[var(--text-faint)] text-[0.6875rem] uppercase tracking-widest font-semibold">
+          <div class="px-3 pt-1 pb-1.5 text-[var(--text-faint)] text-micro uppercase tracking-widest font-semibold">
             Group by
           </div>
           {#each [["status", "Status"], ["priority", "Priority"], ["module", "Module"], ["none", "None"]] as [val, label]}
@@ -403,7 +403,7 @@
             </button>
           {/each}
 
-          <div class="px-3 pt-2.5 pb-1.5 mt-1 text-[var(--text-faint)] text-[0.6875rem] uppercase tracking-widest font-semibold border-t border-[var(--border)]">
+          <div class="px-3 pt-2.5 pb-1.5 mt-1 text-[var(--text-faint)] text-micro uppercase tracking-widest font-semibold border-t border-[var(--border)]">
             Density
           </div>
           {#each [["compact", "Compact"], ["comfortable", "Comfortable"]] as [val, label]}
@@ -486,7 +486,7 @@
                  rounded-lg shadow-lg p-3"
           onclick={(e) => e.stopPropagation()}
         >
-          <div class="text-[var(--text-faint)] text-[0.6875rem]
+          <div class="text-[var(--text-faint)] text-micro
                       uppercase tracking-widest font-semibold mb-2">
             Keyboard
           </div>
@@ -509,7 +509,7 @@
                             border border-[var(--border)]
                             bg-[var(--bg-subtle)]
                             text-[var(--text)]
-                            font-mono text-[0.6875rem] leading-none
+                            font-mono text-micro leading-none
                             shrink-0">
                   {keys}
                 </kbd>
@@ -553,7 +553,7 @@
           New
           <kbd
             class="ml-0.5 grid place-items-center min-w-[1.05rem] h-[1.05rem]
-                   rounded bg-white/20 font-mono text-[0.625rem] leading-none"
+                   rounded bg-white/20 font-mono text-micro leading-none"
           >
             C
           </kbd>
@@ -610,7 +610,7 @@
             <kbd
               class="px-1.5 py-0.5 rounded border border-[var(--border)]
                      bg-[var(--bg-subtle)] text-[var(--text)] font-mono
-                     text-[0.6875rem] leading-none shrink-0"
+                     text-micro leading-none shrink-0"
             >
               C
             </kbd>
@@ -631,7 +631,7 @@
 
           <div class="my-1 h-px bg-[var(--border)]"></div>
           <div
-            class="px-3 pb-1 pt-0.5 text-[0.625rem] uppercase tracking-widest
+            class="px-3 pb-1 pt-0.5 text-micro uppercase tracking-widest
                    font-semibold text-[var(--text-faint)]"
           >
             New in status

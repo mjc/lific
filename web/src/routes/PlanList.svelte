@@ -122,7 +122,7 @@
       <ChevronRight size={12} class="text-[var(--text-faint)]" />
       <span class="text-[0.8125rem] font-medium text-[var(--text)]">Plans</span>
       {#if !loading}
-        <span class="ml-1 text-[0.6875rem] text-[var(--text-faint)] font-medium tabular-nums">
+        <span class="ml-1 text-micro text-[var(--text-faint)] font-medium tabular-nums">
           {plans.length}
         </span>
       {/if}
@@ -214,7 +214,7 @@
         {:else}
           {#each grouped as group (group.status)}
             <div class="mb-6">
-              <h2 class="text-[0.6875rem] font-semibold uppercase tracking-wide text-[var(--text-faint)] mb-2">
+              <h2 class="text-micro font-semibold uppercase tracking-wide text-[var(--text-faint)] mb-2">
                 {STATUS_LABEL[group.status] ?? group.status}
                 <span class="ml-1 tabular-nums">{group.items.length}</span>
               </h2>
@@ -231,7 +231,7 @@
                     <ProgressRing value={frac} size={40} stroke={4} color="var(--success)">
                       {#snippet label()}
                         {#if plan.step_count > 0}
-                          <span class="text-[0.625rem] font-semibold tabular-nums text-[var(--text)] leading-none">
+                          <span class="text-micro font-semibold tabular-nums text-[var(--text)] leading-none">
                             {Math.round(frac * 100)}
                           </span>
                         {:else}

@@ -223,7 +223,7 @@
         <kbd
           class="px-1.5 py-0.5 rounded border border-[var(--border)]
                  bg-[var(--bg-subtle)] text-[var(--text-faint)]
-                 font-mono text-[0.625rem] leading-none shrink-0"
+                 font-mono text-micro leading-none shrink-0"
         >
           esc
         </kbd>
@@ -231,7 +231,7 @@
 
       <!-- Context line: what this modal acts on -->
       <div
-        class="px-4 py-1.5 text-[0.6875rem] uppercase tracking-widest
+        class="px-4 py-1.5 text-micro uppercase tracking-widest
                font-semibold text-[var(--text-faint)] flex items-center gap-2"
       >
         <span>{title}</span>
@@ -279,7 +279,7 @@
               <span class="flex-1 min-w-0 text-[0.875rem] text-[var(--text)] truncate">
                 {hit.title}
               </span>
-              <span class="font-mono text-[0.6875rem] text-[var(--text-faint)] shrink-0">
+              <span class="font-mono text-micro text-[var(--text-faint)] shrink-0">
                 {hit.identifier}
               </span>
               {#if i === selectedIdx}
@@ -293,7 +293,7 @@
       <!-- Footer -->
       <div
         class="flex items-center gap-3 px-4 py-2.5 border-t border-[var(--border)]
-               text-[0.6875rem] text-[var(--text-faint)]"
+               text-micro text-[var(--text-faint)]"
       >
         <span class="inline-flex items-center gap-1">
           <kbd class="font-mono">↑↓</kbd> navigate

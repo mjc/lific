@@ -288,7 +288,7 @@
       </span>
       {#if !loading}
         <span
-          class="ml-1 text-[0.6875rem] text-[var(--text-faint)] font-medium
+          class="ml-1 text-micro text-[var(--text-faint)] font-medium
                  tabular-nums"
         >
           {filtered.length}{hasMore && filterActor === undefined ? "+" : ""}
@@ -366,12 +366,12 @@
                        bg-[var(--bg)] flex items-center gap-2"
               >
                 <span
-                  class="text-[0.6875rem] font-semibold uppercase tracking-widest
+                  class="text-micro font-semibold uppercase tracking-widest
                          text-[var(--text-muted)]"
                 >
                   {group.label}
                 </span>
-                <span class="text-[0.6875rem] text-[var(--text-faint)] tabular-nums">
+                <span class="text-micro text-[var(--text-faint)] tabular-nums">
                   {group.entries.length}
                 </span>
                 <div class="flex-1 h-px bg-[var(--border)]"></div>
@@ -399,7 +399,7 @@
                       <span class="font-medium text-[var(--text)]">{actorName(a)}</span>
                       {#if a.actor_is_bot}
                         <span
-                          class="inline-block align-middle text-[0.5625rem] font-semibold
+                          class="inline-block align-middle text-micro font-semibold
                                  uppercase tracking-wider px-1 py-px rounded
                                  bg-[var(--accent-subtle)] text-[var(--accent)] mx-0.5"
                         >
@@ -439,7 +439,7 @@
                         </span>
                       {:else if a.action === "attach" || a.action === "detach"}
                         <span
-                          class="text-[0.6875rem] font-medium px-1.5 py-0.5 rounded-full
+                          class="text-micro font-medium px-1.5 py-0.5 rounded-full
                                  border border-[var(--border)] align-middle"
                         >
                           {a.action === "attach" ? a.new_value : a.old_value}
@@ -460,7 +460,7 @@
                     </div>
 
                     <span
-                      class="shrink-0 text-[0.6875rem] text-[var(--text-faint)] tabular-nums"
+                      class="shrink-0 text-micro text-[var(--text-faint)] tabular-nums"
                       title={formatDate(a.ts)}
                     >
                       {formatRelative(a.ts)}
@@ -479,20 +479,20 @@
                       <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-3 pt-2.5">
                         <!-- When -->
                         <div>
-                          <p class="text-[0.625rem] font-semibold uppercase tracking-widest text-[var(--text-faint)] mb-1">
+                          <p class="text-micro font-semibold uppercase tracking-widest text-[var(--text-faint)] mb-1">
                             When
                           </p>
                           <p class="text-[0.8125rem] text-[var(--text)] m-0">
                             {formatDate(a.ts)}
                           </p>
-                          <p class="text-[0.6875rem] font-mono text-[var(--text-faint)] m-0 mt-0.5">
+                          <p class="text-micro font-mono text-[var(--text-faint)] m-0 mt-0.5">
                             {a.ts} UTC
                           </p>
                         </div>
 
                         <!-- Who -->
                         <div>
-                          <p class="text-[0.625rem] font-semibold uppercase tracking-widest text-[var(--text-faint)] mb-1">
+                          <p class="text-micro font-semibold uppercase tracking-widest text-[var(--text-faint)] mb-1">
                             Who
                           </p>
                           <p class="text-[0.8125rem] text-[var(--text)] m-0">
@@ -502,7 +502,7 @@
                             {/if}
                             {#if a.actor_is_bot}
                               <span
-                                class="inline-block align-middle text-[0.5625rem] font-semibold
+                                class="inline-block align-middle text-micro font-semibold
                                        uppercase tracking-wider px-1 py-px rounded
                                        bg-[var(--accent-subtle)] text-[var(--accent)] ml-1"
                               >
@@ -512,7 +512,7 @@
                             <span class="text-[var(--text-muted)]">via {a.transport}</span>
                           </p>
                           {#if standing}
-                            <p class="text-[0.6875rem] text-[var(--text-muted)] m-0 mt-0.5">
+                            <p class="text-micro text-[var(--text-muted)] m-0 mt-0.5">
                               {standing.stat.actions.toLocaleString()} action{standing.stat.actions === 1 ? "" : "s"}
                               in this project · {ordinal(standing.rank)} most active
                               · last seen {formatRelative(standing.stat.last_ts)}
@@ -522,7 +522,7 @@
 
                         <!-- What -->
                         <div class="sm:col-span-2">
-                          <p class="text-[0.625rem] font-semibold uppercase tracking-widest text-[var(--text-faint)] mb-1">
+                          <p class="text-micro font-semibold uppercase tracking-widest text-[var(--text-faint)] mb-1">
                             What
                           </p>
                           <p class="text-[0.8125rem] text-[var(--text)] m-0 flex items-center gap-1.5 flex-wrap">
@@ -592,12 +592,12 @@
         <aside class="w-full lg:w-[260px] shrink-0 lg:sticky lg:top-6">
           <div class="flex items-center gap-2 mb-3">
             <span
-              class="text-[0.6875rem] font-semibold uppercase tracking-widest
+              class="text-micro font-semibold uppercase tracking-widest
                      text-[var(--text-muted)]"
             >
               Actors
             </span>
-            <span class="text-[0.6875rem] text-[var(--text-faint)] tabular-nums">
+            <span class="text-micro text-[var(--text-faint)] tabular-nums">
               {actors.length}
             </span>
           </div>
@@ -618,7 +618,7 @@
                 <div class="flex items-center gap-2.5">
                   <span
                     class="size-6 rounded-full flex items-center justify-center
-                           text-[0.5625rem] font-bold shrink-0 select-none
+                           text-micro font-bold shrink-0 select-none
                            {s.is_bot
                       ? 'bg-[var(--accent-subtle)] text-[var(--accent)] border border-[var(--accent)]'
                       : 'bg-[var(--accent)] text-[var(--accent-text)]'}"
@@ -632,7 +632,7 @@
                       </span>
                       {#if s.is_bot}
                         <span
-                          class="text-[0.5625rem] font-semibold uppercase tracking-wider
+                          class="text-micro font-semibold uppercase tracking-wider
                                  px-1 py-px rounded bg-[var(--accent-subtle)]
                                  text-[var(--accent)] shrink-0"
                         >
@@ -640,7 +640,7 @@
                         </span>
                       {/if}
                     </div>
-                    <div class="text-[0.6875rem] text-[var(--text-faint)]">
+                    <div class="text-micro text-[var(--text-faint)]">
                       via {s.top_transport} · {formatRelative(s.last_ts)}
                     </div>
                   </div>

@@ -1000,7 +1000,7 @@
       class="shrink-0 flex items-center gap-3 px-6 pt-3 pb-2"
     >
       <span
-        class="text-[0.6875rem] font-semibold uppercase tracking-widest
+        class="text-micro font-semibold uppercase tracking-widest
                text-[var(--text-faint)]"
       >
         Columns
@@ -1028,7 +1028,7 @@
               <StatusIcon status={status} size={12} />
               <span class="capitalize">{status}</span>
               <span
-                class="tabular-nums text-[0.6875rem]
+                class="tabular-nums text-micro
                        {visible
                   ? 'text-[var(--text-muted)]'
                   : 'text-[var(--text-faint)]'}"
@@ -1325,7 +1325,7 @@
            buckets are just noise. Ordering is by relevance score
            (set up in compareIssues). -->
       {#if sortedIssues.length === RESULT_CAP}
-        <div class="text-[0.6875rem] text-[var(--text-faint)] uppercase tracking-widest font-semibold px-6 py-2 border-b border-[var(--border)] bg-[var(--surface)]">
+        <div class="text-micro text-[var(--text-faint)] uppercase tracking-widest font-semibold px-6 py-2 border-b border-[var(--border)] bg-[var(--surface)]">
           Top {RESULT_CAP} matches — narrow the query for fewer results
         </div>
       {/if}

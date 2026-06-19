@@ -218,7 +218,7 @@
       {#each issue.labels.slice(0, 2) as lbl}
         {@const labelObj = labels.find((l) => l.name === lbl)}
         <span
-          class="text-[0.6875rem] font-medium px-1.5 py-0.5 rounded-full
+          class="text-micro font-medium px-1.5 py-0.5 rounded-full
                  border border-[var(--border)]"
           style={labelObj ? `color: ${labelObj.color}; border-color: ${labelObj.color}40;` : ""}
         >
@@ -226,7 +226,7 @@
         </span>
       {/each}
       {#if issue.labels.length > 2}
-        <span class="text-[0.6875rem] text-[var(--text-faint)]">
+        <span class="text-micro text-[var(--text-faint)]">
           +{issue.labels.length - 2}
         </span>
       {/if}
@@ -236,7 +236,7 @@
   <!-- LIF-191: module chip — which arc this issue belongs to. Hidden when
        already grouped by module (redundant). -->
   {#if issue.module_id != null && groupBy !== "module" && mod}
-    <span class="shrink-0 inline-flex items-center gap-1 max-w-[130px] text-[0.6875rem] text-[var(--text-muted)]">
+    <span class="shrink-0 inline-flex items-center gap-1 max-w-[130px] text-micro text-[var(--text-muted)]">
       {#if mod.emoji}
         <ProjectIcon value={mod.emoji} size={12} />
       {:else}

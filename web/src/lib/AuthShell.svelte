@@ -125,7 +125,7 @@
         <span class="font-display text-[1.125rem] tracking-tight text-[var(--text)] leading-none flex-1">
           Lific
         </span>
-        <span class="font-mono text-[0.625rem] tracking-tight text-[var(--text-faint)] px-1.5 py-0.5 rounded-md bg-[var(--bg-subtle)]">
+        <span class="font-mono text-micro tracking-tight text-[var(--text-faint)] px-1.5 py-0.5 rounded-md bg-[var(--bg-subtle)]">
           v{__APP_VERSION__}
         </span>
       </div>
@@ -143,7 +143,7 @@
           <div class="text-[0.8125rem] text-[var(--text-muted)] truncate leading-tight">
             Not signed in
           </div>
-          <div class="text-[0.625rem] text-[var(--text-faint)] leading-tight mt-0.5">
+          <div class="text-micro text-[var(--text-faint)] leading-tight mt-0.5">
             {crumb} to continue
           </div>
         </div>

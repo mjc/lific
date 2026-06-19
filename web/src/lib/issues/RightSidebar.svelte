@@ -49,7 +49,7 @@
       <p class="text-[1.375rem] font-display tracking-tight tabular-nums text-[var(--text)] leading-none">
         {stats.total}
       </p>
-      <p class="text-[0.625rem] font-semibold uppercase tracking-widest text-[var(--text-faint)] mt-1">
+      <p class="text-micro font-semibold uppercase tracking-widest text-[var(--text-faint)] mt-1">
         Issues
       </p>
     </div>
@@ -57,7 +57,7 @@
       <p class="text-[1.375rem] font-display tracking-tight tabular-nums text-[var(--text)] leading-none">
         {stats.active}
       </p>
-      <p class="text-[0.625rem] font-semibold uppercase tracking-widest text-[var(--text-faint)] mt-1">
+      <p class="text-micro font-semibold uppercase tracking-widest text-[var(--text-faint)] mt-1">
         Active
       </p>
     </div>
@@ -65,7 +65,7 @@
 
   <!-- Priority breakdown — not surfaced anywhere else in the view; each row
        toggles the Priority filter. -->
-  <p class="text-[0.625rem] font-semibold uppercase tracking-widest text-[var(--text-faint)] mb-2 px-1">
+  <p class="text-micro font-semibold uppercase tracking-widest text-[var(--text-faint)] mb-2 px-1">
     Priority
   </p>
   <div class="flex flex-col gap-0.5 mb-5">
@@ -81,7 +81,7 @@
         >
           <PriorityIcon priority={p} size={14} />
           <span class="flex-1 capitalize">{p}</span>
-          <span class="tabular-nums text-[0.6875rem] text-[var(--text-faint)]">
+          <span class="tabular-nums text-micro text-[var(--text-faint)]">
             {stats.prio[p]}
           </span>
         </button>
@@ -93,7 +93,7 @@
     <div class="h-px bg-[var(--border)] -mx-4 mb-4"></div>
     <!-- Module navigator — parallel to the Pages folder navigator; click to
          focus a module's issues. -->
-    <p class="text-[0.625rem] font-semibold uppercase tracking-widest text-[var(--text-faint)] mb-2 px-1">
+    <p class="text-micro font-semibold uppercase tracking-widest text-[var(--text-faint)] mb-2 px-1">
       Modules
     </p>
     <div class="flex flex-col gap-0.5">
@@ -112,7 +112,7 @@
             <Layers size={14} class="shrink-0 text-[var(--text-faint)]" />
           {/if}
           <span class="flex-1 truncate">{m.name}</span>
-          <span class="tabular-nums text-[0.6875rem] text-[var(--text-faint)]">
+          <span class="tabular-nums text-micro text-[var(--text-faint)]">
             {stats.byModule.get(m.id) ?? 0}
           </span>
         </button>

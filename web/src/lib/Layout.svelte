@@ -152,7 +152,7 @@
             Lific
           </span>
           <span
-            class="font-mono text-[0.625rem] tracking-tight text-[var(--text-faint)]
+            class="font-mono text-micro tracking-tight text-[var(--text-faint)]
                    px-1.5 py-0.5 rounded-md bg-[var(--bg-subtle)]
                    group-hover:bg-[var(--surface)] transition-colors"
           >
@@ -171,7 +171,7 @@
         >
           <Search size={14} class="shrink-0" />
           <span class="flex-1 text-left text-[0.8125rem]">Jump to…</span>
-          <kbd class="font-mono text-[0.625rem] leading-none text-[var(--text-faint)]
+          <kbd class="font-mono text-micro leading-none text-[var(--text-faint)]
                       border border-[var(--border)] rounded px-1 py-0.5">⌘K</kbd>
         </button>
       </div>
@@ -180,7 +180,7 @@
       <nav class="flex-1 px-2 py-1 overflow-y-auto">
         {#if projects.length > 0}
           <div class="flex items-center justify-between px-2 pt-1.5 pb-1">
-            <span class="text-[0.625rem] font-semibold uppercase tracking-widest text-[var(--text-faint)]">
+            <span class="text-micro font-semibold uppercase tracking-widest text-[var(--text-faint)]">
               Projects
             </span>
             <button
@@ -219,7 +219,7 @@
               {:else}
                 <span
                   class="size-5 rounded-md border border-[var(--border)] bg-[var(--bg-subtle)]
-                         flex items-center justify-center text-[0.5625rem] font-semibold
+                         flex items-center justify-center text-micro font-semibold
                          tracking-tight shrink-0
                          {isProjectActive ? 'text-[var(--text)]' : 'text-[var(--text-muted)]'}"
                 >
@@ -283,7 +283,7 @@
         >
           <div
             class="size-7 rounded-full bg-[var(--accent)] text-[var(--accent-text)]
-                   flex items-center justify-center text-[0.625rem] font-semibold
+                   flex items-center justify-center text-micro font-semibold
                    tracking-wide select-none shrink-0"
           >
             {initials(user.display_name || user.username)}
@@ -292,7 +292,7 @@
             <div class="text-[0.8125rem] text-[var(--text)] truncate leading-tight">
               {user.display_name || user.username}
             </div>
-            <div class="text-[0.625rem] text-[var(--text-faint)] flex items-center gap-1 leading-tight mt-0.5">
+            <div class="text-micro text-[var(--text-faint)] flex items-center gap-1 leading-tight mt-0.5">
               <Settings size={9} /> Settings
             </div>
           </div>

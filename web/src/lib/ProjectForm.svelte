@@ -197,7 +197,7 @@
     {#if opt.value !== null}
       <div
         class="size-5 rounded-full bg-[var(--accent)] text-[var(--accent-text)]
-               flex items-center justify-center text-[0.5625rem] font-semibold shrink-0"
+               flex items-center justify-center text-micro font-semibold shrink-0"
       >
         {userInitials(opt.label)}
       </div>
@@ -213,7 +213,7 @@
     <div class="flex items-center gap-2.5">
       <div
         class="size-7 rounded-full flex items-center justify-center
-               text-[0.625rem] font-semibold shrink-0
+               text-micro font-semibold shrink-0
                {isSelected
           ? 'bg-[var(--accent)] text-[var(--accent-text)]'
           : 'bg-[var(--bg-subtle)] text-[var(--text-muted)]'}"
@@ -230,7 +230,7 @@
           </span>
           {#if opt.is_admin}
             <span
-              class="text-[0.625rem] font-semibold uppercase tracking-wide
+              class="text-micro font-semibold uppercase tracking-wide
                      px-1 py-0.5 rounded bg-[var(--accent-subtle)] text-[var(--accent)]"
             >
               Admin

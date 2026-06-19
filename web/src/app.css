@@ -15,6 +15,21 @@
 
   --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
 
+  /* Type scale — role-based, eight steps.
+     See LIF-DOC-14 "UI Guidelines" §2 for the full rationale. Expert
+     consensus (Brainy/FontFYI/DSC) is that production UIs should land at
+     7–9 steps with role-based names; >10 thins out and produces sizes
+     nobody uses. Lific previously had 13+ literal sizes inlined as
+     `text-[0.8125rem]` etc. — this collapses the scale and gives every
+     step a real semantic name. The micro step deliberately absorbs the
+     old 9px / 10px / 11px sizes (the 9/10 sizes were near-illegible and
+     under-used; 11px was already the canonical section-label size).
+
+     Tailwind v4 reads `--text-<name>` from @theme as a font-size utility
+     `text-<name>`. We intentionally do NOT set companion `--line-height`
+     values — every call-site already controls its own leading. */
+  --text-micro: 0.6875rem;    /* 11px — section labels, kbd, tally, badges */
+
   /* named colors for palette reference */
   --color-stone-50: #faf8f5;
   --color-stone-100: #f3f0eb;

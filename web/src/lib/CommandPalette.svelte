@@ -597,7 +597,7 @@
         <kbd
           class="px-1.5 py-0.5 rounded border border-[var(--border)]
                  bg-[var(--bg-subtle)] text-[var(--text-faint)]
-                 font-mono text-[0.625rem] leading-none shrink-0"
+                 font-mono text-micro leading-none shrink-0"
         >
           esc
         </kbd>
@@ -648,7 +648,7 @@
                 {c.title}
               </span>
               {#if c.hint}
-                <span class="text-[0.6875rem] text-[var(--text-faint)] shrink-0">
+                <span class="text-micro text-[var(--text-faint)] shrink-0">
                   {c.hint}
                 </span>
               {/if}
@@ -662,7 +662,7 @@
                likely intent. -->
           {#if actionHits.length > 0}
             <div
-              class="px-4 pt-2 pb-1 text-[0.625rem] font-semibold uppercase
+              class="px-4 pt-2 pb-1 text-micro font-semibold uppercase
                      tracking-widest text-[var(--text-faint)]"
             >
               Actions
@@ -685,7 +685,7 @@
                   {a.title}
                 </span>
                 {#if a.hint}
-                  <span class="text-[0.6875rem] text-[var(--text-faint)] capitalize shrink-0">
+                  <span class="text-micro text-[var(--text-faint)] capitalize shrink-0">
                     {a.hint}
                   </span>
                 {/if}
@@ -699,7 +699,7 @@
           {/if}
           {#each grouped as group (group.label)}
             <div
-              class="px-4 pt-2 pb-1 text-[0.625rem] font-semibold uppercase
+              class="px-4 pt-2 pb-1 text-micro font-semibold uppercase
                      tracking-widest text-[var(--text-faint)]"
             >
               {group.label}
@@ -744,7 +744,7 @@
                 </span>
 
                 {#if r.identifier}
-                  <span class="font-mono text-[0.6875rem] text-[var(--text-faint)] shrink-0">
+                  <span class="font-mono text-micro text-[var(--text-faint)] shrink-0">
                     {r.identifier}
                   </span>
                 {/if}

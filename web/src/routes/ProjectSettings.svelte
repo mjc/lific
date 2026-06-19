@@ -309,7 +309,7 @@
                 </button>
               {/if}
               <button
-                class="group inline-flex items-center gap-1 text-[0.6875rem] font-mono font-semibold
+                class="group inline-flex items-center gap-1 text-micro font-mono font-semibold
                        px-1.5 py-0.5 rounded border border-[var(--border)] text-[var(--text-muted)]
                        hover:border-[var(--accent)] hover:text-[var(--accent)] transition-colors"
                 onclick={copyIdentifier}
@@ -319,7 +319,7 @@
                 {#if copied}<Check size={11} />{:else}<Copy size={11} class="opacity-0 group-hover:opacity-100 transition-opacity" />{/if}
               </button>
               {#if savedAt}
-                <span class="inline-flex items-center gap-1 text-[0.6875rem] text-[var(--success)]" aria-live="polite">
+                <span class="inline-flex items-center gap-1 text-micro text-[var(--success)]" aria-live="polite">
                   <Check size={11} /> Saved
                 </span>
               {/if}
@@ -359,7 +359,7 @@
           {#if total > 0}
             <div class="shrink-0 flex flex-col items-center gap-1 pt-0.5">
               <ProgressRing value={completion} size={52} stroke={5} color="var(--success)" />
-              <span class="text-[0.625rem] text-[var(--text-faint)] tabular-nums">{counts?.done ?? 0}/{total} done</span>
+              <span class="text-micro text-[var(--text-faint)] tabular-nums">{counts?.done ?? 0}/{total} done</span>
             </div>
           {/if}
         </section>
@@ -402,9 +402,9 @@
                   <!-- heat edge -->
                   <span class="absolute left-0 top-0 bottom-0 w-[3px]" style="background: {heat}"></span>
                   <PriorityIcon priority={issue.priority} size={15} />
-                  <span class="text-[0.6875rem] font-mono text-[var(--text-faint)] shrink-0 tabular-nums w-[58px]">{issue.identifier}</span>
+                  <span class="text-micro font-mono text-[var(--text-faint)] shrink-0 tabular-nums w-[58px]">{issue.identifier}</span>
                   <span class="text-[0.875rem] text-[var(--text)] truncate flex-1">{issue.title}</span>
-                  <div class="shrink-0 flex items-center gap-2 text-[0.6875rem] tabular-nums">
+                  <div class="shrink-0 flex items-center gap-2 text-micro tabular-nums">
                     <span class="text-[var(--text-faint)]">open {ageLabel(age)}</span>
                     {#if idle >= 14}
                       <span class="px-1.5 py-0.5 rounded-full text-[var(--warn)] bg-[color-mix(in_oklab,var(--warn)_14%,transparent)]">idle {ageLabel(idle)}</span>

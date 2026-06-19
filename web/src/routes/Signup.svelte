@@ -194,7 +194,7 @@
       <div class="flex flex-col gap-1.5">
         <label
           for="signup-username"
-          class="text-[0.6875rem] font-semibold uppercase tracking-widest text-[var(--text-faint)]"
+          class="text-micro font-semibold uppercase tracking-widest text-[var(--text-faint)]"
         >
           Username
         </label>
@@ -223,7 +223,7 @@
       <div class="flex flex-col gap-1.5">
         <label
           for="signup-email"
-          class="text-[0.6875rem] font-semibold uppercase tracking-widest text-[var(--text-faint)]"
+          class="text-micro font-semibold uppercase tracking-widest text-[var(--text-faint)]"
         >
           Email
         </label>
@@ -252,7 +252,7 @@
       <div class="flex flex-col gap-1.5">
         <label
           for="signup-password"
-          class="text-[0.6875rem] font-semibold uppercase tracking-widest text-[var(--text-faint)]"
+          class="text-micro font-semibold uppercase tracking-widest text-[var(--text-faint)]"
         >
           Password
         </label>
@@ -302,7 +302,7 @@
                 {/each}
               </div>
               <span
-                class="text-[0.6875rem] font-medium tabular-nums w-[3.25rem] text-right"
+                class="text-micro font-medium tabular-nums w-[3.25rem] text-right"
                 style="color: {strength.color}"
               >
                 {strength.label}
@@ -352,7 +352,7 @@
     <!-- Getting started, in Lific's own issue + status vocabulary. These are
          your real next steps; the first ticks to done when signup succeeds. -->
     <div class="mt-8 pt-6 border-t border-[var(--border)]">
-      <p class="text-[0.625rem] font-semibold uppercase tracking-widest text-[var(--text-faint)] mb-2.5">
+      <p class="text-micro font-semibold uppercase tracking-widest text-[var(--text-faint)] mb-2.5">
         Getting started
       </p>
       <ul class="rounded-lg border border-[var(--border)] bg-[var(--surface)] overflow-hidden">
@@ -371,7 +371,7 @@
               {step.title}
             </span>
             <span
-              class="text-[0.6875rem] font-medium capitalize tabular-nums"
+              class="text-micro font-medium capitalize tabular-nums"
               style="color: {statusCssColor(step.status)}"
             >
               {step.status}

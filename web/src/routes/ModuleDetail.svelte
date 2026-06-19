@@ -395,7 +395,7 @@
             {#if progress.total > 0}
               <div class="shrink-0 flex flex-col items-center gap-1 pl-2">
                 <ProgressRing value={progress.frac} size={56} stroke={5} color="var(--success)" />
-                <span class="text-[0.6875rem] text-[var(--text-muted)] tabular-nums">
+                <span class="text-micro text-[var(--text-muted)] tabular-nums">
                   {progress.done}/{progress.total} done
                 </span>
               </div>
@@ -425,14 +425,14 @@
                  "what's queued, what's in progress, what's done." -->
             <div class="flex items-baseline justify-between mb-3 pb-2">
               <div class="flex items-baseline gap-2">
-                <h2 class="text-[0.6875rem] font-semibold uppercase tracking-widest text-[var(--text-muted)]">
+                <h2 class="text-micro font-semibold uppercase tracking-widest text-[var(--text-muted)]">
                   Issues
                 </h2>
-                <span class="text-[0.6875rem] text-[var(--text-faint)] tabular-nums">
+                <span class="text-micro text-[var(--text-faint)] tabular-nums">
                   {issues.length}
                 </span>
               </div>
-              <div class="flex items-center gap-3 text-[0.6875rem] text-[var(--text-faint)]">
+              <div class="flex items-center gap-3 text-micro text-[var(--text-faint)]">
                 {#each ISSUE_STATUS_ORDER as s}
                   {#if issueStatusCounts[s] > 0}
                     <span class="flex items-center gap-1">
@@ -502,7 +502,7 @@
         <aside class="w-[236px] shrink-0 self-start rounded-xl bg-[var(--bg-subtle)] py-5 px-5 my-6 mr-2">
           <!-- Status -->
           <div class="mb-5">
-            <p class="text-[0.6875rem] font-semibold uppercase tracking-widest text-[var(--text-faint)] mb-2">
+            <p class="text-micro font-semibold uppercase tracking-widest text-[var(--text-faint)] mb-2">
               Status
             </p>
             <div class="relative">
@@ -553,7 +553,7 @@
           <!-- Dates -->
           <div class="flex flex-col gap-4">
             <div>
-              <p class="text-[0.6875rem] font-semibold uppercase tracking-widest text-[var(--text-faint)] mb-0.5">
+              <p class="text-micro font-semibold uppercase tracking-widest text-[var(--text-faint)] mb-0.5">
                 Created
               </p>
               <p class="text-[0.8125rem] text-[var(--text-muted)] leading-snug m-0">
@@ -561,7 +561,7 @@
               </p>
             </div>
             <div>
-              <p class="text-[0.6875rem] font-semibold uppercase tracking-widest text-[var(--text-faint)] mb-0.5">
+              <p class="text-micro font-semibold uppercase tracking-widest text-[var(--text-faint)] mb-0.5">
                 Updated
               </p>
               <p class="text-[0.8125rem] text-[var(--text-muted)] leading-snug m-0">

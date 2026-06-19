@@ -183,13 +183,13 @@
           <div class="flex items-center gap-2 mb-5">
             <SlidersHorizontal size={15} class="text-[var(--text-muted)]" />
             <h2 class="text-[0.9375rem] font-semibold text-[var(--text)]">Settings</h2>
-            <span class="font-mono text-[0.625rem] text-[var(--text-faint)] px-1.5 py-0.5 rounded bg-[var(--bg-subtle)]">v{__APP_VERSION__}</span>
+            <span class="font-mono text-micro text-[var(--text-faint)] px-1.5 py-0.5 rounded bg-[var(--bg-subtle)]">v{__APP_VERSION__}</span>
           </div>
 
           <div class="flex flex-col gap-6 max-w-[560px]">
             <!-- Name -->
             <label class="block">
-              <span class="block text-[0.6875rem] font-semibold uppercase tracking-widest text-[var(--text)] mb-1.5">Instance name</span>
+              <span class="block text-micro font-semibold uppercase tracking-widest text-[var(--text)] mb-1.5">Instance name</span>
               <input
                 bind:value={fName}
                 onblur={commitName}
@@ -204,7 +204,7 @@
             <!-- Signups: a real status, so each state carries its own color
                  (green = open/permissive, amber = gated) + an icon. -->
             <div>
-              <span class="block text-[0.6875rem] font-semibold uppercase tracking-widest text-[var(--text)] mb-1.5">Sign-ups</span>
+              <span class="block text-micro font-semibold uppercase tracking-widest text-[var(--text)] mb-1.5">Sign-ups</span>
               <div class="inline-flex gap-1 p-1 rounded-xl bg-[var(--bg)] shadow-[inset_0_1px_2px_rgba(0,0,0,0.10)]">
                 <button
                   type="button"
@@ -244,7 +244,7 @@
 
             <!-- Email domain allowlist -->
             <label class="block">
-              <span class="block text-[0.6875rem] font-semibold uppercase tracking-widest text-[var(--text)] mb-1.5">Allowed signup domains</span>
+              <span class="block text-micro font-semibold uppercase tracking-widest text-[var(--text)] mb-1.5">Allowed signup domains</span>
               <input
                 bind:value={fDomains}
                 onblur={commitDomains}
@@ -257,7 +257,7 @@
 
             <!-- Session lifetime -->
             <label class="block">
-              <span class="block text-[0.6875rem] font-semibold uppercase tracking-widest text-[var(--text)] mb-1.5">Session lifetime</span>
+              <span class="block text-micro font-semibold uppercase tracking-widest text-[var(--text)] mb-1.5">Session lifetime</span>
               <div class="flex items-center gap-2">
                 <input
                   type="number"
@@ -275,7 +275,7 @@
 
             <!-- Login message -->
             <label class="block">
-              <span class="block text-[0.6875rem] font-semibold uppercase tracking-widest text-[var(--text)] mb-1.5">Login message</span>
+              <span class="block text-micro font-semibold uppercase tracking-widest text-[var(--text)] mb-1.5">Login message</span>
               <textarea
                 bind:value={fMessage}
                 onblur={commitMessage}
@@ -296,7 +296,7 @@
                  box, NOT by tinting this 11px label amber — orange-600 is only
                  ~3.4:1 on the light surface and would fail AA. -->
             <div class="pt-6 mt-1 border-t border-[var(--border)]">
-              <span class="block text-[0.6875rem] font-semibold uppercase tracking-widest text-[var(--text)] mb-1.5">Single-user mode</span>
+              <span class="block text-micro font-semibold uppercase tracking-widest text-[var(--text)] mb-1.5">Single-user mode</span>
               <div class="inline-flex gap-1 p-1 rounded-xl bg-[var(--bg)] shadow-[inset_0_1px_2px_rgba(0,0,0,0.10)]">
                 <button
                   type="button"
@@ -373,7 +373,7 @@
           <div class="rounded-xl bg-[var(--surface)] shadow-[0_1px_2px_rgba(0,0,0,0.06)] overflow-hidden">
             {#each users as u, i (u.id)}
               <div class="flex items-center gap-3 px-4 py-3 {i > 0 ? 'border-t border-[var(--border)]' : ''}">
-                <div class="size-8 shrink-0 rounded-full bg-[var(--accent)] text-[var(--accent-text)] grid place-items-center text-[0.625rem] font-semibold tracking-wide">
+                <div class="size-8 shrink-0 rounded-full bg-[var(--accent)] text-[var(--accent-text)] grid place-items-center text-micro font-semibold tracking-wide">
                   {initials(u.display_name || u.username)}
                 </div>
                 <div class="flex-1 min-w-0">
@@ -381,7 +381,7 @@
                   <div class="text-[0.75rem] font-mono text-[var(--text-faint)] truncate leading-tight mt-0.5">@{u.username}</div>
                 </div>
                 <span
-                  class="text-[0.625rem] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded-full shrink-0
+                  class="text-micro font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded-full shrink-0
                          {u.is_admin
                     ? 'text-[var(--accent)] bg-[var(--accent-subtle)]'
                     : 'text-[var(--text-muted)] bg-[var(--bg-subtle)]'}"

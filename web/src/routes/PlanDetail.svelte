@@ -440,7 +440,7 @@
 
           {#if prov}
             <button
-              class="shrink-0 text-[0.6875rem] font-mono px-1.5 py-0.5 rounded inline-flex items-center gap-1
+              class="shrink-0 text-micro font-mono px-1.5 py-0.5 rounded inline-flex items-center gap-1
                      {prov.tone === 'warn'
                        ? 'text-[var(--warning)] bg-[var(--warning-bg)]'
                        : prov.tone === 'muted'
@@ -455,9 +455,9 @@
           <!-- row actions -->
           <div class="ml-auto flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
             {#if step.issue_identifier}
-              <button class="p-1 rounded text-[var(--text-faint)] hover:text-[var(--text)] text-[0.6875rem]" title="Detach issue" onclick={() => detachIssue(step)}>unlink</button>
+              <button class="p-1 rounded text-[var(--text-faint)] hover:text-[var(--text)] text-micro" title="Detach issue" onclick={() => detachIssue(step)}>unlink</button>
             {:else}
-              <button class="p-1 rounded text-[var(--text-faint)] hover:text-[var(--text)] text-[0.6875rem]" title="Link an issue" onclick={() => attachIssue(step)}>link</button>
+              <button class="p-1 rounded text-[var(--text-faint)] hover:text-[var(--text)] text-micro" title="Link an issue" onclick={() => attachIssue(step)}>link</button>
             {/if}
             <button class="p-1 rounded text-[var(--text-faint)] hover:text-[var(--text)]" title="Add sub-step" onclick={() => startAddChild(step.id)}><Plus size={13} /></button>
             <button class="p-1 rounded text-[var(--text-faint)] hover:text-[var(--error)]" title="Delete step" onclick={() => removeStep(step)}><X size={13} /></button>
@@ -479,7 +479,7 @@
               <div class="flex items-center gap-2 mt-1">
                 <button class="text-[0.75rem] font-medium text-[var(--accent-text)] bg-[var(--accent)] px-2 py-1 rounded-md hover:bg-[var(--accent-hover)]" onclick={commitEditDesc}>Save</button>
                 <button class="text-[0.75rem] text-[var(--text-muted)] px-2 py-1 rounded-md hover:bg-[var(--bg-subtle)]" onclick={cancelEditDesc}>Cancel</button>
-                <span class="text-[0.6875rem] text-[var(--text-faint)] ml-auto">Markdown · Esc to cancel · ⌘S to save</span>
+                <span class="text-micro text-[var(--text-faint)] ml-auto">Markdown · Esc to cancel · ⌘S to save</span>
               </div>
             {:else if hasBody}
               <button class="block w-full text-left prose-step" onclick={() => startEditDesc(step)} title="Click to edit">

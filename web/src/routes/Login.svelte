@@ -107,7 +107,7 @@
     <div class="flex flex-col gap-1.5">
       <label
         for="login-identity"
-        class="text-[0.6875rem] font-semibold uppercase tracking-widest text-[var(--text-faint)]"
+        class="text-micro font-semibold uppercase tracking-widest text-[var(--text-faint)]"
       >
         Username or email
       </label>
@@ -136,7 +136,7 @@
     <div class="flex flex-col gap-1.5">
       <label
         for="login-password"
-        class="text-[0.6875rem] font-semibold uppercase tracking-widest text-[var(--text-faint)]"
+        class="text-micro font-semibold uppercase tracking-widest text-[var(--text-faint)]"
       >
         Password
       </label>

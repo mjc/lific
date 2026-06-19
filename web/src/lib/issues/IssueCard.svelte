@@ -31,7 +31,7 @@
 >
   <!-- Top row: identifier + priority -->
   <div class="flex items-center gap-2 mb-1.5">
-    <span class="text-[0.6875rem] font-mono text-[var(--text-faint)]">
+    <span class="text-micro font-mono text-[var(--text-faint)]">
       {issue.identifier}
     </span>
     <div class="flex-1"></div>
@@ -59,7 +59,7 @@
     {#each issue.labels.slice(0, 3) as lbl}
       {@const labelObj = labels.find((l) => l.name === lbl)}
       <span
-        class="text-[0.625rem] font-medium px-1.5 py-0.5
+        class="text-micro font-medium px-1.5 py-0.5
                rounded-full border border-[var(--border)]"
         style={labelObj
           ? `color: ${labelObj.color}; border-color: ${labelObj.color}40;`
@@ -69,12 +69,12 @@
       </span>
     {/each}
     {#if issue.labels.length > 3}
-      <span class="text-[0.625rem] text-[var(--text-faint)]">
+      <span class="text-micro text-[var(--text-faint)]">
         +{issue.labels.length - 3}
       </span>
     {/if}
     <div class="flex-1"></div>
-    <span class="text-[0.625rem] text-[var(--text-faint)] tabular-nums">
+    <span class="text-micro text-[var(--text-faint)] tabular-nums">
       {formatRelative(issue.updated_at)}
     </span>
   </div>

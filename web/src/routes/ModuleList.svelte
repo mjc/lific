@@ -232,7 +232,7 @@
       </span>
       {#if !loading}
         <span
-          class="ml-1 text-[0.6875rem] text-[var(--text-faint)] font-medium
+          class="ml-1 text-micro text-[var(--text-faint)] font-medium
                  tabular-nums"
         >
           {modules.length}
@@ -359,7 +359,7 @@
               {#if createError}
                 <p class="text-[0.75rem] text-[var(--error)] mt-1">{createError}</p>
               {/if}
-              <p class="text-[0.6875rem] text-[var(--text-faint)] mt-1">
+              <p class="text-micro text-[var(--text-faint)] mt-1">
                 Enter to create · Esc to cancel · status defaults to Active
               </p>
             </div>
@@ -378,12 +378,12 @@
             <div class="flex items-center gap-2 mb-3 px-1">
               {@render statusIcon(group.status, 13)}
               <h2
-                class="text-[0.6875rem] font-semibold uppercase tracking-widest
+                class="text-micro font-semibold uppercase tracking-widest
                        text-[var(--text-muted)]"
               >
                 {STATUS_LABEL[group.status] ?? group.status}
               </h2>
-              <span class="text-[0.6875rem] text-[var(--text-faint)] tabular-nums">
+              <span class="text-micro text-[var(--text-faint)] tabular-nums">
                 {group.mods.length}
               </span>
             </div>
@@ -477,7 +477,7 @@
     <p class="text-[1.375rem] font-display tracking-tight tabular-nums text-[var(--text)] leading-none">
       {value}
     </p>
-    <p class="text-[0.625rem] font-semibold uppercase tracking-widest text-[var(--text-faint)] mt-1">
+    <p class="text-micro font-semibold uppercase tracking-widest text-[var(--text-faint)] mt-1">
       {label}
     </p>
   </div>
