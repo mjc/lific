@@ -9,12 +9,30 @@
   import ProjectIcon from "./ProjectIcon.svelte";
   import CommandPalette from "./CommandPalette.svelte";
   import { getPreference, setPreference, resolveTheme, type ThemePreference } from "./theme";
-  import { Settings, List, LayoutGrid, FileText, Plus, Layers, History, ListChecks, LayoutDashboard, Search, ChevronRight, Sun, Moon, Monitor } from "lucide-svelte";
+  import { Settings, List, LayoutGrid, FileText, Plus, Layers, History, ListChecks, LayoutDashboard, Search, ChevronRight, Sun, Moon, Monitor, Menu, X } from "lucide-svelte";
   import { setContext } from "svelte";
 
   // Ref to the command palette so the sidebar's "Jump to…" affordance can
   // summon it (LIF-192).
   let palette = $state<{ openPalette: () => void } | null>(null);
+
+  // LIF-223: below md the sidebar is an off-canvas drawer. This tracks its
+  // open state; it's meaningless at md+ (the sidebar is statically docked).
+  let drawerOpen = $state(false);
+  function closeDrawer() {
+    drawerOpen = false;
+  }
+
+  // Escape dismisses the drawer. Registered as a window listener via effect
+  // because <svelte:window> may only appear at the component's top level, and
+  // our markup is gated behind {#if user}.
+  $effect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape" && drawerOpen) closeDrawer();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
 
   // Compact icon-only theme cycle for the footer (full Light/Dark/System
   // control lives in Settings → Appearance).
@@ -72,10 +90,13 @@
     loadUser();
   });
 
-  // Re-fetch projects whenever route changes (catches new/deleted projects)
+  // Re-fetch projects whenever route changes (catches new/deleted projects).
+  // Also dismiss the mobile drawer on navigation so it never lingers over the
+  // newly-loaded route (LIF-223).
   $effect(() => {
     route; // track route changes
     refreshProjects();
+    closeDrawer();
   });
 
   async function loadUser() {
@@ -133,19 +154,34 @@
        INSIDE the content), so in-content elements never merge with the
        chrome surrounding them. -->
   <div class="h-dvh flex overflow-hidden bg-[var(--chrome)]">
-    <!-- ── SIDEBAR (LIF-192 redesign) ──────────────────────── -->
+    <!-- Mobile drawer backdrop. Only rendered below md while the drawer is
+         open; tapping it dismisses the drawer (LIF-223). -->
+    {#if drawerOpen}
+      <button
+        class="md:hidden fixed inset-0 z-40 bg-black/40 backdrop-blur-[1px]"
+        aria-label="Close menu"
+        onclick={closeDrawer}
+      ></button>
+    {/if}
+
+    <!-- ── SIDEBAR (LIF-192 redesign) ──────────────────────────
+         Below md it's a fixed off-canvas drawer that slides in over the
+         backdrop; at md+ it docks statically into the flex row as before
+         (LIF-223). -->
     <aside
-      class="w-[230px] shrink-0 flex flex-col
-             bg-[var(--chrome)] select-none"
+      class="w-[230px] shrink-0 flex flex-col bg-[var(--chrome)] select-none
+             fixed inset-y-0 left-0 z-50 transition-transform duration-200 ease-out
+             {drawerOpen ? 'translate-x-0 shadow-2xl' : '-translate-x-full'}
+             md:static md:z-auto md:translate-x-0 md:shadow-none md:transition-none"
     >
       <!-- Brand header -->
-      <div class="px-3 pt-3 pb-2">
+      <div class="px-3 pt-3 pb-2 flex items-center gap-1.5">
         <a
           href="https://github.com/VoidNullable/lific"
           target="_blank"
           rel="noopener noreferrer"
           title="View Lific on GitHub"
-          class="group flex items-center gap-2.5 px-1 py-1 rounded-lg hover:bg-[var(--bg-subtle)] transition-colors"
+          class="group flex flex-1 min-w-0 items-center gap-2.5 px-1 py-1 rounded-lg hover:bg-[var(--bg-subtle)] transition-colors"
         >
           <img src="/logo.webp" alt="" width="26" height="26" class="rounded-md shrink-0" />
           <span class="font-display text-heading tracking-tight text-[var(--text)] leading-none flex-1">
@@ -159,6 +195,15 @@
             v{__APP_VERSION__}
           </span>
         </a>
+        <!-- Drawer close affordance (mobile only). -->
+        <button
+          class="md:hidden size-9 shrink-0 grid place-items-center rounded-md
+                 text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--bg-subtle)] transition-colors"
+          aria-label="Close menu"
+          onclick={closeDrawer}
+        >
+          <X size={18} />
+        </button>
       </div>
 
       <!-- Jump-to / command palette trigger -->
@@ -317,6 +362,26 @@
 
     <!-- Right column: chrome topbar (continuous with sidebar) + inset panel -->
     <div class="flex-1 min-w-0 flex flex-col">
+      <!-- Mobile header (below md only): hamburger summons the drawer, since
+           the sidebar is off-canvas at this width (LIF-223). -->
+      <header
+        class="md:hidden shrink-0 flex items-center gap-2 h-12 px-2 bg-[var(--chrome)]"
+      >
+        <button
+          class="size-10 grid place-items-center rounded-md
+                 text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--bg-subtle)] transition-colors"
+          aria-label="Open menu"
+          aria-expanded={drawerOpen}
+          onclick={() => (drawerOpen = true)}
+        >
+          <Menu size={20} />
+        </button>
+        <img src="/logo.webp" alt="" width="22" height="22" class="rounded-md shrink-0" />
+        <span class="font-display text-heading tracking-tight text-[var(--text)] leading-none">
+          Lific
+        </span>
+      </header>
+
       <!-- Chrome topbar slot. Routes pass a `topbar` snippet for breadcrumb,
            filters, search, etc. Background matches the sidebar so the L is
            visually seamless. -->
@@ -347,7 +412,7 @@
            hidden, then layer two pointer-events-none gradient overlays
            ABOVE main via z-index. The chrome's cast shadow now renders
            on top of every child, indelibly. -->
-      <div class="relative flex-1 min-w-0 rounded-tl-xl overflow-hidden">
+      <div class="relative flex-1 min-w-0 overflow-hidden md:rounded-tl-xl">
         <main class="absolute inset-0 bg-[var(--bg)] overflow-y-auto">
           {@render children()}
         </main>
@@ -356,9 +421,10 @@
           class="pointer-events-none absolute top-0 left-0 right-0 h-6 z-10
                  bg-gradient-to-b from-[var(--shadow-recess)] to-transparent"
         ></div>
-        <!-- Left edge: TL → BL. -->
+        <!-- Left edge: TL → BL. Only meaningful at md+ where the sidebar is
+             docked to cast the shadow; on mobile there's nothing to its left. -->
         <div
-          class="pointer-events-none absolute top-0 left-0 bottom-0 w-6 z-10
+          class="hidden md:block pointer-events-none absolute top-0 left-0 bottom-0 w-6 z-10
                  bg-gradient-to-r from-[var(--shadow-recess)] to-transparent"
         ></div>
       </div>
