@@ -172,6 +172,41 @@
   }
 
   let activeProject = $derived(projectFromRoute());
+
+  // ── Project sub-nav expand/collapse ─────────────────────────
+  // The active project's sub-nav is shown by default. `manuallyCollapsed`
+  // lets the user fold it away by clicking the already-active project (the
+  // chevron now behaves like a real disclosure toggle, not a one-way latch).
+  // It's reset whenever you navigate to a *different* project so that project
+  // opens expanded.
+  let manuallyCollapsed = $state(false);
+  let prevActiveProject: string | null = null;
+  $effect(() => {
+    if (activeProject !== prevActiveProject) {
+      prevActiveProject = activeProject;
+      manuallyCollapsed = false;
+    }
+  });
+
+  // Whether the active project's sub-nav is currently visible. Hidden while a
+  // drag is in flight (collapsing every tree keeps the reorder list compact and
+  // unambiguous) and while the user has manually folded it.
+  function subnavOpen(project: Project): boolean {
+    return (
+      activeProject === project.identifier && !manuallyCollapsed && !dragActive
+    );
+  }
+
+  // Clicking a project: if it's already the active one, toggle its sub-nav
+  // (collapse/expand) in place rather than re-navigating. Otherwise navigate
+  // into it, which makes it active and — via the reset effect — expands it.
+  function onProjectClick(project: Project) {
+    if (activeProject === project.identifier) {
+      manuallyCollapsed = !manuallyCollapsed;
+    } else {
+      navigate(`/${project.identifier}/overview`);
+    }
+  }
 </script>
 
 {#if loading}
@@ -291,25 +326,30 @@
           >
           {#each projects as project (project.id)}
             {@const isProjectActive = activeProject === project.identifier}
+            {@const open = subnavOpen(project)}
             <!-- One draggable item per project. animate:flip gives the reorder
-                 its slide; the wrapper holds both the pill and (when active)
+                 its slide; the wrapper holds both the pill and (when open)
                  the sub-nav so they move as a unit. -->
             <div animate:flip={{ duration: FLIP_MS }}>
-            <!-- Project pill. Active = elevated surface + chevron down; the
-                 click navigates into the project, which makes it active and
-                 expands its sub-nav (collapsed-until-focused UX preserved). -->
+            <!-- Project pill. Clicking the active project toggles its sub-nav
+                 (the chevron is a real disclosure control); clicking any other
+                 project navigates in and opens it. The chevron rotates with the
+                 open state, not mere activeness, so a manually-collapsed active
+                 project reads as closed. -->
             <button
               class="group w-full flex items-center gap-1.5 pl-1.5 pr-2 py-1.5 rounded-md
                      text-left text-body-sm transition-all
                      {isProjectActive
                 ? 'text-[var(--text)] bg-[var(--bg-subtle)] font-medium'
                 : 'text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--bg-subtle)]'}"
-              onclick={() => navigate(`/${project.identifier}/overview`)}
+              aria-expanded={isProjectActive ? open : undefined}
+              onclick={() => onProjectClick(project)}
             >
               <ChevronRight
                 size={13}
                 class="shrink-0 transition-transform
-                       {isProjectActive ? 'rotate-90 text-[var(--text-muted)]' : 'text-[var(--text-faint)] group-hover:text-[var(--text-muted)]'}"
+                       {open ? 'rotate-90' : ''}
+                       {isProjectActive ? 'text-[var(--text-muted)]' : 'text-[var(--text-faint)] group-hover:text-[var(--text-muted)]'}"
               />
               {#if project.emoji}
                 <span class="size-5 flex items-center justify-center shrink-0">
@@ -328,7 +368,7 @@
               <span class="truncate flex-1">{project.name}</span>
             </button>
 
-            {#if isProjectActive}
+            {#if open}
               <!-- Sub-nav: indented under the project with a vertical guide
                    line, matching the tree language used in Pages. -->
               <div class="ml-[1.125rem] pl-2.5 mt-0.5 mb-1.5 border-l border-[var(--border)] flex flex-col gap-px">
