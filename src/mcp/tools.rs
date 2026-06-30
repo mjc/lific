@@ -473,7 +473,14 @@ impl LificMcp {
                 },
             )
         }) {
-            Ok(issue) => format!("Created {}: {}", issue.identifier, issue.title),
+            Ok(issue) => {
+                self.emit(crate::realtime::RealtimeEvent::IssueCreated {
+                    project_id: issue.project_id,
+                    issue_id: issue.id,
+                    identifier: Some(issue.identifier.clone()),
+                });
+                format!("Created {}: {}", issue.identifier, issue.title)
+            }
             Err(e) => format!("Error: {e}"),
         }
     }
@@ -507,7 +514,14 @@ impl LificMcp {
                 },
             )
         }) {
-            Ok(issue) => format!("Updated {}: {}", issue.identifier, fmt_issue(&issue)),
+            Ok(issue) => {
+                self.emit(crate::realtime::RealtimeEvent::IssueUpdated {
+                    project_id: issue.project_id,
+                    issue_id: issue.id,
+                    identifier: Some(issue.identifier.clone()),
+                });
+                format!("Updated {}: {}", issue.identifier, fmt_issue(&issue))
+            }
             Err(e) => format!("Error: {e}"),
         }
     }
@@ -568,7 +582,14 @@ impl LificMcp {
 
             queries::update_issue(conn, id, &patch)
         }) {
-            Ok(issue) => format!("Edited {}: {}", issue.identifier, fmt_issue(&issue)),
+            Ok(issue) => {
+                self.emit(crate::realtime::RealtimeEvent::IssueUpdated {
+                    project_id: issue.project_id,
+                    issue_id: issue.id,
+                    identifier: Some(issue.identifier.clone()),
+                });
+                format!("Edited {}: {}", issue.identifier, fmt_issue(&issue))
+            }
             Err(e) => format!("Error: {e}"),
         }
     }
@@ -884,9 +905,18 @@ impl LificMcp {
         match input.resource_type.as_str() {
             "issue" => match self.write(|conn| {
                 let id = queries::resolve_identifier(conn, &input.identifier)?;
+                let issue = queries::get_issue(conn, id)?;
                 queries::delete_issue(conn, id)
+                    .map(|_| (issue.project_id, issue.id, issue.identifier))
             }) {
-                Ok(()) => format!("Deleted issue {}", input.identifier),
+                Ok((project_id, issue_id, identifier)) => {
+                    self.emit(crate::realtime::RealtimeEvent::IssueDeleted {
+                        project_id,
+                        issue_id,
+                        identifier: Some(identifier),
+                    });
+                    format!("Deleted issue {}", input.identifier)
+                }
                 Err(e) => format!("Error: {e}"),
             },
             "plan" => match self.write(|conn| {
@@ -905,9 +935,16 @@ impl LificMcp {
             },
             "project" => match self.write(|conn| {
                 let id = queries::resolve_project_identifier(conn, &input.identifier)?;
-                queries::delete_project(conn, id)
+                let project = queries::get_project(conn, id)?;
+                queries::delete_project(conn, id).map(|_| (project.id, project.identifier))
             }) {
-                Ok(()) => format!("Deleted project {}", input.identifier),
+                Ok((project_id, identifier)) => {
+                    self.emit(crate::realtime::RealtimeEvent::ProjectDeleted {
+                        project_id,
+                        identifier: Some(identifier),
+                    });
+                    format!("Deleted project {}", input.identifier)
+                }
                 Err(e) => format!("Error: {e}"),
             },
             "module" | "label" | "folder" => {
@@ -1220,7 +1257,13 @@ impl LificMcp {
                         },
                     )
                 }) {
-                    Ok(p) => format!("Created project {} | {}", p.identifier, p.name),
+                    Ok(p) => {
+                        self.emit(crate::realtime::RealtimeEvent::ProjectCreated {
+                            project_id: p.id,
+                            identifier: Some(p.identifier.clone()),
+                        });
+                        format!("Created project {} | {}", p.identifier, p.name)
+                    }
                     Err(e) => format!("Error: {e}"),
                 }
             }
@@ -1245,7 +1288,13 @@ impl LificMcp {
                         },
                     )
                 }) {
-                    Ok(p) => format!("Updated project {} | {}", p.identifier, p.name),
+                    Ok(p) => {
+                        self.emit(crate::realtime::RealtimeEvent::ProjectUpdated {
+                            project_id: p.id,
+                            identifier: Some(p.identifier.clone()),
+                        });
+                        format!("Updated project {} | {}", p.identifier, p.name)
+                    }
                     Err(e) => format!("Error: {e}"),
                 }
             }
@@ -1714,6 +1763,12 @@ mod tests {
         LificMcp::new(db)
     }
 
+    fn mcp_with_realtime() -> (LificMcp, crate::realtime::RealtimeHub) {
+        let db = crate::db::open_memory().expect("test db");
+        let hub = crate::realtime::RealtimeHub::new();
+        (LificMcp::with_realtime(db, Some(hub.clone())), hub)
+    }
+
     /// Seed a project via manage_resource, return identifier.
     fn seed_project(mcp: &LificMcp, name: &str, ident: &str) -> String {
         let result = mcp.manage_resource(Parameters(ManageResourceInput {
@@ -1770,6 +1825,41 @@ mod tests {
             color: None,
         }));
         assert!(result.contains("New Name"), "got: {result}");
+    }
+
+    #[tokio::test]
+    async fn manage_project_emits_realtime_events() {
+        let (m, hub) = mcp_with_realtime();
+        let mut events = hub.subscribe();
+
+        seed_project(&m, "Realtime", "RTP");
+        assert_eq!(
+            events.recv().await.unwrap(),
+            crate::realtime::RealtimeEvent::ProjectCreated {
+                project_id: 1,
+                identifier: Some("RTP".into()),
+            }
+        );
+
+        let result = m.manage_resource(Parameters(ManageResourceInput {
+            resource_type: "project".into(),
+            action: "update".into(),
+            project: Some("RTP".into()),
+            name: Some("Realtime Updated".into()),
+            identifier: None,
+            description: None,
+            current_name: None,
+            status: None,
+            color: None,
+        }));
+        assert!(result.contains("Realtime Updated"), "got: {result}");
+        assert_eq!(
+            events.recv().await.unwrap(),
+            crate::realtime::RealtimeEvent::ProjectUpdated {
+                project_id: 1,
+                identifier: Some("RTP".into()),
+            }
+        );
     }
 
     #[test]
@@ -1875,6 +1965,53 @@ mod tests {
         }));
         assert!(detail.contains("First issue"), "got: {detail}");
         assert!(detail.contains("backlog"), "got: {detail}");
+    }
+
+    #[tokio::test]
+    async fn issue_mutations_emit_realtime_events() {
+        let (m, hub) = mcp_with_realtime();
+        seed_project(&m, "Realtime Issues", "RTI");
+        let mut events = hub.subscribe();
+
+        seed_issue(&m, "RTI", "Watched issue");
+        assert_eq!(
+            events.recv().await.unwrap(),
+            crate::realtime::RealtimeEvent::IssueCreated {
+                project_id: 1,
+                issue_id: 1,
+                identifier: Some("RTI-1".into()),
+            }
+        );
+
+        let result = m.update_issue(Parameters(UpdateIssueInput {
+            identifier: "RTI-1".into(),
+            status: Some("active".into()),
+            ..Default::default()
+        }));
+        assert!(result.contains("Updated RTI-1"), "got: {result}");
+        assert_eq!(
+            events.recv().await.unwrap(),
+            crate::realtime::RealtimeEvent::IssueUpdated {
+                project_id: 1,
+                issue_id: 1,
+                identifier: Some("RTI-1".into()),
+            }
+        );
+
+        let result = m.delete(Parameters(DeleteInput {
+            resource_type: "issue".into(),
+            identifier: "RTI-1".into(),
+            project: None,
+        }));
+        assert!(result.contains("Deleted issue RTI-1"), "got: {result}");
+        assert_eq!(
+            events.recv().await.unwrap(),
+            crate::realtime::RealtimeEvent::IssueDeleted {
+                project_id: 1,
+                issue_id: 1,
+                identifier: Some("RTI-1".into()),
+            }
+        );
     }
 
     #[test]
@@ -2750,15 +2887,24 @@ mod tests {
             identifier: "MIX-1".into(),
             ..Default::default()
         }));
-        assert!(issue_listing.contains("issue thread"), "got: {issue_listing}");
-        assert!(!issue_listing.contains("page thread"), "got: {issue_listing}");
+        assert!(
+            issue_listing.contains("issue thread"),
+            "got: {issue_listing}"
+        );
+        assert!(
+            !issue_listing.contains("page thread"),
+            "got: {issue_listing}"
+        );
 
         let page_listing = m.list_comments(Parameters(ListCommentsInput {
             identifier: "MIX-DOC-1".into(),
             ..Default::default()
         }));
         assert!(page_listing.contains("page thread"), "got: {page_listing}");
-        assert!(!page_listing.contains("issue thread"), "got: {page_listing}");
+        assert!(
+            !page_listing.contains("issue thread"),
+            "got: {page_listing}"
+        );
     }
 
     #[test]
@@ -2785,7 +2931,10 @@ mod tests {
             identifier: "DOC-1".into(),
             ..Default::default()
         }));
-        assert!(listing.contains("comment on workspace page"), "got: {listing}");
+        assert!(
+            listing.contains("comment on workspace page"),
+            "got: {listing}"
+        );
     }
 
     // ── LIF-113: edit_issue / edit_page (surgical string replacement) ────
@@ -2841,7 +2990,12 @@ mod tests {
 
     // ── edit_issue (MCP tool) ────
 
-    fn seed_issue_with_description(mcp: &LificMcp, project: &str, title: &str, desc: &str) -> String {
+    fn seed_issue_with_description(
+        mcp: &LificMcp,
+        project: &str,
+        title: &str,
+        desc: &str,
+    ) -> String {
         let result = mcp.create_issue(Parameters(CreateIssueInput {
             project: project.into(),
             title: title.into(),
@@ -3041,7 +3195,10 @@ mod tests {
         assert!(detail.contains("Stays"), "title preserved, got: {detail}");
         assert!(detail.contains("active"), "status preserved, got: {detail}");
         assert!(detail.contains("high"), "priority preserved, got: {detail}");
-        assert!(detail.contains("kept me"), "description edited, got: {detail}");
+        assert!(
+            detail.contains("kept me"),
+            "description edited, got: {detail}"
+        );
     }
 
     // ── edit_page (MCP tool) ────
@@ -3136,7 +3293,10 @@ mod tests {
             identifier: "EPP-DOC-1".into(),
         }));
         // Title preserved, content edited.
-        assert!(detail.contains("Original Title"), "title preserved, got: {detail}");
+        assert!(
+            detail.contains("Original Title"),
+            "title preserved, got: {detail}"
+        );
         assert!(detail.contains("kept me"), "content edited, got: {detail}");
 
         // Folder preserved — verified via list_pages with the folder filter.
@@ -3149,7 +3309,10 @@ mod tests {
             offset: None,
             ..Default::default()
         }));
-        assert!(listing.contains("EPP-DOC-1"), "folder preserved, got: {listing}");
+        assert!(
+            listing.contains("EPP-DOC-1"),
+            "folder preserved, got: {listing}"
+        );
     }
 
     #[test]
@@ -3399,13 +3562,19 @@ mod tests {
         let detail = m.get_page(Parameters(GetPageInput {
             identifier: "MET-DOC-1".into(),
         }));
-        assert!(detail.contains("Status: active | Folder: Specs"), "got: {detail}");
+        assert!(
+            detail.contains("Status: active | Folder: Specs"),
+            "got: {detail}"
+        );
         assert!(detail.contains("Created: "), "got: {detail}");
         assert!(detail.contains("Updated: "), "got: {detail}");
         // Metadata header comes BEFORE the content.
         let header_pos = detail.find("Status: active").unwrap();
         let body_pos = detail.find("Body text").unwrap();
-        assert!(header_pos < body_pos, "metadata must precede content: {detail}");
+        assert!(
+            header_pos < body_pos,
+            "metadata must precede content: {detail}"
+        );
     }
 
     #[test]
@@ -3424,7 +3593,10 @@ mod tests {
         let detail = m.get_page(Parameters(GetPageInput {
             identifier: "MET-DOC-1".into(),
         }));
-        assert!(detail.contains("Status: draft | Folder: none"), "got: {detail}");
+        assert!(
+            detail.contains("Status: draft | Folder: none"),
+            "got: {detail}"
+        );
     }
 
     #[test]
@@ -3781,10 +3953,7 @@ mod tests {
             identifier: "TST-1".into(),
             ..Default::default()
         }));
-        assert!(
-            out.contains("opencode-blake (agent) via mcp"),
-            "got: {out}"
-        );
+        assert!(out.contains("opencode-blake (agent) via mcp"), "got: {out}");
     }
 
     /// Regression (LIF-155): rmcp executes tools on internally-spawned
@@ -3859,20 +4028,34 @@ mod tests {
                 PlanStepInput {
                     title: "Backend".into(),
                     steps: Some(vec![
-                        PlanStepInput { title: "schema".into(), ..Default::default() },
-                        PlanStepInput { title: "queries".into(), ..Default::default() },
+                        PlanStepInput {
+                            title: "schema".into(),
+                            ..Default::default()
+                        },
+                        PlanStepInput {
+                            title: "queries".into(),
+                            ..Default::default()
+                        },
                     ]),
                     ..Default::default()
                 },
-                PlanStepInput { title: "Frontend".into(), ..Default::default() },
+                PlanStepInput {
+                    title: "Frontend".into(),
+                    ..Default::default()
+                },
             ]),
         }));
         assert!(created.contains("PLN-PLAN-1"), "got: {created}");
         assert!(created.contains("Backend"));
         assert!(created.contains("schema"));
 
-        let got = m.get_plan(Parameters(GetPlanInput { plan: "PLN-PLAN-1".into() }));
-        assert!(got.contains("Frontend"), "get_plan should rehydrate tree: {got}");
+        let got = m.get_plan(Parameters(GetPlanInput {
+            plan: "PLN-PLAN-1".into(),
+        }));
+        assert!(
+            got.contains("Frontend"),
+            "get_plan should rehydrate tree: {got}"
+        );
         assert!(got.contains("0/4 done"), "header should count steps: {got}");
     }
 
@@ -3912,7 +4095,9 @@ mod tests {
         );
 
         // The issue is actually closed.
-        let issue = m.get_issue(Parameters(GetIssueInput { identifier: "PLN-1".into() }));
+        let issue = m.get_issue(Parameters(GetIssueInput {
+            identifier: "PLN-1".into(),
+        }));
         assert!(issue.contains("done"), "issue should be done: {issue}");
     }
 
@@ -3946,7 +4131,9 @@ mod tests {
             replace_all: None,
         }));
         assert!(out.contains("Edited step"), "got: {out}");
-        let got = m.get_plan(Parameters(GetPlanInput { plan: "PLN-PLAN-1".into() }));
+        let got = m.get_plan(Parameters(GetPlanInput {
+            plan: "PLN-PLAN-1".into(),
+        }));
         assert!(got.contains("new text"), "edit should persist: {got}");
     }
 
@@ -3977,7 +4164,10 @@ mod tests {
             status: Some("active".into()),
             ..Default::default()
         }));
-        assert!(active.contains("No plans found."), "archived plan must not show as active: {active}");
+        assert!(
+            active.contains("No plans found."),
+            "archived plan must not show as active: {active}"
+        );
 
         let archived = m.list_resources(Parameters(ListResourcesInput {
             resource_type: "plan".into(),
@@ -4014,7 +4204,9 @@ mod tests {
             ..Default::default()
         }));
 
-        let got = m.get_plan(Parameters(GetPlanInput { plan: "PLN-PLAN-1".into() }));
+        let got = m.get_plan(Parameters(GetPlanInput {
+            plan: "PLN-PLAN-1".into(),
+        }));
         assert!(got.contains("[x]"), "step should be auto-completed: {got}");
         assert!(got.contains("via PLN-1"), "provenance should show: {got}");
     }
@@ -4035,7 +4227,12 @@ mod tests {
             project: None,
         }));
         assert!(out.contains("Deleted plan"), "got: {out}");
-        let got = m.get_plan(Parameters(GetPlanInput { plan: "PLN-PLAN-1".into() }));
-        assert!(got.contains("Error"), "deleted plan should not be found: {got}");
+        let got = m.get_plan(Parameters(GetPlanInput {
+            plan: "PLN-PLAN-1".into(),
+        }));
+        assert!(
+            got.contains("Error"),
+            "deleted plan should not be found: {got}"
+        );
     }
 }

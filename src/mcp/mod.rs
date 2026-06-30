@@ -12,6 +12,7 @@ use rmcp::{
 
 use crate::db::DbPool;
 use crate::db::models::AuthUser;
+use crate::realtime::{RealtimeEvent, RealtimeHub};
 
 /// Serialization lock for MCP request handling.
 /// Ensures only one MCP request processes at a time, preventing the race
@@ -62,14 +63,26 @@ pub(crate) fn current_auth_user() -> Option<AuthUser> {
 #[derive(Clone)]
 pub struct LificMcp {
     db: Arc<DbPool>,
+    realtime: Option<RealtimeHub>,
     tool_router: ToolRouter<Self>,
 }
 
 impl LificMcp {
     pub fn new(db: DbPool) -> Self {
+        Self::with_realtime(db, None)
+    }
+
+    pub fn with_realtime(db: DbPool, realtime: Option<RealtimeHub>) -> Self {
         Self {
             db: Arc::new(db),
+            realtime,
             tool_router: Self::create_tool_router(),
+        }
+    }
+
+    fn emit(&self, event: RealtimeEvent) {
+        if let Some(realtime) = &self.realtime {
+            realtime.send(event);
         }
     }
 

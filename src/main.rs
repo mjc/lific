@@ -508,13 +508,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 mcp_allowed_hosts.push(host);
             }
 
+            let realtime = realtime::RealtimeHub::new();
+            let realtime_for_mcp = realtime.clone();
+
             let mcp_config = StreamableHttpServerConfig::default()
                 .with_stateful_mode(false)
                 .with_json_response(true)
                 .with_allowed_hosts(mcp_allowed_hosts.clone());
 
             let mcp_service = StreamableHttpService::new(
-                move || Ok(mcp::LificMcp::new(db_for_mcp.clone())),
+                move || {
+                    Ok(mcp::LificMcp::with_realtime(
+                        db_for_mcp.clone(),
+                        Some(realtime_for_mcp.clone()),
+                    ))
+                },
                 Arc::new(LocalSessionManager::default()),
                 mcp_config,
             );
@@ -524,8 +532,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 5,
                 std::time::Duration::from_secs(15 * 60),
             ));
-            let realtime = realtime::RealtimeHub::new();
-
             // Routes behind auth: REST API + MCP
             let authed_routes = api::router(pool.clone(), &cfg.server.cors_origins)
                 .layer(axum::Extension(realtime.clone()))
