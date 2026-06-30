@@ -140,7 +140,13 @@
         limit: 500,
       }),
     ]);
-    if (modRes.ok) mod = modRes.data;
+    if (!modRes.ok) {
+      error = modRes.error;
+      mod = null;
+      issues = [];
+      return;
+    }
+    mod = modRes.data;
     if (issuesRes.ok) issues = issuesRes.data;
   }
 
