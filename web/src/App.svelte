@@ -48,6 +48,7 @@
   function navigate(path: string) {
     window.location.hash = path;
     route = path;
+    syncRealtimeSocket();
   }
 
   $effect(() => {
@@ -60,7 +61,6 @@
 
   $effect(() => {
     bootstrapping;
-    route;
     syncRealtimeSocket();
   });
 
@@ -133,13 +133,17 @@
       realtimeDelayMs = 1000;
     });
     socket.addEventListener("message", (message) => {
-      const event = parseRealtimeEvent(message.data);
-      if (!event) return;
-      window.dispatchEvent(
-        new CustomEvent<RealtimeEvent>(REALTIME_INVALIDATE_EVENT, {
-          detail: event,
-        }),
-      );
+      try {
+        const event = JSON.parse(message.data) as RealtimeEvent;
+        if (typeof event?.type !== "string") return;
+        window.dispatchEvent(
+          new CustomEvent<RealtimeEvent>(REALTIME_INVALIDATE_EVENT, {
+            detail: event,
+          }),
+        );
+      } catch {
+        // Ignore malformed websocket payloads; HTTP refresh remains source of truth.
+      }
     });
     socket.addEventListener("close", () => {
       if (realtimeSocket === socket) realtimeSocket = null;
@@ -148,23 +152,6 @@
     socket.addEventListener("error", () => {
       socket.close();
     });
-  }
-
-  function parseRealtimeEvent(data: unknown): RealtimeEvent | null {
-    if (typeof data !== "string") return null;
-    try {
-      const event = JSON.parse(data) as unknown;
-      if (
-        event &&
-        typeof event === "object" &&
-        typeof (event as { type?: unknown }).type === "string"
-      ) {
-        return event as RealtimeEvent;
-      }
-    } catch {
-      return null;
-    }
-    return null;
   }
 
   type ParsedRoute =

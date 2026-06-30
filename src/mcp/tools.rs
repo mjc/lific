@@ -66,7 +66,10 @@ fn fmt_steps(nodes: &[models::PlanStepNode], depth: usize, out: &mut String) {
             n.id, n.title, suffix
         ));
         if !n.description.is_empty() {
-            out.push_str(&format!("{indent}    {}\n", truncate_value(&n.description, 100)));
+            out.push_str(&format!(
+                "{indent}    {}\n",
+                truncate_value(&n.description, 100)
+            ));
         }
         if !n.children.is_empty() {
             fmt_steps(&n.children, depth + 1, out);
@@ -220,7 +223,10 @@ fn fmt_activity(a: &models::Activity) -> String {
         other => format!("{label} {other}"),
     };
 
-    format!("[{}] {}{} via {} — {}", a.ts, who, agent, a.transport, detail)
+    format!(
+        "[{}] {}{} via {} — {}",
+        a.ts, who, agent, a.transport, detail
+    )
 }
 
 #[tool_router]
@@ -300,9 +306,9 @@ impl LificMcp {
             }
         };
 
-        match self.read(|conn| {
-            queries::activity::list_activity(conn, scope, Some(limit), Some(offset))
-        }) {
+        match self
+            .read(|conn| queries::activity::list_activity(conn, scope, Some(limit), Some(offset)))
+        {
             Ok(feed) if feed.items.is_empty() && offset == 0 => {
                 format!("No recorded activity for {ident} yet.")
             }
@@ -477,7 +483,7 @@ impl LificMcp {
                 self.emit(crate::realtime::RealtimeEvent::IssueCreated {
                     project_id: issue.project_id,
                     issue_id: issue.id,
-                    identifier: Some(issue.identifier.clone()),
+                    identifier: issue.identifier.clone(),
                 });
                 format!("Created {}: {}", issue.identifier, issue.title)
             }
@@ -518,7 +524,7 @@ impl LificMcp {
                 self.emit(crate::realtime::RealtimeEvent::IssueUpdated {
                     project_id: issue.project_id,
                     issue_id: issue.id,
-                    identifier: Some(issue.identifier.clone()),
+                    identifier: issue.identifier.clone(),
                 });
                 format!("Updated {}: {}", issue.identifier, fmt_issue(&issue))
             }
@@ -586,7 +592,7 @@ impl LificMcp {
                 self.emit(crate::realtime::RealtimeEvent::IssueUpdated {
                     project_id: issue.project_id,
                     issue_id: issue.id,
-                    identifier: Some(issue.identifier.clone()),
+                    identifier: issue.identifier.clone(),
                 });
                 format!("Edited {}: {}", issue.identifier, fmt_issue(&issue))
             }
@@ -945,7 +951,7 @@ impl LificMcp {
                     self.emit(crate::realtime::RealtimeEvent::IssueDeleted {
                         project_id,
                         issue_id,
-                        identifier: Some(identifier),
+                        identifier,
                     });
                     format!("Deleted issue {}", input.identifier)
                 }
@@ -973,7 +979,7 @@ impl LificMcp {
                 Ok((project_id, identifier)) => {
                     self.emit(crate::realtime::RealtimeEvent::ProjectDeleted {
                         project_id,
-                        identifier: Some(identifier),
+                        identifier,
                     });
                     format!("Deleted project {}", input.identifier)
                 }
@@ -1135,8 +1141,9 @@ impl LificMcp {
                 let order_by = input.order_by.as_deref();
                 let order = input.order.as_deref();
                 match self.read(|conn| {
-                    let pages =
-                        queries::list_pages(conn, project_id, folder_id, label, status, order_by, order)?;
+                    let pages = queries::list_pages(
+                        conn, project_id, folder_id, label, status, order_by, order,
+                    )?;
                     // One folders round-trip for the whole listing — folders
                     // are project-scoped, so workspace pages never have one.
                     let folder_names: std::collections::HashMap<i64, String> = match project_id {
@@ -1292,7 +1299,7 @@ impl LificMcp {
                     Ok(p) => {
                         self.emit(crate::realtime::RealtimeEvent::ProjectCreated {
                             project_id: p.id,
-                            identifier: Some(p.identifier.clone()),
+                            identifier: p.identifier.clone(),
                         });
                         format!("Created project {} | {}", p.identifier, p.name)
                     }
@@ -1323,7 +1330,7 @@ impl LificMcp {
                     Ok(p) => {
                         self.emit(crate::realtime::RealtimeEvent::ProjectUpdated {
                             project_id: p.id,
-                            identifier: Some(p.identifier.clone()),
+                            identifier: p.identifier.clone(),
                         });
                         format!("Updated project {} | {}", p.identifier, p.name)
                     }
@@ -1514,20 +1521,18 @@ impl LificMcp {
         // For stdio/local MCP sessions (no HTTP auth), fall back to the first admin user.
         let user_id = match super::current_auth_user() {
             Some(u) => u.id,
-            None => {
-                match self.read(queries::users::first_admin) {
-                    Ok(Some(admin)) => admin.id,
-                    Ok(None) => {
-                        return "Error: no admin user exists to attribute comments to.".into();
-                    }
-                    Err(e) => return format!("Error: {e}"),
+            None => match self.read(queries::users::first_admin) {
+                Ok(Some(admin)) => admin.id,
+                Ok(None) => {
+                    return "Error: no admin user exists to attribute comments to.".into();
                 }
-            }
+                Err(e) => return format!("Error: {e}"),
+            },
         };
 
-        match self.write(|conn| {
-            queries::comments::create_comment(conn, parent, user_id, &input.content)
-        }) {
+        match self
+            .write(|conn| queries::comments::create_comment(conn, parent, user_id, &input.content))
+        {
             // Don't echo c.content back — the agent already supplied it in the
             // tool args, so repeating it just duplicates tokens in context
             // (LIF-115). The comment id is the useful new handle for any
@@ -1647,7 +1652,12 @@ impl LificMcp {
             )?;
             queries::plans::get_plan(conn, plan_id)
         }) {
-            Ok(plan) => format!("Edited step #{} in {}\n{}", input.step_id, plan.identifier, fmt_plan(&plan)),
+            Ok(plan) => format!(
+                "Edited step #{} in {}\n{}",
+                input.step_id,
+                plan.identifier,
+                fmt_plan(&plan)
+            ),
             Err(e) => format!("Error: {e}"),
         }
     }
@@ -1740,7 +1750,12 @@ impl LificMcp {
                             } else {
                                 queries::plans::step_parent(conn, step_id)?
                             };
-                            queries::plans::move_step(conn, step_id, new_parent, input.move_position)?;
+                            queries::plans::move_step(
+                                conn,
+                                step_id,
+                                new_parent,
+                                input.move_position,
+                            )?;
                             notes.push(format!("Moved step #{step_id}"));
                         }
                         if notes.is_empty() {
@@ -1869,7 +1884,7 @@ mod tests {
             events.recv().await.unwrap(),
             crate::realtime::RealtimeEvent::ProjectCreated {
                 project_id: 1,
-                identifier: Some("RTP".into()),
+                identifier: "RTP".into(),
             }
         );
 
@@ -1889,7 +1904,7 @@ mod tests {
             events.recv().await.unwrap(),
             crate::realtime::RealtimeEvent::ProjectUpdated {
                 project_id: 1,
-                identifier: Some("RTP".into()),
+                identifier: "RTP".into(),
             }
         );
     }
@@ -2011,7 +2026,7 @@ mod tests {
             crate::realtime::RealtimeEvent::IssueCreated {
                 project_id: 1,
                 issue_id: 1,
-                identifier: Some("RTI-1".into()),
+                identifier: "RTI-1".into(),
             }
         );
 
@@ -2026,7 +2041,7 @@ mod tests {
             crate::realtime::RealtimeEvent::IssueUpdated {
                 project_id: 1,
                 issue_id: 1,
-                identifier: Some("RTI-1".into()),
+                identifier: "RTI-1".into(),
             }
         );
 
@@ -2041,7 +2056,7 @@ mod tests {
             crate::realtime::RealtimeEvent::IssueDeleted {
                 project_id: 1,
                 issue_id: 1,
-                identifier: Some("RTI-1".into()),
+                identifier: "RTI-1".into(),
             }
         );
     }
@@ -2351,10 +2366,7 @@ mod tests {
             ..Default::default()
         }));
         assert!(result.contains("1 issues"), "got: {result}");
-        assert!(
-            !result.contains("more results available"),
-            "got: {result}"
-        );
+        assert!(!result.contains("more results available"), "got: {result}");
     }
 
     // ── link / unlink ──
@@ -2802,12 +2814,13 @@ mod tests {
         // Set the authenticated user context so add_comment works in tests
         *crate::mcp::MCP_REQUEST_USER
             .lock()
-            .unwrap_or_else(|e: std::sync::PoisonError<_>| e.into_inner()) = Some(models::AuthUser {
-            id: user.id,
-            username: user.username.clone(),
-            display_name: user.display_name,
-            is_admin: user.is_admin,
-        });
+            .unwrap_or_else(|e: std::sync::PoisonError<_>| e.into_inner()) =
+            Some(models::AuthUser {
+                id: user.id,
+                username: user.username.clone(),
+                display_name: user.display_name,
+                is_admin: user.is_admin,
+            });
     }
 
     #[test]

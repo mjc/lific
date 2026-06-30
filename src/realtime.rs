@@ -36,39 +36,30 @@ pub enum RealtimeEvent {
     #[serde(rename = "resync.required")]
     ResyncRequired,
     #[serde(rename = "project.created")]
-    ProjectCreated {
-        project_id: i64,
-        identifier: Option<String>,
-    },
+    ProjectCreated { project_id: i64, identifier: String },
     #[serde(rename = "project.updated")]
-    ProjectUpdated {
-        project_id: i64,
-        identifier: Option<String>,
-    },
+    ProjectUpdated { project_id: i64, identifier: String },
     #[serde(rename = "project.deleted")]
-    ProjectDeleted {
-        project_id: i64,
-        identifier: Option<String>,
-    },
+    ProjectDeleted { project_id: i64, identifier: String },
     #[serde(rename = "projects.reordered")]
     ProjectsReordered,
     #[serde(rename = "issue.created")]
     IssueCreated {
         project_id: i64,
         issue_id: i64,
-        identifier: Option<String>,
+        identifier: String,
     },
     #[serde(rename = "issue.updated")]
     IssueUpdated {
         project_id: i64,
         issue_id: i64,
-        identifier: Option<String>,
+        identifier: String,
     },
     #[serde(rename = "issue.deleted")]
     IssueDeleted {
         project_id: i64,
         issue_id: i64,
-        identifier: Option<String>,
+        identifier: String,
     },
     #[serde(rename = "issue.linked")]
     IssueLinked { project_id: i64, issue_id: i64 },
@@ -124,7 +115,7 @@ mod tests {
         let event = RealtimeEvent::IssueUpdated {
             project_id: 7,
             issue_id: 42,
-            identifier: Some("LIF-42".into()),
+            identifier: "LIF-42".into(),
         };
         let json = serde_json::to_value(&event).unwrap();
         assert_eq!(json["type"], "issue.updated");
@@ -140,11 +131,11 @@ mod tests {
 
         hub.send(RealtimeEvent::ProjectUpdated {
             project_id: 1,
-            identifier: Some("LIF".into()),
+            identifier: "LIF".into(),
         });
         hub.send(RealtimeEvent::ProjectUpdated {
             project_id: 2,
-            identifier: Some("LIF".into()),
+            identifier: "LIF".into(),
         });
 
         assert!(matches!(rx.recv().await, Err(RecvError::Lagged(1))));
@@ -152,7 +143,7 @@ mod tests {
             rx.recv().await.unwrap(),
             RealtimeEvent::ProjectUpdated {
                 project_id: 2,
-                identifier: Some("LIF".into()),
+                identifier: "LIF".into(),
             }
         );
     }

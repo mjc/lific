@@ -43,7 +43,7 @@ pub(super) async fn create_issue(
     realtime.send(RealtimeEvent::IssueCreated {
         project_id: issue.project_id,
         issue_id: issue.id,
-        identifier: Some(issue.identifier.clone()),
+        identifier: issue.identifier.clone(),
     });
     Ok(Json(issue))
 }
@@ -60,7 +60,7 @@ pub(super) async fn update_issue(
     realtime.send(RealtimeEvent::IssueUpdated {
         project_id: issue.project_id,
         issue_id: issue.id,
-        identifier: Some(issue.identifier.clone()),
+        identifier: issue.identifier.clone(),
     });
     Ok(Json(issue))
 }
@@ -75,7 +75,7 @@ pub(super) async fn delete_issue_handler(
     realtime.send(RealtimeEvent::IssueDeleted {
         project_id: issue.project_id,
         issue_id: issue.id,
-        identifier: Some(issue.identifier),
+        identifier: issue.identifier,
     });
     Ok(Json(serde_json::json!({"deleted": true})))
 }
@@ -150,40 +150,10 @@ pub(super) async fn unlink_issues(
 #[cfg(test)]
 mod tests {
     use crate::api::test_helpers::*;
-    use crate::config::AuthConfig;
-    use crate::realtime::{RealtimeEvent, RealtimeHub};
+    use crate::realtime::RealtimeEvent;
     use axum::http::{Request, StatusCode};
-    use axum::{Extension, Router};
     use http_body_util::BodyExt;
     use tower::ServiceExt;
-
-    fn test_app_with_realtime() -> (Router, RealtimeHub) {
-        let db = crate::db::open_memory().expect("test db");
-        let admin_id = {
-            let conn = db.write().unwrap();
-            conn.execute(
-                "INSERT INTO users (username, email, password_hash, display_name, is_admin, is_bot)
-                 VALUES ('test-admin', 'admin@test.local', 'x', 'Test Admin', 1, 0)",
-                [],
-            )
-            .expect("seed test admin");
-            conn.last_insert_rowid()
-        };
-        let hub = RealtimeHub::new();
-        let app = crate::api::router(db, &[])
-            .layer(Extension(hub.clone()))
-            .layer(Extension(AuthConfig {
-                allow_signup: true,
-                secure_cookies: false,
-            }))
-            .layer(Extension(Some(crate::db::models::AuthUser {
-                id: admin_id,
-                username: "test-admin".into(),
-                display_name: "Test Admin".into(),
-                is_admin: true,
-            })));
-        (app, hub)
-    }
 
     #[tokio::test]
     async fn issue_crud_lifecycle() {
@@ -221,7 +191,7 @@ mod tests {
             RealtimeEvent::IssueCreated {
                 project_id,
                 issue_id,
-                identifier: Some("TST-1".into()),
+                identifier: "TST-1".into(),
             }
         );
 
@@ -262,7 +232,7 @@ mod tests {
             RealtimeEvent::IssueUpdated {
                 project_id,
                 issue_id,
-                identifier: Some("TST-1".into()),
+                identifier: "TST-1".into(),
             }
         );
 
@@ -297,7 +267,7 @@ mod tests {
             RealtimeEvent::IssueDeleted {
                 project_id,
                 issue_id,
-                identifier: Some("TST-1".into()),
+                identifier: "TST-1".into(),
             }
         );
     }

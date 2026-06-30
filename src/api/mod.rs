@@ -239,7 +239,9 @@ fn validate_websocket_request(
 }
 
 fn websocket_origin_allowed(headers: &HeaderMap, allowed_origins: &[String]) -> bool {
-    let origin = headers.get(header::ORIGIN).and_then(|value| value.to_str().ok());
+    let origin = headers
+        .get(header::ORIGIN)
+        .and_then(|value| value.to_str().ok());
     let Some(origin) = origin else {
         return true;
     };
@@ -373,6 +375,10 @@ pub(crate) mod test_helpers {
     use crate::db::models::*;
 
     pub fn test_app() -> Router {
+        test_app_with_realtime().0
+    }
+
+    pub fn test_app_with_realtime() -> (Router, crate::realtime::RealtimeHub) {
         let db = crate::db::open_memory().expect("test db");
         // Insert a real admin row so FK constraints (e.g. projects.lead_user_id
         // now defaults to the creator — see LIF-102) pass. Direct SQL skips
@@ -387,8 +393,9 @@ pub(crate) mod test_helpers {
             .expect("seed test admin");
             conn.last_insert_rowid()
         };
-        super::router(db, &[])
-            .layer(Extension(crate::realtime::RealtimeHub::new()))
+        let hub = crate::realtime::RealtimeHub::new();
+        let app = super::router(db, &[])
+            .layer(Extension(hub.clone()))
             .layer(Extension(crate::config::AuthConfig {
                 allow_signup: true,
                 secure_cookies: false,
@@ -398,7 +405,8 @@ pub(crate) mod test_helpers {
                 username: "test-admin".into(),
                 display_name: "Test Admin".into(),
                 is_admin: true,
-            })))
+            })));
+        (app, hub)
     }
 
     /// Seed a project and return its id.
@@ -655,10 +663,7 @@ mod tests {
         );
 
         headers.remove(header::COOKIE);
-        assert_eq!(
-            super::websocket_session_token(&headers).as_deref(),
-            None
-        );
+        assert_eq!(super::websocket_session_token(&headers).as_deref(), None);
     }
 
     #[test]
@@ -706,7 +711,10 @@ mod tests {
         ));
 
         let mut invalid = HeaderMap::new();
-        invalid.insert(header::COOKIE, "lific_token=lific_sess_fake".parse().unwrap());
+        invalid.insert(
+            header::COOKIE,
+            "lific_token=lific_sess_fake".parse().unwrap(),
+        );
         assert!(matches!(
             super::validate_websocket_request(&db, &invalid, &[]),
             Err(crate::error::LificError::BadRequest(_))
@@ -717,7 +725,10 @@ mod tests {
     async fn websocket_accepts_valid_session_cookie_before_upgrade() {
         let (db, token) = websocket_session();
         let mut headers = HeaderMap::new();
-        headers.insert(header::COOKIE, format!("lific_token={token}").parse().unwrap());
+        headers.insert(
+            header::COOKIE,
+            format!("lific_token={token}").parse().unwrap(),
+        );
 
         super::validate_websocket_request(&db, &headers, &[]).unwrap();
     }
@@ -729,7 +740,10 @@ mod tests {
 
         let mut rejected = HeaderMap::new();
         rejected.insert(header::ORIGIN, "https://evil.example.test".parse().unwrap());
-        rejected.insert(header::COOKIE, format!("lific_token={token}").parse().unwrap());
+        rejected.insert(
+            header::COOKIE,
+            format!("lific_token={token}").parse().unwrap(),
+        );
         assert!(matches!(
             super::validate_websocket_request(&db, &rejected, &origins),
             Err(crate::error::LificError::Forbidden(_))
@@ -737,7 +751,10 @@ mod tests {
 
         let mut accepted = HeaderMap::new();
         accepted.insert(header::ORIGIN, "https://app.example.test".parse().unwrap());
-        accepted.insert(header::COOKIE, format!("lific_token={token}").parse().unwrap());
+        accepted.insert(
+            header::COOKIE,
+            format!("lific_token={token}").parse().unwrap(),
+        );
         super::validate_websocket_request(&db, &accepted, &origins).unwrap();
     }
 
@@ -748,7 +765,10 @@ mod tests {
         let mut rejected = HeaderMap::new();
         rejected.insert(header::ORIGIN, "https://evil.example.test".parse().unwrap());
         rejected.insert(header::HOST, "app.example.test".parse().unwrap());
-        rejected.insert(header::COOKIE, format!("lific_token={token}").parse().unwrap());
+        rejected.insert(
+            header::COOKIE,
+            format!("lific_token={token}").parse().unwrap(),
+        );
         assert!(matches!(
             super::validate_websocket_request(&db, &rejected, &[]),
             Err(crate::error::LificError::Forbidden(_))
@@ -757,7 +777,10 @@ mod tests {
         let mut same_origin = HeaderMap::new();
         same_origin.insert(header::ORIGIN, "https://app.example.test".parse().unwrap());
         same_origin.insert(header::HOST, "app.example.test".parse().unwrap());
-        same_origin.insert(header::COOKIE, format!("lific_token={token}").parse().unwrap());
+        same_origin.insert(
+            header::COOKIE,
+            format!("lific_token={token}").parse().unwrap(),
+        );
         super::validate_websocket_request(&db, &same_origin, &[]).unwrap();
     }
 }

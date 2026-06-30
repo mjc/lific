@@ -39,7 +39,7 @@ pub(super) async fn create_project(
     let project = with_write(&db, |conn| crate::db::queries::create_project(conn, &input))?;
     realtime.send(RealtimeEvent::ProjectCreated {
         project_id: project.id,
-        identifier: Some(project.identifier.clone()),
+        identifier: project.identifier.clone(),
     });
     Ok(Json(project))
 }
@@ -57,7 +57,7 @@ pub(super) async fn update_project(
     })?;
     realtime.send(RealtimeEvent::ProjectUpdated {
         project_id: project.id,
-        identifier: Some(project.identifier.clone()),
+        identifier: project.identifier.clone(),
     });
     Ok(Json(project))
 }
@@ -92,7 +92,7 @@ pub(super) async fn delete_project_handler(
     with_write(&db, |conn| crate::db::queries::delete_project(conn, id))?;
     realtime.send(RealtimeEvent::ProjectDeleted {
         project_id: project.id,
-        identifier: Some(project.identifier),
+        identifier: project.identifier,
     });
     Ok(Json(serde_json::json!({"deleted": true})))
 }
@@ -168,41 +168,12 @@ pub(super) async fn get_board(
 #[cfg(test)]
 mod tests {
     use crate::api::test_helpers::*;
-    use crate::config::AuthConfig;
     use crate::db::models::*;
-    use crate::realtime::{RealtimeEvent, RealtimeHub};
+    use crate::realtime::RealtimeEvent;
     use axum::Extension;
     use axum::http::{Request, StatusCode};
     use http_body_util::BodyExt;
     use tower::ServiceExt;
-
-    fn test_app_with_realtime() -> (axum::Router, RealtimeHub) {
-        let db = crate::db::open_memory().expect("test db");
-        let admin_id = {
-            let conn = db.write().unwrap();
-            conn.execute(
-                "INSERT INTO users (username, email, password_hash, display_name, is_admin, is_bot)
-                 VALUES ('test-admin', 'admin@test.local', 'x', 'Test Admin', 1, 0)",
-                [],
-            )
-            .expect("seed test admin");
-            conn.last_insert_rowid()
-        };
-        let hub = RealtimeHub::new();
-        let app = crate::api::router(db, &[])
-            .layer(Extension(hub.clone()))
-            .layer(Extension(AuthConfig {
-                allow_signup: true,
-                secure_cookies: false,
-            }))
-            .layer(Extension(Some(crate::db::models::AuthUser {
-                id: admin_id,
-                username: "test-admin".into(),
-                display_name: "Test Admin".into(),
-                is_admin: true,
-            })));
-        (app, hub)
-    }
 
     #[tokio::test]
     async fn project_crud_lifecycle() {
@@ -216,7 +187,7 @@ mod tests {
             events.recv().await.unwrap(),
             RealtimeEvent::ProjectCreated {
                 project_id: id,
-                identifier: Some("TST".into()),
+                identifier: "TST".into(),
             }
         );
 
@@ -270,7 +241,7 @@ mod tests {
             events.recv().await.unwrap(),
             RealtimeEvent::ProjectUpdated {
                 project_id: id,
-                identifier: Some("TST".into()),
+                identifier: "TST".into(),
             }
         );
 
@@ -291,7 +262,7 @@ mod tests {
             events.recv().await.unwrap(),
             RealtimeEvent::ProjectDeleted {
                 project_id: id,
-                identifier: Some("TST".into()),
+                identifier: "TST".into(),
             }
         );
 

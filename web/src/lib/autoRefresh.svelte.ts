@@ -72,11 +72,8 @@ export function startAutoRefresh(opts: AutoRefreshOptions): () => void {
   let refreshing = false;
   let pending = false;
 
-  const hidden = () => document.hidden;
-  const busy = () => (isBusy ? isBusy() : false);
-
   async function runRefresh() {
-    if (disposed || hidden() || busy()) return;
+    if (disposed || document.hidden || isBusy?.()) return;
     if (refreshing) {
       pending = true;
       return;
@@ -98,7 +95,7 @@ export function startAutoRefresh(opts: AutoRefreshOptions): () => void {
   // Visibility/focus revalidate, debounced so the visibilitychange +
   // window.focus pair that fires on tab-switch-back is a single fetch.
   function scheduleEager() {
-    if (disposed || hidden()) return;
+    if (disposed || document.hidden) return;
     if (eagerDebounce) clearTimeout(eagerDebounce);
     eagerDebounce = setTimeout(() => {
       eagerDebounce = null;
