@@ -21,6 +21,7 @@
   import PriorityIcon from "../lib/PriorityIcon.svelte";
   import StatusIcon, { statusCssColor } from "../lib/StatusIcon.svelte";
   import { formatDate } from "../lib/format";
+  import { startAutoRefresh } from "../lib/autoRefresh.svelte";
   import { ArrowUpRight } from "lucide-svelte";
 
   let {
@@ -70,6 +71,7 @@
   let priorityOpen = $state(false);
   let moduleOpen = $state(false);
   let labelsOpen = $state(false);
+  let bodyMode = $state<"read" | "edit">("read");
 
   // Save indicator
   let saving = $state(false);
@@ -104,6 +106,21 @@
     lastSaved = null;
     loadIssue(id);
   });
+
+  $effect(() =>
+    startAutoRefresh({
+      refresh: () => loadIssue(issueIdentifier),
+      isBusy: () =>
+        bodyMode === "edit" ||
+        saving ||
+        loading ||
+        statusOpen ||
+        priorityOpen ||
+        moduleOpen ||
+        labelsOpen,
+      intervalMs: 0,
+    }),
+  );
 
   async function loadIssue(identifier: string) {
     loading = true;
@@ -355,6 +372,7 @@
   {activity}
   {paletteActions}
   layout="two-column"
+  bind:bodyMode
 >
   {#snippet breadcrumbExtra()}
     {#if issue}

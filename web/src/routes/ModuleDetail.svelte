@@ -30,6 +30,7 @@
   import ProgressRing from "../lib/ProgressRing.svelte";
   import Mascot from "../lib/Mascot.svelte";
   import ErrorState from "../lib/ErrorState.svelte";
+  import { startAutoRefresh } from "../lib/autoRefresh.svelte";
   import { formatDate } from "../lib/format";
   import {
     ArrowLeft, Plus, ChevronDown, PanelRight, X,
@@ -111,6 +112,19 @@
     loadModule(id);
   });
 
+  $effect(() =>
+    startAutoRefresh({
+      refresh: refreshModule,
+      isBusy: () =>
+        loading ||
+        saving ||
+        editingName ||
+        descriptionMode === "edit" ||
+        statusOpen,
+      intervalMs: 0,
+    }),
+  );
+
   async function loadModule(id: number) {
     loading = true;
     error = "";
@@ -127,6 +141,21 @@
     if (issuesRes.ok) issues = issuesRes.data;
 
     loading = false;
+  }
+
+  async function refreshModule() {
+    if (!mod) return;
+
+    const [modRes, issuesRes] = await Promise.all([
+      getModule(mod.id),
+      listIssues({
+        project_id: mod.project_id,
+        module_id: mod.id,
+        limit: 500,
+      }),
+    ]);
+    if (modRes.ok) mod = modRes.data;
+    if (issuesRes.ok) issues = issuesRes.data;
   }
 
   function handleWindowClick() {
@@ -642,5 +671,4 @@
     <Circle {size} class="text-[var(--text-faint)]" />
   {/if}
 {/snippet}
-
 

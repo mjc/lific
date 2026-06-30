@@ -24,6 +24,7 @@
   import StatusIcon from "../lib/StatusIcon.svelte";
   import PriorityIcon from "../lib/PriorityIcon.svelte";
   import { formatRelative, formatDate } from "../lib/format";
+  import { startAutoRefresh } from "../lib/autoRefresh.svelte";
   import {
     ChevronRight, Download, Pencil, Copy, Check, ArrowRight, History,
     AlertTriangle, ChevronDown,
@@ -84,6 +85,29 @@
     const id = projectIdentifier;
     loadAll(id);
   });
+
+  function formBusy(): boolean {
+    const el = document.activeElement;
+    return !!el &&
+      (el.tagName === "INPUT" ||
+        el.tagName === "TEXTAREA" ||
+        el.tagName === "SELECT" ||
+        (el as HTMLElement).isContentEditable);
+  }
+
+  $effect(() =>
+    startAutoRefresh({
+      refresh: () => loadAll(projectIdentifier),
+      isBusy: () =>
+        loading ||
+        renaming ||
+        deleting ||
+        exporting ||
+        savedAt !== 0 ||
+        formBusy(),
+      intervalMs: 0,
+    }),
+  );
 
   async function loadAll(ident: string) {
     loading = true;

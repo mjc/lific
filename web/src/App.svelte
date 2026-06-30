@@ -18,6 +18,7 @@
   import Layout from "./lib/Layout.svelte";
   import ErrorState from "./lib/ErrorState.svelte";
   import { hasSession, getInstance, autoLogin, saveSession } from "./lib/api";
+  import { REALTIME_INVALIDATE_EVENT } from "./lib/autoRefresh.svelte";
   import { onMount } from "svelte";
 
   let route = $state(window.location.hash.slice(1) || "/");
@@ -28,6 +29,9 @@
   // "bootstrapping" only when there's no session, so the logged-in common case
   // never shows a spinner.
   let bootstrapping = $state(!hasSession());
+  let realtimeSocket: WebSocket | null = null;
+  let realtimeReconnect: ReturnType<typeof setTimeout> | null = null;
+  let realtimeDelayMs = 1000;
 
   onMount(async () => {
     if (!hasSession()) {
@@ -38,6 +42,7 @@
       }
     }
     bootstrapping = false;
+    syncRealtimeSocket();
   });
 
   function navigate(path: string) {
@@ -51,6 +56,12 @@
     }
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
+  });
+
+  $effect(() => {
+    bootstrapping;
+    route;
+    syncRealtimeSocket();
   });
 
   // Redirect logic
@@ -73,6 +84,64 @@
   // by navigating into a project.)
   function redirectToDefault() {
     navigate("/settings");
+  }
+
+  function socketUrl(): string {
+    const url = new URL("/api/events/ws", window.location.origin);
+    url.protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    return url.toString();
+  }
+
+  function closeRealtimeSocket() {
+    if (realtimeReconnect) {
+      clearTimeout(realtimeReconnect);
+      realtimeReconnect = null;
+    }
+    realtimeDelayMs = 1000;
+    if (realtimeSocket) {
+      realtimeSocket.close(1000, "teardown");
+      realtimeSocket = null;
+    }
+  }
+
+  function scheduleRealtimeReconnect() {
+    if (realtimeReconnect || !hasSession()) return;
+    realtimeReconnect = window.setTimeout(() => {
+      realtimeReconnect = null;
+      syncRealtimeSocket();
+    }, realtimeDelayMs);
+    realtimeDelayMs = Math.min(realtimeDelayMs * 2, 10_000);
+  }
+
+  function syncRealtimeSocket() {
+    if (typeof window === "undefined") return;
+    if (!hasSession() || bootstrapping) {
+      closeRealtimeSocket();
+      return;
+    }
+    if (
+      realtimeSocket &&
+      (realtimeSocket.readyState === WebSocket.OPEN ||
+        realtimeSocket.readyState === WebSocket.CONNECTING)
+    ) {
+      return;
+    }
+
+    const socket = new WebSocket(socketUrl());
+    realtimeSocket = socket;
+    socket.addEventListener("open", () => {
+      realtimeDelayMs = 1000;
+    });
+    socket.addEventListener("message", () => {
+      window.dispatchEvent(new CustomEvent(REALTIME_INVALIDATE_EVENT));
+    });
+    socket.addEventListener("close", () => {
+      if (realtimeSocket === socket) realtimeSocket = null;
+      scheduleRealtimeReconnect();
+    });
+    socket.addEventListener("error", () => {
+      socket.close();
+    });
   }
 
   type ParsedRoute =

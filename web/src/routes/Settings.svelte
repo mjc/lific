@@ -20,6 +20,7 @@
   import {
     getPreference, setPreference, type ThemePreference,
   } from "../lib/theme";
+  import { startAutoRefresh } from "../lib/autoRefresh.svelte";
   import {
     Plug, Check, Copy, X, AlertTriangle, Sun, Moon, Monitor,
     Palette, Lock, LogOut, Eye, EyeOff, KeyRound, FileCode2, Terminal,
@@ -157,6 +158,30 @@
     loadUser();
   });
 
+  function formBusy(): boolean {
+    const el = document.activeElement;
+    return !!el &&
+      (el.tagName === "INPUT" ||
+        el.tagName === "TEXTAREA" ||
+        el.tagName === "SELECT" ||
+        (el as HTMLElement).isContentEditable);
+  }
+
+  $effect(() =>
+    startAutoRefresh({
+      refresh: refreshUser,
+      isBusy: () =>
+        loading ||
+        profileSaving ||
+        pwSaving ||
+        signingOut ||
+        connectTool !== null ||
+        busyId !== null ||
+        formBusy(),
+      intervalMs: 0,
+    }),
+  );
+
   let hasProfileChanges = $derived(
     user != null && (
       profileName.trim() !== user.display_name ||
@@ -227,6 +252,16 @@
       await loadBots();
     }
     loading = false;
+  }
+
+  async function refreshUser() {
+    const result = await me();
+    if (result.ok) {
+      user = result.data;
+      profileName = result.data.display_name;
+      profileEmail = result.data.email;
+      await loadBots();
+    }
   }
   async function loadBots() {
     const result = await listBots();

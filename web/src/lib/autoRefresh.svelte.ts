@@ -16,6 +16,9 @@
 //     that yanks state out from under the user is worse than a stale one.
 //   - Coalesce: visibility + focus can fire together; we debounce the
 //     eager revalidate so that's one fetch, not two.
+//   - Realtime invalidation events from the websocket bubble through the
+//     same eager path, so a write in another tab or via MCP refreshes the
+//     visible screen without inventing a second refresh loop.
 //
 // This intentionally owns no data and does no merging. Each view passes
 // its own `refresh` (which already knows how to load and how to keep
@@ -35,7 +38,12 @@ export interface AutoRefreshOptions {
    *  timer) — used by the page detail view, where the body editor makes
    *  a periodic poll more disruptive than it's worth. */
   intervalMs?: number;
+  /** Listen for the app-level realtime invalidation event. Enabled by
+   *  default so websocket writes can converge every mounted surface. */
+  listenRealtime?: boolean;
 }
+
+export const REALTIME_INVALIDATE_EVENT = "lific:realtime";
 
 /**
  * Start an auto-refresh loop. Returns a cleanup function that clears the
@@ -52,7 +60,7 @@ export function startAutoRefresh(opts: AutoRefreshOptions): () => void {
     return () => {};
   }
 
-  const { refresh, isBusy, intervalMs } = opts;
+  const { refresh, isBusy, intervalMs, listenRealtime = true } = opts;
 
   let timer: ReturnType<typeof setInterval> | null = null;
   let eagerDebounce: ReturnType<typeof setTimeout> | null = null;
@@ -83,8 +91,15 @@ export function startAutoRefresh(opts: AutoRefreshOptions): () => void {
     scheduleEager();
   }
 
+  function onRealtime() {
+    scheduleEager();
+  }
+
   document.addEventListener("visibilitychange", onVisibility);
   window.addEventListener("focus", scheduleEager);
+  if (listenRealtime) {
+    window.addEventListener(REALTIME_INVALIDATE_EVENT, onRealtime);
+  }
 
   if (intervalMs && intervalMs > 0) {
     timer = setInterval(tick, intervalMs);
@@ -96,5 +111,8 @@ export function startAutoRefresh(opts: AutoRefreshOptions): () => void {
     if (eagerDebounce) clearTimeout(eagerDebounce);
     document.removeEventListener("visibilitychange", onVisibility);
     window.removeEventListener("focus", scheduleEager);
+    if (listenRealtime) {
+      window.removeEventListener(REALTIME_INVALIDATE_EVENT, onRealtime);
+    }
   };
 }
