@@ -218,18 +218,18 @@ async fn events_ws(
     let token = websocket_session_token(&headers)
         .ok_or_else(|| LificError::Forbidden("authentication required".into()))?;
     with_read(&db, |conn| {
-        crate::db::queries::users::validate_session(conn, &token).map(|_| ())
+        crate::db::queries::users::validate_session(conn, token).map(|_| ())
     })?;
 
     Ok(ws.on_upgrade(move |socket| crate::realtime::serve_socket(socket, realtime)))
 }
 
-fn websocket_session_token(headers: &HeaderMap) -> Option<String> {
+fn websocket_session_token(headers: &HeaderMap) -> Option<&str> {
     headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "))
-        .map(|token| token.trim().to_string())
+        .and_then(non_empty_token)
         .or_else(|| {
             headers
                 .get(header::COOKIE)
@@ -238,10 +238,15 @@ fn websocket_session_token(headers: &HeaderMap) -> Option<String> {
                     cookie.split(';').find_map(|part| {
                         part.trim()
                             .strip_prefix("lific_token=")
-                            .map(|token| token.trim().to_string())
+                            .and_then(non_empty_token)
                     })
                 })
         })
+}
+
+fn non_empty_token(token: &str) -> Option<&str> {
+    let token = token.trim();
+    (!token.is_empty()).then_some(token)
 }
 
 // ── Shared helpers ───────────────────────────────────────────
@@ -630,5 +635,16 @@ mod tests {
             super::websocket_session_token(&headers).as_deref(),
             Some("lific_sess_cookie")
         );
+    }
+
+    #[test]
+    fn websocket_session_token_rejects_empty_credentials() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::AUTHORIZATION, "Bearer   ".parse().unwrap());
+        assert_eq!(super::websocket_session_token(&headers).as_deref(), None);
+
+        headers.remove(header::AUTHORIZATION);
+        headers.insert(header::COOKIE, "lific_token=   ".parse().unwrap());
+        assert_eq!(super::websocket_session_token(&headers).as_deref(), None);
     }
 }

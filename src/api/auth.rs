@@ -703,7 +703,44 @@ pub(super) async fn list_users(
 #[cfg(test)]
 mod tests {
     use crate::api::test_helpers::*;
-    use axum::http::StatusCode;
+    use axum::http::{StatusCode, header};
+
+    fn assert_session_cookie(resp: &axum::response::Response) {
+        let cookie = resp
+            .headers()
+            .get(header::SET_COOKIE)
+            .expect("response should set a session cookie")
+            .to_str()
+            .expect("set-cookie header should be text");
+        assert!(
+            cookie.starts_with("lific_token=lific_sess_"),
+            "cookie should carry the browser session token: {cookie}"
+        );
+        assert!(cookie.contains("HttpOnly"), "cookie should be HttpOnly: {cookie}");
+        assert!(
+            cookie.contains("SameSite=Lax"),
+            "cookie should use SameSite=Lax: {cookie}"
+        );
+    }
+
+    fn assert_clear_session_cookie(resp: &axum::response::Response) {
+        let cookie = resp
+            .headers()
+            .get(header::SET_COOKIE)
+            .expect("response should clear the session cookie")
+            .to_str()
+            .expect("set-cookie header should be text");
+        assert!(
+            cookie.starts_with("lific_token=;"),
+            "cookie should clear lific_token: {cookie}"
+        );
+        assert!(cookie.contains("Max-Age=0"), "cookie should expire immediately: {cookie}");
+        assert!(cookie.contains("HttpOnly"), "cookie should be HttpOnly: {cookie}");
+        assert!(
+            cookie.contains("SameSite=Lax"),
+            "cookie should use SameSite=Lax: {cookie}"
+        );
+    }
 
     // LIF-207: the Secure attribute is gated; everything else stays constant.
     #[test]
@@ -736,6 +773,7 @@ mod tests {
         });
         let resp = json_post(&app, "/api/auth/signup", body).await;
         assert_eq!(resp.status(), StatusCode::OK);
+        assert_session_cookie(&resp);
 
         let data = parse_json(resp).await;
         assert_eq!(data["user"]["username"], "blake");
@@ -943,6 +981,7 @@ mod tests {
 
         let resp = json_post(&app, "/api/auth/auto-login", serde_json::json!({})).await;
         assert_eq!(resp.status(), StatusCode::OK);
+        assert_session_cookie(&resp);
         let data = parse_json(resp).await;
         assert!(
             data["token"].as_str().unwrap().starts_with("lific_sess_"),
@@ -1026,6 +1065,7 @@ mod tests {
         });
         let resp = json_post(&app, "/api/auth/login", body).await;
         assert_eq!(resp.status(), StatusCode::OK);
+        assert_session_cookie(&resp);
 
         let data = parse_json(resp).await;
         assert_eq!(data["user"]["username"], "logintest");
@@ -1122,6 +1162,7 @@ mod tests {
             serde_json::json!({ "current_password": "originalpass123", "new_password": "newpassword123" });
         let resp = json_post(&app, "/api/auth/me/password", right).await;
         assert_eq!(resp.status(), StatusCode::OK);
+        assert_session_cookie(&resp);
         // LIF-205: a successful change returns a fresh session token so the
         // current browser stays logged in after the old sessions are killed.
         let data = parse_json(resp).await;
@@ -1206,6 +1247,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
+        assert_clear_session_cookie(&resp);
         let data = parse_json(resp).await;
         assert_eq!(data["revoked"], true);
     }
