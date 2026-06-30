@@ -25,7 +25,6 @@
   import ProgressRing from "../lib/ProgressRing.svelte";
   import Mascot from "../lib/Mascot.svelte";
   import ErrorState from "../lib/ErrorState.svelte";
-  import { startAutoRefresh } from "../lib/autoRefresh.svelte";
   import { getContext } from "svelte";
 
   const topbarCtx = getContext<{
@@ -91,17 +90,6 @@
         el.tagName === "SELECT" ||
         (el as HTMLElement).isContentEditable);
   }
-
-  $effect(() =>
-    startAutoRefresh({
-      refresh: () => loadData(projectIdentifier),
-      isBusy: () => loading || creating || createSaving || formBusy(),
-      intervalMs: 0,
-      shouldRefresh: (event) =>
-        event.type === "resync.required" ||
-        (typeof event.project_id === "number" && event.project_id === project?.id),
-    }),
-  );
 
   async function loadData(ident: string) {
     loading = true;

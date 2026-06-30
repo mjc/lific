@@ -17,7 +17,6 @@
   import LabelEditor from "../lib/LabelEditor.svelte";
   import Select from "../lib/Select.svelte";
   import { formatDate } from "../lib/format";
-  import { startAutoRefresh } from "../lib/autoRefresh.svelte";
   import {
     PenLine,
     CircleDot,
@@ -107,20 +106,6 @@
     if (res.ok) page = res.data;
     if (actRes.ok) activity = actRes.data.items;
   }
-
-  $effect(() =>
-    startAutoRefresh({
-      refresh: refreshPage,
-      // Also skip while a navigation load is running (loading) so a focus
-      // event can't fire a redundant fetch on top of the mount load.
-      isBusy: () => bodyMode === "edit" || saving || loading,
-      // Focus-only — no background interval for the page editor.
-      intervalMs: 0,
-      shouldRefresh: (event) =>
-        event.type === "resync.required" ||
-        (typeof event.project_id === "number" && event.project_id === page?.project_id),
-    }),
-  );
 
   async function loadPage(id: number) {
     const gen = ++loadGen;

@@ -30,7 +30,6 @@
   import ProgressRing from "../lib/ProgressRing.svelte";
   import Mascot from "../lib/Mascot.svelte";
   import ErrorState from "../lib/ErrorState.svelte";
-  import { startAutoRefresh } from "../lib/autoRefresh.svelte";
   import { formatDate } from "../lib/format";
   import {
     ArrowLeft, Plus, ChevronDown, PanelRight, X,
@@ -111,22 +110,6 @@
     lastSaved = null;
     loadModule(id);
   });
-
-  $effect(() =>
-    startAutoRefresh({
-      refresh: refreshModule,
-      isBusy: () =>
-        loading ||
-        saving ||
-        editingName ||
-        descriptionMode === "edit" ||
-        statusOpen,
-      intervalMs: 0,
-      shouldRefresh: (event) =>
-        event.type === "resync.required" ||
-        (typeof event.project_id === "number" && event.project_id === mod?.project_id),
-    }),
-  );
 
   async function loadModule(id: number) {
     loading = true;

@@ -67,13 +67,18 @@ export function startAutoRefresh(opts: AutoRefreshOptions): () => void {
   const { refresh, isBusy, intervalMs, shouldRefresh } = opts;
 
   let timer: ReturnType<typeof setInterval> | null = null;
+  let pendingTimer: ReturnType<typeof setInterval> | null = null;
   let eagerDebounce: ReturnType<typeof setTimeout> | null = null;
   let disposed = false;
   let refreshing = false;
   let pending = false;
 
   async function runRefresh() {
-    if (disposed || document.hidden || isBusy?.()) return;
+    if (disposed || document.hidden) return;
+    if (isBusy?.()) {
+      pending = true;
+      return;
+    }
     if (refreshing) {
       pending = true;
       return;
@@ -124,9 +129,16 @@ export function startAutoRefresh(opts: AutoRefreshOptions): () => void {
     timer = setInterval(() => void runRefresh(), intervalMs);
   }
 
+  pendingTimer = setInterval(() => {
+    if (!pending || disposed || document.hidden || isBusy?.()) return;
+    pending = false;
+    void runRefresh();
+  }, 250);
+
   return () => {
     disposed = true;
     if (timer) clearInterval(timer);
+    if (pendingTimer) clearInterval(pendingTimer);
     if (eagerDebounce) clearTimeout(eagerDebounce);
     document.removeEventListener("visibilitychange", onVisibility);
     window.removeEventListener("focus", scheduleEager);

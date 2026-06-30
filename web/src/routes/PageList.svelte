@@ -40,7 +40,6 @@
   import { fuzzyMatch, buildSnippet } from "../lib/fuzzy";
   import ErrorState from "../lib/ErrorState.svelte";
   import { getContext } from "svelte";
-  import { startAutoRefresh } from "../lib/autoRefresh.svelte";
 
   // Register the toolbar with Layout's chrome topbar slot so it sits in
   // the same --chrome zone as the sidebar instead of as a banded strip
@@ -314,17 +313,6 @@
       (searchExpanded && document.activeElement === searchInputEl)
     );
   }
-
-  $effect(() =>
-    startAutoRefresh({
-      refresh: reloadPages,
-      isBusy: autoRefreshBusy,
-      intervalMs: 15_000,
-      shouldRefresh: (event) =>
-        event.type === "resync.required" ||
-        (typeof event.project_id === "number" && event.project_id === project?.id),
-    }),
-  );
 
   // Tree helpers
   function childFolders(parentId: number | null): Folder[] {

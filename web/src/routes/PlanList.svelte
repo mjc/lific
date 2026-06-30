@@ -10,7 +10,6 @@
     type Plan,
     type Project,
   } from "../lib/api";
-  import { startAutoRefresh } from "../lib/autoRefresh.svelte";
   import { ListChecks, Plus, ChevronRight } from "lucide-svelte";
   import ProgressRing from "../lib/ProgressRing.svelte";
   import Mascot from "../lib/Mascot.svelte";
@@ -54,17 +53,6 @@
     const id = projectIdentifier;
     loadData(id);
   });
-
-  $effect(() =>
-    startAutoRefresh({
-      refresh: reload,
-      isBusy: () => creating || createSaving,
-      intervalMs: 15_000,
-      shouldRefresh: (event) =>
-        event.type === "resync.required" ||
-        (typeof event.project_id === "number" && event.project_id === project?.id),
-    }),
-  );
 
   async function loadData(ident: string) {
     loading = true;
@@ -261,4 +249,3 @@
     {/if}
   </div>
 </div>
-

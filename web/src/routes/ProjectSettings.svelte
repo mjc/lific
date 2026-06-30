@@ -24,7 +24,6 @@
   import StatusIcon from "../lib/StatusIcon.svelte";
   import PriorityIcon from "../lib/PriorityIcon.svelte";
   import { formatRelative, formatDate } from "../lib/format";
-  import { startAutoRefresh } from "../lib/autoRefresh.svelte";
   import {
     ChevronRight, Download, Pencil, Copy, Check, ArrowRight, History,
     AlertTriangle, ChevronDown,
@@ -94,23 +93,6 @@
         el.tagName === "SELECT" ||
         (el as HTMLElement).isContentEditable);
   }
-
-  $effect(() =>
-    startAutoRefresh({
-      refresh: () => loadAll(projectIdentifier),
-      isBusy: () =>
-        loading ||
-        renaming ||
-        deleting ||
-        exporting ||
-        savedAt !== 0 ||
-        formBusy(),
-      intervalMs: 0,
-      shouldRefresh: (event) =>
-        event.type === "resync.required" ||
-        (typeof event.project_id === "number" && event.project_id === project?.id),
-    }),
-  );
 
   async function loadAll(ident: string) {
     loading = true;

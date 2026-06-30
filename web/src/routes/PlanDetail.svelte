@@ -20,7 +20,6 @@
   import DocumentDetail from "../lib/DocumentDetail.svelte";
   import IssuePickerModal from "../lib/IssuePickerModal.svelte";
   import Markdown from "../lib/Markdown.svelte";
-  import { startAutoRefresh } from "../lib/autoRefresh.svelte";
   import { formatDate } from "../lib/format";
   import {
     Check,
@@ -77,23 +76,6 @@
     const id = planId;
     load(id);
   });
-
-  $effect(() =>
-    startAutoRefresh({
-      refresh: reload,
-      isBusy: () =>
-        mutating ||
-        statusOpen ||
-        pickerOpen ||
-        addingChildOf !== null ||
-        editingTitleOf !== null ||
-        editingDescOf !== null,
-      intervalMs: 15_000,
-      shouldRefresh: (event) =>
-        event.type === "resync.required" ||
-        (typeof event.project_id === "number" && event.project_id === plan?.project_id),
-    }),
-  );
 
   async function load(id: number) {
     loading = true;
