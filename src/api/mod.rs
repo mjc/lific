@@ -198,6 +198,7 @@ pub fn router(db: DbPool, cors_origins: &[String]) -> Router {
             cors.allow_methods([
                 axum::http::Method::GET,
                 axum::http::Method::POST,
+                axum::http::Method::PATCH,
                 axum::http::Method::PUT,
                 axum::http::Method::DELETE,
             ])

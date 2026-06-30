@@ -197,17 +197,19 @@
     }
     project = found;
 
-    // Load modules, labels, and issues in parallel
+    await loadProjectMetadata(found.id);
+    await loadIssues();
+    loading = false;
+  }
+
+  async function loadProjectMetadata(projectId: number) {
     const [modRes, lblRes] = await Promise.all([
-      listModules(found.id),
-      listLabels(found.id),
+      listModules(projectId),
+      listLabels(projectId),
     ]);
 
     if (modRes.ok) modules = modRes.data;
     if (lblRes.ok) labels = lblRes.data;
-
-    await loadIssues();
-    loading = false;
   }
 
   async function loadIssues() {
@@ -301,18 +303,15 @@
     );
   }
 
-  // Refresh just the issue rows. Modules/labels feed the filter dropdowns
-  // and change rarely; a full project reload on every tick would be
-  // wasteful and could flash the loading spinner, so we only re-pull
-  // issues here. New modules/labels reconcile on the next mount/navigation.
-  async function refreshIssues() {
+  async function refreshProjectData() {
     if (!project) return;
+    await loadProjectMetadata(project.id);
     await loadIssues();
   }
 
   $effect(() =>
     startAutoRefresh({
-      refresh: refreshIssues,
+      refresh: refreshProjectData,
       isBusy: autoRefreshBusy,
       intervalMs: 15_000,
       shouldRefresh: (event) =>
@@ -1451,6 +1450,5 @@
     onHoverStatusOption={(si) => { view.inlineCreateStatusIdx = si; }}
   />
 {/snippet}
-
 
 

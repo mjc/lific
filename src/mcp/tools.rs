@@ -1519,8 +1519,17 @@ impl LificMcp {
 
         // Resolve the authenticated user from the task-local set by the HTTP handler.
         // For stdio/local MCP sessions (no HTTP auth), fall back to the first admin user.
-        let user_id = match super::current_auth_user() {
-            Some(u) => u.id,
+        let current_user_id = super::current_auth_user().and_then(|u| {
+            self.read(|conn| {
+                conn.query_row("SELECT 1 FROM users WHERE id = ?1", [u.id], |_| Ok(()))
+                    .map(|_| u.id)
+                    .map_err(Into::into)
+            })
+            .ok()
+        });
+
+        let user_id = match current_user_id {
+            Some(id) => id,
             None => match self.read(queries::users::first_admin) {
                 Ok(Some(admin)) => admin.id,
                 Ok(None) => {
@@ -2875,6 +2884,31 @@ mod tests {
         assert!(result.contains("2 comment(s)"), "got: {result}");
         assert!(result.contains("Hello from MCP"), "got: {result}");
         assert!(result.contains("Second comment"), "got: {result}");
+    }
+
+    #[test]
+    fn add_comment_with_stale_request_user_falls_back_to_admin() {
+        let m = mcp();
+        seed_project(&m, "Proj", "PRJ");
+        seed_issue(&m, "PRJ", "Test issue");
+        seed_user(&m);
+        *crate::mcp::MCP_REQUEST_USER
+            .lock()
+            .unwrap_or_else(|e: std::sync::PoisonError<_>| e.into_inner()) =
+            Some(models::AuthUser {
+                id: 999_999,
+                username: "stale".into(),
+                display_name: "Stale".into(),
+                is_admin: false,
+            });
+
+        let result = m.add_comment(Parameters(AddCommentInput {
+            identifier: "PRJ-1".into(),
+            content: "Fallback attribution".into(),
+        }));
+        assert!(result.starts_with("Comment #"), "got: {result}");
+        assert!(result.contains("testuser"), "got: {result}");
+        assert!(!result.contains("stale"), "got: {result}");
     }
 
     #[tokio::test]
