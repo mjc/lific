@@ -20,6 +20,25 @@ use tower_http::cors::{self, CorsLayer};
 use crate::db::{DbPool, models::*, queries};
 use crate::error::LificError;
 
+#[derive(Clone)]
+struct WebsocketOriginPolicy {
+    allowed: Vec<String>,
+}
+
+impl WebsocketOriginPolicy {
+    fn new(cors_origins: &[String]) -> Self {
+        Self {
+            allowed: cors_origins.to_vec(),
+        }
+    }
+
+    fn accepts(&self, origin: Option<&str>) -> bool {
+        self.allowed.is_empty()
+            || origin.is_none()
+            || origin.is_some_and(|origin| self.allowed.iter().any(|allowed| allowed == origin))
+    }
+}
+
 /// Build the full API router.
 pub fn router(db: DbPool, cors_origins: &[String]) -> Router {
     let cors = if cors_origins.is_empty() {
@@ -207,40 +226,48 @@ pub fn router(db: DbPool, cors_origins: &[String]) -> Router {
             ]),
         )
         .with_state(db)
+        .layer(Extension(WebsocketOriginPolicy::new(cors_origins)))
 }
 
 async fn events_ws(
     State(db): State<DbPool>,
     Extension(realtime): Extension<crate::realtime::RealtimeHub>,
+    Extension(origin_policy): Extension<WebsocketOriginPolicy>,
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Result<impl IntoResponse, LificError> {
-    let token = websocket_session_token(&headers)
-        .ok_or_else(|| LificError::Forbidden("authentication required".into()))?;
-    with_read(&db, |conn| {
-        crate::db::queries::users::validate_session(conn, token).map(|_| ())
-    })?;
+    validate_websocket_request(&db, &headers, &origin_policy)?;
 
     Ok(ws.on_upgrade(move |socket| crate::realtime::serve_socket(socket, realtime)))
 }
 
+fn validate_websocket_request(
+    db: &DbPool,
+    headers: &HeaderMap,
+    origin_policy: &WebsocketOriginPolicy,
+) -> Result<(), LificError> {
+    let origin = headers.get(header::ORIGIN).and_then(|value| value.to_str().ok());
+    if !origin_policy.accepts(origin) {
+        return Err(LificError::Forbidden("websocket origin not allowed".into()));
+    }
+
+    let token = websocket_session_token(headers)
+        .ok_or_else(|| LificError::Forbidden("authentication required".into()))?;
+    with_read(db, |conn| {
+        crate::db::queries::users::validate_session(conn, token).map(|_| ())
+    })
+}
+
 fn websocket_session_token(headers: &HeaderMap) -> Option<&str> {
     headers
-        .get(header::AUTHORIZATION)
+        .get(header::COOKIE)
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .and_then(non_empty_token)
-        .or_else(|| {
-            headers
-                .get(header::COOKIE)
-                .and_then(|value| value.to_str().ok())
-                .and_then(|cookie| {
-                    cookie.split(';').find_map(|part| {
-                        part.trim()
-                            .strip_prefix("lific_token=")
-                            .and_then(non_empty_token)
-                    })
-                })
+        .and_then(|cookie| {
+            cookie.split(';').find_map(|part| {
+                part.trim()
+                    .strip_prefix("lific_token=")
+                    .and_then(non_empty_token)
+            })
         })
 }
 
@@ -612,7 +639,7 @@ mod tests {
     }
 
     #[test]
-    fn websocket_session_token_prefers_bearer_and_cookies() {
+    fn websocket_session_token_reads_cookie_only() {
         let mut headers = HeaderMap::new();
         headers.insert(
             header::AUTHORIZATION,
@@ -627,13 +654,13 @@ mod tests {
 
         assert_eq!(
             super::websocket_session_token(&headers).as_deref(),
-            Some("lific_sess_bearer")
+            Some("lific_sess_cookie")
         );
 
-        headers.remove(header::AUTHORIZATION);
+        headers.remove(header::COOKIE);
         assert_eq!(
             super::websocket_session_token(&headers).as_deref(),
-            Some("lific_sess_cookie")
+            None
         );
     }
 
@@ -646,5 +673,77 @@ mod tests {
         headers.remove(header::AUTHORIZATION);
         headers.insert(header::COOKIE, "lific_token=   ".parse().unwrap());
         assert_eq!(super::websocket_session_token(&headers).as_deref(), None);
+    }
+
+    fn websocket_session() -> (crate::db::DbPool, String) {
+        let db = crate::db::open_memory().expect("test db");
+        let token = {
+            let conn = db.write().unwrap();
+            let user = crate::db::queries::users::create_user(
+                &conn,
+                &crate::db::models::CreateUser {
+                    username: "ws-user".into(),
+                    email: "ws@test.local".into(),
+                    password: "testpassword1".into(),
+                    display_name: None,
+                    is_admin: false,
+                    is_bot: false,
+                },
+            )
+            .unwrap();
+            crate::db::queries::users::create_session(&conn, user.id, None)
+                .unwrap()
+                .token
+        };
+        (db, token)
+    }
+
+    #[tokio::test]
+    async fn websocket_rejects_missing_or_invalid_session_cookie() {
+        let (db, _) = websocket_session();
+        let policy = super::WebsocketOriginPolicy::new(&[]);
+
+        let missing = HeaderMap::new();
+        assert!(matches!(
+            super::validate_websocket_request(&db, &missing, &policy),
+            Err(crate::error::LificError::Forbidden(_))
+        ));
+
+        let mut invalid = HeaderMap::new();
+        invalid.insert(header::COOKIE, "lific_token=lific_sess_fake".parse().unwrap());
+        assert!(matches!(
+            super::validate_websocket_request(&db, &invalid, &policy),
+            Err(crate::error::LificError::BadRequest(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn websocket_accepts_valid_session_cookie_before_upgrade() {
+        let (db, token) = websocket_session();
+        let policy = super::WebsocketOriginPolicy::new(&[]);
+        let mut headers = HeaderMap::new();
+        headers.insert(header::COOKIE, format!("lific_token={token}").parse().unwrap());
+
+        super::validate_websocket_request(&db, &headers, &policy).unwrap();
+    }
+
+    #[tokio::test]
+    async fn websocket_origin_policy_uses_configured_origins() {
+        let origins = vec!["https://app.example.test".to_string()];
+        let (db, token) = websocket_session();
+        let policy = super::WebsocketOriginPolicy::new(&origins);
+
+        let mut rejected = HeaderMap::new();
+        rejected.insert(header::ORIGIN, "https://evil.example.test".parse().unwrap());
+        rejected.insert(header::COOKIE, format!("lific_token={token}").parse().unwrap());
+        assert!(matches!(
+            super::validate_websocket_request(&db, &rejected, &policy),
+            Err(crate::error::LificError::Forbidden(_))
+        ));
+
+        let mut accepted = HeaderMap::new();
+        accepted.insert(header::ORIGIN, "https://app.example.test".parse().unwrap());
+        accepted.insert(header::COOKIE, format!("lific_token={token}").parse().unwrap());
+        super::validate_websocket_request(&db, &accepted, &policy).unwrap();
     }
 }
