@@ -18,7 +18,7 @@
   import Layout from "./lib/Layout.svelte";
   import ErrorState from "./lib/ErrorState.svelte";
   import { hasSession, getInstance, autoLogin, saveSession } from "./lib/api";
-  import { REALTIME_INVALIDATE_EVENT } from "./lib/autoRefresh.svelte";
+  import { REALTIME_INVALIDATE_EVENT, type RealtimeEvent } from "./lib/autoRefresh.svelte";
   import { onMount } from "svelte";
 
   let route = $state(window.location.hash.slice(1) || "/");
@@ -132,8 +132,14 @@
     socket.addEventListener("open", () => {
       realtimeDelayMs = 1000;
     });
-    socket.addEventListener("message", () => {
-      window.dispatchEvent(new CustomEvent(REALTIME_INVALIDATE_EVENT));
+    socket.addEventListener("message", (message) => {
+      const event = parseRealtimeEvent(message.data);
+      if (!event) return;
+      window.dispatchEvent(
+        new CustomEvent<RealtimeEvent>(REALTIME_INVALIDATE_EVENT, {
+          detail: event,
+        }),
+      );
     });
     socket.addEventListener("close", () => {
       if (realtimeSocket === socket) realtimeSocket = null;
@@ -142,6 +148,23 @@
     socket.addEventListener("error", () => {
       socket.close();
     });
+  }
+
+  function parseRealtimeEvent(data: unknown): RealtimeEvent | null {
+    if (typeof data !== "string") return null;
+    try {
+      const event = JSON.parse(data) as unknown;
+      if (
+        event &&
+        typeof event === "object" &&
+        typeof (event as { type?: unknown }).type === "string"
+      ) {
+        return event as RealtimeEvent;
+      }
+    } catch {
+      return null;
+    }
+    return null;
   }
 
   type ParsedRoute =

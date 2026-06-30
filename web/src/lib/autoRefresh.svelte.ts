@@ -45,6 +45,13 @@ export interface AutoRefreshOptions {
 
 export const REALTIME_INVALIDATE_EVENT = "lific:realtime";
 
+export type RealtimeEvent = {
+  type: string;
+  [key: string]: unknown;
+};
+
+export type RealtimeInvalidationEvent = CustomEvent<RealtimeEvent>;
+
 /**
  * Start an auto-refresh loop. Returns a cleanup function that clears the
  * timer and unbinds listeners — wire it up inside an `$effect` so it
@@ -91,7 +98,7 @@ export function startAutoRefresh(opts: AutoRefreshOptions): () => void {
     scheduleEager();
   }
 
-  function onRealtime() {
+  function onRealtime(_event: Event) {
     scheduleEager();
   }
 
