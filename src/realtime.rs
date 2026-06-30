@@ -2,9 +2,11 @@ use axum::extract::ws::{Message, WebSocket};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::RecvError;
-use tracing::warn;
+use tokio::time::{self, Duration};
+use tracing::{trace, warn};
 
 const EVENT_BUFFER: usize = 256;
+const SESSION_REVALIDATE_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Debug, Clone)]
 pub struct RealtimeHub {
@@ -26,7 +28,9 @@ impl RealtimeHub {
     }
 
     pub fn send(&self, event: RealtimeEvent) {
-        let _ = self.tx.send(event);
+        if self.tx.send(event).is_err() {
+            trace!("dropped realtime event because no receivers are subscribed");
+        }
     }
 }
 
@@ -67,11 +71,24 @@ pub enum RealtimeEvent {
     IssueUnlinked { project_id: i64, issue_id: i64 },
 }
 
-pub async fn serve_socket(mut socket: WebSocket, hub: RealtimeHub) {
+pub async fn serve_socket(
+    mut socket: WebSocket,
+    hub: RealtimeHub,
+    db: crate::db::DbPool,
+    session_token: String,
+) {
     let mut rx = hub.subscribe();
+    let mut revalidate = time::interval(SESSION_REVALIDATE_INTERVAL);
+    revalidate.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
 
     loop {
         tokio::select! {
+            _ = revalidate.tick() => {
+                if !session_is_valid(&db, &session_token) {
+                    let _ = socket.send(Message::Close(None)).await;
+                    break;
+                }
+            }
             maybe_event = rx.recv() => {
                 match maybe_event {
                     Ok(event) => {
@@ -104,6 +121,13 @@ pub async fn serve_socket(mut socket: WebSocket, hub: RealtimeHub) {
             }
         }
     }
+}
+
+fn session_is_valid(db: &crate::db::DbPool, token: &str) -> bool {
+    db.read()
+        .ok()
+        .and_then(|conn| crate::db::queries::users::validate_session(&conn, token).ok())
+        .is_some()
 }
 
 #[cfg(test)]

@@ -615,6 +615,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     );
                     build_authless_mcp_router(
                         pool.clone(),
+                        realtime.clone(),
                         &token,
                         authless_user,
                         mcp_allowed_hosts.clone(),
@@ -758,6 +759,7 @@ fn build_global_cors(cors_origins: &[String]) -> CorsLayer {
 /// long and random, and only served over HTTPS.
 fn build_authless_mcp_router(
     pool: db::DbPool,
+    realtime: realtime::RealtimeHub,
     token: &str,
     user: Option<db::models::AuthUser>,
     allowed_hosts: Vec<String>,
@@ -767,7 +769,12 @@ fn build_authless_mcp_router(
         .with_json_response(true)
         .with_allowed_hosts(allowed_hosts);
     let service = StreamableHttpService::new(
-        move || Ok(mcp::LificMcp::new(pool.clone())),
+        move || {
+            Ok(mcp::LificMcp::with_realtime(
+                pool.clone(),
+                Some(realtime.clone()),
+            ))
+        },
         Arc::new(LocalSessionManager::default()),
         config,
     );
@@ -1037,8 +1044,10 @@ mod authless_mcp_tests {
     #[tokio::test]
     async fn authless_path_serves_mcp_without_auth() {
         let pool = db::open_memory().unwrap();
+        let realtime = realtime::RealtimeHub::new();
         let token = "s3cret-authless-token-abcdef";
-        let router = build_authless_mcp_router(pool, token, None, vec!["localhost".into()]);
+        let router =
+            build_authless_mcp_router(pool, realtime, token, None, vec!["localhost".into()]);
 
         let req = Request::builder()
             .method(Method::POST)
@@ -1068,8 +1077,14 @@ mod authless_mcp_tests {
     #[tokio::test]
     async fn wrong_path_token_does_not_match() {
         let pool = db::open_memory().unwrap();
-        let router =
-            build_authless_mcp_router(pool, "the-right-token", None, vec!["localhost".into()]);
+        let realtime = realtime::RealtimeHub::new();
+        let router = build_authless_mcp_router(
+            pool,
+            realtime,
+            "the-right-token",
+            None,
+            vec!["localhost".into()],
+        );
 
         let req = Request::builder()
             .method(Method::POST)

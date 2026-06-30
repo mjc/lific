@@ -217,16 +217,18 @@ async fn events_ws(
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Result<impl IntoResponse, LificError> {
-    validate_websocket_request(&db, &headers, &allowed_origins)?;
+    let session_token = validate_websocket_request(&db, &headers, &allowed_origins)?;
 
-    Ok(ws.on_upgrade(move |socket| crate::realtime::serve_socket(socket, realtime)))
+    Ok(ws.on_upgrade(move |socket| {
+        crate::realtime::serve_socket(socket, realtime, db, session_token)
+    }))
 }
 
 fn validate_websocket_request(
     db: &DbPool,
     headers: &HeaderMap,
     allowed_origins: &[String],
-) -> Result<(), LificError> {
+) -> Result<String, LificError> {
     if !websocket_origin_allowed(headers, allowed_origins) {
         return Err(LificError::Forbidden("websocket origin not allowed".into()));
     }
@@ -234,7 +236,9 @@ fn validate_websocket_request(
     let token = websocket_session_token(headers)
         .ok_or_else(|| LificError::Forbidden("authentication required".into()))?;
     with_read(db, |conn| {
-        crate::db::queries::users::validate_session(conn, token).map(|_| ())
+        crate::db::queries::users::validate_session(conn, token)
+            .map(|_| token.to_string())
+            .map_err(|_| LificError::Forbidden("invalid or expired session".into()))
     })
 }
 
@@ -717,7 +721,7 @@ mod tests {
         );
         assert!(matches!(
             super::validate_websocket_request(&db, &invalid, &[]),
-            Err(crate::error::LificError::BadRequest(_))
+            Err(crate::error::LificError::Forbidden(_))
         ));
     }
 

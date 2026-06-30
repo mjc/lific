@@ -6,6 +6,7 @@ use axum::{
 use crate::db::queries::comments::CommentParent;
 use crate::db::{DbPool, models::*};
 use crate::error::LificError;
+use crate::realtime::{RealtimeEvent, RealtimeHub};
 
 use super::{with_read, with_write};
 
@@ -14,13 +15,19 @@ pub(super) async fn list_comments(
     Path(issue_id): Path<i64>,
 ) -> Result<Json<Vec<Comment>>, LificError> {
     with_read(&db, |conn| {
-        crate::db::queries::comments::list_comments(conn, CommentParent::Issue(issue_id), None, None)
+        crate::db::queries::comments::list_comments(
+            conn,
+            CommentParent::Issue(issue_id),
+            None,
+            None,
+        )
     })
     .map(Json)
 }
 
 pub(super) async fn create_comment(
     State(db): State<DbPool>,
+    realtime: Option<Extension<RealtimeHub>>,
     Path(issue_id): Path<i64>,
     Extension(auth_user): Extension<Option<AuthUser>>,
     Json(input): Json<CreateComment>,
@@ -28,15 +35,17 @@ pub(super) async fn create_comment(
     let user = auth_user
         .ok_or_else(|| LificError::BadRequest("authentication required to comment".into()))?;
 
-    with_write(&db, |conn| {
-        crate::db::queries::comments::create_comment(
+    let (comment, event) = with_write(&db, |conn| {
+        let comment = crate::db::queries::comments::create_comment(
             conn,
             CommentParent::Issue(issue_id),
             user.id,
             &input.content,
-        )
-    })
-    .map(Json)
+        )?;
+        Ok((comment, issue_updated_event(conn, issue_id)?))
+    })?;
+    send_if_present(realtime, event);
+    Ok(Json(comment))
 }
 
 pub(super) async fn list_page_comments(
@@ -71,6 +80,7 @@ pub(super) async fn create_page_comment(
 
 pub(super) async fn update_comment_handler(
     State(db): State<DbPool>,
+    realtime: Option<Extension<RealtimeHub>>,
     Path(id): Path<i64>,
     Extension(auth_user): Extension<Option<AuthUser>>,
     Json(input): Json<UpdateComment>,
@@ -87,14 +97,23 @@ pub(super) async fn update_comment_handler(
         ));
     }
 
-    with_write(&db, |conn| {
-        crate::db::queries::comments::update_comment(conn, id, &input.content)
-    })
-    .map(Json)
+    let (comment, event) = with_write(&db, |conn| {
+        let comment = crate::db::queries::comments::update_comment(conn, id, &input.content)?;
+        let event = comment
+            .issue_id
+            .map(|issue_id| issue_updated_event(conn, issue_id))
+            .transpose()?;
+        Ok((comment, event))
+    })?;
+    if let Some(event) = event {
+        send_if_present(realtime, event);
+    }
+    Ok(Json(comment))
 }
 
 pub(super) async fn delete_comment_handler(
     State(db): State<DbPool>,
+    realtime: Option<Extension<RealtimeHub>>,
     Path(id): Path<i64>,
     Extension(auth_user): Extension<Option<AuthUser>>,
 ) -> Result<Json<serde_json::Value>, LificError> {
@@ -110,16 +129,43 @@ pub(super) async fn delete_comment_handler(
         ));
     }
 
-    with_write(&db, |conn| {
-        crate::db::queries::comments::delete_comment(conn, id)
+    let event = with_write(&db, |conn| {
+        let event = existing
+            .issue_id
+            .map(|issue_id| issue_updated_event(conn, issue_id))
+            .transpose()?;
+        crate::db::queries::comments::delete_comment(conn, id)?;
+        Ok(event)
     })?;
+    if let Some(event) = event {
+        send_if_present(realtime, event);
+    }
     Ok(Json(serde_json::json!({"deleted": true})))
+}
+
+fn send_if_present(realtime: Option<Extension<RealtimeHub>>, event: RealtimeEvent) {
+    if let Some(Extension(realtime)) = realtime {
+        realtime.send(event);
+    }
+}
+
+fn issue_updated_event(
+    conn: &rusqlite::Connection,
+    issue_id: i64,
+) -> Result<RealtimeEvent, LificError> {
+    let issue = crate::db::queries::get_issue(conn, issue_id)?;
+    Ok(RealtimeEvent::IssueUpdated {
+        project_id: issue.project_id,
+        issue_id: issue.id,
+        identifier: issue.identifier,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use crate::api::test_helpers::*;
     use crate::db::models::*;
+    use crate::realtime::{RealtimeEvent, RealtimeHub};
     use axum::Extension;
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
@@ -127,6 +173,11 @@ mod tests {
     /// Set up a test app with a user, project, and issue pre-seeded.
     /// Returns (app_with_user_extension, issue_id, user_id).
     fn setup_comment_test() -> (axum::Router, i64, i64) {
+        let (app, issue_id, user_id, _) = setup_comment_test_with_realtime();
+        (app, issue_id, user_id)
+    }
+
+    fn setup_comment_test_with_realtime() -> (axum::Router, i64, i64, RealtimeHub) {
         let db = crate::db::open_memory().expect("test db");
         let conn = db.write().unwrap();
 
@@ -173,8 +224,13 @@ mod tests {
 
         drop(conn);
 
+        let hub = RealtimeHub::new();
         let app = crate::api::router(db, &[])
-            .layer(Extension(crate::config::AuthConfig { allow_signup: true, secure_cookies: false }))
+            .layer(Extension(hub.clone()))
+            .layer(Extension(crate::config::AuthConfig {
+                allow_signup: true,
+                secure_cookies: false,
+            }))
             .layer(Extension(Some(AuthUser {
                 id: user.id,
                 username: user.username.clone(),
@@ -182,7 +238,7 @@ mod tests {
                 is_admin: user.is_admin,
             })));
 
-        (app, issue.id, user.id)
+        (app, issue.id, user.id, hub)
     }
 
     #[tokio::test]
@@ -218,6 +274,76 @@ mod tests {
         assert_eq!(comments.len(), 2);
         assert_eq!(comments[0]["content"], "Hello from test");
         assert_eq!(comments[1]["content"], "Second comment");
+    }
+
+    #[tokio::test]
+    async fn issue_comment_writes_emit_issue_realtime_events() {
+        let (app, issue_id, _, hub) = setup_comment_test_with_realtime();
+        let mut events = hub.subscribe();
+
+        let resp = json_post(
+            &app,
+            &format!("/api/issues/{issue_id}/comments"),
+            serde_json::json!({"content": "Created"}),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let created = parse_json(resp).await;
+        let comment_id = created["id"].as_i64().unwrap();
+
+        assert_eq!(
+            events.recv().await.unwrap(),
+            RealtimeEvent::IssueUpdated {
+                project_id: 1,
+                issue_id,
+                identifier: "TST-1".into(),
+            }
+        );
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/api/comments/{comment_id}"))
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(
+                        serde_json::to_vec(&serde_json::json!({"content": "Edited"})).unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            events.recv().await.unwrap(),
+            RealtimeEvent::IssueUpdated {
+                project_id: 1,
+                issue_id,
+                identifier: "TST-1".into(),
+            }
+        );
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/api/comments/{comment_id}"))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            events.recv().await.unwrap(),
+            RealtimeEvent::IssueUpdated {
+                project_id: 1,
+                issue_id,
+                identifier: "TST-1".into(),
+            }
+        );
     }
 
     #[tokio::test]
@@ -341,7 +467,10 @@ mod tests {
 
         // Build app as "other" (non-owner, non-admin)
         let app = crate::api::router(db, &[])
-            .layer(Extension(crate::config::AuthConfig { allow_signup: true, secure_cookies: false }))
+            .layer(Extension(crate::config::AuthConfig {
+                allow_signup: true,
+                secure_cookies: false,
+            }))
             .layer(Extension(Some(AuthUser {
                 id: other.id,
                 username: other.username,
@@ -450,7 +579,10 @@ mod tests {
 
         // Build app as admin
         let app = crate::api::router(db, &[])
-            .layer(Extension(crate::config::AuthConfig { allow_signup: true, secure_cookies: false }))
+            .layer(Extension(crate::config::AuthConfig {
+                allow_signup: true,
+                secure_cookies: false,
+            }))
             .layer(Extension(Some(AuthUser {
                 id: admin.id,
                 username: admin.username,
@@ -525,7 +657,10 @@ mod tests {
         };
 
         let app = crate::api::router(db, &[])
-            .layer(Extension(crate::config::AuthConfig { allow_signup: true, secure_cookies: false }))
+            .layer(Extension(crate::config::AuthConfig {
+                allow_signup: true,
+                secure_cookies: false,
+            }))
             .layer(Extension(Some(AuthUser {
                 id: user.id,
                 username: user.username.clone(),
@@ -676,7 +811,10 @@ mod tests {
         };
 
         let app = crate::api::router(db, &[])
-            .layer(Extension(crate::config::AuthConfig { allow_signup: true, secure_cookies: false }))
+            .layer(Extension(crate::config::AuthConfig {
+                allow_signup: true,
+                secure_cookies: false,
+            }))
             .layer(Extension(Some(AuthUser {
                 id: other.id,
                 username: other.username,
@@ -765,7 +903,10 @@ mod tests {
         };
 
         let app = crate::api::router(db, &[])
-            .layer(Extension(crate::config::AuthConfig { allow_signup: true, secure_cookies: false }))
+            .layer(Extension(crate::config::AuthConfig {
+                allow_signup: true,
+                secure_cookies: false,
+            }))
             .layer(Extension(Some(AuthUser {
                 id: admin.id,
                 username: admin.username,
@@ -849,7 +990,10 @@ mod tests {
         };
 
         let app = crate::api::router(db, &[])
-            .layer(Extension(crate::config::AuthConfig { allow_signup: true, secure_cookies: false }))
+            .layer(Extension(crate::config::AuthConfig {
+                allow_signup: true,
+                secure_cookies: false,
+            }))
             .layer(Extension(Some(AuthUser {
                 id: user.id,
                 username: user.username,

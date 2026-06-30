@@ -1530,17 +1530,35 @@ impl LificMcp {
             },
         };
 
-        match self
-            .write(|conn| queries::comments::create_comment(conn, parent, user_id, &input.content))
-        {
+        match self.write(|conn| {
+            let comment = queries::comments::create_comment(conn, parent, user_id, &input.content)?;
+            let event = comment
+                .issue_id
+                .map(|issue_id| {
+                    queries::get_issue(conn, issue_id).map(|issue| {
+                        crate::realtime::RealtimeEvent::IssueUpdated {
+                            project_id: issue.project_id,
+                            issue_id: issue.id,
+                            identifier: issue.identifier,
+                        }
+                    })
+                })
+                .transpose()?;
+            Ok((comment, event))
+        }) {
             // Don't echo c.content back — the agent already supplied it in the
             // tool args, so repeating it just duplicates tokens in context
             // (LIF-115). The comment id is the useful new handle for any
             // follow-up edit/delete.
-            Ok(c) => format!(
-                "Comment #{} added to {} by {} at {}",
-                c.id, input.identifier, c.author, c.created_at
-            ),
+            Ok((c, event)) => {
+                if let Some(event) = event {
+                    self.emit(event);
+                }
+                format!(
+                    "Comment #{} added to {} by {} at {}",
+                    c.id, input.identifier, c.author, c.created_at
+                )
+            }
             Err(e) => format!("Error: {e}"),
         }
     }
@@ -2857,6 +2875,29 @@ mod tests {
         assert!(result.contains("2 comment(s)"), "got: {result}");
         assert!(result.contains("Hello from MCP"), "got: {result}");
         assert!(result.contains("Second comment"), "got: {result}");
+    }
+
+    #[tokio::test]
+    async fn add_issue_comment_emits_realtime_event() {
+        let (m, hub) = mcp_with_realtime();
+        seed_project(&m, "Proj", "PRJ");
+        seed_issue(&m, "PRJ", "Test issue");
+        seed_user(&m);
+        let mut events = hub.subscribe();
+
+        let result = m.add_comment(Parameters(AddCommentInput {
+            identifier: "PRJ-1".into(),
+            content: "Realtime comment".into(),
+        }));
+        assert!(result.starts_with("Comment #"), "got: {result}");
+        assert_eq!(
+            events.recv().await.unwrap(),
+            crate::realtime::RealtimeEvent::IssueUpdated {
+                project_id: 1,
+                issue_id: 1,
+                identifier: "PRJ-1".into(),
+            }
+        );
     }
 
     #[test]

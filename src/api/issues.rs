@@ -70,8 +70,11 @@ pub(super) async fn delete_issue_handler(
     Extension(realtime): Extension<RealtimeHub>,
     Path(id): Path<i64>,
 ) -> Result<Json<serde_json::Value>, LificError> {
-    let issue = with_read(&db, |conn| crate::db::queries::get_issue(conn, id))?;
-    with_write(&db, |conn| crate::db::queries::delete_issue(conn, id))?;
+    let issue = with_write(&db, |conn| {
+        let issue = crate::db::queries::get_issue(conn, id)?;
+        crate::db::queries::delete_issue(conn, id)?;
+        Ok(issue)
+    })?;
     realtime.send(RealtimeEvent::IssueDeleted {
         project_id: issue.project_id,
         issue_id: issue.id,

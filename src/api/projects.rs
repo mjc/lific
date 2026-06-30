@@ -88,8 +88,11 @@ pub(super) async fn delete_project_handler(
     Extension(auth_user): Extension<Option<AuthUser>>,
 ) -> Result<Json<serde_json::Value>, LificError> {
     require_admin(&auth_user)?;
-    let project = with_read(&db, |conn| crate::db::queries::get_project(conn, id))?;
-    with_write(&db, |conn| crate::db::queries::delete_project(conn, id))?;
+    let project = with_write(&db, |conn| {
+        let project = crate::db::queries::get_project(conn, id)?;
+        crate::db::queries::delete_project(conn, id)?;
+        Ok(project)
+    })?;
     realtime.send(RealtimeEvent::ProjectDeleted {
         project_id: project.id,
         identifier: project.identifier,
