@@ -84,6 +84,8 @@ export function startAutoRefresh(opts: AutoRefreshOptions): () => void {
     refreshing = true;
     try {
       await refresh();
+    } catch (err) {
+      console.warn("auto-refresh failed", err);
     } finally {
       refreshing = false;
     }
@@ -91,10 +93,6 @@ export function startAutoRefresh(opts: AutoRefreshOptions): () => void {
       pending = false;
       void runRefresh();
     }
-  }
-
-  function tick() {
-    void runRefresh();
   }
 
   // Visibility/focus revalidate, debounced so the visibilitychange +
@@ -126,7 +124,7 @@ export function startAutoRefresh(opts: AutoRefreshOptions): () => void {
   window.addEventListener(REALTIME_INVALIDATE_EVENT, onRealtime);
 
   if (intervalMs && intervalMs > 0) {
-    timer = setInterval(tick, intervalMs);
+    timer = setInterval(() => void runRefresh(), intervalMs);
   }
 
   return () => {
