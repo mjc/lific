@@ -788,6 +788,7 @@ async fn auth_middleware_wrapper(
         || path == "/api/auth/signup"
         || path == "/api/auth/login"
         || path == "/api/auth/auto-login"
+        || path == "/api/events/ws"
         || path.starts_with("/.well-known/")
         || path.starts_with("/oauth/")
         || path == "/register"

@@ -11,6 +11,7 @@ mod resources;
 use axum::{
     Router,
     extract::{Extension, Json, Query, State, ws::WebSocketUpgrade},
+    http::{HeaderMap, header},
     response::IntoResponse,
     routing::{delete, get, post, put},
 };
@@ -209,10 +210,38 @@ pub fn router(db: DbPool, cors_origins: &[String]) -> Router {
 }
 
 async fn events_ws(
+    State(db): State<DbPool>,
     Extension(realtime): Extension<crate::realtime::RealtimeHub>,
+    headers: HeaderMap,
     ws: WebSocketUpgrade,
-) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| crate::realtime::serve_socket(socket, realtime))
+) -> Result<impl IntoResponse, LificError> {
+    let token = websocket_session_token(&headers)
+        .ok_or_else(|| LificError::Forbidden("authentication required".into()))?;
+    with_read(&db, |conn| {
+        crate::db::queries::users::validate_session(conn, &token).map(|_| ())
+    })?;
+
+    Ok(ws.on_upgrade(move |socket| crate::realtime::serve_socket(socket, realtime)))
+}
+
+fn websocket_session_token(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .map(|token| token.trim().to_string())
+        .or_else(|| {
+            headers
+                .get(header::COOKIE)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|cookie| {
+                    cookie.split(';').find_map(|part| {
+                        part.trim()
+                            .strip_prefix("lific_token=")
+                            .map(|token| token.trim().to_string())
+                    })
+                })
+        })
 }
 
 // ── Shared helpers ───────────────────────────────────────────
@@ -519,7 +548,7 @@ pub(crate) mod test_helpers {
 #[cfg(test)]
 mod tests {
     use super::test_helpers::*;
-    use axum::http::{Request, StatusCode};
+    use axum::http::{HeaderMap, Request, StatusCode, header};
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
@@ -574,5 +603,31 @@ mod tests {
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         let results: Vec<serde_json::Value> = serde_json::from_slice(&bytes).unwrap();
         assert!(!results.is_empty());
+    }
+
+    #[test]
+    fn websocket_session_token_prefers_bearer_and_cookies() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            "Bearer lific_sess_bearer".parse().unwrap(),
+        );
+        headers.insert(
+            header::COOKIE,
+            "lific_token=lific_sess_cookie; other=value"
+                .parse()
+                .unwrap(),
+        );
+
+        assert_eq!(
+            super::websocket_session_token(&headers).as_deref(),
+            Some("lific_sess_bearer")
+        );
+
+        headers.remove(header::AUTHORIZATION);
+        assert_eq!(
+            super::websocket_session_token(&headers).as_deref(),
+            Some("lific_sess_cookie")
+        );
     }
 }
