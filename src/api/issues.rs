@@ -301,4 +301,97 @@ mod tests {
             }
         );
     }
+
+    #[tokio::test]
+    async fn relation_events_use_each_issue_project_id() {
+        let (app, hub) = test_app_with_realtime();
+        let (source_project_id, _) = seed_project(&app).await;
+        let target_project = serde_json::json!({
+            "name": "Target Project",
+            "identifier": "TGT",
+            "description": "cross-project relation target"
+        });
+        let resp = json_post(&app, "/api/projects", target_project).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let target_project = parse_json(resp).await;
+        let target_project_id = target_project["id"].as_i64().unwrap();
+
+        let source = json_post(
+            &app,
+            "/api/issues",
+            serde_json::json!({
+                "project_id": source_project_id,
+                "title": "Source",
+            }),
+        )
+        .await;
+        assert_eq!(source.status(), StatusCode::OK);
+        let source = parse_json(source).await;
+        let source_issue_id = source["id"].as_i64().unwrap();
+
+        let target = json_post(
+            &app,
+            "/api/issues",
+            serde_json::json!({
+                "project_id": target_project_id,
+                "title": "Target",
+            }),
+        )
+        .await;
+        assert_eq!(target.status(), StatusCode::OK);
+        let target = parse_json(target).await;
+        let target_issue_id = target["id"].as_i64().unwrap();
+
+        let mut events = hub.subscribe();
+        let resp = json_post(
+            &app,
+            "/api/issues/link",
+            serde_json::json!({
+                "source": "TST-1",
+                "target": "TGT-1",
+                "relation_type": "relates_to",
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            events.recv().await.unwrap(),
+            RealtimeEvent::IssueLinked {
+                project_id: source_project_id,
+                issue_id: source_issue_id,
+            }
+        );
+        assert_eq!(
+            events.recv().await.unwrap(),
+            RealtimeEvent::IssueLinked {
+                project_id: target_project_id,
+                issue_id: target_issue_id,
+            }
+        );
+
+        let resp = json_post(
+            &app,
+            "/api/issues/unlink",
+            serde_json::json!({
+                "source": "TST-1",
+                "target": "TGT-1",
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            events.recv().await.unwrap(),
+            RealtimeEvent::IssueUnlinked {
+                project_id: source_project_id,
+                issue_id: source_issue_id,
+            }
+        );
+        assert_eq!(
+            events.recv().await.unwrap(),
+            RealtimeEvent::IssueUnlinked {
+                project_id: target_project_id,
+                issue_id: target_issue_id,
+            }
+        );
+    }
 }

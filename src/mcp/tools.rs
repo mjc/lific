@@ -2014,6 +2014,71 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn issue_relation_mutations_emit_realtime_events() {
+        use std::time::Duration;
+        use tokio::time::timeout;
+
+        let (m, hub) = mcp_with_realtime();
+        seed_project(&m, "Realtime Links", "RTL");
+        seed_issue(&m, "RTL", "Blocker");
+        seed_issue(&m, "RTL", "Blocked");
+        let mut events = hub.subscribe();
+
+        let result = m.link_issues(Parameters(LinkIssuesInput {
+            source: "RTL-1".into(),
+            target: "RTL-2".into(),
+            relation_type: "blocks".into(),
+        }));
+        assert!(result.contains("blocks"), "got: {result}");
+        assert_eq!(
+            timeout(Duration::from_millis(100), events.recv())
+                .await
+                .expect("link should emit source issue event")
+                .unwrap(),
+            crate::realtime::RealtimeEvent::IssueLinked {
+                project_id: 1,
+                issue_id: 1,
+            }
+        );
+        assert_eq!(
+            timeout(Duration::from_millis(100), events.recv())
+                .await
+                .expect("link should emit target issue event")
+                .unwrap(),
+            crate::realtime::RealtimeEvent::IssueLinked {
+                project_id: 1,
+                issue_id: 2,
+            }
+        );
+
+        let result = m.unlink_issues(Parameters(UnlinkIssuesInput {
+            source: "RTL-1".into(),
+            target: "RTL-2".into(),
+        }));
+        assert!(result.contains("Unlinked"), "got: {result}");
+        assert_eq!(
+            timeout(Duration::from_millis(100), events.recv())
+                .await
+                .expect("unlink should emit source issue event")
+                .unwrap(),
+            crate::realtime::RealtimeEvent::IssueUnlinked {
+                project_id: 1,
+                issue_id: 1,
+            }
+        );
+        assert_eq!(
+            timeout(Duration::from_millis(100), events.recv())
+                .await
+                .expect("unlink should emit target issue event")
+                .unwrap(),
+            crate::realtime::RealtimeEvent::IssueUnlinked {
+                project_id: 1,
+                issue_id: 2,
+            }
+        );
+    }
+
     #[test]
     fn issue_create_with_options() {
         let m = mcp();
