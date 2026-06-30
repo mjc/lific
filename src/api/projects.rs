@@ -415,6 +415,7 @@ mod tests {
             conn.last_insert_rowid()
         };
         let app = crate::api::router(db.clone(), &[])
+            .layer(Extension(crate::realtime::RealtimeHub::new()))
             .layer(Extension(crate::config::AuthConfig {
                 allow_signup: true,
                 secure_cookies: false,

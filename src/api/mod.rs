@@ -472,6 +472,7 @@ pub(crate) mod test_helpers {
     /// Build a test app authenticated as a specific user.
     pub fn app_as_user(db: DbPool, user: &User) -> Router {
         super::router(db, &[])
+            .layer(Extension(crate::realtime::RealtimeHub::new()))
             .layer(Extension(crate::config::AuthConfig {
                 allow_signup: true,
                 secure_cookies: false,
