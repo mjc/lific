@@ -5,6 +5,7 @@ use axum::{
 
 use crate::db::{DbPool, models::*};
 use crate::error::LificError;
+use crate::realtime::{RealtimeEvent, RealtimeHub};
 
 use super::{require_admin, require_authenticated, require_project_lead, with_read, with_write};
 
@@ -23,6 +24,7 @@ pub(super) async fn get_project(
 
 pub(super) async fn create_project(
     State(db): State<DbPool>,
+    Extension(realtime): Extension<RealtimeHub>,
     Extension(auth_user): Extension<Option<AuthUser>>,
     Json(mut input): Json<CreateProject>,
 ) -> Result<Json<Project>, LificError> {
@@ -34,20 +36,30 @@ pub(super) async fn create_project(
     {
         input.lead_user_id = Some(user.id);
     }
-    with_write(&db, |conn| crate::db::queries::create_project(conn, &input)).map(Json)
+    let project = with_write(&db, |conn| crate::db::queries::create_project(conn, &input))?;
+    realtime.send(RealtimeEvent::ProjectCreated {
+        project_id: project.id,
+        identifier: Some(project.identifier.clone()),
+    });
+    Ok(Json(project))
 }
 
 pub(super) async fn update_project(
     State(db): State<DbPool>,
+    Extension(realtime): Extension<RealtimeHub>,
     Path(id): Path<i64>,
     Extension(auth_user): Extension<Option<AuthUser>>,
     Json(input): Json<UpdateProject>,
 ) -> Result<Json<Project>, LificError> {
     require_project_lead(&db, &auth_user, id)?;
-    with_write(&db, |conn| {
+    let project = with_write(&db, |conn| {
         crate::db::queries::update_project(conn, id, &input)
-    })
-    .map(Json)
+    })?;
+    realtime.send(RealtimeEvent::ProjectUpdated {
+        project_id: project.id,
+        identifier: Some(project.identifier.clone()),
+    });
+    Ok(Json(project))
 }
 
 /// PUT /api/projects/reorder — persist the sidebar order (LIF-233). Takes the
@@ -57,23 +69,31 @@ pub(super) async fn update_project(
 /// lead/admin-only.
 pub(super) async fn reorder_projects(
     State(db): State<DbPool>,
+    Extension(realtime): Extension<RealtimeHub>,
     Extension(auth_user): Extension<Option<AuthUser>>,
     Json(input): Json<ReorderProjects>,
 ) -> Result<Json<Vec<Project>>, LificError> {
     require_authenticated(&auth_user)?;
-    with_write(&db, |conn| {
+    let projects = with_write(&db, |conn| {
         crate::db::queries::reorder_projects(conn, &input.ids)
-    })
-    .map(Json)
+    })?;
+    realtime.send(RealtimeEvent::ProjectsReordered);
+    Ok(Json(projects))
 }
 
 pub(super) async fn delete_project_handler(
     State(db): State<DbPool>,
+    Extension(realtime): Extension<RealtimeHub>,
     Path(id): Path<i64>,
     Extension(auth_user): Extension<Option<AuthUser>>,
 ) -> Result<Json<serde_json::Value>, LificError> {
     require_admin(&auth_user)?;
+    let project = with_read(&db, |conn| crate::db::queries::get_project(conn, id))?;
     with_write(&db, |conn| crate::db::queries::delete_project(conn, id))?;
+    realtime.send(RealtimeEvent::ProjectDeleted {
+        project_id: project.id,
+        identifier: Some(project.identifier),
+    });
     Ok(Json(serde_json::json!({"deleted": true})))
 }
 
@@ -148,19 +168,57 @@ pub(super) async fn get_board(
 #[cfg(test)]
 mod tests {
     use crate::api::test_helpers::*;
+    use crate::config::AuthConfig;
     use crate::db::models::*;
+    use crate::realtime::{RealtimeEvent, RealtimeHub};
     use axum::Extension;
     use axum::http::{Request, StatusCode};
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
+    fn test_app_with_realtime() -> (axum::Router, RealtimeHub) {
+        let db = crate::db::open_memory().expect("test db");
+        let admin_id = {
+            let conn = db.write().unwrap();
+            conn.execute(
+                "INSERT INTO users (username, email, password_hash, display_name, is_admin, is_bot)
+                 VALUES ('test-admin', 'admin@test.local', 'x', 'Test Admin', 1, 0)",
+                [],
+            )
+            .expect("seed test admin");
+            conn.last_insert_rowid()
+        };
+        let hub = RealtimeHub::new();
+        let app = crate::api::router(db, &[])
+            .layer(Extension(hub.clone()))
+            .layer(Extension(AuthConfig {
+                allow_signup: true,
+                secure_cookies: false,
+            }))
+            .layer(Extension(Some(crate::db::models::AuthUser {
+                id: admin_id,
+                username: "test-admin".into(),
+                display_name: "Test Admin".into(),
+                is_admin: true,
+            })));
+        (app, hub)
+    }
+
     #[tokio::test]
     async fn project_crud_lifecycle() {
-        let app = test_app();
+        let (app, hub) = test_app_with_realtime();
+        let mut events = hub.subscribe();
 
         // Create
         let (id, project) = seed_project(&app).await;
         assert_eq!(project["identifier"], "TST");
+        assert_eq!(
+            events.recv().await.unwrap(),
+            RealtimeEvent::ProjectCreated {
+                project_id: id,
+                identifier: Some("TST".into()),
+            }
+        );
 
         // Get
         let resp = app
@@ -208,6 +266,13 @@ mod tests {
         let updated: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(updated["name"], "Renamed");
         assert_eq!(updated["identifier"], "TST"); // unchanged
+        assert_eq!(
+            events.recv().await.unwrap(),
+            RealtimeEvent::ProjectUpdated {
+                project_id: id,
+                identifier: Some("TST".into()),
+            }
+        );
 
         // Delete
         let resp = app
@@ -222,6 +287,13 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            events.recv().await.unwrap(),
+            RealtimeEvent::ProjectDeleted {
+                project_id: id,
+                identifier: Some("TST".into()),
+            }
+        );
 
         // Verify gone
         let resp = app
@@ -298,12 +370,7 @@ mod tests {
         let app = test_app();
         let (project_id, _) = seed_project(&app).await;
 
-        for (title, status) in [
-            ("A", "todo"),
-            ("B", "active"),
-            ("C", "todo"),
-            ("D", "done"),
-        ] {
+        for (title, status) in [("A", "todo"), ("B", "active"), ("C", "todo"), ("D", "done")] {
             let body = serde_json::json!({
                 "project_id": project_id,
                 "title": title,
@@ -348,7 +415,10 @@ mod tests {
             conn.last_insert_rowid()
         };
         let app = crate::api::router(db.clone(), &[])
-            .layer(Extension(crate::config::AuthConfig { allow_signup: true, secure_cookies: false }))
+            .layer(Extension(crate::config::AuthConfig {
+                allow_signup: true,
+                secure_cookies: false,
+            }))
             .layer(Extension(Some(AuthUser {
                 id: admin_id,
                 username: "test-admin".into(),
@@ -567,10 +637,7 @@ mod tests {
         let data = parse_json(resp).await;
         // Distinct message tells the user *why* they can't edit: no lead exists.
         assert!(
-            data["error"]
-                .as_str()
-                .unwrap_or("")
-                .contains("no lead"),
+            data["error"].as_str().unwrap_or("").contains("no lead"),
             "expected 'no lead' in error, got: {}",
             data["error"]
         );
@@ -644,7 +711,11 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let data = parse_json(resp).await;
-        assert!(data["emoji"].is_null(), "expected null emoji, got: {}", data["emoji"]);
+        assert!(
+            data["emoji"].is_null(),
+            "expected null emoji, got: {}",
+            data["emoji"]
+        );
     }
 
     #[tokio::test]

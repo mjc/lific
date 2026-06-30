@@ -10,7 +10,8 @@ mod resources;
 
 use axum::{
     Router,
-    extract::{Json, Query, State},
+    extract::{Extension, Json, Query, State, ws::WebSocketUpgrade},
+    response::IntoResponse,
     routing::{delete, get, post, put},
 };
 use tower_http::cors::{self, CorsLayer};
@@ -23,10 +24,8 @@ pub fn router(db: DbPool, cors_origins: &[String]) -> Router {
     let cors = if cors_origins.is_empty() {
         CorsLayer::new().allow_origin(cors::Any)
     } else {
-        let origins: Vec<axum::http::HeaderValue> = cors_origins
-            .iter()
-            .filter_map(|o| o.parse().ok())
-            .collect();
+        let origins: Vec<axum::http::HeaderValue> =
+            cors_origins.iter().filter_map(|o| o.parse().ok()).collect();
         CorsLayer::new().allow_origin(origins)
     };
 
@@ -105,10 +104,7 @@ pub fn router(db: DbPool, cors_origins: &[String]) -> Router {
             get(issues::resolve_issue),
         )
         // Activity (audit log read surface — LIF-156)
-        .route(
-            "/api/issues/{id}/activity",
-            get(activity::issue_activity),
-        )
+        .route("/api/issues/{id}/activity", get(activity::issue_activity))
         .route("/api/pages/{id}/activity", get(activity::page_activity))
         .route(
             "/api/projects/{id}/activity",
@@ -120,7 +116,10 @@ pub fn router(db: DbPool, cors_origins: &[String]) -> Router {
         )
         .route("/api/export/issues/{identifier}", get(export::export_issue))
         .route("/api/export/pages/{identifier}", get(export::export_page))
-        .route("/api/export/projects/{identifier}", get(export::export_project))
+        .route(
+            "/api/export/projects/{identifier}",
+            get(export::export_project),
+        )
         // Issue relations
         .route("/api/issues/link", post(issues::link_issues))
         .route("/api/issues/unlink", post(issues::unlink_issues))
@@ -181,6 +180,8 @@ pub fn router(db: DbPool, cors_origins: &[String]) -> Router {
         )
         // Users (for dropdowns)
         .route("/api/users", get(auth::list_users))
+        // Realtime invalidation events for the web UI.
+        .route("/api/events/ws", get(events_ws))
         // Search
         .route("/api/search", get(search))
         // Board view
@@ -194,17 +195,24 @@ pub fn router(db: DbPool, cors_origins: &[String]) -> Router {
         .route("/api/health", get(health))
         .layer(
             cors.allow_methods([
-                    axum::http::Method::GET,
-                    axum::http::Method::POST,
-                    axum::http::Method::PUT,
-                    axum::http::Method::DELETE,
-                ])
-                .allow_headers([
-                    axum::http::header::CONTENT_TYPE,
-                    axum::http::header::AUTHORIZATION,
-                ]),
+                axum::http::Method::GET,
+                axum::http::Method::POST,
+                axum::http::Method::PUT,
+                axum::http::Method::DELETE,
+            ])
+            .allow_headers([
+                axum::http::header::CONTENT_TYPE,
+                axum::http::header::AUTHORIZATION,
+            ]),
         )
         .with_state(db)
+}
+
+async fn events_ws(
+    Extension(realtime): Extension<crate::realtime::RealtimeHub>,
+    ws: WebSocketUpgrade,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| crate::realtime::serve_socket(socket, realtime))
 }
 
 // ── Shared helpers ───────────────────────────────────────────
@@ -322,7 +330,11 @@ pub(crate) mod test_helpers {
             conn.last_insert_rowid()
         };
         super::router(db, &[])
-            .layer(Extension(crate::config::AuthConfig { allow_signup: true, secure_cookies: false }))
+            .layer(Extension(crate::realtime::RealtimeHub::new()))
+            .layer(Extension(crate::config::AuthConfig {
+                allow_signup: true,
+                secure_cookies: false,
+            }))
             .layer(Extension(Some(AuthUser {
                 id: admin_id,
                 username: "test-admin".into(),
@@ -431,7 +443,10 @@ pub(crate) mod test_helpers {
     /// Build a test app authenticated as a specific user.
     pub fn app_as_user(db: DbPool, user: &User) -> Router {
         super::router(db, &[])
-            .layer(Extension(crate::config::AuthConfig { allow_signup: true, secure_cookies: false }))
+            .layer(Extension(crate::config::AuthConfig {
+                allow_signup: true,
+                secure_cookies: false,
+            }))
             .layer(Extension(Some(AuthUser {
                 id: user.id,
                 username: user.username.clone(),

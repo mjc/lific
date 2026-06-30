@@ -10,6 +10,7 @@ mod export;
 mod mcp;
 mod oauth;
 mod ratelimit;
+mod realtime;
 
 use std::sync::Arc;
 
@@ -22,19 +23,25 @@ use axum::{
     response::IntoResponse,
     routing::{any, get},
 };
-use tower_http::compression::CompressionLayer;
-use tower_http::cors::{Any, CorsLayer};
 use clap::Parser;
 use cli::{Cli, Command, InstanceAction, KeyAction, UserAction};
 use config::Config;
+use tower_http::compression::CompressionLayer;
+use tower_http::cors::{Any, CorsLayer};
 
 // Commands that operate directly on the database (no server required)
 fn is_crud_command(cmd: &Command) -> bool {
-    matches!(cmd,
-        Command::Issue { .. } | Command::Project { .. } | Command::Page { .. } |
-        Command::Export { .. } |
-        Command::Search { .. } | Command::Comment { .. } | Command::Module { .. } |
-        Command::Label { .. } | Command::Folder { .. }
+    matches!(
+        cmd,
+        Command::Issue { .. }
+            | Command::Project { .. }
+            | Command::Page { .. }
+            | Command::Export { .. }
+            | Command::Search { .. }
+            | Command::Comment { .. }
+            | Command::Module { .. }
+            | Command::Label { .. }
+            | Command::Folder { .. }
     )
 }
 use rmcp::{
@@ -210,15 +217,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("{}", serde_json::to_string_pretty(&out)?);
             } else {
                 println!("Instance");
-                println!("  name:          {}", settings.instance_name.as_deref().unwrap_or("(unnamed)"));
+                println!(
+                    "  name:          {}",
+                    settings.instance_name.as_deref().unwrap_or("(unnamed)")
+                );
                 println!("  version:       {version}");
                 println!("  database:      {}", cfg.database.path.display());
                 println!("  bind:          {}:{}", cfg.server.host, cfg.server.port);
-                println!("  public url:    {}", cfg.server.public_url.as_deref().unwrap_or("(not set)"));
-                println!("  signups:       {}", if settings.allow_signup { "open" } else { "closed" });
+                println!(
+                    "  public url:    {}",
+                    cfg.server.public_url.as_deref().unwrap_or("(not set)")
+                );
+                println!(
+                    "  signups:       {}",
+                    if settings.allow_signup {
+                        "open"
+                    } else {
+                        "closed"
+                    }
+                );
                 println!("  signup domains:{domains}");
                 println!("  session days:  {}", settings.session_lifetime_days);
-                println!("  login message: {}", settings.login_message.as_deref().unwrap_or("(none)"));
+                println!(
+                    "  login message: {}",
+                    settings.login_message.as_deref().unwrap_or("(none)")
+                );
                 println!("  users:         {total} ({admins} admin)");
             }
             return Ok(());
@@ -479,10 +502,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // so reverse proxies (Tailscale funnel, nginx, etc.) can forward requests.
             if let Some(ref url) = cfg.server.public_url
                 && let Ok(parsed) = url.parse::<axum::http::Uri>()
-                    && let Some(authority) = parsed.authority() {
-                        let host: String = authority.host().to_string();
-                        mcp_allowed_hosts.push(host);
-                    }
+                && let Some(authority) = parsed.authority()
+            {
+                let host: String = authority.host().to_string();
+                mcp_allowed_hosts.push(host);
+            }
 
             let mcp_config = StreamableHttpServerConfig::default()
                 .with_stateful_mode(false)
@@ -500,9 +524,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 5,
                 std::time::Duration::from_secs(15 * 60),
             ));
+            let realtime = realtime::RealtimeHub::new();
 
             // Routes behind auth: REST API + MCP
             let authed_routes = api::router(pool.clone(), &cfg.server.cors_origins)
+                .layer(axum::Extension(realtime.clone()))
                 .route(
                     "/mcp",
                     any(move |request: Request<Body>| async move {
@@ -559,17 +585,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let authless_user: Option<db::models::AuthUser> = {
                         match pool.read() {
                             Ok(conn) => match cfg.server.mcp_path_user.as_deref() {
-                                Some(uname) => db::queries::users::get_user_by_username(&conn, uname)
-                                    .ok()
-                                    .map(|u| db::models::AuthUser {
-                                        id: u.id,
-                                        username: u.username,
-                                        display_name: u.display_name,
-                                        is_admin: u.is_admin,
-                                    }),
-                                None => db::queries::users::first_admin(&conn)
-                                    .ok()
-                                    .flatten(),
+                                Some(uname) => {
+                                    db::queries::users::get_user_by_username(&conn, uname)
+                                        .ok()
+                                        .map(|u| db::models::AuthUser {
+                                            id: u.id,
+                                            username: u.username,
+                                            display_name: u.display_name,
+                                            is_admin: u.is_admin,
+                                        })
+                                }
+                                None => db::queries::users::first_admin(&conn).ok().flatten(),
                             },
                             Err(_) => None,
                         }
@@ -656,10 +682,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         // CRUD commands are handled before this match
-        Command::Issue { .. } | Command::Project { .. } | Command::Page { .. } |
-        Command::Export { .. } |
-        Command::Search { .. } | Command::Comment { .. } | Command::Module { .. } |
-        Command::Label { .. } | Command::Folder { .. } => unreachable!(),
+        Command::Issue { .. }
+        | Command::Project { .. }
+        | Command::Page { .. }
+        | Command::Export { .. }
+        | Command::Search { .. }
+        | Command::Comment { .. }
+        | Command::Module { .. }
+        | Command::Label { .. }
+        | Command::Folder { .. } => unreachable!(),
     }
 
     Ok(())
@@ -702,10 +733,8 @@ fn build_global_cors(cors_origins: &[String]) -> CorsLayer {
     if cors_origins.is_empty() {
         layer.allow_origin(Any)
     } else {
-        let origins: Vec<HeaderValue> = cors_origins
-            .iter()
-            .filter_map(|o| o.parse().ok())
-            .collect();
+        let origins: Vec<HeaderValue> =
+            cors_origins.iter().filter_map(|o| o.parse().ok()).collect();
         layer.allow_origin(origins)
     }
 }
@@ -836,7 +865,10 @@ mod cors_tests {
             .uri("/mcp")
             .header("origin", "https://claude.ai")
             .header("access-control-request-method", "POST")
-            .header("access-control-request-headers", "authorization,content-type")
+            .header(
+                "access-control-request-headers",
+                "authorization,content-type",
+            )
             .body(Body::empty())
             .unwrap();
 
@@ -999,8 +1031,7 @@ mod authless_mcp_tests {
     async fn authless_path_serves_mcp_without_auth() {
         let pool = db::open_memory().unwrap();
         let token = "s3cret-authless-token-abcdef";
-        let router =
-            build_authless_mcp_router(pool, token, None, vec!["localhost".into()]);
+        let router = build_authless_mcp_router(pool, token, None, vec!["localhost".into()]);
 
         let req = Request::builder()
             .method(Method::POST)
