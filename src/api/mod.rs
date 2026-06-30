@@ -621,31 +621,14 @@ mod tests {
         );
 
         assert_eq!(
-            super::websocket_session_token(&headers, None).as_deref(),
+            super::websocket_session_token(&headers).as_deref(),
             Some("lific_sess_bearer")
         );
 
         headers.remove(header::AUTHORIZATION);
         assert_eq!(
-            super::websocket_session_token(&headers, None).as_deref(),
+            super::websocket_session_token(&headers).as_deref(),
             Some("lific_sess_cookie")
-        );
-    }
-
-    #[test]
-    fn websocket_session_token_accepts_query_token_after_headers() {
-        let mut headers = HeaderMap::new();
-        headers.insert(header::COOKIE, "lific_token=lific_sess_cookie".parse().unwrap());
-
-        assert_eq!(
-            super::websocket_session_token(&headers, Some("lific_sess_query")).as_deref(),
-            Some("lific_sess_cookie")
-        );
-
-        headers.remove(header::COOKIE);
-        assert_eq!(
-            super::websocket_session_token(&headers, Some("lific_sess_query")).as_deref(),
-            Some("lific_sess_query")
         );
     }
 }
