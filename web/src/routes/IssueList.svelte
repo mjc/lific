@@ -315,6 +315,9 @@
       refresh: refreshIssues,
       isBusy: autoRefreshBusy,
       intervalMs: 15_000,
+      shouldRefresh: (event) =>
+        event.type === "resync.required" ||
+        (typeof event.project_id === "number" && event.project_id === project?.id),
     }),
   );
 
@@ -1448,7 +1451,6 @@
     onHoverStatusOption={(si) => { view.inlineCreateStatusIdx = si; }}
   />
 {/snippet}
-
 
 
 

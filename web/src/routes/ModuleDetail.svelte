@@ -122,6 +122,9 @@
         descriptionMode === "edit" ||
         statusOpen,
       intervalMs: 0,
+      shouldRefresh: (event) =>
+        event.type === "resync.required" ||
+        (typeof event.project_id === "number" && event.project_id === mod?.project_id),
     }),
   );
 
@@ -671,4 +674,3 @@
     <Circle {size} class="text-[var(--text-faint)]" />
   {/if}
 {/snippet}
-

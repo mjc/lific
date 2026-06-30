@@ -106,6 +106,9 @@
         savedAt !== 0 ||
         formBusy(),
       intervalMs: 0,
+      shouldRefresh: (event) =>
+        event.type === "resync.required" ||
+        (typeof event.project_id === "number" && event.project_id === project?.id),
     }),
   );
 

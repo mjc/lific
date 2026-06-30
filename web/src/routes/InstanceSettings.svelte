@@ -14,7 +14,6 @@
   } from "../lib/api";
   import SettingsTabs from "../lib/SettingsTabs.svelte";
   import { formatRelative } from "../lib/format";
-  import { startAutoRefresh } from "../lib/autoRefresh.svelte";
   import { ShieldCheck, Lock, SlidersHorizontal, Check, AlertTriangle, DoorOpen, DoorClosed } from "lucide-svelte";
   import { getContext, onMount } from "svelte";
 
@@ -66,23 +65,6 @@
     }
     loading = false;
   });
-
-  function formBusy(): boolean {
-    const el = document.activeElement;
-    return !!el &&
-      (el.tagName === "INPUT" ||
-        el.tagName === "TEXTAREA" ||
-        el.tagName === "SELECT" ||
-        (el as HTMLElement).isContentEditable);
-  }
-
-  $effect(() =>
-    startAutoRefresh({
-      refresh: refreshSettings,
-      isBusy: () => loading || saving || formBusy(),
-      intervalMs: 0,
-    }),
-  );
 
   function parseDomains(csv: string): string[] {
     return csv.split(/[,\s]+/).map((d) => d.trim()).filter(Boolean);
@@ -145,16 +127,6 @@
     if (settings && v !== fAutoLogin) {
       fAutoLogin = v;
       commit({ web_auto_login: v });
-    }
-  }
-
-  async function refreshSettings() {
-    const meRes = await me();
-    if (meRes.ok) user = meRes.data;
-    if (meRes.ok && meRes.data.is_admin) {
-      const [u, s] = await Promise.all([listUsers(), getInstanceSettings()]);
-      if (u.ok) users = u.data;
-      if (s.ok) hydrate(s.data);
     }
   }
 

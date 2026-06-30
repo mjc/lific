@@ -38,9 +38,8 @@ export interface AutoRefreshOptions {
    *  timer) — used by the page detail view, where the body editor makes
    *  a periodic poll more disruptive than it's worth. */
   intervalMs?: number;
-  /** Listen for the app-level realtime invalidation event. Enabled by
-   *  default so websocket writes can converge every mounted surface. */
-  listenRealtime?: boolean;
+  /** Return true when a realtime event is relevant to this mounted view. */
+  shouldRefresh?: (event: RealtimeEvent) => boolean;
 }
 
 export const REALTIME_INVALIDATE_EVENT = "lific:realtime";
@@ -49,8 +48,6 @@ export type RealtimeEvent = {
   type: string;
   [key: string]: unknown;
 };
-
-export type RealtimeInvalidationEvent = CustomEvent<RealtimeEvent>;
 
 /**
  * Start an auto-refresh loop. Returns a cleanup function that clears the
@@ -67,18 +64,37 @@ export function startAutoRefresh(opts: AutoRefreshOptions): () => void {
     return () => {};
   }
 
-  const { refresh, isBusy, intervalMs, listenRealtime = true } = opts;
+  const { refresh, isBusy, intervalMs, shouldRefresh } = opts;
 
   let timer: ReturnType<typeof setInterval> | null = null;
   let eagerDebounce: ReturnType<typeof setTimeout> | null = null;
   let disposed = false;
+  let refreshing = false;
+  let pending = false;
 
   const hidden = () => document.hidden;
   const busy = () => (isBusy ? isBusy() : false);
 
-  function tick() {
+  async function runRefresh() {
     if (disposed || hidden() || busy()) return;
-    void refresh();
+    if (refreshing) {
+      pending = true;
+      return;
+    }
+    refreshing = true;
+    try {
+      await refresh();
+    } finally {
+      refreshing = false;
+    }
+    if (pending) {
+      pending = false;
+      void runRefresh();
+    }
+  }
+
+  function tick() {
+    void runRefresh();
   }
 
   // Visibility/focus revalidate, debounced so the visibilitychange +
@@ -88,8 +104,7 @@ export function startAutoRefresh(opts: AutoRefreshOptions): () => void {
     if (eagerDebounce) clearTimeout(eagerDebounce);
     eagerDebounce = setTimeout(() => {
       eagerDebounce = null;
-      if (disposed || hidden() || busy()) return;
-      void refresh();
+      void runRefresh();
     }, 50);
   }
 
@@ -98,15 +113,17 @@ export function startAutoRefresh(opts: AutoRefreshOptions): () => void {
     scheduleEager();
   }
 
-  function onRealtime(_event: Event) {
+  function onRealtime(event: Event) {
+    if (shouldRefresh) {
+      const detail = (event as CustomEvent<RealtimeEvent>).detail;
+      if (!detail || !shouldRefresh(detail)) return;
+    }
     scheduleEager();
   }
 
   document.addEventListener("visibilitychange", onVisibility);
   window.addEventListener("focus", scheduleEager);
-  if (listenRealtime) {
-    window.addEventListener(REALTIME_INVALIDATE_EVENT, onRealtime);
-  }
+  window.addEventListener(REALTIME_INVALIDATE_EVENT, onRealtime);
 
   if (intervalMs && intervalMs > 0) {
     timer = setInterval(tick, intervalMs);
@@ -118,8 +135,6 @@ export function startAutoRefresh(opts: AutoRefreshOptions): () => void {
     if (eagerDebounce) clearTimeout(eagerDebounce);
     document.removeEventListener("visibilitychange", onVisibility);
     window.removeEventListener("focus", scheduleEager);
-    if (listenRealtime) {
-      window.removeEventListener(REALTIME_INVALIDATE_EVENT, onRealtime);
-    }
+    window.removeEventListener(REALTIME_INVALIDATE_EVENT, onRealtime);
   };
 }

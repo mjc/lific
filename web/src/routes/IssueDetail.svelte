@@ -119,6 +119,12 @@
         moduleOpen ||
         labelsOpen,
       intervalMs: 0,
+      shouldRefresh: (event) =>
+        event.type === "resync.required" ||
+        (typeof event.issue_id === "number" && event.issue_id === issue?.id) ||
+        (event.type.startsWith("project.") &&
+          typeof event.project_id === "number" &&
+          event.project_id === issue?.project_id),
     }),
   );
 
