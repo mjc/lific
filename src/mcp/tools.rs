@@ -690,9 +690,25 @@ impl LificMcp {
         match self.write(|conn| {
             let source_id = queries::resolve_identifier(conn, &input.source)?;
             let target_id = queries::resolve_identifier(conn, &input.target)?;
-            queries::link_issues(conn, source_id, target_id, &input.relation_type)
+            let source = queries::get_issue(conn, source_id)?;
+            let target = queries::get_issue(conn, target_id)?;
+            queries::link_issues(conn, source_id, target_id, &input.relation_type)?;
+            Ok((
+                crate::realtime::RealtimeEvent::IssueLinked {
+                    project_id: source.project_id,
+                    issue_id: source.id,
+                },
+                crate::realtime::RealtimeEvent::IssueLinked {
+                    project_id: target.project_id,
+                    issue_id: target.id,
+                },
+            ))
         }) {
-            Ok(()) => format!("{} {} {}", input.source, input.relation_type, input.target),
+            Ok((source_event, target_event)) => {
+                self.emit(source_event);
+                self.emit(target_event);
+                format!("{} {} {}", input.source, input.relation_type, input.target)
+            }
             Err(e) => format!("Error: {e}"),
         }
     }
@@ -702,9 +718,25 @@ impl LificMcp {
         match self.write(|conn| {
             let source_id = queries::resolve_identifier(conn, &input.source)?;
             let target_id = queries::resolve_identifier(conn, &input.target)?;
-            queries::unlink_issues(conn, source_id, target_id)
+            let source = queries::get_issue(conn, source_id)?;
+            let target = queries::get_issue(conn, target_id)?;
+            queries::unlink_issues(conn, source_id, target_id)?;
+            Ok((
+                crate::realtime::RealtimeEvent::IssueUnlinked {
+                    project_id: source.project_id,
+                    issue_id: source.id,
+                },
+                crate::realtime::RealtimeEvent::IssueUnlinked {
+                    project_id: target.project_id,
+                    issue_id: target.id,
+                },
+            ))
         }) {
-            Ok(()) => format!("Unlinked {} and {}", input.source, input.target),
+            Ok((source_event, target_event)) => {
+                self.emit(source_event);
+                self.emit(target_event);
+                format!("Unlinked {} and {}", input.source, input.target)
+            }
             Err(e) => format!("Error: {e}"),
         }
     }

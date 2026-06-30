@@ -98,25 +98,25 @@ pub(super) async fn link_issues(
     Extension(realtime): Extension<RealtimeHub>,
     Json(input): Json<LinkRequest>,
 ) -> Result<Json<serde_json::Value>, LificError> {
-    let (source_id, target_id, source_issue) = with_read(&db, |conn| {
+    let (source_event, target_event) = with_write(&db, |conn| {
         let source_id = crate::db::queries::resolve_identifier(conn, &input.source)?;
         let target_id = crate::db::queries::resolve_identifier(conn, &input.target)?;
-        let source_issue = crate::db::queries::get_issue(conn, source_id)?;
-        Ok((source_id, target_id, source_issue))
+        let source = crate::db::queries::get_issue(conn, source_id)?;
+        let target = crate::db::queries::get_issue(conn, target_id)?;
+        crate::db::queries::link_issues(conn, source_id, target_id, &input.relation_type)?;
+        Ok((
+            RealtimeEvent::IssueLinked {
+                project_id: source.project_id,
+                issue_id: source.id,
+            },
+            RealtimeEvent::IssueLinked {
+                project_id: target.project_id,
+                issue_id: target.id,
+            },
+        ))
     })?;
-    with_write(&db, |conn| {
-        let source_id = crate::db::queries::resolve_identifier(conn, &input.source)?;
-        let target_id = crate::db::queries::resolve_identifier(conn, &input.target)?;
-        crate::db::queries::link_issues(conn, source_id, target_id, &input.relation_type)
-    })?;
-    realtime.send(RealtimeEvent::IssueLinked {
-        project_id: source_issue.project_id,
-        issue_id: source_id,
-    });
-    realtime.send(RealtimeEvent::IssueLinked {
-        project_id: source_issue.project_id,
-        issue_id: target_id,
-    });
+    realtime.send(source_event);
+    realtime.send(target_event);
     Ok(Json(serde_json::json!({"linked": true})))
 }
 
@@ -125,25 +125,25 @@ pub(super) async fn unlink_issues(
     Extension(realtime): Extension<RealtimeHub>,
     Json(input): Json<UnlinkRequest>,
 ) -> Result<Json<serde_json::Value>, LificError> {
-    let (source_id, target_id, source_issue) = with_read(&db, |conn| {
+    let (source_event, target_event) = with_write(&db, |conn| {
         let source_id = crate::db::queries::resolve_identifier(conn, &input.source)?;
         let target_id = crate::db::queries::resolve_identifier(conn, &input.target)?;
-        let source_issue = crate::db::queries::get_issue(conn, source_id)?;
-        Ok((source_id, target_id, source_issue))
+        let source = crate::db::queries::get_issue(conn, source_id)?;
+        let target = crate::db::queries::get_issue(conn, target_id)?;
+        crate::db::queries::unlink_issues(conn, source_id, target_id)?;
+        Ok((
+            RealtimeEvent::IssueUnlinked {
+                project_id: source.project_id,
+                issue_id: source.id,
+            },
+            RealtimeEvent::IssueUnlinked {
+                project_id: target.project_id,
+                issue_id: target.id,
+            },
+        ))
     })?;
-    with_write(&db, |conn| {
-        let source_id = crate::db::queries::resolve_identifier(conn, &input.source)?;
-        let target_id = crate::db::queries::resolve_identifier(conn, &input.target)?;
-        crate::db::queries::unlink_issues(conn, source_id, target_id)
-    })?;
-    realtime.send(RealtimeEvent::IssueUnlinked {
-        project_id: source_issue.project_id,
-        issue_id: source_id,
-    });
-    realtime.send(RealtimeEvent::IssueUnlinked {
-        project_id: source_issue.project_id,
-        issue_id: target_id,
-    });
+    realtime.send(source_event);
+    realtime.send(target_event);
     Ok(Json(serde_json::json!({"unlinked": true})))
 }
 
