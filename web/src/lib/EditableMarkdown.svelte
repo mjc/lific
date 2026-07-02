@@ -31,6 +31,15 @@
 
   import Markdown from "./Markdown.svelte";
   import ModeToggle from "./ModeToggle.svelte";
+  import StatusIcon from "./StatusIcon.svelte";
+  import { Search, CornerDownLeft } from "lucide-svelte";
+  import {
+    findTrigger,
+    searchSuggestions,
+    getCaretCoordinates,
+    type TriggerMatch,
+    type SuggestionHit,
+  } from "./references";
 
   let {
     value,
@@ -299,7 +308,143 @@
     }
   }
 
+  // ── Reference autocomplete (LIF-239) ─────────────────
+  //
+  // Typing "#foo" or "LIF-"/"lif-4" right before the caret opens an
+  // inline suggestion popover, caret-anchored via references.ts's
+  // mirror-div technique. Arrow keys + Enter/Tab accept (inserting the
+  // canonical identifier), Esc dismisses. Row styling mirrors
+  // CommandPalette's result rows so the two feel like one family.
+
+  const AC_WIDTH = 300;
+
+  let acOpen = $state(false);
+  let acTrigger: TriggerMatch | null = $state(null);
+  let acHits = $state<SuggestionHit[]>([]);
+  let acSelectedIdx = $state(0);
+  let acSearching = $state(false);
+  let acCoords = $state({ x: 0, y: 0 });
+  let acListEl = $state<HTMLDivElement | null>(null);
+  let acGen = 0;
+  let acDebounce: ReturnType<typeof setTimeout> | null = null;
+
+  function closeAutocomplete() {
+    acOpen = false;
+    acTrigger = null;
+    acHits = [];
+    acSelectedIdx = 0;
+    acSearching = false;
+    if (acDebounce) {
+      clearTimeout(acDebounce);
+      acDebounce = null;
+    }
+    acGen += 1; // invalidate any in-flight search
+  }
+
+  function positionAutocomplete(el: HTMLTextAreaElement, caret: number) {
+    const rel = getCaretCoordinates(el, caret);
+    const taRect = el.getBoundingClientRect();
+    const margin = 8;
+    let x = taRect.left + rel.left - el.scrollLeft;
+    let y = taRect.top + rel.top - el.scrollTop + rel.height + 4;
+    x = Math.max(margin, Math.min(x, window.innerWidth - AC_WIDTH - margin));
+    y = Math.min(y, window.innerHeight - 220 - margin);
+    y = Math.max(margin, y);
+    acCoords = { x, y };
+  }
+
+  function updateAutocomplete() {
+    const el = textareaEl;
+    if (!el) {
+      closeAutocomplete();
+      return;
+    }
+    const caret = el.selectionStart ?? 0;
+    const trig = findTrigger(draft, caret);
+    if (!trig) {
+      if (acOpen) closeAutocomplete();
+      return;
+    }
+    acTrigger = trig;
+    acOpen = true;
+    acSelectedIdx = 0;
+    positionAutocomplete(el, caret);
+
+    const gen = ++acGen;
+    acSearching = true;
+    if (acDebounce) clearTimeout(acDebounce);
+    acDebounce = setTimeout(() => {
+      void searchSuggestions(trig).then((hits) => {
+        if (gen !== acGen) return; // superseded by a newer keystroke
+        acHits = hits;
+        acSearching = false;
+      });
+    }, 120);
+  }
+
+  function acceptSuggestion(hit: SuggestionHit) {
+    const el = textareaEl;
+    const trig = acTrigger;
+    if (!el || !trig) return;
+    const caret = el.selectionStart ?? trig.start + trig.token.length;
+    const insertion = `${hit.identifier} `;
+    const before = draft.slice(0, trig.start);
+    const after = draft.slice(caret);
+    draft = before + insertion + after;
+    const newCaret = before.length + insertion.length;
+    closeAutocomplete();
+    requestAnimationFrame(() => {
+      el.focus();
+      el.setSelectionRange(newCaret, newCaret);
+      autoResize();
+    });
+  }
+
+  function scrollAcSelectedIntoView() {
+    requestAnimationFrame(() => {
+      acListEl
+        ?.querySelector(`[data-ac-idx="${acSelectedIdx}"]`)
+        ?.scrollIntoView({ block: "nearest" });
+    });
+  }
+
+  function handleTextareaInput() {
+    autoResize();
+    updateAutocomplete();
+  }
+
   function handleTextareaKey(e: KeyboardEvent) {
+    if (acOpen) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        acSelectedIdx = Math.min(acSelectedIdx + 1, Math.max(0, acHits.length - 1));
+        scrollAcSelectedIntoView();
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        acSelectedIdx = Math.max(acSelectedIdx - 1, 0);
+        scrollAcSelectedIntoView();
+        return;
+      }
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault();
+        const hit = acHits[acSelectedIdx];
+        if (hit) acceptSuggestion(hit);
+        else closeAutocomplete();
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        closeAutocomplete();
+        return;
+      }
+      // Any other caret-moving key invalidates the token position —
+      // close rather than risk inserting at the wrong spot.
+      if (["ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown"].includes(e.key)) {
+        closeAutocomplete();
+      }
+    }
     if (e.key === "Escape") {
       e.preventDefault();
       cancelEdit();
@@ -381,7 +526,8 @@
       class="em-textarea"
       {placeholder}
       onkeydown={handleTextareaKey}
-      oninput={autoResize}
+      oninput={handleTextareaInput}
+      onblur={closeAutocomplete}
       autofocus
     ></textarea>
     <div class="em-footer">
@@ -411,6 +557,65 @@
     disabled={saving}
     onSelect={setMode}
   />
+{/if}
+
+{#if acOpen}
+  <!-- LIF-239: reference autocomplete popover, caret-anchored via
+       references.ts's mirror-div measurement. Row styling mirrors
+       CommandPalette's result rows (icon + title + trailing identifier
+       badge, accent-subtle highlight on the selected row). -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    bind:this={acListEl}
+    class="fixed z-[1000] rounded-lg border border-[var(--border)]
+           bg-[var(--surface)] shadow-[0_12px_32px_rgba(0,0,0,0.24)]
+           py-1.5 max-h-[220px] overflow-y-auto"
+    style="left: {acCoords.x}px; top: {acCoords.y}px; width: {AC_WIDTH}px;"
+  >
+    {#if acHits.length === 0}
+      <p class="px-3 py-3 text-center text-caption text-[var(--text-faint)]">
+        {acSearching
+          ? "Searching…"
+          : acTrigger?.mode === "hash" && !acTrigger.query
+            ? "Type to search issues…"
+            : `No issues match “${acTrigger?.query ?? ""}”`}
+      </p>
+    {:else}
+      {#each acHits as hit, i (hit.identifier)}
+        <button
+          type="button"
+          class="w-full flex items-center gap-2 px-3 py-1.5 text-left
+                 transition-colors
+                 {i === acSelectedIdx
+            ? 'bg-[var(--accent-subtle)]'
+            : 'hover:bg-[var(--bg-subtle)]'}"
+          data-ac-idx={i}
+          onmousedown={(e) => e.preventDefault()}
+          onclick={() => acceptSuggestion(hit)}
+          onmouseenter={() => {
+            acSelectedIdx = i;
+          }}
+        >
+          <span class="size-4 flex items-center justify-center shrink-0">
+            {#if hit.status}
+              <StatusIcon status={hit.status} size={13} />
+            {:else}
+              <Search size={12} class="text-[var(--text-faint)]" />
+            {/if}
+          </span>
+          <span class="flex-1 min-w-0 text-body-sm text-[var(--text)] truncate">
+            {hit.title}
+          </span>
+          <span class="font-mono text-micro text-[var(--text-faint)] shrink-0">
+            {hit.identifier}
+          </span>
+          {#if i === acSelectedIdx}
+            <CornerDownLeft size={11} class="shrink-0 text-[var(--text-faint)]" />
+          {/if}
+        </button>
+      {/each}
+    {/if}
+  </div>
 {/if}
 
 <style>

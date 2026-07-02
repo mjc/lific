@@ -1,30 +1,48 @@
 <script lang="ts">
   import { marked } from "marked";
   import DOMPurify from "dompurify";
+  import IssueHoverCard from "./IssueHoverCard.svelte";
+  import { IDENTIFIER_RE, refKind, routeFor } from "./references";
 
   let { content, class: className = "" }: { content: string; class?: string } =
     $props();
 
-  // Matches issue identifiers (LIF-42) and page identifiers (LIF-DOC-3).
-  // Only matches uppercase project codes 1-5 chars followed by -NUMBER or -DOC-NUMBER.
-  const IDENT_RE = /\b([A-Z][A-Z0-9]{0,4})-(DOC-)?(\d+)\b/g;
+  // LIF-239: identifiers must never be re-linked (or double-linked)
+  // inside an existing <a> (would nest anchors — invalid HTML and
+  // double-navigation), inside a fenced code block (<pre><code>...),
+  // or inside inline code (<code>...). We walk the rendered HTML as a
+  // sequence of tags vs. text runs (same split marked's own output
+  // naturally falls into) and track a depth counter for those three
+  // tag names; identifier matching only runs on text while that
+  // counter is zero.
+  const SKIP_LINKING_TAGS = new Set(["a", "code", "pre"]);
+  const TAG_NAME_RE = /^<\/?([a-zA-Z][a-zA-Z0-9-]*)\b/;
 
   function linkIdentifiers(html: string): string {
-    // Don't replace inside HTML tags, href attributes, or <code> blocks.
-    // Split on tags, only process text nodes.
-    return html.replace(
-      /(<[^>]*>)|(\b[A-Z][A-Z0-9]{0,4}-(?:DOC-)?\d+\b)/g,
-      (match, tag, ident) => {
-        if (tag) return tag; // HTML tag, leave alone
-        if (!ident) return match;
-        const isDoc = ident.includes("-DOC-");
-        const project = ident.split("-")[0];
-        if (isDoc) {
-          return `<a href="#/${project}/pages" class="identifier-link">${ident}</a>`;
+    let skipDepth = 0;
+    return html.replace(/<[^>]+>|[^<]+/g, (token) => {
+      if (token[0] === "<") {
+        const m = token.match(TAG_NAME_RE);
+        if (m && SKIP_LINKING_TAGS.has(m[1].toLowerCase())) {
+          const isClosing = token[1] === "/";
+          const isSelfClosing = token.endsWith("/>");
+          if (isClosing) skipDepth = Math.max(0, skipDepth - 1);
+          else if (!isSelfClosing) skipDepth += 1;
         }
-        return `<a href="#/${project}/issues/${ident}" class="identifier-link">${ident}</a>`;
+        return token; // tags themselves are never rewritten
       }
-    );
+      if (skipDepth > 0) return token; // inside <a>/<code>/<pre> — leave prose alone
+      return token.replace(IDENTIFIER_RE, (full, code, kindMarker, num) => {
+        const kind = refKind(kindMarker);
+        const identifier = kindMarker ? `${code}-${kindMarker}${num}` : `${code}-${num}`;
+        const href = routeFor(code, kind, identifier);
+        // data-issue-ident is how the hover-card effect below finds
+        // issue (not page/plan) links to decorate; DOMPurify's ADD_ATTR
+        // list further down must keep allowing it through.
+        const dataAttr = kind === "issue" ? ` data-issue-ident="${identifier}"` : "";
+        return `<a href="${href}" class="identifier-link"${dataAttr}>${identifier}</a>`;
+      });
+    });
   }
 
   // LIF-107: intercept fenced code. ```mermaid blocks become a placeholder
@@ -69,12 +87,93 @@
   // their class + data-* attributes, GFM tables, task-list checkboxes).
   let html = $derived(
     DOMPurify.sanitize(linkIdentifiers(rendered), {
-      // Keep the data-mermaid / data-lang hooks the post-render effects read.
-      ADD_ATTR: ["data-mermaid", "data-lang"],
+      // Keep the data-mermaid / data-lang / data-issue-ident hooks the
+      // post-render effects read.
+      ADD_ATTR: ["data-mermaid", "data-lang", "data-issue-ident"],
     })
   );
 
   let containerEl = $state<HTMLDivElement | null>(null);
+
+  // LIF-239: hover card for auto-linked issue identifiers. Timing is
+  // owned here (not by IssueHoverCard) because a single container can
+  // hold many identifier links and the show/hide state machine needs to
+  // be shared across all of them — e.g. gliding the mouse from one
+  // identifier straight to another shouldn't flicker the card closed
+  // and reopened.
+  let hoverIdent = $state<string | null>(null);
+  let hoverAnchor = $state<HTMLElement | null>(null);
+  let hoverShowTimer: ReturnType<typeof setTimeout> | null = null;
+  let hoverHideTimer: ReturnType<typeof setTimeout> | null = null;
+  const HOVER_SHOW_DELAY = 350;
+  const HOVER_HIDE_GRACE = 200;
+
+  function scheduleHoverShow(el: HTMLElement, ident: string) {
+    if (hoverHideTimer) {
+      clearTimeout(hoverHideTimer);
+      hoverHideTimer = null;
+    }
+    if (hoverShowTimer) clearTimeout(hoverShowTimer);
+    hoverShowTimer = setTimeout(() => {
+      hoverAnchor = el;
+      hoverIdent = ident;
+    }, HOVER_SHOW_DELAY);
+  }
+
+  function scheduleHoverHide() {
+    if (hoverShowTimer) {
+      clearTimeout(hoverShowTimer);
+      hoverShowTimer = null;
+    }
+    if (hoverHideTimer) clearTimeout(hoverHideTimer);
+    hoverHideTimer = setTimeout(() => {
+      hoverAnchor = null;
+      hoverIdent = null;
+    }, HOVER_HIDE_GRACE);
+  }
+
+  function cancelHoverHide() {
+    if (hoverHideTimer) {
+      clearTimeout(hoverHideTimer);
+      hoverHideTimer = null;
+    }
+  }
+
+  // Content changed out from under any open card (e.g. a live edit) —
+  // drop it rather than let it point at a detached element.
+  $effect(() => {
+    html;
+    hoverIdent = null;
+    hoverAnchor = null;
+  });
+
+  $effect(() => {
+    return () => {
+      if (hoverShowTimer) clearTimeout(hoverShowTimer);
+      if (hoverHideTimer) clearTimeout(hoverHideTimer);
+    };
+  });
+
+  // Wire hover/focus listeners onto every not-yet-decorated issue link.
+  // Mirrors the code-copy-button effect below: direct DOM listeners
+  // (not Svelte event bindings) because the anchors come from raw
+  // `{@html}` markup, not the component's own template.
+  $effect(() => {
+    html; // re-run when the rendered markdown changes
+    const root = containerEl;
+    if (!root) return;
+    const links = root.querySelectorAll<HTMLAnchorElement>(
+      "a.identifier-link[data-issue-ident]:not([data-hover-decorated])"
+    );
+    for (const link of Array.from(links)) {
+      link.dataset.hoverDecorated = "true";
+      const ident = link.dataset.issueIdent as string;
+      link.addEventListener("mouseenter", () => scheduleHoverShow(link, ident));
+      link.addEventListener("mouseleave", scheduleHoverHide);
+      link.addEventListener("focus", () => scheduleHoverShow(link, ident));
+      link.addEventListener("blur", scheduleHoverHide);
+    }
+  });
 
   // LIF-107: render mermaid blocks after the HTML lands. Mermaid (~600KB)
   // is dynamically imported so pages without a diagram never pay for it.
@@ -153,3 +252,12 @@
 <div class="prose {className}" bind:this={containerEl}>
   {@html html}
 </div>
+
+{#if hoverIdent && hoverAnchor}
+  <IssueHoverCard
+    identifier={hoverIdent}
+    anchorEl={hoverAnchor}
+    onEnter={cancelHoverHide}
+    onLeave={scheduleHoverHide}
+  />
+{/if}
