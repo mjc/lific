@@ -59,6 +59,20 @@ pub(crate) fn current_auth_user() -> Option<AuthUser> {
         .clone()
 }
 
+/// Per-session instructions handed to every connected MCP agent via
+/// `get_info`. This is unconditional context cost on every session, so the
+/// convention guidance appended after the discovery guidance is kept tight
+/// (imperative, no filler). Extracted as a const so it stays testable.
+const SERVER_INSTRUCTIONS: &str = "Lific is a local-first issue tracker. Use list_resources(type='project') to discover projects. \
+     Use list_issues to browse issues with filters. Use get_issue with an identifier like 'PRO-42' \
+     for details. Use workable=true to find issues ready to work on (no unresolved blockers). \
+     Use search to find anything by text across issues and pages. \
+     Conventions: when you finish work on an issue, mark it done (status='done'). \
+     Organize issues into modules; keep each issue a self-contained work item. \
+     Prefer edit_issue/edit_page (exact string replacement) over update_issue/update_page for small changes. \
+     Use plans (create_plan/get_plan) for multi-step or multi-session work; steps can mirror issues and stay in sync. \
+     Use pages for documentation and design notes.";
+
 #[derive(Clone)]
 pub struct LificMcp {
     db: Arc<DbPool>,
@@ -126,12 +140,7 @@ impl ServerHandler for LificMcp {
         // (including Zed) skipped, going straight from 2025-03-26 to 2025-11-25.
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_protocol_version(ProtocolVersion::V_2025_03_26)
-            .with_instructions(
-                "Lific is a local-first issue tracker. Use list_resources(type='project') to discover projects. \
-                 Use list_issues to browse issues with filters. Use get_issue with an identifier like 'PRO-42' \
-                 for details. Use workable=true to find issues ready to work on (no unresolved blockers). \
-                 Use search to find anything by text across issues and pages.",
-            )
+            .with_instructions(SERVER_INSTRUCTIONS)
     }
 
     fn list_tools(
@@ -279,5 +288,53 @@ mod tests {
         // The global must be cleared after the request completes so it
         // never leaks into an unrelated subsequent request.
         assert!(current_auth_user().is_none());
+    }
+
+    // ── LIF-256: session instructions carry Lific's workflow conventions ──
+    //
+    // Every connected agent receives these at session start, so the string
+    // must keep the discovery guidance AND surface the key conventions
+    // (mark done, prefer edit_* for small changes, use plans/pages/modules).
+    #[test]
+    fn get_info_instructions_include_conventions() {
+        let pool = crate::db::open_memory().expect("test db");
+        let mcp = LificMcp::new(pool);
+        let info = mcp.get_info();
+        let instructions = info
+            .instructions
+            .expect("server info must carry instructions");
+
+        // Discovery guidance is preserved.
+        assert!(instructions.contains("list_resources(type='project')"));
+        assert!(instructions.contains("workable=true"));
+
+        // Convention guidance is present.
+        assert!(
+            instructions.contains("done"),
+            "instructions must tell agents to mark finished issues done"
+        );
+        assert!(
+            instructions.contains("edit_issue"),
+            "instructions must steer agents to edit_issue for small changes"
+        );
+        assert!(instructions.contains("edit_page"));
+        assert!(instructions.contains("modules"));
+        assert!(instructions.contains("create_plan"));
+        assert!(instructions.contains("pages for documentation"));
+    }
+
+    // The appended convention guidance is unconditional per-session context
+    // cost; keep the whole addition tight (~150 tokens / ~600 chars).
+    #[test]
+    fn server_instructions_stay_compact() {
+        let base = "Lific is a local-first issue tracker. Use list_resources(type='project') to discover projects. \
+     Use list_issues to browse issues with filters. Use get_issue with an identifier like 'PRO-42' \
+     for details. Use workable=true to find issues ready to work on (no unresolved blockers). \
+     Use search to find anything by text across issues and pages. ";
+        let addition = SERVER_INSTRUCTIONS.len() - base.len();
+        assert!(
+            addition <= 700,
+            "convention addition grew to {addition} chars; keep it tight"
+        );
     }
 }
