@@ -289,8 +289,6 @@ The frontend is a Svelte 5 SPA built with Vite. `bun run build` outputs static f
 
 Issues and PRs welcome. If you're planning something big, open an issue first so we can talk about it before you put in the work.
 
-Lific's own development is tracked in Lific. Every feature in this README started life as a `LIF-` issue, filed and closed mostly by agents. The dogfood is the roadmap.
-
 ## MCP Registry
 
 Lific is published to the official [MCP Registry](https://registry.modelcontextprotocol.io).
