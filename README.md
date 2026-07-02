@@ -207,3 +207,9 @@ Issues and PRs welcome. If you're planning something big, open an issue first so
 ## License
 
 [Apache-2.0](LICENSE)
+
+## MCP Registry
+
+Lific is published to the official [MCP Registry](https://registry.modelcontextprotocol.io).
+
+- MCP Registry name: `mcp-name: io.github.VoidNullable/lific`
