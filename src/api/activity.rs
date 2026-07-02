@@ -212,8 +212,10 @@ mod tests {
             &format!("/api/projects/{project_id}/activity?limit=50&offset=3"),
         )
         .await;
-        // 6 total (project create + 5 issues) minus the 3 already seen.
-        assert_eq!(rest["items"].as_array().unwrap().len(), 3);
+        // 7 total (project create + its auto-seeded lead membership row
+        // (LIF-199 audits `project_members`, LIF-102 defaults the creator
+        // as lead) + 5 issues) minus the 3 already seen.
+        assert_eq!(rest["items"].as_array().unwrap().len(), 4);
         assert_eq!(rest["has_more"], false);
     }
 

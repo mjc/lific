@@ -17,6 +17,9 @@ pub enum LificError {
     #[error("Forbidden: {0}")]
     Forbidden(String),
 
+    #[error("Conflict: {0}")]
+    Conflict(String),
+
     #[error("Internal error: {0}")]
     Internal(String),
 }
@@ -35,6 +38,7 @@ impl IntoResponse for LificError {
             LificError::NotFound(msg) => (StatusCode::NOT_FOUND, msg.clone()),
             LificError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
             LificError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg.clone()),
+            LificError::Conflict(msg) => (StatusCode::CONFLICT, msg.clone()),
             LificError::Internal(msg) => {
                 error!(error = %msg, "internal error");
                 (

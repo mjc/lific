@@ -3,6 +3,7 @@ mod auth;
 mod comments;
 mod export;
 mod issues;
+mod members;
 mod pages;
 mod plans;
 mod projects;
@@ -11,7 +12,7 @@ mod resources;
 use axum::{
     Router,
     extract::{Json, Query, State},
-    routing::{delete, get, post, put},
+    routing::{delete, get, patch, post, put},
 };
 use tower_http::cors::{self, CorsLayer};
 
@@ -192,6 +193,16 @@ pub fn router(db: DbPool, cors_origins: &[String]) -> Router {
         .route("/api/search", get(search))
         // Board view
         .route("/api/projects/{id}/board", get(projects::get_board))
+        // Membership management (LIF-199) — lead-gated, web/REST only per
+        // design LIF-DOC-7 decision #14 (no MCP tools).
+        .route(
+            "/api/projects/{id}/members",
+            get(members::list_project_members).post(members::add_project_member),
+        )
+        .route(
+            "/api/projects/{id}/members/{user_id}",
+            patch(members::update_project_member).delete(members::remove_project_member),
+        )
         // Per-status issue counts (topbar tallies — LIF-161)
         .route(
             "/api/projects/{id}/issue-counts",

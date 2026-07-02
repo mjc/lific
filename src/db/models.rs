@@ -375,6 +375,40 @@ pub struct ProjectMember {
     pub created_at: String,
 }
 
+/// LIF-199: a membership row joined with the target user's display
+/// identity. Powers `GET /api/projects/{id}/members` — the web UI needs a
+/// name to render, not just a bare `user_id`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemberWithUser {
+    pub project_id: i64,
+    pub user_id: i64,
+    pub role: Role,
+    pub created_at: String,
+    pub username: String,
+    pub display_name: String,
+}
+
+/// `POST /api/projects/{id}/members` body. `role` defaults to `Viewer`
+/// (design LIF-DOC-7: "default grant = viewer") when omitted.
+///
+/// `role` is a raw `String`, not [`Role`]: deserializing straight into the
+/// enum would make axum's `Json<T>` extractor reject a bad value with 422
+/// before the handler ever runs, but this API contracts for 400 on an
+/// invalid role — so parsing (and the `BadRequest` it produces on failure)
+/// happens explicitly in `db::queries::members::add_member`.
+#[derive(Debug, Deserialize)]
+pub struct AddMember {
+    pub user_id: i64,
+    pub role: Option<String>,
+}
+
+/// `PATCH /api/projects/{id}/members/{user_id}` body. See [`AddMember`]'s
+/// doc comment for why `role` is a raw `String`.
+#[derive(Debug, Deserialize)]
+pub struct ChangeMemberRole {
+    pub role: String,
+}
+
 // ── Users & Sessions ─────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
