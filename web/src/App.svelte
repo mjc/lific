@@ -1,6 +1,7 @@
 <script lang="ts">
   import Login from "./routes/Login.svelte";
   import Signup from "./routes/Signup.svelte";
+  import Home from "./routes/Home.svelte";
   import Settings from "./routes/Settings.svelte";
   import InstanceSettings from "./routes/InstanceSettings.svelte";
   import IssueList from "./routes/IssueList.svelte";
@@ -59,7 +60,9 @@
     // flash /login and then bounce into the app once the session lands.
     if (bootstrapping) return;
     if (hasSession()) {
-      if (route === "/" || route === "/login" || route === "/signup") {
+      // LIF-237: "/" is now a real route (Home) rather than a redirect
+      // target — only /login and /signup bounce once a session exists.
+      if (route === "/login" || route === "/signup") {
         redirectToDefault();
       }
     } else {
@@ -69,14 +72,16 @@
     }
   });
 
-  // The bare root URL lands on Settings. (Issue lists are still reached
-  // by navigating into a project.)
+  // LIF-237: the bare root URL is Home, the "My Work" landing dashboard.
+  // (Project-scoped surfaces are still reached by navigating into a
+  // project.)
   function redirectToDefault() {
-    navigate("/settings");
+    navigate("/");
   }
 
   type ParsedRoute =
     | { type: "auth"; page: "login" | "signup" }
+    | { type: "app"; page: "home" }
     | { type: "app"; page: "settings" }
     | { type: "app"; page: "instance-settings" }
     | { type: "app"; page: "project-new" }
@@ -111,6 +116,10 @@
 
     if (r === "/login" || r === "/signup") {
       return { type: "auth", page: r.slice(1) as "login" | "signup" };
+    }
+    // LIF-237: bare root — the "My Work" home dashboard.
+    if (r === "/") {
+      return { type: "app", page: "home" };
     }
     if (r === "/settings") {
       return { type: "app", page: "settings" };
@@ -235,10 +244,6 @@
       };
     }
 
-    // "/" is the redirect-pending root (the effect below sends it to the
-    // default surface), so keep it on the spinner. Any OTHER unmatched path
-    // is a genuine 404 — don't spin forever.
-    if (r === "/") return { type: "loading" };
     return { type: "not-found" };
   }
 
@@ -275,7 +280,7 @@
       <button
         class="text-body-sm font-medium text-[var(--btn-success-text)] bg-[var(--btn-success)]
                px-3 py-1.5 rounded-md hover:bg-[var(--btn-success-hover)] transition-colors"
-        onclick={() => navigate("/settings")}
+        onclick={() => navigate("/")}
       >
         Back to home
       </button>
@@ -284,7 +289,9 @@
 {:else}
   <Layout {navigate} {route} bind:onProjectChange>
     <svelte:boundary>
-    {#if parsed.page === "settings"}
+    {#if parsed.page === "home"}
+      <Home {navigate} />
+    {:else if parsed.page === "settings"}
       <Settings {navigate} />
     {:else if parsed.page === "instance-settings"}
       <InstanceSettings {navigate} />

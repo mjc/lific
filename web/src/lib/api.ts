@@ -1254,3 +1254,21 @@ export async function updatePlanStep(
 export async function deletePlanStep(planId: number, stepId: number) {
   return request<Plan>(`/plans/${planId}/steps/${stepId}`, { method: "DELETE" });
 }
+
+// ── Home (LIF-237) ───────────────────────────────────────────
+//
+// The "My Work" landing dashboard reuses existing endpoints for almost
+// everything (cross-project `listIssues`/`listPages` already filter to
+// visible projects server-side when `project_id` is omitted — see
+// LIF-197). The one new call is a cross-project pages fetch: `listPages`
+// above always sends `project_id`, and there's no server-side `pinned`
+// filter to combine with a cross-project scope, so Home fetches every
+// visible page once and filters to `pinned` client-side. That's a single
+// round trip regardless of project count (cheaper than one listPages()
+// per project) and acceptable because `list_pages` has no row cap and
+// real instances run a modest page count; revisit with a dedicated
+// `?pinned=` filter if that stops holding.
+
+export async function listAllPages() {
+  return request<Page[]>("/pages");
+}

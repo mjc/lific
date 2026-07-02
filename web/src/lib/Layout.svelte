@@ -12,7 +12,7 @@
   import { dndzone, type DndEvent } from "svelte-dnd-action";
   import { flip } from "svelte/animate";
   import { getPreference, setPreference, resolveTheme, type ThemePreference } from "./theme";
-  import { Settings, List, LayoutGrid, FileText, Plus, Layers, History, ListChecks, LayoutDashboard, Search, ChevronRight, Sun, Moon, Monitor, Menu, X } from "lucide-svelte";
+  import { Settings, List, LayoutGrid, FileText, Plus, Layers, History, ListChecks, LayoutDashboard, Search, ChevronRight, Sun, Moon, Monitor, Menu, X, Home } from "lucide-svelte";
   import { setContext } from "svelte";
 
   // Ref to the command palette so the sidebar's "Jump to…" affordance can
@@ -292,6 +292,22 @@
 
       <!-- Navigation -->
       <nav class="flex-1 px-2 py-1 overflow-y-auto">
+        <!-- LIF-237: Home — "My Work" landing dashboard. Sits above the
+             project list as its own top-level entry, mirroring the sub-nav
+             pill's shape (icon + label) but unindented and un-chevroned
+             since it isn't a disclosure. -->
+        <button
+          class="w-full flex items-center gap-2 px-2.5 py-1.5 mb-1 rounded-md
+                 text-left text-body-sm transition-colors
+                 {isActive('/')
+            ? 'text-[var(--text)] bg-[var(--bg-subtle)] font-medium'
+            : 'text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--bg-subtle)]'}"
+          onclick={() => navigate("/")}
+        >
+          <Home size={14} class="shrink-0 {isActive('/') ? 'text-[var(--accent)]' : ''}" />
+          Home
+        </button>
+
         {#if projects.length > 0}
           <div class="flex items-center justify-between px-2 pt-1.5 pb-1">
             <span class="text-micro font-semibold uppercase tracking-widest text-[var(--text-faint)]">

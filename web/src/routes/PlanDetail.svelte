@@ -22,6 +22,7 @@
   import Markdown from "../lib/Markdown.svelte";
   import { startAutoRefresh } from "../lib/autoRefresh.svelte";
   import { formatDate } from "../lib/format";
+  import { recordRecent } from "../lib/home/recents"; // LIF-237
   import {
     Check,
     Plus,
@@ -98,6 +99,7 @@
     const res = await getPlan(id);
     if (!res.ok) { error = res.error; loading = false; return; }
     plan = res.data;
+    recordRecent({ type: "plan", routeId: String(plan.id), identifier: plan.identifier, title: plan.title, project: projectIdentifier }); // LIF-237
     const act = await listPlanActivity(id);
     if (act.ok) activity = act.data.items;
     loading = false;

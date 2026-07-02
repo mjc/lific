@@ -17,6 +17,7 @@
   import LabelEditor from "../lib/LabelEditor.svelte";
   import Select from "../lib/Select.svelte";
   import { formatDate } from "../lib/format";
+  import { recordRecent } from "../lib/home/recents"; // LIF-237
   import { startAutoRefresh } from "../lib/autoRefresh.svelte";
   import {
     PenLine,
@@ -129,6 +130,7 @@
     if (gen !== loadGen) return; // a newer navigation superseded this load
     if (!res.ok) { error = res.error; loading = false; return; }
     page = res.data;
+    recordRecent({ type: "page", routeId: String(page.id), identifier: page.identifier, title: page.title, project: projectIdentifier }); // LIF-237
 
     // Load page comments and (project) labels in parallel. Workspace
     // pages skip the labels fetch — they can't carry any (LIF-105).

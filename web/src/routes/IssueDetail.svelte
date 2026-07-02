@@ -22,6 +22,7 @@
   import PriorityIcon from "../lib/PriorityIcon.svelte";
   import StatusIcon, { statusCssColor } from "../lib/StatusIcon.svelte";
   import { formatDate } from "../lib/format";
+  import { recordRecent } from "../lib/home/recents"; // LIF-237
   import { ArrowUpRight } from "lucide-svelte";
 
   let {
@@ -116,6 +117,7 @@
       return;
     }
     issue = res.data;
+    recordRecent({ type: "issue", routeId: issue.identifier, identifier: issue.identifier, title: issue.title, project: projectIdentifier }); // LIF-237
 
     const [modRes, lblRes, cmtRes, actRes] = await Promise.all([
       listModules(issue.project_id),

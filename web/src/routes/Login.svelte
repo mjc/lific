@@ -65,7 +65,7 @@
 
     if (result.ok) {
       saveSession(result.data.token);
-      navigate("/settings");
+      navigate("/");
     } else {
       error = result.error;
       loading = false;

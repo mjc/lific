@@ -133,7 +133,7 @@
       saveSession(result.data.token);
       // Tick the first step done (the app's status-change), then enter.
       accountDone = true;
-      setTimeout(() => navigate("/settings"), 750);
+      setTimeout(() => navigate("/"), 750);
     } else {
       error = result.error;
       loading = false;
