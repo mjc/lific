@@ -107,6 +107,22 @@ async fn serve_frontend(uri: axum::http::Uri) -> impl IntoResponse {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
+    // Rust ignores SIGPIPE process-wide, which makes println!/stdout writes
+    // PANIC when piped into a closed reader (`lific completion fish | head`,
+    // `lific issue list --json | head -1`). For data commands, restore the
+    // default SIGPIPE disposition so the process exits quietly like every
+    // other Unix CLI. The long-running servers (Start, Mcp) keep SIGPIPE
+    // ignored — tokio socket writes rely on that to surface EPIPE as errors
+    // instead of killing the process.
+    #[cfg(unix)]
+    if !matches!(cli.command, Command::Start { .. } | Command::Mcp) {
+        // SAFETY: setting a signal disposition to SIG_DFL before any threads
+        // depend on the ignored state; standard practice for CLI tools.
+        unsafe {
+            libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+        }
+    }
+
     // Shell completions must work with no lific.toml present and touch no DB,
     // so handle them before loading config or opening the database.
     if let Command::Completion { shell } = cli.command {

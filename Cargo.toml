@@ -95,6 +95,10 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 hmac = { version = "0.12", features = ["std"] }
 
+# SIGPIPE handling for piped CLI output (see main.rs); unix only.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
