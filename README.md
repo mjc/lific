@@ -16,59 +16,80 @@
 
 ---
 
-Lific's full MCP schema fits in roughly 5,200 tokens. It uses human-readable identifiers (`APP-42`, not UUIDs), runs as a single binary with an embedded SQLite database, and includes a web UI for when you want to look at things yourself.
+Lific is an issue tracker whose primary user is often an agent. The full MCP schema fits in roughly 5,200 tokens, identifiers are human-readable (`APP-42`, not UUIDs), and everything lives in one ~16 MB binary with an embedded SQLite database — no Docker, no Postgres, no reverse proxy, nothing to babysit. There's a clean web UI for when you want to look at things yourself.
 
-## Install
-
-```bash
-cargo install lific
-```
-
-Or grab a binary from the [releases page](https://github.com/VoidNullable/lific/releases).
-
-## Quickstart
+## 60-second setup
 
 ```bash
-lific init     # creates lific.toml + lific.db
-lific start    # starts on port 3456
+cargo install lific     # or grab a binary from the releases page
+
+lific init              # writes lific.toml + creates the database
+lific start             # serves on :3456, prints your API key once
+lific connect           # writes MCP config into your AI clients
 ```
 
-On first run, Lific generates an API key and prints it to the console. It won't be shown again. This key is used for MCP and API access.
+That's the whole thing. `lific connect` detects the AI tools installed on your machine (OpenCode, Claude Code, Cursor, VS Code, Codex, and more), lets you pick, mints an API key, and writes correct MCP config into each one — merging into existing config files, never overwriting them. Restart your client and the Lific tools are there.
 
-Open `http://localhost:3456` to use the web UI. The first account you create is the admin.
+The web UI is at `http://localhost:3456` — the first account you create is the admin.
 
-The CLI also works directly against the database. No server or auth required:
+Verify any setup with:
 
 ```bash
-lific project list
-lific issue list --project APP
-lific issue create --project APP --title "Fix login bug" --priority high
-lific issue get APP-42
-lific issue update APP-42 --status done
-lific search "authentication" --project APP
+lific doctor            # green/yellow/red checks: config, database, server,
+                        # OAuth discovery, and a real MCP round-trip
 ```
 
-Add `--json` to any command for machine-readable output.
+`doctor` exits nonzero if anything is actually broken, so agents and CI can gate on it.
 
 ## Connecting AI tools
 
-Point your MCP client at the server. Replace `your-api-key` with the key from first run (or create one with `lific key create --name my-key`).
+**`lific connect`** is the front door. It supports eleven clients out of the box:
 
-**Remote (network):**
+`opencode` · `claude-code` · `claude-desktop` · `cursor` · `vscode` · `codex` · `zed` · `gemini` · `windsurf` · `goose` · `crush`
+
+```bash
+lific connect                                    # interactive picker
+lific connect --client opencode --client cursor --yes   # non-interactive
+lific connect --client claude-code --scope project      # repo-local .mcp.json
+lific connect --client zed --stdio               # no server: direct SQLite over stdio
+lific connect --dry-run --client vscode          # preview without writing
+```
+
+Each client gets its native schema (`mcpServers` vs `servers` vs `mcp`, Codex TOML with an env-var token, Goose YAML — the quirks are handled). JSON configs are merged non-destructively; a file `connect` can't parse safely is left untouched and you get the exact snippet to paste instead.
+
+**Zero-config OAuth.** Lific implements the full MCP authorization spec — RFC 9728 protected-resource metadata, dynamic client registration, PKCE. Clients that speak MCP OAuth (Claude Code, Cursor, VS Code, Codex, OpenCode, Zed, and others) can connect with **just the URL** and complete auth in the browser:
+
+```bash
+claude mcp add --transport http lific http://localhost:3456/mcp
+```
+
+**Headless / SSH / agents.** No browser on the box? The device flow has you covered:
+
+```bash
+lific login                     # prints a URL + short code; approve on any device
+lific login --non-interactive   # agent mode: prints JSON {verification_uri, user_code,
+                                #   device_code, next_step} and exits immediately
+lific login --complete <code>   # finish later, from a script or a second session
+```
+
+Tokens are stored in your OS keyring (Secret Service / Keychain / Credential Manager), falling back to a `0600` file with a loud warning when no keyring exists.
+
+<details>
+<summary>Manual configuration (any MCP client)</summary>
+
+**Remote (Streamable HTTP):**
 
 ```json
 {
   "lific": {
     "type": "remote",
     "url": "http://localhost:3456/mcp",
-    "headers": {
-      "Authorization": "Bearer your-api-key"
-    }
+    "headers": { "Authorization": "Bearer your-api-key" }
   }
 }
 ```
 
-**Local (stdio, no network):**
+**Local (stdio, no server):**
 
 ```json
 {
@@ -79,14 +100,36 @@ Point your MCP client at the server. Replace `your-api-key` with the key from fi
 }
 ```
 
+Create keys anytime with `lific key create --name my-key`.
+
+</details>
+
 <details>
 <summary>Web UI setup (if you prefer clicking)</summary>
 
-Go to **Settings > Connected Tools** in the web UI. Pick your tool, click Connect, and paste the generated config snippet. Supported tools: OpenCode, Cursor, Claude Code, Claude Desktop, Codex.
+Go to **Settings > Connected Tools** in the web UI. Pick your tool, click Connect, and paste the generated config snippet.
 
-Each connection creates a bot identity tied to your account. Changes show up attributed to you, tagged with which tool made them.
+Each connection creates a bot identity tied to your account (the CLI's `connect` does the same). Changes show up attributed to you, tagged with which tool made them.
 
 </details>
+
+## Built for agents, not just reachable by them
+
+- **`lific agents-md`** writes an idempotent, marker-delimited block into your repo's `AGENTS.md` telling every agent that this project uses Lific — project identifier, CLI examples, and the workflow conventions (mark issues done, use modules, use plans). `lific connect` offers to do this automatically in project context.
+- **Session instructions.** The MCP server ships its conventions in the `initialize` response, so connected agents know how Lific wants to be used without you explaining it.
+- **Self-onboarding.** On a fresh database, the MCP tools tell the agent exactly how to bootstrap (`create a project first: manage_resource(...)`) instead of returning an empty list.
+- **Pipe-native CLI.** Output auto-upgrades to JSON when piped — `lific issue list --project APP | jq` just works, no `--json` needed (though it's there). Prompts never hang a non-interactive caller; they fail fast and name the bypass flag.
+- **Shell completions:** `lific completion fish | source` (bash, zsh, fish, powershell, elvish).
+
+The CLI also works directly against the database — no server or auth required:
+
+```bash
+lific project list
+lific issue list --project APP
+lific issue create --project APP --title "Fix login bug" --priority high
+lific issue update APP-42 --status done
+lific search "authentication" --project APP
+```
 
 ## MCP tools
 
@@ -131,13 +174,14 @@ Issues stay flat and lateral; the hierarchy lives on the plan. It's the differen
 | **Issue tracking** | Status, priority, modules with icons, labels, relations, comments, board view, fuzzy search, sort by recent activity |
 | **Plans** | Persisted, nestable step trees that outlive a session; steps mirror issues with two-way done/close sync; first-class tree view and activity history |
 | **Documentation** | Markdown pages in recursive folders, with comments, labels, lifecycle status, full-text search, and Mermaid diagrams |
-| **MCP interface** | 26 tools, human-readable identifiers, compact schema |
+| **MCP interface** | 26 tools, human-readable identifiers, compact schema, session instructions |
+| **Onboarding** | `lific connect` (11 clients), `lific doctor`, `lific agents-md`, shell completions |
 | **REST API** | Full CRUD for all resources, search, board view |
 | **Web UI** | Markdown editing with live preview, drag-and-drop board, Mermaid and code-copy, dark/light theme |
-| **User accounts** | Individual auth, per-tool bot identities, project lead permissions |
-| **OAuth 2.1** | PKCE, dynamic client registration, token revocation, per-user token identity |
+| **User accounts** | Individual auth, per-tool bot identities, project membership and roles |
+| **Auth** | OAuth 2.1 (PKCE, dynamic client registration, RFC 9728 discovery), RFC 8628 device flow, API keys, token revocation |
 | **Backups** | Automatic SQLite snapshots with configurable retention |
-| **CLI** | Full CRUD for issues, projects, pages, modules, labels, folders. No server needed |
+| **CLI** | Full CRUD, TTY-aware JSON output, works with no server running |
 | **Single binary** | No runtime dependencies, embedded SQLite, ~16MB |
 
 ## Configuration
@@ -165,7 +209,7 @@ retain = 24
 level = "info"
 ```
 
-CLI flags (`--db`, `--port`, `--host`) override config values.
+CLI flags (`--db`, `--port`, `--host`) override config values. Set `server.public_url` when exposing Lific beyond localhost — it becomes the OAuth issuer and the URL `lific connect` writes into client configs.
 
 </details>
 
@@ -204,12 +248,12 @@ The frontend is a Svelte 5 SPA built with Vite. `bun run build` outputs static f
 
 Issues and PRs welcome. If you're planning something big, open an issue first so we can talk about it before you put in the work.
 
-## License
-
-[Apache-2.0](LICENSE)
-
 ## MCP Registry
 
 Lific is published to the official [MCP Registry](https://registry.modelcontextprotocol.io).
 
 - MCP Registry name: `mcp-name: io.github.VoidNullable/lific`
+
+## License
+
+[Apache-2.0](LICENSE)
