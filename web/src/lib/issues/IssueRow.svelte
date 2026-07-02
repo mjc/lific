@@ -10,7 +10,7 @@
   // state instance; keeping them explicit here first makes the seam
   // reviewable and build-verifiable.
   import type { Issue, Label, Module } from "../api";
-  import { Check, Signal, Layers } from "lucide-svelte";
+  import { Check, Signal, Layers, PanelRight } from "lucide-svelte";
   import StatusIcon from "../StatusIcon.svelte";
   import PriorityIcon from "../PriorityIcon.svelte";
   import ProjectIcon from "../ProjectIcon.svelte";
@@ -33,6 +33,7 @@
     priorityOpen,
     statusPickerIdx,
     onOpen,
+    onPeek,
     onRangeSelect,
     onToggleSelect,
     onMouseEnterRow,
@@ -63,6 +64,10 @@
     /** Highlighted index within the open status picker. */
     statusPickerIdx: number;
     onOpen: (issue: Issue) => void;
+    /** LIF-244: opens the peek panel on this issue (hover affordance —
+     *  mod-click stays reserved for ctrl/cmd-toggle-select on rows, see
+     *  the row's own onclick below). */
+    onPeek: (issue: Issue) => void;
     onRangeSelect: (idx: number) => void;
     onToggleSelect: (id: number, idx: number) => void;
     onMouseEnterRow: (e: MouseEvent, idx: number) => void;
@@ -297,6 +302,27 @@
       </div>
     {/if}
   </div>
+
+  <!-- LIF-244: peek affordance. Hover-only trigger for the slide-over
+       preview — mirrors the checkbox/priority hover pattern above, but
+       `[@media(hover:hover)]` (rather than plain `group-hover`) also
+       fully removes it on touch (no hover capability), where a phantom
+       hover-in-waiting affordance would just be a dead tap target. -->
+  <Tooltip content="Peek">
+    <button
+      class="hidden shrink-0 size-6 items-center justify-center rounded
+             text-[var(--text-faint)] hover:text-[var(--accent)]
+             hover:bg-[var(--bg-subtle)] transition-colors
+             [@media(hover:hover)]:flex [@media(hover:hover)]:opacity-0
+             [@media(hover:hover)]:group-hover:opacity-100"
+      onclick={(e) => {
+        e.stopPropagation();
+        onPeek(issue);
+      }}
+    >
+      <PanelRight size={13} />
+    </button>
+  </Tooltip>
 
   <!-- Updated time. Hidden below sm to give the title room (LIF-229). -->
   <span class="hidden sm:block text-caption text-[var(--text-faint)] shrink-0 w-[60px] text-right">

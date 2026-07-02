@@ -40,6 +40,8 @@
   import RightSidebar from "../lib/issues/RightSidebar.svelte";
   import IssueRow from "../lib/issues/IssueRow.svelte";
   import Topbar from "../lib/issues/Topbar.svelte";
+  import PeekPanel from "../lib/issues/PeekPanel.svelte";
+  import { peekState, openPeek } from "../lib/issues/peek.svelte"; // LIF-244
   import {
     IssueListState,
     updateIssueWithUndo,
@@ -253,6 +255,7 @@
       view.newMenuOpen ||
       view.filterOpen ||
       view.lanesOpen ||
+      peekState.open ||
       inlineCreateActive ||
       view.statusDropdownId !== null ||
       view.priorityDropdownId !== null ||
@@ -766,6 +769,11 @@
   }
 
   function handleKeydown(e: KeyboardEvent) {
+    // LIF-244: the peek panel owns keyboard input while open (its own Esc
+    // handler closes it) — list shortcuts (j/k nav, x select, c create,
+    // s/p cycle) shouldn't fire on the row behind it while previewing.
+    if (peekState.open) return;
+
     // Status picker keyboard navigation (inline create or row dropdown)
     if (inlineCreateStatusOpen || view.statusDropdownId !== null) {
       if (e.key === "ArrowDown" || e.key === "j") {
@@ -1020,6 +1028,19 @@
   // and the optimistic issue updates that used to live inline in the row.
   function openIssue(issue: Issue) {
     navigate(`/${projectIdentifier}/issues/${issue.identifier}`);
+  }
+  // LIF-244: peek panel. openPeek() is the module-level singleton entry
+  // point (lib/issues/peek.svelte.ts) — PeekPanel itself is mounted once
+  // below and reads that same store.
+  function peekIssue(issue: Issue) {
+    openPeek(issue.identifier);
+  }
+  // Mirrors every other row/keyboard/board handler's onApplied: stamp the
+  // patch onto the master `issues` array so sortedIssues/groups/boardLanes
+  // (and thus the row/card behind the peek's scrim) reflect a mutation
+  // made from inside the peek panel, without a refetch.
+  function onPeekIssueChanged(id: number, patch: Record<string, unknown>) {
+    issues = issues.map((i) => (i.id === id ? { ...i, ...(patch as Partial<Issue>) } : i));
   }
   function onMouseEnterRow(e: MouseEvent, idx: number) {
     if (shouldAcceptMouse(e)) view.focusedIndex = idx;
@@ -1351,6 +1372,7 @@
                     {labels}
                     onOpen={(i) =>
                       navigate(`/${projectIdentifier}/issues/${i.identifier}`)}
+                    onPeek={peekIssue}
                   />
                 </div>
               {/each}
@@ -1699,6 +1721,7 @@
     priorityOpen={view.priorityDropdownId === issue.id}
     statusPickerIdx={view.inlineCreateStatusIdx}
     onOpen={openIssue}
+    onPeek={peekIssue}
     onRangeSelect={rangeSelect}
     onToggleSelect={toggleSelect}
     {onMouseEnterRow}
@@ -1709,6 +1732,11 @@
     onHoverStatusOption={(si) => { view.inlineCreateStatusIdx = si; }}
   />
 {/snippet}
+
+<!-- LIF-244: peek panel, mounted once and shared by both list and board
+     layouts (it's `fixed`-positioned, so it doesn't care which layout is
+     active — only the peek.svelte.ts store's open/identifier state does). -->
+<PeekPanel {navigate} onIssueChanged={onPeekIssueChanged} />
 
 
 
