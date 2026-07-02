@@ -11,6 +11,7 @@
     class: className = "",
     renderOption,
     renderSelected,
+    onchange,
   }: {
     options: Option[];
     value?: string | number | null;
@@ -19,6 +20,10 @@
     class?: string;
     renderOption?: import("svelte").Snippet<[Option, boolean]>;
     renderSelected?: import("svelte").Snippet<[Option]>;
+    /** Fired with the newly-picked option, in addition to the `bind:value`
+     *  update — handy for per-row selects (e.g. a list loop) where a plain
+     *  two-way binding can't carry which row changed. */
+    onchange?: (opt: Option) => void;
   } = $props();
 
   let sm = $derived(size === "sm");
@@ -31,6 +36,7 @@
   function select(opt: Option) {
     value = opt.value;
     open = false;
+    onchange?.(opt);
   }
 
   function toggle(e: Event) {

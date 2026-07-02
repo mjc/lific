@@ -111,6 +111,10 @@ export interface InstanceSettings {
   session_lifetime_days: number;
   login_message: string | null;
   web_auto_login: boolean;
+  /** LIF-197: operator toggle for project-scoped authorization (epic
+   *  LIF-194). Off by default — see src/authz.rs for the legacy vs
+   *  enforced mode split. */
+  authz_enforced: boolean;
 }
 
 export interface InstanceSettingsPatch {
@@ -122,6 +126,7 @@ export interface InstanceSettingsPatch {
   /** "" clears. */
   login_message?: string;
   web_auto_login?: boolean;
+  authz_enforced?: boolean;
 }
 
 export async function getInstanceSettings() {
@@ -287,6 +292,55 @@ export interface UserSummary {
 
 export async function listUsers() {
   return request<UserSummary[]>("/users");
+}
+
+// ── Project members (LIF-199 / LIF-200) ─────────────────────
+//
+// Project-scoped roles: viewer < maintainer < lead. See LIF-DOC-7 for the
+// authorization design. `GET` is visible to any project member (and to
+// everyone while `authz_enforced` is off); writes are lead-only (or
+// instance admin).
+
+export type ProjectRole = "viewer" | "maintainer" | "lead";
+
+export interface ProjectMember {
+  project_id: number;
+  user_id: number;
+  role: ProjectRole;
+  created_at: string;
+  username: string;
+  display_name: string;
+}
+
+export async function listProjectMembers(projectId: number) {
+  return request<ProjectMember[]>(`/projects/${projectId}/members`);
+}
+
+export async function addProjectMember(
+  projectId: number,
+  input: { user_id: number; role?: ProjectRole },
+) {
+  return request<ProjectMember>(`/projects/${projectId}/members`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function changeProjectMemberRole(
+  projectId: number,
+  userId: number,
+  role: ProjectRole,
+) {
+  return request<ProjectMember>(`/projects/${projectId}/members/${userId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ role }),
+  });
+}
+
+export async function removeProjectMember(projectId: number, userId: number) {
+  return request<{ deleted: boolean }>(`/projects/${projectId}/members/${userId}`, {
+    method: "DELETE",
+  });
 }
 
 // ── Projects ────────────────────────────────────────────────

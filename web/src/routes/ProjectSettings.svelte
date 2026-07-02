@@ -20,6 +20,7 @@
   } from "../lib/api";
   import IconPicker from "../lib/IconPicker.svelte";
   import LabelManager from "../lib/LabelManager.svelte";
+  import ProjectMembers from "../lib/ProjectMembers.svelte";
   import { loadListState, saveListState } from "../lib/issues/persistence";
   import ProjectIcon from "../lib/ProjectIcon.svelte";
   import ProgressRing from "../lib/ProgressRing.svelte";
@@ -435,6 +436,9 @@
           onChange={() => loadAll(projectIdentifier)}
           onOpenLabel={openLabelInIssues}
         />
+
+        <!-- ── MEMBERS (LIF-200) ────────────────────────── -->
+        <ProjectMembers projectId={project.id} />
 
         <!-- ── RECENT ACTIVITY ──────────────────────────── -->
         {#if activity.length > 0}
