@@ -115,11 +115,20 @@ export const OpenCodeTUI: React.FC<OpenCodeProps> = ({
     extrapolateRight: "clamp",
   });
 
-  // Reply fade.
-  const replyIn = interpolate(frame, [replyAt, replyAt + 10], [0, 1], {
+  // Tool calls POP in (quick fade, full text at once) — like real tool
+  // results appearing; the streamed text is the reply, not the tools.
+  const tool1In = interpolate(frame, [tool1At, tool1At + 6], [0, 1], {
     extrapolateLeft: "clamp",
     extrapolateRight: "clamp",
   });
+  const tool2In = interpolate(frame, [tool2At, tool2At + 6], [0, 1], {
+    extrapolateLeft: "clamp",
+    extrapolateRight: "clamp",
+  });
+
+  // Reply TYPES out via string slicing (streaming), ~1.7 chars/frame.
+  const replyText = sliceReveal(reply, frame, replyAt, 0.6);
+  const replyTyping = frame >= replyAt && replyText.length < reply.length;
 
   // Completion line fade.
   const completeIn = interpolate(frame, [completeAt, completeAt + 8], [0, 1], {
@@ -130,8 +139,6 @@ export const OpenCodeTUI: React.FC<OpenCodeProps> = ({
   // Block cursor blink — pure function of frame.
   const blink = interpolate(frame % 24, [0, 12, 24], [1, 0.15, 1]);
 
-  const tool1Text = sliceReveal(tool1, frame, tool1At);
-  const tool2Text = sliceReveal(tool2, frame, tool2At);
 
   return (
     <div
@@ -220,7 +227,7 @@ export const OpenCodeTUI: React.FC<OpenCodeProps> = ({
           {/* blank line */}
           <div style={{ height: FS_SM }} />
 
-          {/* tool line 1 */}
+          {/* tool line 1 — pops in whole */}
           <div
             style={{
               fontSize: FS_SM,
@@ -228,17 +235,18 @@ export const OpenCodeTUI: React.FC<OpenCodeProps> = ({
               color: TUI.dim,
               minHeight: FS_SM * 1.6,
               whiteSpace: "pre",
+              opacity: tool1In,
             }}
           >
-            {tool1Text ? (
+            {frame >= tool1At ? (
               <>
                 <span>⚙ </span>
-                {tool1Text}
+                {tool1}
               </>
             ) : null}
           </div>
 
-          {/* tool line 2 */}
+          {/* tool line 2 — pops in whole */}
           <div
             style={{
               fontSize: FS_SM,
@@ -246,12 +254,13 @@ export const OpenCodeTUI: React.FC<OpenCodeProps> = ({
               color: TUI.dim,
               minHeight: FS_SM * 1.6,
               whiteSpace: "pre",
+              opacity: tool2In,
             }}
           >
-            {tool2Text ? (
+            {frame >= tool2At ? (
               <>
                 <span>⚙ </span>
-                {tool2Text}
+                {tool2}
               </>
             ) : null}
           </div>
@@ -259,18 +268,28 @@ export const OpenCodeTUI: React.FC<OpenCodeProps> = ({
           {/* blank line */}
           <div style={{ height: FS }} />
 
-          {/* assistant reply (bright) */}
+          {/* assistant reply (bright) — streams in like real output */}
           <div
             style={{
               fontSize: FS,
               lineHeight: 1.5,
               color: TUI.text,
-              opacity: replyIn,
-              transform: `translateY(${(1 - replyIn) * 8}px)`,
               minHeight: FS * 1.5,
             }}
           >
-            {frame >= replyAt ? reply : null}
+            {replyText}
+            {replyTyping ? (
+              <span
+                style={{
+                  display: "inline-block",
+                  width: 11,
+                  height: FS,
+                  marginLeft: 2,
+                  verticalAlign: "text-bottom",
+                  backgroundColor: TUI.cursor,
+                }}
+              />
+            ) : null}
           </div>
 
           {/* blank line */}

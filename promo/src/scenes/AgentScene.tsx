@@ -40,7 +40,7 @@ const BOARD_1 = 56; // LIF-198 appears in Done
 const TOOL_2 = 88; // ⚙ lific_create_issue
 const BOARD_2 = 104; // LIF-232 pops into Todo
 const REPLY = 126; // assistant reply
-const COMPLETE = 138; // ▣ Build · Agent · 4.1s
+const COMPLETE = 162; // ▣ Build · Agent · 4.1s — after the reply finishes streaming
 const CAPTION = 146;
 
 export const AgentScene: React.FC = () => {
