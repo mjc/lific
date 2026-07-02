@@ -187,6 +187,7 @@ fn rest_manifest() -> HashMap<(&'static str, &'static str), Classification> {
         (("GET", "/api/pages/{id}/activity"), Gated(Viewer)),
         (("GET", "/api/projects/{id}/activity"), Gated(Viewer)),
         (("GET", "/api/projects/{id}/activity/actors"), Gated(Viewer)),
+        (("GET", "/api/projects/{id}/insights"), Gated(Viewer)),
         (("GET", "/api/export/issues/{identifier}"), Gated(Viewer)),
         (("GET", "/api/export/pages/{identifier}"), Gated(Viewer)),
         (("GET", "/api/export/projects/{identifier}"), Gated(Viewer)),

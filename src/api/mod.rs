@@ -2,6 +2,7 @@ mod activity;
 mod auth;
 mod comments;
 mod export;
+mod insights;
 mod issues;
 mod members;
 mod pages;
@@ -118,6 +119,11 @@ pub fn router(db: DbPool, cors_origins: &[String]) -> Router {
         .route(
             "/api/projects/{id}/activity/actors",
             get(activity::project_activity_actors),
+        )
+        // Insights (per-project analytics tab — LIF-240)
+        .route(
+            "/api/projects/{id}/insights",
+            get(insights::project_insights),
         )
         .route("/api/export/issues/{identifier}", get(export::export_issue))
         .route("/api/export/pages/{identifier}", get(export::export_page))

@@ -1272,3 +1272,50 @@ export async function deletePlanStep(planId: number, stepId: number) {
 export async function listAllPages() {
   return request<Page[]>("/pages");
 }
+
+// ── Insights (LIF-240) ───────────────────────────────────────
+//
+// Per-project analytics tab. One endpoint returns the full payload —
+// trend lines, current distributions, and a windowed actor rollup — so
+// the route makes a single round trip regardless of `weeks`.
+
+export interface WeekPoint {
+  /** Monday (ISO week start), formatted YYYY-MM-DD. */
+  week_start: string;
+  count: number;
+}
+
+export interface PriorityCounts {
+  urgent: number;
+  high: number;
+  medium: number;
+  low: number;
+  none: number;
+  total: number;
+}
+
+export interface ModuleCount {
+  module_id: number | null;
+  /** "No module" when module_id is null. */
+  name: string;
+  count: number;
+}
+
+export interface InsightsPayload {
+  /** The clamped week count this payload was computed over. */
+  weeks: number;
+  created_per_week: WeekPoint[];
+  /** See the backend's `queries::insights` module doc for the exact
+   *  closure-counting semantics (latest status transition per issue). */
+  closed_per_week: WeekPoint[];
+  status_counts: IssueStatusCounts;
+  priority_counts: PriorityCounts;
+  module_counts: ModuleCount[];
+  /** Actor rollup scoped to the same `weeks` window as the trend lines
+   *  (unlike ActorStat's all-time rollup on the Activity tab). */
+  top_actors: ActorStat[];
+}
+
+export async function getInsights(projectId: number, weeks: number) {
+  return request<InsightsPayload>(`/projects/${projectId}/insights?weeks=${weeks}`);
+}

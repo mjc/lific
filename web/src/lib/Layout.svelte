@@ -12,7 +12,7 @@
   import { dndzone, type DndEvent } from "svelte-dnd-action";
   import { flip } from "svelte/animate";
   import { getPreference, setPreference, resolveTheme, type ThemePreference } from "./theme";
-  import { Settings, List, LayoutGrid, FileText, Plus, Layers, History, ListChecks, LayoutDashboard, Search, ChevronRight, Sun, Moon, Monitor, Menu, X, Home } from "lucide-svelte";
+  import { Settings, List, LayoutGrid, FileText, Plus, Layers, History, ListChecks, LayoutDashboard, Search, ChevronRight, Sun, Moon, Monitor, Menu, X, Home, TrendingUp } from "lucide-svelte";
   import { setContext } from "svelte";
 
   // Ref to the command palette so the sidebar's "Jump to…" affordance can
@@ -409,6 +409,7 @@
                 {@render subItem(`/${project.identifier}/pages`, "Pages", FileText)}
                 {@render subItem(`/${project.identifier}/plans`, "Plans", ListChecks)}
                 {@render subItem(`/${project.identifier}/activity`, "Activity", History)}
+                {@render subItem(`/${project.identifier}/insights`, "Insights", TrendingUp)}
               </div>
             {/if}
             </div>

@@ -593,6 +593,66 @@ pub struct ActorStat {
     pub top_transport: String,
 }
 
+// ── Insights (LIF-240) ────────────────────────────────────────
+//
+// Per-project analytics tab: created/closed trend lines, current
+// status/priority/module distributions, and a top-actors rollup scoped to
+// the same window as the trend lines. Everything here is read-only,
+// computed straight from `issues` + `audit_log` — no new tables.
+
+/// One point on a created/closed trend line. `week_start` is the Monday
+/// (ISO week start) the bucket covers, formatted `YYYY-MM-DD`. Buckets are
+/// dense — every week in the requested range is present with `count: 0`
+/// when there's no data, so the frontend never has to fill gaps itself.
+#[derive(Debug, Clone, Serialize)]
+pub struct WeekPoint {
+    pub week_start: String,
+    pub count: i64,
+}
+
+/// Current per-priority issue counts for a project. Mirrors
+/// `IssueStatusCounts`'s shape (fixed fields + `total`) since priority, like
+/// status, is a closed set the API validates on write.
+#[derive(Debug, Default, Serialize)]
+pub struct PriorityCounts {
+    pub urgent: i64,
+    pub high: i64,
+    pub medium: i64,
+    pub low: i64,
+    pub none: i64,
+    pub total: i64,
+}
+
+/// Current issue count for one module (or the `module_id: None` "no
+/// module" bucket), ordered largest-first.
+#[derive(Debug, Serialize)]
+pub struct ModuleCount {
+    pub module_id: Option<i64>,
+    pub name: String,
+    pub count: i64,
+}
+
+/// `GET /api/projects/{id}/insights` response — everything the Insights
+/// tab needs in one round trip.
+#[derive(Debug, Serialize)]
+pub struct InsightsPayload {
+    /// The (clamped) week count this payload was computed over — echoed
+    /// back so the frontend's selector can confirm what it got.
+    pub weeks: i64,
+    pub created_per_week: Vec<WeekPoint>,
+    /// See `queries::insights::get_insights` doc comment for the closure
+    /// semantics: the most recent status-field transition per issue,
+    /// counted only when it landed on done/cancelled — so a reopened issue
+    /// isn't double-counted and a closed-then-reopened issue drops out.
+    pub closed_per_week: Vec<WeekPoint>,
+    pub status_counts: IssueStatusCounts,
+    pub priority_counts: PriorityCounts,
+    pub module_counts: Vec<ModuleCount>,
+    /// Actor rollup scoped to the same `weeks` window as the trend lines
+    /// (unlike `ActorStat`'s all-time project rollup on the Activity tab).
+    pub top_actors: Vec<ActorStat>,
+}
+
 // ── Plans (LIF-165/166) ──────────────────────────────────────
 //
 // A plan is a project-level tree of steps that survives across sessions.

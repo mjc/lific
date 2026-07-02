@@ -16,6 +16,7 @@
   import PlanList from "./routes/PlanList.svelte";
   import PlanDetail from "./routes/PlanDetail.svelte";
   import ProjectActivity from "./routes/ProjectActivity.svelte";
+  import Insights from "./routes/Insights.svelte";
   import Layout from "./lib/Layout.svelte";
   import ErrorState from "./lib/ErrorState.svelte";
   import { hasSession, getInstance, autoLogin, saveSession } from "./lib/api";
@@ -103,6 +104,7 @@
     | { type: "app"; page: "plans"; project: string }
     | { type: "app"; page: "plan-detail"; project: string; planId: number }
     | { type: "app"; page: "activity"; project: string }
+    | { type: "app"; page: "insights"; project: string }
     | { type: "loading" }
     | { type: "not-found" };
 
@@ -227,6 +229,12 @@
       return { type: "app", page: "activity", project: activityMatch[1] };
     }
 
+    // Project-scoped: /{IDENTIFIER}/insights (analytics tab — LIF-240)
+    const insightsMatch = r.match(/^\/([A-Za-z][A-Za-z0-9_-]*)\/insights$/i);
+    if (insightsMatch) {
+      return { type: "app", page: "insights", project: insightsMatch[1] };
+    }
+
     // Project-scoped: /{IDENTIFIER}/modules
     const moduleListMatch = r.match(/^\/([A-Za-z][A-Za-z0-9_-]*)\/modules$/i);
     if (moduleListMatch) {
@@ -341,6 +349,8 @@
       <PlanDetail {navigate} projectIdentifier={parsed.project} planId={parsed.planId} />
     {:else if parsed.page === "activity"}
       <ProjectActivity {navigate} projectIdentifier={parsed.project} />
+    {:else if parsed.page === "insights"}
+      <Insights {navigate} projectIdentifier={parsed.project} />
     {/if}
 
       <!-- LIF-193: catch any unexpected render error from a route. Shows a
