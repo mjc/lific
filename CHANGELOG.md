@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.7.0 (2026-07-02)
+
+Lific gets real authorization. Until now, authentication was a door with no rooms behind it: any logged-in account — and any connected agent — could read, edit, or delete content in every project. This release adds project-scoped membership and roles, enforced identically across the REST API and every MCP tool, so an agent holds exactly the authority its owner granted it and nothing more.
+
+### Project membership and roles
+
+- **Three roles per project**: `viewer` (read + comment), `maintainer` (full content and structure CRUD), and `lead` (everything, plus settings, membership, and project deletion). Multiple leads per project are supported; global admins override everything as the break-glass path.
+- **Default-deny, reads included.** With enforcement on, a non-member sees nothing — projects vanish from lists and search, and direct reads are refused. There is no implicit access floor.
+- **One enforcement layer, two transports.** REST handlers and all 26 MCP tools call the same `authz` module, so the web UI and agents can never drift apart. Cross-project operations (issue relations, plan-step issue links) require the role on every project touched.
+- **Agents inherit their owner.** A bot acts with its owning user's memberships and can never exceed them; OAuth-token requests resolve to their real user end to end. A token-backed agent that is a member keeps working under default-deny — verified by explicit lockout-regression tests on both transports.
+- **Safe, reversible rollout.** Enforcement is a runtime instance setting (`authz_enforced`, default off — flip it in Instance Settings or `lific instance set --authz-enforced true`). Legacy mode preserves pre-1.7 behavior bit-for-bit; existing project leads are backfilled as `lead` members automatically.
+- **Membership management** in Project Settings: list members with role badges, add by name, change roles inline, remove with confirmation — lead-gated, with last-lead protection so a project can't be orphaned. Every membership change lands in the audit log with actor attribution.
+- **Enumeration-derived coverage.** The test suite extracts every REST route and every MCP tool and fails if any surface is missing an authorization classification, so future endpoints can't ship ungated. 597 tests total.
+
+### Labels
+
+- **Edit and merge labels.** Labels can now be renamed and recolored in place, and duplicate labels can be merged (issues and pages re-tagged, source label removed) — with a full label manager and color picker in Project Settings.
+
 ## v1.6.0 (2026-06-15)
 
 Lific gets a planning layer. Plans turn a goal into an ordered, arbitrarily-nestable tree of steps that persists across sessions and context compaction — the thing that separates an issue tracker from a project planner. Steps can mirror issues, so closing an issue checks its step and completing a step closes its issue, all recorded in the audit log.
