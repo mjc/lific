@@ -40,7 +40,12 @@
   import RightSidebar from "../lib/issues/RightSidebar.svelte";
   import IssueRow from "../lib/issues/IssueRow.svelte";
   import Topbar from "../lib/issues/Topbar.svelte";
-  import { IssueListState } from "../lib/issues/state.svelte";
+  import {
+    IssueListState,
+    updateIssueWithUndo,
+    bulkUpdateIssuesWithUndo,
+    prevPatchFor,
+  } from "../lib/issues/state.svelte"; // LIF-243: undo layer
 
   const topbarCtx = getContext<{
     set: (s: import("svelte").Snippet | undefined) => void;
@@ -468,6 +473,13 @@
       update.priority = laneKey;
     }
 
+    // LIF-243: capture the pre-drop fields for Undo before anything else
+    // touches `moved` — it still carries the stale (pre-drop) values here,
+    // mirroring `update`'s shape field-for-field.
+    const prevPatch: Record<string, unknown> = { status: moved.status };
+    if ("module_id" in update) prevPatch.module_id = moved.module_id;
+    if ("priority" in update) prevPatch.priority = moved.priority;
+
     // Optimistic: stamp both fields onto the master issues list so
     // sortedIssues/boardLanes/the cell all stay coherent until the API
     // resolves.
@@ -478,11 +490,30 @@
       );
     }
 
+    const movedId = moved.id;
+    const movedIdentifier = moved.identifier;
+
     // trackMutation keeps auto-refresh paused until the PUT resolves;
     // clear dragActive only after, so no poll lands between drop and ack.
-    const res = await trackMutation(updateIssue(moved.id, update));
+    // updateIssueWithUndo shows the success/Undo toast (or an error toast
+    // on failure, replacing the previous silent failure path) and, on
+    // Undo, re-stamps `prevPatch` back onto `issues` via onApplied.
+    const ok = await trackMutation(
+      updateIssueWithUndo({
+        id: movedId,
+        identifier: movedIdentifier,
+        patch: update,
+        prevPatch,
+        modules,
+        onApplied: (patch) => {
+          issues = issues.map((i) =>
+            i.id === movedId ? { ...i, ...(patch as Partial<Issue>) } : i,
+          );
+        },
+      }),
+    );
     dragActive = false;
-    if (!res.ok) {
+    if (!ok) {
       // Rollback by re-fetching. Simpler than trying to undo the local
       // mutation surgically — drop failures should be rare. This also
       // covers the two-field case: a partial server failure still leaves
@@ -562,23 +593,33 @@
 
   /** Apply the same field update to every selected issue. Optimistic:
    *  stamps the change locally on success; converges via reload if any
-   *  PUT fails (rare — same tradeoff as the board's drop handler). */
+   *  PUT fails (rare — same tradeoff as the board's drop handler).
+   *  LIF-243: each target's prior value is captured before the mutation so
+   *  the resulting toast's Undo restores every issue to *its own* prior
+   *  status/priority/module rather than a single blanket value. */
   async function bulkUpdate(input: Record<string, unknown>) {
     if (bulkBusy || view.selectedIds.size === 0) return;
     bulkBusy = true;
     bulkMenu = null;
     skipFocusReset = true;
-    const ids = [...view.selectedIds];
-    const results = await Promise.all(
-      ids.map((id) => trackMutation(updateIssue(id, input))),
+    const targets = issues
+      .filter((i) => view.selectedIds.has(i.id))
+      .map((i) => ({ id: i.id, identifier: i.identifier, prevPatch: prevPatchFor(i, input) }));
+    const { failedIds } = await trackMutation(
+      bulkUpdateIssuesWithUndo({
+        targets,
+        patch: input,
+        modules,
+        onApplied: (patches) => {
+          issues = issues.map((i) =>
+            patches.has(i.id) ? { ...i, ...(patches.get(i.id) as Partial<Issue>) } : i,
+          );
+        },
+      }),
     );
     bulkBusy = false;
-    if (results.some((r) => !r.ok)) {
+    if (failedIds.size > 0) {
       await loadIssues();
-    } else {
-      issues = issues.map((i) =>
-        view.selectedIds.has(i.id) ? { ...i, ...(input as Partial<Issue>) } : i,
-      );
     }
   }
 
@@ -750,12 +791,21 @@
           const target = issues.find((i) => i.id === view.statusDropdownId);
           if (target && picked !== target.status) {
             skipFocusReset = true;
-            trackMutation(updateIssue(target.id, { status: picked })).then((res) => {
-              if (res.ok) {
-                target.status = picked;
-                issues = [...issues];
-              }
-            });
+            const targetId = target.id;
+            trackMutation(
+              updateIssueWithUndo({
+                id: targetId,
+                identifier: target.identifier,
+                patch: { status: picked },
+                prevPatch: { status: target.status },
+                modules,
+                onApplied: (patch) => {
+                  issues = issues.map((i) =>
+                    i.id === targetId ? { ...i, ...(patch as Partial<Issue>) } : i,
+                  );
+                },
+              }),
+            );
           }
           view.statusDropdownId = null;
         }
@@ -853,19 +903,29 @@
           const focusedId = focusedIssue.id;
           const sIdx = STATUSES.indexOf(focusedIssue.status);
           const nextStatus = STATUSES[(sIdx + 1) % STATUSES.length];
+          const prevStatus = focusedIssue.status;
           skipFocusReset = true;
           statusUpdating = true;
-          trackMutation(updateIssue(focusedIssue.id, { status: nextStatus })).then((res) => {
+          trackMutation(
+            updateIssueWithUndo({
+              id: focusedIssue.id,
+              identifier: focusedIssue.identifier,
+              patch: { status: nextStatus },
+              prevPatch: { status: prevStatus },
+              modules,
+              onApplied: (patch) => {
+                issues = issues.map((i) =>
+                  i.id === focusedId ? { ...i, ...(patch as Partial<Issue>) } : i,
+                );
+                const newIdx = flatIssues.findIndex((i) => i.id === focusedId);
+                if (newIdx >= 0) {
+                  scrollOnFocus = true;
+                  view.focusedIndex = newIdx;
+                }
+              },
+            }),
+          ).then(() => {
             statusUpdating = false;
-            if (res.ok) {
-              focusedIssue.status = nextStatus;
-              issues = [...issues];
-              const newIdx = flatIssues.findIndex((i) => i.id === focusedId);
-              if (newIdx >= 0) {
-                scrollOnFocus = true;
-                view.focusedIndex = newIdx;
-              }
-            }
           });
         }
         break;
@@ -877,15 +937,24 @@
           const pId = pIssue.id;
           const pIdx = PRIORITIES.indexOf(pIssue.priority);
           const nextP = PRIORITIES[(pIdx + 1) % PRIORITIES.length];
+          const prevP = pIssue.priority;
           skipFocusReset = true;
-          trackMutation(updateIssue(pIssue.id, { priority: nextP })).then((res) => {
-            if (res.ok) {
-              pIssue.priority = nextP;
-              issues = [...issues];
-              const newIdx = flatIssues.findIndex((i) => i.id === pId);
-              if (newIdx >= 0) { scrollOnFocus = true; view.focusedIndex = newIdx; }
-            }
-          });
+          trackMutation(
+            updateIssueWithUndo({
+              id: pIssue.id,
+              identifier: pIssue.identifier,
+              patch: { priority: nextP },
+              prevPatch: { priority: prevP },
+              modules,
+              onApplied: (patch) => {
+                issues = issues.map((i) =>
+                  i.id === pId ? { ...i, ...(patch as Partial<Issue>) } : i,
+                );
+                const newIdx = flatIssues.findIndex((i) => i.id === pId);
+                if (newIdx >= 0) { scrollOnFocus = true; view.focusedIndex = newIdx; }
+              },
+            }),
+          );
         }
         break;
       case "Escape":
@@ -971,23 +1040,41 @@
     view.statusDropdownId = null;
     if (status === issue.status) return;
     skipFocusReset = true;
-    updateIssue(issue.id, { status }).then((res) => {
-      if (res.ok) {
-        issue.status = status;
-        issues = [...issues];
-      }
-    });
+    const issueId = issue.id;
+    trackMutation(
+      updateIssueWithUndo({
+        id: issueId,
+        identifier: issue.identifier,
+        patch: { status },
+        prevPatch: { status: issue.status },
+        modules,
+        onApplied: (patch) => {
+          issues = issues.map((i) =>
+            i.id === issueId ? { ...i, ...(patch as Partial<Issue>) } : i,
+          );
+        },
+      }),
+    );
   }
   function pickRowPriority(issue: Issue, priority: string) {
     view.priorityDropdownId = null;
     if (priority === issue.priority) return;
     skipFocusReset = true;
-    updateIssue(issue.id, { priority }).then((res) => {
-      if (res.ok) {
-        issue.priority = priority;
-        issues = [...issues];
-      }
-    });
+    const issueId = issue.id;
+    trackMutation(
+      updateIssueWithUndo({
+        id: issueId,
+        identifier: issue.identifier,
+        patch: { priority },
+        prevPatch: { priority: issue.priority },
+        modules,
+        onApplied: (patch) => {
+          issues = issues.map((i) =>
+            i.id === issueId ? { ...i, ...(patch as Partial<Issue>) } : i,
+          );
+        },
+      }),
+    );
   }
 
 </script>

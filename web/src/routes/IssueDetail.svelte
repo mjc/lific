@@ -23,6 +23,7 @@
   import StatusIcon, { statusCssColor } from "../lib/StatusIcon.svelte";
   import { formatDate } from "../lib/format";
   import { recordRecent } from "../lib/home/recents"; // LIF-237
+  import { updateIssueWithUndo } from "../lib/issues/state.svelte"; // LIF-243
   import { ArrowUpRight } from "lucide-svelte";
 
   let {
@@ -185,21 +186,66 @@
   }
 
   // ── Metadata updates ─────────────────────────────────
+  // LIF-243: status/priority/module are one-click reversible, so they skip
+  // the plain `saveField` path in favor of `saveFieldWithUndo`, which shows
+  // a toast with a single-shot Undo. Title/description/labels stay on
+  // `saveField` — editing text isn't a "one value flips to another" action
+  // undo makes sense for.
+
+  /** Shares saveField's saving/lastSaved/activity-refresh side effects, but
+   *  routes the mutation through updateIssueWithUndo for the toast + Undo
+   *  affordance. `onApplied` fires both after the forward save and — if the
+   *  user clicks Undo later, possibly from a different route entirely —
+   *  after the reverting save; guarding on `issue.id` keeps it a no-op if
+   *  the sidebar has since loaded a different issue. */
+  async function saveFieldWithUndo(
+    patch: Record<string, unknown>,
+    prevPatch: Record<string, unknown>,
+  ) {
+    if (!issue) return;
+    const id = issue.id;
+    const identifier = issue.identifier;
+    saving = true;
+    await updateIssueWithUndo({
+      id,
+      identifier,
+      patch,
+      prevPatch,
+      modules,
+      onApplied: (applied) => {
+        if (issue && issue.id === id) {
+          issue = { ...issue, ...(applied as Partial<Issue>) };
+        }
+        lastSaved = new Date().toLocaleTimeString([], {
+          hour: "2-digit",
+          minute: "2-digit",
+        });
+        refreshActivity();
+      },
+    });
+    saving = false;
+  }
 
   async function setStatus(value: string) {
     statusOpen = false;
-    if (issue && value !== issue.status) await saveField("status", value);
+    if (issue && value !== issue.status) {
+      await saveFieldWithUndo({ status: value }, { status: issue.status });
+    }
   }
 
   async function setPriority(value: string) {
     priorityOpen = false;
-    if (issue && value !== issue.priority) await saveField("priority", value);
+    if (issue && value !== issue.priority) {
+      await saveFieldWithUndo({ priority: value }, { priority: issue.priority });
+    }
   }
 
   async function setModule(id: number | null) {
     moduleOpen = false;
     if (!issue) return;
-    if (id !== issue.module_id) await saveField("module_id", id);
+    if (id !== issue.module_id) {
+      await saveFieldWithUndo({ module_id: id }, { module_id: issue.module_id });
+    }
   }
 
   async function toggleLabel(name: string) {

@@ -19,6 +19,7 @@
   import Insights from "./routes/Insights.svelte";
   import Layout from "./lib/Layout.svelte";
   import ErrorState from "./lib/ErrorState.svelte";
+  import Toaster from "./lib/toast/Toaster.svelte"; // LIF-243
   import { hasSession, getInstance, autoLogin, saveSession } from "./lib/api";
   import { onMount } from "svelte";
 
@@ -380,3 +381,7 @@
     </svelte:boundary>
   </Layout>
 {/if}
+
+<!-- LIF-243: single global toast host, outside the route branches so it
+     survives navigation and renders on auth screens too. -->
+<Toaster />

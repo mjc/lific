@@ -27,6 +27,182 @@ import {
   loadCollapsedColumns,
   saveCollapsedColumns,
 } from "./persistence";
+import { updateIssue, type Issue, type Module } from "../api";
+import { toast } from "../toast/toast.svelte";
+
+// ── LIF-243: undo layer for status/priority/module mutations ────────────
+//
+// These are plain exported functions rather than IssueListState methods —
+// they're used from IssueList's row/keyboard/board handlers *and* from
+// IssueDetail's sidebar, which doesn't have an IssueListState instance at
+// all. Keeping them here (rather than inline in each call site) is what
+// makes the toast text, the "what changed" detection, and the undo
+// semantics consistent across every entry point instead of drifting.
+//
+// Every patch/prevPatch closure captures only primitive values (ids,
+// plain objects) — never a component's local state — so an Undo button
+// keeps working correctly even after the user has navigated to a
+// different route and the component that created the toast is long gone.
+// `onApplied` is the one place a caller's local state gets touched; if
+// that component has since unmounted, calling its setter is a harmless
+// no-op (nothing is listening to render it anymore).
+
+export function capitalize(s: string): string {
+  return s.length ? s[0].toUpperCase() + s.slice(1) : s;
+}
+
+/** Human summary of the single field that actually changed between `patch`
+ *  and `prevPatch` — status wins if present (it's the field every entry
+ *  point can produce), then module, then priority. Falls back to a generic
+ *  "updated" for shapes we don't specifically describe (e.g. a same-value
+ *  resend). */
+export function describeIssueChange(
+  patch: Record<string, unknown>,
+  prevPatch: Record<string, unknown>,
+  modules: Module[],
+): string {
+  if ("status" in patch && patch.status !== prevPatch.status) {
+    return `→ ${capitalize(String(patch.status))}`;
+  }
+  if ("module_id" in patch && patch.module_id !== prevPatch.module_id) {
+    const id = patch.module_id as number | null;
+    const name = id == null ? "No module" : modules.find((m) => m.id === id)?.name ?? "a module";
+    return `→ ${name}`;
+  }
+  if ("priority" in patch && patch.priority !== prevPatch.priority) {
+    return `→ ${capitalize(String(patch.priority))} priority`;
+  }
+  return "updated";
+}
+
+/** Build the inverse of `patch` from an issue's current field values —
+ *  only for the keys `patch` actually touches, so the resulting undo call
+ *  is a minimal, field-for-field opposite. */
+export function prevPatchFor(issue: Issue, patch: Record<string, unknown>): Record<string, unknown> {
+  const prev: Record<string, unknown> = {};
+  if ("status" in patch) prev.status = issue.status;
+  if ("priority" in patch) prev.priority = issue.priority;
+  if ("module_id" in patch) prev.module_id = issue.module_id;
+  return prev;
+}
+
+/** Apply `patch` to one issue, then offer a single-shot Undo that re-applies
+ *  `prevPatch` via the same `updateIssue` call. Returns whether the forward
+ *  mutation succeeded so callers keep their existing failure branching
+ *  (e.g. IssueList's board-drop rollback-by-reload). Errors route through
+ *  an error toast either way — including for call sites that previously
+ *  failed silently. */
+export async function updateIssueWithUndo(opts: {
+  id: number;
+  identifier: string;
+  patch: Record<string, unknown>;
+  prevPatch: Record<string, unknown>;
+  modules: Module[];
+  /** Sync the caller's local issue list after the forward mutation AND
+   *  after a successful undo (called again with `prevPatch` then). */
+  onApplied?: (patch: Record<string, unknown>) => void;
+}): Promise<boolean> {
+  const res = await updateIssue(opts.id, opts.patch);
+  if (!res.ok) {
+    toast(`Couldn't update ${opts.identifier}: ${res.error}`, { kind: "error" });
+    return false;
+  }
+  opts.onApplied?.(opts.patch);
+  toast(`${opts.identifier} ${describeIssueChange(opts.patch, opts.prevPatch, opts.modules)}`, {
+    kind: "success",
+    action: {
+      label: "Undo",
+      fn: async () => {
+        const undoRes = await updateIssue(opts.id, opts.prevPatch);
+        if (undoRes.ok) {
+          opts.onApplied?.(opts.prevPatch);
+          toast(`Restored ${opts.identifier}`, { kind: "info", duration: 3000 });
+        } else {
+          toast(`Couldn't undo ${opts.identifier}: ${undoRes.error}`, { kind: "error" });
+        }
+      },
+    },
+  });
+  return true;
+}
+
+/** Bulk variant for BulkActionBar's Status/Priority/Module actions: applies
+ *  `patch` to every target, then offers one Undo that restores each issue
+ *  to *its own* captured prior value (not a blanket revert to a single
+ *  prior state — selections are usually mixed). Both directions use
+ *  Promise.allSettled and report partial failure honestly rather than
+ *  implying an all-or-nothing result. */
+export async function bulkUpdateIssuesWithUndo(opts: {
+  targets: { id: number; identifier: string; prevPatch: Record<string, unknown> }[];
+  patch: Record<string, unknown>;
+  modules: Module[];
+  onApplied?: (patches: Map<number, Record<string, unknown>>) => void;
+}): Promise<{ okIds: Set<number>; failedIds: Set<number> }> {
+  const results = await Promise.allSettled(
+    opts.targets.map((t) => updateIssue(t.id, opts.patch)),
+  );
+  const okIds = new Set<number>();
+  const failedIds = new Set<number>();
+  results.forEach((r, i) => {
+    const t = opts.targets[i];
+    if (r.status === "fulfilled" && r.value.ok) okIds.add(t.id);
+    else failedIds.add(t.id);
+  });
+
+  if (okIds.size > 0) {
+    const applied = new Map<number, Record<string, unknown>>();
+    for (const id of okIds) applied.set(id, opts.patch);
+    opts.onApplied?.(applied);
+  }
+
+  if (failedIds.size > 0) {
+    toast(
+      okIds.size > 0
+        ? `Updated ${okIds.size} of ${opts.targets.length} issues`
+        : `Couldn't update ${opts.targets.length} issue${opts.targets.length === 1 ? "" : "s"}`,
+      { kind: "error" },
+    );
+  }
+
+  if (okIds.size > 0) {
+    const okTargets = opts.targets.filter((t) => okIds.has(t.id));
+    const label =
+      okTargets.length === 1
+        ? okTargets[0].identifier
+        : `${okTargets.length} issue${okTargets.length === 1 ? "" : "s"}`;
+    toast(`${label} ${describeIssueChange(opts.patch, okTargets[0].prevPatch, opts.modules)}`, {
+      kind: "success",
+      action: {
+        label: "Undo",
+        fn: async () => {
+          const undoResults = await Promise.allSettled(
+            okTargets.map((t) => updateIssue(t.id, t.prevPatch)),
+          );
+          const restored = new Map<number, Record<string, unknown>>();
+          let failCount = 0;
+          undoResults.forEach((r, i) => {
+            if (r.status === "fulfilled" && r.value.ok) {
+              restored.set(okTargets[i].id, okTargets[i].prevPatch);
+            } else {
+              failCount++;
+            }
+          });
+          if (restored.size > 0) opts.onApplied?.(restored);
+          if (failCount > 0) {
+            toast(`Restored ${restored.size} of ${okTargets.length}`, { kind: "error" });
+          } else {
+            toast(`Restored ${restored.size} issue${restored.size === 1 ? "" : "s"}`, {
+              kind: "info",
+              duration: 3000,
+            });
+          }
+        },
+      },
+    });
+  }
+
+  return { okIds, failedIds };
+}
 
 export class IssueListState {
   // ── Filters ──
