@@ -14,7 +14,7 @@
     type Module,
     type Label,
   } from "../lib/api";
-  import { Plus, ChevronRight, Layers } from "lucide-svelte";
+  import { Plus, ChevronRight, Layers, PanelLeftClose, PanelLeftOpen } from "lucide-svelte";
   import Tooltip from "../lib/Tooltip.svelte";
   import PriorityIcon from "../lib/PriorityIcon.svelte";
   import StatusIcon from "../lib/StatusIcon.svelte";
@@ -28,7 +28,10 @@
   import { startAutoRefresh } from "../lib/autoRefresh.svelte";
   import { compareIssues as compareIssuesPure } from "../lib/issues/sort";
   import { computeSearchResult, RESULT_CAP } from "../lib/issues/search";
-  import { STATUSES, PRIORITIES, buildGroups, STATUS_UNRESOLVED, isUnresolved } from "../lib/issues/grouping";
+  import {
+    STATUSES, PRIORITIES, buildGroups, STATUS_UNRESOLVED, isUnresolved,
+    buildLanes, laneKeyForIssue,
+  } from "../lib/issues/grouping";
   import { saveListState, saveLayout } from "../lib/issues/persistence";
   import IssueCard from "../lib/issues/IssueCard.svelte";
   import BulkActionBar, {
@@ -244,6 +247,7 @@
       view.displayOpen ||
       view.newMenuOpen ||
       view.filterOpen ||
+      view.lanesOpen ||
       inlineCreateActive ||
       view.statusDropdownId !== null ||
       view.priorityDropdownId !== null ||
@@ -375,56 +379,115 @@
   // that it can mutate during consider/finalize. We sync that from the
   // sorted-issues derived value (so filters + sort feed into it), and
   // svelte-dnd-action takes over during the drag lifecycle.
-  let columnItems = $state<Record<string, Issue[]>>({});
+  //
+  // LIF-241: with swimlanes, a "zone" is (lane, status) rather than just
+  // status, so the map is keyed by a composite string. NO_LANE is the key
+  // used when laneBy === "none" (today's flat single-lane board).
+  const NO_LANE = "__all__";
+  function cellKey(laneKey: string, status: string): string {
+    return `${laneKey}::${status}`;
+  }
+
+  let boardLanes = $derived(
+    buildLanes({ sortedIssues, modules, laneBy: view.laneBy }),
+  );
+
+  // Statuses that render as columns — respects the single-status filter and
+  // the "Columns" visibility pills. Shared by every lane's column row (and
+  // the single implicit lane when swimlanes are off).
+  let visibleStatuses = $derived(
+    STATUSES.filter(
+      (s) => (!view.filterStatus || view.filterStatus === s) && !view.hiddenStatuses.has(s),
+    ),
+  );
+
+  let boardItems = $state<Record<string, Issue[]>>({});
 
   $effect(() => {
     if (layout !== "board") return;
     const next: Record<string, Issue[]> = {};
-    for (const s of STATUSES) {
-      next[s] = sortedIssues.filter((i) => i.status === s);
+    if (boardLanes) {
+      for (const lane of boardLanes) {
+        for (const s of STATUSES) {
+          next[cellKey(lane.key, s)] = lane.issues.filter((i) => i.status === s);
+        }
+      }
+    } else {
+      for (const s of STATUSES) {
+        next[cellKey(NO_LANE, s)] = sortedIssues.filter((i) => i.status === s);
+      }
     }
-    columnItems = next;
+    boardItems = next;
   });
 
-  function handleConsider(status: string, e: CustomEvent<DndEvent<Issue>>) {
+  function handleConsider(
+    laneKey: string,
+    status: string,
+    e: CustomEvent<DndEvent<Issue>>,
+  ) {
     // A drag is in progress — veto auto-refresh until finalize.
     dragActive = true;
-    columnItems[status] = e.detail.items as Issue[];
+    boardItems[cellKey(laneKey, status)] = e.detail.items as Issue[];
   }
 
   async function handleFinalize(
+    laneKey: string,
     status: string,
     e: CustomEvent<DndEvent<Issue>>,
   ) {
     const newItems = e.detail.items as Issue[];
+    boardItems[cellKey(laneKey, status)] = newItems;
 
-    // Find any issue that landed in this column with a different status
-    // — that's a cross-column drop and needs persisting. There can only
+    // Find the issue that landed in this cell with a stale status and/or
+    // lane value — that's a cross-column and/or cross-lane drop. The
+    // dragged issue object is untouched until the PUT below resolves, so
+    // comparing its (still-old) status/lane to this cell's is the same
+    // "what changed" trick for both dimensions at once. There can only
     // ever be one such item per finalize (a single drag op).
-    const moved = newItems.find((i) => i.status !== status);
-    columnItems[status] = newItems;
+    const moved = newItems.find((i) => {
+      if (i.status !== status) return true;
+      if (view.laneBy !== "none" && laneKeyForIssue(i, view.laneBy) !== laneKey) return true;
+      return false;
+    });
 
     if (!moved) {
       dragActive = false;
       return;
     }
 
-    // Optimistic: stamp the new status onto the master issues list so
-    // sortedIssues and the cell stay coherent until the API resolves.
+    // Build the update payload from the *destination cell*, not from a
+    // diff — always sending both the status and (when lanes are on) the
+    // lane field in one PUT, even if one of them didn't actually change.
+    // Simpler than conditionally including fields, and idempotent (a
+    // same-lane cross-status drop just resends the current module_id/
+    // priority, which is a no-op server-side).
+    const update: Record<string, unknown> = { status };
+    if (view.laneBy === "module") {
+      update.module_id = laneKey === "none" ? null : Number(laneKey);
+    } else if (view.laneBy === "priority") {
+      update.priority = laneKey;
+    }
+
+    // Optimistic: stamp both fields onto the master issues list so
+    // sortedIssues/boardLanes/the cell all stay coherent until the API
+    // resolves.
     const idx = issues.findIndex((i) => i.id === moved.id);
     if (idx >= 0) {
       issues = issues.map((i) =>
-        i.id === moved.id ? { ...i, status } : i,
+        i.id === moved.id ? { ...i, ...(update as Partial<Issue>) } : i,
       );
     }
 
     // trackMutation keeps auto-refresh paused until the PUT resolves;
     // clear dragActive only after, so no poll lands between drop and ack.
-    const res = await trackMutation(updateIssue(moved.id, { status }));
+    const res = await trackMutation(updateIssue(moved.id, update));
     dragActive = false;
     if (!res.ok) {
       // Rollback by re-fetching. Simpler than trying to undo the local
-      // mutation surgically — drop failures should be rare.
+      // mutation surgically — drop failures should be rare. This also
+      // covers the two-field case: a partial server failure still leaves
+      // the client fully consistent because the reload replaces both
+      // fields from server truth, not just the one that failed.
       await loadIssues();
     }
   }
@@ -832,6 +895,8 @@
           view.hintsOpen = false;
         } else if (view.displayOpen) {
           view.displayOpen = false;
+        } else if (view.lanesOpen) {
+          view.lanesOpen = false;
         } else if (view.sortOpen) {
           view.sortOpen = false;
         } else if (view.filterOpen) {
@@ -939,6 +1004,7 @@
     view.sortOpen = false;
     view.newMenuOpen = false;
     view.filterOpen = false;
+    view.lanesOpen = false;
     bulkMenu = null;
   }}
 />
@@ -1022,8 +1088,7 @@
       </div>
     </div>
 
-    <!-- Columns -->
-    <div class="flex-1 flex overflow-x-auto overflow-y-hidden min-h-0">
+    <!-- Board body -->
     {#if loading}
       <div class="flex-1 flex items-center justify-center">
         <div
@@ -1032,34 +1097,91 @@
         ></div>
       </div>
     {:else if error}
-      <ErrorState title="Couldn't load this board" message={error}>
-        <button
-          class="text-body-sm font-medium text-[var(--btn-success-text)] bg-[var(--btn-success)] px-3 py-1.5 rounded-md hover:bg-[var(--btn-success-hover)] transition-colors"
-          onclick={() => loadProject(projectIdentifier)}
-        >
-          Try again
-        </button>
-        <button
-          class="text-body-sm text-[var(--text-muted)] border border-[var(--border)] px-3 py-1.5 rounded-md hover:bg-[var(--bg-subtle)] transition-colors"
-          onclick={() => navigate(`/${projectIdentifier}/overview`)}
-        >
-          Project overview
-        </button>
-      </ErrorState>
-    {:else}
-      {#each STATUSES as status (status)}
-        {@const colIssues = columnItems[status] ?? []}
-        {#if (!view.filterStatus || view.filterStatus === status) && !view.hiddenStatuses.has(status)}
-          <div
-            class="w-[300px] shrink-0 flex flex-col h-full
-                   border-r border-[var(--border)] last:border-r-0"
+      <div class="flex-1 flex items-center justify-center">
+        <ErrorState title="Couldn't load this board" message={error}>
+          <button
+            class="text-body-sm font-medium text-[var(--btn-success-text)] bg-[var(--btn-success)] px-3 py-1.5 rounded-md hover:bg-[var(--btn-success-hover)] transition-colors"
+            onclick={() => loadProject(projectIdentifier)}
           >
+            Try again
+          </button>
+          <button
+            class="text-body-sm text-[var(--text-muted)] border border-[var(--border)] px-3 py-1.5 rounded-md hover:bg-[var(--bg-subtle)] transition-colors"
+            onclick={() => navigate(`/${projectIdentifier}/overview`)}
+          >
+            Project overview
+          </button>
+        </ErrorState>
+      </div>
+    {:else}
+      <!-- One column: a status cell within a given lane (or NO_LANE when
+           swimlanes are off). Shared by the lane rows below and the
+           single-lane fallback so the two render paths can't drift.
+           LIF-225/mobile: below md, columns are 85vw scroll-snap panels
+           with a subtle edge-fade hint on the scroller; at sm+ they're a
+           fixed 300px in a plain horizontally-scrolling row. -->
+      {#snippet column(laneKey: string, status: string)}
+        {@const colIssues = boardItems[cellKey(laneKey, status)] ?? []}
+        {@const collapsed = view.isColumnCollapsed(status)}
+        <div
+          class="relative shrink-0 snap-start flex flex-col
+                 border-r border-[var(--border)] last:border-r-0
+                 {collapsed ? 'w-10' : 'w-[85vw] md:w-[300px]'}
+                 {boardLanes ? 'h-[380px]' : 'h-full'}"
+        >
+          {#if collapsed}
+            <!-- Collapsed rail: slim drop target. The dndzone IS the
+                 visible-sized element (so svelte-dnd-action's dashed-outline
+                 drop-target style shows on the real rail the user sees, not
+                 an invisible helper); its items render at ~0 size so they
+                 don't visually leak, while the chrome overlay on top is
+                 pointer-events-none so drags pass through to the zone. -->
+            <div
+              class="h-full w-full overflow-hidden"
+              use:dndzone={{
+                items: colIssues,
+                flipDurationMs: 150,
+                type: "lific-issues",
+                dropTargetStyle: {
+                  outline: "2px dashed var(--accent)",
+                  outlineOffset: "-4px",
+                  borderRadius: "8px",
+                },
+              }}
+              onconsider={(e) => handleConsider(laneKey, status, e as CustomEvent<DndEvent<Issue>>)}
+              onfinalize={(e) => handleFinalize(laneKey, status, e as CustomEvent<DndEvent<Issue>>)}
+            >
+              {#each colIssues as issue (issue.id)}
+                <div animate:flip={{ duration: 150 }} class="h-px opacity-0"></div>
+              {/each}
+            </div>
+            <div class="pointer-events-none absolute inset-0 flex flex-col items-center pt-2.5 pb-3 gap-2">
+              <Tooltip content="Expand {status} column" placement="right">
+                <button
+                  class="pointer-events-auto size-5 flex items-center justify-center rounded
+                         text-[var(--text-faint)] hover:text-[var(--text)]
+                         hover:bg-[var(--bg-subtle)] transition-colors"
+                  onclick={() => view.toggleColumnCollapsed(projectIdentifier, status)}
+                >
+                  <PanelLeftOpen size={12} />
+                </button>
+              </Tooltip>
+              <StatusIcon {status} size={13} />
+              <span
+                class="flex-1 text-caption font-semibold uppercase tracking-widest text-[var(--text-muted)]"
+                style="writing-mode: vertical-rl; transform: rotate(180deg);"
+              >
+                {status}
+              </span>
+              <span class="text-micro text-[var(--text-faint)] tabular-nums">{colIssues.length}</span>
+            </div>
+          {:else}
             <!-- Column header. Sticky-like: not scrollable with cards. -->
             <div
               class="shrink-0 flex items-center gap-2 px-3 py-2.5
                      border-b border-[var(--border)]"
             >
-              <StatusIcon status={status} size={14} />
+              <StatusIcon {status} size={14} />
               <span
                 class="text-caption font-semibold uppercase tracking-widest
                        text-[var(--text-muted)]"
@@ -1070,6 +1192,16 @@
                 {colIssues.length}
               </span>
               <div class="flex-1"></div>
+              <Tooltip content="Collapse column" placement="bottom">
+                <button
+                  class="size-5 flex items-center justify-center rounded
+                         text-[var(--text-faint)] hover:text-[var(--text)]
+                         hover:bg-[var(--bg-subtle)] transition-colors"
+                  onclick={() => view.toggleColumnCollapsed(projectIdentifier, status)}
+                >
+                  <PanelLeftClose size={12} />
+                </button>
+              </Tooltip>
               <Tooltip content="New {status} issue" placement="bottom">
                 <button
                   class="size-5 flex items-center justify-center rounded
@@ -1105,7 +1237,8 @@
                 </div>
               {/if}
               <!-- Drop zone. All zones share `type: "lific-issues"` so an
-                   item dragged from any column drops into any other. -->
+                   item dragged from any (lane, status) cell drops into any
+                   other — cross-column, cross-lane, or both at once. -->
               <div
                 class="flex flex-col gap-2 flex-1 min-h-[40px]"
                 use:dndzone={{
@@ -1118,8 +1251,8 @@
                     borderRadius: "8px",
                   },
                 }}
-                onconsider={(e) => handleConsider(status, e as CustomEvent<DndEvent<Issue>>)}
-                onfinalize={(e) => handleFinalize(status, e as CustomEvent<DndEvent<Issue>>)}
+                onconsider={(e) => handleConsider(laneKey, status, e as CustomEvent<DndEvent<Issue>>)}
+                onfinalize={(e) => handleFinalize(laneKey, status, e as CustomEvent<DndEvent<Issue>>)}
               >
               {#each colIssues as issue (issue.id)}
                 <!-- Wrapper carries animate:flip (svelte-dnd-action animates
@@ -1136,11 +1269,75 @@
               {/each}
               </div>
             </div>
+          {/if}
+        </div>
+      {/snippet}
+
+      {#if boardLanes}
+        <!-- Swimlanes on: vertically-stacked bands, each its own
+             horizontally-scrolling column row (mobile: each lane gets its
+             own snap-scroll row, stacked one after another — no nested
+             horizontal scrollers competing for the same gesture). -->
+        <div class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden">
+          {#each boardLanes as lane (lane.key)}
+            {@const laneCollapsed = view.isLaneCollapsed(lane.key)}
+            <div class="border-b border-[var(--border)] last:border-b-0">
+              <!-- Lane header -->
+              <button
+                class="w-full flex items-center gap-2 px-4 py-2 sticky top-0 z-10
+                       bg-[var(--bg)] border-b border-[var(--border)]
+                       hover:bg-[var(--bg-subtle)] transition-colors text-left"
+                onclick={() => view.toggleLaneCollapsed(projectIdentifier, lane.key)}
+                aria-expanded={!laneCollapsed}
+              >
+                <ChevronRight
+                  size={13}
+                  class="shrink-0 text-[var(--text-faint)] transition-transform
+                         {laneCollapsed ? '' : 'rotate-90'}"
+                />
+                {#if lane.kind === "module"}
+                  <Layers size={13} class="shrink-0 text-[var(--text-faint)]" />
+                {:else if lane.kind === "priority"}
+                  <PriorityIcon priority={lane.priority ?? "none"} size={13} />
+                {/if}
+                <span class="text-caption font-semibold uppercase tracking-widest text-[var(--text-muted)] truncate">
+                  {lane.label}
+                </span>
+                <span class="text-caption text-[var(--text-faint)] tabular-nums">
+                  {lane.issues.length}
+                </span>
+              </button>
+              {#if !laneCollapsed}
+                <div class="relative">
+                  <div
+                    class="flex overflow-x-auto pb-3
+                           max-md:snap-x max-md:snap-mandatory max-md:scroll-smooth
+                           max-md:[mask-image:linear-gradient(to_right,transparent,black_16px,black_calc(100%-16px),transparent)]"
+                  >
+                    {#each visibleStatuses as status (status)}
+                      {@render column(lane.key, status)}
+                    {/each}
+                  </div>
+                </div>
+              {/if}
+            </div>
+          {/each}
+        </div>
+      {:else}
+        <!-- Swimlanes off: today's flat board, filling the remaining height. -->
+        <div class="relative flex-1 min-h-0">
+          <div
+            class="h-full flex overflow-x-auto overflow-y-hidden
+                   max-md:snap-x max-md:snap-mandatory max-md:scroll-smooth
+                   max-md:[mask-image:linear-gradient(to_right,transparent,black_16px,black_calc(100%-16px),transparent)]"
+          >
+            {#each visibleStatuses as status (status)}
+              {@render column(NO_LANE, status)}
+            {/each}
           </div>
-        {/if}
-      {/each}
+        </div>
+      {/if}
     {/if}
-    </div>
   </div>
 {:else}
 

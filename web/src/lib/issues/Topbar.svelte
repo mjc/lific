@@ -13,13 +13,13 @@
     Plus, Search, ChevronRight, ChevronDown, Signal,
     List as ListIcon, LayoutGrid, SlidersHorizontal, HelpCircle,
     ArrowDown, ArrowUp, Hash, Clock, History, Check, Zap, PenLine,
-    SlidersVertical,
+    SlidersVertical, Rows3, Layers,
   } from "lucide-svelte";
   import Tooltip from "../Tooltip.svelte";
   import StatusIcon from "../StatusIcon.svelte";
   import FilterModal from "./FilterModal.svelte";
   import type { SortField } from "./sort";
-  import type { GroupBy, Density } from "./grouping";
+  import type { GroupBy, Density, LaneBy } from "./grouping";
   import type { IssueListState } from "./state.svelte";
 
   let {
@@ -167,6 +167,7 @@
           view.sortOpen = false;
           view.displayOpen = false;
           view.hintsOpen = false;
+          view.lanesOpen = false;
           view.newMenuOpen = false;
         }}
       >
@@ -222,6 +223,7 @@
             view.sortOpen = !view.sortOpen;
             view.displayOpen = false;
             view.hintsOpen = false;
+            view.lanesOpen = false;
           }}
         >
           {#if view.sortDir === "asc"}
@@ -290,6 +292,72 @@
         </div>
       {/if}
     </div>
+
+    <!-- LIF-241: Swimlane picker. Board view only — splits the board into
+         horizontal bands (module / priority) on top of the status columns. -->
+    {#if layout === "board"}
+    <div class="relative">
+      <Tooltip content={view.lanesOpen ? null : "Swimlanes"} placement="bottom">
+        <button
+          class="h-7 flex items-center gap-1 px-2 rounded-md
+                 text-caption font-medium
+                 text-[var(--text-muted)] hover:text-[var(--text)]
+                 hover:bg-[var(--bg-subtle)] transition-colors
+                 {view.lanesOpen || view.laneBy !== 'none' ? 'text-[var(--text)] bg-[var(--bg-subtle)]' : ''}"
+          onclick={(e) => {
+            e.stopPropagation();
+            view.lanesOpen = !view.lanesOpen;
+            view.sortOpen = false;
+            view.hintsOpen = false;
+            view.newMenuOpen = false;
+            view.filterOpen = false;
+          }}
+        >
+          <Rows3 size={12} class="shrink-0" />
+          <span class="hidden sm:inline">
+            {view.laneBy === "none" ? "Lanes" : view.laneBy === "module" ? "Module" : "Priority"}
+          </span>
+        </button>
+      </Tooltip>
+      {#if view.lanesOpen}
+        <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
+        <div
+          class="absolute right-0 top-full mt-1.5 z-30 w-[188px]
+                 bg-[var(--surface)] border border-[var(--border)]
+                 rounded-lg shadow-lg py-1.5 text-body-sm"
+          onclick={(e) => e.stopPropagation()}
+        >
+          <div class="px-3 pt-1 pb-1.5 text-[var(--text-faint)] text-micro uppercase tracking-widest font-semibold">
+            Group rows by
+          </div>
+          {#snippet laneRow(val: LaneBy, label: string, Icon: typeof Layers | null)}
+            {@const active = view.laneBy === val}
+            <button
+              class="w-full flex items-center justify-between gap-2 px-3 py-1.5 text-left transition-colors
+                     {active
+                ? 'text-[var(--text)] bg-[var(--bg-subtle)] font-medium'
+                : 'text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--bg-subtle)]'}"
+              onclick={() => { view.setLaneBy(projectIdentifier, val); }}
+            >
+              <span class="flex items-center gap-2">
+                {#if Icon}<Icon size={13} class="shrink-0" />{:else}<span class="size-[13px] shrink-0"></span>{/if}
+                {label}
+              </span>
+              {#if active}<Check size={13} class="text-[var(--accent)]" />{/if}
+            </button>
+          {/snippet}
+          {@render laneRow("none", "None", null)}
+          {@render laneRow("module", "Module", Layers)}
+          {@render laneRow("priority", "Priority", Signal)}
+          <div class="px-3 pt-2 pb-1 mt-1 text-micro
+                      text-[var(--text-faint)] border-t
+                      border-[var(--border)] leading-snug">
+            Rows always show, even at zero — drag a card in to assign it.
+          </div>
+        </div>
+      {/if}
+    </div>
+    {/if}
 
     <!-- LIF-191: Display options — group-by + density. List view only. -->
     {#if layout !== "board"}
@@ -399,7 +467,7 @@
                  text-[var(--text-muted)] hover:text-[var(--text)]
                  hover:bg-[var(--bg-subtle)] transition-colors
                  {view.hintsOpen ? 'text-[var(--text)] bg-[var(--bg-subtle)]' : ''}"
-          onclick={(e) => { e.stopPropagation(); view.hintsOpen = !view.hintsOpen; view.displayOpen = false; }}
+          onclick={(e) => { e.stopPropagation(); view.hintsOpen = !view.hintsOpen; view.displayOpen = false; view.lanesOpen = false; }}
         >
           <HelpCircle size={14} />
         </button>
@@ -499,6 +567,7 @@
             view.newMenuOpen = !view.newMenuOpen;
             view.sortOpen = false;
             view.displayOpen = false;
+            view.lanesOpen = false;
             view.hintsOpen = false;
           }}
         >

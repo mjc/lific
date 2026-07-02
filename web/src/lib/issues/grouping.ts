@@ -114,3 +114,72 @@ export function buildGroups(opts: {
   }
   return out;
 }
+
+// ── LIF-241: board swimlanes ────────────────────────────────────────────
+// Lanes are a board-only concept (see IssueList.svelte's board mode) and
+// deliberately differ from buildGroups above in one key way: a swimlane is
+// also a drag-and-drop target, so an empty "Design" lane must still render
+// as a row you can drop a card into to assign it that module/priority.
+// buildGroups omits empty buckets (they're just headers in a flat list);
+// buildLanes never does — every module and every priority always gets a
+// row, count 0 included.
+
+export type LaneBy = "none" | "module" | "priority";
+
+export type Lane = {
+  key: string;
+  label: string;
+  kind: LaneBy;
+  module?: Module;
+  priority?: string;
+  issues: Issue[];
+};
+
+/** Build swimlane rows for the board. Returns null for laneBy === "none",
+ *  meaning the board renders as a single implicit lane (today's behavior). */
+export function buildLanes(opts: {
+  sortedIssues: Issue[];
+  modules: Module[];
+  laneBy: LaneBy;
+}): Lane[] | null {
+  const { sortedIssues, modules, laneBy } = opts;
+  if (laneBy === "none") return null;
+
+  if (laneBy === "priority") {
+    return PRIORITIES.map((p) => ({
+      key: p,
+      label: p,
+      kind: "priority" as const,
+      priority: p,
+      issues: sortedIssues.filter((i) => i.priority === p),
+    }));
+  }
+
+  // module
+  const lanes: Lane[] = modules.map((m) => ({
+    key: String(m.id),
+    label: m.name,
+    kind: "module" as const,
+    module: m,
+    issues: sortedIssues.filter((i) => i.module_id === m.id),
+  }));
+  lanes.push({
+    key: "none",
+    label: "No module",
+    kind: "module",
+    issues: sortedIssues.filter((i) => i.module_id == null),
+  });
+  return lanes;
+}
+
+/** The lane key a given issue currently belongs to, under `laneBy` — the
+ *  inverse of the bucketing in `buildLanes`. The board's dnd finalize
+ *  handler uses this to detect a cross-lane drop: the dragged issue object
+ *  is stale (its module_id/priority isn't updated until the PUT resolves),
+ *  so comparing its lane key to the drop zone's lane key is the same trick
+ *  IssueList already uses for cross-column status drops. */
+export function laneKeyForIssue(issue: Issue, laneBy: LaneBy): string {
+  if (laneBy === "priority") return issue.priority;
+  if (laneBy === "module") return issue.module_id == null ? "none" : String(issue.module_id);
+  return "";
+}

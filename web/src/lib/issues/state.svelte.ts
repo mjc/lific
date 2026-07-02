@@ -13,13 +13,19 @@
 
 import type { SortField, SortDir } from "./sort";
 import { defaultSortDir } from "./sort";
-import type { GroupBy, Density } from "./grouping";
+import type { GroupBy, Density, LaneBy } from "./grouping";
 import {
   loadListState,
   saveCollapsedGroups,
   loadCollapsedGroups,
   loadHiddenStatuses,
   saveHiddenStatuses,
+  loadLaneBy,
+  saveLaneBy,
+  loadCollapsedLanes,
+  saveCollapsedLanes,
+  loadCollapsedColumns,
+  saveCollapsedColumns,
 } from "./persistence";
 
 export class IssueListState {
@@ -45,6 +51,21 @@ export class IssueListState {
   // ── Board: per-status column visibility ──
   hiddenStatuses = $state<Set<string>>(new Set());
 
+  // ── Board: swimlanes (LIF-241) ──
+  // Which dimension splits the board into horizontal bands, on top of the
+  // status columns. "none" = today's flat board (single implicit lane).
+  laneBy = $state<LaneBy>("none");
+  /** Collapsed lane keys (module id / "none" / priority name). Unlike
+   *  collapsedGroups these aren't namespaced by laneBy — switching lanes
+   *  clears the set's *meaning* anyway (a module-id key means nothing under
+   *  priority lanes), so the component just treats the current laneBy's
+   *  keys as the ones that matter and stale keys from a prior laneBy are
+   *  harmless (never matched, quietly forgotten on next save). */
+  collapsedLanes = $state<Set<string>>(new Set());
+  /** Collapsed status columns — board-wide, independent of lane. A
+   *  collapsed column shrinks to a slim drop-target rail. */
+  collapsedColumns = $state<Set<string>>(new Set());
+
   // ── Topbar popovers (only one open at a time, but tracked separately so
   //    the global click/Escape handlers can close whichever is open) ──
   searchExpanded = $state(false);
@@ -55,6 +76,8 @@ export class IssueListState {
   /** Unified filter popover (LIF-222). Replaces the previous row of four
    *  inline `<Select>` filter triggers. */
   filterOpen = $state(false);
+  /** Swimlane-picker popover (LIF-241). Board mode only. */
+  lanesOpen = $state(false);
 
   // ── Row interaction: keyboard focus, multi-select, inline dropdowns ──
   // Shared between the keyboard handler, the bulk handlers, and IssueRow.
@@ -153,6 +176,37 @@ export class IssueListState {
     saveHiddenStatuses(projectId, next);
   }
 
+  // ── Board swimlanes (persisted, LIF-241) ──
+  setLaneBy(projectId: string, laneBy: LaneBy): void {
+    this.laneBy = laneBy;
+    saveLaneBy(projectId, laneBy);
+  }
+
+  isLaneCollapsed(key: string): boolean {
+    return this.collapsedLanes.has(key);
+  }
+
+  toggleLaneCollapsed(projectId: string, key: string): void {
+    const next = new Set(this.collapsedLanes);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    this.collapsedLanes = next;
+    saveCollapsedLanes(projectId, next);
+  }
+
+  // ── Board collapsed columns (persisted, LIF-241) ──
+  isColumnCollapsed(status: string): boolean {
+    return this.collapsedColumns.has(status);
+  }
+
+  toggleColumnCollapsed(projectId: string, status: string): void {
+    const next = new Set(this.collapsedColumns);
+    if (next.has(status)) next.delete(status);
+    else next.add(status);
+    this.collapsedColumns = next;
+    saveCollapsedColumns(projectId, next);
+  }
+
   // ── Popover helpers ──
   /** Close every topbar popover. Used by the global click + Escape paths. */
   closePopovers(): void {
@@ -161,6 +215,7 @@ export class IssueListState {
     this.sortOpen = false;
     this.newMenuOpen = false;
     this.filterOpen = false;
+    this.lanesOpen = false;
   }
 
   /** Count of active filters, for the topbar Filter button badge. */
@@ -189,6 +244,9 @@ export class IssueListState {
     if (s.density) this.density = s.density;
     this.collapsedGroups = loadCollapsedGroups(projectId);
     this.hiddenStatuses = loadHiddenStatuses(projectId);
+    this.laneBy = loadLaneBy(projectId);
+    this.collapsedLanes = loadCollapsedLanes(projectId);
+    this.collapsedColumns = loadCollapsedColumns(projectId);
     this.hydrated = true;
   }
 
