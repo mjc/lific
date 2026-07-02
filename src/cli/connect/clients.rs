@@ -30,6 +30,14 @@ pub enum Transport {
         /// Absolute path to the SQLite database the spawned server should open.
         db_path: String,
     },
+    /// Remote streamable-HTTP server reached over the network, written WITHOUT
+    /// any `Authorization` header — the client's native MCP OAuth flow (DCR +
+    /// authorization-code) takes over and obtains its own token. No key is
+    /// minted for this transport (LIF-259 `--oauth`).
+    OauthRemote {
+        /// The MCP endpoint URL (e.g. `http://127.0.0.1:3456/mcp`).
+        url: String,
+    },
 }
 
 /// The canonical, client-agnostic description of the Lific MCP server. Every
@@ -60,6 +68,28 @@ impl ServerConfig {
             },
         }
     }
+
+    /// A remote server whose config carries no key — the client authenticates
+    /// via its native MCP OAuth flow (LIF-259 `--oauth`).
+    pub fn oauth_remote(url: impl Into<String>) -> Self {
+        Self {
+            name: "lific".into(),
+            transport: Transport::OauthRemote { url: url.into() },
+        }
+    }
+}
+
+/// Whether a client can drive Lific's MCP OAuth flow from a config file that
+/// carries only a URL (no `Authorization` header), and — when it can — the
+/// post-connect command that kicks off/completes that flow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OauthSupport {
+    /// The client completes OAuth (DCR + auth-code) itself once it sees a
+    /// header-less remote entry. `hint` is the command/instruction to surface.
+    Capable { hint: &'static str },
+    /// The client cannot OAuth from the config-file form we write. `reason` is
+    /// shown to the user so the skip isn't silent.
+    Unsupported { reason: &'static str },
 }
 
 /// On-disk file format for a client's config.
@@ -160,8 +190,13 @@ pub struct CompiledEntry {
 pub struct ClientSpec {
     /// Stable identifier used on the CLI (`--client <id>`).
     pub id: &'static str,
-    /// Human-facing display name.
+    /// Human-facing display name. Matches the web UI's Connected Tools display
+    /// map where the tool overlaps (LIF-259) so a CLI-connected bot and a
+    /// web-connected bot are indistinguishable on that page.
     pub display: &'static str,
+    /// Whether this client can drive Lific's MCP OAuth flow from a header-less
+    /// config, and the post-connect auth hint (LIF-259 `--oauth`).
+    pub oauth: OauthSupport,
     pub format: Format,
     /// Compute the global-scope config path for this OS, or `None` if the
     /// client has no global config (rare).
@@ -276,6 +311,9 @@ pub fn all_clients() -> Vec<ClientSpec> {
         ClientSpec {
             id: "opencode",
             display: "OpenCode",
+            oauth: OauthSupport::Capable {
+                hint: "opencode mcp auth lific",
+            },
             format: Format::Json,
             global_path: |b| Some(config_dir(b, &["opencode", "opencode.json"])),
             project_path: |b| Some(project_rel(b, &["opencode.json"])),
@@ -288,6 +326,19 @@ pub fn all_clients() -> Vec<ClientSpec> {
                         "type": "remote",
                         "url": url,
                         "headers": headers_obj(key),
+                        "enabled": true,
+                    }),
+                    notes: vec![],
+                },
+                // OAuth: a bare remote entry with no headers. OpenCode's
+                // automatic MCP OAuth detection kicks in (verified: it completes
+                // discovery + DCR against Lific with just this).
+                Transport::OauthRemote { url } => CompiledEntry {
+                    name: String::new(),
+                    top_key: "mcp".into(),
+                    value: serde_json::json!({
+                        "type": "remote",
+                        "url": url,
                         "enabled": true,
                     }),
                     notes: vec![],
@@ -308,6 +359,9 @@ pub fn all_clients() -> Vec<ClientSpec> {
         ClientSpec {
             id: "claude-code",
             display: "Claude Code",
+            oauth: OauthSupport::Capable {
+                hint: "claude mcp login lific  (or /mcp inside a session)",
+            },
             format: Format::Json,
             global_path: |b| Some(home_dot(b, &[".claude.json"])),
             project_path: |b| Some(project_rel(b, &[".mcp.json"])),
@@ -320,6 +374,15 @@ pub fn all_clients() -> Vec<ClientSpec> {
                         "type": "http",
                         "url": url,
                         "headers": headers_obj(key),
+                    }),
+                    notes: vec![],
+                },
+                Transport::OauthRemote { url } => CompiledEntry {
+                    name: String::new(),
+                    top_key: "mcpServers".into(),
+                    value: serde_json::json!({
+                        "type": "http",
+                        "url": url,
                     }),
                     notes: vec![],
                 },
@@ -339,6 +402,12 @@ pub fn all_clients() -> Vec<ClientSpec> {
         ClientSpec {
             id: "claude-desktop",
             display: "Claude Desktop",
+            // Its config-file form uses the mcp-remote npx shim; the native
+            // OAuth path is the Custom Connectors UI, not a header-less config.
+            oauth: OauthSupport::Unsupported {
+                reason: "Claude Desktop's OAuth path is the Settings > Connectors UI, not a \
+                         config-file entry — add Lific there instead.",
+            },
             format: Format::Json,
             global_path: |b| {
                 Some(match b.os {
@@ -381,6 +450,18 @@ pub fn all_clients() -> Vec<ClientSpec> {
                             .into(),
                     ],
                 },
+                // Unreachable in `--oauth` mode (claude-desktop is skipped as
+                // OAuth-incapable before compile), but the match must be total:
+                // fall back to the header-less mcp-remote shim.
+                Transport::OauthRemote { url } => CompiledEntry {
+                    name: String::new(),
+                    top_key: "mcpServers".into(),
+                    value: serde_json::json!({
+                        "command": "npx",
+                        "args": ["-y", "mcp-remote", url],
+                    }),
+                    notes: vec![],
+                },
                 Transport::Stdio { db_path } => CompiledEntry {
                     name: String::new(),
                     top_key: "mcpServers".into(),
@@ -396,6 +477,9 @@ pub fn all_clients() -> Vec<ClientSpec> {
         ClientSpec {
             id: "cursor",
             display: "Cursor",
+            oauth: OauthSupport::Capable {
+                hint: "Cursor will prompt to authorize in-app on first connect",
+            },
             format: Format::Json,
             global_path: |b| Some(home_dot(b, &[".cursor", "mcp.json"])),
             project_path: |b| Some(project_rel(b, &[".cursor", "mcp.json"])),
@@ -410,6 +494,14 @@ pub fn all_clients() -> Vec<ClientSpec> {
                     value: serde_json::json!({
                         "url": url,
                         "headers": headers_obj(key),
+                    }),
+                    notes: vec![],
+                },
+                Transport::OauthRemote { url } => CompiledEntry {
+                    name: String::new(),
+                    top_key: "mcpServers".into(),
+                    value: serde_json::json!({
+                        "url": url,
                     }),
                     notes: vec![],
                 },
@@ -428,6 +520,9 @@ pub fn all_clients() -> Vec<ClientSpec> {
         ClientSpec {
             id: "vscode",
             display: "VS Code",
+            oauth: OauthSupport::Capable {
+                hint: "VS Code starts the browser OAuth flow on first connect",
+            },
             format: Format::Json,
             global_path: |b| {
                 Some(match b.os {
@@ -456,6 +551,15 @@ pub fn all_clients() -> Vec<ClientSpec> {
                     }),
                     notes: vec![],
                 },
+                Transport::OauthRemote { url } => CompiledEntry {
+                    name: String::new(),
+                    top_key: "servers".into(),
+                    value: serde_json::json!({
+                        "type": "http",
+                        "url": url,
+                    }),
+                    notes: vec![],
+                },
                 Transport::Stdio { db_path } => CompiledEntry {
                     name: String::new(),
                     top_key: "servers".into(),
@@ -472,6 +576,9 @@ pub fn all_clients() -> Vec<ClientSpec> {
         ClientSpec {
             id: "codex",
             display: "Codex",
+            oauth: OauthSupport::Capable {
+                hint: "codex mcp login lific",
+            },
             format: Format::Toml,
             global_path: |b| Some(home_dot(b, &[".codex", "config.toml"])),
             project_path: |b| Some(project_rel(b, &[".codex", "config.toml"])),
@@ -494,6 +601,16 @@ pub fn all_clients() -> Vec<ClientSpec> {
                             .into(),
                     ],
                 },
+                // OAuth: url only — no bearer_token_env_var, so Codex runs its
+                // own login flow rather than reading a key from the env.
+                Transport::OauthRemote { url } => CompiledEntry {
+                    name: String::new(),
+                    top_key: "mcp_servers.lific".into(),
+                    value: serde_json::json!({
+                        "url": url,
+                    }),
+                    notes: vec![],
+                },
                 Transport::Stdio { db_path } => CompiledEntry {
                     name: String::new(),
                     top_key: "mcp_servers.lific".into(),
@@ -509,6 +626,9 @@ pub fn all_clients() -> Vec<ClientSpec> {
         ClientSpec {
             id: "zed",
             display: "Zed",
+            oauth: OauthSupport::Capable {
+                hint: "Zed runs the OAuth flow automatically when no header is set",
+            },
             format: Format::Json,
             global_path: |b| Some(config_dir(b, &["zed", "settings.json"])),
             project_path: |_| None,
@@ -523,6 +643,14 @@ pub fn all_clients() -> Vec<ClientSpec> {
                     value: serde_json::json!({
                         "url": url,
                         "headers": headers_obj(key),
+                    }),
+                    notes: vec![],
+                },
+                Transport::OauthRemote { url } => CompiledEntry {
+                    name: String::new(),
+                    top_key: "context_servers".into(),
+                    value: serde_json::json!({
+                        "url": url,
                     }),
                     notes: vec![],
                 },
@@ -541,6 +669,9 @@ pub fn all_clients() -> Vec<ClientSpec> {
         ClientSpec {
             id: "gemini",
             display: "Gemini CLI",
+            oauth: OauthSupport::Capable {
+                hint: "run /mcp auth lific inside Gemini CLI",
+            },
             format: Format::Json,
             global_path: |b| Some(home_dot(b, &[".gemini", "settings.json"])),
             project_path: |b| Some(project_rel(b, &[".gemini", "settings.json"])),
@@ -559,6 +690,14 @@ pub fn all_clients() -> Vec<ClientSpec> {
                     }),
                     notes: vec![],
                 },
+                Transport::OauthRemote { url } => CompiledEntry {
+                    name: String::new(),
+                    top_key: "mcpServers".into(),
+                    value: serde_json::json!({
+                        "httpUrl": url,
+                    }),
+                    notes: vec![],
+                },
                 Transport::Stdio { db_path } => CompiledEntry {
                     name: String::new(),
                     top_key: "mcpServers".into(),
@@ -574,6 +713,9 @@ pub fn all_clients() -> Vec<ClientSpec> {
         ClientSpec {
             id: "windsurf",
             display: "Windsurf",
+            oauth: OauthSupport::Capable {
+                hint: "Windsurf prompts to authorize in-app on first connect",
+            },
             format: Format::Json,
             global_path: |b| Some(home_dot(b, &[".codeium", "windsurf", "mcp_config.json"])),
             project_path: |_| None,
@@ -592,6 +734,14 @@ pub fn all_clients() -> Vec<ClientSpec> {
                     }),
                     notes: vec![],
                 },
+                Transport::OauthRemote { url } => CompiledEntry {
+                    name: String::new(),
+                    top_key: "mcpServers".into(),
+                    value: serde_json::json!({
+                        "serverUrl": url,
+                    }),
+                    notes: vec![],
+                },
                 Transport::Stdio { db_path } => CompiledEntry {
                     name: String::new(),
                     top_key: "mcpServers".into(),
@@ -607,6 +757,12 @@ pub fn all_clients() -> Vec<ClientSpec> {
         ClientSpec {
             id: "goose",
             display: "Goose",
+            // Unconfirmed OAuth support — don't write a header-less config we
+            // can't vouch for; steer the user to the default key mode.
+            oauth: OauthSupport::Unsupported {
+                reason: "Goose's MCP OAuth support is unconfirmed — use the default key mode \
+                         (drop --oauth) to connect it.",
+            },
             format: Format::Yaml,
             global_path: |b| Some(config_dir(b, &["goose", "config.yaml"])),
             project_path: |_| None,
@@ -632,6 +788,20 @@ pub fn all_clients() -> Vec<ClientSpec> {
                             .into(),
                     ],
                 },
+                // Unreachable in `--oauth` mode (goose is skipped as
+                // OAuth-incapable before compile), but the match must be total.
+                Transport::OauthRemote { url } => CompiledEntry {
+                    name: String::new(),
+                    top_key: "extensions".into(),
+                    value: serde_json::json!({
+                        "name": "lific",
+                        "type": "streamable_http",
+                        "uri": url,
+                        "enabled": true,
+                        "timeout": 300,
+                    }),
+                    notes: vec![],
+                },
                 Transport::Stdio { db_path } => CompiledEntry {
                     name: String::new(),
                     top_key: "extensions".into(),
@@ -655,6 +825,10 @@ pub fn all_clients() -> Vec<ClientSpec> {
         ClientSpec {
             id: "crush",
             display: "Crush",
+            oauth: OauthSupport::Unsupported {
+                reason: "Crush's MCP OAuth support is unconfirmed — use the default key mode \
+                         (drop --oauth) to connect it.",
+            },
             format: Format::Json,
             global_path: |b| Some(config_dir(b, &["crush", "crush.json"])),
             project_path: |b| Some(project_rel(b, &["crush.json"])),
@@ -670,6 +844,17 @@ pub fn all_clients() -> Vec<ClientSpec> {
                         "type": "http",
                         "url": url,
                         "headers": headers_obj(key),
+                    }),
+                    notes: vec![],
+                },
+                // Unreachable in `--oauth` mode (crush is skipped as
+                // OAuth-incapable before compile), but the match must be total.
+                Transport::OauthRemote { url } => CompiledEntry {
+                    name: String::new(),
+                    top_key: "mcp".into(),
+                    value: serde_json::json!({
+                        "type": "http",
+                        "url": url,
                     }),
                     notes: vec![],
                 },
@@ -717,6 +902,59 @@ mod tests {
 
     fn stdio_cfg() -> ServerConfig {
         ServerConfig::stdio("/abs/lific.db")
+    }
+
+    fn oauth_cfg() -> ServerConfig {
+        ServerConfig::oauth_remote("http://127.0.0.1:3456/mcp")
+    }
+
+    #[test]
+    fn opencode_oauth_has_url_but_no_headers() {
+        let e = find_client("opencode").unwrap().compile(&oauth_cfg());
+        assert_eq!(e.value["url"], "http://127.0.0.1:3456/mcp");
+        assert!(
+            e.value.get("headers").is_none(),
+            "oauth opencode entry must have no headers"
+        );
+        assert_eq!(e.value["type"], "remote");
+    }
+
+    #[test]
+    fn codex_oauth_has_url_and_no_bearer_env_var() {
+        let e = find_client("codex").unwrap().compile(&oauth_cfg());
+        assert_eq!(e.value["url"], "http://127.0.0.1:3456/mcp");
+        assert!(
+            e.value.get("bearer_token_env_var").is_none(),
+            "oauth codex entry must not set bearer_token_env_var"
+        );
+    }
+
+    #[test]
+    fn oauth_capable_clients_have_hints_incapable_have_reasons() {
+        let capable = [
+            "opencode",
+            "claude-code",
+            "cursor",
+            "vscode",
+            "codex",
+            "zed",
+            "gemini",
+            "windsurf",
+        ];
+        for id in capable {
+            match find_client(id).unwrap().oauth {
+                OauthSupport::Capable { hint } => assert!(!hint.is_empty(), "{id} needs a hint"),
+                OauthSupport::Unsupported { .. } => panic!("{id} should be OAuth-capable"),
+            }
+        }
+        for id in ["claude-desktop", "goose", "crush"] {
+            match find_client(id).unwrap().oauth {
+                OauthSupport::Unsupported { reason } => {
+                    assert!(!reason.is_empty(), "{id} needs a reason")
+                }
+                OauthSupport::Capable { .. } => panic!("{id} should not be OAuth-capable"),
+            }
+        }
     }
 
     #[test]

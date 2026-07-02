@@ -28,7 +28,7 @@ lific start             # serves on :3456, prints your API key once
 lific connect           # writes MCP config into your AI clients
 ```
 
-That's the whole thing. `lific connect` detects the AI tools installed on your machine (OpenCode, Claude Code, Cursor, VS Code, Codex, and more), lets you pick, mints an API key, and writes correct MCP config into each one — merging into existing config files, never overwriting them. Restart your client and the Lific tools are there.
+That's the whole thing. `lific connect` detects the AI tools installed on your machine (OpenCode, Claude Code, Cursor, VS Code, Codex, and more), lets you pick, mints a per-tool API key, and writes correct MCP config into each one — merging into existing config files, never overwriting them. Restart your client and the Lific tools are there.
 
 The web UI is at `http://localhost:3456` — the first account you create is the admin.
 
@@ -57,11 +57,29 @@ lific connect --dry-run --client vscode          # preview without writing
 
 Each client gets its native schema (`mcpServers` vs `servers` vs `mcp`, Codex TOML with an env-var token, Goose YAML — the quirks are handled). JSON configs are merged non-destructively; a file `connect` can't parse safely is left untouched and you get the exact snippet to paste instead.
 
-**Zero-config OAuth.** Lific implements the full MCP authorization spec — RFC 9728 protected-resource metadata, dynamic client registration, PKCE. Clients that speak MCP OAuth (Claude Code, Cursor, VS Code, Codex, OpenCode, Zed, and others) can connect with **just the URL** and complete auth in the browser:
+### Every tool gets its own identity — and that's the point
+
+`lific connect` mints a **separate bot identity per tool**, owned by your account (`opencode-blake`, `cursor-blake`, ...). This is what makes the audit log actually useful in an agent-driven workflow:
+
+- **`get_activity` and the web activity feed show which harness made every change** — "OpenCode closed APP-42", "Cursor edited the design page" — all attributed to you, but never blurred together. When three different agents work your projects, you can see exactly who did what.
+- **Revoke one tool without touching the others.** Cursor misbehaving? Disconnect just its key — OpenCode keeps working.
+- **Scoped authority.** Each bot inherits its owner's project access and nothing more.
+
+This is the recommended way to connect agent harnesses.
+
+### OAuth, if you'd rather auth as yourself
+
+Lific also implements the full MCP authorization spec — RFC 9728 protected-resource metadata, dynamic client registration, PKCE — so OAuth-capable clients (OpenCode, Claude Code, Cursor, VS Code, Codex, Zed, and others) can connect with **just the URL** and complete auth in the browser:
 
 ```bash
+lific connect --oauth --client opencode   # writes a header-less config, mints nothing
+opencode mcp auth lific                   # browser opens → sign in → approve
+
+# or with any client's native command:
 claude mcp add --transport http lific http://localhost:3456/mcp
 ```
+
+The trade-off: an OAuth token **is you**. Changes made through it are indistinguishable from your own edits in the audit log — no per-harness attribution. That's fine for personally browsing your tracker from an editor; for agents doing real work, prefer the per-tool bot identities above.
 
 **Headless / SSH / agents.** No browser on the box? The device flow has you covered:
 

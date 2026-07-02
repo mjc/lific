@@ -116,8 +116,11 @@ pub enum Command {
     ///
     /// With no --client and an interactive terminal, probes for installed
     /// clients and lets you pick. Non-interactively you must name at least one
-    /// --client and pass --yes. A single API key is minted (or reused via
-    /// --key) and shared by all selected clients this run.
+    /// --client and pass --yes. One bot + API key is minted PER selected client
+    /// (named after the tool, matching the web UI's Connected Tools) so the
+    /// audit log attributes changes to the specific harness. --key reuses one
+    /// key verbatim for all clients; --oauth mints nothing and writes
+    /// header-less config for the client's native OAuth flow.
     Connect {
         /// Client id to configure (repeatable). Known ids: opencode,
         /// claude-code, claude-desktop, cursor, vscode, codex, zed, gemini,
@@ -133,6 +136,12 @@ pub enum Command {
         /// remote HTTP server. No API key is needed.
         #[arg(long)]
         stdio: bool,
+
+        /// Write a header-less remote config and let the client's native MCP
+        /// OAuth flow authenticate. Mints no key or bot. Conflicts with --stdio
+        /// and --key. OAuth-incapable clients are skipped with a note.
+        #[arg(long)]
+        oauth: bool,
 
         /// Override the MCP URL (default: server.public_url, else
         /// http://127.0.0.1:<port>/mcp).
@@ -1024,6 +1033,7 @@ mod tests {
                 clients,
                 scope,
                 stdio,
+                oauth,
                 url,
                 key,
                 user,
@@ -1034,12 +1044,36 @@ mod tests {
                 assert!(clients.is_empty());
                 assert_eq!(scope, "global");
                 assert!(!stdio);
+                assert!(!oauth);
                 assert!(url.is_none());
                 assert!(key.is_none());
                 assert!(user.is_none());
                 assert!(!yes);
                 assert!(!dry_run);
                 assert!(!skip_agents);
+            }
+            _ => panic!("expected Connect"),
+        }
+    }
+
+    #[test]
+    fn parse_connect_oauth_flag() {
+        let cli = Cli::try_parse_from([
+            "lific", "connect", "--oauth", "--client", "opencode", "--yes",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Connect {
+                oauth,
+                clients,
+                stdio,
+                key,
+                ..
+            } => {
+                assert!(oauth, "--oauth must parse");
+                assert_eq!(clients, vec!["opencode".to_string()]);
+                assert!(!stdio);
+                assert!(key.is_none());
             }
             _ => panic!("expected Connect"),
         }
@@ -1066,6 +1100,7 @@ mod tests {
                 clients,
                 scope,
                 stdio,
+                oauth,
                 url,
                 key,
                 user,
@@ -1076,6 +1111,7 @@ mod tests {
                 assert_eq!(clients, vec!["opencode".to_string(), "codex".to_string()]);
                 assert_eq!(scope, "project");
                 assert!(stdio);
+                assert!(!oauth);
                 assert_eq!(url, Some("http://127.0.0.1:9000/mcp".into()));
                 assert_eq!(key, Some("lific_sk-live-K".into()));
                 assert_eq!(user, Some("blake".into()));
