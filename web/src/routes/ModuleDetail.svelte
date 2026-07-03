@@ -33,6 +33,7 @@
   import { formatDate } from "../lib/format";
   import { peekState } from "../lib/issues/peek.svelte"; // LIF-248
   import { contextMenuState } from "../lib/contextMenu.svelte"; // LIF-248
+  import { projectRole, loadProjectRole } from "../lib/projectRole.svelte"; // LIF-234
   import {
     ArrowLeft, Plus, ChevronDown, PanelRight, X,
     CircleDot, Pause, CircleCheck, CircleX, CircleDashed, Circle,
@@ -63,13 +64,17 @@
     navigate,
     projectIdentifier,
     moduleId,
-    editable = true,
+    editable: editableProp,
   }: {
     navigate: (path: string) => void;
     projectIdentifier: string;
     moduleId: number;
     editable?: boolean;
   } = $props();
+
+  // LIF-234: modules are structure — edits are maintainer-gated
+  // (require_structure_role). A viewer sees the module read-only.
+  const editable = $derived(editableProp ?? projectRole.canEdit);
 
   let mod = $state<Module | null>(null);
   let issues = $state<Issue[]>([]);
@@ -121,6 +126,7 @@
     const res = await getModule(id);
     if (!res.ok) { error = res.error; loading = false; return; }
     mod = res.data;
+    loadProjectRole(mod.project_id); // LIF-234
 
     // Pull the issues for this module. Using the existing module_id
     // filter on listIssues keeps the load efficient even for very

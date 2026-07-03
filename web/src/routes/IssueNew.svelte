@@ -15,6 +15,12 @@
   import StatusIcon from "../lib/StatusIcon.svelte";
   import ErrorState from "../lib/ErrorState.svelte";
   import { getContext } from "svelte";
+  import { projectRole, loadProjectRole } from "../lib/projectRole.svelte"; // LIF-234
+
+  // LIF-234: issue creation is maintainer-gated. A viewer who lands here
+  // (e.g. via a stale link) gets a read-only notice instead of a form that
+  // would 403 on submit.
+  const canEdit = $derived(projectRole.canEdit);
 
   const topbarCtx = getContext<{
     set: (s: import("svelte").Snippet | undefined) => void;
@@ -103,6 +109,7 @@
       return;
     }
     project = found;
+    loadProjectRole(found.id); // LIF-234
 
     const [modRes, lblRes] = await Promise.all([
       listModules(found.id),
@@ -203,6 +210,19 @@
     </button>
     <button
       class="text-body-sm text-[var(--text-muted)] border border-[var(--border)] px-3 py-1.5 rounded-md hover:bg-[var(--bg-subtle)] transition-colors"
+      onclick={() => navigate(`/${projectIdentifier}/issues`)}
+    >
+      Back to issues
+    </button>
+  </ErrorState>
+{:else if !canEdit}
+  <!-- LIF-234: viewer landed on the create form (stale link / manual URL). -->
+  <ErrorState
+    title="You can't create issues here"
+    message="You're a viewer on this project. Only maintainers and leads can create issues. You can still read and comment."
+  >
+    <button
+      class="text-body-sm font-medium text-[var(--btn-success-text)] bg-[var(--btn-success)] px-3 py-1.5 rounded-md hover:bg-[var(--btn-success-hover)] transition-colors"
       onclick={() => navigate(`/${projectIdentifier}/issues`)}
     >
       Back to issues

@@ -19,6 +19,7 @@
   import { formatDate } from "../lib/format";
   import { recordRecent } from "../lib/home/recents"; // LIF-237
   import { startAutoRefresh } from "../lib/autoRefresh.svelte";
+  import { projectRole, loadProjectRole, ensureMeAdmin } from "../lib/projectRole.svelte"; // LIF-234
   import {
     PenLine,
     CircleDot,
@@ -49,7 +50,7 @@
     navigate,
     projectIdentifier,
     pageId,
-    editable = true,
+    editable: editableProp,
   }: {
     navigate: (path: string) => void;
     projectIdentifier: string;
@@ -58,6 +59,21 @@
   } = $props();
 
   let page = $state<Page | null>(null);
+
+  // LIF-234: role-aware gating. A page with a project follows that project's
+  // role (maintainer+ edits, viewer read-only, viewer may still comment). A
+  // workspace page (project_id === null) is admin-only once enforcement is
+  // on, mirroring the server (authz::require_workspace_admin). `editableProp`
+  // remains an optional hard override.
+  const isWorkspacePage = $derived(page != null && page.project_id === null);
+  const editable = $derived(
+    editableProp ??
+      (isWorkspacePage ? projectRole.canEditWorkspacePage : projectRole.canEdit),
+  );
+  const canComment = $derived(
+    isWorkspacePage ? projectRole.canEditWorkspacePage : projectRole.canComment,
+  );
+
   let comments = $state<Comment[]>([]);
   let activity = $state<Activity[]>([]);
   // LIF-105: project labels available for attachment. Stays empty for
@@ -130,6 +146,10 @@
     if (gen !== loadGen) return; // a newer navigation superseded this load
     if (!res.ok) { error = res.error; loading = false; return; }
     page = res.data;
+    // LIF-234: prime role gating — a project page reads that project's role;
+    // a workspace page needs the workspace-admin flag instead.
+    if (page.project_id !== null) loadProjectRole(page.project_id);
+    else ensureMeAdmin();
     recordRecent({ type: "page", routeId: String(page.id), identifier: page.identifier, title: page.title, project: projectIdentifier }); // LIF-237
 
     // Load page comments and (project) labels in parallel. Workspace
@@ -298,6 +318,7 @@
   backRoute={`/${projectIdentifier}/pages`}
   backLabel="Pages"
   {editable}
+  {canComment}
   title={page?.title ?? ""}
   titleSize="lg"
   onSaveTitle={saveTitle}
@@ -323,6 +344,19 @@
   layout="wide"
   bind:bodyMode
 >
+  {#snippet breadcrumbExtra()}
+    {#if !editable && (isWorkspacePage ? projectRole.globalEnforced : projectRole.enforced)}
+      <!-- LIF-234: read-only cue for a viewer (project page) or non-admin
+           (workspace page). Commenting stays available on project pages. -->
+      <span class="text-micro font-medium px-1.5 py-0.5 rounded-full text-[var(--text-muted)] bg-[var(--bg-subtle)]"
+            title={isWorkspacePage
+              ? "Read-only — workspace pages can only be edited by an admin."
+              : "Read-only — you're a viewer on this project. You can still comment."}>
+        Read-only
+      </span>
+    {/if}
+  {/snippet}
+
   {#snippet belowTitle()}
     <!-- LIF-112 + LIF-105: lifecycle status picker and labels strip. Both
          sit between title and body, mirroring the issue sidebar's UX but

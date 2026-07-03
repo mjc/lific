@@ -53,6 +53,7 @@
   import { shortcutsSuppressed } from "../lib/shortcuts"; // LIF-245
   import { shortcutHelpState } from "../lib/shortcutHelp.svelte"; // LIF-245
   import { commandPaletteState } from "../lib/commandPaletteState.svelte"; // LIF-245
+  import { projectRole, loadProjectRole } from "../lib/projectRole.svelte"; // LIF-234
 
   const topbarCtx = getContext<{
     set: (s: import("svelte").Snippet | undefined) => void;
@@ -95,6 +96,13 @@
   // LIF-99 Phase 3: shared view/interaction state lives in a $state class.
   // The component still owns the data layer (issues, project, fetches).
   const view = new IssueListState();
+
+  // LIF-234: content mutation gate. When false (a viewer, enforcement on),
+  // hide create affordances, disable board drag, and drop the inline
+  // status/priority/bulk controls — the server denies these anyway, this
+  // just stops offering them. True while enforcement is off / for admins /
+  // maintainer+.
+  const canEdit = $derived(projectRole.canEdit);
 
   // LIF-246: shared duration for every animate:flip / dndzone
   // flipDurationMs in this component (list-row reorder, board card
@@ -212,6 +220,7 @@
       return;
     }
     project = found;
+    loadProjectRole(found.id); // LIF-234: prime role gating for this project
 
     // Load modules, labels, and issues in parallel
     const [modRes, lblRes] = await Promise.all([
@@ -972,7 +981,9 @@
         view.focusedIndex = flatIssues.length - 1;
         break;
       case "x":
-        // Toggle selection on the focused row (LIF-149).
+        // Toggle selection on the focused row (LIF-149). LIF-234: selection
+        // only drives bulk mutations, so it's a no-op for viewers.
+        if (!canEdit) break;
         if (listOnly && view.focusedIndex >= 0 && view.focusedIndex < flatIssues.length) {
           e.preventDefault();
           toggleSelect(flatIssues[view.focusedIndex].id, view.focusedIndex);
@@ -995,6 +1006,7 @@
         }
         break;
       case "c":
+        if (!canEdit) break; // LIF-234: creation is maintainer-gated
         e.preventDefault();
         inlineCreateActive = true;
         inlineCreateStatus = "backlog";
@@ -1011,12 +1023,15 @@
         // LIF-245: opens the status picker popover (same UI the row's
         // click trigger opens) rather than cycling — see the s/p decision
         // in the report. Cycling lives on shift+S below.
+        // LIF-234: read-only for viewers.
+        if (!canEdit) break;
         if (listOnly && view.focusedIndex >= 0 && view.focusedIndex < flatIssues.length) {
           e.preventDefault();
           toggleStatusDropdown(flatIssues[view.focusedIndex]);
         }
         break;
       case "S":
+        if (!canEdit) break; // LIF-234
         // Fast-path: cycle status without opening the picker. Previously
         // bound to plain `s`; shift+S was an unbound no-op before this
         // change (the old switch only matched lowercase "s"), so this is
@@ -1055,12 +1070,15 @@
         break;
       case "p":
         // LIF-245: opens the priority picker popover — mirrors `s`.
+        // LIF-234: read-only for viewers.
+        if (!canEdit) break;
         if (listOnly && view.focusedIndex >= 0 && view.focusedIndex < flatIssues.length) {
           e.preventDefault();
           togglePriorityDropdown(flatIssues[view.focusedIndex]);
         }
         break;
       case "P":
+        if (!canEdit) break; // LIF-234
         // Fast-path: cycle priority (previously plain `p`; shift+P was an
         // unbound no-op before this change — see the `S` case comment).
         if (listOnly && view.focusedIndex >= 0 && view.focusedIndex < flatIssues.length && canFireKey()) {
@@ -1094,6 +1112,8 @@
         // prior binding existed for module, so there's no cycle fast-path
         // to preserve (module sets aren't a small fixed enum like status/
         // priority, so cycling wouldn't be a great fit anyway).
+        // LIF-234: read-only for viewers.
+        if (!canEdit) break;
         if (listOnly && view.focusedIndex >= 0 && view.focusedIndex < flatIssues.length) {
           e.preventDefault();
           toggleModuleDropdown(flatIssues[view.focusedIndex]);
@@ -1134,6 +1154,7 @@
   // Empty-state CTA: open the inline quick-create row (mirrors the `c`
   // shortcut) and drop focus straight into the title input.
   function startInlineCreateFromEmpty() {
+    if (!canEdit) return; // LIF-234: creation is maintainer-gated
     inlineCreateActive = true;
     inlineCreateStatus = "backlog";
     inlineCreateStatusOpen = false;
@@ -1307,6 +1328,7 @@
     {projectIdentifier}
     {layout}
     {navigate}
+    {canEdit}
     {statusCounts}
     countsLoading={issueCounts === null}
     {countLabel}
@@ -1449,6 +1471,7 @@
                 items: colIssues,
                 flipDurationMs: flipMs(),
                 type: "lific-issues",
+                dragDisabled: !canEdit,
                 dropTargetStyle: {
                   outline: "2px dashed var(--accent)",
                   outlineOffset: "-4px",
@@ -1509,17 +1532,19 @@
                   <PanelLeftClose size={12} />
                 </button>
               </Tooltip>
-              <Tooltip content="New {status} issue" placement="bottom">
-                <button
-                  class="size-5 flex items-center justify-center rounded
-                         text-[var(--text-faint)] hover:text-[var(--accent)]
-                         hover:bg-[var(--bg-subtle)] transition-colors"
-                  onclick={() =>
-                    navigate(`/${projectIdentifier}/issues/new?status=${status}`)}
-                >
-                  <Plus size={12} />
-                </button>
-              </Tooltip>
+              {#if canEdit}
+                <Tooltip content="New {status} issue" placement="bottom">
+                  <button
+                    class="size-5 flex items-center justify-center rounded
+                           text-[var(--text-faint)] hover:text-[var(--accent)]
+                           hover:bg-[var(--bg-subtle)] transition-colors"
+                    onclick={() =>
+                      navigate(`/${projectIdentifier}/issues/new?status=${status}`)}
+                  >
+                    <Plus size={12} />
+                  </button>
+                </Tooltip>
+              {/if}
             </div>
 
             <!-- Cards container wraps the dndzone so we can render the
@@ -1552,6 +1577,7 @@
                   items: colIssues,
                   flipDurationMs: flipMs(),
                   type: "lific-issues",
+                  dragDisabled: !canEdit,
                   dropTargetStyle: {
                     outline: "2px dashed var(--accent)",
                     outlineOffset: "-4px",
@@ -1805,16 +1831,18 @@
               No work on the board. Time for a nap… or a fresh idea.
             </p>
           </div>
-          <button
-            class="flex items-center gap-1.5 mt-1 text-body-sm font-medium
-                   text-[var(--btn-success-text)] bg-[var(--btn-success)]
-                   px-3 py-1.5 rounded-md hover:bg-[var(--btn-success-hover)]
-                   transition-colors"
-            onclick={startInlineCreateFromEmpty}
-          >
-            <Plus size={15} />
-            Create an issue
-          </button>
+          {#if canEdit}
+            <button
+              class="flex items-center gap-1.5 mt-1 text-body-sm font-medium
+                     text-[var(--btn-success-text)] bg-[var(--btn-success)]
+                     px-3 py-1.5 rounded-md hover:bg-[var(--btn-success-hover)]
+                     transition-colors"
+              onclick={startInlineCreateFromEmpty}
+            >
+              <Plus size={15} />
+              Create an issue
+            </button>
+          {/if}
         </div>
       {/if}
     {:else if view.searchQuery.trim()}
@@ -1929,6 +1957,7 @@
     {issue}
     {idx}
     {isLast}
+    editable={canEdit}
     {labels}
     {modules}
     density={view.density}

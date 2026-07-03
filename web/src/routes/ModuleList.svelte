@@ -26,6 +26,11 @@
   import Mascot from "../lib/Mascot.svelte";
   import ErrorState from "../lib/ErrorState.svelte";
   import { getContext } from "svelte";
+  import { projectRole, loadProjectRole } from "../lib/projectRole.svelte"; // LIF-234
+
+  // LIF-234: modules are project structure — create/edit is maintainer-gated
+  // (require_structure_role). A viewer sees them read-only.
+  const canEdit = $derived(projectRole.canEdit);
 
   const topbarCtx = getContext<{
     set: (s: import("svelte").Snippet | undefined) => void;
@@ -92,6 +97,7 @@
     const found = projRes.data.find((p) => p.identifier === ident);
     if (!found) { error = `Project ${ident} not found`; loading = false; return; }
     project = found;
+    loadProjectRole(found.id); // LIF-234
 
     // Pull modules + issues in parallel. Issues feed the per-module
     // counts; we deliberately fetch them all rather than calling per
@@ -168,6 +174,7 @@
   // ── Inline create ─────────────────────────────────────
 
   function startCreate() {
+    if (!canEdit) return; // LIF-234: module creation is maintainer-gated
     creating = true;
     createName = "";
     createEmoji = "";
@@ -242,17 +249,19 @@
 
     <!-- Right zone: action -->
     <div class="ml-auto flex items-center gap-1.5 shrink-0">
-      <button
-        class="flex items-center gap-1 text-body-sm font-medium
-               text-[var(--btn-success-text)] bg-[var(--btn-success)]
-               px-2.5 py-1 rounded-md hover:bg-[var(--btn-success-hover)]
-               transition-colors focus:outline-none
-               motion-safe:active:scale-[0.97]"
-        onclick={startCreate}
-      >
-        <Plus size={14} />
-        Module
-      </button>
+      {#if canEdit}
+        <button
+          class="flex items-center gap-1 text-body-sm font-medium
+                 text-[var(--btn-success-text)] bg-[var(--btn-success)]
+                 px-2.5 py-1 rounded-md hover:bg-[var(--btn-success-hover)]
+                 transition-colors focus:outline-none
+                 motion-safe:active:scale-[0.97]"
+          onclick={startCreate}
+        >
+          <Plus size={14} />
+          Module
+        </button>
+      {/if}
     </div>
   </div>
 {/snippet}
@@ -293,16 +302,18 @@
             a release, an effort. Spin one up to start organizing.
           </p>
         </div>
-        <button
-          class="flex items-center gap-1.5 mt-1 text-body-sm font-medium
-                 text-[var(--btn-success-text)] bg-[var(--btn-success)]
-                 px-3 py-1.5 rounded-md hover:bg-[var(--btn-success-hover)]
-                 transition-colors"
-          onclick={startCreate}
-        >
-          <Plus size={15} />
-          Create a module
-        </button>
+        {#if canEdit}
+          <button
+            class="flex items-center gap-1.5 mt-1 text-body-sm font-medium
+                   text-[var(--btn-success-text)] bg-[var(--btn-success)]
+                   px-3 py-1.5 rounded-md hover:bg-[var(--btn-success-hover)]
+                   transition-colors"
+            onclick={startCreate}
+          >
+            <Plus size={15} />
+            Create a module
+          </button>
+        {/if}
       </div>
     {:else}
       <div class="max-w-[1100px] mx-auto px-6 py-6">

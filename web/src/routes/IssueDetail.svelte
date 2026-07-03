@@ -25,19 +25,29 @@
   import { recordRecent } from "../lib/home/recents"; // LIF-237
   import { updateIssueWithUndo } from "../lib/issues/state.svelte"; // LIF-243
   import { openPeek } from "../lib/issues/peek.svelte"; // LIF-248
+  import { projectRole, loadProjectRole } from "../lib/projectRole.svelte"; // LIF-234
   import { ArrowUpRight } from "lucide-svelte";
 
   let {
     navigate,
     projectIdentifier,
     issueIdentifier,
-    editable = true,
+    editable: editableProp,
   }: {
     navigate: (path: string) => void;
     projectIdentifier: string;
     issueIdentifier: string;
+    /** Optional hard override (peek panel passes false). When omitted, the
+     *  caller's project role drives it — a viewer is read-only (LIF-234). */
     editable?: boolean;
   } = $props();
+
+  // LIF-234: content edits (title/description/status/priority/module/labels/
+  // delete) require maintainer+ once enforcement is on. `editableProp` lets a
+  // caller force read-only regardless (unused today; kept for parity with the
+  // prop's prior meaning). Commenting stays available for viewers.
+  const editable = $derived(editableProp ?? projectRole.canEdit);
+  const canComment = $derived(projectRole.canComment);
 
   // Back-arrow destination mirrors whichever list layout the user was
   // last viewing for this project (set by IssueList). Falling back to
@@ -119,6 +129,7 @@
       return;
     }
     issue = res.data;
+    loadProjectRole(issue.project_id); // LIF-234: prime role gating for this project
     recordRecent({ type: "issue", routeId: issue.identifier, identifier: issue.identifier, title: issue.title, project: projectIdentifier }); // LIF-237
 
     const [modRes, lblRes, cmtRes, actRes] = await Promise.all([
@@ -407,6 +418,7 @@
   backRoute={backHref()}
   backLabel={backText()}
   {editable}
+  {canComment}
   title={issue?.title ?? ""}
   titleSize="md"
   onSaveTitle={saveTitle}
@@ -441,6 +453,13 @@
           {issue.status}
         </span>
       </span>
+      {#if !editable && projectRole.enforced}
+        <!-- LIF-234: viewer read-only cue, in the topbar breadcrumb. -->
+        <span class="text-micro font-medium px-1.5 py-0.5 rounded-full text-[var(--text-muted)] bg-[var(--bg-subtle)]"
+              title="Read-only — you're a viewer on this project. You can still comment.">
+          Read-only
+        </span>
+      {/if}
     {/if}
   {/snippet}
 

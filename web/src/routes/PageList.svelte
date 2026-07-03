@@ -42,6 +42,11 @@
   import Skeleton from "../lib/Skeleton.svelte";
   import { getContext } from "svelte";
   import { startAutoRefresh } from "../lib/autoRefresh.svelte";
+  import { projectRole, loadProjectRole } from "../lib/projectRole.svelte"; // LIF-234
+
+  // LIF-234: pages are content — create/edit/delete + folder management are
+  // maintainer-gated. A viewer browses the tree read-only.
+  const canEdit = $derived(projectRole.canEdit);
 
   // Register the toolbar with Layout's chrome topbar slot so it sits in
   // the same --chrome zone as the sidebar instead of as a banded strip
@@ -274,6 +279,7 @@
     const found = projRes.data.find((p: Project) => p.identifier === ident);
     if (!found) { error = `Project ${ident} not found`; loading = false; return; }
     project = found;
+    loadProjectRole(found.id); // LIF-234
 
     const [pRes, fRes, lRes] = await Promise.all([
       listPages(found.id, undefined, filterLabel || undefined, serverStatusFilter()),
@@ -484,6 +490,7 @@
     parentId: number | null = null,
     status?: string,
   ) {
+    if (!canEdit) return; // LIF-234: page/folder creation is maintainer-gated
     newMenuOpen = false;
     createTarget = { type, parentId, status };
     createName = "";
@@ -765,13 +772,15 @@
         </Tooltip>
       {/if}
 
+      {#if canEdit}
       <!-- Separator -->
       <div class="w-px h-4 bg-[var(--border)] mx-1.5"></div>
 
       <!-- Primary action: New page. Split button — the main segment starts
            an inline page create; the caret reveals folder creation and
            page-specific shortcuts (paste-as-page, quick note, status
-           presets). Folds the old separate Folder button into the menu. -->
+           presets). Folds the old separate Folder button into the menu.
+           Hidden for viewers (LIF-234) — pages are maintainer-gated. -->
       <div class="relative">
         <button
           class="group flex items-center gap-1.5 h-7 pl-2.5 pr-2
@@ -868,6 +877,7 @@
           </div>
         {/if}
       </div>
+      {/if}
     </div>
   </div>
 {/snippet}
@@ -936,16 +946,18 @@
             first one and give the ideas a home.
           </p>
         </div>
-        <button
-          class="flex items-center gap-1.5 mt-1 text-body-sm font-medium
-                 text-[var(--btn-success-text)] bg-[var(--btn-success)]
-                 px-3 py-1.5 rounded-md hover:bg-[var(--btn-success-hover)]
-                 transition-colors"
-          onclick={() => startCreate("page")}
-        >
-          <Plus size={15} />
-          Create a page
-        </button>
+        {#if canEdit}
+          <button
+            class="flex items-center gap-1.5 mt-1 text-body-sm font-medium
+                   text-[var(--btn-success-text)] bg-[var(--btn-success)]
+                   px-3 py-1.5 rounded-md hover:bg-[var(--btn-success-hover)]
+                   transition-colors"
+            onclick={() => startCreate("page")}
+          >
+            <Plus size={15} />
+            Create a page
+          </button>
+        {/if}
       </div>
     {:else if searchQuery.trim()}
       <!-- LIF-117/118: flat ranked search results. Folders are omitted
@@ -1091,17 +1103,19 @@
                         <span class="text-body font-medium text-[var(--text)] truncate flex-1">
                           {page.title}
                         </span>
-                        <span
-                          class="shrink-0 text-[var(--text-faint)] opacity-0 group-hover:opacity-100
-                                 hover:text-[var(--accent)] transition"
-                          role="button"
-                          tabindex="0"
-                          title="Unpin"
-                          onclick={(e) => togglePin(page, e)}
-                          onkeydown={(e) => { if (e.key === "Enter") togglePin(page, e); }}
-                        >
-                          <PinOff size={13} />
-                        </span>
+                        {#if canEdit}
+                          <span
+                            class="shrink-0 text-[var(--text-faint)] opacity-0 group-hover:opacity-100
+                                   hover:text-[var(--accent)] transition"
+                            role="button"
+                            tabindex="0"
+                            title="Unpin"
+                            onclick={(e) => togglePin(page, e)}
+                            onkeydown={(e) => { if (e.key === "Enter") togglePin(page, e); }}
+                          >
+                            <PinOff size={13} />
+                          </span>
+                        {/if}
                       </div>
                       {#if prev}
                         <p class="text-caption text-[var(--text-faint)] line-clamp-1 mt-0.5">{prev}</p>
@@ -1304,7 +1318,8 @@
         <span class="text-body-lg font-medium text-[var(--text)] flex-1 truncate">
           {folder.name}
         </span>
-        <!-- Hover actions -->
+        <!-- Hover actions (LIF-234: hidden for viewers) -->
+        {#if canEdit}
         <div class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
           <button
             class="size-6 flex items-center justify-center rounded
@@ -1334,6 +1349,7 @@
             <Trash2 size={13} />
           </button>
         </div>
+        {/if}
       </div>
 
       <!-- Children (recursive), inset under a vertical guide line so the
@@ -1356,8 +1372,8 @@
              text-left group transition-colors
              {isDragging ? 'opacity-40' : 'hover:bg-[var(--bg-subtle)]'}"
       onclick={() => navigate(`/${projectIdentifier}/pages/${page.id}`)}
-      draggable="true"
-      ondragstart={(e) => onDragStartPage(e, page.id)}
+      draggable={canEdit}
+      ondragstart={(e) => { if (canEdit) onDragStartPage(e, page.id); }}
       ondragend={onDragEnd}
     >
       <span
@@ -1402,24 +1418,31 @@
           </span>
 
           <!-- LIF-183: pin toggle. Always visible (accent) when pinned;
-               otherwise revealed on hover. -->
-          <span
-            class="shrink-0 transition
-                   {page.pinned
-              ? 'text-[var(--accent)]'
-              : 'text-[var(--text-faint)] opacity-0 group-hover:opacity-100 hover:text-[var(--accent)]'}"
-            role="button"
-            tabindex="0"
-            title={page.pinned ? "Unpin" : "Pin to top"}
-            onclick={(e) => togglePin(page, e)}
-            onkeydown={(e) => { if (e.key === "Enter") togglePin(page, e); }}
-          >
-            {#if page.pinned}
+               otherwise revealed on hover. LIF-234: for a viewer, a pinned
+               page shows a static pin; the toggle affordance is hidden. -->
+          {#if canEdit}
+            <span
+              class="shrink-0 transition
+                     {page.pinned
+                ? 'text-[var(--accent)]'
+                : 'text-[var(--text-faint)] opacity-0 group-hover:opacity-100 hover:text-[var(--accent)]'}"
+              role="button"
+              tabindex="0"
+              title={page.pinned ? "Unpin" : "Pin to top"}
+              onclick={(e) => togglePin(page, e)}
+              onkeydown={(e) => { if (e.key === "Enter") togglePin(page, e); }}
+            >
+              {#if page.pinned}
+                <Pin size={13} class="fill-current" />
+              {:else}
+                <Pin size={13} />
+              {/if}
+            </span>
+          {:else if page.pinned}
+            <span class="shrink-0 text-[var(--accent)]" title="Pinned">
               <Pin size={13} class="fill-current" />
-            {:else}
-              <Pin size={13} />
-            {/if}
-          </span>
+            </span>
+          {/if}
         </div>
 
         <!-- Content preview — turns the tree into something scannable. -->

@@ -30,6 +30,7 @@
     issues = [],
     onChange,
     onOpenLabel,
+    canEdit = true,
   }: {
     projectId: number;
     /** Project issues, used for per-label usage counts. */
@@ -38,6 +39,11 @@
     onChange?: () => void;
     /** Navigate to the issue list filtered by this label (#1). */
     onOpenLabel?: (name: string) => void;
+    /** LIF-234: when false (a viewer on this project, enforcement on), the
+     *  create row and all per-row mutate controls (recolor, rename, delete,
+     *  merge) are hidden; labels render as read-only chips whose usage count
+     *  still links out. Structure edits are maintainer-gated server-side. */
+    canEdit?: boolean;
   } = $props();
 
   let labels = $state<Label[]>([]);
@@ -285,6 +291,7 @@
   </div>
 
   <div class="rounded-xl bg-[var(--surface)] shadow-[0_1px_2px_rgba(0,0,0,0.06)] overflow-hidden">
+    {#if canEdit}
     <!-- Create row with live preview (#6) -->
     <div class="flex items-center gap-3 px-4 py-3 border-b border-[var(--border)] flex-wrap">
       <ColorPicker value={createColor} onChange={(c) => { newColor = c; colorTouched = true; }} />
@@ -323,6 +330,7 @@
         “{newName.trim()}” already exists.
       </div>
     {/if}
+    {/if}
     {#if err}
       <div class="px-4 py-2 text-caption text-[var(--error)] bg-[var(--error-bg)]">{err}</div>
     {/if}
@@ -332,6 +340,8 @@
       <div class="px-4 py-6 flex justify-center">
         <div class="size-5 rounded-full border-2 border-[var(--border)] border-t-[var(--accent)] animate-spin"></div>
       </div>
+    {:else if labels.length === 0 && !canEdit}
+      <div class="px-4 py-6 text-center text-body-sm text-[var(--text-faint)]">No labels yet.</div>
     {:else if labels.length === 0}
       <!-- Empty-state starter presets (#5) -->
       <div class="px-4 py-5 flex flex-col gap-3">
@@ -413,6 +423,24 @@
             >
               Cancel
             </button>
+          {:else if !canEdit}
+            <!-- Read-only display row (viewer): static dot + name, usage
+                 count still links out to the filtered issue list. -->
+            <span class="size-3.5 rounded-full shrink-0" style="background: {l.color}"></span>
+            <span class="flex-1 min-w-0 text-body-sm font-medium text-[var(--text)] truncate">{l.name}</span>
+            {#if usageTotal(l.name) > 0}
+              <button
+                class="shrink-0 inline-flex items-center gap-1 text-caption text-[var(--text-faint)]
+                       hover:text-[var(--accent)] transition-colors tabular-nums"
+                title="View {l.name} issues"
+                onclick={() => onOpenLabel?.(l.name)}
+              >
+                {usageText(l.name)}
+                <ArrowRight size={11} />
+              </button>
+            {:else}
+              <span class="shrink-0 text-caption text-[var(--text-faint)]">unused</span>
+            {/if}
           {:else}
             <!-- Display row: dot recolors, name renames, count links out -->
             <ColorPicker value={l.color} size={14} onChange={(c) => recolor(l, c)} />

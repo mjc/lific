@@ -45,6 +45,13 @@
     backRoute,
     backLabel,
     editable = true,
+    // LIF-234: whether the comment composer is available. Kept SEPARATE from
+    // `editable` because commenting is Viewer-gated server-side (LIF-197): a
+    // viewer can't edit the document but CAN comment. Routes set this to
+    // "may I comment on this project" (true for any member) while `editable`
+    // is "may I edit content" (maintainer+). Defaults to `editable` so
+    // callers that don't distinguish keep today's behavior.
+    canComment,
     // Title
     title,
     titleSize = "md",
@@ -117,6 +124,7 @@
     backRoute: string;
     backLabel: string;
     editable?: boolean;
+    canComment?: boolean;
     title: string;
     titleSize?: "md" | "lg";
     onSaveTitle: (next: string) => Promise<void> | void;
@@ -151,6 +159,11 @@
     attachEntity?: { entity_type: "issue" | "page"; entity_id: number } | null;
   } = $props();
 
+  // LIF-234: the comment composer is available when the caller explicitly
+  // says so (any project member — comments are Viewer-gated), falling back
+  // to `editable` for callers that don't pass `canComment`.
+  const commentsEnabled = $derived(canComment ?? editable);
+
   // LIF-262: bump to force the AttachmentSection to re-fetch after a body or
   // comment save may have linked/unlinked references server-side.
   let attachmentRefresh = $state(0);
@@ -173,32 +186,40 @@
   const paletteCtx = getContext<PaletteContext | undefined>("lific:palette");
 
   $effect(() => {
-    if (!editable || loading || error) {
+    // LIF-234: a viewer (not editable) can still comment, so the palette
+    // isn't cleared wholesale — we register only the actions their role
+    // allows. Nothing to offer when neither editing nor commenting is
+    // available (or while loading/errored).
+    if ((!editable && !commentsEnabled) || loading || error) {
       paletteCtx?.set(undefined);
       return;
     }
     const noun = deleteNoun ?? "document";
-    const shared: PaletteAction[] = [
-      {
-        id: "rename",
-        title: `Rename ${noun}…`,
-        hint: title,
-        prompt: {
-          placeholder: `New ${noun} title`,
-          initial: title,
-          submit: (v) => void onSaveTitle(v),
-        },
-      },
-      ...(bodyContent
-        ? []
-        : [
-            {
-              id: "edit-body",
-              title: "Edit description",
-              run: () => bodyRef?.focus(),
+    const editActions: PaletteAction[] = editable
+      ? [
+          {
+            id: "rename",
+            title: `Rename ${noun}…`,
+            hint: title,
+            prompt: {
+              placeholder: `New ${noun} title`,
+              initial: title,
+              submit: (v) => void onSaveTitle(v),
             },
-          ]),
-      ...(onNewComment
+          },
+          ...(bodyContent
+            ? []
+            : [
+                {
+                  id: "edit-body",
+                  title: "Edit description",
+                  run: () => bodyRef?.focus(),
+                },
+              ]),
+        ]
+      : [];
+    const commentActions: PaletteAction[] =
+      commentsEnabled && onNewComment
         ? [
             {
               id: "add-comment",
@@ -206,9 +227,11 @@
               run: () => commentsRef?.focusComposer(),
             },
           ]
-        : []),
-    ];
-    paletteCtx?.set([...paletteActions, ...shared]);
+        : [];
+    // Route-specific actions (status/priority/module/labels) are edit
+    // affordances — only surface them when editable.
+    const routeActions = editable ? paletteActions : [];
+    paletteCtx?.set([...routeActions, ...editActions, ...commentActions]);
     return () => paletteCtx?.set(undefined);
   });
 
@@ -392,7 +415,7 @@
     </div>
   </div>
 
-  {#if editable && onNewComment && bodyMode === "read"}
+  {#if commentsEnabled && onNewComment && bodyMode === "read"}
     <QuoteSelectionToolbar
       container={contentEl}
       onQuote={(t) => commentsRef?.insertQuote(t)}
@@ -442,7 +465,7 @@
     <Comments
       bind:this={commentsRef}
       {comments}
-      {editable}
+      editable={commentsEnabled}
       onSubmit={async (content) => {
         const created = await onNewComment(content);
         if (created) attachmentRefresh += 1;

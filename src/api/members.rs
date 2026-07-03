@@ -44,6 +44,50 @@ pub(super) async fn list_project_members(
     with_read(&db, |conn| members::list_members_with_users(conn, project_id)).map(Json)
 }
 
+/// GET /api/projects/{id}/my-role — the caller's own effective role on this
+/// project, plus whether enforcement is on and whether they're a workspace
+/// admin. Viewer-gated so any member (including a plain viewer) can learn
+/// their own role cheaply without reading the whole member roster or the
+/// admin-only instance settings.
+///
+/// LIF-234: this is the single source the web app reads to gate mutate
+/// affordances (`web/src/lib/projectRole.svelte.ts`). It deliberately
+/// answers "what can I do here" rather than exposing the roster:
+///   - `enforced=false` → the instance is in legacy mode; the UI stays fully
+///     interactive (server still allows everything a non-lead would try).
+///   - `is_admin=true` → workspace admin; the UI stays fully interactive.
+///   - `role` is the effective role resolved through bot→owner inheritance,
+///     so an agent key reports the human it inherits from, and is `null`
+///     only for a non-member admin (who is gated by `is_admin` instead).
+///
+/// Being Viewer-gated, a non-member is denied (403) here exactly as they are
+/// on every other project read — the client treats that denial as "no
+/// access," never as "full access."
+pub(super) async fn my_project_role(
+    State(db): State<DbPool>,
+    Extension(auth_user): Extension<Option<AuthUser>>,
+    Path(project_id): Path<i64>,
+) -> Result<Json<serde_json::Value>, LificError> {
+    authz::require_role(&db, &auth_user, project_id, Role::Viewer)?;
+
+    let enforced = authz::authz_enforced(&db)?;
+    let (role, is_admin) = with_read(&db, |conn| {
+        let effective = authz::effective_user(conn, &auth_user);
+        let is_admin = matches!(&effective, Some(u) if u.is_admin);
+        let role = match &effective {
+            Some(u) => members::get_member_role(conn, project_id, u.id)?,
+            None => None,
+        };
+        Ok((role, is_admin))
+    })?;
+
+    Ok(Json(serde_json::json!({
+        "role": role.map(|r| r.as_str()),
+        "enforced": enforced,
+        "is_admin": is_admin,
+    })))
+}
+
 /// POST /api/projects/{id}/members — add a member. `role` defaults to
 /// `viewer` when omitted (design: "default grant = viewer"). 409 if the
 /// user is already a member (use `PATCH` to change an existing role), 404
@@ -452,6 +496,70 @@ mod tests {
             member_rows.iter().all(|a| a["actor_username"] == "lead"),
             "every membership change must be attributed to the acting user: {member_rows:#?}"
         );
+    }
+
+    // ── my-role (LIF-234) ────────────────────────────────────────
+
+    #[tokio::test]
+    async fn my_role_reports_each_members_own_role_when_enforced() {
+        let (db, _admin, lead, maintainer, viewer, _non_member, project_id) =
+            setup_membership_test();
+
+        for (user, expected) in [(&lead, "lead"), (&maintainer, "maintainer"), (&viewer, "viewer")] {
+            let app = app_as_user(db.clone(), user);
+            let resp = json_get(&app, &format!("/api/projects/{project_id}/my-role")).await;
+            assert_eq!(resp.status(), StatusCode::OK, "{} my-role", user.username);
+            let body = parse_json(resp).await;
+            assert_eq!(body["role"], expected, "{} role", user.username);
+            assert_eq!(body["enforced"], true);
+            assert_eq!(body["is_admin"], false);
+        }
+    }
+
+    #[tokio::test]
+    async fn my_role_denies_non_member_when_enforced() {
+        // Same Viewer gate as every other project read: a non-member gets a
+        // 403, which the client reads as "no access," never "full access."
+        let (db, _admin, _lead, _maintainer, _viewer, non_member, project_id) =
+            setup_membership_test();
+        let app = app_as_user(db, &non_member);
+        let resp = json_get(&app, &format!("/api/projects/{project_id}/my-role")).await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn my_role_reports_admin_bypass_when_enforced() {
+        // A workspace admin who holds no membership row still passes the
+        // Viewer gate and is flagged `is_admin` so the UI stays fully
+        // interactive.
+        let (db, admin, _lead, _maintainer, _viewer, _non_member, project_id) =
+            setup_membership_test();
+        let app = app_as_user(db, &admin);
+        let resp = json_get(&app, &format!("/api/projects/{project_id}/my-role")).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = parse_json(resp).await;
+        assert_eq!(body["is_admin"], true);
+        assert_eq!(body["enforced"], true);
+        // Admin has no membership row in this fixture → role is null; the
+        // client relies on is_admin, not role, for the bypass.
+        assert!(body["role"].is_null());
+    }
+
+    #[tokio::test]
+    async fn my_role_reports_enforced_false_in_legacy_mode() {
+        // Flag OFF (default): the endpoint reports enforced=false so the web
+        // app keeps every affordance interactive, matching the server, which
+        // still allows a non-lead everything in legacy mode.
+        let (db, _admin, _lead, regular, project_id) = setup_lead_test();
+        let app = app_as_user(db, &regular);
+        let resp = json_get(&app, &format!("/api/projects/{project_id}/my-role")).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = parse_json(resp).await;
+        assert_eq!(body["enforced"], false);
+        assert_eq!(body["is_admin"], false);
+        // No membership row for a legacy-mode regular user → role null, but
+        // enforced=false is what the client keys off.
+        assert!(body["role"].is_null());
     }
 
     // ── Flag OFF: still lead/admin-gated; list allowed ─────────────

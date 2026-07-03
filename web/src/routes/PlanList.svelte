@@ -17,6 +17,10 @@
   import ErrorState from "../lib/ErrorState.svelte";
   import Skeleton from "../lib/Skeleton.svelte";
   import { getContext } from "svelte";
+  import { projectRole, loadProjectRole } from "../lib/projectRole.svelte"; // LIF-234
+
+  // LIF-234: plans are content — creation is maintainer-gated.
+  const canEdit = $derived(projectRole.canEdit);
 
   const topbarCtx = getContext<{
     set: (s: import("svelte").Snippet | undefined) => void;
@@ -72,6 +76,7 @@
     const found = projRes.data.find((p) => p.identifier === ident);
     if (!found) { error = `Project ${ident} not found`; loading = false; return; }
     project = found;
+    loadProjectRole(found.id); // LIF-234
     await reload();
     loading = false;
   }
@@ -129,17 +134,19 @@
       {/if}
     </div>
     <div class="ml-auto flex items-center gap-1.5 shrink-0">
-      <button
-        class="flex items-center gap-1 text-body-sm font-medium
-               text-[var(--btn-success-text)] bg-[var(--btn-success)]
-               px-2.5 py-1 rounded-md hover:bg-[var(--btn-success-hover)]
-               transition-colors focus:outline-none
-               motion-safe:active:scale-[0.97]"
-        onclick={startCreate}
-      >
-        <Plus size={14} />
-        Plan
-      </button>
+      {#if canEdit}
+        <button
+          class="flex items-center gap-1 text-body-sm font-medium
+                 text-[var(--btn-success-text)] bg-[var(--btn-success)]
+                 px-2.5 py-1 rounded-md hover:bg-[var(--btn-success-hover)]
+                 transition-colors focus:outline-none
+                 motion-safe:active:scale-[0.97]"
+          onclick={startCreate}
+        >
+          <Plus size={14} />
+          Plan
+        </button>
+      {/if}
     </div>
   </div>
 {/snippet}
@@ -215,16 +222,18 @@
                 off its step.
               </p>
             </div>
-            <button
-              class="flex items-center gap-1.5 mt-1 text-body-sm font-medium
-                     text-[var(--btn-success-text)] bg-[var(--btn-success)]
-                     px-3 py-1.5 rounded-md hover:bg-[var(--btn-success-hover)]
-                     transition-colors"
-              onclick={startCreate}
-            >
-              <Plus size={15} />
-              Create a plan
-            </button>
+            {#if canEdit}
+              <button
+                class="flex items-center gap-1.5 mt-1 text-body-sm font-medium
+                       text-[var(--btn-success-text)] bg-[var(--btn-success)]
+                       px-3 py-1.5 rounded-md hover:bg-[var(--btn-success-hover)]
+                       transition-colors"
+                onclick={startCreate}
+              >
+                <Plus size={15} />
+                Create a plan
+              </button>
+            {/if}
           </div>
         {:else}
           {#each grouped as group (group.status)}

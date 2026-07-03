@@ -24,6 +24,7 @@
   import { formatDate } from "../lib/format";
   import { recordRecent } from "../lib/home/recents"; // LIF-237
   import { openPeek } from "../lib/issues/peek.svelte"; // LIF-248
+  import { projectRole, loadProjectRole } from "../lib/projectRole.svelte"; // LIF-234
   import {
     Check,
     Plus,
@@ -45,6 +46,11 @@
   } = $props();
 
   let plan = $state<Plan | null>(null);
+
+  // LIF-234: plans are content — step edits, title, and delete are
+  // maintainer-gated. A viewer sees the plan read-only.
+  const canEdit = $derived(projectRole.canEdit);
+
   let activity = $state<Activity[]>([]);
   let loading = $state(true);
   let error = $state("");
@@ -100,6 +106,7 @@
     const res = await getPlan(id);
     if (!res.ok) { error = res.error; loading = false; return; }
     plan = res.data;
+    loadProjectRole(plan.project_id); // LIF-234
     recordRecent({ type: "plan", routeId: String(plan.id), identifier: plan.identifier, title: plan.title, project: projectIdentifier }); // LIF-237
     const act = await listPlanActivity(id);
     if (act.ok) activity = act.data.items;
@@ -340,6 +347,7 @@
   identifier={plan?.identifier ?? `PLAN-${planId}`}
   backRoute={`/${projectIdentifier}/plans`}
   backLabel="Plans"
+  editable={canEdit}
   title={plan?.title ?? ""}
   titleSize="md"
   onSaveTitle={saveTitle}
@@ -383,24 +391,26 @@
       {/each}
     </div>
 
-    {#if addingChildOf === -1}
-      <div class="flex items-center gap-2 py-1 mt-2 pl-1">
-        <input
-          class="flex-1 bg-transparent outline-none text-body text-[var(--text)] border-b border-[var(--accent)]"
-          placeholder="Step title…"
-          bind:value={childTitle}
-          autofocus
-          onkeydown={(e) => { if (e.key === "Enter") commitAddChild(); if (e.key === "Escape") addingChildOf = null; }}
-          onblur={commitAddChild}
-        />
-      </div>
-    {:else}
-      <button
-        class="mt-3 flex items-center gap-1.5 text-body-sm text-[var(--text-muted)] hover:text-[var(--text)]"
-        onclick={() => startAddChild(-1)}
-      >
-        <Plus size={14} /> Add step
-      </button>
+    {#if canEdit}
+      {#if addingChildOf === -1}
+        <div class="flex items-center gap-2 py-1 mt-2 pl-1">
+          <input
+            class="flex-1 bg-transparent outline-none text-body text-[var(--text)] border-b border-[var(--accent)]"
+            placeholder="Step title…"
+            bind:value={childTitle}
+            autofocus
+            onkeydown={(e) => { if (e.key === "Enter") commitAddChild(); if (e.key === "Escape") addingChildOf = null; }}
+            onblur={commitAddChild}
+          />
+        </div>
+      {:else}
+        <button
+          class="mt-3 flex items-center gap-1.5 text-body-sm text-[var(--text-muted)] hover:text-[var(--text)]"
+          onclick={() => startAddChild(-1)}
+        >
+          <Plus size={14} /> Add step
+        </button>
+      {/if}
     {/if}
   {/if}
 {/snippet}
@@ -420,14 +430,16 @@
         {#if expanded}<ChevronDown size={13} />{:else}<ChevronRight size={13} />{/if}
       </button>
 
-      <!-- checkbox -->
+      <!-- checkbox (LIF-234: static for viewers — done state still shows) -->
       <button
         class="mt-0.5 size-4 shrink-0 rounded border flex items-center justify-center transition-colors
                {step.done
                  ? 'bg-[var(--accent)] border-[var(--accent)] text-[var(--accent-text)]'
-                 : 'border-[var(--border-strong)] hover:border-[var(--accent)]'}"
-        onclick={() => toggleDone(step)}
-        title={step.done ? "Mark not done" : "Mark done"}
+                 : 'border-[var(--border-strong)]'}
+               {canEdit && !step.done ? 'hover:border-[var(--accent)]' : ''}
+               {canEdit ? '' : 'cursor-default'}"
+        onclick={() => { if (canEdit) toggleDone(step); }}
+        title={canEdit ? (step.done ? "Mark not done" : "Mark done") : (step.done ? "Done" : "Not done")}
       >
         {#if step.done}<Check size={11} />{/if}
       </button>
@@ -445,9 +457,9 @@
             />
           {:else}
             <button
-              class="text-left text-body truncate {step.done ? 'text-[var(--text-faint)] line-through' : 'text-[var(--text)]'}"
-              ondblclick={() => startEditTitle(step)}
-              title="Double-click to rename"
+              class="text-left text-body truncate {step.done ? 'text-[var(--text-faint)] line-through' : 'text-[var(--text)]'} {canEdit ? '' : 'cursor-default'}"
+              ondblclick={() => { if (canEdit) startEditTitle(step); }}
+              title={canEdit ? "Double-click to rename" : undefined}
             >
               {step.title}
             </button>
@@ -468,7 +480,8 @@
             </button>
           {/if}
 
-          <!-- row actions -->
+          <!-- row actions (LIF-234: hidden for viewers) -->
+          {#if canEdit}
           <div class="ml-auto flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
             {#if step.issue_identifier}
               <button class="p-1 rounded text-[var(--text-faint)] hover:text-[var(--text)] text-micro" title="Detach issue" onclick={() => detachIssue(step)}>unlink</button>
@@ -478,12 +491,18 @@
             <button class="p-1 rounded text-[var(--text-faint)] hover:text-[var(--text)]" title="Add sub-step" onclick={() => startAddChild(step.id)}><Plus size={13} /></button>
             <button class="p-1 rounded text-[var(--text-faint)] hover:text-[var(--error)]" title="Delete step" onclick={() => removeStep(step)}><X size={13} /></button>
           </div>
+          {/if}
         </div>
 
         {#if expanded}
           <!-- description body -->
           <div class="mt-1 mb-1">
-            {#if editingDescOf === step.id}
+            {#if !canEdit}
+              <!-- LIF-234: viewer — render markdown read-only, no edit CTA. -->
+              {#if hasBody}
+                <div class="prose-step"><Markdown content={step.description} /></div>
+              {/if}
+            {:else if editingDescOf === step.id}
               <textarea
                 class="w-full bg-transparent outline-none text-body-sm leading-relaxed text-[var(--text)]
                        border border-[var(--border)] rounded-md p-2 resize-y min-h-[80px]"
@@ -535,18 +554,18 @@
 {#snippet sidebar()}
   {#if plan}
     <div class="issue-meta-aside">
-      <!-- Status -->
+      <!-- Status (LIF-234: read-only for viewers) -->
       <div class="issue-meta-field">
         <p class="issue-meta-field-label">Status</p>
         <div class="relative">
           <button
-            class="flex items-center gap-2 text-body-sm rounded-md px-2 py-1 -mx-2 w-full text-left hover:bg-[var(--bg-subtle)]"
-            onclick={(e) => { e.stopPropagation(); statusOpen = !statusOpen; }}
+            class="flex items-center gap-2 text-body-sm rounded-md px-2 py-1 -mx-2 w-full text-left {canEdit ? 'hover:bg-[var(--bg-subtle)]' : 'cursor-default'}"
+            onclick={(e) => { if (!canEdit) return; e.stopPropagation(); statusOpen = !statusOpen; }}
           >
             <span class="size-2 rounded-full {plan.status === 'active' ? 'bg-[var(--accent)]' : plan.status === 'done' ? 'bg-[var(--success)]' : 'bg-[var(--text-faint)]'}"></span>
             <span class="capitalize text-[var(--text)]">{plan.status}</span>
           </button>
-          {#if statusOpen}
+          {#if statusOpen && canEdit}
             <div class="absolute left-0 top-full mt-1 z-20 w-[160px] bg-[var(--surface)] border border-[var(--border)] rounded-md shadow-lg py-1"
                  role="presentation" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()}>
               {#each STATUSES as s}
@@ -584,9 +603,13 @@
                     onclick={(e) => plan?.anchor_identifier && openIssueChip(e, plan.anchor_identifier)}>
               {plan.anchor_identifier}<ArrowUpRight size={12} />
             </button>
-            <button class="ml-auto text-[var(--text-faint)] hover:text-[var(--text)] text-caption" onclick={setAnchor}>change</button>
-          {:else}
+            {#if canEdit}
+              <button class="ml-auto text-[var(--text-faint)] hover:text-[var(--text)] text-caption" onclick={setAnchor}>change</button>
+            {/if}
+          {:else if canEdit}
             <button class="text-body-sm text-[var(--text-faint)] hover:text-[var(--text)]" onclick={setAnchor}>Set anchor…</button>
+          {:else}
+            <span class="text-body-sm text-[var(--text-faint)]">None</span>
           {/if}
         </div>
       </div>

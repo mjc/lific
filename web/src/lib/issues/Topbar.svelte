@@ -40,6 +40,7 @@
     onOpenSearch,
     onMaybeCollapseSearch,
     onQuickCreate,
+    canEdit = true,
   }: {
     view: IssueListState;
     projectIdentifier: string;
@@ -60,6 +61,9 @@
     onOpenSearch: () => void;
     onMaybeCollapseSearch: () => void;
     onQuickCreate: () => void;
+    /** LIF-234: when false (a viewer on this project, enforcement on), the
+     *  "New issue" primary action is hidden — creation is maintainer-gated. */
+    canEdit?: boolean;
   } = $props();
 
   // Count of active filters — drives the badge on the Filter button. Derived
@@ -492,10 +496,12 @@
     </div>
 
     <!-- Separator -->
+    {#if canEdit}
     <div class="w-px h-4 bg-[var(--border)] mx-1.5"></div>
 
     <!-- Primary action: New issue. Split button — main segment opens the
-         inline quick-create row; the caret reveals alternative paths. -->
+         inline quick-create row; the caret reveals alternative paths.
+         Hidden for viewers (LIF-234) — creation is maintainer-gated. -->
     <div class="relative">
       <div
         class="flex items-stretch h-7 rounded-md overflow-hidden shadow-sm
@@ -625,5 +631,6 @@
         </div>
       {/if}
     </div>
+    {/if}
   </div>
 </div>

@@ -52,6 +52,7 @@
     onHoverStatusOption,
     onHoverPriorityOption,
     onHoverModuleOption,
+    editable = true,
   }: {
     issue: Issue;
     idx: number;
@@ -103,6 +104,11 @@
     onHoverStatusOption: (si: number) => void;
     onHoverPriorityOption: (pi: number) => void;
     onHoverModuleOption: (mi: number) => void;
+    /** LIF-234: when false (a viewer, enforcement on), the row is read-only:
+     *  the selection checkbox is hidden and the inline status/priority/module
+     *  pickers render as static icons (no dropdown). Opening the issue and
+     *  peeking still work. */
+    editable?: boolean;
   } = $props();
 
   const mod = $derived(
@@ -171,7 +177,9 @@
 >
   <!-- Selection checkbox (LIF-149). Space is always reserved so rows never
        shift; the box is invisible until hover or until a selection exists
-       anywhere, then stays visible for the session of that selection. -->
+       anywhere, then stays visible for the session of that selection.
+       LIF-234: hidden for viewers — selection only drives bulk mutations. -->
+  {#if editable}
   <button
     class="size-4 shrink-0 rounded border flex items-center justify-center
            transition
@@ -190,6 +198,10 @@
   >
     <Check size={11} strokeWidth={3} />
   </button>
+  {:else}
+    <!-- Keep the row's leading alignment identical to editable rows. -->
+    <span class="size-4 shrink-0" aria-hidden="true"></span>
+  {/if}
 
   <!-- Status indicator (clickable to pick). Tooltip suppressed while the
        status picker is open for this row, otherwise it'd hover-fight with
@@ -202,8 +214,9 @@
     >
       <button
         class="size-4 flex items-center justify-center transition-colors
-               hover:text-[var(--accent)]"
+               {editable ? 'hover:text-[var(--accent)]' : 'cursor-default'}"
         onclick={(e) => {
+          if (!editable) return;
           e.stopPropagation();
           onToggleStatusDropdown(issue);
         }}
@@ -211,7 +224,7 @@
         <StatusIcon status={issue.status} size={16} />
       </button>
     </Tooltip>
-    {#if statusOpen}
+    {#if statusOpen && editable}
       <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
       <div
         class="absolute left-0 top-full mt-1.5 z-30 w-[160px]
@@ -297,7 +310,22 @@
        would also make `m` and the popover invisible mid-group, so it
        always renders (still hover-revealed when unset, like priority's
        "none" affordance). -->
+  <!-- LIF-234: for a viewer, only render the module chip when one is set,
+       and as a static (non-clickable) chip — the "Set module" hover
+       affordance is an edit control. -->
   <div class="relative shrink-0 hidden sm:block">
+    {#if !editable}
+      {#if mod}
+        <span class="max-w-[130px] flex items-center gap-1 text-micro text-[var(--text-muted)]">
+          {#if mod.emoji}
+            <ProjectIcon value={mod.emoji} size={12} />
+          {:else}
+            <Layers size={11} class="text-[var(--text-faint)]" />
+          {/if}
+          <span class="truncate">{mod.name}</span>
+        </span>
+      {/if}
+    {:else}
     <Tooltip content={moduleOpen ? null : mod ? mod.name : "Set module"}>
       <button
         class="max-w-[130px] flex items-center gap-1 text-micro
@@ -356,11 +384,21 @@
         {/each}
       </div>
     {/if}
+    {/if}
   </div>
 
   <!-- LIF-191: priority — click to pick in place (mirrors the status
-       picker). When 'none', a faint affordance appears on row hover. -->
+       picker). When 'none', a faint affordance appears on row hover.
+       LIF-234: read-only for viewers — only shown when set, as a static icon
+       (the 'none' hover affordance is an edit control). -->
   <div class="relative shrink-0 w-9 flex items-center justify-end">
+    {#if !editable}
+      {#if issue.priority !== "none"}
+        <span class="size-6 flex items-center justify-end">
+          <PriorityIcon priority={issue.priority} size={21} />
+        </span>
+      {/if}
+    {:else}
     <Tooltip
       content={priorityOpen
         ? null
@@ -406,6 +444,7 @@
           </button>
         {/each}
       </div>
+    {/if}
     {/if}
   </div>
 

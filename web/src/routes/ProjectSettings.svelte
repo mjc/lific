@@ -34,6 +34,10 @@
   } from "lucide-svelte";
   import ErrorState from "../lib/ErrorState.svelte";
   import { getContext } from "svelte";
+  // LIF-234: role-aware affordance gating. `canManage` = lead/admin (or
+  // enforcement off) — settings edits, danger zone, members, and import are
+  // all lead-level. `canEdit` = maintainer/admin — label management.
+  import { projectRole, loadProjectRole } from "../lib/projectRole.svelte";
 
   const topbarCtx = getContext<{
     set: (s: import("svelte").Snippet | undefined) => void;
@@ -97,6 +101,10 @@
     const found = projRes.data.find((p: Project) => p.identifier === ident);
     if (!found) { error = `Project ${ident} not found`; loading = false; return; }
     project = found;
+    // LIF-234: prime the shared role store for this project so `canManage`/
+    // `canEdit` below reflect the correct answer (Layout also primes it, but
+    // this makes the route self-sufficient and dedupes via the store cache).
+    loadProjectRole(found.id);
     leadValue = found.lead_user_id == null ? "" : String(found.lead_user_id);
     lastLead = found.lead_user_id;
 
@@ -205,6 +213,11 @@
   const total = $derived(counts?.total ?? 0);
   const completion = $derived(total > 0 ? (counts?.done ?? 0) / total : 0);
 
+  // LIF-234: lead/admin (or enforcement off) may edit project identity,
+  // manage members, import, and use the danger zone. A non-lead sees a
+  // read-only overview.
+  const canManage = $derived(projectRole.canManage);
+
   function gotoOpenIssues() {
     navigate(`/${projectIdentifier}/issues`);
   }
@@ -293,14 +306,29 @@
       <div class="max-w-[840px] mx-auto px-6 py-8 flex flex-col gap-10">
 
         <!-- ── IDENTITY HERO (inline-editable) ──────────── -->
+        <!-- LIF-234: identity edits (name/desc/icon → updateProject) are
+             lead-gated. A non-lead sees the same hero, read-only: the icon
+             isn't a picker, and name/description aren't click-to-edit. -->
         <section class="flex items-start gap-4">
           <div class="shrink-0">
-            <IconPicker value={project.emoji ?? ""} onchange={(v) => saveField("emoji", v || null)} />
+            {#if canManage}
+              <IconPicker value={project.emoji ?? ""} onchange={(v) => saveField("emoji", v || null)} />
+            {:else}
+              <div class="size-12 grid place-items-center rounded-xl bg-[var(--surface)] shadow-[0_1px_2px_rgba(0,0,0,0.06)]">
+                {#if project.emoji}
+                  <ProjectIcon value={project.emoji} size={22} />
+                {:else}
+                  <span class="text-body-sm font-mono font-semibold text-[var(--text-muted)]">{project.identifier.slice(0, 2)}</span>
+                {/if}
+              </div>
+            {/if}
           </div>
           <div class="flex-1 min-w-0">
             <!-- Name -->
             <div class="flex items-center gap-2 flex-wrap">
-              {#if editingName}
+              {#if !canManage}
+                <h1 class="text-display font-display tracking-tight text-[var(--text)] -my-0.5 px-0.5">{project.name}</h1>
+              {:else if editingName}
                 <!-- svelte-ignore a11y_autofocus -->
                 <input
                   bind:value={draftName}
@@ -336,10 +364,23 @@
                   <Check size={11} /> Saved
                 </span>
               {/if}
+              {#if !canManage && projectRole.enforced}
+                <!-- LIF-234: tell a non-lead why the identity + settings are
+                     read-only, in the existing badge vocabulary. -->
+                <span class="inline-flex items-center gap-1 text-micro font-medium px-1.5 py-0.5 rounded-full
+                             text-[var(--text-muted)] bg-[var(--bg-subtle)]"
+                      title="Only a project lead or admin can change project settings.">
+                  Read-only
+                </span>
+              {/if}
             </div>
 
             <!-- Description -->
-            {#if editingDesc}
+            {#if !canManage}
+              {#if project.description}
+                <p class="text-body text-[var(--text-muted)] leading-relaxed mt-1.5 max-w-[60ch]">{project.description}</p>
+              {/if}
+            {:else if editingDesc}
               <!-- svelte-ignore a11y_autofocus -->
               <textarea
                 bind:value={draftDesc}
@@ -431,18 +472,26 @@
         </section>
 
         <!-- ── LABELS (management) ──────────────────────── -->
+        <!-- LIF-234: label management is a maintainer-level structure edit —
+             a viewer sees labels read-only. -->
         <LabelManager
           projectId={project.id}
           {issues}
+          canEdit={projectRole.canEdit}
           onChange={() => loadAll(projectIdentifier)}
           onOpenLabel={openLabelInIssues}
         />
 
         <!-- ── MEMBERS (LIF-200) ────────────────────────── -->
-        <ProjectMembers projectId={project.id} />
+        <!-- LIF-234: members management is a lead-level operation. Hidden
+             entirely for non-leads (its own read-only-notice path was for the
+             flag-off era; now the whole panel only shows when manageable). -->
+        {#if canManage}
+          <ProjectMembers projectId={project.id} />
 
-        <!-- ── IMPORT (LIF-264) ─────────────────────────── -->
-        <ImportPanel projectId={project.id} onImported={() => loadAll(projectIdentifier)} />
+          <!-- ── IMPORT (LIF-264) ─────────────────────────── -->
+          <ImportPanel projectId={project.id} onImported={() => loadAll(projectIdentifier)} />
+        {/if}
 
         <!-- ── RECENT ACTIVITY ──────────────────────────── -->
         {#if activity.length > 0}
@@ -469,6 +518,8 @@
         {/if}
 
         <!-- ── DANGER ZONE ──────────────────────────────── -->
+        <!-- LIF-234: lead/admin-only. Hidden entirely for everyone else. -->
+        {#if canManage}
         <section class="rounded-xl border border-[var(--error)]/40 overflow-hidden mt-2"
                  style="border-color: color-mix(in oklab, var(--error) 35%, transparent)">
           <button
@@ -573,6 +624,7 @@
             </div>
           {/if}
         </section>
+        {/if}
 
         <div class="h-2"></div>
       </div>

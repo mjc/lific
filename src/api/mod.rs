@@ -222,6 +222,13 @@ pub fn router(db: DbPool, cors_origins: &[String]) -> Router {
             "/api/projects/{id}/members/{user_id}",
             patch(members::update_project_member).delete(members::remove_project_member),
         )
+        // The caller's own effective role on a project (LIF-234) — Viewer-gated,
+        // so any member can learn their role to drive role-aware UI affordances
+        // without reading the full roster or the admin-only instance settings.
+        .route(
+            "/api/projects/{id}/my-role",
+            get(members::my_project_role),
+        )
         // @mention autocomplete candidates (LIF-263) — Viewer-gated,
         // member-scoped when authz enforcement is on.
         .route(
