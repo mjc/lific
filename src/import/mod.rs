@@ -35,6 +35,8 @@
 //!   [`NormalizedIssue`].
 
 pub mod github;
+pub mod jira;
+pub mod linear;
 
 use crate::db::DbPool;
 use crate::db::models::{CreateIssue, CreateLabel};

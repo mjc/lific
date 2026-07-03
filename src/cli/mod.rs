@@ -326,6 +326,60 @@ pub enum ImportAction {
         #[arg(long = "dry-run")]
         dry_run: bool,
     },
+
+    /// Import Linear team issues.
+    Linear {
+        /// Linear team key (e.g. ENG).
+        #[arg(long)]
+        team: String,
+
+        /// Destination Lific project identifier.
+        #[arg(long)]
+        project: String,
+
+        /// Linear personal API key (falls back to LINEAR_API_KEY).
+        #[arg(long, env = "LINEAR_API_KEY")]
+        token: Option<String>,
+
+        /// Username who should own the import bot.
+        #[arg(long)]
+        user: Option<String>,
+
+        /// Report what would be imported without writing anything.
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+    },
+
+    /// Import Jira Cloud project issues.
+    Jira {
+        /// Jira site slug (the `<site>` in <site>.atlassian.net).
+        #[arg(long)]
+        site: String,
+
+        /// Jira project key (e.g. PROJ).
+        #[arg(long = "jira-project")]
+        jira_project: String,
+
+        /// Destination Lific project identifier.
+        #[arg(long)]
+        project: String,
+
+        /// Jira account email (falls back to JIRA_EMAIL).
+        #[arg(long, env = "JIRA_EMAIL")]
+        email: Option<String>,
+
+        /// Jira API token (falls back to JIRA_API_TOKEN).
+        #[arg(long, env = "JIRA_API_TOKEN")]
+        token: Option<String>,
+
+        /// Username who should own the import bot.
+        #[arg(long)]
+        user: Option<String>,
+
+        /// Report what would be imported without writing anything.
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+    },
 }
 
 // ── Issue ────────────────────────────────────────────────────

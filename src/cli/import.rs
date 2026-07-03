@@ -7,8 +7,10 @@
 
 use crate::config::Config;
 use crate::db::{self, DbPool};
-use crate::import::github::{self, StateFilter};
 use crate::import::{self, ImportSummary};
+use crate::import::github::{self, StateFilter};
+use crate::import::jira::{self, JiraStatusMap};
+use crate::import::linear::{self, LinearStatusMap};
 
 /// Dispatch an `ImportAction` to the right source runner.
 pub fn run(
@@ -33,15 +35,27 @@ pub fn run(
             user,
             dry_run,
         } => run_github(
-            &pool,
-            repo,
+            &pool, repo, project, state, token.as_deref(), map_open, map_closed,
+            user.as_deref(), *dry_run,
+        )?,
+        ImportAction::Linear {
+            team,
             project,
-            state,
-            token.as_deref(),
-            map_open,
-            map_closed,
-            user.as_deref(),
-            *dry_run,
+            token,
+            user,
+            dry_run,
+        } => run_linear(&pool, team, project, token.as_deref(), user.as_deref(), *dry_run)?,
+        ImportAction::Jira {
+            site,
+            jira_project,
+            project,
+            email,
+            token,
+            user,
+            dry_run,
+        } => run_jira(
+            &pool, site, jira_project, project, email.as_deref(), token.as_deref(),
+            user.as_deref(), *dry_run,
         )?,
     };
 
@@ -66,12 +80,7 @@ fn resolve_bot(
     user: Option<&str>,
 ) -> Result<Option<i64>, Box<dyn std::error::Error>> {
     match import::resolve_owner(pool, user)? {
-        Some(owner) => Ok(Some(import::ensure_import_bot(
-            pool,
-            owner,
-            source_slug,
-            display,
-        )?)),
+        Some(owner) => Ok(Some(import::ensure_import_bot(pool, owner, source_slug, display)?)),
         None => Ok(None),
     }
 }
@@ -109,6 +118,60 @@ fn run_github(
     Ok(summary)
 }
 
+fn run_linear(
+    pool: &DbPool,
+    team: &str,
+    project: &str,
+    token: Option<&str>,
+    user: Option<&str>,
+    dry_run: bool,
+) -> Result<ImportSummary, Box<dyn std::error::Error>> {
+    let token = token
+        .ok_or("Linear API key required: pass --token or set LINEAR_API_KEY")?
+        .to_string();
+    let project_id = resolve_project(pool, project)?;
+    let map = LinearStatusMap::default();
+
+    let bot = if dry_run {
+        None
+    } else {
+        resolve_bot(pool, "linear", "Linear Import", user)?
+    };
+
+    let fetcher = linear::LiveLinear::new(team, token)?;
+    let fetched = linear::collect(&fetcher, &map)?;
+    let summary = import::run_import(pool, project_id, bot, &fetched, dry_run)?;
+    Ok(summary)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_jira(
+    pool: &DbPool,
+    site: &str,
+    jira_project: &str,
+    project: &str,
+    email: Option<&str>,
+    token: Option<&str>,
+    user: Option<&str>,
+    dry_run: bool,
+) -> Result<ImportSummary, Box<dyn std::error::Error>> {
+    let email = email.ok_or("Jira email required: pass --email or set JIRA_EMAIL")?;
+    let token = token.ok_or("Jira API token required: pass --token or set JIRA_API_TOKEN")?;
+    let project_id = resolve_project(pool, project)?;
+    let map = JiraStatusMap::default();
+
+    let bot = if dry_run {
+        None
+    } else {
+        resolve_bot(pool, "jira", "Jira Import", user)?
+    };
+
+    let fetcher = jira::LiveJira::new(site, jira_project, email, token)?;
+    let fetched = jira::collect(&fetcher, site, &map)?;
+    let summary = import::run_import(pool, project_id, bot, &fetched, dry_run)?;
+    Ok(summary)
+}
+
 /// Render the summary for humans (or JSON when piped).
 pub fn print_summary(summary: &ImportSummary, json: bool) {
     if json {
@@ -142,7 +205,11 @@ pub fn print_summary(summary: &ImportSummary, json: bool) {
         }
     }
     // What didn't come across.
-    if summary.skipped_non_issues + summary.skipped_assignees + summary.skipped_other > 0 {
+    if summary.skipped_non_issues
+        + summary.skipped_assignees
+        + summary.skipped_other
+        > 0
+    {
         println!();
         println!("  Not imported (by design):");
         if summary.skipped_non_issues > 0 {
