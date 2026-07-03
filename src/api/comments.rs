@@ -53,12 +53,15 @@ pub(super) async fn create_comment(
         .ok_or_else(|| LificError::BadRequest("authentication required to comment".into()))?;
 
     with_write(&db, |conn| {
-        crate::db::queries::comments::create_comment(
+        let comment = crate::db::queries::comments::create_comment(
             conn,
             CommentParent::Issue(issue_id),
             user.id,
             &input.content,
-        )
+        )?;
+        // LIF-262: link attachments referenced in the comment body.
+        super::attachments::sync_links(conn, AttachmentEntity::Comment, comment.id, &comment.content)?;
+        Ok(comment)
     })
     .map(Json)
 }
@@ -91,12 +94,15 @@ pub(super) async fn create_page_comment(
         .ok_or_else(|| LificError::BadRequest("authentication required to comment".into()))?;
 
     with_write(&db, |conn| {
-        crate::db::queries::comments::create_comment(
+        let comment = crate::db::queries::comments::create_comment(
             conn,
             CommentParent::Page(page_id),
             user.id,
             &input.content,
-        )
+        )?;
+        // LIF-262: link attachments referenced in the comment body.
+        super::attachments::sync_links(conn, AttachmentEntity::Comment, comment.id, &comment.content)?;
+        Ok(comment)
     })
     .map(Json)
 }
@@ -120,7 +126,10 @@ pub(super) async fn update_comment_handler(
     }
 
     with_write(&db, |conn| {
-        crate::db::queries::comments::update_comment(conn, id, &input.content)
+        let comment = crate::db::queries::comments::update_comment(conn, id, &input.content)?;
+        // LIF-262: re-scan the edited comment and reconcile links.
+        super::attachments::sync_links(conn, AttachmentEntity::Comment, comment.id, &comment.content)?;
+        Ok(comment)
     })
     .map(Json)
 }
