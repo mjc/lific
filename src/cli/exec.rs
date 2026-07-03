@@ -427,7 +427,7 @@ fn page(pool: &DbPool, action: &PageAction, json: bool) -> Result<(), Box<dyn st
             };
 
             let pages =
-                queries::list_pages(&conn, project_id, folder_id, label.as_deref(), None, None, None)?;
+                queries::list_pages(&conn, project_id, folder_id, label.as_deref(), None, None, None, None, None)?;
 
             if json {
                 print_json(&pages);
