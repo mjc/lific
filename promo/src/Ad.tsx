@@ -4,13 +4,12 @@ import { TransitionSeries, linearTiming, springTiming } from "@remotion/transiti
 import { fade } from "@remotion/transitions/fade";
 import { slide } from "@remotion/transitions/slide";
 import { SCENES, TRANSITION } from "./timing";
-import { ColdOpen } from "./scenes/ColdOpen";
+import { Hook } from "./scenes/Hook";
 import { AgitateJira, AgitateLinear, AgitateFoss } from "./scenes/Agitate";
 import { Reveal } from "./scenes/Reveal";
 import { TerminalScene } from "./scenes/TerminalScene";
 import { UIScene } from "./scenes/UIScene";
 import { AgentScene } from "./scenes/AgentScene";
-import { Proof } from "./scenes/Proof";
 import { TeamsScene } from "./scenes/TeamsScene";
 import { Cta } from "./scenes/Cta";
 
@@ -32,10 +31,13 @@ export const Ad: React.FC = () => {
     <>
       {MUSIC ? <Audio src={staticFile("music.mp3")} volume={0.8} /> : null}
       <TransitionSeries>
-        <TransitionSeries.Sequence durationInFrames={SCENES.coldOpen}>
-          <ColdOpen />
+        <TransitionSeries.Sequence durationInFrames={SCENES.hook}>
+          <Hook />
         </TransitionSeries.Sequence>
-        <TransitionSeries.Transition presentation={fade()} timing={cut} />
+        <TransitionSeries.Transition
+          presentation={slide({ direction: "from-right" })}
+          timing={springy}
+        />
 
         <TransitionSeries.Sequence durationInFrames={SCENES.jira}>
           <AgitateJira />
@@ -78,11 +80,6 @@ export const Ad: React.FC = () => {
 
         <TransitionSeries.Sequence durationInFrames={SCENES.agent}>
           <AgentScene />
-        </TransitionSeries.Sequence>
-        <TransitionSeries.Transition presentation={fade()} timing={cut} />
-
-        <TransitionSeries.Sequence durationInFrames={SCENES.proof}>
-          <Proof />
         </TransitionSeries.Sequence>
         <TransitionSeries.Transition presentation={fade()} timing={cut} />
 

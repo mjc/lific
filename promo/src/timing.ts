@@ -9,7 +9,7 @@
 export const TRANSITION = 12;
 
 export const SCENES = {
-  coldOpen: 75,
+  hook: 100,
   jira: 78,
   linear: 85,
   foss: 120,
@@ -17,7 +17,6 @@ export const SCENES = {
   terminal: 270,
   ui: 240,
   agent: 215,
-  proof: 115,
   teams: 270,
   cta: 265,
 } as const;
