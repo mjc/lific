@@ -947,6 +947,7 @@ mod tests {
                     start_date: None,
                     target_date: None,
                     labels: vec![],
+                    source: None,
                 },
             )
             .unwrap();
@@ -1048,6 +1049,7 @@ mod tests {
                     start_date: None,
                     target_date: None,
                     labels: vec![],
+                    source: None,
                 },
             )
             .unwrap();
@@ -1119,6 +1121,7 @@ mod tests {
                     start_date: None,
                     target_date: None,
                     labels: vec![],
+                    source: None,
                 },
             )
             .unwrap()
