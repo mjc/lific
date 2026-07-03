@@ -2,7 +2,34 @@
 
 ## v2.0.0 (2026-07-02)
 
-The UX overhaul. Ten features that move the web UI from complete to fast, personal, and pleasant — a real home page, analytics, saved views, undo, a peek panel, full keyboard control, and a theming system, finished with motion and skeleton polish. No breaking API changes; the major bump marks the scale of the interface change.
+Lific 2.0 is three releases in one. The web UI moves from complete to fast, personal, and pleasant — a real home page, analytics, saved views, undo, a peek panel, full keyboard control, and a theming system. Underneath it, Lific gets real authorization: project-scoped membership and roles, enforced identically across the REST API and every MCP tool. And around it, a new CLI connects any of 11 AI clients in one command, with health checks, device-flow login, and per-tool agent identities. No breaking API changes — authorization enforcement is opt-in, and existing setups keep working bit-for-bit.
+
+### Project membership and roles
+
+Until now, authentication was a door with no rooms behind it: any logged-in account — and any connected agent — could read, edit, or delete content in every project. 2.0 adds project-scoped membership and roles, so an agent holds exactly the authority its owner granted it and nothing more.
+
+- **Three roles per project**: `viewer` (read + comment), `maintainer` (full content and structure CRUD), and `lead` (everything, plus settings, membership, and project deletion). Multiple leads per project are supported; global admins override everything as the break-glass path.
+- **Default-deny, reads included.** With enforcement on, a non-member sees nothing — projects vanish from lists and search, and direct reads are refused. There is no implicit access floor.
+- **One enforcement layer, two transports.** REST handlers and all 26 MCP tools call the same `authz` module, so the web UI and agents can never drift apart. Cross-project operations (issue relations, plan-step issue links) require the role on every project touched.
+- **Agents inherit their owner.** A bot acts with its owning user's memberships and can never exceed them; OAuth-token requests resolve to their real user end to end. A token-backed agent that is a member keeps working under default-deny — verified by explicit lockout-regression tests on both transports.
+- **Safe, reversible rollout.** Enforcement is a runtime instance setting (`authz_enforced`, default off — flip it in Instance Settings or `lific instance set --authz-enforced true`). Legacy mode preserves pre-2.0 behavior bit-for-bit; existing project leads are backfilled as `lead` members automatically.
+- **Membership management** in Project Settings: list members with role badges, add by name, change roles inline, remove with confirmation — lead-gated, with last-lead protection so a project can't be orphaned. Every membership change lands in the audit log with actor attribution.
+- **Enumeration-derived coverage.** The test suite extracts every REST route and every MCP tool and fails if any surface is missing an authorization classification, so future endpoints can't ship ungated. The suite now stands at 793 tests.
+
+### Connect an agent in one command
+
+- **`lific connect <tool>`** writes working MCP config into 11 AI clients — OpenCode, Claude Code, Claude Desktop, Cursor, VS Code, Codex, Zed, Gemini CLI, Windsurf, Goose, and Crush — globally or per-project, over stdio or HTTP. Each connected tool gets its own bot identity, so the audit log shows *which* agent did what; `--oauth` connects native-auth clients without minting a key.
+- **`lific doctor`** health-checks config, database, backups, server reachability, OAuth, and MCP wiring, with actionable fix hints.
+- **`lific login` / `logout`**: two-step device-flow auth (RFC 8628) with keyring-backed credential storage — no pasting API keys.
+- **`lific agents-md`** writes a maintained Lific section into a repo's AGENTS.md so agents learn the house conventions.
+- **Terminal citizenship**: shell completions for bash/zsh/fish, TTY-aware output (auto-JSON when piped, prompts never hang non-interactive runs), and piped output can no longer panic on SIGPIPE.
+- **For agents over MCP**: the server's instructions now teach Lific workflow conventions, cold read tools nudge self-onboarding on a zero-project instance, and the repo ships an MCP Registry manifest and publish runbook.
+
+### Account and instance settings
+
+- **Account settings**: profile editing (display name, email), change password, and sign-out-everywhere. Changing your password revokes every other session — a stolen token dies the moment you rotate — while your current browser stays signed in.
+- **Instance settings**: a DB-backed, admin-gated settings surface — name your instance, open or close signup, toggle authorization enforcement, and enable single-user auto-login (skip the login screen entirely on a personal single-account instance). Editable in the UI or via `lific instance set`.
+- **Connected-tools flow redesigned**: a stepped connect modal with per-OS config paths, masked keys, copyable command chips, and real brand logos for every supported client.
 
 ### A place to land
 
@@ -19,27 +46,37 @@ The UX overhaul. Ten features that move the web UI from complete to fast, person
 
 ### Everywhere else
 
-- **Issue references come alive**: bare identifiers (LIF-42, PROJ-DOC-3) auto-link in all rendered markdown (code blocks correctly excluded), show rich hover preview cards, and autocomplete in every editor via `#` or an identifier prefix at the caret.
+- **Issue references come alive**: bare identifiers (LIF-42, PROJ-DOC-3) auto-link in all rendered markdown (code blocks correctly excluded), show rich hover preview cards, and autocomplete in every editor via `#` or an identifier prefix at the caret. Issue chips learned tricks too: shift-click opens the peek panel, right-click offers preview and open-in-new-tab.
+- **Path-style deep links**: plain URLs like `/LIF/issues/LIF-42` resolve into the app at boot, so links from dashboards, chats, and agents land directly on the right view.
 - **Appearance system**: six accent presets (all AA-verified in both modes, including a fix to the stock indigo dark-mode contrast), comfortable/compact density, three font scales, and a reduced-motion preference that every animation in the app honors — applied before first paint, no flash.
 - **Motion & loading polish**: content-shaped skeletons replace spinners on every heavy route, list rows and board cards glide on reorder, routes fade in quietly, and transition durations are normalized app-wide.
-
-## v1.7.0 (2026-07-02)
-
-Lific gets real authorization. Until now, authentication was a door with no rooms behind it: any logged-in account — and any connected agent — could read, edit, or delete content in every project. This release adds project-scoped membership and roles, enforced identically across the REST API and every MCP tool, so an agent holds exactly the authority its owner granted it and nothing more.
-
-### Project membership and roles
-
-- **Three roles per project**: `viewer` (read + comment), `maintainer` (full content and structure CRUD), and `lead` (everything, plus settings, membership, and project deletion). Multiple leads per project are supported; global admins override everything as the break-glass path.
-- **Default-deny, reads included.** With enforcement on, a non-member sees nothing — projects vanish from lists and search, and direct reads are refused. There is no implicit access floor.
-- **One enforcement layer, two transports.** REST handlers and all 26 MCP tools call the same `authz` module, so the web UI and agents can never drift apart. Cross-project operations (issue relations, plan-step issue links) require the role on every project touched.
-- **Agents inherit their owner.** A bot acts with its owning user's memberships and can never exceed them; OAuth-token requests resolve to their real user end to end. A token-backed agent that is a member keeps working under default-deny — verified by explicit lockout-regression tests on both transports.
-- **Safe, reversible rollout.** Enforcement is a runtime instance setting (`authz_enforced`, default off — flip it in Instance Settings or `lific instance set --authz-enforced true`). Legacy mode preserves pre-1.7 behavior bit-for-bit; existing project leads are backfilled as `lead` members automatically.
-- **Membership management** in Project Settings: list members with role badges, add by name, change roles inline, remove with confirmation — lead-gated, with last-lead protection so a project can't be orphaned. Every membership change lands in the audit log with actor attribution.
-- **Enumeration-derived coverage.** The test suite extracts every REST route and every MCP tool and fails if any surface is missing an authorization classification, so future endpoints can't ship ungated. 597 tests total.
-
-### Labels
-
 - **Edit and merge labels.** Labels can now be renamed and recolored in place, and duplicate labels can be merged (issues and pages re-tagged, source label removed) — with a full label manager and color picker in Project Settings.
+- **Pinned pages** stay at the top of the page list.
+
+### Design and mobile
+
+- **Login and signup redesigned** around the brand — and meet Lizzy, the mascot who now staffs the empty states, error pages, and the sign-in screen.
+- **Real error pages**: a 404 and a global error boundary that recover gracefully without leaking internals.
+- **Light theme contrast overhaul** and a typography token system (display through micro) replacing ad-hoc pixel sizes app-wide.
+- **Mobile pass**: off-canvas navigation drawer, reflowed topbars, issue rows, and detail views, board snap-scroll columns, and touch-reachable actions.
+- **Topbar filters consolidated** into a single Filter popover; projects reorder by drag in the sidebar, with collapsible per-project sub-navigation.
+
+### Security fixes
+
+- **Password changes revoke all other sessions** — a stolen session token no longer survives a password rotation.
+- **The session cookie's `Secure` flag is now gated on the request scheme**, fixing broken logins on plain-http and localhost deploys.
+- **OAuth approval CSRF tokens are bound to the approving session** (previously forgeable across users), the CSRF MAC comparison is constant-time, and token revocation validates its bearer before acting.
+
+### Performance
+
+- Issue list label hydration is O(1) — one query instead of one per row.
+- Hot read paths cache prepared statements.
+- `list_plans` is 2x faster via page-then-aggregate.
+
+### Upgrading
+
+- The database upgrades itself automatically on first launch. Upgrading from any 1.x is safe and needs no manual steps.
+- Authorization enforcement ships **off** by default: existing instances behave exactly as before until an admin flips `authz_enforced` in Instance Settings or runs `lific instance set --authz-enforced true`. Project leads are backfilled as members automatically, so flipping it on does not lock anyone out of their own projects.
 
 ## v1.6.0 (2026-06-15)
 
