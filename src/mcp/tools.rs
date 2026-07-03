@@ -1479,9 +1479,22 @@ impl LificMcp {
                 let status = input.status.as_deref();
                 let order_by = input.order_by.as_deref();
                 let order = input.order.as_deref();
+                let limit = input.limit.unwrap_or(100).max(1);
+                let offset = input.offset.unwrap_or(0).max(0);
                 match self.read(|conn| {
-                    let pages =
-                        queries::list_pages(conn, project_id, folder_id, label, status, order_by, order)?;
+                    // Over-fetch by one to detect truncation (mirrors the
+                    // issue branch above).
+                    let pages = queries::list_pages(
+                        conn,
+                        project_id,
+                        folder_id,
+                        label,
+                        status,
+                        order_by,
+                        order,
+                        Some(limit + 1),
+                        Some(offset),
+                    )?;
                     // One folders round-trip for the whole listing — folders
                     // are project-scoped, so workspace pages never have one.
                     let folder_names: std::collections::HashMap<i64, String> = match project_id {
@@ -1494,9 +1507,15 @@ impl LificMcp {
                     Ok((pages, folder_names))
                 }) {
                     Ok((pages, folder_names)) => {
-                        let pages = filter_visible(pages, &visible, |p| p.project_id);
+                        let mut pages = filter_visible(pages, &visible, |p| p.project_id);
                         if pages.is_empty() {
                             return "No pages found.".into();
+                        }
+                        // Over-fetched by one: detect truncation, then trim
+                        // back to the requested page size before rendering.
+                        let has_more = pages.len() as i64 > limit;
+                        if has_more {
+                            pages.truncate(limit as usize);
                         }
                         let mut out = format!("{} pages:\n", pages.len());
                         for p in &pages {
@@ -1523,6 +1542,7 @@ impl LificMcp {
                                 pin, p.identifier, p.status, p.title, labels, folder, updated
                             ));
                         }
+                        append_pagination_hint(&mut out, has_more, offset + limit);
                         out
                     }
                     Err(e) => format!("Error: {e}"),
@@ -4226,6 +4246,105 @@ mod tests {
             ..Default::default()
         }));
         assert!(listing.contains("(folder: Design)"), "got: {listing}");
+    }
+
+    // ── list_resources(page) pagination (LIF-137) ─────────────────────────
+
+    #[test]
+    fn mcp_list_resources_pages_respects_limit() {
+        let m = mcp();
+        seed_project(&m, "Pag", "PAG");
+        for title in ["P1", "P2", "P3", "P4", "P5"] {
+            m.create_page(Parameters(CreatePageInput {
+                project: Some("PAG".into()),
+                title: title.into(),
+                content: None,
+                folder: None,
+                status: None,
+                labels: None,
+            }));
+        }
+
+        let listing = m.list_resources(Parameters(ListResourcesInput {
+            resource_type: "page".into(),
+            project: Some("PAG".into()),
+            limit: Some(2),
+            ..Default::default()
+        }));
+        // Only 2 of the 5 pages should render.
+        assert!(listing.starts_with("2 pages:"), "got: {listing}");
+        assert_eq!(
+            listing.matches("| draft |").count(),
+            2,
+            "expected exactly 2 page lines, got: {listing}"
+        );
+        // More remain, so the hint points to the next page.
+        assert!(
+            listing.contains("call again with offset=2"),
+            "got: {listing}"
+        );
+    }
+
+    #[test]
+    fn mcp_list_resources_pages_offset_pages_correctly() {
+        let m = mcp();
+        seed_project(&m, "Off", "OFF");
+        // Deterministic order: sort by title asc so we know which page lands
+        // on which offset.
+        for title in ["A", "B", "C", "D"] {
+            m.create_page(Parameters(CreatePageInput {
+                project: Some("OFF".into()),
+                title: title.into(),
+                content: None,
+                folder: None,
+                status: None,
+                labels: None,
+            }));
+        }
+
+        let page2 = m.list_resources(Parameters(ListResourcesInput {
+            resource_type: "page".into(),
+            project: Some("OFF".into()),
+            order_by: Some("title".into()),
+            order: Some("asc".into()),
+            limit: Some(2),
+            offset: Some(2),
+            ..Default::default()
+        }));
+        // Offset 2 with limit 2 skips A/B and shows C/D.
+        assert!(!page2.contains("| A "), "got: {page2}");
+        assert!(!page2.contains("| B "), "got: {page2}");
+        assert!(page2.contains("| C "), "got: {page2}");
+        assert!(page2.contains("| D "), "got: {page2}");
+    }
+
+    #[test]
+    fn mcp_list_resources_pages_hint_absent_on_last_page() {
+        let m = mcp();
+        seed_project(&m, "Last", "LST");
+        for title in ["X", "Y", "Z"] {
+            m.create_page(Parameters(CreatePageInput {
+                project: Some("LST".into()),
+                title: title.into(),
+                content: None,
+                folder: None,
+                status: None,
+                labels: None,
+            }));
+        }
+
+        // A limit that exactly covers the remainder must NOT append a hint.
+        let listing = m.list_resources(Parameters(ListResourcesInput {
+            resource_type: "page".into(),
+            project: Some("LST".into()),
+            limit: Some(3),
+            ..Default::default()
+        }));
+        assert!(listing.starts_with("3 pages:"), "got: {listing}");
+        assert!(
+            !listing.contains("more results available"),
+            "hint should be absent when no more pages remain, got: {listing}"
+        );
     }
 
     // ── list_comments author filter + sort ────────────────────────────────

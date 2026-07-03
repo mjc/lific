@@ -59,6 +59,8 @@ pub(super) async fn list_pages_handler(
                 q.status.as_deref(),
                 q.order_by.as_deref(),
                 q.order.as_deref(),
+                None,
+                None,
             )
         })
         .map(Json);
@@ -76,6 +78,8 @@ pub(super) async fn list_pages_handler(
             q.status.as_deref(),
             q.order_by.as_deref(),
             q.order.as_deref(),
+            None,
+            None,
         )
     })?;
     Ok(Json(filter_visible(pages, &visible, |p| p.project_id)))

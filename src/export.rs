@@ -82,7 +82,7 @@ pub fn export_project(conn: &Connection, identifier: &str) -> Result<ExportBundl
             ..Default::default()
         },
     )?;
-    let pages = queries::list_pages(conn, Some(project.id), None, None, None, None, None)?;
+    let pages = queries::list_pages(conn, Some(project.id), None, None, None, None, None, None, None)?;
 
     let mut files = Vec::new();
     for issue in issues {

@@ -85,6 +85,10 @@ fn populate_page_labels(conn: &Connection, pages: &mut [Page]) -> Result<(), Lif
     Ok(())
 }
 
+// Positional filters mirror the REST/CLI call sites; a params struct would
+// churn every caller. Pagination (limit/offset) pushed it past the 7-arg
+// lint threshold (LIF-137).
+#[allow(clippy::too_many_arguments)]
 pub fn list_pages(
     conn: &Connection,
     project_id: Option<i64>,
@@ -93,6 +97,8 @@ pub fn list_pages(
     status: Option<&str>,
     order_by: Option<&str>,
     order: Option<&str>,
+    limit: Option<i64>,
+    offset: Option<i64>,
 ) -> Result<Vec<Page>, LificError> {
     // Build the query incrementally so the optional label filter can
     // graft on a JOIN. Using DISTINCT shields against a page joining
@@ -166,6 +172,24 @@ pub fn list_pages(
         }
     };
     sql.push_str(&format!(" ORDER BY {order_col} {dir}, pg.id {dir}"));
+
+    // Optional pagination. `None` limit means "no limit" so existing
+    // callers (export, REST, CLI) keep their unbounded behavior; only the
+    // MCP list_resources(page) branch passes explicit values (LIF-137).
+    // When a limit is given, clamp to a sane range like list_issues
+    // (LIF-141): floor at 1 so a 0/negative value still paginates, cap at
+    // 500 to match MCP conventions. Offset applies whenever provided.
+    if limit.is_some() || offset.is_some() {
+        let limit = limit.map(|l| l.clamp(1, 500)).unwrap_or(-1);
+        let offset = offset.unwrap_or(0).max(0);
+        sql.push_str(&format!(
+            " LIMIT ?{} OFFSET ?{}",
+            param_values.len() + 1,
+            param_values.len() + 2
+        ));
+        param_values.push(Box::new(limit));
+        param_values.push(Box::new(offset));
+    }
 
     let params_refs: Vec<&dyn rusqlite::types::ToSql> =
         param_values.iter().map(|p| p.as_ref()).collect();
@@ -749,7 +773,7 @@ mod tests {
         )
         .unwrap();
 
-        let pages = list_pages(&conn, Some(pid), None, None, None, None, None).unwrap();
+        let pages = list_pages(&conn, Some(pid), None, None, None, None, None, None, None).unwrap();
         let by_title: std::collections::HashMap<_, _> =
             pages.into_iter().map(|p| (p.title.clone(), p)).collect();
         assert_eq!(by_title["One"].labels, vec!["a".to_string()]);
@@ -780,7 +804,7 @@ mod tests {
         .unwrap();
         create_page(&conn, &blank_page(Some(pid), "Plain")).unwrap();
 
-        let filtered = list_pages(&conn, Some(pid), None, Some("design"), None, None, None).unwrap();
+        let filtered = list_pages(&conn, Some(pid), None, Some("design"), None, None, None, None, None).unwrap();
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].title, "Designy");
     }
@@ -961,11 +985,11 @@ mod tests {
         )
         .unwrap();
 
-        let archived = list_pages(&conn, Some(pid), None, None, Some("archived"), None, None).unwrap();
+        let archived = list_pages(&conn, Some(pid), None, None, Some("archived"), None, None, None, None).unwrap();
         assert_eq!(archived.len(), 1);
         assert_eq!(archived[0].title, "Archived doc");
 
-        let drafts = list_pages(&conn, Some(pid), None, None, Some("draft"), None, None).unwrap();
+        let drafts = list_pages(&conn, Some(pid), None, None, Some("draft"), None, None, None, None).unwrap();
         assert_eq!(drafts.len(), 1);
         assert_eq!(drafts[0].title, "Drafty");
     }
@@ -995,12 +1019,12 @@ mod tests {
         create_page(&conn, &blank_page(Some(pid), "cherry")).unwrap();
 
         // COLLATE NOCASE: "Apple" sorts before "banana" despite case.
-        let asc = list_pages(&conn, Some(pid), None, None, None, Some("title"), None).unwrap();
+        let asc = list_pages(&conn, Some(pid), None, None, None, Some("title"), None, None, None).unwrap();
         let titles: Vec<&str> = asc.iter().map(|p| p.title.as_str()).collect();
         assert_eq!(titles, vec!["Apple", "banana", "cherry"]);
 
         let desc =
-            list_pages(&conn, Some(pid), None, None, None, Some("title"), Some("desc")).unwrap();
+            list_pages(&conn, Some(pid), None, None, None, Some("title"), Some("desc"), None, None).unwrap();
         let titles: Vec<&str> = desc.iter().map(|p| p.title.as_str()).collect();
         assert_eq!(titles, vec!["cherry", "banana", "Apple"]);
     }
@@ -1016,7 +1040,7 @@ mod tests {
         pin_page_timestamps(&conn, fresh.id, "2026-01-01 00:00:00", "2026-06-01 00:00:00");
 
         let pages =
-            list_pages(&conn, Some(pid), None, None, None, Some("updated"), Some("desc")).unwrap();
+            list_pages(&conn, Some(pid), None, None, None, Some("updated"), Some("desc"), None, None).unwrap();
         let titles: Vec<&str> = pages.iter().map(|p| p.title.as_str()).collect();
         assert_eq!(titles, vec!["Fresh", "Stale"]);
     }
@@ -1029,10 +1053,10 @@ mod tests {
         create_page(&conn, &blank_page(Some(pid), "P")).unwrap();
 
         assert!(
-            list_pages(&conn, Some(pid), None, None, None, Some("content; --"), None).is_err(),
+            list_pages(&conn, Some(pid), None, None, None, Some("content; --"), None, None, None).is_err(),
             "unknown order_by must error, not be interpolated"
         );
-        assert!(list_pages(&conn, Some(pid), None, None, None, None, Some("up")).is_err());
+        assert!(list_pages(&conn, Some(pid), None, None, None, None, Some("up"), None, None).is_err());
     }
 
     // ── LIF-183: page pinning ────────────────────────────────
@@ -1146,7 +1170,7 @@ mod tests {
         )
         .unwrap();
 
-        let pages = list_pages(&conn, Some(pid), None, None, None, None, None).unwrap();
+        let pages = list_pages(&conn, Some(pid), None, None, None, None, None, None, None).unwrap();
         assert_eq!(pages.len(), 1);
         assert!(pages[0].pinned);
     }
