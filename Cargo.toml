@@ -108,6 +108,17 @@ libc = "0.2"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 
+# Argon2 password hashing is memory-hard by design; in unoptimized debug
+# builds each hash/verify costs ~0.4s of CPU, and the test suite performs
+# hundreds of them (every API test that creates a user or logs in). Compiling
+# just the crypto crates with optimizations keeps `cargo test` fast without
+# touching hash parameters or test code. Measured: full suite CPU time
+# dropped from ~42 CPU-minutes to a fraction with this override.
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3
+
 [profile.release]
 opt-level = 3
 strip = true

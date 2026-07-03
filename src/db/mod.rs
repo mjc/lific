@@ -100,6 +100,21 @@ fn apply_pragmas(conn: &Connection) -> Result<(), LificError> {
     Ok(())
 }
 
+/// Disable SQLite's memory-usage statistics before the first connection is
+/// created. When memstatus is on (the default), every sqlite3 malloc/free in
+/// the entire process serializes on one global mutex (`mem0`) — with many
+/// threads (e.g. the parallel test runner) this becomes a futex storm that
+/// burns more CPU in the kernel than the actual queries. We never read
+/// sqlite3_memory_used(), so the stats are pure overhead. Must run before
+/// SQLite initializes; once it has, the call returns SQLITE_MISUSE and is a
+/// harmless no-op.
+fn disable_sqlite_memstatus() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| unsafe {
+        rusqlite::ffi::sqlite3_config(rusqlite::ffi::SQLITE_CONFIG_MEMSTATUS, 0i32);
+    });
+}
+
 fn open_read_connection(path: &Path) -> Result<Connection, LificError> {
     let conn = Connection::open_with_flags(
         path,
@@ -128,6 +143,7 @@ fn open_read_connection(path: &Path) -> Result<Connection, LificError> {
 /// databases are not shared across connections.
 #[cfg(test)]
 pub fn open_memory() -> Result<DbPool, LificError> {
+    disable_sqlite_memstatus();
     let conn = Connection::open_in_memory()?;
     conn.execute_batch(
         "PRAGMA journal_mode = WAL;
@@ -174,6 +190,7 @@ pub fn open_memory() -> Result<DbPool, LificError> {
 
 /// Open (or create) the SQLite database, run migrations, and return a pool.
 pub fn open(path: &Path) -> Result<DbPool, LificError> {
+    disable_sqlite_memstatus();
     // Writer connection — runs migrations
     let writer = Connection::open(path)?;
     apply_pragmas(&writer)?;
