@@ -69,7 +69,7 @@ export const Cta: React.FC = () => {
         <div
           style={{
             fontFamily: MONO,
-            fontSize: 58,
+            fontSize: 84,
             fontWeight: 600,
             color: C.text,
             backgroundColor: C.accentSubtle,

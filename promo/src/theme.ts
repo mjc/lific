@@ -36,10 +36,10 @@ export const GENERIC = {
 } as const;
 
 /**
- * Single swappable CTA. When lific.dev is live, change this one string
- * and re-render.
+ * Single swappable CTA. lific.dev currently reroutes to the GitHub
+ * repo, and stays accurate if a site lands there later.
  */
-export const CTA_URL = "github.com/VoidNullable/lific";
+export const CTA_URL = "lific.dev";
 
 export const WIDTH = 1920;
 export const HEIGHT = 1080;
