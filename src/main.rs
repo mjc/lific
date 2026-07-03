@@ -8,6 +8,7 @@ mod backup;
 mod cli;
 mod config;
 mod db;
+mod dump;
 mod error;
 mod export;
 mod import;
@@ -161,6 +162,78 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             std::fs::write(config_path, Config::default_toml())?;
             println!("Created lific.toml with default settings");
+            return Ok(());
+        }
+
+        Command::Dump { out } => {
+            let json = cli::term::wants_json(cli.json);
+            let result = dump::run_dump(&cfg.database.path, out.as_deref())
+                .map_err(|e| -> Box<dyn std::error::Error> { e.to_string().into() })?;
+            let m = &result.manifest;
+            if json {
+                let out_json = serde_json::json!({
+                    "archive": result.archive_path.display().to_string(),
+                    "lific_version": m.lific_version,
+                    "schema_version": m.schema_version,
+                    "created_at": m.created_at,
+                    "db_size_bytes": m.db_size_bytes,
+                    "attachment_count": m.attachment_count,
+                    "attachment_bytes": m.attachment_bytes,
+                });
+                println!("{}", serde_json::to_string_pretty(&out_json)?);
+            } else {
+                println!("Wrote backup archive: {}", result.archive_path.display());
+                println!("  lific version:    {}", m.lific_version);
+                println!("  schema version:   {}", m.schema_version);
+                println!("  created at:       {}", m.created_at);
+                println!("  database size:    {} bytes", m.db_size_bytes);
+                println!(
+                    "  attachments:      {} ({} bytes)",
+                    m.attachment_count, m.attachment_bytes
+                );
+            }
+            return Ok(());
+        }
+
+        Command::Restore { archive, force } => {
+            let json = cli::term::wants_json(cli.json);
+            // Best-effort warning: a hot WAL suggests the server is still up.
+            if dump::server_maybe_running(&cfg.database.path) {
+                eprintln!(
+                    "warning: a hot -wal file is present next to {} — is the server still \
+                     running? Stop it before restoring.",
+                    cfg.database.path.display()
+                );
+            }
+            let result = dump::run_restore(&archive, &cfg.database.path, force)
+                .map_err(|e| -> Box<dyn std::error::Error> { e.to_string().into() })?;
+            let m = &result.manifest;
+            if json {
+                let out_json = serde_json::json!({
+                    "restored_to": result.db_path.display().to_string(),
+                    "lific_version": m.lific_version,
+                    "schema_version": m.schema_version,
+                    "created_at": m.created_at,
+                    "attachment_count": result.attachment_count,
+                    "moved_existing_to": result
+                        .moved_existing_to
+                        .as_ref()
+                        .map(|p| p.display().to_string()),
+                });
+                println!("{}", serde_json::to_string_pretty(&out_json)?);
+            } else {
+                println!("Restored from archive: {}", archive.display());
+                println!("  database:        {}", result.db_path.display());
+                println!("  from lific:      {}", m.lific_version);
+                println!("  schema version:  {}", m.schema_version);
+                println!("  created at:      {}", m.created_at);
+                println!("  attachments:     {}", result.attachment_count);
+                if let Some(moved) = &result.moved_existing_to {
+                    println!("  previous db moved aside to: {}", moved.display());
+                }
+                println!();
+                println!("Start the server; any pending migrations will apply on startup.");
+            }
             return Ok(());
         }
 

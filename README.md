@@ -212,7 +212,7 @@ Everything takes human-readable identifiers (`project="APP"`, not `project_id=7`
 | **Web UI** | Markdown editing with live preview, drag-and-drop board, Mermaid and code-copy, dark/light theme |
 | **User accounts** | Individual auth, per-tool bot identities, project membership and roles |
 | **Auth** | OAuth 2.1 (PKCE, dynamic client registration, RFC 9728 discovery), RFC 8628 device flow, API keys, token revocation |
-| **Backups** | Automatic SQLite snapshots with configurable retention |
+| **Backups** | `lific dump` / `lific restore` single-archive backups, plus automatic interval archives with retention |
 | **CLI** | Full CRUD, TTY-aware JSON output, works with no server running |
 | **Single binary** | No runtime dependencies, embedded SQLite, ~25 MB |
 
@@ -254,6 +254,31 @@ level = "info"
 CLI flags (`--db`, `--port`, `--host`) override config values. Set `server.public_url` when exposing Lific beyond localhost; it becomes the OAuth issuer and the URL `lific connect` writes into client configs.
 
 </details>
+
+## Backup and restore
+
+The data set is the database plus a content-addressed `attachments/` dir beside it. `lific dump` packages both — with a consistent DB snapshot taken via `VACUUM INTO`, safe while the server is running — into one self-contained archive:
+
+```bash
+lific dump                      # → ./lific_20260703_141500.tar.gz
+lific dump --out /mnt/backups   # directory → default filename inside it
+```
+
+Each archive contains the DB snapshot, every attachment blob, and a `manifest.json` (Lific version, schema version, sizes). Restoring is the mirror image — stop the server first:
+
+```bash
+lific restore lific_20260703_141500.tar.gz          # refuses to overwrite an existing db
+lific restore lific_20260703_141500.tar.gz --force  # moves the current db aside to lific.db.pre-restore-<ts>
+```
+
+Restores are staged (a failure leaves the original data dir untouched) and refuse archives created by a newer Lific; older archives are fine — pending migrations apply on next start.
+
+The automatic interval backups (`[backup]` in config) write the same `.tar.gz` artifact to the backup dir with rotation. External backup harnesses (restic, borg, cron) can either scoop up that dir or call `lific dump` as a pre-backup hook:
+
+```bash
+# e.g. restic pre-hook
+lific dump --out /srv/backup-staging/lific.tar.gz && restic backup /srv/backup-staging
+```
 
 ## Building from source
 

@@ -491,12 +491,23 @@ fn check_backups(cfg: &Config) -> Option<Check> {
     }
 }
 
-/// Age in minutes of the most recently modified file in the backup dir, or
-/// `None` if there are no files.
+/// Age in minutes of the most recent backup artifact in the backup dir, or
+/// `None` if there are none.
+///
+/// LIF-266: backups are now single `lific_*.tar.gz` archives. Legacy bare
+/// `lific_*.db` snapshots from the pre-archive scheme are still counted so a
+/// mixed backup dir mid-migration reports freshness correctly. Other files
+/// (e.g. the legacy mirrored `attachments/` dir) are ignored.
 fn newest_backup_age_minutes(dir: &Path) -> Option<u64> {
     let mut newest: Option<std::time::SystemTime> = None;
     let entries = std::fs::read_dir(dir).ok()?;
     for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let is_backup_artifact = name.ends_with(".tar.gz") || name.ends_with(".db");
+        if !is_backup_artifact {
+            continue;
+        }
         if let Ok(meta) = entry.metadata()
             && meta.is_file()
             && let Ok(modified) = meta.modified()
@@ -1034,6 +1045,44 @@ mod tests {
         cfg.backup.dir = std::path::PathBuf::from("backups");
         let c = check_backups(&cfg).unwrap();
         assert_eq!(c.status, Status::Pass, "detail: {}", c.detail);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn backups_check_recognizes_tar_gz_archives() {
+        // LIF-266: the interval task now writes `lific_*.tar.gz` archives.
+        // Freshness must be reported against the new naming.
+        let dir = std::env::temp_dir().join(format!("lific_doctor_bk4_{}", std::process::id()));
+        let bkdir = dir.join("backups");
+        std::fs::create_dir_all(&bkdir).unwrap();
+        std::fs::write(bkdir.join("lific_20260101_120000.tar.gz"), b"x").unwrap();
+        let mut cfg = Config::default();
+        cfg.backup.enabled = true;
+        cfg.backup.interval_minutes = 60;
+        cfg.database.path = dir.join("lific.db");
+        cfg.backup.dir = std::path::PathBuf::from("backups");
+        let c = check_backups(&cfg).unwrap();
+        assert_eq!(c.status, Status::Pass, "detail: {}", c.detail);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn backups_check_ignores_non_artifact_files() {
+        // A backup dir containing only a leftover mirrored `attachments/` dir
+        // (and no archive) must still report "no backups yet", not treat the
+        // dir's contents as a fresh backup.
+        let dir = std::env::temp_dir().join(format!("lific_doctor_bk5_{}", std::process::id()));
+        let bkdir = dir.join("backups");
+        std::fs::create_dir_all(bkdir.join("attachments")).unwrap();
+        std::fs::write(bkdir.join("attachments").join("deadbeef"), b"blob").unwrap();
+        let mut cfg = Config::default();
+        cfg.backup.enabled = true;
+        cfg.backup.interval_minutes = 60;
+        cfg.database.path = dir.join("lific.db");
+        cfg.backup.dir = std::path::PathBuf::from("backups");
+        let c = check_backups(&cfg).unwrap();
+        assert_eq!(c.status, Status::Warn, "detail: {}", c.detail);
+        assert!(c.detail.contains("no backups yet"));
         std::fs::remove_dir_all(&dir).ok();
     }
 

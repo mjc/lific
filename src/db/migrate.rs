@@ -162,6 +162,14 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
     ),
 ];
 
+/// Highest migration version this binary knows how to apply. Used by
+/// `lific dump`/`restore` (LIF-266) to stamp and gate archives on schema
+/// compatibility: an archive whose `schema_version` exceeds this was created
+/// by a newer Lific and must not be restored onto an older binary.
+pub fn latest_version() -> i64 {
+    MIGRATIONS.iter().map(|(v, _, _)| *v).max().unwrap_or(0)
+}
+
 /// Ensure the migrations table exists and apply any pending migrations.
 pub fn run(conn: &Connection) -> Result<(), crate::error::LificError> {
     conn.execute_batch(

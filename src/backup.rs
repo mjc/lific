@@ -1,12 +1,13 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use rusqlite::backup;
 use tracing::{error, info, warn};
 
 use crate::config::BackupConfig;
 use crate::db::DbPool;
+use crate::dump;
 
 /// Start the background backup task. Returns the JoinHandle.
 pub fn start_backup_task(
@@ -52,120 +53,65 @@ pub fn start_backup_task(
     })
 }
 
-/// Perform a single backup using SQLite's online backup API.
+/// Whether we've already logged the one-time hint about the legacy mirrored
+/// `attachments/` dir left behind by the pre-LIF-266 backup scheme.
+static LEGACY_MIRROR_HINTED: AtomicBool = AtomicBool::new(false);
+
+/// Perform a single backup: write one self-contained `.tar.gz` archive via the
+/// shared dump code path (same artifact `lific dump` produces), then rotate.
+///
+/// LIF-266: this replaces the old bare-`.db` snapshot plus additive
+/// attachments-mirror scheme. The mirror grew forever (blobs were never GC'd);
+/// self-contained archives sidestep that (at the cost of duplicating blobs per
+/// archive — acceptable at current scale).
 fn run_backup(pool: &DbPool, db_path: &Path, backup_dir: &Path, retain: usize) {
-    let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
     let db_stem = db_path
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("lific");
-    let backup_filename = format!("{db_stem}_{timestamp}.db");
-    let backup_path = backup_dir.join(&backup_filename);
+    let filename = dump::archive_filename(db_stem, &dump::archive_timestamp());
+    let backup_path = backup_dir.join(&filename);
 
-    // Use a read connection so we don't block writes
-    let source = match pool.read() {
-        Ok(conn) => conn,
-        Err(e) => {
-            error!(error = %e, "failed to acquire read connection for backup");
-            return;
-        }
-    };
-
-    // Open a new connection to the backup destination
-    let mut dest = match rusqlite::Connection::open(&backup_path) {
-        Ok(conn) => conn,
-        Err(e) => {
-            error!(path = %backup_path.display(), error = %e, "failed to open backup destination");
-            return;
-        }
-    };
-
-    // Use SQLite's backup API -- consistent snapshot, no locking
-    match backup::Backup::new(&source, &mut dest) {
-        Ok(b) => {
-            // Step through the backup in chunks to avoid holding locks too long
-            // -1 means copy all pages at once (fine for small DBs)
-            if let Err(e) = b.step(-1) {
-                error!(error = %e, "backup step failed");
-                let _ = std::fs::remove_file(&backup_path);
-                return;
-            }
-            // Restrict permissions to owner-only (0600) since backups contain the full DB
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let perms = std::fs::Permissions::from_mode(0o600);
-                if let Err(e) = std::fs::set_permissions(&backup_path, perms) {
-                    warn!(error = %e, "failed to set backup file permissions");
-                }
-            }
+    match dump::write_dump(pool, db_path, &backup_path) {
+        Ok(manifest) => {
             let size = std::fs::metadata(&backup_path)
                 .map(|m| m.len())
                 .unwrap_or(0);
             info!(
                 path = %backup_path.display(),
                 size_kb = size / 1024,
-                "backup completed"
+                attachments = manifest.attachment_count,
+                "backup archive written"
             );
         }
         Err(e) => {
-            error!(error = %e, "failed to initialize backup");
+            error!(error = %e, "backup archive failed");
             let _ = std::fs::remove_file(&backup_path);
             return;
         }
     }
 
-    // Drop the dest connection to flush
-    drop(dest);
-
-    // LIF-262: the attachments sidecar dir is part of the data set (Option B
-    // content-addressed storage — bytes live on disk, not in the DB), so a DB
-    // snapshot alone would restore metadata rows pointing at missing blobs.
-    // Mirror the attachments dir into the backup dir so a backup is
-    // self-contained: one binary, one database, one attachments dir. Files are
-    // content-addressed (immutable), so this is an additive sync — existing
-    // backup blobs are never rewritten and pruned source files are left in
-    // place (a restore only needs a superset of the referenced hashes).
-    if let Some(parent) = db_path.parent() {
-        let attachments_src = parent.join("attachments");
-        if attachments_src.is_dir() {
-            let attachments_dst = backup_dir.join("attachments");
-            if let Err(e) = sync_attachments_dir(&attachments_src, &attachments_dst) {
-                warn!(error = %e, "failed to sync attachments into backup dir");
-            }
-        }
+    // One-time hint about the legacy mirrored attachments dir (old scheme). It
+    // is no longer written to or read from; the operator can delete it.
+    let legacy_mirror = backup_dir.join("attachments");
+    if legacy_mirror.is_dir() && !LEGACY_MIRROR_HINTED.swap(true, Ordering::Relaxed) {
+        info!(
+            dir = %legacy_mirror.display(),
+            "legacy mirrored attachments dir from the pre-archive backup scheme is no longer \
+             used and can be deleted"
+        );
     }
 
-    // Rotate old backups
     rotate_backups(backup_dir, db_stem, retain);
 }
 
-/// Copy any attachment blobs not already present in the backup dir. Blobs are
-/// content-addressed (the filename IS the sha256), so a file that already
-/// exists is byte-identical and safe to skip — this stays cheap even as the
-/// attachment set grows.
-fn sync_attachments_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(dst)?;
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-        let Some(name) = path.file_name() else { continue };
-        // Skip in-progress temp writes (see storage::AttachmentStore::write).
-        if path.extension().and_then(|e| e.to_str()) == Some("tmp") {
-            continue;
-        }
-        let target = dst.join(name);
-        if !target.exists() {
-            std::fs::copy(&path, &target)?;
-        }
-    }
-    Ok(())
-}
-
-/// Keep only the N most recent backups, delete the rest.
+/// Keep only the N most recent backup archives, delete the rest.
+///
+/// LIF-266: rotation candidates are the new `.tar.gz` archives AND legacy
+/// bare-`.db` snapshots from the old scheme (both share the `{stem}_` prefix
+/// and a sortable timestamp), so old snapshots age out naturally alongside new
+/// archives. The legacy mirrored `attachments/` dir is left alone (it isn't a
+/// per-run artifact); a one-time hint in `run_backup` notes it can be deleted.
 fn rotate_backups(backup_dir: &Path, db_stem: &str, retain: usize) {
     let prefix = format!("{db_stem}_");
     let mut backups: Vec<PathBuf> = match std::fs::read_dir(backup_dir) {
@@ -173,10 +119,16 @@ fn rotate_backups(backup_dir: &Path, db_stem: &str, retain: usize) {
             .filter_map(|e| e.ok())
             .map(|e| e.path())
             .filter(|p| {
-                p.extension().and_then(|e| e.to_str()) == Some("db")
-                    && p.file_name()
-                        .and_then(|n| n.to_str())
-                        .is_some_and(|n| n.starts_with(&prefix))
+                let name = match p.file_name().and_then(|n| n.to_str()) {
+                    Some(n) => n,
+                    None => return false,
+                };
+                if !name.starts_with(&prefix) {
+                    return false;
+                }
+                // New archives (`.tar.gz`) or legacy snapshots (`.db`).
+                name.ends_with(".tar.gz")
+                    || p.extension().and_then(|e| e.to_str()) == Some("db")
             })
             .collect(),
         Err(e) => {
@@ -233,9 +185,9 @@ mod tests {
     fn rotate_keeps_only_retain_count() {
         let dir = make_temp_dir();
 
-        // Create 5 fake backup files with lexicographic timestamps
+        // Create 5 fake archive files with lexicographic timestamps
         for i in 1..=5 {
-            fs::write(dir.join(format!("lific_2026010{i}_120000.db")), "fake").unwrap();
+            fs::write(dir.join(format!("lific_2026010{i}_120000.tar.gz")), "fake").unwrap();
         }
 
         rotate_backups(&dir, "lific", 3);
@@ -244,10 +196,10 @@ mod tests {
         assert_eq!(remaining.len(), 3);
 
         // Oldest two (01, 02) should be gone, newest three (03, 04, 05) kept
-        assert!(!dir.join("lific_20260101_120000.db").exists());
-        assert!(!dir.join("lific_20260102_120000.db").exists());
-        assert!(dir.join("lific_20260103_120000.db").exists());
-        assert!(dir.join("lific_20260105_120000.db").exists());
+        assert!(!dir.join("lific_20260101_120000.tar.gz").exists());
+        assert!(!dir.join("lific_20260102_120000.tar.gz").exists());
+        assert!(dir.join("lific_20260103_120000.tar.gz").exists());
+        assert!(dir.join("lific_20260105_120000.tar.gz").exists());
 
         fs::remove_dir_all(&dir).ok();
     }
@@ -256,8 +208,8 @@ mod tests {
     fn rotate_does_nothing_under_retain() {
         let dir = make_temp_dir();
 
-        fs::write(dir.join("lific_20260101_120000.db"), "fake").unwrap();
-        fs::write(dir.join("lific_20260102_120000.db"), "fake").unwrap();
+        fs::write(dir.join("lific_20260101_120000.tar.gz"), "fake").unwrap();
+        fs::write(dir.join("lific_20260102_120000.tar.gz"), "fake").unwrap();
 
         rotate_backups(&dir, "lific", 5);
 
@@ -272,62 +224,57 @@ mod tests {
         let dir = make_temp_dir();
 
         // These should be ignored (wrong prefix / extension)
-        fs::write(dir.join("other_20260101_120000.db"), "x").unwrap();
+        fs::write(dir.join("other_20260101_120000.tar.gz"), "x").unwrap();
         fs::write(dir.join("lific_20260101_120000.txt"), "x").unwrap();
-        // These are real backups
-        fs::write(dir.join("lific_20260101_120000.db"), "x").unwrap();
-        fs::write(dir.join("lific_20260102_120000.db"), "x").unwrap();
+        // These are real archives
+        fs::write(dir.join("lific_20260101_120000.tar.gz"), "x").unwrap();
+        fs::write(dir.join("lific_20260102_120000.tar.gz"), "x").unwrap();
 
         rotate_backups(&dir, "lific", 1);
 
         // Only 1 backup kept, non-matching files untouched
-        assert!(dir.join("other_20260101_120000.db").exists());
+        assert!(dir.join("other_20260101_120000.tar.gz").exists());
         assert!(dir.join("lific_20260101_120000.txt").exists());
-        assert!(!dir.join("lific_20260101_120000.db").exists()); // oldest removed
-        assert!(dir.join("lific_20260102_120000.db").exists()); // kept
+        assert!(!dir.join("lific_20260101_120000.tar.gz").exists()); // oldest removed
+        assert!(dir.join("lific_20260102_120000.tar.gz").exists()); // kept
 
         fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
-    fn run_backup_syncs_attachments_dir() {
-        // A backup must carry the content-addressed attachment blobs (Option B
-        // storage) alongside the DB snapshot, so a restore has the bytes its
-        // metadata rows point at.
+    fn rotate_ages_out_legacy_db_snapshots_alongside_archives() {
+        // LIF-266: pre-archive `.db` snapshots from the old scheme are
+        // rotation candidates too, so they age out naturally instead of
+        // accumulating forever next to the new `.tar.gz` archives.
         let dir = make_temp_dir();
-        let db_path = dir.join("source.db");
-        let backup_dir = dir.join("backups");
-        fs::create_dir_all(&backup_dir).unwrap();
+        // Two legacy .db snapshots (older timestamps) + two new archives.
+        fs::write(dir.join("lific_20260101_120000.db"), "old1").unwrap();
+        fs::write(dir.join("lific_20260102_120000.db"), "old2").unwrap();
+        fs::write(dir.join("lific_20260103_120000.tar.gz"), "new1").unwrap();
+        fs::write(dir.join("lific_20260104_120000.tar.gz"), "new2").unwrap();
 
-        // Seed an attachments sidecar dir next to the db.
-        let att_dir = dir.join("attachments");
-        fs::create_dir_all(&att_dir).unwrap();
-        fs::write(att_dir.join("deadbeefsha"), b"blob contents").unwrap();
-        // A stray temp write must be skipped.
-        fs::write(att_dir.join("deadbeefsha.tmp"), b"partial").unwrap();
+        rotate_backups(&dir, "lific", 2);
 
-        let pool = crate::db::open(&db_path).expect("open test db");
-        run_backup(&pool, &db_path, &backup_dir, 5);
-
-        let mirrored = backup_dir.join("attachments").join("deadbeefsha");
-        assert!(mirrored.exists(), "attachment blob must be mirrored into the backup dir");
-        assert_eq!(fs::read(&mirrored).unwrap(), b"blob contents");
-        assert!(
-            !backup_dir.join("attachments").join("deadbeefsha.tmp").exists(),
-            "in-progress .tmp writes must not be backed up"
-        );
+        // The two oldest (legacy .db) are gone; the two newest archives kept.
+        assert!(!dir.join("lific_20260101_120000.db").exists());
+        assert!(!dir.join("lific_20260102_120000.db").exists());
+        assert!(dir.join("lific_20260103_120000.tar.gz").exists());
+        assert!(dir.join("lific_20260104_120000.tar.gz").exists());
 
         fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
-    fn run_backup_creates_valid_db() {
+    fn run_backup_emits_tar_gz_archive_with_data_and_blobs() {
+        // LIF-266: the interval task now emits a single self-contained
+        // `.tar.gz` archive (same artifact as `lific dump`) carrying the DB
+        // snapshot and every non-.tmp attachment blob.
         let dir = make_temp_dir();
-        let db_path = dir.join("source.db");
+        let db_path = dir.join("lific.db");
         let backup_dir = dir.join("backups");
         fs::create_dir_all(&backup_dir).unwrap();
 
-        // Create a real pool with some data
+        // Seed the DB and an attachments sidecar dir next to it.
         let pool = crate::db::open(&db_path).expect("open test db");
         {
             let conn = pool.write().unwrap();
@@ -343,27 +290,39 @@ mod tests {
             )
             .unwrap();
         }
+        let att_dir = dir.join("attachments");
+        fs::create_dir_all(&att_dir).unwrap();
+        fs::write(att_dir.join("deadbeefsha"), b"blob contents").unwrap();
+        fs::write(att_dir.join("deadbeefsha.tmp"), b"partial").unwrap();
 
         run_backup(&pool, &db_path, &backup_dir, 5);
 
-        // Should have exactly one backup file
-        let backups: Vec<_> = fs::read_dir(&backup_dir)
+        // Exactly one `.tar.gz` archive, no bare `.db` snapshot.
+        let archives: Vec<_> = fs::read_dir(&backup_dir)
             .unwrap()
             .filter_map(|e| e.ok())
-            .filter(|e| e.path().extension().and_then(|e| e.to_str()) == Some("db"))
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.ends_with(".tar.gz"))
             .collect();
-        assert_eq!(backups.len(), 1);
+        assert_eq!(archives.len(), 1, "expected one archive, got {archives:?}");
 
-        // Verify the backup is a valid SQLite DB with our data
-        let backup_conn = rusqlite::Connection::open(backups[0].path()).unwrap();
-        let name: String = backup_conn
-            .query_row(
-                "SELECT name FROM projects WHERE identifier = 'BKP'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(name, "BackupTest");
+        // Its contents: db + manifest + the blob, excluding the .tmp write.
+        let archive_path = backup_dir.join(&archives[0]);
+        let file = fs::File::open(&archive_path).unwrap();
+        let dec = flate2::read::GzDecoder::new(file);
+        let mut tar = tar::Archive::new(dec);
+        let names: Vec<String> = tar
+            .entries()
+            .unwrap()
+            .map(|e| e.unwrap().path().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert!(names.iter().any(|n| n == crate::dump::ARCHIVE_DB_NAME));
+        assert!(names.iter().any(|n| n == crate::dump::ARCHIVE_MANIFEST_NAME));
+        assert!(names.iter().any(|n| n == "attachments/deadbeefsha"));
+        assert!(
+            !names.iter().any(|n| n.ends_with(".tmp")),
+            "in-progress .tmp writes must not be archived: {names:?}"
+        );
 
         fs::remove_dir_all(&dir).ok();
     }

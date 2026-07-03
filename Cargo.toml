@@ -69,6 +69,11 @@ keyring = { version = "3", features = [
 rust-embed = { version = "8", features = ["mime-guess"] }
 mime_guess = "2"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+# Backup/restore archive format (LIF-266): `lific dump` / `lific restore`
+# produce a single self-contained tar.gz (gitea-dump style). flate2 is already
+# in the tree transitively; tar is the new direct dep.
+tar = "0.4"
+flate2 = "1"
 
 # Encoding
 urlencoding = "2"

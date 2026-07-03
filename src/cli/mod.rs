@@ -112,6 +112,40 @@ pub enum Command {
     /// Generate a default lific.toml config file
     Init,
 
+    /// Write a single self-contained backup archive of the whole data set.
+    ///
+    /// Produces `lific_YYYYMMDD_HHMMSS.tar.gz` (gitea-dump style) containing a
+    /// consistent snapshot of the database, every attachment blob, and a
+    /// `manifest.json`. Safe to run while the server is running (the DB is
+    /// snapshotted via `VACUUM INTO`, no writer lock is held). The archive is
+    /// chmod 0600. Point external harnesses (restic/borg/cron) at the output,
+    /// or call this as a pre-backup hook.
+    Dump {
+        /// Output target: a file path, or a directory (the default filename is
+        /// used inside it). Defaults to the current working directory.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+
+    /// Restore the data set from a `lific dump` archive.
+    ///
+    /// STOP THE SERVER FIRST — restoring under a live server corrupts state.
+    /// Validates the archive (manifest + db present, no path traversal in
+    /// attachment entries, schema not newer than this binary), then stages the
+    /// extraction in a temp dir and moves it into place, so a failure leaves
+    /// the original data dir untouched. Refuses to overwrite an existing
+    /// database unless `--force`; with `--force` the current db is moved aside
+    /// to `lific.db.pre-restore-<timestamp>` rather than deleted. After a
+    /// restore, start the server — any pending migrations apply on startup.
+    Restore {
+        /// Path to the `.tar.gz` archive produced by `lific dump`.
+        archive: PathBuf,
+
+        /// Overwrite an existing database (moving the current one aside).
+        #[arg(long)]
+        force: bool,
+    },
+
     /// Write Lific's MCP config into your AI clients (the fastest way to
     /// connect an editor/agent to this Lific instance).
     ///
@@ -1018,6 +1052,49 @@ mod tests {
     fn parse_init() {
         let cli = Cli::try_parse_from(["lific", "init"]).unwrap();
         assert!(matches!(cli.command, Command::Init));
+    }
+
+    #[test]
+    fn parse_dump_defaults() {
+        let cli = Cli::try_parse_from(["lific", "dump"]).unwrap();
+        match cli.command {
+            Command::Dump { out } => assert!(out.is_none()),
+            _ => panic!("expected Dump"),
+        }
+    }
+
+    #[test]
+    fn parse_dump_with_out() {
+        let cli = Cli::try_parse_from(["lific", "dump", "--out", "/tmp/backups"]).unwrap();
+        match cli.command {
+            Command::Dump { out } => assert_eq!(out, Some(PathBuf::from("/tmp/backups"))),
+            _ => panic!("expected Dump"),
+        }
+    }
+
+    #[test]
+    fn parse_restore_defaults() {
+        let cli = Cli::try_parse_from(["lific", "restore", "/tmp/b.tar.gz"]).unwrap();
+        match cli.command {
+            Command::Restore { archive, force } => {
+                assert_eq!(archive, PathBuf::from("/tmp/b.tar.gz"));
+                assert!(!force);
+            }
+            _ => panic!("expected Restore"),
+        }
+    }
+
+    #[test]
+    fn parse_restore_force() {
+        let cli =
+            Cli::try_parse_from(["lific", "restore", "/tmp/b.tar.gz", "--force"]).unwrap();
+        match cli.command {
+            Command::Restore { archive, force } => {
+                assert_eq!(archive, PathBuf::from("/tmp/b.tar.gz"));
+                assert!(force);
+            }
+            _ => panic!("expected Restore"),
+        }
     }
 
     #[test]
