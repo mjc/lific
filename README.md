@@ -20,7 +20,7 @@ Your agent can write the code. What it can't do is remember: the plan dies with 
 
 Three numbers instead of adjectives:
 
-- **26 MCP tools in 5,231 tokens.** That's the measured size of the full `tools/list` response at v2.0.0 (o200k tokenizer). Your entire tracker costs about as much context as one long file read. Bloated MCP servers are a real tax; this one isn't.
+- **29 MCP tools in 6,081 tokens.** That's the measured size of the full `tools/list` response at v2.0.0 (o200k tokenizer). Your entire tracker costs about as much context as one long file read. Bloated MCP servers are a real tax; this one isn't.
 - **One ~25 MB binary.** Embedded SQLite, embedded web UI, backups built in. The data set is just the database and a content-addressed `attachments/` dir beside it (both covered by the automatic backups). No Docker, no Postgres, no reverse proxy, no daemon farm. Copy it to a server, point your agents at it, done.
 - **11 AI clients configured by one command.** `lific connect` writes correct MCP config into OpenCode, Claude Code, Cursor, VS Code, Codex, Zed, and more. No hand-edited JSON.
 
@@ -184,15 +184,15 @@ lific search "authentication" --project APP
 
 ## MCP tools
 
-All 26, in 5,231 tokens:
+All 29, in 6,081 tokens:
 
 | Family | Tools |
 |--------|-------|
-| Issues | `list_issues` · `get_issue` · `create_issue` · `update_issue` · `edit_issue` · `get_board` |
+| Issues | `list_issues` · `get_issue` · `create_issue` · `update_issue` · `bulk_update` · `edit_issue` · `get_board` |
 | Relations | `link_issues` · `unlink_issues` |
 | Pages | `get_page` · `create_page` · `update_page` · `edit_page` |
 | Plans | `create_plan` · `get_plan` · `edit_plan_step` · `update_plan_step` |
-| Comments | `add_comment` · `list_comments` |
+| Comments | `add_comment` · `list_comments` · `edit_comment` · `delete_comment` |
 | Search & history | `search` · `get_activity` |
 | Structure | `list_resources` · `manage_resource` · `delete` |
 | Export | `export_issue` · `export_page` · `export_project` |
@@ -206,7 +206,7 @@ Everything takes human-readable identifiers (`project="APP"`, not `project_id=7`
 | **Issue tracking** | Status, priority, modules with icons, labels, relations, comments, board view, fuzzy search, sort by recent activity |
 | **Plans** | Persisted, nestable step trees that outlive a session; steps mirror issues with two-way done/close sync |
 | **Documentation** | Markdown pages in recursive folders, with comments, labels, lifecycle status, full-text search, and Mermaid diagrams |
-| **MCP interface** | 26 tools, human-readable identifiers, compact schema, session instructions |
+| **MCP interface** | 29 tools, human-readable identifiers, compact schema, session instructions |
 | **Onboarding** | `lific connect` (11 clients), `lific doctor`, `lific agents-md`, shell completions |
 | **REST API** | Full CRUD for all resources, search, board view |
 | **Web UI** | Markdown editing with live preview, drag-and-drop board, Mermaid and code-copy, dark/light theme |
@@ -257,21 +257,21 @@ CLI flags (`--db`, `--port`, `--host`) override config values. Set `server.publi
 
 ## Backup and restore
 
-The data set is the database plus a content-addressed `attachments/` dir beside it. `lific dump` packages both — with a consistent DB snapshot taken via `VACUUM INTO`, safe while the server is running — into one self-contained archive:
+The data set is the database plus a content-addressed `attachments/` dir beside it. `lific dump` packages both into one self-contained archive, taking a consistent DB snapshot via `VACUUM INTO` that is safe while the server is running:
 
 ```bash
 lific dump                      # → ./lific_20260703_141500.tar.gz
 lific dump --out /mnt/backups   # directory → default filename inside it
 ```
 
-Each archive contains the DB snapshot, every attachment blob, and a `manifest.json` (Lific version, schema version, sizes). Restoring is the mirror image — stop the server first:
+Each archive contains the DB snapshot, every attachment blob, and a `manifest.json` (Lific version, schema version, sizes). Restoring is the mirror image. Stop the server first:
 
 ```bash
 lific restore lific_20260703_141500.tar.gz          # refuses to overwrite an existing db
 lific restore lific_20260703_141500.tar.gz --force  # moves the current db aside to lific.db.pre-restore-<ts>
 ```
 
-Restores are staged (a failure leaves the original data dir untouched) and refuse archives created by a newer Lific; older archives are fine — pending migrations apply on next start.
+Restores are staged (a failure leaves the original data dir untouched) and refuse archives created by a newer Lific; older archives are fine, and pending migrations apply on next start.
 
 The automatic interval backups (`[backup]` in config) write the same `.tar.gz` artifact to the backup dir with rotation. External backup harnesses (restic, borg, cron) can either scoop up that dir or call `lific dump` as a pre-backup hook:
 
