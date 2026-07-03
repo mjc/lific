@@ -347,6 +347,7 @@ fn mcp_manifest() -> HashMap<&'static str, Classification> {
         ("export_issue", Gated(Viewer)),
         ("create_issue", Gated(Maintainer)),
         ("update_issue", Gated(Maintainer)),
+        ("bulk_update", Gated(Maintainer)),
         ("edit_issue", Gated(Maintainer)),
         ("get_board", Gated(Viewer)),
         ("link_issues", Gated(Maintainer)),

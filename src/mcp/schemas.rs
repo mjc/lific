@@ -119,6 +119,28 @@ pub struct UpdateIssueInput {
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct BulkUpdateInput {
+    #[schemars(description = "Project identifier (e.g. LIF)")]
+    pub project: String,
+    // ── Filter (which issues to change; mirrors list_issues) ──
+    #[schemars(description = "Only affect issues with this status: backlog, todo, active, done, cancelled")]
+    pub filter_status: Option<String>,
+    #[schemars(description = "Only affect issues with this priority: urgent, high, medium, low, none")]
+    pub filter_priority: Option<String>,
+    #[schemars(description = "Only affect issues in this module (by name)")]
+    pub filter_module: Option<String>,
+    #[schemars(description = "Only affect issues carrying this label (by name)")]
+    pub filter_label: Option<String>,
+    // ── Target (fields to set on every matching issue) ──
+    #[schemars(description = "New status to set: backlog, todo, active, done, cancelled")]
+    pub set_status: Option<String>,
+    #[schemars(description = "New priority to set: urgent, high, medium, low, none")]
+    pub set_priority: Option<String>,
+    #[schemars(description = "New module (by name) to set")]
+    pub set_module: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct GetBoardInput {
     #[schemars(description = "Project identifier (e.g. LIF)")]
     pub project: String,

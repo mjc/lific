@@ -762,6 +762,75 @@ impl LificMcp {
     }
 
     #[tool(
+        description = "Apply field changes to every issue in a project matching a filter, in one call. Filter with filter_status / filter_priority / filter_module / filter_label (same semantics as list_issues); set new values with set_status / set_priority / set_module. Returns the number of issues updated."
+    )]
+    fn bulk_update(&self, Parameters(input): Parameters<BulkUpdateInput>) -> String {
+        let pid = match resolve_project(&self.db, &input.project) {
+            Ok(id) => id,
+            Err(e) => return format!("Error: {e}"),
+        };
+        // Authz: mirror update_issue — project-scoped Maintainer gate.
+        if let Err(e) = require_role_mcp(&self.db, pid, models::Role::Maintainer) {
+            return format!("Error: {e}");
+        }
+        let filter_module_id = match &input.filter_module {
+            Some(name) => match resolve_module(&self.db, pid, name) {
+                Ok(id) => Some(id),
+                Err(e) => return format!("Error: {e}"),
+            },
+            None => None,
+        };
+        // Resolve the target module once (present => set it on every match).
+        let set_module_id = match &input.set_module {
+            Some(name) => match resolve_module(&self.db, pid, name) {
+                Ok(id) => Some(id),
+                Err(e) => return format!("Error: {e}"),
+            },
+            None => None,
+        };
+        // Cap the selection like get_board does; bulk changes over 500 issues
+        // in a single call are out of scope for this tool.
+        const BULK_CAP: i64 = 500;
+        match self.write(|conn| {
+            let issues = queries::list_issues(
+                conn,
+                &models::ListIssuesQuery {
+                    project_id: Some(pid),
+                    status: input.filter_status.clone(),
+                    priority: input.filter_priority.clone(),
+                    module_id: filter_module_id,
+                    label: input.filter_label.clone(),
+                    limit: Some(BULK_CAP),
+                    ..Default::default()
+                },
+            )?;
+            let mut count = 0usize;
+            for issue in &issues {
+                queries::update_issue(
+                    conn,
+                    issue.id,
+                    &models::UpdateIssue {
+                        title: None,
+                        description: None,
+                        status: input.set_status.clone(),
+                        priority: input.set_priority.clone(),
+                        module_id: set_module_id,
+                        sort_order: None,
+                        start_date: None,
+                        target_date: None,
+                        labels: None,
+                    },
+                )?;
+                count += 1;
+            }
+            Ok(count)
+        }) {
+            Ok(count) => format!("Updated {count} issue(s)"),
+            Err(e) => format!("Error: {e}"),
+        }
+    }
+
+    #[tool(
         description = "Edit an issue by replacing an exact string. Targets the description field by default; pass field='title' to edit the title. Fails if old_string is not found or matches multiple places (unless replace_all=true). Cheaper than update_issue for small changes because the agent doesn't have to resend the whole field."
     )]
     fn edit_issue(&self, Parameters(input): Parameters<EditIssueInput>) -> String {
@@ -2489,6 +2558,70 @@ mod tests {
         assert!(result.contains("Renamed"), "got: {result}");
         assert!(result.contains("active"), "got: {result}");
         assert!(result.contains("urgent"), "got: {result}");
+    }
+
+    // ── bulk_update (LIF-24) ──
+
+    #[test]
+    fn bulk_update_sets_status_on_module_matches_only() {
+        let m = mcp();
+        seed_project(&m, "Bulk", "BLK");
+        // Module to target.
+        m.manage_resource(Parameters(ManageResourceInput {
+            resource_type: "module".into(),
+            action: "create".into(),
+            project: Some("BLK".into()),
+            name: Some("Backend".into()),
+            identifier: None,
+            current_name: None,
+            description: None,
+            status: None,
+            color: None,
+        }));
+        // Two active issues in the Backend module (should be updated).
+        for title in ["In-module A", "In-module B"] {
+            m.create_issue(Parameters(CreateIssueInput {
+                project: "BLK".into(),
+                title: title.into(),
+                status: Some("active".into()),
+                priority: None,
+                description: None,
+                module: Some("Backend".into()),
+                labels: None,
+            }));
+        }
+        // One active issue with NO module (outside the filter).
+        m.create_issue(Parameters(CreateIssueInput {
+            project: "BLK".into(),
+            title: "Loose one".into(),
+            status: Some("active".into()),
+            priority: None,
+            description: None,
+            module: None,
+            labels: None,
+        }));
+
+        let result = m.bulk_update(Parameters(BulkUpdateInput {
+            project: "BLK".into(),
+            filter_status: Some("active".into()),
+            filter_module: Some("Backend".into()),
+            set_status: Some("done".into()),
+            ..Default::default()
+        }));
+        assert_eq!(result, "Updated 2 issue(s)", "got: {result}");
+
+        // The two in-module issues are now done.
+        for id in ["BLK-1", "BLK-2"] {
+            let got = m.get_issue(Parameters(GetIssueInput {
+                identifier: id.into(),
+            }));
+            assert!(got.contains("Status: done"), "{id} not done: {got}");
+        }
+        // The out-of-filter issue is untouched (still active).
+        let loose = m.get_issue(Parameters(GetIssueInput {
+            identifier: "BLK-3".into(),
+        }));
+        assert!(loose.contains("Status: active"), "loose changed: {loose}");
     }
 
     #[test]
@@ -4777,6 +4910,49 @@ mod authz_gating_tests {
 
     fn is_forbidden(s: &str) -> bool {
         s.starts_with("Error: Forbidden:")
+    }
+
+    // ── bulk_update (LIF-24): project-scoped Maintainer gate ─────
+
+    #[test]
+    fn bulk_update_denies_non_member_when_enforced() {
+        let (m, _admin, _lead, maintainer, _viewer, non_member, _project_id) =
+            setup_membership_mcp();
+        // Seed an active issue as a permitted member.
+        let created = as_user(&maintainer, || {
+            m.create_issue(Parameters(CreateIssueInput {
+                project: "MEM".into(),
+                title: "Target".into(),
+                status: Some("active".into()),
+                priority: None,
+                description: None,
+                module: None,
+                labels: None,
+            }))
+        });
+        assert!(created.starts_with("Created"), "got: {created}");
+
+        // Non-member is refused with enforcement on (mirrors update_issue).
+        let denied = as_user(&non_member, || {
+            m.bulk_update(Parameters(BulkUpdateInput {
+                project: "MEM".into(),
+                filter_status: Some("active".into()),
+                set_status: Some("done".into()),
+                ..Default::default()
+            }))
+        });
+        assert!(is_forbidden(&denied), "got: {denied}");
+
+        // A maintainer is allowed and updates the match.
+        let allowed = as_user(&maintainer, || {
+            m.bulk_update(Parameters(BulkUpdateInput {
+                project: "MEM".into(),
+                filter_status: Some("active".into()),
+                set_status: Some("done".into()),
+                ..Default::default()
+            }))
+        });
+        assert_eq!(allowed, "Updated 1 issue(s)", "got: {allowed}");
     }
 
     // ── Reads: single-resource Viewer gate ──────────────────────
