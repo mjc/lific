@@ -417,6 +417,15 @@ pub async fn require_api_key(
                         is_admin: u.is_admin,
                     })
             });
+            // LIF-261: an API key with NO user binding is operator-trusted —
+            // it can only be minted with shell access to the server, so it's
+            // admin-equivalent in enforced mode. This is the ONE credential
+            // path that sets the operator signal; OAuth/session tokens never
+            // do, so a legacy unbound OAuth token (also `AuthUser = None`)
+            // stays default-denied. Keyed off the DB binding, not the resolved
+            // `auth_user`, so a key bound to a since-deleted user does NOT
+            // silently become an operator.
+            let is_operator = key.user_id.is_none();
             // LIF-155: API keys are programmatic — 'mcp' on the /mcp
             // path, 'api' for direct REST usage.
             let actor = crate::actor::ActorCtx {
@@ -428,7 +437,16 @@ pub async fn require_api_key(
                 },
             };
             request.extensions_mut().insert(auth_user);
-            crate::actor::scope(actor, next.run(request)).await
+            // The /mcp route reads this marker to pass the operator flag into
+            // `with_request_identity`; REST reads the task-local scoped below.
+            if is_operator {
+                request.extensions_mut().insert(OperatorCredential);
+            }
+            crate::actor::scope(
+                actor,
+                crate::authz::operator_scope(is_operator, next.run(request)),
+            )
+            .await
         }
         _ => {
             warn!("API key hash verification failed");
@@ -441,6 +459,15 @@ pub async fn require_api_key(
         }
     }
 }
+
+/// LIF-261: request-extension marker inserted by [`require_api_key`] when the
+/// authenticated credential is an operator-trusted unbound API key. The `/mcp`
+/// route reads it (via `request.extensions().get::<OperatorCredential>()`) to
+/// forward the operator flag into `mcp::with_request_identity`. REST handlers
+/// don't read it — they see the operator signal through the task-local scoped
+/// by `authz::operator_scope` around the same request.
+#[derive(Clone, Copy)]
+pub struct OperatorCredential;
 
 /// Internal struct for loading API key rows during auth.
 #[derive(Debug)]
@@ -990,5 +1017,157 @@ mod tests {
             )
             .unwrap();
         assert_eq!(stored.as_deref(), Some("2030-06-01"));
+    }
+
+    // ── LIF-261: operator-key trust rule, end-to-end through the middleware ──
+    //
+    // The auth middleware sets `authz::operator_scope(true, ..)` ONLY on the
+    // unbound-API-key path. These drive a real route that runs
+    // `authz::require_role(.., Viewer)` in enforced mode behind the real
+    // `require_api_key`, so a 200 means the gate passed and a 403 means it
+    // denied — proving the credential-type signal reaches authz and that a
+    // legacy unbound OAuth token (also `None`) does NOT get the bypass.
+
+    fn enable_enforcement(pool: &db::DbPool) {
+        let conn = pool.write().unwrap();
+        crate::db::queries::settings::update(
+            &conn,
+            crate::db::queries::settings::InstanceSettingsPatch {
+                authz_enforced: Some(true),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    }
+
+    fn seed_project_id(pool: &db::DbPool, ident: &str) -> i64 {
+        let conn = pool.write().unwrap();
+        crate::db::queries::create_project(
+            &conn,
+            &crate::db::models::CreateProject {
+                name: format!("Project {ident}"),
+                identifier: ident.into(),
+                description: String::new(),
+                emoji: None,
+                lead_user_id: None,
+            },
+        )
+        .unwrap()
+        .id
+    }
+
+    /// A route that Viewer-gates a fixed project via `authz::require_role`
+    /// behind the real `require_api_key`. 200 = allowed, 403 = Forbidden.
+    fn gate_app(auth_state: AuthState, pool: db::DbPool, project_id: i64) -> Router {
+        async fn gate(
+            State((pool, project_id)): State<(db::DbPool, i64)>,
+            Extension(auth_user): Extension<Option<crate::db::models::AuthUser>>,
+        ) -> Result<String, crate::error::LificError> {
+            crate::authz::require_role(
+                &pool,
+                &auth_user,
+                project_id,
+                crate::db::models::Role::Viewer,
+            )?;
+            Ok("allowed".into())
+        }
+        Router::new()
+            .route("/gate", get(gate))
+            .with_state((pool, project_id))
+            .layer(middleware::from_fn_with_state(auth_state, require_api_key))
+    }
+
+    async fn gate_status(app: Router, key: &str) -> StatusCode {
+        app.oneshot(
+            Request::builder()
+                .uri("/gate")
+                .header("authorization", format!("Bearer {key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .status()
+    }
+
+    #[tokio::test]
+    async fn enforced_operator_unbound_key_passes_viewer_gate_via_middleware() {
+        let pool = test_db();
+        let manager = create_key_manager().unwrap();
+        let key = create_api_key(&pool, &manager, "operator").unwrap(); // unbound
+        let project = seed_project_id(&pool, "OPM");
+        enable_enforcement(&pool);
+
+        let app = gate_app(test_auth_state(&pool), pool.clone(), project);
+        assert_eq!(
+            gate_status(app, &key).await,
+            StatusCode::OK,
+            "an unbound (operator) API key must pass the Viewer gate in enforced mode"
+        );
+    }
+
+    // THE test: a legacy pre-binding OAuth token also resolves to None, but it
+    // is NOT an operator credential — it must stay Forbidden even in the exact
+    // same enforced-mode Viewer gate the operator key just passed.
+    #[tokio::test]
+    async fn enforced_legacy_unbound_oauth_token_is_forbidden_via_middleware() {
+        let pool = test_db();
+        let project = seed_project_id(&pool, "OAM");
+        enable_enforcement(&pool);
+        // Unbound OAuth token (user_id = None) — the LIF-204 legacy case.
+        let token = insert_oauth_token(&pool, "legacy-unbound", None);
+
+        let app = gate_app(test_auth_state(&pool), pool.clone(), project);
+        assert_eq!(
+            gate_status(app, &token).await,
+            StatusCode::FORBIDDEN,
+            "a legacy unbound OAuth token must NOT gain operator power — it stays default-denied"
+        );
+    }
+
+    // A key bound to a real (non-member) user is NOT an operator: even though
+    // it isn't None, it must be denied in enforced mode (no membership row),
+    // proving the operator bypass keys off the unbound binding, not the key
+    // type in general.
+    #[tokio::test]
+    async fn enforced_user_bound_key_nonmember_is_forbidden_via_middleware() {
+        let pool = test_db();
+        let manager = create_key_manager().unwrap();
+        create_api_key(&pool, &manager, "bound").unwrap();
+        let key = {
+            // Bind the key to a fresh non-admin user, then re-read plaintext by
+            // rotating is overkill; instead create bound key by assigning.
+            let uid = {
+                let conn = pool.write().unwrap();
+                crate::db::queries::users::create_user(
+                    &conn,
+                    &crate::db::models::CreateUser {
+                        username: "bounduser".into(),
+                        email: "bound@test.local".into(),
+                        password: "testpassword1".into(),
+                        display_name: None,
+                        is_admin: false,
+                        is_bot: false,
+                    },
+                )
+                .unwrap()
+                .id
+            };
+            let conn = pool.write().unwrap();
+            crate::db::queries::users::assign_key_to_user(&conn, "bound", uid).unwrap();
+            drop(conn);
+            // Rotate to obtain a usable plaintext bound to that user (rotation
+            // carries the binding over — LIF-132).
+            rotate_api_key(&pool, &manager, "bound").unwrap()
+        };
+        let project = seed_project_id(&pool, "BNM");
+        enable_enforcement(&pool);
+
+        let app = gate_app(test_auth_state(&pool), pool.clone(), project);
+        assert_eq!(
+            gate_status(app, &key).await,
+            StatusCode::FORBIDDEN,
+            "a user-bound key for a non-member must be denied — it is not an operator credential"
+        );
     }
 }

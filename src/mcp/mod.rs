@@ -24,6 +24,15 @@ static MCP_HANDLER_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(
 /// Uses unwrap_or_else to recover from poison (e.g. if a handler panics).
 static MCP_REQUEST_USER: Mutex<Option<AuthUser>> = Mutex::new(None);
 
+/// LIF-261: per-request "the credential is an operator-trusted unbound API
+/// key" flag, mirroring [`MCP_REQUEST_USER`]. A task-local can't carry this on
+/// the MCP path because rmcp spawns internal tasks that drop it, so it lives in
+/// a global guarded by the same serialization lock. Read by `authz` (via
+/// [`current_is_operator`]) to treat an unbound API key as admin-equivalent in
+/// enforced mode without granting that power to a legacy unbound OAuth token
+/// (which also resolves to `AuthUser = None`).
+static MCP_REQUEST_OPERATOR: Mutex<bool> = Mutex::new(false);
+
 /// Acquire the MCP handler lock, set the user, run the provided future,
 /// then clean up. Guarantees no identity confusion between concurrent requests.
 ///
@@ -36,6 +45,20 @@ where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = R>,
 {
+    with_request_identity(user, false, f).await
+}
+
+/// LIF-261: like [`with_request_user`] but also records whether the request's
+/// credential is an operator-trusted unbound API key. The `/mcp` route passes
+/// `true` only when the auth middleware resolved an unbound API key (never for
+/// OAuth/session tokens), so `authz` can treat it as admin-equivalent in
+/// enforced mode. `with_request_user` keeps the old signature (operator =
+/// false) for every non-unbound-key caller.
+pub async fn with_request_identity<F, Fut, R>(user: Option<AuthUser>, is_operator: bool, f: F) -> R
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = R>,
+{
     let _guard = MCP_HANDLER_LOCK.lock().await;
     let actor = crate::actor::ActorCtx {
         user_id: user.as_ref().map(|u| u.id),
@@ -44,10 +67,16 @@ where
     *MCP_REQUEST_USER
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = user;
+    *MCP_REQUEST_OPERATOR
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = is_operator;
     let result = crate::actor::scope(actor, f()).await;
     *MCP_REQUEST_USER
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    *MCP_REQUEST_OPERATOR
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = false;
     result
 }
 
@@ -57,6 +86,14 @@ pub(crate) fn current_auth_user() -> Option<AuthUser> {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clone()
+}
+
+/// LIF-261: whether the current MCP request's credential is an operator-trusted
+/// unbound API key. Read by `authz::operator_context`.
+pub(crate) fn current_is_operator() -> bool {
+    *MCP_REQUEST_OPERATOR
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Per-session instructions handed to every connected MCP agent via
@@ -294,6 +331,137 @@ mod tests {
         // The global must be cleared after the request completes so it
         // never leaks into an unrelated subsequent request.
         assert!(current_auth_user().is_none());
+    }
+
+    // ── LIF-261: operator flag on the MCP request identity global ──────────
+    //
+    // The `/mcp` route calls `with_request_identity(user, is_operator, ..)`;
+    // MCP tools' authz gates read the operator flag via
+    // `current_is_operator()`. These prove the global is set/read/cleared and
+    // that `with_request_user` keeps the non-operator default.
+
+    #[tokio::test]
+    async fn with_request_identity_exposes_and_clears_operator_flag() {
+        // Default (no request) is false.
+        assert!(!current_is_operator());
+
+        let seen = with_request_identity(None, true, || async { current_is_operator() }).await;
+        assert!(seen, "operator flag must be visible inside the request scope");
+
+        // Cleared after the request completes.
+        assert!(!current_is_operator(), "operator flag must be cleared after the request");
+    }
+
+    #[tokio::test]
+    async fn with_request_user_defaults_operator_false() {
+        let seen = with_request_user(None, || async { current_is_operator() }).await;
+        assert!(
+            !seen,
+            "with_request_user (non-unbound-key callers) must never set the operator flag"
+        );
+    }
+
+    // End-to-end: an operator-trusted unbound API key aimed at /mcp passes an
+    // enforced-mode MCP Viewer gate, while a legacy unbound OAuth token does
+    // not. Mirrors the /mcp route wiring (require_api_key → OperatorCredential
+    // extension → with_request_identity), then runs a real MCP gate.
+    #[tokio::test]
+    async fn mcp_operator_key_passes_gate_but_legacy_oauth_does_not() {
+        use axum::extract::State;
+        use axum::response::IntoResponse;
+
+        let pool = crate::db::open_memory().expect("test db");
+        let manager = crate::auth::create_key_manager().unwrap();
+        let unbound_key = crate::auth::create_api_key(&pool, &manager, "mcp-operator").unwrap();
+        let project = {
+            let conn = pool.write().unwrap();
+            crate::db::queries::settings::update(
+                &conn,
+                crate::db::queries::settings::InstanceSettingsPatch {
+                    authz_enforced: Some(true),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            crate::db::queries::create_project(
+                &conn,
+                &crate::db::models::CreateProject {
+                    name: "MCP Gate".into(),
+                    identifier: "MGT".into(),
+                    description: String::new(),
+                    emoji: None,
+                    lead_user_id: None,
+                },
+            )
+            .unwrap()
+            .id
+        };
+        let oauth_token = insert_oauth_token(&pool, "mcp-legacy-unbound", None);
+
+        // Route that mirrors main.rs's /mcp identity plumbing, then runs the
+        // same authz gate an MCP Viewer-tool would (via the tools.rs
+        // require_role_mcp path — here inlined as authz::require_role over the
+        // MCP current_auth_user()).
+        async fn gate(
+            State((pool, project_id)): State<(DbPool, i64)>,
+            axum::Extension(auth_user): axum::Extension<Option<AuthUser>>,
+            request: axum::extract::Request,
+        ) -> axum::response::Response {
+            let is_operator = request
+                .extensions()
+                .get::<crate::auth::OperatorCredential>()
+                .is_some();
+            crate::mcp::with_request_identity(auth_user, is_operator, || async {
+                let db = std::sync::Arc::new(pool);
+                match crate::authz::require_role(
+                    &db,
+                    &crate::mcp::current_auth_user(),
+                    project_id,
+                    crate::db::models::Role::Viewer,
+                ) {
+                    Ok(()) => (StatusCode::OK, "allowed").into_response(),
+                    Err(e) => e.into_response(),
+                }
+            })
+            .await
+        }
+
+        let auth_state = crate::auth::AuthState {
+            db: pool.clone(),
+            manager,
+            public_url: "https://example.com".into(),
+        };
+        let app = Router::new()
+            .route("/mcp-gate", get(gate))
+            .with_state((pool.clone(), project))
+            .layer(middleware::from_fn_with_state(
+                auth_state,
+                crate::auth::require_api_key,
+            ));
+
+        let status = |key: String, app: Router| async move {
+            app.oneshot(
+                Request::builder()
+                    .uri("/mcp-gate")
+                    .header("authorization", format!("Bearer {key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
+        };
+
+        assert_eq!(
+            status(unbound_key, app.clone()).await,
+            StatusCode::OK,
+            "operator-trusted unbound API key must pass the enforced MCP Viewer gate"
+        );
+        assert_eq!(
+            status(oauth_token, app).await,
+            StatusCode::FORBIDDEN,
+            "legacy unbound OAuth token must NOT gain operator power on the MCP surface"
+        );
     }
 
     // ── LIF-256: session instructions carry Lific's workflow conventions ──

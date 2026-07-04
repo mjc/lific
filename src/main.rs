@@ -730,7 +730,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             .cloned()
                             .flatten();
 
-                        mcp::with_request_user(auth_user, || async {
+                        // LIF-261: the auth middleware marks an operator-trusted
+                        // unbound API key with the OperatorCredential extension.
+                        // Forward it so MCP tools' authz gates treat it as
+                        // admin-equivalent in enforced mode.
+                        let is_operator = request
+                            .extensions()
+                            .get::<auth::OperatorCredential>()
+                            .is_some();
+
+                        mcp::with_request_identity(auth_user, is_operator, || async {
                             mcp_service.handle(request).await.into_response()
                         })
                         .await

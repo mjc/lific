@@ -22,6 +22,26 @@
 //! `is_admin` bypasses both modes unconditionally. Bots resolve to their
 //! owner (`007_bot_owners.sql`) before either check runs, in both modes — an
 //! agent can never exceed the human that owns it.
+//!
+//! ## Operator-key trust (LIF-261)
+//!
+//! Enforced mode is default-deny for a `None` effective user. That alone would
+//! brick the zero-user agent-first flow (`lific init` → `start` → `connect`),
+//! which runs on **user-unbound API keys** that resolve to `AuthUser = None`.
+//! Those keys can only be minted with shell access to the server (`lific
+//! start`'s first-run auto-key, `lific key create`, `connect`'s fresh-install
+//! path), so they're operator-trusted by construction — the threat the default
+//! guards against is a web-signup stranger with a session/OAuth token, not the
+//! operator's own shell-minted key.
+//!
+//! So enforced mode treats an **unbound API key** as admin-equivalent. The
+//! signal is credential-type-specific and comes only from the auth layer's
+//! unbound-API-key path — it is deliberately NOT "any `None`," because a legacy
+//! pre-binding OAuth token (`src/auth.rs`) also resolves to `None` and must
+//! stay default-denied. The auth middleware sets [`operator_scope`] (REST) or
+//! `mcp::with_request_user`'s operator flag (MCP); [`operator_context`] reads
+//! whichever surface is active. **Unbound API keys therefore bypass authz by
+//! design; audit them with `lific key list`.**
 
 use std::collections::HashSet;
 
@@ -30,6 +50,34 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::db::models::{AuthUser, Role};
 use crate::db::{DbPool, queries};
 use crate::error::LificError;
+
+// ── Operator-key trust signal (LIF-261) ─────────────────────────
+
+tokio::task_local! {
+    /// REST-side, request-scoped "the credential is an operator-trusted
+    /// unbound API key" flag. Set by `auth::require_api_key` via
+    /// [`operator_scope`] around the downstream handler, which runs in the
+    /// same task — so ambient reads in `require_role` see it. MCP can't use a
+    /// task-local (rmcp spawns internal tasks that drop it), so it mirrors the
+    /// flag into `mcp::current_is_operator()` instead.
+    static OPERATOR: bool;
+}
+
+/// Run `fut` with the REST operator flag in scope. `auth::require_api_key`
+/// wraps the unbound-API-key request path in this so `authz`'s ambient
+/// [`operator_context`] reads `true` for the duration of the request.
+pub async fn operator_scope<F: std::future::Future>(is_operator: bool, fut: F) -> F::Output {
+    OPERATOR.scope(is_operator, fut).await
+}
+
+/// Whether the current request's credential is an operator-trusted unbound
+/// API key. Checks the REST task-local first, then the MCP request global —
+/// exactly one is ever set for a given request. Defaults to `false`
+/// (including every synchronous / CLI / test context that sets neither), so
+/// no code path silently gains operator power without an explicit signal.
+fn operator_context() -> bool {
+    OPERATOR.try_with(|o| *o).unwrap_or(false) || crate::mcp::current_is_operator()
+}
 
 // ── Bot → owner resolution ──────────────────────────────────────
 
@@ -115,6 +163,19 @@ fn require_role_conn(
     project_id: i64,
     min: Role,
 ) -> Result<(), LificError> {
+    require_role_conn_op(conn, auth_user, project_id, min, operator_context())
+}
+
+/// Same as [`require_role_conn`] but with the operator signal passed
+/// explicitly, so tests can exercise both the operator and non-operator paths
+/// deterministically without an ambient task-local / MCP global.
+fn require_role_conn_op(
+    conn: &Connection,
+    auth_user: &Option<AuthUser>,
+    project_id: i64,
+    min: Role,
+    is_operator: bool,
+) -> Result<(), LificError> {
     let effective = effective_user(conn, auth_user);
 
     // Admin — resolved *after* bot→owner inheritance — always wins, in
@@ -124,6 +185,14 @@ fn require_role_conn(
     }
 
     if authz_enforced_conn(conn)? {
+        // LIF-261: an operator-trusted unbound API key is admin-equivalent in
+        // enforced mode. This is gated on `is_operator` (a credential-type
+        // signal from the auth layer), NOT on `effective` being `None`, so a
+        // legacy unbound OAuth token — which is also `None` here — still falls
+        // through to the default-deny check below.
+        if is_operator {
+            return Ok(());
+        }
         require_role_enforced(conn, &effective, project_id, min)
     } else {
         require_role_legacy(conn, &effective, project_id, min)
@@ -259,6 +328,10 @@ pub fn require_workspace_admin(
     if !authz_enforced(db)? {
         return Ok(());
     }
+    // LIF-261: operator-trusted unbound API keys are admin-equivalent.
+    if operator_context() {
+        return Ok(());
+    }
     let conn = db.read()?;
     let effective = effective_user(&conn, auth_user);
     match &effective {
@@ -275,10 +348,11 @@ pub fn require_workspace_admin(
 /// workspace-spanning read (LIF-197/LIF-198 call sites).
 ///
 /// `None` = unrestricted — caller should apply no filter at all. Returned
-/// for admins, and whenever enforcement is off (legacy mode has no concept
-/// of hidden projects). `Some(ids)` = only these project ids are visible:
-/// the effective caller's memberships (any role), or the empty set for a
-/// `None` auth user / a member of nothing.
+/// for admins, operator-trusted unbound API keys (LIF-261), and whenever
+/// enforcement is off (legacy mode has no concept of hidden projects).
+/// `Some(ids)` = only these project ids are visible: the effective caller's
+/// memberships (any role), or the empty set for a `None` auth user / a member
+/// of nothing.
 pub fn visible_project_ids(
     db: &DbPool,
     auth_user: &Option<AuthUser>,
@@ -290,6 +364,12 @@ pub fn visible_project_ids(
         return Ok(None);
     }
     if !authz_enforced_conn(&conn)? {
+        return Ok(None);
+    }
+    // LIF-261: an operator-trusted unbound API key sees everything, like an
+    // admin. Gated on the credential-type signal, not on `effective` being
+    // `None` — a legacy unbound OAuth token stays scoped to the empty set.
+    if operator_context() {
         return Ok(None);
     }
     let Some(user) = effective else {
@@ -470,6 +550,84 @@ mod tests {
         for min in [Role::Viewer, Role::Maintainer, Role::Lead] {
             assert!(require_role_conn(&conn, &None, project, min).is_err());
         }
+    }
+
+    // ── Operator-key trust rule (LIF-261) ────────────────────────
+    //
+    // These call `require_role_conn_op` with the operator signal passed
+    // explicitly so both the operator and non-operator determination are
+    // exercised deterministically, without depending on an ambient task-local
+    // or MCP global. The end-to-end wiring (auth middleware → operator_scope /
+    // MCP global) is proven by the middleware tests in `auth.rs` / `mcp/mod.rs`.
+
+    #[test]
+    fn enforced_operator_unbound_key_passes_all_levels() {
+        let pool = test_db();
+        let conn = pool.write().unwrap();
+        enable_enforcement(&conn);
+        let project = seed_project(&conn, "OPR"); // no membership rows at all
+
+        // A `None` effective user WITH the operator signal is admin-equivalent.
+        for min in [Role::Viewer, Role::Maintainer, Role::Lead] {
+            assert!(
+                require_role_conn_op(&conn, &None, project, min, true).is_ok(),
+                "operator-trusted unbound key must pass {min} in enforced mode"
+            );
+        }
+    }
+
+    // THE critical test: a legacy pre-binding OAuth token also resolves to
+    // `None`, but it is NOT an operator credential, so it must stay
+    // default-denied in enforced mode. Proves the operator bypass is gated on
+    // the credential-type signal, never on `effective` being `None`.
+    #[test]
+    fn enforced_legacy_unbound_oauth_none_stays_forbidden_all_levels() {
+        let pool = test_db();
+        let conn = pool.write().unwrap();
+        enable_enforcement(&conn);
+        let project = seed_project(&conn, "OAU");
+
+        for min in [Role::Viewer, Role::Maintainer, Role::Lead] {
+            assert!(
+                require_role_conn_op(&conn, &None, project, min, false).is_err(),
+                "a legacy unbound OAuth token (None, non-operator) must stay Forbidden at {min}"
+            );
+        }
+    }
+
+    // The operator signal never *demotes* a real user: it's a bypass, so with
+    // it set a real non-member is still allowed (admin-equivalent). And with it
+    // unset the same non-member is denied — i.e. the signal is what flips it.
+    #[test]
+    fn enforced_operator_signal_is_the_only_difference_for_a_nonmember() {
+        let pool = test_db();
+        let conn = pool.write().unwrap();
+        enable_enforcement(&conn);
+        let project = seed_project(&conn, "SIG");
+
+        assert!(
+            require_role_conn_op(&conn, &None, project, Role::Viewer, false).is_err(),
+            "no operator signal: denied"
+        );
+        assert!(
+            require_role_conn_op(&conn, &None, project, Role::Viewer, true).is_ok(),
+            "operator signal present: allowed"
+        );
+    }
+
+    // The operator bypass is enforced-mode only; in legacy mode the flag is a
+    // no-op because unbound `None` already passes Viewer/Maintainer there and
+    // the Lead gate stays admin/lead-only regardless.
+    #[test]
+    fn legacy_mode_operator_flag_does_not_change_lead_gate() {
+        let pool = test_db();
+        let conn = pool.write().unwrap();
+        // flag OFF (default)
+        let project = seed_project(&conn, "LGO"); // unowned
+
+        // Even with the operator flag set, legacy Lead gate on an unowned
+        // project denies a None user (matches pre-existing require_admin/lead).
+        assert!(require_role_conn_op(&conn, &None, project, Role::Lead, true).is_err());
     }
 
     // ── Legacy mode (flag OFF, default) ─────────────────────────
@@ -656,6 +814,63 @@ mod tests {
             enable_enforcement(&conn);
         }
         assert_eq!(visible_project_ids(&pool, &None).unwrap(), Some(HashSet::new()));
+    }
+
+    // LIF-261: an operator-trusted unbound key sees everything (unrestricted),
+    // like an admin — proven here through the ambient `operator_scope`
+    // task-local, which is the exact carrier the REST middleware uses.
+    #[tokio::test]
+    async fn visible_project_ids_operator_scope_returns_none() {
+        let pool = test_db();
+        {
+            let conn = pool.write().unwrap();
+            enable_enforcement(&conn);
+            seed_project(&conn, "V1");
+            seed_project(&conn, "V2");
+        }
+        // Without the operator scope, a None user is confined to the empty set.
+        assert_eq!(
+            visible_project_ids(&pool, &None).unwrap(),
+            Some(HashSet::new())
+        );
+        // Inside operator_scope(true), the same None user is unrestricted.
+        let got = operator_scope(true, async { visible_project_ids(&pool, &None) }).await.unwrap();
+        assert_eq!(got, None, "operator sees all projects (unrestricted)");
+    }
+
+    // LIF-261: the ambient operator context flips require_role end-to-end via
+    // the same task-local the REST auth middleware scopes around a request.
+    #[tokio::test]
+    async fn require_role_reads_ambient_operator_scope() {
+        let pool = test_db();
+        let project = {
+            let conn = pool.write().unwrap();
+            enable_enforcement(&conn);
+            seed_project(&conn, "AMB")
+        };
+
+        // No scope: None user denied at Viewer in enforced mode.
+        assert!(require_role(&pool, &None, project, Role::Viewer).is_err());
+
+        // Inside operator_scope(true): allowed at every level.
+        operator_scope(true, async {
+            for min in [Role::Viewer, Role::Maintainer, Role::Lead] {
+                assert!(
+                    require_role(&pool, &None, project, min).is_ok(),
+                    "ambient operator scope must pass {min}"
+                );
+            }
+        })
+        .await;
+
+        // operator_scope(false) must NOT grant the bypass.
+        operator_scope(false, async {
+            assert!(
+                require_role(&pool, &None, project, Role::Viewer).is_err(),
+                "operator_scope(false) is not a bypass"
+            );
+        })
+        .await;
     }
 
     // ── require_structure_role (LIF-197) ────────────────────────
