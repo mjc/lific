@@ -62,17 +62,19 @@ const CARD_H = 87;
 const PITCH = CARD_H + 8;
 const slotYAt = (slot: number) => cardsTop() + slot * PITCH;
 
-// Drag: LIF-214 (todo slot 1) -> active slot 2. The grab lands on the
-// track's second drop: bar 17 of the 130 BPM grid (global frame 886).
-const DRAG_START = 75;
-const DRAG_END = 125;
+// Drag: LIF-214 (todo slot 1) -> active slot 2. In Ad A the grab lands
+// on the track's second drop (bar 17, global 886) with dragStart=75.
 const MOVED = "LIF-214";
 
 const ease = Easing.bezier(0.4, 0, 0.2, 1);
 
-export const UIScene: React.FC = () => {
+export const UIScene: React.FC<{ dragStart?: number }> = ({
+  dragStart = 75,
+}) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
+  const DRAG_START = dragStart;
+  const DRAG_END = DRAG_START + 50;
 
   const dragT = interpolate(frame, [DRAG_START, DRAG_END], [0, 1], {
     extrapolateLeft: "clamp",
