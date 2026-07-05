@@ -435,6 +435,11 @@
   attachEntity={issue ? { entity_type: "issue", entity_id: issue.id } : null}
   backRoute={backHref()}
   backLabel={backText()}
+  breadcrumbSegments={[
+    { label: projectIdentifier, href: `#/${projectIdentifier}/overview`, mono: true, hideBelowSm: true },
+    { label: backText(), href: `#${backHref()}` },
+    { label: issue?.identifier ?? issueIdentifier, mono: true },
+  ]}
   {editable}
   {canComment}
   title={issue?.title ?? ""}

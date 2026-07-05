@@ -10,12 +10,13 @@
   // (navigate, searchInputEl, inline-create trigger) come in as props.
   import type { Label, Module } from "../api";
   import {
-    Plus, Search, ChevronRight, ChevronDown, Signal,
+    Plus, Search, ChevronDown, Signal,
     List as ListIcon, LayoutGrid, SlidersHorizontal, HelpCircle,
     ArrowDown, ArrowUp, Hash, Clock, History, Check, Zap, PenLine,
     SlidersVertical, Rows3, Layers,
   } from "lucide-svelte";
   import Tooltip from "../Tooltip.svelte";
+  import Breadcrumbs from "../Breadcrumbs.svelte";
   import StatusIcon from "../StatusIcon.svelte";
   import Skeleton from "../Skeleton.svelte";
   import FilterModal from "./FilterModal.svelte";
@@ -75,21 +76,15 @@
 
   <!-- ── LEFT ZONE: scope + view switcher ───────────────────── -->
   <div class="flex items-center gap-2 sm:gap-3 shrink-0 min-w-0">
-    <!-- Breadcrumb. The project segment + chevron collapse below sm (the
-         mobile header already shows the app name); the page label stays. -->
-    <div class="flex items-center gap-1.5 min-w-0">
-      <button
-        class="hidden sm:inline text-body-sm font-mono font-medium text-[var(--text-muted)]
-               hover:text-[var(--text)] transition-colors"
-        onclick={() => navigate(`/${projectIdentifier}/overview`)}
-      >
-        {projectIdentifier}
-      </button>
-      <ChevronRight size={12} class="hidden sm:block text-[var(--text-faint)]" />
-      <span class="text-body-sm font-medium text-[var(--text)] truncate">
-        {layout === "board" ? "Board" : "Issues"}
-      </span>
-    </div>
+    <!-- Breadcrumb (LIF-286: shared component). The project segment + its
+         separator collapse below sm (the mobile header already shows the
+         app name); the page label stays. -->
+    <Breadcrumbs
+      segments={[
+        { label: projectIdentifier, href: `#/${projectIdentifier}/overview`, mono: true, hideBelowSm: true },
+        { label: layout === "board" ? "Board" : "Issues" },
+      ]}
+    />
 
     <!-- View switcher pill. Anchored directly after the breadcrumb so the
          toggle never shifts when the per-status tallies (which arrive a

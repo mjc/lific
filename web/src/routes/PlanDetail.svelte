@@ -347,6 +347,11 @@
   identifier={plan?.identifier ?? `PLAN-${planId}`}
   backRoute={`/${projectIdentifier}/plans`}
   backLabel="Plans"
+  breadcrumbSegments={[
+    { label: projectIdentifier, href: `#/${projectIdentifier}/overview`, mono: true, hideBelowSm: true },
+    { label: "Plans", href: `#/${projectIdentifier}/plans` },
+    { label: plan?.title || plan?.identifier || `PLAN-${planId}` },
+  ]}
   editable={canEdit}
   title={plan?.title ?? ""}
   titleSize="md"

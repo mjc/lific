@@ -27,7 +27,8 @@
   import ActivityTimeline from "./ActivityTimeline.svelte";
   import ErrorState from "./ErrorState.svelte";
   import Skeleton from "./Skeleton.svelte";
-  import { ArrowLeft, Download, PanelRight, X } from "lucide-svelte";
+  import Breadcrumbs, { type Crumb } from "./Breadcrumbs.svelte";
+  import { Download, PanelRight, X } from "lucide-svelte";
   import { getContext, type Snippet } from "svelte";
   import type { Activity, Comment } from "./api";
   import { isTypingContext } from "./shortcuts";
@@ -44,6 +45,12 @@
     identifier,
     backRoute,
     backLabel,
+    // LIF-286: the full breadcrumb trail (e.g. PROJ › Issues › LIF-42). When
+    // provided it replaces the old back-arrow + identifier crumb: the trail's
+    // parent segment links to the same list the back-arrow used to. `backRoute`
+    // stays (Escape-to-list + the error state's "Back to …" button still use
+    // it). Routes that don't pass it fall back to the legacy back-arrow trail.
+    breadcrumbSegments,
     editable = true,
     // LIF-234: whether the comment composer is available. Kept SEPARATE from
     // `editable` because commenting is Viewer-gated server-side (LIF-197): a
@@ -123,6 +130,7 @@
     identifier: string;
     backRoute: string;
     backLabel: string;
+    breadcrumbSegments?: Crumb[];
     editable?: boolean;
     canComment?: boolean;
     title: string;
@@ -488,21 +496,18 @@
 {#snippet topbar()}
   {#if !loading && !error}
     <div class="flex items-center gap-2 sm:gap-3 px-3 sm:px-6 py-2 w-full">
-      <!-- Left zone: scope -->
+      <!-- Left zone: scope. LIF-286: the shared breadcrumb trail replaces the
+           back-arrow + "/" + identifier crumb. The trail's parent segment
+           links to the list the back-arrow used to target, so the arrow is
+           redundant here and dropped; Escape-to-list still works. -->
       <div class="flex items-center gap-1.5 shrink-0 min-w-0">
-        <button
-          class="flex items-center gap-1.5 text-body-sm text-[var(--text-muted)]
-                 hover:text-[var(--text)] transition-colors rounded px-1.5 py-0.5
-                 hover:bg-[var(--bg-subtle)]"
-          onclick={() => navigate(backRoute)}
-        >
-          <ArrowLeft size={14} class="shrink-0" />
-          <span class="hidden sm:inline">{backLabel}</span>
-        </button>
-        <span class="text-[var(--text-faint)]">/</span>
-        <span class="text-body-sm font-mono text-[var(--text-muted)] truncate">
-          {identifier}
-        </span>
+        {#if breadcrumbSegments}
+          <Breadcrumbs segments={breadcrumbSegments} />
+        {:else}
+          <span class="text-body-sm font-mono text-[var(--text-muted)] truncate">
+            {identifier}
+          </span>
+        {/if}
         {#if breadcrumbExtra}{@render breadcrumbExtra()}{/if}
       </div>
 

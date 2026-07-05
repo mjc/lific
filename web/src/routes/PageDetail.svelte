@@ -7,10 +7,12 @@
     listPageComments,
     createPageComment,
     listLabels,
+    listFolders,
     listPageActivity,
     type Page,
     type Comment,
     type Label,
+    type Folder,
     type Activity,
   } from "../lib/api";
   import DocumentDetail from "../lib/DocumentDetail.svelte";
@@ -80,6 +82,10 @@
   // LIF-105: project labels available for attachment. Stays empty for
   // workspace pages (project_id === null) — labels are project-scoped.
   let labels = $state<Label[]>([]);
+  // LIF-286: project folders, fetched only when this page lives in one, so the
+  // breadcrumb can show PROJ › Pages › Folder › Title. Workspace pages (no
+  // project) and root pages skip the fetch.
+  let folders = $state<Folder[]>([]);
   let loading = $state(true);
   let error = $state("");
 
@@ -143,6 +149,7 @@
     error = "";
     comments = [];
     labels = [];
+    folders = [];
     const res = await getPage(id);
     if (gen !== loadGen) return; // a newer navigation superseded this load
     if (!res.ok) { error = res.error; loading = false; return; }
@@ -163,6 +170,12 @@
       tasks.push(
         listLabels(page.project_id).then((r) => { if (gen === loadGen && r.ok) labels = r.data; }),
       );
+      // Only need folder names to render the breadcrumb's folder segment.
+      if (page.folder_id !== null) {
+        tasks.push(
+          listFolders(page.project_id).then((r) => { if (gen === loadGen && r.ok) folders = r.data; }),
+        );
+      }
     }
     await Promise.all(tasks);
 
@@ -279,6 +292,24 @@
     return false;
   }
 
+  // LIF-286: breadcrumb trail — PROJ › Pages › (Folder ›) Title. The folder
+  // segment appears only when the page is filed under one; its name is
+  // resolved from the folders fetched in loadPage. PageList has no per-folder
+  // route, so the folder crumb links to the flat pages list. The Title
+  // segment falls back to the identifier until the page loads.
+  let breadcrumbSegments = $derived.by<import("../lib/Breadcrumbs.svelte").Crumb[]>(() => {
+    const crumbs: import("../lib/Breadcrumbs.svelte").Crumb[] = [
+      { label: projectIdentifier, href: `#/${projectIdentifier}/overview`, mono: true, hideBelowSm: true },
+      { label: "Pages", href: `#/${projectIdentifier}/pages` },
+    ];
+    if (page?.folder_id != null) {
+      const name = folders.find((f) => f.id === page!.folder_id)?.name;
+      if (name) crumbs.push({ label: name, href: `#/${projectIdentifier}/pages` });
+    }
+    crumbs.push({ label: page?.title || page?.identifier || "Page" });
+    return crumbs;
+  });
+
   // ── LIF-159: palette actions ─────────────────────────
   let paletteActions = $derived.by<import("../lib/palette").PaletteAction[]>(() => {
     if (!page) return [];
@@ -326,6 +357,7 @@
   attachEntity={page ? { entity_type: "page", entity_id: page.id } : null}
   backRoute={`/${projectIdentifier}/pages`}
   backLabel="Pages"
+  {breadcrumbSegments}
   {editable}
   {canComment}
   title={page?.title ?? ""}

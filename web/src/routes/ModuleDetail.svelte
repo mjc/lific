@@ -24,6 +24,7 @@
   import ModeToggle from "../lib/ModeToggle.svelte";
   import DeleteMenu from "../lib/DeleteMenu.svelte";
   import IconPicker from "../lib/IconPicker.svelte";
+  import Breadcrumbs from "../lib/Breadcrumbs.svelte";
   import ProjectIcon from "../lib/ProjectIcon.svelte";
   import PriorityIcon from "../lib/PriorityIcon.svelte";
   import StatusIcon from "../lib/StatusIcon.svelte";
@@ -37,7 +38,7 @@
   import { projectRole, loadProjectRole } from "../lib/projectRole.svelte"; // LIF-234
   import { toast } from "../lib/toast/toast.svelte"; // LIF-284
   import {
-    ArrowLeft, Plus, ChevronDown, PanelRight, X,
+    Plus, ChevronDown, PanelRight, X,
     CircleDot, Pause, CircleCheck, CircleX, CircleDashed, Circle,
   } from "lucide-svelte";
   import { getContext } from "svelte";
@@ -273,20 +274,16 @@
 {#snippet topbarContent()}
   {#if mod}
     <div class="flex items-center gap-2 sm:gap-3 px-3 sm:px-6 py-2 w-full">
+      <!-- LIF-286: shared breadcrumb trail replaces the back-arrow + name.
+           The Modules segment links where the back-arrow used to go. -->
       <div class="flex items-center gap-1.5 shrink-0 min-w-0">
-        <button
-          class="flex items-center gap-1.5 text-body-sm text-[var(--text-muted)]
-                 hover:text-[var(--text)] transition-colors rounded px-1.5 py-0.5
-                 hover:bg-[var(--bg-subtle)]"
-          onclick={() => navigate(`/${projectIdentifier}/modules`)}
-        >
-          <ArrowLeft size={14} class="shrink-0" />
-          <span class="hidden sm:inline">Modules</span>
-        </button>
-        <span class="text-[var(--text-faint)]">/</span>
-        <span class="text-body-sm font-medium text-[var(--text)] truncate max-w-[140px] sm:max-w-[280px]">
-          {mod.name}
-        </span>
+        <Breadcrumbs
+          segments={[
+            { label: projectIdentifier, href: `#/${projectIdentifier}/overview`, mono: true, hideBelowSm: true },
+            { label: "Modules", href: `#/${projectIdentifier}/modules` },
+            { label: mod.name },
+          ]}
+        />
       </div>
 
       <div class="ml-auto flex items-center gap-2 shrink-0">
