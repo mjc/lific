@@ -35,6 +35,7 @@
   import { peekState } from "../lib/issues/peek.svelte"; // LIF-248
   import { contextMenuState } from "../lib/contextMenu.svelte"; // LIF-248
   import { projectRole, loadProjectRole } from "../lib/projectRole.svelte"; // LIF-234
+  import { toast } from "../lib/toast/toast.svelte"; // LIF-284
   import {
     ArrowLeft, Plus, ChevronDown, PanelRight, X,
     CircleDot, Pause, CircleCheck, CircleX, CircleDashed, Circle,
@@ -154,6 +155,10 @@
         hour: "2-digit",
         minute: "2-digit",
       });
+    } else {
+      // Error-only: name/description/status/emoji are optimistic inline edits;
+      // surface the failure so it can't vanish silently (LIF-284).
+      toast(`Couldn't save module: ${res.error}`, { kind: "error" });
     }
     saving = false;
   }
@@ -200,6 +205,7 @@
       navigate(`/${projectIdentifier}/modules`);
       return true;
     }
+    toast(`Couldn't delete module: ${res.error}`, { kind: "error" });
     return false;
   }
 

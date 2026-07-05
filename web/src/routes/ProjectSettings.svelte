@@ -40,6 +40,8 @@
   // enforcement off) — settings edits, danger zone, members, and import are
   // all lead-level. `canEdit` = maintainer/admin — label management.
   import { projectRole, loadProjectRole } from "../lib/projectRole.svelte";
+  import { copyToClipboard } from "../lib/clipboard";
+  import { toast } from "../lib/toast/toast.svelte";
 
   const topbarCtx = getContext<{
     set: (s: import("svelte").Snippet | undefined) => void;
@@ -133,7 +135,10 @@
       savedAt = Date.now();
       window.setTimeout(() => { if (Date.now() - savedAt >= 1900) savedAt = 0; }, 2000);
     } else {
-      error = res.error;
+      // `error` only feeds the initial-load ErrorState, which isn't rendered
+      // in the loaded view — so a field autosave failure here would otherwise
+      // be silent. The identity hero has no inline slot, so toast it (LIF-284).
+      toast(`Couldn't save changes: ${res.error}`, { kind: "error" });
     }
   }
 
@@ -172,11 +177,13 @@
 
   async function copyIdentifier() {
     if (!project) return;
-    try {
-      await navigator.clipboard.writeText(project.identifier);
+    // Inline checkmark flip stays as the success cue; the helper still toasts
+    // on failure so a blocked clipboard no longer no-ops silently.
+    const ok = await copyToClipboard(project.identifier, { silentSuccess: true });
+    if (ok) {
       copied = true;
       window.setTimeout(() => { copied = false; }, 1500);
-    } catch { /* clipboard blocked */ }
+    }
   }
 
   // ── Importance heuristic ─────────────────────────────

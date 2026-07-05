@@ -20,6 +20,7 @@
   import { recordRecent } from "../lib/home/recents"; // LIF-237
   import { startAutoRefresh } from "../lib/autoRefresh.svelte";
   import { projectRole, loadProjectRole, ensureMeAdmin } from "../lib/projectRole.svelte"; // LIF-234
+  import { toast } from "../lib/toast/toast.svelte"; // LIF-284
   import {
     PenLine,
     CircleDot,
@@ -185,6 +186,10 @@
       listPageActivity(page.id).then((r) => {
         if (r.ok) activity = r.data.items;
       });
+    } else {
+      // Error-only: title/content/status/labels are optimistic inline edits;
+      // a failed save must still surface (LIF-284).
+      toast(`Couldn't save ${page.identifier}: ${res.error}`, { kind: "error" });
     }
     saving = false;
   }
@@ -246,7 +251,10 @@
   async function handleNewComment(content: string) {
     if (!page) return null;
     const res = await createPageComment(page.id, content);
-    if (!res.ok) return null;
+    if (!res.ok) {
+      toast(`Couldn't add comment: ${res.error}`, { kind: "error" });
+      return null;
+    }
     comments = [...comments, res.data];
     return res.data;
   }
@@ -267,6 +275,7 @@
       navigate(`/${projectIdentifier}/pages`);
       return true;
     }
+    toast(`Couldn't delete ${page.identifier}: ${res.error}`, { kind: "error" });
     return false;
   }
 

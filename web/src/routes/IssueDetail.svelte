@@ -26,6 +26,7 @@
   import { scheduleDelete } from "../lib/issues/deferredDelete.svelte"; // LIF-283
   import { openPeek } from "../lib/issues/peek.svelte"; // LIF-248
   import { projectRole, loadProjectRole } from "../lib/projectRole.svelte"; // LIF-234
+  import { toast } from "../lib/toast/toast.svelte"; // LIF-284
   import { ArrowUpRight } from "lucide-svelte";
 
   let {
@@ -182,6 +183,11 @@
         minute: "2-digit",
       });
       refreshActivity();
+    } else {
+      // Error-only: title/description/labels are high-frequency inline edits
+      // with optimistic UI, so no success toast — but a failed save must not
+      // vanish silently (LIF-284).
+      toast(`Couldn't save ${issue.identifier}: ${res.error}`, { kind: "error" });
     }
     saving = false;
   }
@@ -275,7 +281,10 @@
   async function createLabelInline(name: string, color: string): Promise<boolean> {
     if (!issue) return false;
     const res = await createLabel({ project_id: issue.project_id, name, color });
-    if (!res.ok) return false;
+    if (!res.ok) {
+      toast(`Couldn't create label: ${res.error}`, { kind: "error" });
+      return false;
+    }
     labels = [...labels, res.data].sort((a, b) => a.name.localeCompare(b.name));
     await toggleLabel(res.data.name);
     return true;
@@ -298,7 +307,10 @@
   async function handleNewComment(content: string) {
     if (!issue) return null;
     const res = await createComment(issue.id, content);
-    if (!res.ok) return null;
+    if (!res.ok) {
+      toast(`Couldn't add comment: ${res.error}`, { kind: "error" });
+      return null;
+    }
     comments = [...comments, res.data];
     refreshActivity();
     return res.data;

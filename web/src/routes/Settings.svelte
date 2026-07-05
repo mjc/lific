@@ -32,6 +32,7 @@
     Rows3, Rows2, Type, Zap, ZapOff,
   } from "lucide-svelte";
   import { getContext } from "svelte";
+  import { copyToClipboard } from "../lib/clipboard";
 
   let { navigate }: { navigate: (path: string) => void } = $props();
 
@@ -327,18 +328,21 @@
     if (keyRevealed || !connectKey) return text;
     return text.split(connectKey).join(maskedKey);
   });
-  async function copyToClipboard(text: string, flag: (v: boolean) => void) {
-    try {
-      await navigator.clipboard.writeText(text);
+  // Each copy button keeps its own inline "Copied" flip, so the shared helper
+  // runs with silentSuccess (no success toast) but still fires the error toast
+  // on failure — the old catch swallowed blocked-clipboard failures silently.
+  async function copyWithFlag(text: string, flag: (v: boolean) => void) {
+    const ok = await copyToClipboard(text, { silentSuccess: true });
+    if (ok) {
       flag(true);
       window.setTimeout(() => flag(false), 1500);
-    } catch { /* clipboard blocked */ }
+    }
   }
-  const copyConfig = () => copyToClipboard(configText(), (v) => (copied = v));
-  const copyKey = () => connectKey && copyToClipboard(connectKey, (v) => (keyCopied = v));
-  const copyExport = () => copyToClipboard(exportLine, (v) => (exportCopied = v));
+  const copyConfig = () => copyWithFlag(configText(), (v) => (copied = v));
+  const copyKey = () => connectKey && copyWithFlag(connectKey, (v) => (keyCopied = v));
+  const copyExport = () => copyWithFlag(exportLine, (v) => (exportCopied = v));
   async function copyNote(idx: number, command: string) {
-    await copyToClipboard(command, (v) => (noteCopiedIdx = v ? idx : null));
+    await copyWithFlag(command, (v) => (noteCopiedIdx = v ? idx : null));
   }
 
   async function handleDisconnect(id: number) {

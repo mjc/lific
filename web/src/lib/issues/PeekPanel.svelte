@@ -36,6 +36,8 @@
   } from "../api";
   import { peekState, closePeek, notifyPeekSync } from "./peek.svelte";
   import { updateIssueWithUndo } from "./state.svelte";
+  import { toast } from "../toast/toast.svelte";
+  import { copyToClipboard } from "../clipboard";
   import { STATUSES, PRIORITIES } from "./grouping";
   import { projectCodeOf } from "../references";
   import StatusIcon from "../StatusIcon.svelte";
@@ -165,18 +167,19 @@
     if (res.ok) {
       if (issue && issue.id === id) issue = res.data;
       notifyPeekSync(id, { title: next });
+    } else {
+      toast(`Couldn't save ${issue.identifier}: ${res.error}`, { kind: "error" });
     }
   }
 
   async function copyIdentifier() {
     if (!issue) return;
-    try {
-      await navigator.clipboard.writeText(issue.identifier);
+    // Keep the inline checkmark flip on success (nicer than a toast for a
+    // one-tap copy); the helper still surfaces an error toast on failure.
+    const ok = await copyToClipboard(issue.identifier, { silentSuccess: true });
+    if (ok) {
       copied = true;
       window.setTimeout(() => { copied = false; }, 1500);
-    } catch {
-      // Clipboard blocked (permissions/insecure context) — silently no-op,
-      // same tradeoff ProjectSettings' copy button makes.
     }
   }
 
