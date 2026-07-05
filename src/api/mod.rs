@@ -230,35 +230,32 @@ fn validate_websocket_request(
     headers: &HeaderMap,
     allowed_origins: &[String],
 ) -> Result<String, LificError> {
-    if !websocket_origin_allowed(headers, allowed_origins) {
-        return Err(LificError::Forbidden("websocket origin not allowed".into()));
-    }
-
-    let token = websocket_session_token(headers)
-        .ok_or_else(|| LificError::Forbidden("authentication required".into()))?;
-    with_read(db, |conn| {
-        crate::db::queries::users::validate_session(conn, token)
-            .map(|_| token.to_string())
-            .map_err(|_| LificError::Forbidden("invalid or expired session".into()))
-    })
+    websocket_origin_allowed(headers, allowed_origins)
+        .then(|| websocket_session_token(headers))
+        .ok_or_else(|| LificError::Forbidden("websocket origin not allowed".into()))?
+        .ok_or_else(|| LificError::Forbidden("authentication required".into()))
+        .and_then(|token| {
+            with_read(db, |conn| {
+                crate::db::queries::users::validate_session(conn, token)
+                    .map(|_| token.to_string())
+                    .map_err(|_| LificError::Forbidden("invalid or expired session".into()))
+            })
+        })
 }
 
 fn websocket_origin_allowed(headers: &HeaderMap, allowed_origins: &[String]) -> bool {
-    let origin = headers
-        .get(header::ORIGIN)
-        .and_then(|value| value.to_str().ok());
-    let Some(origin) = origin else {
-        return true;
-    };
-    if allowed_origins.iter().any(|allowed| allowed == origin) {
-        return true;
-    }
     headers
-        .get(header::HOST)
+        .get(header::ORIGIN)
         .and_then(|value| value.to_str().ok())
-        .is_some_and(|host| {
-            origin.strip_prefix("http://") == Some(host)
-                || origin.strip_prefix("https://") == Some(host)
+        .is_none_or(|origin| {
+            allowed_origins.iter().any(|allowed| allowed == origin)
+                || headers
+                    .get(header::HOST)
+                    .and_then(|value| value.to_str().ok())
+                    .is_some_and(|host| {
+                        origin.strip_prefix("http://") == Some(host)
+                            || origin.strip_prefix("https://") == Some(host)
+                    })
         })
 }
 
@@ -270,14 +267,10 @@ fn websocket_session_token(headers: &HeaderMap) -> Option<&str> {
             cookie.split(';').find_map(|part| {
                 part.trim()
                     .strip_prefix("lific_token=")
-                    .and_then(non_empty_token)
+                    .map(str::trim)
+                    .filter(|token| !token.is_empty())
             })
         })
-}
-
-fn non_empty_token(token: &str) -> Option<&str> {
-    let token = token.trim();
-    (!token.is_empty()).then_some(token)
 }
 
 // ── Shared helpers ───────────────────────────────────────────
@@ -379,11 +372,16 @@ pub(crate) mod test_helpers {
     use crate::db::DbPool;
     use crate::db::models::*;
 
-    pub fn test_app() -> Router {
-        test_app_with_realtime().0
+    pub struct RealtimeTestApp {
+        pub app: Router,
+        pub realtime: crate::realtime::RealtimeHub,
     }
 
-    pub fn test_app_with_realtime() -> (Router, crate::realtime::RealtimeHub) {
+    pub fn test_app() -> Router {
+        test_app_with_realtime().app
+    }
+
+    pub fn test_app_with_realtime() -> RealtimeTestApp {
         let db = crate::db::open_memory().expect("test db");
         // Insert a real admin row so FK constraints (e.g. projects.lead_user_id
         // now defaults to the creator — see LIF-102) pass. Direct SQL skips
@@ -411,7 +409,7 @@ pub(crate) mod test_helpers {
                 display_name: "Test Admin".into(),
                 is_admin: true,
             })));
-        (app, hub)
+        RealtimeTestApp { app, realtime: hub }
     }
 
     /// Seed a project and return its id.

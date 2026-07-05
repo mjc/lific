@@ -92,14 +92,14 @@ pub async fn serve_socket(
             maybe_event = rx.recv() => {
                 match maybe_event {
                     Ok(event) => {
-                        if socket.send(Message::Text(serde_json::to_string(&event).expect("realtime event serializes").into())).await.is_err() {
+                        if send_event(&mut socket, &event).await.is_err() {
                             break;
                         }
                     }
                     Err(RecvError::Lagged(dropped)) => {
                         warn!(dropped, "realtime websocket lagged; asking client to resync");
                         let event = RealtimeEvent::ResyncRequired;
-                        if socket.send(Message::Text(serde_json::to_string(&event).expect("resync event serializes").into())).await.is_err() {
+                        if send_event(&mut socket, &event).await.is_err() {
                             break;
                         }
                     }
@@ -119,6 +119,16 @@ pub async fn serve_socket(
                     Some(Err(_)) => break,
                 }
             }
+        }
+    }
+}
+
+async fn send_event(socket: &mut WebSocket, event: &RealtimeEvent) -> Result<(), axum::Error> {
+    match serde_json::to_string(event) {
+        Ok(json) => socket.send(Message::Text(json.into())).await,
+        Err(_) => {
+            warn!("failed to serialize realtime event");
+            socket.send(Message::Close(None)).await
         }
     }
 }

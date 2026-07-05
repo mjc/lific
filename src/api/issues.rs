@@ -160,7 +160,7 @@ mod tests {
 
     #[tokio::test]
     async fn issue_crud_lifecycle() {
-        let (app, hub) = test_app_with_realtime();
+        let RealtimeTestApp { app, realtime: hub } = test_app_with_realtime();
         let (project_id, _) = seed_project(&app).await;
         let mut events = hub.subscribe();
 
@@ -277,7 +277,7 @@ mod tests {
 
     #[tokio::test]
     async fn relation_events_use_each_issue_project_id() {
-        let (app, hub) = test_app_with_realtime();
+        let RealtimeTestApp { app, realtime: hub } = test_app_with_realtime();
         let (source_project_id, _) = seed_project(&app).await;
         let target_project = serde_json::json!({
             "name": "Target Project",

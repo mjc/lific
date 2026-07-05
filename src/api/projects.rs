@@ -180,7 +180,7 @@ mod tests {
 
     #[tokio::test]
     async fn project_crud_lifecycle() {
-        let (app, hub) = test_app_with_realtime();
+        let RealtimeTestApp { app, realtime: hub } = test_app_with_realtime();
         let mut events = hub.subscribe();
 
         // Create
