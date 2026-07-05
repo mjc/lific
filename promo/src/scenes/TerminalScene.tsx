@@ -71,7 +71,7 @@ export const TerminalScene: React.FC = () => {
   const clock = `${elapsed.toFixed(1)}s`;
   const deployed = frame >= DEPLOYED_AT;
 
-  const captionIn = interpolate(frame, [138, 154], [0, 1], {
+  const captionIn = interpolate(frame, [66, 82], [0, 1], {
     extrapolateLeft: "clamp",
     extrapolateRight: "clamp",
   });

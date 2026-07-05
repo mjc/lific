@@ -25,7 +25,7 @@ const LINES: Line[] = [
 
 export const InitScene: React.FC = () => {
   const frame = useCurrentFrame();
-  const capIn = interpolate(frame, [100, 114], [0, 1], {
+  const capIn = interpolate(frame, [40, 54], [0, 1], {
     extrapolateLeft: "clamp",
     extrapolateRight: "clamp",
   });

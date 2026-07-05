@@ -387,10 +387,41 @@ const TopbarBtn: React.FC<{
   </div>
 );
 
-const Topbar: React.FC<{
-  tallies: { status: string; count: number }[];
+export const Topbar: React.FC<{
+  /** Which view is active — drives the breadcrumb label + the segment
+   *  that reads as "on" in the List|Board switcher pill. */
+  active?: "list" | "board";
+  counts: Record<string, number>;
   countLabel: string;
-}> = ({ tallies, countLabel }) => (
+  /** 0..1 crossfade of the switcher pill's active slot from List -> Board.
+   *  0 = List active, 1 = Board active. Overrides `active` for the pill
+   *  when provided (lets the scene animate the flip). */
+  switchT?: number;
+}> = ({ active = "board", counts, countLabel, switchT }) => {
+  const tallies = ALL_STATUSES.filter((s) => (counts[s] ?? 0) > 0).map((s) => ({
+    status: s,
+    count: counts[s] ?? 0,
+  }));
+  // Pill flip: a continuous crossfade so a scene can animate List -> Board.
+  const t = switchT !== undefined ? switchT : active === "board" ? 1 : 0;
+  const listOn = 1 - t;
+  const boardOn = t;
+  const activeShadow =
+    "0 1px 2px rgba(0,0,0,0.16), 0 1px 1px rgba(0,0,0,0.10)";
+  const seg = (on: number): React.CSSProperties => ({
+    display: "flex",
+    alignItems: "center",
+    gap: 4,
+    padding: "2px 8px",
+    borderRadius: 4,
+    fontSize: CAPTION,
+    fontWeight: 500,
+    // Interpolate label color faint(muted) -> text and the raised slot in.
+    color: on > 0.5 ? C.text : C.textMuted,
+    backgroundColor: `rgba(37,44,41,${on})`, // C.surface (#252c29) at `on`
+    boxShadow: on > 0.02 ? activeShadow : "none",
+  });
+  return (
   <div
     style={{
       height: TOPBAR_H,
@@ -417,7 +448,7 @@ const Topbar: React.FC<{
       </span>
       <ChevronRight size={12} color={C.textFaint} />
       <span style={{ fontSize: BODY_SM, fontWeight: 500, color: C.text }}>
-        Board
+        {active === "list" ? "Issues" : "Board"}
       </span>
     </div>
 
@@ -433,37 +464,12 @@ const Topbar: React.FC<{
         boxShadow: "inset 0 1px 2px rgba(0,0,0,0.10)",
       }}
     >
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 4,
-          padding: "2px 8px",
-          borderRadius: 4,
-          fontSize: CAPTION,
-          fontWeight: 500,
-          color: C.textMuted,
-        }}
-      >
-        <ListIcon size={11} color={C.textMuted} />
+      <div style={seg(listOn)}>
+        <ListIcon size={11} color={listOn > 0.5 ? C.text : C.textMuted} />
         List
       </div>
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 4,
-          padding: "2px 8px",
-          borderRadius: 4,
-          fontSize: CAPTION,
-          fontWeight: 500,
-          color: C.text,
-          backgroundColor: C.surface,
-          boxShadow:
-            "0 1px 2px rgba(0,0,0,0.16), 0 1px 1px rgba(0,0,0,0.10)",
-        }}
-      >
-        <LayoutGrid size={11} color={C.text} />
+      <div style={seg(boardOn)}>
+        <LayoutGrid size={11} color={boardOn > 0.5 ? C.text : C.textMuted} />
         Board
       </div>
     </div>
@@ -593,7 +599,8 @@ const Topbar: React.FC<{
       </div>
     </div>
   </div>
-);
+  );
+};
 
 // ── Layout.svelte sidebar ────────────────────────────────────
 
@@ -621,7 +628,9 @@ const NavItem: React.FC<{
   </div>
 );
 
-const Sidebar: React.FC = () => {
+export const Sidebar: React.FC<{ active?: "issues" | "board" }> = ({
+  active: activeNav = "board",
+}) => {
   const sub = (
     Icon: React.FC<{ size: number; color: string }>,
     label: string,
@@ -810,8 +819,8 @@ const Sidebar: React.FC = () => {
           }}
         >
           {sub(LayoutDashboard, "Overview")}
-          {sub(ListIcon, "Issues")}
-          {sub(LayoutGrid, "Board", true)}
+          {sub(ListIcon, "Issues", activeNav === "issues")}
+          {sub(LayoutGrid, "Board", activeNav === "board")}
           {sub(Layers, "Modules")}
           {sub(FileText, "Pages")}
           {sub(ListChecks, "Plans")}
@@ -907,7 +916,21 @@ export const LificApp: React.FC<{
   totalLabel: string;
   columns?: string[];
   children?: React.ReactNode;
-}> = ({ width, height, counts, totalLabel, columns = BOARD_STATUSES, children }) => {
+  /** Optional passthrough so a scene can animate the List|Board switcher
+   *  pill flip on the board frame in lockstep with a list frame. Defaults
+   *  preserve the board-only behavior (Board active). */
+  switchT?: number;
+  sidebarActive?: "issues" | "board";
+}> = ({
+  width,
+  height,
+  counts,
+  totalLabel,
+  columns = BOARD_STATUSES,
+  children,
+  switchT,
+  sidebarActive = "board",
+}) => {
   return (
     <div
       style={{
@@ -920,7 +943,7 @@ export const LificApp: React.FC<{
         fontFamily: BODY,
       }}
     >
-      <Sidebar />
+      <Sidebar active={sidebarActive} />
       <div
         style={{
           flex: 1,
@@ -930,11 +953,10 @@ export const LificApp: React.FC<{
         }}
       >
         <Topbar
-          tallies={ALL_STATUSES.filter((s) => (counts[s] ?? 0) > 0).map((s) => ({
-            status: s,
-            count: counts[s] ?? 0,
-          }))}
+          active="board"
+          counts={counts}
           countLabel={totalLabel}
+          switchT={switchT}
         />
         {/* Recessed content panel: rounded-tl-xl + cast shadows */}
         <div

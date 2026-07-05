@@ -7,7 +7,7 @@ import { AgentHook } from "./scenes/AgentHook";
 import { ProblemFlash } from "./scenes/ProblemFlash";
 import { Reveal } from "./scenes/Reveal";
 import { InitScene } from "./scenes/InitScene";
-import { UIScene } from "./scenes/UIScene";
+import { WebUIScene } from "./scenes/WebUIScene";
 import { PlansScene } from "./scenes/PlansScene";
 import { Cta } from "./scenes/Cta";
 
@@ -23,13 +23,19 @@ import { Cta } from "./scenes/Cta";
  * drop 2 (bar 17, frame 886) = plans cut. All cut mids on beats.
  */
 
+/*
+ * v2 rebalance (caption-readability pass): the web UI scene (list ->
+ * board) owns the whole segment between drop 1 and drop 2; init moves
+ * AFTER plans as the classic get-started beat before the CTA. Captions
+ * everywhere appear early and hold 5s+. Total = 27 bars (49.8s).
+ */
 export const SCENES_B = {
   agentHook: 248,
   problem: 213,
-  reveal: 109,
-  init: 137,
-  board: 233,
+  reveal: 123,
+  webui: 344,
   plans: 234,
+  init: 178,
   cta: 227,
 } as const;
 
@@ -71,21 +77,21 @@ export const AdB: React.FC = () => {
         </TransitionSeries.Sequence>
         <TransitionSeries.Transition presentation={fade()} timing={cut} />
 
-        <TransitionSeries.Sequence durationInFrames={SCENES_B.init}>
-          <InitScene />
+        <TransitionSeries.Sequence durationInFrames={SCENES_B.webui}>
+          <WebUIScene />
+        </TransitionSeries.Sequence>
+        <TransitionSeries.Transition presentation={fade()} timing={cut} />
+
+        <TransitionSeries.Sequence durationInFrames={SCENES_B.plans}>
+          <PlansScene />
         </TransitionSeries.Sequence>
         <TransitionSeries.Transition
           presentation={slide({ direction: "from-bottom" })}
           timing={springy}
         />
 
-        <TransitionSeries.Sequence durationInFrames={SCENES_B.board}>
-          <UIScene dragStart={116} />
-        </TransitionSeries.Sequence>
-        <TransitionSeries.Transition presentation={fade()} timing={cut} />
-
-        <TransitionSeries.Sequence durationInFrames={SCENES_B.plans}>
-          <PlansScene />
+        <TransitionSeries.Sequence durationInFrames={SCENES_B.init}>
+          <InitScene />
         </TransitionSeries.Sequence>
         <TransitionSeries.Transition presentation={fade()} timing={cut} />
 

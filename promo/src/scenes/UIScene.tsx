@@ -116,7 +116,7 @@ export const UIScene: React.FC<{ dragStart?: number }> = ({
   ];
 
   const frameIn = spring({ frame, fps, config: { damping: 200, stiffness: 90 } });
-  const captionIn = interpolate(frame, [DRAG_END + 25, DRAG_END + 42], [0, 1], {
+  const captionIn = interpolate(frame, [20, 36], [0, 1], {
     extrapolateLeft: "clamp",
     extrapolateRight: "clamp",
   });

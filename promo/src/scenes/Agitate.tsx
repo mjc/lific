@@ -92,7 +92,7 @@ export const AgitateJira: React.FC = () => (
           <FactChip>built for the enterprise, not for you</FactChip>
         </div>
       </FadeUp>
-      <FadeUp delay={30} duration={14}>
+      <FadeUp delay={24} duration={14}>
         <div style={{ fontFamily: BODY, fontSize: 22, color: C.textFaint }}>
           quote: Hacker News, Dec 2024. A recurring complaint since 2020.
         </div>
@@ -203,15 +203,15 @@ const TOOLS: FossTool[] = [
 // Build-up: the headline sits alone for a beat, THEN "heavy." booms in
 // (the only shake in the scene), then the stacks pile with poise.
 const HEAVY_AT = 34;
-const WAVE_0 = 58;
+const WAVE_0 = 40;
 const WAVE_GAP = 9;
 const DROP_DUR = 8;
 const BLOCK_H = 40; // 34px block + 6 gap
 const landAt = (wave: number) => WAVE_0 + wave * WAVE_GAP + DROP_DUR;
 
-const LINE_A_AT = 126;
-const LINE_B_AT = 140;
-const FOOT_AT = 158;
+const LINE_A_AT = 98;
+const LINE_B_AT = 114;
+const FOOT_AT = 132;
 
 /** One container block dropping into a card's stack. */
 const ContainerBlock: React.FC<{ label: string; wave: number }> = ({

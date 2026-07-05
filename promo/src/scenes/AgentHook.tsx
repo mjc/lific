@@ -43,7 +43,7 @@ export const AgentHook: React.FC = () => {
   const doneShift = spring({ frame: frame - BOARD_1, fps, config: { damping: 200, stiffness: 140 } });
 
   const cap1 = interpolate(frame, [22, 36], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
-  const cap2 = interpolate(frame, [150, 164], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
+  const cap2 = interpolate(frame, [116, 130], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
 
   const doneCount = frame >= BOARD_1 ? 3 : 2;
   const todoCount = frame >= BOARD_2 ? 2 : 1;

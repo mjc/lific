@@ -35,8 +35,8 @@ const S2_LABEL = 104;
 const S2_TOOL = 116;
 const TREE_GLOW = 132;
 const S2_REPLY = 146;
-const CAP_1 = 158;
-const CAP_2 = 176;
+const CAP_1 = 96;
+const CAP_2 = 118;
 
 const STEPS: { title: string; done: boolean }[] = [
   { title: "Extract billing module", done: true },

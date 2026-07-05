@@ -41,7 +41,7 @@ const TOOL_2 = 88; // ⚙ lific_create_issue
 const BOARD_2 = 104; // LIF-232 pops into Todo
 const REPLY = 126; // assistant reply
 const COMPLETE = 162; // ▣ Build · Agent · 4.1s — after the reply finishes streaming
-const CAPTION = 146;
+const CAPTION = 40;
 
 export const AgentScene: React.FC = () => {
   const frame = useCurrentFrame();
