@@ -30,6 +30,7 @@
   import ProgressRing from "../lib/ProgressRing.svelte";
   import Mascot from "../lib/Mascot.svelte";
   import ErrorState from "../lib/ErrorState.svelte";
+  import Skeleton from "../lib/Skeleton.svelte";
   import { formatDate } from "../lib/format";
   import { peekState } from "../lib/issues/peek.svelte"; // LIF-248
   import { contextMenuState } from "../lib/contextMenu.svelte"; // LIF-248
@@ -341,11 +342,70 @@
 {/snippet}
 
 {#if loading}
-  <div class="h-full flex items-center justify-center">
-    <div
-      class="size-6 rounded-full border-2 border-[var(--border)]
-             border-t-[var(--accent)] animate-spin"
-    ></div>
+  <!-- LIF-281: structural skeleton mirroring the loaded module layout — the
+       max-w-[1120px] wrapper, the main column (px-4 py-5 sm:px-8 sm:py-6) with
+       its icon+name header, description block, and issues list, plus the
+       docked sidebar at md+. Replaces a bare centered spinner so the frame
+       holds steady when the module resolves. -->
+  <div class="h-full flex flex-col">
+    <div class="flex-1 overflow-y-auto">
+      <div class="max-w-[1120px] mx-auto flex gap-0 min-h-full">
+        <!-- Main column -->
+        <div class="flex-1 min-w-0 px-4 py-5 sm:px-8 sm:py-6">
+          <!-- Icon (size-10 IconPicker box) + name (text-display line). -->
+          <div class="flex items-center gap-3 mb-3">
+            <Skeleton variant="block" class="size-10 rounded-lg shrink-0" />
+            <div class="flex-1 min-w-0">
+              <Skeleton variant="bar" class="h-8 w-1/2" />
+            </div>
+          </div>
+
+          <!-- Description (a few markdown lines). -->
+          <section class="mb-10 flex flex-col gap-2">
+            <Skeleton variant="bar" class="h-3.5 w-full" />
+            <Skeleton variant="bar" class="h-3.5 w-11/12" />
+            <Skeleton variant="bar" class="h-3.5 w-3/4" />
+          </section>
+
+          <!-- Issues section: header + a handful of rows. -->
+          <section>
+            <div class="flex items-baseline gap-2 mb-3 pb-2">
+              <Skeleton variant="bar" class="h-2.5 w-12" />
+              <Skeleton variant="bar" class="h-2.5 w-5" />
+            </div>
+            <div class="flex flex-col -mx-2">
+              {#each Array(5) as _, i (i)}
+                <div class="flex items-center gap-3 px-2 py-2">
+                  <Skeleton variant="circle" class="size-3.5" />
+                  <Skeleton variant="bar" class="h-3 w-[60px] shrink-0" />
+                  <Skeleton variant="bar" class="h-3.5 flex-1 max-w-[360px]" />
+                </div>
+              {/each}
+            </div>
+          </section>
+        </div>
+
+        <!-- Sidebar (docked at md+): status field + date fields. -->
+        <aside
+          class="hidden md:block w-[236px] shrink-0 self-start
+                 bg-[var(--bg-subtle)] py-5 px-5 rounded-xl my-6 mr-2"
+        >
+          <div class="mb-5 flex flex-col gap-2">
+            <Skeleton variant="bar" class="h-2.5 w-12" />
+            <Skeleton variant="bar" class="h-3.5 w-24" />
+          </div>
+          <div class="border-t border-[var(--border)] -mx-5 my-4"></div>
+          <div class="flex flex-col gap-4">
+            {#each Array(2) as _, i (i)}
+              <div class="flex flex-col gap-1.5">
+                <Skeleton variant="bar" class="h-2.5 w-14" />
+                <Skeleton variant="bar" class="h-3.5 w-28" />
+              </div>
+            {/each}
+          </div>
+        </aside>
+      </div>
+    </div>
   </div>
 {:else if error}
   <ErrorState title="Couldn't load this module" message={error}>

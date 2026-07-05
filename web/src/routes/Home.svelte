@@ -319,33 +319,53 @@
 <div class="h-full flex flex-col">
   <div class="flex-1 overflow-y-auto">
     {#if loading}
-      <!-- LIF-246: mirrors the two-column dashboard shape (greeting +
+      <!-- LIF-281: mirrors the two-column dashboard shape (greeting +
            active-issue sections on the left, recents/pinned/activity rail
-           on the right) instead of a centered spinner. -->
+           on the right) instead of a centered spinner. Aligned to the loaded
+           markup below: the greeting row now uses the same
+           `justify-between … mb-8` as the real hero (with a right-side
+           quick-actions stand-in), the main column carries the "My active
+           issues" section header (`mb-3`) so the first section card lands at
+           the same y-position as loaded, and the issue rows use `py-2` to
+           match the real issue-row padding. -->
       <div class="max-w-[1280px] mx-auto px-6 md:px-8 py-8 md:py-10">
-        <div class="flex items-center gap-3 mb-8">
-          <Skeleton variant="circle" class="size-11 rounded-xl" />
-          <div class="flex flex-col gap-2">
-            <Skeleton variant="bar" class="h-5 w-48" />
-            <Skeleton variant="bar" class="h-3 w-32" />
+        <div class="flex flex-wrap items-start justify-between gap-4 mb-8">
+          <div class="flex items-center gap-3">
+            <Skeleton variant="circle" class="size-11 rounded-xl" />
+            <div class="flex flex-col gap-2">
+              <Skeleton variant="bar" class="h-5 w-48" />
+              <Skeleton variant="bar" class="h-3 w-32" />
+            </div>
+          </div>
+          <div class="flex items-center gap-2">
+            <Skeleton variant="bar" class="h-8 w-28 rounded-md" />
+            <Skeleton variant="bar" class="h-8 w-24 rounded-md" />
           </div>
         </div>
         <div class="flex flex-col lg:flex-row gap-8 items-start">
-          <div class="flex-1 min-w-0 w-full flex flex-col gap-5">
-            {#each [0, 1] as section (section)}
-              <div class="rounded-xl bg-[var(--surface)] border border-[var(--border)] overflow-hidden">
-                <div class="flex items-center gap-2 px-4 py-2.5 border-b border-[var(--border)]">
-                  <Skeleton variant="bar" class="h-3.5 w-32" />
-                </div>
-                {#each [0, 1, 2] as row (row)}
-                  <div class="flex items-center gap-2.5 px-4 py-2.5 border-b border-[var(--border)] last:border-b-0">
-                    <Skeleton variant="circle" class="size-3.5" />
-                    <Skeleton variant="bar" class="h-3 w-16 shrink-0" />
-                    <Skeleton variant="bar" class="h-3 flex-1 max-w-[260px]" />
+          <div class="flex-1 min-w-0 w-full">
+            <!-- "My active issues" section header (matches loaded mb-3) -->
+            <div class="flex items-center gap-2 mb-3">
+              <Skeleton variant="bar" class="h-3 w-28" />
+              <Skeleton variant="bar" class="h-3 w-4" />
+            </div>
+            <div class="flex flex-col gap-5">
+              {#each [0, 1] as section (section)}
+                <div class="rounded-xl bg-[var(--surface)] border border-[var(--border)] overflow-hidden">
+                  <div class="flex items-center gap-2 px-4 py-2.5 border-b border-[var(--border)]">
+                    <Skeleton variant="circle" class="size-5 rounded-md" />
+                    <Skeleton variant="bar" class="h-3.5 w-32" />
                   </div>
-                {/each}
-              </div>
-            {/each}
+                  {#each [0, 1, 2] as row (row)}
+                    <div class="flex items-center gap-2.5 px-4 py-2 border-b border-[var(--border)] last:border-b-0">
+                      <Skeleton variant="circle" class="size-3.5" />
+                      <Skeleton variant="bar" class="h-3 w-16 shrink-0" />
+                      <Skeleton variant="bar" class="h-3 flex-1 max-w-[260px]" />
+                    </div>
+                  {/each}
+                </div>
+              {/each}
+            </div>
           </div>
           <aside class="w-full lg:w-[340px] shrink-0 flex flex-col gap-8">
             {#each [4, 3, 3] as rows, section (section)}

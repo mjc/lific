@@ -33,6 +33,7 @@
     AlertTriangle, ChevronDown,
   } from "lucide-svelte";
   import ErrorState from "../lib/ErrorState.svelte";
+  import Skeleton from "../lib/Skeleton.svelte";
   import { getContext } from "svelte";
   // LIF-234: role-aware affordance gating. `canManage` = lead/admin (or
   // enforcement off) — settings edits, danger zone, members, and import are
@@ -282,8 +283,46 @@
 </script>
 
 {#if loading}
-  <div class="h-full flex items-center justify-center">
-    <div class="size-6 rounded-full border-2 border-[var(--border)] border-t-[var(--accent)] animate-spin"></div>
+  <!-- LIF-281: structural skeleton replacing the bare centered spinner.
+       Mirrors the loaded overview's default-visible frame — the same
+       max-w-[840px] … gap-10 wrapper, the identity hero (icon + name/desc +
+       completion ring), and the "Needs attention" heading + card list — so
+       the first heading lands at the same y-position and nothing snaps when
+       data arrives. Conditional/role-gated sections (members, import,
+       danger zone, recent activity) are intentionally omitted; they don't
+       render by default. -->
+  <div class="h-full flex flex-col">
+    <div class="flex-1 overflow-y-auto">
+      <div class="max-w-[840px] mx-auto px-6 py-8 flex flex-col gap-10">
+        <!-- Identity hero -->
+        <section class="flex items-start gap-4">
+          <Skeleton variant="block" class="size-12 rounded-xl shrink-0" />
+          <div class="flex-1 min-w-0 flex flex-col gap-2.5">
+            <Skeleton variant="bar" class="h-8 w-64" />
+            <Skeleton variant="bar" class="h-4 w-full max-w-[46ch]" />
+            <Skeleton variant="bar" class="h-3 w-40" />
+          </div>
+          <Skeleton variant="circle" class="size-[52px] shrink-0" />
+        </section>
+
+        <!-- Needs attention -->
+        <section>
+          <div class="flex items-baseline justify-between mb-3">
+            <Skeleton variant="bar" class="h-3.5 w-32" />
+          </div>
+          <div class="flex flex-col rounded-xl bg-[var(--surface)] shadow-[0_1px_2px_rgba(0,0,0,0.06)] overflow-hidden">
+            {#each [0, 1, 2, 3] as row (row)}
+              <div class="flex items-center gap-3 pl-4 pr-3 py-2.5 {row > 0 ? 'border-t border-[var(--border)]' : ''}">
+                <Skeleton variant="circle" class="size-[15px]" />
+                <Skeleton variant="bar" class="h-3 w-[58px] shrink-0" />
+                <Skeleton variant="bar" class="h-3.5 flex-1 max-w-[320px]" />
+                <Skeleton variant="bar" class="h-3 w-12 shrink-0" />
+              </div>
+            {/each}
+          </div>
+        </section>
+      </div>
+    </div>
   </div>
 {:else if !project}
   <ErrorState title="Couldn't load this project" message={error}>

@@ -128,9 +128,15 @@
          cap). Clicking one toggles the matching status filter. Gated on at
          least one non-zero tally. -->
     {#if countsLoading}
-      <div class="hidden md:flex items-center gap-1">
+      <!-- LIF-281: parity with the real tally cluster below — same
+           container (gap-0.5) and same per-chip box (h-6, px-1.5, icon +
+           count), so the tallies don't shift when the counts fetch lands. -->
+      <div class="hidden md:flex items-center gap-0.5">
         {#each [0, 1, 2] as i (i)}
-          <Skeleton variant="bar" class="h-6 w-11 rounded" />
+          <div class="h-6 flex items-center gap-1 px-1.5 rounded">
+            <Skeleton variant="circle" class="size-3 shrink-0" />
+            <Skeleton variant="bar" class="h-2.5 w-3" />
+          </div>
         {/each}
       </div>
     {:else if statusCounts.some((s) => s.count > 0)}

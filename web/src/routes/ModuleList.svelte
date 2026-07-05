@@ -25,6 +25,7 @@
   import ProgressRing from "../lib/ProgressRing.svelte";
   import Mascot from "../lib/Mascot.svelte";
   import ErrorState from "../lib/ErrorState.svelte";
+  import Skeleton from "../lib/Skeleton.svelte";
   import { getContext } from "svelte";
   import { projectRole, loadProjectRole } from "../lib/projectRole.svelte"; // LIF-234
 
@@ -269,11 +270,50 @@
 <div class="h-full flex flex-col">
   <div class="flex-1 overflow-y-auto">
     {#if loading}
-      <div class="flex items-center justify-center py-20">
+      <!-- LIF-281: structural skeleton mirroring the loaded layout — the
+           max-w-[1100px] px-6 py-6 wrapper, the portfolio hero card (ring +
+           four stat blocks), then an Active status group of bento tiles.
+           Replaces a bare centered spinner so the frame doesn't shift when
+           data arrives. -->
+      <div class="max-w-[1100px] mx-auto px-6 py-6">
+        <!-- Portfolio hero: ring + 4 stat blocks (mirrors the p-5 card). -->
         <div
-          class="size-6 rounded-full border-2 border-[var(--border)]
-                 border-t-[var(--accent)] animate-spin"
-        ></div>
+          class="mb-7 rounded-xl bg-[var(--surface)] p-5
+                 shadow-[0_1px_2px_rgba(0,0,0,0.06)]
+                 flex items-center gap-6 flex-wrap"
+        >
+          <Skeleton variant="circle" class="size-[116px]" />
+          <div class="grid grid-cols-2 sm:grid-cols-4 gap-x-8 gap-y-3 flex-1 min-w-[240px]">
+            {#each Array(4) as _, i (i)}
+              <div class="flex flex-col gap-1.5">
+                <Skeleton variant="bar" class="h-6 w-12" />
+                <Skeleton variant="bar" class="h-2.5 w-16" />
+              </div>
+            {/each}
+          </div>
+        </div>
+
+        <!-- One status group (Active): header + two-up tile grid. -->
+        <section class="mb-8">
+          <div class="flex items-center gap-2 mb-3 px-1">
+            <Skeleton variant="circle" class="size-3" />
+            <Skeleton variant="bar" class="h-2.5 w-16" />
+          </div>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {#each Array(4) as _, i (i)}
+              <div class="rounded-xl bg-[var(--surface)] p-4 shadow-[0_1px_2px_rgba(0,0,0,0.06)]">
+                <div class="flex items-start gap-3.5">
+                  <Skeleton variant="circle" class="size-[60px]" />
+                  <div class="flex-1 min-w-0 flex flex-col gap-2">
+                    <Skeleton variant="bar" class="h-4 w-1/2" />
+                    <Skeleton variant="bar" class="h-2.5 w-20" />
+                    <Skeleton variant="bar" class="h-3 w-4/5 mt-0.5" />
+                  </div>
+                </div>
+              </div>
+            {/each}
+          </div>
+        </section>
       </div>
     {:else if error}
       <ErrorState title="Couldn't load modules" message={error}>

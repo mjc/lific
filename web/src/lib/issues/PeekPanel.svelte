@@ -41,6 +41,7 @@
   import StatusIcon from "../StatusIcon.svelte";
   import PriorityIcon from "../PriorityIcon.svelte";
   import ProjectIcon from "../ProjectIcon.svelte";
+  import Skeleton from "../Skeleton.svelte"; // LIF-281
   import InlineTitle from "../InlineTitle.svelte";
   import Markdown from "../Markdown.svelte";
   import Select from "../Select.svelte";
@@ -305,8 +306,30 @@
     <!-- Body: its own scroll region, independent of the list behind it. -->
     <div class="flex-1 overflow-y-auto px-4 py-4">
       {#if loading && !issue}
-        <div class="flex items-center justify-center py-16">
-          <div class="size-6 rounded-full border-2 border-[var(--border)] border-t-[var(--accent)] animate-spin"></div>
+        <!-- LIF-281: body skeleton mirroring the loaded layout below so the
+             panel doesn't reflow when the issue lands — the header/footer
+             chrome is already outside this branch. Order + spacing match:
+             the InlineTitle bar (text-title mb-4), the status/priority/
+             module meta row (flex flex-wrap gap-2 mb-4), the full-bleed
+             divider (border-t -mx-4 mb-4), then description lines. -->
+        <div>
+          <!-- Title (InlineTitle md → text-title mb-4, py-1). -->
+          <Skeleton variant="bar" class="h-6 w-3/4 mt-1 mb-5" />
+          <!-- Meta row: status / priority / module Selects. -->
+          <div class="flex flex-wrap items-center gap-2 mb-4">
+            <Skeleton variant="bar" class="h-7 w-24 rounded-md" />
+            <Skeleton variant="bar" class="h-7 w-24 rounded-md" />
+            <Skeleton variant="bar" class="h-7 w-28 rounded-md" />
+          </div>
+          <!-- Full-bleed divider, same as the loaded body. -->
+          <div class="border-t border-[var(--border)] -mx-4 mb-4"></div>
+          <!-- Description lines. -->
+          <div class="flex flex-col gap-2.5">
+            <Skeleton variant="bar" class="h-3.5 w-full" />
+            <Skeleton variant="bar" class="h-3.5 w-full" />
+            <Skeleton variant="bar" class="h-3.5 w-5/6" />
+            <Skeleton variant="bar" class="h-3.5 w-2/3" />
+          </div>
         </div>
       {:else if error}
         <div class="flex flex-col items-center gap-2 py-16 text-center">

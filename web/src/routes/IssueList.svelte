@@ -1402,28 +1402,53 @@
 
     <!-- Board body -->
     {#if loading}
-      <!-- LIF-246: content-shaped skeleton (3 columns × 3 cards) instead
-           of a spinner — mirrors the real column-header + card structure
-           so the board doesn't visually "pop" once data lands. -->
-      <div class="flex-1 flex overflow-hidden">
-        {#each [0, 1, 2] as col (col)}
-          <div class="w-[300px] shrink-0 flex flex-col border-r border-[var(--border)] last:border-r-0 p-2 gap-2">
-            <div class="flex items-center gap-2 px-1 py-1.5 mb-1">
-              <Skeleton variant="circle" class="size-3.5" />
-              <Skeleton variant="bar" class="h-3 w-16" />
-            </div>
-            {#each [0, 1, 2] as card (card)}
-              <div class="rounded-md border border-[var(--border)] bg-[var(--surface)] p-2.5 flex flex-col gap-2.5">
-                <div class="flex items-center justify-between">
-                  <Skeleton variant="bar" class="h-2.5 w-12" />
-                  <Skeleton variant="circle" class="size-3" />
-                </div>
-                <Skeleton variant="bar" class="h-3 w-full" />
-                <Skeleton variant="bar" class="h-3 w-2/3" />
+      <!-- LIF-281: board skeleton with shape+position parity to the loaded
+           flat board. Column widths now match the loaded snap panels
+           (w-[85vw] md:w-[300px]) instead of a fixed w-[300px] that
+           overflowed + snapped on phones, and the outer scroller mirrors
+           the loaded flat-board container (h-full flex overflow-x-auto).
+           Column header (px-3 py-2.5 border-b) and cards (p-2.5, mb-1.5 top
+           row, mt-2 bottom row) copy the real column + IssueCard paddings. -->
+      <div class="relative flex-1 min-h-0">
+        <div class="h-full flex overflow-x-auto overflow-y-hidden">
+          {#each [0, 1, 2] as col (col)}
+            <div
+              class="relative shrink-0 snap-start flex flex-col
+                     border-r border-[var(--border)] last:border-r-0
+                     w-[85vw] md:w-[300px] h-full"
+            >
+              <!-- Column header — mirrors the real header at px-3 py-2.5. -->
+              <div
+                class="shrink-0 flex items-center gap-2 px-3 py-2.5
+                       border-b border-[var(--border)]"
+              >
+                <Skeleton variant="circle" class="size-3.5 shrink-0" />
+                <Skeleton variant="bar" class="h-2.5 w-16" />
+                <Skeleton variant="bar" class="h-2.5 w-4 shrink-0" />
               </div>
-            {/each}
-          </div>
-        {/each}
+              <!-- Cards container — matches the real p-2 / gap-2 flow. -->
+              <div class="flex-1 overflow-y-hidden p-2 min-h-0 flex flex-col gap-2">
+                {#each [0, 1, 2] as card (card)}
+                  <!-- Card — IssueCard paddings: p-2.5, mb-1.5 top row,
+                       mt-2 bottom row. -->
+                  <div class="rounded-md border border-[var(--border)] bg-[var(--surface)] p-2.5">
+                    <div class="flex items-center gap-2 mb-1.5">
+                      <Skeleton variant="bar" class="h-2.5 w-12" />
+                      <div class="flex-1"></div>
+                      <Skeleton variant="circle" class="size-3.5 shrink-0" />
+                    </div>
+                    <Skeleton variant="bar" class="h-3 w-full" />
+                    <Skeleton variant="bar" class="h-3 w-2/3 mt-1" />
+                    <div class="flex items-center mt-2">
+                      <div class="flex-1"></div>
+                      <Skeleton variant="bar" class="h-2.5 w-10 shrink-0" />
+                    </div>
+                  </div>
+                {/each}
+              </div>
+            </div>
+          {/each}
+        </div>
       </div>
     {:else if error}
       <div class="flex-1 flex items-center justify-center">
@@ -1768,21 +1793,53 @@
   <!-- Issue list -->
   <div class="flex-1 overflow-y-auto" bind:this={listEl}>
     {#if loading}
-      <!-- LIF-246: 8 row-shaped skeletons (status dot + identifier +
-           title + trailing meta) instead of a centered spinner — reads
-           immediately as "issue rows incoming" rather than a generic
-           wait state. -->
+      <!-- LIF-281: grouped-list skeleton with shape+position parity to the
+           loaded state. The default view (groupBy="status", density=
+           "compact") renders status group headers with rows beneath them,
+           so the skeleton mirrors BOTH: sticky group-header bars (matching
+           the real header's px-6 py-2 / border-b markup) interleaved with
+           row skeletons whose container metrics are copied verbatim from
+           IssueRow.svelte at compact density (gap-2 sm:gap-3, px-3 sm:px-6,
+           py-2.5, border-b border-l-2) — leading size-4 checkbox slot,
+           size-4 status circle, w-[52px] sm:w-[72px] identifier, flex-1
+           title, and the sm+-only w-[60px] trailing time — so nothing
+           snaps when real rows land. -->
       <div>
-        {#each Array(8) as _, i (i)}
-          <div
-            class="w-full flex items-center gap-2 sm:gap-3 px-3 sm:px-6 py-3
-                   border-b border-[var(--border)] last:border-b-0"
-          >
-            <Skeleton variant="circle" class="size-4 shrink-0" />
-            <Skeleton variant="bar" class="h-3 w-[52px] sm:w-[72px] shrink-0" />
-            <Skeleton variant="bar" class="h-3.5 flex-1 max-w-[420px]" />
-            <div class="hidden sm:block flex-1"></div>
-            <Skeleton variant="bar" class="hidden sm:block h-3 w-[60px] shrink-0" />
+        {#each [4, 3] as rowCount, gi (gi)}
+          <div class="border-b border-[var(--border)] last:border-b-0">
+            <!-- Group header — mirrors the real button at IssueList's
+                 grouped view: sticky, px-6 py-2, border-b. -->
+            <div
+              class="w-full sticky top-0 z-10 flex items-center gap-2 px-6 py-2
+                     bg-[var(--surface)] border-b border-[var(--border)]"
+            >
+              <Skeleton variant="bar" class="size-3.5 shrink-0" />
+              <Skeleton variant="circle" class="size-3.5 shrink-0" />
+              <Skeleton variant="bar" class="h-2.5 w-16" />
+              <Skeleton variant="bar" class="h-2.5 w-4 shrink-0" />
+            </div>
+            {#each Array(rowCount) as _, i (i)}
+              <!-- Row — container classes copied from IssueRow.svelte
+                   (compact: py-2.5) so height/padding match exactly. The
+                   transparent left border keeps the row's horizontal
+                   metrics identical to the loaded border-l-2 rows. -->
+              <div
+                class="w-full flex items-center gap-2 sm:gap-3 px-3 sm:px-6 py-2.5
+                       border-b border-[var(--border)] last:border-b-0
+                       border-l-2 border-l-transparent"
+              >
+                <!-- Selection checkbox slot (size-4, always reserved). -->
+                <Skeleton variant="bar" class="size-4 shrink-0 rounded" />
+                <!-- Status icon. -->
+                <Skeleton variant="circle" class="size-4 shrink-0" />
+                <!-- Identifier. -->
+                <Skeleton variant="bar" class="h-3 w-[52px] sm:w-[72px] shrink-0" />
+                <!-- Title (flexes like the loaded title column). -->
+                <Skeleton variant="bar" class="h-3.5 flex-1 min-w-0 max-w-[420px]" />
+                <!-- Updated time — hidden below sm, w-[60px], like the row. -->
+                <Skeleton variant="bar" class="hidden sm:block h-3 w-[60px] shrink-0" />
+              </div>
+            {/each}
           </div>
         {/each}
       </div>

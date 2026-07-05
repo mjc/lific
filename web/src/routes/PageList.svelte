@@ -911,20 +911,30 @@
     }}
   >
     {#if loading}
-      <!-- LIF-246: mimics the tree shape (a couple of folder rows, each
-           with a few indented page rows beneath) instead of a spinner. -->
+      <!-- LIF-281: mimics the tree shape (folder rows, each with indented
+           page rows beneath). Mirrors the loaded treeLevel markup: the
+           px-6 py-4 wrapper; folder rows (gap-1.5 py-1.5 px-1.5 -mx-1.5,
+           14px chevron + 18px folder icon + title); the ml-[15px] pl-3
+           border-l children rail; and page rows (items-start gap-2 py-1.5
+           px-1.5 -mx-1.5, 17px status icon at mt-0.5 + title + preview
+           line). Corrects the earlier LIF-246 skeleton, which dropped the
+           row padding, mis-sized the status icon, aligned items center
+           instead of start, and omitted the preview line. -->
       <div class="px-6 py-4 flex flex-col gap-0.5">
         {#each [3, 2] as pageCount, folder (folder)}
-          <div class="flex items-center gap-1.5 py-1.5">
-            <Skeleton variant="circle" class="size-3.5" />
-            <Skeleton variant="circle" class="size-[18px] rounded-md" />
+          <div class="flex items-center gap-1.5 py-1.5 px-1.5 -mx-1.5">
+            <Skeleton variant="circle" class="size-3.5 shrink-0" />
+            <Skeleton variant="circle" class="size-[18px] rounded-md shrink-0" />
             <Skeleton variant="bar" class="h-3.5 w-32" />
           </div>
           <div class="ml-[15px] pl-3 border-l border-[var(--border)] flex flex-col gap-0.5">
             {#each Array(pageCount) as _, page (page)}
-              <div class="flex items-center gap-2 py-1.5">
-                <Skeleton variant="circle" class="size-[18px] rounded-md" />
-                <Skeleton variant="bar" class="h-3.5 flex-1 max-w-[240px]" />
+              <div class="flex items-start gap-2 py-1.5 px-1.5 -mx-1.5">
+                <Skeleton variant="circle" class="size-[17px] mt-0.5 shrink-0" />
+                <div class="flex-1 min-w-0 flex flex-col gap-1">
+                  <Skeleton variant="bar" class="h-3.5 w-full max-w-[240px]" />
+                  <Skeleton variant="bar" class="h-2.5 w-4/5 max-w-[200px]" />
+                </div>
               </div>
             {/each}
           </div>

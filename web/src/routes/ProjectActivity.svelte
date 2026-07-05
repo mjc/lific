@@ -324,28 +324,48 @@
 <div class="h-full flex flex-col">
   <div class="flex-1 overflow-y-auto">
     {#if loading}
-      <!-- LIF-246: feed-shaped skeleton (day header + entity-icon rows)
-           instead of a centered spinner. -->
+      <!-- LIF-281: feed-shaped skeleton. Mirrors the loaded two-pane frame
+           (px-8 py-6 max-w-[1280px] wrapper, lg:w-[260px] actor rail), the
+           day header (label + count + divider rule), the gap-2.5 px-2.5 py-1.5
+           entity rows with a 14px leading icon, and the actor-rail rows
+           (px-2.5 py-2, size-6 avatar + two text lines + trailing count).
+           Corrects drift from the earlier LIF-246 skeleton (rail was 280px,
+           header lacked the divider, rows lacked padding + trailing count). -->
       <div class="flex flex-col lg:flex-row gap-8 px-8 py-6 max-w-[1280px] mx-auto items-start">
         <div class="flex-1 min-w-0 w-full">
-          <Skeleton variant="bar" class="h-3 w-20 mb-3" />
-          <div class="flex flex-col gap-1">
+          <!-- Day header: label + count + divider, matching the sticky row. -->
+          <div class="-mx-2 px-2 py-1.5 mb-1 flex items-center gap-2">
+            <Skeleton variant="bar" class="h-2.5 w-20" />
+            <Skeleton variant="bar" class="h-2.5 w-4" />
+            <div class="flex-1 h-px bg-[var(--border)]"></div>
+          </div>
+          <div class="flex flex-col">
             {#each Array(6) as _, i (i)}
               <div class="flex items-center gap-2.5 px-2.5 py-1.5">
                 <Skeleton variant="circle" class="size-3.5" />
                 <Skeleton variant="bar" class="h-3 flex-1 max-w-[420px]" />
+                <Skeleton variant="bar" class="h-2.5 w-8 shrink-0" />
               </div>
             {/each}
           </div>
         </div>
-        <aside class="w-full lg:w-[280px] shrink-0 flex flex-col gap-2">
-          <Skeleton variant="bar" class="h-3 w-16 mb-1" />
-          {#each Array(4) as _, i (i)}
-            <div class="flex items-center gap-2">
-              <Skeleton variant="circle" class="size-6" />
-              <Skeleton variant="bar" class="h-3 flex-1" />
-            </div>
-          {/each}
+        <aside class="w-full lg:w-[260px] shrink-0">
+          <div class="flex items-center gap-2 mb-3">
+            <Skeleton variant="bar" class="h-2.5 w-16" />
+            <Skeleton variant="bar" class="h-2.5 w-4" />
+          </div>
+          <div class="flex flex-col gap-0.5">
+            {#each Array(4) as _, i (i)}
+              <div class="flex items-center gap-2.5 px-2.5 py-2">
+                <Skeleton variant="circle" class="size-6 shrink-0" />
+                <div class="flex-1 min-w-0 flex flex-col gap-1.5">
+                  <Skeleton variant="bar" class="h-3 w-24" />
+                  <Skeleton variant="bar" class="h-2 w-32" />
+                </div>
+                <Skeleton variant="bar" class="h-2.5 w-6 shrink-0" />
+              </div>
+            {/each}
+          </div>
         </aside>
       </div>
     {:else if error}

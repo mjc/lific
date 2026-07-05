@@ -328,7 +328,14 @@
   <div class="h-full flex flex-col">
     <div class="flex-1 overflow-y-auto">
       <div class="max-w-[1120px] mx-auto flex gap-0 min-h-full">
-        <div class="flex-1 min-w-0 px-4 py-5 sm:px-8 sm:py-6">
+        <!-- LIF-281: match the loaded main-column padding per layout so the
+             title/body don't shift on load — two-column uses
+             px-4 py-5 sm:px-8 sm:py-6, wide uses px-4 py-6 sm:px-10 sm:py-8. -->
+        <div
+          class="flex-1 min-w-0 {layout === 'wide'
+            ? 'px-4 py-6 sm:px-10 sm:py-8'
+            : 'px-4 py-5 sm:px-8 sm:py-6'}"
+        >
           <Skeleton variant="bar" class="h-7 w-2/3 mb-6" />
           <div class="flex flex-col gap-2.5 max-w-[640px]">
             <Skeleton variant="bar" class="h-3.5 w-full" />

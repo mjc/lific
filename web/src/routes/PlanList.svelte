@@ -154,14 +154,19 @@
 <div class="h-full flex flex-col">
   <div class="flex-1 overflow-y-auto">
     {#if loading}
-      <!-- LIF-246: mirrors the plan-card shape (ring + title/identifier +
-           fraction) instead of a centered spinner. -->
+      <!-- LIF-281: mirrors the plan-card shape (40px ring + title/identifier
+           + done/total fraction) inside the exact loaded wrapper + group
+           frame. Verified against the current card markup (gap-3.5 p-3
+           rounded-xl, ring size 40 → size-10, text-micro group header). -->
       <div class="max-w-[860px] mx-auto px-6 py-6">
-        <Skeleton variant="bar" class="h-3 w-20 mb-2" />
+        <div class="mb-2 flex items-center gap-1.5">
+          <Skeleton variant="bar" class="h-2.5 w-16" />
+          <Skeleton variant="bar" class="h-2.5 w-4" />
+        </div>
         <div class="flex flex-col gap-2">
           {#each [0, 1, 2] as i (i)}
             <div class="flex items-center gap-3.5 p-3 rounded-xl bg-[var(--surface)] shadow-[0_1px_2px_rgba(0,0,0,0.06)]">
-              <Skeleton variant="circle" class="size-10" />
+              <Skeleton variant="circle" class="size-10 shrink-0" />
               <div class="flex-1 min-w-0 flex flex-col gap-2">
                 <Skeleton variant="bar" class="h-3.5 w-1/2" />
                 <Skeleton variant="bar" class="h-2.5 w-24" />

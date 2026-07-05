@@ -13,6 +13,7 @@
     type InstanceSettingsPatch,
   } from "../lib/api";
   import SettingsTabs from "../lib/SettingsTabs.svelte";
+  import Skeleton from "../lib/Skeleton.svelte";
   import { formatRelative } from "../lib/format";
   import { ShieldCheck, Lock, SlidersHorizontal, Check, AlertTriangle, DoorOpen, DoorClosed, Users } from "lucide-svelte";
   import { getContext, onMount } from "svelte";
@@ -155,9 +156,44 @@
 <div class="flex-1 overflow-y-auto">
   <div class="w-full max-w-[1000px] mx-auto px-6 py-10 md:py-12">
     {#if loading}
-      <div class="flex items-center justify-center py-20">
-        <div class="size-6 rounded-full border-2 border-[var(--border)] border-t-[var(--accent)] animate-spin"></div>
+      <!-- LIF-281: structural skeleton replacing the bare centered spinner.
+           The tab bar (SettingsTabs: border-b + mb-8) always renders in both
+           the admin and non-admin loaded branches, so it's mirrored first to
+           pin the frame. Below it we mirror the admin path's default-visible
+           layout — the "Instance" heading block and the settings form column
+           (single max-w-[560px] column of labeled fields) — which is the
+           expected case for this admin-only route. A non-admin instead sees
+           the "Admins only" gate on load; that branch is intentionally not
+           mirrored (unpredictable until `me()` resolves), but the tab bar
+           keeps the top of the frame from shifting. -->
+      <!-- Tab bar stand-in -->
+      <div class="flex items-center gap-6 border-b border-[var(--border)] mb-8">
+        <Skeleton variant="bar" class="h-4 w-16 mb-2.5 mt-1" />
+        <Skeleton variant="bar" class="h-4 w-16 mb-2.5 mt-1" />
       </div>
+
+      <!-- Heading block -->
+      <section class="mb-8">
+        <Skeleton variant="bar" class="h-7 w-40 mb-2" />
+        <Skeleton variant="bar" class="h-4 w-full max-w-[52ch]" />
+      </section>
+
+      <!-- Settings form card -->
+      <section class="rounded-xl bg-[var(--surface)] shadow-[0_1px_2px_rgba(0,0,0,0.06)] p-5">
+        <div class="flex items-center gap-2 mb-5">
+          <Skeleton variant="circle" class="size-[15px] rounded" />
+          <Skeleton variant="bar" class="h-4 w-24" />
+        </div>
+        <div class="flex flex-col gap-6 max-w-[560px]">
+          {#each [0, 1, 2] as field (field)}
+            <div class="flex flex-col gap-1.5">
+              <Skeleton variant="bar" class="h-3 w-32" />
+              <Skeleton variant="block" class="h-10 w-full rounded-md" />
+              <Skeleton variant="bar" class="h-3 w-56" />
+            </div>
+          {/each}
+        </div>
+      </section>
     {:else}
       <SettingsTabs active="instance" isAdmin={user?.is_admin ?? false} {navigate} />
 

@@ -23,6 +23,7 @@
   } from "./api";
   import { Tag, Trash2, Plus, ArrowRight, Search } from "lucide-svelte";
   import ColorPicker from "./ColorPicker.svelte";
+  import Skeleton from "./Skeleton.svelte";
   import { colorForName, DEFAULT_LABEL_COLOR } from "./labelColors";
 
   let {
@@ -337,9 +338,18 @@
 
     <!-- List -->
     {#if loading}
-      <div class="px-4 py-6 flex justify-center">
-        <div class="size-5 rounded-full border-2 border-[var(--border)] border-t-[var(--accent)] animate-spin"></div>
-      </div>
+      <!-- LIF-281: structural skeleton replacing the centered spinner. The
+           section header + rounded card (and the canEdit-gated create row)
+           already render around this branch, so here we mirror the loaded
+           label rows (color dot + name + usage count, px-4 py-2.5 with top
+           borders) to hold the card body height and avoid a snap-in. -->
+      {#each [0, 1, 2] as row (row)}
+        <div class="flex items-center gap-3 px-4 py-2.5 {row > 0 ? 'border-t border-[var(--border)]' : ''}">
+          <Skeleton variant="circle" class="size-3.5 shrink-0" />
+          <Skeleton variant="bar" class="h-3.5 flex-1 max-w-[180px]" />
+          <Skeleton variant="bar" class="h-3 w-16 shrink-0" />
+        </div>
+      {/each}
     {:else if labels.length === 0 && !canEdit}
       <div class="px-4 py-6 text-center text-body-sm text-[var(--text-faint)]">No labels yet.</div>
     {:else if labels.length === 0}

@@ -23,6 +23,7 @@
   } from "./api";
   import { UsersRound, UserPlus, Trash2 } from "lucide-svelte";
   import Select from "./Select.svelte";
+  import Skeleton from "./Skeleton.svelte";
   import { formatDate } from "./format";
 
   let { projectId }: { projectId: number } = $props();
@@ -212,9 +213,23 @@
     {/if}
 
     {#if loading}
-      <div class="px-4 py-6 flex justify-center">
-        <div class="size-5 rounded-full border-2 border-[var(--border)] border-t-[var(--accent)] animate-spin"></div>
-      </div>
+      <!-- LIF-281: structural skeleton replacing the centered spinner. The
+           section header + rounded card already render around this branch, so
+           here we mirror the loaded member rows (avatar + name/username +
+           role badge + date, px-4 py-2.5 with top borders) so the card body
+           keeps its height and the rows don't snap in. The add-member row is
+           amLead-gated and not part of the default view, so it's omitted. -->
+      {#each [0, 1, 2] as row (row)}
+        <div class="flex items-center gap-3 px-4 py-2.5 {row > 0 ? 'border-t border-[var(--border)]' : ''}">
+          <Skeleton variant="circle" class="size-8 shrink-0" />
+          <div class="flex-1 min-w-0 flex flex-col gap-1.5">
+            <Skeleton variant="bar" class="h-3.5 w-40" />
+            <Skeleton variant="bar" class="h-3 w-24" />
+          </div>
+          <Skeleton variant="bar" class="h-5 w-20 rounded-full shrink-0" />
+          <Skeleton variant="bar" class="hidden sm:block h-3 w-[8.5rem] shrink-0" />
+        </div>
+      {/each}
     {:else if loadError}
       <div class="px-4 py-4 text-body-sm text-[var(--error)]">{loadError}</div>
     {:else if members.length === 0}

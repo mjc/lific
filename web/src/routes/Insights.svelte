@@ -172,16 +172,63 @@
 <div class="h-full flex flex-col">
   <div class="flex-1 overflow-y-auto">
     {#if loading}
-      <!-- LIF-246: unified onto the shared Skeleton component (was local
-           `animate-pulse` blocks) — same shapes/sizes as before. -->
-      <div class="max-w-[1100px] mx-auto px-6 py-6 flex flex-col gap-6">
-        <Skeleton variant="block" class="h-[280px] shadow-[0_1px_2px_rgba(0,0,0,0.06)]" />
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <!-- LIF-281: skeleton now mirrors the loaded layout's exact wrapper
+           (max-w-[1100px] … gap-5, was gap-6) and reuses the real section
+           card classes (rounded-xl surface + shadow + p-5/p-4) with
+           correctly-sized Skeleton primitives inside, so the hero header,
+           the 3-up distribution grid, and the top-actors card land at the
+           same y-positions as their loaded counterparts instead of a set of
+           flat blocks of the wrong height. -->
+      <div class="max-w-[1100px] mx-auto px-6 py-6 flex flex-col gap-5">
+        <!-- Hero: header row + chart placeholder -->
+        <section class="rounded-xl bg-[var(--surface)] shadow-[0_1px_2px_rgba(0,0,0,0.06)] p-5">
+          <div class="flex items-center gap-2 mb-4">
+            <Skeleton variant="circle" class="size-[15px] rounded" />
+            <Skeleton variant="bar" class="h-4 w-40" />
+            <Skeleton variant="bar" class="h-3 w-24 ml-auto" />
+          </div>
+          <Skeleton variant="block" class="h-[300px] w-full" />
+        </section>
+
+        <!-- Distribution row: status / priority / module -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 items-stretch">
           {#each [0, 1, 2] as i (i)}
-            <Skeleton variant="block" class="h-[220px] shadow-[0_1px_2px_rgba(0,0,0,0.06)]" />
+            <section class="rounded-xl bg-[var(--surface)] shadow-[0_1px_2px_rgba(0,0,0,0.06)] p-4 flex flex-col">
+              <Skeleton variant="bar" class="h-3 w-20 mb-3" />
+              <div class="flex flex-col gap-2">
+                {#each [0, 1, 2, 3, 4] as row (row)}
+                  <div class="flex items-center gap-2.5">
+                    <Skeleton variant="circle" class="size-3.5" />
+                    <Skeleton variant="bar" class="h-3 w-[92px] shrink-0" />
+                    <Skeleton variant="bar" class="h-2 flex-1 rounded-full" />
+                    <Skeleton variant="bar" class="h-3 w-7 shrink-0" />
+                  </div>
+                {/each}
+              </div>
+            </section>
           {/each}
         </div>
-        <Skeleton variant="block" class="h-[200px] shadow-[0_1px_2px_rgba(0,0,0,0.06)]" />
+
+        <!-- Top actors -->
+        <section class="rounded-xl bg-[var(--surface)] shadow-[0_1px_2px_rgba(0,0,0,0.06)] p-4">
+          <div class="flex items-center gap-2 mb-2">
+            <Skeleton variant="circle" class="size-3.5 rounded" />
+            <Skeleton variant="bar" class="h-3 w-24" />
+            <Skeleton variant="bar" class="h-3 w-24 ml-auto" />
+          </div>
+          <div class="flex flex-col gap-1">
+            {#each [0, 1, 2] as row (row)}
+              <div class="flex items-center gap-2.5 px-1 py-1.5">
+                <Skeleton variant="circle" class="size-6 shrink-0" />
+                <div class="flex-1 min-w-0 flex flex-col gap-1">
+                  <Skeleton variant="bar" class="h-3 w-32" />
+                  <Skeleton variant="bar" class="h-2.5 w-24" />
+                </div>
+                <Skeleton variant="bar" class="h-3 w-8 shrink-0" />
+              </div>
+            {/each}
+          </div>
+        </section>
       </div>
     {:else if error}
       <ErrorState title="Couldn't load insights" message={error}>

@@ -17,6 +17,7 @@
   } from "../lib/api";
   import ToolIcon from "../lib/ToolIcon.svelte";
   import SettingsTabs from "../lib/SettingsTabs.svelte";
+  import Skeleton from "../lib/Skeleton.svelte";
   import {
     getPreference, setPreference, type ThemePreference,
     getAccent, setAccent, type AccentPreset,
@@ -369,9 +370,37 @@
 <div class="flex-1 overflow-y-auto">
   <div class="w-full max-w-[1000px] mx-auto px-6 py-10 md:py-12">
     {#if loading}
-      <div class="flex items-center justify-center py-20">
-        <div class="size-6 rounded-full border-2 border-[var(--border)] border-t-[var(--accent)] animate-spin"></div>
+      <!-- LIF-281: structural skeleton replacing the bare centered spinner.
+           Mirrors the loaded account page's default-visible frame inside the
+           same max-w-[1000px] wrapper — the tab bar (border-b + mb-8), the
+           identity hero (size-14 avatar + name/meta, mb-8), and the
+           Appearance card (rounded-xl surface + p-5 with its header +
+           first control row) — so the first heading lands at the same
+           y-position and the layout doesn't snap when data arrives. -->
+      <!-- Tab bar stand-in (SettingsTabs: border-b + mb-8) -->
+      <div class="flex items-center gap-6 border-b border-[var(--border)] mb-8">
+        <Skeleton variant="bar" class="h-4 w-16 mb-2.5 mt-1" />
+        <Skeleton variant="bar" class="h-4 w-16 mb-2.5 mt-1" />
       </div>
+
+      <!-- Identity hero -->
+      <section class="flex items-center gap-4 mb-8">
+        <Skeleton variant="circle" class="size-14 shrink-0" />
+        <div class="min-w-0 flex flex-col gap-2">
+          <Skeleton variant="bar" class="h-6 w-48" />
+          <Skeleton variant="bar" class="h-3.5 w-64" />
+        </div>
+      </section>
+
+      <!-- Appearance card -->
+      <section class="rounded-xl bg-[var(--surface)] shadow-[0_1px_2px_rgba(0,0,0,0.06)] p-5">
+        <div class="flex items-center gap-2 mb-1">
+          <Skeleton variant="circle" class="size-[15px] rounded" />
+          <Skeleton variant="bar" class="h-4 w-32" />
+        </div>
+        <Skeleton variant="bar" class="h-3 w-40 mb-3.5" />
+        <Skeleton variant="block" class="h-9 w-[280px] rounded-lg" />
+      </section>
     {:else if user}
       <SettingsTabs active="account" isAdmin={user.is_admin} {navigate} />
 
