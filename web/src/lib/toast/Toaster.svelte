@@ -22,8 +22,10 @@
     if (!t.action) return;
     // The toast is dismissed regardless of what the action does — Undo is
     // one-shot (no stacked redo), so leaving it on-screen after firing
-    // would just invite a second, meaningless click.
-    toastStore.dismiss(t.id);
+    // would just invite a second, meaningless click. Pass didAction=true
+    // so an onClose consumer (LIF-283 deferred delete) knows this close was
+    // the action firing, not a timeout/close, and must NOT commit.
+    toastStore.dismiss(t.id, true);
     await t.action.fn();
   }
 

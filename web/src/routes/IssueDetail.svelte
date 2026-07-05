@@ -2,7 +2,6 @@
   import {
     resolveIssue,
     updateIssue,
-    deleteIssue,
     downloadIssueExport,
     listModules,
     listLabels,
@@ -24,6 +23,7 @@
   import { formatDate } from "../lib/format";
   import { recordRecent } from "../lib/home/recents"; // LIF-237
   import { updateIssueWithUndo } from "../lib/issues/state.svelte"; // LIF-243
+  import { scheduleDelete } from "../lib/issues/deferredDelete.svelte"; // LIF-283
   import { openPeek } from "../lib/issues/peek.svelte"; // LIF-248
   import { projectRole, loadProjectRole } from "../lib/projectRole.svelte"; // LIF-234
   import { ArrowUpRight } from "lucide-svelte";
@@ -315,12 +315,18 @@
 
   async function handleDelete(): Promise<boolean> {
     if (!issue) return false;
-    const res = await deleteIssue(issue.id);
-    if (res.ok) {
-      navigate(backHref());
-      return true;
-    }
-    return false;
+    // LIF-283: deferred delete with Undo. Navigate away immediately (the
+    // detail view of a "deleted" issue makes no sense to keep open) and defer
+    // the API call. Undo — the toast survives navigation — brings the user
+    // back to this issue and cancels the delete. Capture the identifier now
+    // so the Undo closure doesn't depend on `issue` still being set.
+    const captured = issue;
+    const detailHref = `/${projectIdentifier}/issues/${captured.identifier}`;
+    navigate(backHref());
+    scheduleDelete([captured], {
+      onRestore: () => navigate(detailHref),
+    });
+    return true;
   }
 
   function moduleName(id: number | null): string {

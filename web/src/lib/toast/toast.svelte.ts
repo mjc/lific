@@ -23,6 +23,12 @@ export interface ToastOptions {
   /** Explicit auto-dismiss duration in ms. Omit to use the kind default
    *  (5s success/info, 8s error). 0 disables auto-dismiss entirely. */
   duration?: number;
+  /** LIF-283: fired exactly once when the toast leaves the stack, with
+   *  `didAction` = whether it left because its action button was pressed
+   *  (true) vs. it expired / was closed / was evicted without the action
+   *  (false). This is what lets a deferred-delete toast tell "Undo pressed"
+   *  from "timed out → commit the delete." */
+  onClose?: (didAction: boolean) => void;
 }
 
 export interface ToastItem {
@@ -34,6 +40,9 @@ export interface ToastItem {
   /** True while hovered/focused — dismiss timer is paused. Read by
    *  <Toaster/> to skip the countdown visually if it ever wants to. */
   paused: boolean;
+  /** LIF-283: see ToastOptions.onClose. Held on the item so `dismiss` can
+   *  fire it. Not reactive UI state — Toaster never reads it. */
+  onClose?: (didAction: boolean) => void;
 }
 
 /** Toasts visible at once. The (n+1)th push evicts the oldest so the stack
@@ -72,16 +81,20 @@ class ToastStore {
       action: opts.action,
       duration,
       paused: false,
+      onClose: opts.onClose,
     };
 
     let next = [...this.toasts, item];
     if (next.length > MAX_TOASTS) {
       // Oldest collapses out of the stack (evicted, not just visually
       // hidden) — its timer is cleaned up so it can't fire a dismiss for
-      // an id nothing references anymore.
+      // an id nothing references anymore. Eviction counts as a close
+      // without the action (LIF-283) so a pending deferred delete still
+      // commits if its toast gets pushed out by a burst of later toasts.
       const evicted = next[0];
       next = next.slice(1);
       this.#clearTimer(evicted.id);
+      this.#fireClose(evicted, false);
     }
     this.toasts = next;
 
@@ -89,9 +102,24 @@ class ToastStore {
     return id;
   }
 
-  dismiss(id: number): void {
+  /** Remove a toast. `didAction` records whether its action button drove
+   *  the removal (LIF-283) so `onClose` can be told; the timer and the
+   *  close button pass false, the action path (`runAction` in Toaster)
+   *  passes true. */
+  dismiss(id: number, didAction = false): void {
     this.#clearTimer(id);
+    const item = this.toasts.find((t) => t.id === id);
     this.toasts = this.toasts.filter((t) => t.id !== id);
+    if (item) this.#fireClose(item, didAction);
+  }
+
+  /** Invoke a toast's onClose exactly once. Guards against double-fire
+   *  (e.g. eviction racing a stale timer) by clearing the ref first. */
+  #fireClose(item: ToastItem, didAction: boolean): void {
+    const cb = item.onClose;
+    if (!cb) return;
+    item.onClose = undefined;
+    cb(didAction);
   }
 
   /** Pause the auto-dismiss countdown (hover/focus). No-op for toasts with

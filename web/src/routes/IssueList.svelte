@@ -6,7 +6,6 @@
     listLabels,
     updateIssue,
     createIssue,
-    deleteIssue,
     getIssueCounts,
     type IssueStatusCounts,
     type Issue,
@@ -50,6 +49,7 @@
     bulkUpdateIssuesWithUndo,
     prevPatchFor,
   } from "../lib/issues/state.svelte"; // LIF-243: undo layer
+  import { scheduleDelete, hasPendingDeletes } from "../lib/issues/deferredDelete.svelte"; // LIF-283
   import { shortcutsSuppressed } from "../lib/shortcuts"; // LIF-245
   import { shortcutHelpState } from "../lib/shortcutHelp.svelte"; // LIF-245
   import { commandPaletteState } from "../lib/commandPaletteState.svelte"; // LIF-245
@@ -310,6 +310,9 @@
       // data on top of an in-flight bulk write.
       view.selectedIds.size > 0 ||
       bulkBusy ||
+      // LIF-283: a deferred delete has optimistically removed rows the server
+      // still has; a poll would resurrect them until the commit fires.
+      hasPendingDeletes() ||
       // Don't refetch while the user is typing in the search box.
       (view.searchExpanded && document.activeElement === searchInputEl)
     );
@@ -701,13 +704,41 @@
 
   async function bulkDelete() {
     if (bulkBusy || view.selectedIds.size === 0) return;
-    bulkBusy = true;
+    // LIF-283: deferred delete. Capture the exact rows (with their current
+    // array positions) BEFORE removing them, so Undo can splice them back in
+    // place rather than reload and jump scroll/selection. The confirm popover
+    // in BulkActionBar has already gated this — Undo is the second safety net.
     bulkMenu = null;
-    const ids = [...view.selectedIds];
-    await Promise.all(ids.map((id) => trackMutation(deleteIssue(id))));
-    bulkBusy = false;
+    const ids = new Set(view.selectedIds);
+    const removed = issues
+      .map((issue, index) => ({ issue, index }))
+      .filter(({ issue }) => ids.has(issue.id));
+    if (removed.length === 0) return;
+
+    // Optimistic local removal + clear selection.
+    issues = issues.filter((i) => !ids.has(i.id));
     clearSelection();
-    await loadIssues();
+
+    scheduleDelete(
+      removed.map((r) => r.issue),
+      {
+        onRestore: () => {
+          // Reinsert each captured row at its original index (ascending, so
+          // earlier splices don't shift later indices). Falls back to append
+          // if the array has since changed length underneath us.
+          const next = [...issues];
+          for (const { issue, index } of removed) {
+            if (index <= next.length) next.splice(index, 0, issue);
+            else next.push(issue);
+          }
+          issues = next;
+        },
+        onCommit: () => {
+          // Reconcile server-side counts after the real delete lands.
+          void loadIssues();
+        },
+      },
+    );
   }
 
   // Status picker keyboard index now lives on view.inlineCreateStatusIdx
