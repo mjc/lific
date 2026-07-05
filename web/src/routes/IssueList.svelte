@@ -189,7 +189,7 @@
   // NOTE: filters no longer trigger a fetch. They're applied client-side in
   // `controlFilteredIssues` (LIF-222 perf), so changing a filter is a pure
   // in-memory recompute — instant, no round-trip. The full set is (re)loaded
-  // on mount/navigation and by the 15s auto-refresh poll.
+  // on mount/navigation and by focus/realtime refresh.
 
   async function loadProject(identifier: string) {
     loading = true;
@@ -241,10 +241,10 @@
     // priority / label / module filtering is applied client-side in the
     // derived pipeline (see `controlFilteredIssues`), exactly like search —
     // so toggling a filter is instant with zero network. The server fetch
-    // only runs on mount and the 15s poll.
+    // only runs on mount and focus/realtime refresh.
     //
     // LIF-161: bounded at 1000 so a huge project can't pull megabytes of
-    // descriptions per poll; the topbar tallies come from the counts
+    // descriptions per refresh; the topbar tallies come from the counts
     // endpoint, not from this fetch. Counts ride along so the topbar
     // converges with the rows.
     const [res, countsRes] = await Promise.all([
@@ -260,11 +260,11 @@
   }
 
   // ── LIF-129: auto-refresh ────────────────────────────
-  // Background poll (15s) + revalidate on tab focus so the list/board
-  // converges on server state after out-of-band changes (MCP agent, API,
-  // another tab). Both modes share this one loop — it's the same dataset.
+  // Focus/realtime refresh keeps the list/board converged after
+  // out-of-band changes (MCP agent, API, another tab). Both modes share
+  // this one loop — it's the same dataset.
   //
-  // `mutationsInFlight` pauses refresh while a write is pending so a poll
+  // `mutationsInFlight` pauses refresh while a write is pending so a refresh
   // can't land stale server data on top of an optimistic change that the
   // PUT hasn't acknowledged yet (the card-snaps-back race). `dragActive`
   // covers the drag itself. Open popovers / inline create / a focused
@@ -294,7 +294,7 @@
       view.filterOpen ||
       view.lanesOpen ||
       peekState.open ||
-      // LIF-245: a poll landing under the command palette or the shortcut
+      // LIF-245: a refresh landing under the command palette or the shortcut
       // help overlay wouldn't corrupt anything visible (both are opaque
       // modals over the list), but it would still burn a network round
       // trip and reset keyboard focus/selection pointlessly the moment
@@ -305,22 +305,21 @@
       view.statusDropdownId !== null ||
       view.priorityDropdownId !== null ||
       view.moduleDropdownId !== null ||
-      // LIF-149: a poll mustn't shuffle rows mid-selection or land stale
+      // LIF-149: refresh mustn't shuffle rows mid-selection or land stale
       // data on top of an in-flight bulk write.
       view.selectedIds.size > 0 ||
       bulkBusy ||
       // LIF-283: a deferred delete has optimistically removed rows the server
-      // still has; a poll would resurrect them until the commit fires.
+      // still has; a refresh would resurrect them until the commit fires.
       hasPendingDeletes() ||
       // Don't refetch while the user is typing in the search box.
       (view.searchExpanded && document.activeElement === searchInputEl)
     );
   }
 
-  // Refresh just the issue rows. Modules/labels feed the filter dropdowns
-  // and change rarely; a full project reload on every tick would be
-  // wasteful and could flash the loading spinner, so we only re-pull
-  // issues here. New modules/labels reconcile on the next mount/navigation.
+  // Refresh the issue rows and project-scoped filter data together.
+  // That keeps the list, labels, and module filters converged without
+  // running a background poll on a timer.
   async function refreshIssues() {
     if (!project) return;
     await loadIssues();
@@ -330,7 +329,6 @@
     startAutoRefresh({
       refresh: refreshIssues,
       isBusy: autoRefreshBusy,
-      intervalMs: 15_000,
     }),
   );
 
@@ -546,7 +544,7 @@
     const movedIdentifier = moved.identifier;
 
     // trackMutation keeps auto-refresh paused until the PUT resolves;
-    // clear dragActive only after, so no poll lands between drop and ack.
+    // clear dragActive only after, so no refresh lands between drop and ack.
     // updateIssueWithUndo shows the success/Undo toast (or an error toast
     // on failure, replacing the previous silent failure path) and, on
     // Undo, re-stamps `prevPatch` back onto `issues` via onApplied.
@@ -631,8 +629,8 @@
     bulkMenu = null;
   }
 
-  // Prune selection to rows that still exist — filters, search, and the
-  // background poll can all remove rows out from under a selection. Only
+  // Prune selection to rows that still exist — filters, search, and
+  // server refresh can all remove rows out from under a selection. Only
   // writes when something actually fell out, so the effect settles.
   $effect(() => {
     const visible = new Set(flatIssues.map((i) => i.id));
@@ -798,9 +796,9 @@
 
   // ── LIF-245: keyboard focus survives a list refetch ──────────────────
   // `flatIssues` is a fresh array every time `issues` changes reference —
-  // which happens on every 15s auto-refresh poll, not just on a genuine
+  // which happens on every focus/realtime refresh, not just on a genuine
   // reorder — so naively resetting `focusedIndex` here would drop keyboard
-  // focus out from under the user on every poll tick, even when the exact
+  // focus out from under the user on every refresh, even when the exact
   // same issue is still sitting right there. Instead: remember which
   // *issue* (by id) was focused, and when the list changes shape, try to
   // relocate it by id in the new flatIssues before falling back to -1.
@@ -2075,6 +2073,3 @@
     onHoverModuleOption={(mi) => { view.modulePickerIdx = mi; }}
   />
 {/snippet}
-
-
-
