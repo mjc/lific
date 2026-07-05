@@ -20,7 +20,7 @@ import { commandPaletteState } from "./commandPaletteState.svelte";
 import { shortcutHelpState } from "./shortcutHelp.svelte";
 import { contextMenuState } from "./contextMenu.svelte"; // LIF-248
 
-export type ShortcutScope = "global" | "list" | "board" | "peek" | "palette";
+export type ShortcutScope = "global" | "list" | "board" | "peek" | "palette" | "editor";
 
 export interface ShortcutEntry {
   /** Display form. Space-separated tokens render as separate <kbd> chips,
@@ -30,7 +30,7 @@ export interface ShortcutEntry {
   scope: ShortcutScope;
 }
 
-export const SCOPE_ORDER: ShortcutScope[] = ["global", "list", "board", "peek", "palette"];
+export const SCOPE_ORDER: ShortcutScope[] = ["global", "list", "board", "peek", "palette", "editor"];
 
 export const SCOPE_LABEL: Record<ShortcutScope, string> = {
   global: "Global",
@@ -38,6 +38,7 @@ export const SCOPE_LABEL: Record<ShortcutScope, string> = {
   board: "Board",
   peek: "Peek panel",
   palette: "Command palette",
+  editor: "Markdown editor",
 };
 
 export const SHORTCUTS: ShortcutEntry[] = [
@@ -80,6 +81,12 @@ export const SHORTCUTS: ShortcutEntry[] = [
   { keys: "Enter", label: "Open / run", scope: "palette" },
   { keys: "⌫", label: "Step back out of a submenu", scope: "palette" },
   { keys: "Esc", label: "Close", scope: "palette" },
+
+  // ── Markdown editor (EditableMarkdown.svelte, edit mode) ──
+  { keys: "⌘ B", label: "Bold", scope: "editor" },
+  { keys: "⌘ I", label: "Italic", scope: "editor" },
+  { keys: "⌘ ⇧ K", label: "Insert link", scope: "editor" },
+  { keys: "⌘ S", label: "Save", scope: "editor" },
 ];
 
 /** True when focus is in something that owns its own text input — a

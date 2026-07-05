@@ -32,7 +32,31 @@
   import Markdown from "./Markdown.svelte";
   import ModeToggle from "./ModeToggle.svelte";
   import StatusIcon from "./StatusIcon.svelte";
-  import { Search, CornerDownLeft, Paperclip } from "lucide-svelte";
+  import {
+    Search,
+    CornerDownLeft,
+    Paperclip,
+    Bold,
+    Italic,
+    Heading,
+    List,
+    ListOrdered,
+    ListChecks,
+    Code,
+    Code2,
+    Link as LinkIcon,
+    Quote,
+  } from "lucide-svelte";
+  import {
+    toggleInlineWrap,
+    toggleLinePrefix,
+    toggleCodeBlock,
+    insertLink,
+    type EditorState,
+    type TransformResult,
+    type InlineMarker,
+    type LinePrefixKind,
+  } from "./markdownFormat";
   import {
     findTrigger,
     searchSuggestions,
@@ -359,6 +383,110 @@
     }
   }
 
+  // ── LIF-282: markdown formatting toolbar + shortcuts ──────
+  //
+  // The pure string/selection math lives in ./markdownFormat.ts. This
+  // component owns the textarea, so it snapshots the current selection,
+  // runs the requested transform, then applies the result. We apply via
+  // document.execCommand('insertText') when the text actually changes so
+  // native Ctrl+Z / Cmd+Z keeps working (the transform reads as one
+  // ordinary edit). If execCommand is unavailable or reports failure we
+  // fall back to assigning `draft` + dispatching an input event so the
+  // rest of the editor (autoResize, autocomplete) still reacts.
+
+  function currentEditorState(): EditorState | null {
+    const el = textareaEl;
+    if (!el) return null;
+    return {
+      text: draft,
+      selectionStart: el.selectionStart ?? 0,
+      selectionEnd: el.selectionEnd ?? 0,
+    };
+  }
+
+  // Apply a transform result to the textarea. Prefers execCommand so undo
+  // works; the whole document is replaced in a single insertText by first
+  // selecting everything, which the browser records as one undo step.
+  function applyTransform(result: TransformResult) {
+    const el = textareaEl;
+    if (!el) return;
+
+    let applied = false;
+    if (result.text !== draft && typeof document.execCommand === "function") {
+      el.focus();
+      el.setSelectionRange(0, draft.length);
+      try {
+        applied = document.execCommand("insertText", false, result.text);
+      } catch {
+        applied = false;
+      }
+    }
+
+    if (!applied) {
+      // Fallback: assign + dispatch so bind:value and oninput both fire.
+      draft = result.text;
+      el.value = result.text;
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    } else {
+      // execCommand already mutated el.value; keep our model in sync.
+      draft = el.value;
+    }
+
+    requestAnimationFrame(() => {
+      el.focus();
+      el.setSelectionRange(result.selectionStart, result.selectionEnd);
+      autoResize();
+    });
+  }
+
+  // Run a transform function against the live selection, then apply it.
+  // Guards against being called outside edit mode / before the textarea
+  // mounts. Closing any open autocomplete keeps the popover from lingering
+  // over freshly-rewritten text.
+  function runTransform(fn: (state: EditorState) => TransformResult) {
+    if (mode !== "edit") return;
+    const state = currentEditorState();
+    if (!state) return;
+    if (acOpen) closeAutocomplete();
+    applyTransform(fn(state));
+  }
+
+  function fmtInline(marker: InlineMarker) {
+    runTransform((s) => toggleInlineWrap(s, marker));
+  }
+  function fmtPrefix(kind: LinePrefixKind) {
+    runTransform((s) => toggleLinePrefix(s, kind));
+  }
+  function fmtCodeBlock() {
+    runTransform(toggleCodeBlock);
+  }
+  function fmtLink() {
+    runTransform(insertLink);
+  }
+
+  // Toolbar button descriptors — icon component, tooltip, and the action.
+  // Rendered as a compact row above the textarea. `mousedown` is prevented
+  // on each button so clicking never steals focus from the textarea (the
+  // selection stays intact through the click).
+  type ToolbarItem = {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    icon: any;
+    title: string;
+    run: () => void;
+  };
+  const toolbarItems: ToolbarItem[] = [
+    { icon: Bold, title: "Bold (⌘B)", run: () => fmtInline("**") },
+    { icon: Italic, title: "Italic (⌘I)", run: () => fmtInline("*") },
+    { icon: Heading, title: "Heading", run: () => fmtPrefix("heading") },
+    { icon: List, title: "Bulleted list", run: () => fmtPrefix("bullet") },
+    { icon: ListOrdered, title: "Numbered list", run: () => fmtPrefix("numbered") },
+    { icon: ListChecks, title: "Checklist", run: () => fmtPrefix("checklist") },
+    { icon: Code, title: "Inline code", run: () => fmtInline("`") },
+    { icon: Code2, title: "Code block", run: fmtCodeBlock },
+    { icon: LinkIcon, title: "Link (⌘⇧K)", run: fmtLink },
+    { icon: Quote, title: "Quote", run: () => fmtPrefix("quote") },
+  ];
+
   // ── Reference autocomplete (LIF-239) ─────────────────
   //
   // Typing "#foo" or "LIF-"/"lif-4" right before the caret opens an
@@ -501,6 +629,35 @@
       cancelEdit();
       return;
     }
+
+    // ── LIF-282: formatting shortcuts (edit mode) ──────────
+    //
+    // These fire only while typing in the textarea. Cmd/Ctrl+B/I toggle
+    // bold/italic. Cmd/Ctrl+Shift+K inserts a link — and CRUCIALLY it must
+    // stopPropagation, because CommandPalette's window-level handler opens
+    // the palette on Cmd/Ctrl+K without checking Shift. Plain Cmd+K (no
+    // Shift) is deliberately left untouched here so it keeps bubbling to
+    // that handler and opens the palette as before.
+    if (e.ctrlKey || e.metaKey) {
+      const k = e.key.toLowerCase();
+      if (e.shiftKey && k === "k") {
+        e.preventDefault();
+        e.stopPropagation();
+        fmtLink();
+        return;
+      }
+      if (!e.shiftKey && k === "b") {
+        e.preventDefault();
+        fmtInline("**");
+        return;
+      }
+      if (!e.shiftKey && k === "i") {
+        e.preventDefault();
+        fmtInline("*");
+        return;
+      }
+    }
+
     if ((e.ctrlKey || e.metaKey) && e.key === "s") {
       e.preventDefault();
       commitEdit();
@@ -572,6 +729,28 @@
     -->
     <!-- svelte-ignore a11y_autofocus -->
     <DropOverlay radius="0.375rem" onFiles={(files) => uploads.enqueue(files)}>
+      <!--
+        LIF-282: compact formatting toolbar. Buttons prevent focus theft
+        via onmousedown preventDefault so the textarea selection survives
+        the click. Styling mirrors the editor chrome (subtle border,
+        rounded, dark-mode-aware via CSS custom props).
+      -->
+      <div class="em-toolbar" role="toolbar" aria-label="Formatting">
+        {#each toolbarItems as item (item.title)}
+          {@const Icon = item.icon}
+          <button
+            type="button"
+            class="em-tool"
+            title={item.title}
+            aria-label={item.title}
+            onmousedown={(e) => e.preventDefault()}
+            onclick={item.run}
+          >
+            <Icon size={15} />
+          </button>
+        {/each}
+      </div>
+
       <textarea
         bind:value={draft}
         bind:this={textareaEl}
@@ -738,6 +917,47 @@
   }
 
   /*
+   * LIF-282: formatting toolbar. A subtle bordered strip sitting above
+   * the textarea, matching the ModeToggle/footer visual language —
+   * subtle border, rounded corners, muted icons that gain the accent on
+   * hover. Buttons are icon-only squares with a tooltip via `title`.
+   */
+  .em-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.125rem;
+    margin-bottom: 0.625rem;
+    padding: 0.1875rem;
+    background: var(--bg-subtle);
+    border: 1px solid var(--border);
+    border-radius: 0.5rem;
+  }
+  .em-tool {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.75rem;
+    height: 1.75rem;
+    color: var(--text-muted);
+    background: transparent;
+    border: 0;
+    border-radius: 0.375rem;
+    cursor: pointer;
+    transition:
+      background 0.15s var(--ease-out-expo),
+      color 0.15s var(--ease-out-expo);
+  }
+  .em-tool:hover {
+    background: var(--surface);
+    color: var(--accent);
+  }
+  .em-tool:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--accent-subtle);
+  }
+
+  /*
    * Textarea inherits the prose font/size so visual rhythm matches
    * the rendered side, then strips chrome so it visually fades into
    * the page.
@@ -834,7 +1054,8 @@
     .em-empty-cta,
     .em-save,
     .em-cancel,
-    .em-attach {
+    .em-attach,
+    .em-tool {
       transition-duration: 0.001s;
     }
   }
