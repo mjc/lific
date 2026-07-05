@@ -129,27 +129,6 @@
     loading = false;
   }
 
-  async function refreshModule() {
-    if (!mod) return;
-
-    const [modRes, issuesRes] = await Promise.all([
-      getModule(mod.id),
-      listIssues({
-        project_id: mod.project_id,
-        module_id: mod.id,
-        limit: 500,
-      }),
-    ]);
-    if (!modRes.ok) {
-      error = modRes.error;
-      mod = null;
-      issues = [];
-      return;
-    }
-    mod = modRes.data;
-    if (issuesRes.ok) issues = issuesRes.data;
-  }
-
   function handleWindowClick() {
     statusOpen = false;
   }

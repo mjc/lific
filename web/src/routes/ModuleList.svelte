@@ -82,15 +82,6 @@
     loadData(id);
   });
 
-  function formBusy(): boolean {
-    const el = document.activeElement;
-    return !!el &&
-      (el.tagName === "INPUT" ||
-        el.tagName === "TEXTAREA" ||
-        el.tagName === "SELECT" ||
-        (el as HTMLElement).isContentEditable);
-  }
-
   async function loadData(ident: string) {
     loading = true;
     error = "";

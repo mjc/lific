@@ -1,29 +1,6 @@
-// LIF-129 — Tier 0 auto-refresh.
-//
-// The issue/page views load once on mount and then go stale: anything
-// that mutates data out-of-band (the MCP agent, the REST API, a second
-// tab) is invisible until you navigate away and back. This helper gives
-// those views a gentle "converge on server state" loop without any
-// backend change.
-//
-// Design constraints (the anti-enshittification rules from LIF-129):
-//   - Pause while the tab is hidden; refetch once the moment it's shown
-//     or the window regains focus. Focus-revalidation does most of the
-//     real work — the interval is just a backstop for a left-open tab.
-//   - Never refetch mid-interaction. The caller passes `isBusy()` and we
-//     skip any tick it vetoes (drag in progress, a popover open, inline
-//     create open, a page mid-edit, or a mutation in flight). A refresh
-//     that yanks state out from under the user is worse than a stale one.
-//   - Coalesce: visibility + focus can fire together; we debounce the
-//     eager revalidate so that's one fetch, not two.
-//   - Realtime invalidation events from the websocket bubble through the
-//     same eager path, so a write in another tab or via MCP refreshes the
-//     visible screen without inventing a second refresh loop.
-//
-// This intentionally owns no data and does no merging. Each view passes
-// its own `refresh` (which already knows how to load and how to keep
-// optimistic state coherent). Keeping the helper dumb keeps the per-view
-// safety logic where the state actually lives.
+// Auto-refresh keeps mounted views close to server state. It owns no data:
+// callers decide when a refresh is relevant and when local UI state is too
+// busy to disturb.
 
 export interface AutoRefreshOptions {
   /** Re-fetch the view's data. Should be safe to call repeatedly; the
@@ -67,7 +44,6 @@ export function startAutoRefresh(opts: AutoRefreshOptions): () => void {
   const { refresh, isBusy, intervalMs, shouldRefresh } = opts;
 
   let timer: ReturnType<typeof setInterval> | null = null;
-  let pendingTimer: ReturnType<typeof setInterval> | null = null;
   let eagerDebounce: ReturnType<typeof setTimeout> | null = null;
   let disposed = false;
   let refreshing = false;
@@ -75,10 +51,7 @@ export function startAutoRefresh(opts: AutoRefreshOptions): () => void {
 
   async function runRefresh() {
     if (disposed || document.hidden) return;
-    if (isBusy?.()) {
-      pending = true;
-      return;
-    }
+    if (isBusy?.()) return;
     if (refreshing) {
       pending = true;
       return;
@@ -129,16 +102,9 @@ export function startAutoRefresh(opts: AutoRefreshOptions): () => void {
     timer = setInterval(() => void runRefresh(), intervalMs);
   }
 
-  pendingTimer = setInterval(() => {
-    if (!pending || disposed || document.hidden || isBusy?.()) return;
-    pending = false;
-    void runRefresh();
-  }, 250);
-
   return () => {
     disposed = true;
     if (timer) clearInterval(timer);
-    if (pendingTimer) clearInterval(pendingTimer);
     if (eagerDebounce) clearTimeout(eagerDebounce);
     document.removeEventListener("visibilitychange", onVisibility);
     window.removeEventListener("focus", scheduleEager);

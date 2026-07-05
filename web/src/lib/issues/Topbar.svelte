@@ -23,6 +23,7 @@
   import type { IssueListState } from "./state.svelte";
 
   type Opt = { value: string; label: string; color?: string };
+  type FilterIconKind = "none" | "status" | "priority" | "label" | "module";
 
   let {
     view,
@@ -220,7 +221,14 @@
 
         <!-- Section row snippet. `iconKind` selects the inline glyph (status
              icon, priority bar, label color dot, module icon, or none). -->
-        {#snippet row(label, active, color, iconKind, value, onClick)}
+        {#snippet row(
+          label: string,
+          active: boolean,
+          color: string | undefined,
+          iconKind: FilterIconKind,
+          value: string,
+          onClick: () => void,
+        )}
           <button
             class="w-full flex items-center justify-between gap-2 px-3 py-1.5 text-left transition-colors
                    {active
