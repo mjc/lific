@@ -31,13 +31,13 @@ Identifiers are human-readable everywhere: `APP-42`, never a UUID. They survive 
 ```bash
 cargo install lific     # or grab a binary from the releases page
 
-lific init              # config + database + your API key, printed once —
+lific init              # config + database + your API key, printed once -
                         # then installs a background service and starts it.
                         # The server is now on :3456 and survives reboot.
 lific connect           # writes MCP config into your AI clients
 ```
 
-That's the whole thing. `lific init` sets up everything in the current directory and registers the server with your OS service manager (a systemd user unit on Linux, a LaunchAgent on macOS), so it isn't a process tied to your terminal — it's still running tomorrow. `lific connect` then detects the AI tools installed on your machine, lets you pick, mints a per-tool API key, and merges correct MCP config into each one without overwriting existing config. Restart your client and the Lific tools are there.
+That's the whole thing. `lific init` sets up everything in the current directory and registers the server with your OS service manager (a systemd user unit on Linux, a LaunchAgent on macOS), so it isn't a process tied to your terminal - it's still running tomorrow. `lific connect` then detects the AI tools installed on your machine, lets you pick, mints a per-tool API key, and merges correct MCP config into each one without overwriting existing config. Restart your client and the Lific tools are there.
 
 Manage the service anytime with `lific service status | restart | stop | uninstall`. Prefer a foreground process (containers, supervisors, debugging)? `lific init --no-service` skips the service and `lific start` runs the server in your terminal.
 
@@ -230,13 +230,13 @@ For one human directing several agents across personal projects (the thing it's 
 
 ## Authorization
 
-Lific has project-scoped, default-deny authorization: viewer / maintainer / lead membership enforced on every REST and MCP call, including reads. **Fresh installs (created on 2.1+) enforce it by default; instances upgraded from an earlier version keep it off** until you opt in — nothing changes under you on upgrade. Toggle it at runtime:
+Lific has project-scoped, default-deny authorization: viewer / maintainer / lead membership enforced on every REST and MCP call, including reads. **Fresh installs (created on 2.0+) enforce it by default; instances upgraded from an earlier version keep it off** until you opt in - nothing changes under you on upgrade. Toggle it at runtime:
 
 ```bash
 lific instance set --authz-enforced true    # or false
 ```
 
-**Unbound API keys bypass authorization by design.** A key with no user binding — the one `lific start` auto-mints on a keyless DB, and the ones `lific key create` and `connect`'s fresh-install path produce — is *operator-trusted*: it can only be created by someone with shell access to the server, so it's treated as admin-equivalent even in enforced mode. That's what keeps the zero-user `init → start → connect` flow working with enforcement on. The threat the default guards against is a web-signup stranger's session/OAuth token, not the operator's own shell-minted key. Audit these keys any time with:
+**Unbound API keys bypass authorization by design.** A key with no user binding - the one `lific start` auto-mints on a keyless DB, and the ones `lific key create` and `connect`'s fresh-install path produce - is *operator-trusted*: it can only be created by someone with shell access to the server, so it's treated as admin-equivalent even in enforced mode. That's what keeps the zero-user `init → start → connect` flow working with enforcement on. The threat the default guards against is a web-signup stranger's session/OAuth token, not the operator's own shell-minted key. Audit these keys any time with:
 
 ```bash
 lific key list
