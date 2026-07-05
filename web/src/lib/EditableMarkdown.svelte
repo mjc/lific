@@ -41,12 +41,11 @@
     type SuggestionHit,
   } from "./references";
   import type { AttachmentEntity } from "./api";
-  import {
-    uploadFiles,
-    filesFromClipboard,
-    filesFromDrop,
-    insertAtCaret,
-  } from "./attachments/compose";
+  import { filesFromClipboard, insertAtCaret } from "./attachments/compose";
+  import { createUploadController } from "./attachments/uploads.svelte";
+  import DropOverlay from "./attachments/DropOverlay.svelte";
+  import PendingUploads from "./attachments/PendingUploads.svelte";
+  import { onDestroy } from "svelte";
 
   let {
     value,
@@ -77,8 +76,6 @@
     attachTo?: { entity_type: AttachmentEntity; entity_id: number } | null;
   } = $props();
 
-  let uploading = $state(false);
-  let dragOver = $state(false);
   let fileInputEl = $state<HTMLInputElement | null>(null);
 
   // Draft only matters while editing. enterEdit() copies the current
@@ -338,42 +335,26 @@
     });
   }
 
-  async function runUploads(files: File[]) {
-    await uploadFiles(files, {
-      link: attachTo ?? undefined,
-      onInsert: insertSnippet,
-      onBusy: (b) => (uploading = b),
-    });
-  }
+  // Shared pending-upload controller (LIF-268) — same model as the comment
+  // composer so drag / paste / button all resolve into the same chip strip.
+  const uploads = createUploadController({
+    link: () => attachTo,
+    onInsert: insertSnippet,
+  });
+  onDestroy(() => uploads.destroy());
 
   function onEditorPaste(e: ClipboardEvent) {
     const files = filesFromClipboard(e);
     if (files.length > 0) {
       e.preventDefault();
-      void runUploads(files);
-    }
-  }
-
-  function onEditorDrop(e: DragEvent) {
-    const files = filesFromDrop(e);
-    dragOver = false;
-    if (files.length > 0) {
-      e.preventDefault();
-      void runUploads(files);
-    }
-  }
-
-  function onEditorDragOver(e: DragEvent) {
-    if (e.dataTransfer?.types.includes("Files")) {
-      e.preventDefault();
-      dragOver = true;
+      uploads.enqueue(files);
     }
   }
 
   function onEditorFilePicked(e: Event) {
     const input = e.target as HTMLInputElement;
     if (input.files && input.files.length > 0) {
-      void runUploads(Array.from(input.files));
+      uploads.enqueue(Array.from(input.files));
       input.value = "";
     }
   }
@@ -590,41 +571,42 @@
       the parent prose font + line-height so vertical math also matches.
     -->
     <!-- svelte-ignore a11y_autofocus -->
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <textarea
-      bind:value={draft}
-      bind:this={textareaEl}
-      class="em-textarea"
-      class:em-textarea--drag={dragOver}
-      {placeholder}
-      onkeydown={handleTextareaKey}
-      oninput={handleTextareaInput}
-      onblur={closeAutocomplete}
-      onpaste={onEditorPaste}
-      ondrop={onEditorDrop}
-      ondragover={onEditorDragOver}
-      ondragleave={() => (dragOver = false)}
-      autofocus
-    ></textarea>
-    <div class="em-footer">
-      <button class="em-save" onclick={commitEdit} disabled={saving}>
-        {saving ? "Saving..." : "Save"}
-      </button>
-      <button class="em-cancel" onclick={cancelEdit} disabled={saving}>
-        Cancel
-      </button>
-      <button
-        type="button"
-        class="em-attach"
-        onclick={() => fileInputEl?.click()}
-        disabled={saving || uploading}
-        title="Attach a file"
-      >
-        <Paperclip size={13} />
-        {uploading ? "Uploading…" : "Attach"}
-      </button>
-      <span class="em-hint">Markdown · drag/paste to upload · ⌘S to save</span>
-    </div>
+    <DropOverlay radius="0.375rem" onFiles={(files) => uploads.enqueue(files)}>
+      <textarea
+        bind:value={draft}
+        bind:this={textareaEl}
+        class="em-textarea"
+        {placeholder}
+        onkeydown={handleTextareaKey}
+        oninput={handleTextareaInput}
+        onblur={closeAutocomplete}
+        onpaste={onEditorPaste}
+        autofocus
+      ></textarea>
+
+      <PendingUploads controller={uploads} />
+
+      <div class="em-footer">
+        <button class="em-save" onclick={commitEdit} disabled={saving}>
+          {saving ? "Saving..." : "Save"}
+        </button>
+        <button class="em-cancel" onclick={cancelEdit} disabled={saving}>
+          Cancel
+        </button>
+        <button
+          type="button"
+          class="em-attach"
+          onclick={() => fileInputEl?.click()}
+          disabled={saving || uploads.busy}
+          title="Attach files"
+          aria-label="Attach files"
+        >
+          <Paperclip size={13} />
+          {uploads.busy ? "Uploading…" : "Attach"}
+        </button>
+        <span class="em-hint">Markdown · drag/paste to upload · ⌘S to save</span>
+      </div>
+    </DropOverlay>
     <input
       bind:this={fileInputEl}
       type="file"
@@ -775,12 +757,6 @@
   }
   .em-textarea::placeholder {
     color: var(--text-faint);
-  }
-  /* LIF-262: subtle drag-over ring on the editor while a file hovers. */
-  .em-textarea--drag {
-    outline: 2px dashed var(--accent);
-    outline-offset: 4px;
-    border-radius: 0.375rem;
   }
 
   .em-file-input {
