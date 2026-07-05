@@ -179,8 +179,13 @@
   <!-- Picker dropdown -->
   {#if open}
     <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
+    <!-- LIF-278: below sm the 320px panel anchors to the viewport (fixed,
+         edge-to-edge with margins) instead of the trigger — trigger-anchored
+         absolute positioning pushed it off a 360px screen whenever the
+         trigger sat right of center. -->
     <div
       class="absolute left-0 top-full mt-2 z-30 w-[320px]
+             max-sm:fixed max-sm:inset-x-3 max-sm:top-16 max-sm:w-auto max-sm:mt-0
              bg-[var(--surface)] border border-[var(--border)]
              rounded-xl shadow-lg overflow-hidden"
       onclick={(e) => e.stopPropagation()}

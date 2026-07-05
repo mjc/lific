@@ -161,9 +161,9 @@
     <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
     <div
       bind:this={menuEl}
-      class="fixed z-50 w-max
+      class="fixed z-50 w-max max-w-[calc(100vw-16px)]
              bg-[var(--surface)] border border-[var(--border)]
-             rounded-lg shadow-lg py-1.5 max-h-[min(360px,_50vh)] overflow-y-auto"
+             rounded-lg shadow-lg py-1.5 max-h-[min(360px,_50dvh)] overflow-y-auto"
       style="top: {menuPos.top}px; left: {menuPos.left}px; min-width: {menuPos.minWidth}px;"
       onclick={(e) => e.stopPropagation()}
     >

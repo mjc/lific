@@ -170,6 +170,7 @@
     <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
     <div
       class="absolute left-0 top-full mt-1 z-20 {onCreate ? 'w-[240px]' : popoverWidth}
+             max-w-[calc(100vw-2rem)]
              bg-[var(--surface)] border border-[var(--border)]
              rounded-md shadow-lg py-1"
       onclick={(e) => e.stopPropagation()}

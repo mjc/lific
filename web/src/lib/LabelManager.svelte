@@ -374,7 +374,9 @@
       </div>
     {:else}
       {#each visible as l, idx (l.id)}
-        <div class="flex items-center gap-3 px-4 py-2.5 {idx > 0 ? 'border-t border-[var(--border)]' : ''}">
+        <!-- LIF-278: flex-wrap lets the delete/merge confirm state stack on
+             narrow screens instead of overflowing the card. -->
+        <div class="flex flex-wrap items-center gap-3 px-4 py-2.5 {idx > 0 ? 'border-t border-[var(--border)]' : ''}">
           {#if confirmingId === l.id}
             <!-- Delete / merge confirm (#4) -->
             <span class="size-3 rounded-full shrink-0" style="background: {l.color}"></span>
@@ -386,12 +388,13 @@
                 {/if}
               </p>
               {#if labels.length > 1}
-                <div class="flex items-center gap-1.5 mt-1.5">
+                <div class="flex flex-wrap items-center gap-1.5 mt-1.5">
                   <span class="text-caption text-[var(--text-muted)] shrink-0">or merge into</span>
                   <select
                     bind:value={mergeInto}
                     class="text-caption rounded border border-[var(--border)] bg-[var(--surface)]
-                           text-[var(--text)] px-1.5 py-0.5 outline-none focus:border-[var(--accent)]"
+                           text-[var(--text)] px-1.5 py-0.5 outline-none focus:border-[var(--accent)]
+                           min-w-0 max-w-full"
                   >
                     <option value={null}>Choose label…</option>
                     {#each labels.filter((x) => x.id !== l.id) as t (t.id)}
