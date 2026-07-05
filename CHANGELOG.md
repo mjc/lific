@@ -11,6 +11,14 @@ Human-facing CLI output moved from bare `println!` walls to a proper prompt UI (
 - **`lific user create`'s password prompt is masked now** — it previously echoed the password in plaintext.
 - **Agents see zero change.** JSON output (explicit `--json` or piped stdout), non-TTY fail-fast prompts, and every machine-readable shape are byte-for-byte untouched; the pretty layer renders only for humans at a terminal.
 
+### `lific connect` can no longer wire your tools to the wrong instance silently
+
+Running `connect` from the wrong directory used to be a quiet disaster: it would silently create a brand-new empty `lific.db` in whatever directory you happened to be in, mint keys against it, and rewrite every selected client's `lific` entry to point there — replacing their config for your real instance without a word about which instance it was targeting.
+
+- **Connect refuses to run where no instance exists.** If the resolved database file isn't there, it errors with directions (`run from the instance directory, pass --config/--db, or lific init`) instead of conjuring a fresh one.
+- **The target is announced up front**: the session opens with `Instance: <url> (keys minted in <db path>)`, and the client picker itself asks "Which clients should connect to <url>?" — wiring tools to the wrong instance now requires ignoring two explicit statements of it.
+- **`--config` works from anywhere now.** A relative `database.path` in a config file resolves against the config file's directory, not the process cwd — previously `lific --config /srv/lific/lific.toml <cmd>` run from elsewhere would look for (or create) the database in your cwd. Backups anchor the same way.
+
 ### `lific init` now sets up everything — including a service that survives reboot
 
 The 60-second setup used to end with a server tied to an open terminal: close it (or log out) and your agents' "missing memory" was gone. `lific init` is now the whole onboarding story:

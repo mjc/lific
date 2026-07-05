@@ -129,6 +129,38 @@ pub struct AgentsMdOutcome {
     pub action: String,
 }
 
+/// The URL (or db path, for `--stdio`) this run will write into client
+/// configs. Shared by `run` and by the pre-run announcement so they can never
+/// disagree.
+pub fn target_url(args: &ConnectArgs, cfg: &Config) -> String {
+    if args.stdio {
+        absolute_db_path(cfg)
+    } else {
+        args.url.clone().unwrap_or_else(|| default_url(cfg))
+    }
+}
+
+/// Guard: refuse to run against an instance that doesn't exist yet.
+///
+/// Without this, `lific connect` in any random directory would silently
+/// CREATE a fresh `lific.db` there and mint keys against it — wiring every
+/// selected client to a brand-new empty instance the user never asked for
+/// (and, worse, silently *replacing* their existing client config pointing at
+/// the real one). Explicit `--db`/`--config`/cwd discovery must resolve to a
+/// database that already exists; `lific init` is the thing that creates one.
+pub fn ensure_instance_exists(cfg: &Config) -> Result<(), String> {
+    let db = &cfg.database.path;
+    if db.exists() {
+        return Ok(());
+    }
+    Err(format!(
+        "no Lific instance here: {} does not exist. Run `lific connect` from your instance's \
+         directory (where lific.toml/lific.db live), point at it with --config or --db, or \
+         create one first with `lific init`.",
+        absolute_db_path(cfg)
+    ))
+}
+
 /// Build the production [`PathBase`] from the real environment.
 ///
 /// A `LIFIC_CONNECT_HOME` override is honored for the home dir. It exists for
@@ -263,15 +295,19 @@ pub fn detect_clients(base: &PathBase, scope: Scope) -> Vec<DetectedClient> {
 /// The default interactive picker: a real arrow-key multiselect (space to
 /// toggle, enter to confirm). Detected clients are listed first and
 /// preselected; the rest follow so an undetected client can still be chosen.
-fn interactive_picker(detected: &[DetectedClient]) -> Result<Vec<String>, String> {
+/// The prompt names the target instance so it's impossible to wire clients to
+/// the wrong one without noticing.
+fn interactive_picker(detected: &[DetectedClient], target: &str) -> Result<Vec<String>, String> {
     let any_installed = detected.iter().any(|c| c.detected);
     let mut ordered: Vec<&DetectedClient> = detected.iter().filter(|c| c.detected).collect();
     ordered.extend(detected.iter().filter(|c| !c.detected));
 
     let mut prompt = cliclack::multiselect(if any_installed {
-        "Which clients should connect to Lific?"
+        format!("Which clients should connect to {target}?")
     } else {
-        "No installed clients detected in this scope — pick any to configure anyway:"
+        format!(
+            "No installed clients detected in this scope — pick any to configure for {target}:"
+        )
     })
     .required(true);
     for c in &ordered {
@@ -491,13 +527,10 @@ pub fn run(
     }
 
     let stdin_tty = std::io::stdin().is_terminal();
-    let selected = resolve_clients_inner(
-        &args.clients,
-        stdin_tty,
-        base,
-        args.scope,
-        interactive_picker,
-    )?;
+    let target = target_url(args, cfg);
+    let selected = resolve_clients_inner(&args.clients, stdin_tty, base, args.scope, |d| {
+        interactive_picker(d, &target)
+    })?;
 
     // Resolve how per-tool keys are minted (once — owner selection is run-wide).
     // Not needed for stdio (no key) or --oauth (mints nothing), and skipped in
@@ -891,6 +924,56 @@ mod tests {
         let mut c = Config::default();
         c.server.port = port;
         c
+    }
+
+    // ── ensure_instance_exists (the wrong-directory guard) ───────
+
+    #[test]
+    fn connect_refuses_when_database_does_not_exist() {
+        let dir = tmp();
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut cfg = Config::default();
+        cfg.database.path = dir.join("lific.db");
+        let err = ensure_instance_exists(&cfg).expect_err("must refuse a nonexistent db");
+        assert!(err.contains("does not exist"), "got: {err}");
+        assert!(err.contains("lific init"), "should point at init: {err}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn connect_accepts_an_existing_database() {
+        let dir = tmp();
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("lific.db");
+        std::fs::write(&db_path, b"").unwrap();
+        let mut cfg = Config::default();
+        cfg.database.path = db_path;
+        assert!(ensure_instance_exists(&cfg).is_ok());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ── target_url ───────────────────────────────────────────────
+
+    #[test]
+    fn target_url_prefers_explicit_url_and_stdio_uses_db_path() {
+        let cfg = cfg_with_port(4000);
+        let mut args = ConnectArgs {
+            clients: vec![],
+            scope: Scope::Global,
+            stdio: false,
+            oauth: false,
+            url: Some("https://example.com/mcp".into()),
+            key: None,
+            user: None,
+            yes: true,
+            dry_run: false,
+            skip_agents: true,
+        };
+        assert_eq!(target_url(&args, &cfg), "https://example.com/mcp");
+        args.url = None;
+        assert_eq!(target_url(&args, &cfg), "http://127.0.0.1:4000/mcp");
+        args.stdio = true;
+        assert!(target_url(&args, &cfg).ends_with("lific.db"));
     }
 
     fn base(dir: &std::path::Path) -> PathBase {

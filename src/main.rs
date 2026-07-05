@@ -943,6 +943,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
 
             let base = cli::connect::production_base()?;
+            // Refuse to conjure a fresh database in whatever directory this
+            // happens to run from — connect targets an EXISTING instance.
+            cli::connect::ensure_instance_exists(&cfg)?;
             let pool = db::open(&cfg.database.path)?;
             actor::set_default_transport(actor::Transport::Cli);
 
@@ -960,6 +963,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
             if !json {
                 cli::ui::intro("lific connect");
+                // Say WHICH instance up front: the url clients will dial and
+                // the database keys are minted in. Running from the wrong
+                // directory must be obvious here, not after the writes.
+                cli::ui::info(format!(
+                    "Instance: {} {}",
+                    cli::ui::command(cli::connect::target_url(&args, &cfg)),
+                    cli::ui::dim(format!(
+                        "(keys minted in {})",
+                        cli::connect::absolute_db_path(&cfg)
+                    ))
+                ));
             }
             let result = match cli::connect::run(&args, &cfg, &pool, &base) {
                 Ok(r) => r,

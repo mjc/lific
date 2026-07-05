@@ -172,8 +172,20 @@ impl Config {
             if path.exists() {
                 match std::fs::read_to_string(path) {
                     Ok(contents) => match toml::from_str::<Config>(&contents) {
-                        Ok(config) => {
+                        Ok(mut config) => {
                             info!(path = %path.display(), "loaded config");
+                            // Anchor a relative database path to the config
+                            // file's own directory, not the process cwd —
+                            // `lific --config /srv/lific/lific.toml <cmd>` must
+                            // find /srv/lific/lific.db no matter where it runs
+                            // from. (backup_dir derives from database.path, so
+                            // backups inherit the same anchoring.)
+                            if config.database.path.is_relative()
+                                && let Some(parent) = path.parent()
+                                && !parent.as_os_str().is_empty()
+                            {
+                                config.database.path = parent.join(&config.database.path);
+                            }
                             return config;
                         }
                         Err(e) => {
@@ -256,6 +268,36 @@ enabled = false
     }
 
     #[test]
+    fn relative_db_path_anchors_to_config_dir_not_cwd() {
+        let dir = std::env::temp_dir().join(format!("lific_cfg_anchor_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("lific.toml");
+        std::fs::write(&path, "[database]\npath = \"lific.db\"\n").unwrap();
+
+        // Loaded from an explicit path in another directory: the relative db
+        // path must resolve beside the config file, not in the process cwd.
+        let config = Config::load(Some(&path));
+        assert_eq!(config.database.path, dir.join("lific.db"));
+        // backup_dir derives from database.path, so it anchors too.
+        assert_eq!(config.backup_dir(), dir.join("backups"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn absolute_db_path_is_untouched_by_anchoring() {
+        let dir = std::env::temp_dir().join(format!("lific_cfg_abs_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("lific.toml");
+        std::fs::write(&path, "[database]\npath = \"/srv/lific/lific.db\"\n").unwrap();
+
+        let config = Config::load(Some(&path));
+        assert_eq!(config.database.path, PathBuf::from("/srv/lific/lific.db"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn missing_file_returns_defaults() {
         let config = Config::load(Some(Path::new("/tmp/nonexistent_lific_cfg_12345.toml")));
         assert_eq!(config.server.port, 3456);
@@ -284,7 +326,8 @@ enabled = false
         let config = Config::load(Some(&path));
         assert_eq!(config.server.port, 7777);
         assert_eq!(config.server.host, "0.0.0.0"); // default
-        assert_eq!(config.database.path, PathBuf::from("lific.db")); // default
+        // Default db filename, anchored beside the config file it came from.
+        assert_eq!(config.database.path, dir.join("lific.db"));
 
         std::fs::remove_dir_all(&dir).ok();
     }
