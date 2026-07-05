@@ -520,7 +520,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 move || {
                     Ok(mcp::LificMcp::with_realtime(
                         db_for_mcp.clone(),
-                        Some(realtime_for_mcp.clone()),
+                        realtime_for_mcp.clone(),
                     ))
                 },
                 Arc::new(LocalSessionManager::default()),
@@ -770,12 +770,7 @@ fn build_authless_mcp_router(
         .with_json_response(true)
         .with_allowed_hosts(allowed_hosts);
     let service = StreamableHttpService::new(
-        move || {
-            Ok(mcp::LificMcp::with_realtime(
-                pool.clone(),
-                Some(realtime.clone()),
-            ))
-        },
+        move || Ok(mcp::LificMcp::with_realtime(pool.clone(), realtime.clone())),
         Arc::new(LocalSessionManager::default()),
         config,
     );

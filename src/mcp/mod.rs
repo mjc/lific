@@ -63,16 +63,16 @@ pub(crate) fn current_auth_user() -> Option<AuthUser> {
 #[derive(Clone)]
 pub struct LificMcp {
     db: Arc<DbPool>,
-    realtime: Option<RealtimeHub>,
+    realtime: RealtimeHub,
     tool_router: ToolRouter<Self>,
 }
 
 impl LificMcp {
     pub fn new(db: DbPool) -> Self {
-        Self::with_realtime(db, None)
+        Self::with_realtime(db, RealtimeHub::new())
     }
 
-    pub fn with_realtime(db: DbPool, realtime: Option<RealtimeHub>) -> Self {
+    pub fn with_realtime(db: DbPool, realtime: RealtimeHub) -> Self {
         Self {
             db: Arc::new(db),
             realtime,
@@ -81,9 +81,7 @@ impl LificMcp {
     }
 
     fn emit(&self, event: RealtimeEvent) {
-        if let Some(realtime) = &self.realtime {
-            realtime.send(event);
-        }
+        self.realtime.send(event);
     }
 
     fn read<F, T>(&self, f: F) -> Result<T, String>

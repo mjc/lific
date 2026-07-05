@@ -27,7 +27,7 @@ pub(super) async fn list_comments(
 
 pub(super) async fn create_comment(
     State(db): State<DbPool>,
-    realtime: Option<Extension<RealtimeHub>>,
+    Extension(realtime): Extension<RealtimeHub>,
     Path(issue_id): Path<i64>,
     Extension(auth_user): Extension<Option<AuthUser>>,
     Json(input): Json<CreateComment>,
@@ -44,7 +44,7 @@ pub(super) async fn create_comment(
         )?;
         Ok((comment, issue_updated_event(conn, issue_id)?))
     })?;
-    send_if_present(realtime, event);
+    realtime.send(event);
     Ok(Json(comment))
 }
 
@@ -80,7 +80,7 @@ pub(super) async fn create_page_comment(
 
 pub(super) async fn update_comment_handler(
     State(db): State<DbPool>,
-    realtime: Option<Extension<RealtimeHub>>,
+    Extension(realtime): Extension<RealtimeHub>,
     Path(id): Path<i64>,
     Extension(auth_user): Extension<Option<AuthUser>>,
     Json(input): Json<UpdateComment>,
@@ -106,14 +106,14 @@ pub(super) async fn update_comment_handler(
         Ok((comment, event))
     })?;
     if let Some(event) = event {
-        send_if_present(realtime, event);
+        realtime.send(event);
     }
     Ok(Json(comment))
 }
 
 pub(super) async fn delete_comment_handler(
     State(db): State<DbPool>,
-    realtime: Option<Extension<RealtimeHub>>,
+    Extension(realtime): Extension<RealtimeHub>,
     Path(id): Path<i64>,
     Extension(auth_user): Extension<Option<AuthUser>>,
 ) -> Result<Json<serde_json::Value>, LificError> {
@@ -138,15 +138,9 @@ pub(super) async fn delete_comment_handler(
         Ok(event)
     })?;
     if let Some(event) = event {
-        send_if_present(realtime, event);
-    }
-    Ok(Json(serde_json::json!({"deleted": true})))
-}
-
-fn send_if_present(realtime: Option<Extension<RealtimeHub>>, event: RealtimeEvent) {
-    if let Some(Extension(realtime)) = realtime {
         realtime.send(event);
     }
+    Ok(Json(serde_json::json!({"deleted": true})))
 }
 
 fn issue_updated_event(

@@ -1619,12 +1619,13 @@ impl LificMcp {
                 Some(ident) => Some(queries::resolve_identifier(conn, ident)?),
                 None => None,
             };
-            let mut steps = Vec::new();
-            if let Some(input_steps) = &input.steps {
-                for s in input_steps {
-                    steps.push(build_create_step(conn, s)?);
-                }
-            }
+            let steps = input
+                .steps
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .map(|s| build_create_step(conn, s))
+                .collect::<Result<Vec<_>, _>>()?;
             queries::plans::create_plan(
                 conn,
                 &models::CreatePlan {
@@ -1812,12 +1813,13 @@ fn build_create_step(
         Some(ident) => Some(queries::resolve_identifier(conn, ident)?),
         None => None,
     };
-    let mut steps = Vec::new();
-    if let Some(children) = &s.steps {
-        for c in children {
-            steps.push(build_create_step(conn, c)?);
-        }
-    }
+    let steps = s
+        .steps
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .map(|c| build_create_step(conn, c))
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(models::CreatePlanStep {
         title: s.title.clone(),
         description: s.description.clone().unwrap_or_default(),
@@ -1840,7 +1842,7 @@ mod tests {
     fn mcp_with_realtime() -> (LificMcp, crate::realtime::RealtimeHub) {
         let db = crate::db::open_memory().expect("test db");
         let hub = crate::realtime::RealtimeHub::new();
-        (LificMcp::with_realtime(db, Some(hub.clone())), hub)
+        (LificMcp::with_realtime(db, hub.clone()), hub)
     }
 
     /// Seed a project via manage_resource, return identifier.
