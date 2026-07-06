@@ -31,7 +31,7 @@ use axum::{
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::{Any, CorsLayer};
 use clap::{CommandFactory, Parser};
-use cli::{Cli, Command, InstanceAction, KeyAction, ServiceAction, UserAction};
+use cli::{Cli, Command, InstanceAction, KeyAction, MemberAction, ServiceAction, UserAction};
 use config::Config;
 
 // Commands that operate directly on the database (no server required)
@@ -155,11 +155,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match cli.command {
         Command::Init { no_service } => {
-            return cmd_init(&cfg, cli.json, no_service).await;
+            // LIF-292: init/service must honor --config; they take the raw
+            // flag (not the pre-loaded cfg) because init may need to CREATE
+            // the file at that path and then reload anchored to it.
+            return cmd_init(cli.config.as_deref(), cli.db.as_deref(), cli.json, no_service)
+                .await;
         }
 
         Command::Service { action } => {
-            return cmd_service(&cfg, cli.json, &action);
+            return cmd_service(&cfg, cli.config.as_deref(), cli.json, &action);
         }
 
         Command::Dump { out } => {
@@ -558,6 +562,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                 }
+                UserAction::SetPassword { username, password } => {
+                    // Same prompt behavior as `user create`: masked prompt on
+                    // a TTY, read-a-line for piped stdin.
+                    let pw = match password {
+                        Some(p) => p,
+                        None if cli::term::stdin_is_tty() => {
+                            cliclack::password("New password").interact()?
+                        }
+                        None => {
+                            let mut buf = String::new();
+                            std::io::stdin().read_line(&mut buf)?;
+                            buf.trim().to_string()
+                        }
+                    };
+
+                    let conn = pool.write()?;
+                    let user = db::queries::users::get_user_by_username(&conn, &username)?;
+                    db::queries::users::update_password(&conn, user.id, &pw)?;
+                    // LIF-205 semantics: any password change signs out every
+                    // existing session — a reset must not leave a possibly
+                    // hijacked session alive.
+                    db::queries::users::delete_all_sessions(&conn, user.id)?;
+
+                    if json {
+                        let out = serde_json::json!({
+                            "username": user.username,
+                            "password_set": true,
+                            "sessions_cleared": true,
+                        });
+                        println!("{}", serde_json::to_string_pretty(&out)?);
+                    } else {
+                        cli::ui::step(format!(
+                            "Password updated for '{}' {}",
+                            user.username,
+                            cli::ui::dim("(all sessions signed out)")
+                        ));
+                    }
+                }
                 UserAction::Promote { username } => {
                     let conn = pool.write()?;
                     db::queries::users::set_admin(&conn, &username, true)?;
@@ -576,6 +618,151 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         println!("{}", serde_json::to_string_pretty(&out)?);
                     } else {
                         cli::ui::step(format!("Demoted '{username}' from admin."));
+                    }
+                }
+            }
+            return Ok(());
+        }
+
+        // LIF-290: project membership from the CLI — with authorization
+        // enforcement on, this is how an operator grants a new user access
+        // to existing projects without touching the web UI.
+        Command::Member { action } => {
+            let json = cli::term::wants_json(cli.json);
+            let pool = db::open(&cfg.database.path)?;
+
+            match action {
+                MemberAction::List { project } => {
+                    let conn = pool.read()?;
+                    let pid = db::queries::resolve_project_identifier(&conn, &project)?;
+                    let members = db::queries::members::list_members_with_users(&conn, pid)?;
+
+                    if json {
+                        let out: Vec<_> = members
+                            .iter()
+                            .map(|m| {
+                                serde_json::json!({
+                                    "username": m.username,
+                                    "display_name": m.display_name,
+                                    "role": m.role.as_str(),
+                                    "since": m.created_at,
+                                })
+                            })
+                            .collect();
+                        println!("{}", serde_json::to_string_pretty(&out)?);
+                    } else if members.is_empty() {
+                        println!(
+                            "No members on '{project}'. Grant access with `lific member add \
+                             --project {project} --user <name>`."
+                        );
+                    } else {
+                        println!("{} member(s) of {}:", members.len(), project);
+                        for m in &members {
+                            println!("  {} | {} | since {}", m.username, m.role, m.created_at);
+                        }
+                    }
+                }
+                MemberAction::Add {
+                    project,
+                    user,
+                    role,
+                    all,
+                } => {
+                    let conn = pool.write()?;
+                    let u = db::queries::users::get_user_by_username(&conn, &user)?;
+
+                    if all {
+                        // Grant on every project; existing memberships are
+                        // skipped, never overwritten (a role change is
+                        // `member role`'s explicit job).
+                        let mut granted: Vec<String> = Vec::new();
+                        let mut skipped: Vec<String> = Vec::new();
+                        for p in db::queries::list_projects(&conn)? {
+                            match db::queries::members::add_member(&conn, p.id, u.id, &role) {
+                                Ok(_) => granted.push(p.identifier),
+                                Err(error::LificError::Conflict(_)) => skipped.push(p.identifier),
+                                Err(e) => return Err(e.into()),
+                            }
+                        }
+                        if json {
+                            let out = serde_json::json!({
+                                "user": u.username,
+                                "role": role,
+                                "granted": granted,
+                                "already_member": skipped,
+                            });
+                            println!("{}", serde_json::to_string_pretty(&out)?);
+                        } else {
+                            cli::ui::step(format!(
+                                "Granted '{}' {role} access to {} project(s){}",
+                                u.username,
+                                granted.len(),
+                                if skipped.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!(" ({} already a member: {})", skipped.len(), skipped.join(", "))
+                                }
+                            ));
+                        }
+                    } else {
+                        // clap guarantees project is present when --all is absent.
+                        let ident = project.expect("clap: --project required unless --all");
+                        let pid =
+                            db::queries::resolve_project_identifier(&conn, &ident)?;
+                        let member = db::queries::members::add_member(&conn, pid, u.id, &role)?;
+                        if json {
+                            let out = serde_json::json!({
+                                "project": ident,
+                                "user": u.username,
+                                "role": member.role.as_str(),
+                            });
+                            println!("{}", serde_json::to_string_pretty(&out)?);
+                        } else {
+                            cli::ui::step(format!(
+                                "Added '{}' to {ident} as {}",
+                                u.username,
+                                member.role
+                            ));
+                        }
+                    }
+                }
+                MemberAction::Role {
+                    project,
+                    user,
+                    role,
+                } => {
+                    let conn = pool.write()?;
+                    let u = db::queries::users::get_user_by_username(&conn, &user)?;
+                    let pid = db::queries::resolve_project_identifier(&conn, &project)?;
+                    let member = db::queries::members::change_role(&conn, pid, u.id, &role)?;
+                    if json {
+                        let out = serde_json::json!({
+                            "project": project,
+                            "user": u.username,
+                            "role": member.role.as_str(),
+                        });
+                        println!("{}", serde_json::to_string_pretty(&out)?);
+                    } else {
+                        cli::ui::step(format!(
+                            "'{}' is now {} on {project}",
+                            u.username, member.role
+                        ));
+                    }
+                }
+                MemberAction::Remove { project, user } => {
+                    let conn = pool.write()?;
+                    let u = db::queries::users::get_user_by_username(&conn, &user)?;
+                    let pid = db::queries::resolve_project_identifier(&conn, &project)?;
+                    db::queries::members::remove_member_guarded(&conn, pid, u.id)?;
+                    if json {
+                        let out = serde_json::json!({
+                            "project": project,
+                            "user": u.username,
+                            "removed": true,
+                        });
+                        println!("{}", serde_json::to_string_pretty(&out)?);
+                    } else {
+                        cli::ui::step(format!("Removed '{}' from {project}", u.username));
                     }
                 }
             }
@@ -1103,7 +1290,8 @@ async fn wait_healthy(base_url: &str, timeout: std::time::Duration) -> bool {
 /// background service that survives reboot. Idempotent: re-running repairs
 /// whatever is missing and never overwrites existing config or keys.
 async fn cmd_init(
-    cfg: &Config,
+    config_flag: Option<&std::path::Path>,
+    db_flag: Option<&std::path::Path>,
     json_flag: bool,
     no_service: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -1112,13 +1300,33 @@ async fn cmd_init(
     if !json {
         ui::intro("lific init");
     }
-    let config_path = std::path::Path::new("lific.toml");
+    // LIF-292: honor --config — the instance roots wherever the config file
+    // lives. Default stays ./lific.toml (current directory).
+    let config_path: std::path::PathBuf = config_flag
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| std::path::PathBuf::from("lific.toml"));
     let created_config = if config_path.exists() {
         false
     } else {
-        std::fs::write(config_path, Config::default_toml())?;
+        if let Some(parent) = config_path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&config_path, Config::default_toml())?;
         true
     };
+
+    // (Re)load from the file init actually operates on, so a relative
+    // database.path anchors to the config's own directory — the same
+    // resolution the installed service (WorkingDirectory = that directory)
+    // applies at runtime. The pre-dispatch Config::load can't have done
+    // this when the file didn't exist yet.
+    let mut cfg = Config::load(Some(&config_path));
+    if let Some(db) = db_flag {
+        cfg.database.path = db.to_path_buf();
+    }
+    let cfg = &cfg;
 
     // Create + migrate the database and seed instance settings now, while the
     // instance has zero users — this is the moment the authz-enforced default
@@ -1151,10 +1359,7 @@ async fn cmd_init(
     if !no_service {
         match cli::service::detect() {
             Some(mgr) => {
-                let plan = cli::service::ServicePlan::for_current_exe(
-                    std::path::Path::new("."),
-                    config_path,
-                )?;
+                let plan = cli::service::ServicePlan::for_config_file(&config_path)?;
                 match cli::service::install(mgr, &plan) {
                     Ok(report) => {
                         healthy = wait_healthy(&url, std::time::Duration::from_secs(15)).await;
@@ -1207,7 +1412,7 @@ async fn cmd_init(
 
     if json {
         let out = serde_json::json!({
-            "config": { "path": "lific.toml", "created": created_config },
+            "config": { "path": config_path.display().to_string(), "created": created_config },
             "database": cfg.database.path.display().to_string(),
             "key": new_key,
             "url": url,
@@ -1223,9 +1428,9 @@ async fn cmd_init(
     }
 
     if created_config {
-        ui::step("Created lific.toml");
+        ui::step(format!("Created {}", config_path.display()));
     } else {
-        ui::step("Using existing lific.toml");
+        ui::step(format!("Using existing {}", config_path.display()));
     }
     ui::step(format!("Database ready {}", ui::dim(cfg.database.path.display())));
 
@@ -1296,6 +1501,7 @@ async fn cmd_init(
 /// `lific service <action>`: manage the background service `init` installs.
 fn cmd_service(
     cfg: &Config,
+    config_flag: Option<&std::path::Path>,
     json_flag: bool,
     action: &ServiceAction,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -1308,14 +1514,20 @@ fn cmd_service(
     };
     match action {
         ServiceAction::Install => {
-            let config_path = std::path::Path::new("lific.toml");
+            // LIF-292: honor --config; the unit is rendered around this
+            // exact file, not whatever lific.toml sits in the cwd.
+            let config_path: std::path::PathBuf = config_flag
+                .map(std::path::Path::to_path_buf)
+                .unwrap_or_else(|| std::path::PathBuf::from("lific.toml"));
             if !config_path.exists() {
-                return Err(
-                    "no lific.toml in the current directory — run `lific init` first".into(),
-                );
+                return Err(format!(
+                    "config not found at {} — run `lific init` first (or point --config at an \
+                     existing lific.toml)",
+                    config_path.display()
+                )
+                .into());
             }
-            let plan =
-                cli::service::ServicePlan::for_current_exe(std::path::Path::new("."), config_path)?;
+            let plan = cli::service::ServicePlan::for_config_file(&config_path)?;
             let report = cli::service::install(mgr, &plan)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&report)?);

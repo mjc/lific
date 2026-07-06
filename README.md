@@ -237,6 +237,22 @@ Lific has project-scoped, default-deny authorization: viewer / maintainer / lead
 lific instance set --authz-enforced true    # or false
 ```
 
+With enforcement on, a newly created user sees nothing until they're granted membership. Manage access from the CLI (or the web UI's project members page):
+
+```bash
+lific member add --project LIF --user sam              # viewer by default
+lific member add --all --user sam --role maintainer    # every project at once
+lific member role -p LIF -u sam -r lead                # change a role
+lific member remove -p LIF -u sam
+lific member list --project LIF
+```
+
+Forgotten password? The operator can reset one from the shell (this signs out all of that user's sessions):
+
+```bash
+lific user set-password --username sam
+```
+
 **Unbound API keys bypass authorization by design.** A key with no user binding - the one `lific start` auto-mints on a keyless DB, and the ones `lific key create` and `connect`'s fresh-install path produce - is *operator-trusted*: it can only be created by someone with shell access to the server, so it's treated as admin-equivalent even in enforced mode. That's what keeps the zero-user `init → start → connect` flow working with enforcement on. The threat the default guards against is a web-signup stranger's session/OAuth token, not the operator's own shell-minted key. Audit these keys any time with:
 
 ```bash
@@ -275,6 +291,15 @@ allow_signup = true
 ```
 
 CLI flags (`--db`, `--port`, `--host`) override config values. Set `server.public_url` when exposing Lific beyond localhost; it becomes the OAuth issuer and the URL `lific connect` writes into client configs.
+
+Config is discovered in standard locations, first match wins:
+
+1. `--config <path>` (used alone, no fallback)
+2. `./lific.toml` (current directory)
+3. User config dir: `~/.config/lific/lific.toml` on Linux (`$XDG_CONFIG_HOME` respected), `~/Library/Application Support/lific/` on macOS, `%APPDATA%\lific\` on Windows
+4. System config dir: `/etc/lific/lific.toml` on Linux/BSD, `/Library/Application Support/Lific/` on macOS, `%ProgramData%\lific\` on Windows
+
+A relative `database.path` always resolves against the config file's own directory, so the same config works no matter where the process starts. `lific init --config /path/to/lific.toml` and `lific service install --config ...` root the whole instance (config, database, service working directory) at that path.
 
 </details>
 

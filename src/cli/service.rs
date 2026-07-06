@@ -57,17 +57,29 @@ pub struct ServicePlan {
 }
 
 impl ServicePlan {
-    /// Build a plan for the instance rooted at `workdir` (where lific.toml
-    /// lives), using the currently running binary as the exec target.
-    pub fn for_current_exe(workdir: &Path, config: &Path) -> Result<Self, String> {
+    /// Build a plan anchored at the config file, using the currently running
+    /// binary as the exec target. The service's working directory is the
+    /// config file's own directory, so a relative `database.path` resolves
+    /// beside the lific.toml the unit points at — no matter where `lific
+    /// init` / `lific service install` ran from (LIF-292: the old
+    /// caller-supplied-workdir form let `--config` be silently ignored and
+    /// baked `./lific.toml` from the invocation cwd into the unit).
+    pub fn for_config_file(config: &Path) -> Result<Self, String> {
         let exe = std::env::current_exe()
             .map_err(|e| format!("cannot resolve the lific binary path: {e}"))?;
-        let workdir = workdir
-            .canonicalize()
-            .map_err(|e| format!("cannot resolve working directory: {e}"))?;
         let config = config
             .canonicalize()
-            .map_err(|e| format!("cannot resolve config path: {e}"))?;
+            .map_err(|e| format!("cannot resolve config path {}: {e}", config.display()))?;
+        let workdir = config
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .ok_or_else(|| {
+                format!(
+                    "config path {} has no parent directory",
+                    config.display()
+                )
+            })?
+            .to_path_buf();
         Ok(Self {
             exe,
             config,
@@ -451,6 +463,33 @@ mod tests {
         let plist = launchd_plist(&p);
         assert!(plist.contains("/home/u/a&amp;b"));
         assert!(!plist.contains("<string>/home/u/a&b</string>"));
+    }
+
+    // LIF-292: the plan must anchor to the config file itself, so `--config
+    // /elsewhere/lific.toml` produces a unit that points at /elsewhere — not
+    // at a lific.toml in whatever directory the command happened to run in.
+    #[test]
+    fn for_config_file_anchors_workdir_to_the_config_dir() {
+        let dir = std::env::temp_dir().join(format!("lific_svc_plan_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = dir.join("lific.toml");
+        std::fs::write(&config, "").unwrap();
+
+        let plan = ServicePlan::for_config_file(&config).unwrap();
+        let canon_dir = dir.canonicalize().unwrap();
+        assert_eq!(plan.workdir, canon_dir);
+        assert_eq!(plan.config, canon_dir.join("lific.toml"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn for_config_file_errors_on_missing_config() {
+        let err = ServicePlan::for_config_file(Path::new(
+            "/tmp/nonexistent_lific_dir_12345/lific.toml",
+        ))
+        .unwrap_err();
+        assert!(err.contains("cannot resolve config path"), "got: {err}");
     }
 
     #[test]

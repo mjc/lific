@@ -265,6 +265,17 @@ pub enum Command {
         action: UserAction,
     },
 
+    /// Manage project membership (who can see and edit which project).
+    ///
+    /// With authorization enforcement on (`lific instance set
+    /// --authz-enforced true`, the default on fresh installs), users only see
+    /// projects they are members of — a freshly created user sees nothing
+    /// until granted access here (or via the web UI's project members page).
+    Member {
+        #[command(subcommand)]
+        action: MemberAction,
+    },
+
     /// Manage issues
     Issue {
         #[command(subcommand)]
@@ -1007,6 +1018,62 @@ pub enum KeyAction {
 }
 
 #[derive(Subcommand)]
+pub enum MemberAction {
+    /// List a project's members and their roles
+    List {
+        /// Project identifier (e.g. LIF)
+        #[arg(short, long)]
+        project: String,
+    },
+
+    /// Grant a user access to a project (or to every project with --all)
+    Add {
+        /// Project identifier (e.g. LIF). Required unless --all is given.
+        #[arg(short, long, conflicts_with = "all", required_unless_present = "all")]
+        project: Option<String>,
+
+        /// Username to grant access to
+        #[arg(short, long)]
+        user: String,
+
+        /// Role: viewer, maintainer, or lead
+        #[arg(short, long, default_value = "viewer")]
+        role: String,
+
+        /// Grant access to every existing project (projects where the user
+        /// is already a member are skipped, their role untouched)
+        #[arg(long)]
+        all: bool,
+    },
+
+    /// Change an existing member's role
+    Role {
+        /// Project identifier (e.g. LIF)
+        #[arg(short, long)]
+        project: String,
+
+        /// Username of the member
+        #[arg(short, long)]
+        user: String,
+
+        /// New role: viewer, maintainer, or lead
+        #[arg(short, long)]
+        role: String,
+    },
+
+    /// Remove a user's access to a project
+    Remove {
+        /// Project identifier (e.g. LIF)
+        #[arg(short, long)]
+        project: String,
+
+        /// Username of the member
+        #[arg(short, long)]
+        user: String,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum UserAction {
     /// Create a new user account
     Create {
@@ -1033,6 +1100,19 @@ pub enum UserAction {
 
     /// List all user accounts
     List,
+
+    /// Set a user's password (operator password reset — no current password
+    /// needed; shell access to the server is the trust boundary). Invalidates
+    /// all of the user's sessions, same as a self-service password change.
+    SetPassword {
+        /// Username whose password to set
+        #[arg(short, long)]
+        username: String,
+
+        /// New password (prompted interactively if omitted)
+        #[arg(short, long)]
+        password: Option<String>,
+    },
 
     /// Promote a user to admin
     Promote {
@@ -1641,6 +1721,126 @@ mod tests {
             Command::User {
                 action: UserAction::List,
             }
+        ));
+    }
+
+    // ── LIF-291: user set-password ───────────────────────────
+
+    #[test]
+    fn parse_user_set_password() {
+        let cli = Cli::try_parse_from([
+            "lific", "user", "set-password", "--username", "blake",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::User {
+                action: UserAction::SetPassword { username, password },
+            } => {
+                assert_eq!(username, "blake");
+                assert!(password.is_none(), "password omitted → interactive prompt");
+            }
+            _ => panic!("expected User SetPassword"),
+        }
+    }
+
+    #[test]
+    fn parse_user_set_password_with_password_flag() {
+        let cli = Cli::try_parse_from([
+            "lific", "user", "set-password", "-u", "blake", "-p", "newpass123",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::User {
+                action: UserAction::SetPassword { username, password },
+            } => {
+                assert_eq!(username, "blake");
+                assert_eq!(password, Some("newpass123".into()));
+            }
+            _ => panic!("expected User SetPassword"),
+        }
+    }
+
+    // ── LIF-290: member management ───────────────────────────
+
+    #[test]
+    fn parse_member_add_defaults_to_viewer() {
+        let cli = Cli::try_parse_from([
+            "lific", "member", "add", "--project", "LIF", "--user", "bob",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Member {
+                action: MemberAction::Add { project, user, role, all },
+            } => {
+                assert_eq!(project, Some("LIF".into()));
+                assert_eq!(user, "bob");
+                assert_eq!(role, "viewer");
+                assert!(!all);
+            }
+            _ => panic!("expected Member Add"),
+        }
+    }
+
+    #[test]
+    fn parse_member_add_all_projects() {
+        let cli = Cli::try_parse_from([
+            "lific", "member", "add", "--all", "--user", "bob", "--role", "maintainer",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Member {
+                action: MemberAction::Add { project, user, role, all },
+            } => {
+                assert!(project.is_none());
+                assert_eq!(user, "bob");
+                assert_eq!(role, "maintainer");
+                assert!(all);
+            }
+            _ => panic!("expected Member Add"),
+        }
+    }
+
+    #[test]
+    fn parse_member_add_requires_project_or_all() {
+        assert!(
+            Cli::try_parse_from(["lific", "member", "add", "--user", "bob"]).is_err(),
+            "one of --project / --all is required"
+        );
+        assert!(
+            Cli::try_parse_from([
+                "lific", "member", "add", "--project", "LIF", "--all", "--user", "bob",
+            ])
+            .is_err(),
+            "--project conflicts with --all"
+        );
+    }
+
+    #[test]
+    fn parse_member_list_role_remove() {
+        assert!(matches!(
+            Cli::try_parse_from(["lific", "member", "list", "--project", "LIF"])
+                .unwrap()
+                .command,
+            Command::Member { action: MemberAction::List { .. } }
+        ));
+        match Cli::try_parse_from([
+            "lific", "member", "role", "-p", "LIF", "-u", "bob", "-r", "lead",
+        ])
+        .unwrap()
+        .command
+        {
+            Command::Member {
+                action: MemberAction::Role { project, user, role },
+            } => {
+                assert_eq!((project.as_str(), user.as_str(), role.as_str()), ("LIF", "bob", "lead"));
+            }
+            _ => panic!("expected Member Role"),
+        }
+        assert!(matches!(
+            Cli::try_parse_from(["lific", "member", "remove", "-p", "LIF", "-u", "bob"])
+                .unwrap()
+                .command,
+            Command::Member { action: MemberAction::Remove { .. } }
         ));
     }
 

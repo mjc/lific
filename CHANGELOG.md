@@ -1,5 +1,35 @@
 # Changelog
 
+## Unreleased
+
+Patch release driven by 2.0 field reports: the authorization default made project access a real concept, but the CLI had no way to manage it, no way to reset a password, and `lific init`/`lific service` quietly ignored `--config`.
+
+### `lific member` - manage project access from the CLI
+
+With enforcement on (the 2.0 fresh-install default), a newly created user is a member of nothing and sees nothing. That was manageable only through the web UI's members page; now the CLI can do it:
+
+- `lific member list --project <IDENT>` - members and their roles.
+- `lific member add --project <IDENT> --user <name> [--role viewer|maintainer|lead]` - grant access (viewer by default). `--all` grants on every existing project at once, skipping projects where the user is already a member (their role is never silently overwritten).
+- `lific member role -p <IDENT> -u <name> -r <role>` - change a role. The last-lead guard applies: you cannot demote a project's only lead.
+- `lific member remove -p <IDENT> -u <name>` - revoke access (same last-lead guard; `projects.lead_user_id` is repaired when the removed user was the primary lead).
+
+Membership changes are audit-logged like every other write (the `project_members` triggers from 2.0 cover CLI writes automatically). JSON output on `--json` or piped stdout, as everywhere.
+
+### `lific user set-password` - operator password reset
+
+There was no password reset at all: the web UI's change-password requires the current password, and a forgotten one meant SQL surgery. `lific user set-password --username <name>` sets a new one from the shell (masked prompt on a TTY, read-a-line when piped, `--password` for scripts). Shell access to the server is the trust boundary, same as `user create --admin`. Matching self-service semantics, a reset invalidates **all** of the user's sessions.
+
+### `lific init` and `lific service install` honor `--config`
+
+"lific service sets the wrong config path every time, even after passing the flag" - correct, it did. Both commands hardcoded `./lific.toml` from the invocation cwd when rendering the service definition, so the installed unit could point at a different config than the one you named.
+
+- Both commands now root the instance at `--config <path>`: `init` creates the file there (parent directories included), and the service definition's `ExecStart`/`WorkingDirectory` derive from the config file's canonical location - a relative `database.path` resolves beside the config at runtime, exactly as `init` resolved it at setup time.
+- `lific service install --config <missing path>` fails fast with the path it looked at instead of silently installing a unit for the wrong instance.
+
+### Config discovered in standard system locations
+
+The config search order gains the platform system config dir as a last-resort fallback, for one machine-level config shared by every invocation: `/etc/lific/lific.toml` on Linux/BSD, `/Library/Application Support/Lific/lific.toml` on macOS, `%ProgramData%\lific\lific.toml` on Windows. Full order: `--config` > `./lific.toml` > user config dir (`~/.config/lific/`, `$XDG_CONFIG_HOME` respected) > system config dir. First match wins; a relative `database.path` anchors to the config file's own directory regardless of where it was found.
+
 ## v2.0.0 (2026-07-04)
 
 Lific 2.0 is three releases in one. The web UI moves from complete to fast, personal, and pleasant: a real home page, analytics, saved views, undo, a peek panel, full keyboard control, and a theming system. Underneath it, Lific gets real authorization. Project-scoped membership and roles are enforced identically across the REST API and every MCP tool, **on by default for fresh installs** and opt-in for instances upgrading from 1.x (existing setups keep working bit-for-bit). And around it, a new CLI onboards the whole thing in two commands: `lific init` builds a running, boot-persistent instance and `lific connect` wires any of 11 AI clients to it, with health checks, device-flow login, and per-tool agent identities.
