@@ -154,19 +154,16 @@ impl Default for LogConfig {
 impl Config {
     /// Load config from the first file found, or return defaults.
     /// Search order:
-    /// 1. Explicit path (if provided)
+    /// 1. Explicit path (if provided — used alone, no fallback)
     /// 2. ./lific.toml (working directory)
-    /// 3. ~/.config/lific/lific.toml
+    /// 3. User config dir: ~/.config/lific/lific.toml on Linux
+    ///    (`$XDG_CONFIG_HOME` respected), ~/Library/Application Support/lific/
+    ///    on macOS, %APPDATA%\lific\ on Windows
+    /// 4. System config dir (LIF-293): /etc/lific/ on Linux/BSD,
+    ///    /Library/Application Support/Lific/ on macOS,
+    ///    %ProgramData%\lific\ on Windows
     pub fn load(explicit_path: Option<&Path>) -> Self {
-        let candidates: Vec<PathBuf> = if let Some(p) = explicit_path {
-            vec![p.to_path_buf()]
-        } else {
-            let mut c = vec![PathBuf::from(CONFIG_FILENAME)];
-            if let Some(config_dir) = dirs::config_dir() {
-                c.push(config_dir.join("lific").join(CONFIG_FILENAME));
-            }
-            c
-        };
+        let candidates = Self::candidate_paths(explicit_path);
 
         for path in &candidates {
             if path.exists() {
@@ -200,6 +197,35 @@ impl Config {
         }
 
         Config::default()
+    }
+
+    /// The ordered list of paths [`Config::load`] probes. Split out so the
+    /// search order is testable without creating files in /etc.
+    fn candidate_paths(explicit_path: Option<&Path>) -> Vec<PathBuf> {
+        if let Some(p) = explicit_path {
+            return vec![p.to_path_buf()];
+        }
+        let mut c = vec![PathBuf::from(CONFIG_FILENAME)];
+        if let Some(config_dir) = dirs::config_dir() {
+            c.push(config_dir.join("lific").join(CONFIG_FILENAME));
+        }
+        if let Some(system_dir) = Self::system_config_dir() {
+            c.push(system_dir.join(CONFIG_FILENAME));
+        }
+        c
+    }
+
+    /// The platform's system-wide config directory for Lific (LIF-293): the
+    /// last-resort fallback, matching where other applications keep
+    /// machine-level config.
+    fn system_config_dir() -> Option<PathBuf> {
+        if cfg!(target_os = "macos") {
+            Some(PathBuf::from("/Library/Application Support/Lific"))
+        } else if cfg!(windows) {
+            std::env::var_os("ProgramData").map(|d| PathBuf::from(d).join("lific"))
+        } else {
+            Some(PathBuf::from("/etc/lific"))
+        }
     }
 
     /// Generate a default config file as a TOML string.
@@ -347,6 +373,37 @@ enabled = false
         config.backup.dir = PathBuf::from("/mnt/backups");
 
         assert_eq!(config.backup_dir(), PathBuf::from("/mnt/backups"));
+    }
+
+    // LIF-293: standard config locations — cwd, then user config dir, then
+    // the system config dir; an explicit --config path short-circuits all.
+    #[test]
+    fn candidate_paths_search_cwd_then_user_then_system() {
+        let paths = Config::candidate_paths(None);
+        assert_eq!(paths[0], PathBuf::from("lific.toml"), "cwd first");
+        assert!(
+            paths
+                .iter()
+                .any(|p| p.ends_with(Path::new("lific").join("lific.toml"))),
+            "user config dir must be probed: {paths:?}"
+        );
+        #[cfg(all(unix, not(target_os = "macos")))]
+        assert_eq!(
+            paths.last().unwrap(),
+            &PathBuf::from("/etc/lific/lific.toml"),
+            "system config dir is the last-resort fallback"
+        );
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            paths.last().unwrap(),
+            &PathBuf::from("/Library/Application Support/Lific/lific.toml")
+        );
+    }
+
+    #[test]
+    fn candidate_paths_explicit_path_short_circuits() {
+        let paths = Config::candidate_paths(Some(Path::new("/srv/lific/custom.toml")));
+        assert_eq!(paths, vec![PathBuf::from("/srv/lific/custom.toml")]);
     }
 
     #[test]
