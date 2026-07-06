@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased
+## v2.1.0 (2026-07-06)
 
-Patch release driven by 2.0 field reports: the authorization default made project access a real concept, but the CLI had no way to manage it, no way to reset a password, and `lific init`/`lific service` quietly ignored `--config`.
+A release driven entirely by 2.0 field reports. The authorization default made project access a real concept, but the CLI had no way to manage it and no way to reset a password; `lific init`/`lific service` quietly ignored `--config`; and configuration lived wherever the command happened to run instead of where an OS keeps config. 2.1 closes all of it: project membership and password resets from the CLI, config discovered (and created) in standard OS locations, `--config` honored everywhere, and - for private local instances - the option to turn auth off entirely.
 
 ### `lific member` - manage project access from the CLI
 
