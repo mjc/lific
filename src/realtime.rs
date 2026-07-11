@@ -1,17 +1,26 @@
 use axum::extract::ws::{Message, WebSocket};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::time::{self, Duration};
 use tracing::{trace, warn};
 
 const EVENT_BUFFER: usize = 256;
-const SESSION_REVALIDATE_INTERVAL: Duration = Duration::from_secs(5 * 60);
+// Kept short so a revoked session stops receiving events within a minute;
+// each tick is one indexed SQLite lookup per open socket, which is cheap at
+// this instance's scale.
+const SESSION_REVALIDATE_INTERVAL: Duration = Duration::from_secs(60);
+/// Per-user cap on concurrent event sockets. Generous for real browser tabs,
+/// but stops one authenticated client from accumulating unbounded server
+/// tasks + broadcast receivers.
+const MAX_SOCKETS_PER_USER: usize = 16;
 
 #[derive(Debug, Clone)]
 pub struct RealtimeHub {
     tx: broadcast::Sender<RealtimeMessage>,
+    connections: Arc<Mutex<HashMap<i64, usize>>>,
 }
 
 impl RealtimeHub {
@@ -21,7 +30,26 @@ impl RealtimeHub {
 
     fn with_capacity(capacity: usize) -> Self {
         let (tx, _) = broadcast::channel(capacity);
-        Self { tx }
+        Self {
+            tx,
+            connections: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// Claim a connection slot for `user_id`, or `None` when the user already
+    /// has `MAX_SOCKETS_PER_USER` live sockets. The returned guard releases
+    /// the slot on drop, so a slot can never leak past its socket task.
+    fn try_register(&self, user_id: i64) -> Option<ConnectionSlot> {
+        let mut connections = self.connections.lock().expect("connections lock poisoned");
+        let count = connections.entry(user_id).or_insert(0);
+        if *count >= MAX_SOCKETS_PER_USER {
+            return None;
+        }
+        *count += 1;
+        Some(ConnectionSlot {
+            connections: Arc::clone(&self.connections),
+            user_id,
+        })
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<RealtimeMessage> {
@@ -52,6 +80,24 @@ impl RealtimeHub {
                 }
                 Err(_) => warn!("failed to serialize realtime event"),
             },
+        }
+    }
+}
+
+/// RAII guard for one live socket's slot in the per-user connection count.
+struct ConnectionSlot {
+    connections: Arc<Mutex<HashMap<i64, usize>>>,
+    user_id: i64,
+}
+
+impl Drop for ConnectionSlot {
+    fn drop(&mut self) {
+        let mut connections = self.connections.lock().expect("connections lock poisoned");
+        if let Some(count) = connections.get_mut(&self.user_id) {
+            *count -= 1;
+            if *count == 0 {
+                connections.remove(&self.user_id);
+            }
         }
     }
 }
@@ -111,6 +157,14 @@ pub async fn serve_socket(
             let _ = socket.send(Message::Close(None)).await;
             return;
         }
+    };
+    let Some(_slot) = hub.try_register(auth_user.id) else {
+        warn!(
+            user_id = auth_user.id,
+            "websocket connection refused: per-user socket limit reached"
+        );
+        let _ = socket.send(Message::Close(None)).await;
+        return;
     };
     let mut visible_projects = visible_projects_for(&db, &auth_user);
     let mut rx = hub.subscribe();
@@ -382,6 +436,23 @@ mod tests {
             Message::Text(text) => serde_json::from_str(&text).unwrap(),
             other => panic!("expected text event, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn socket_slots_are_capped_per_user_and_released_on_drop() {
+        let hub = RealtimeHub::new();
+        let mut slots: Vec<ConnectionSlot> = (0..MAX_SOCKETS_PER_USER)
+            .map(|_| hub.try_register(7).expect("slot under the cap"))
+            .collect();
+
+        // A different user is unaffected by user 7's saturation.
+        assert!(hub.try_register(8).is_some());
+        // User 7 is at the cap.
+        assert!(hub.try_register(7).is_none());
+
+        // Dropping one slot frees exactly one.
+        slots.pop();
+        assert!(hub.try_register(7).is_some());
     }
 
     #[test]
