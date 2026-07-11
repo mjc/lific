@@ -140,6 +140,19 @@ pub fn get_issue(conn: &Connection, id: i64) -> Result<Issue, LificError> {
     Ok(issue)
 }
 
+/// Look up just an issue's current status by id — a lightweight read used to
+/// annotate relation lines (LIF-303) without materializing the whole Issue.
+pub fn issue_status(conn: &Connection, id: i64) -> Result<String, LificError> {
+    conn.prepare_cached("SELECT status FROM issues WHERE id = ?1")?
+        .query_row(params![id], |row| row.get(0))
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => {
+                LificError::NotFound(format!("issue {id} not found"))
+            }
+            _ => e.into(),
+        })
+}
+
 /// Resolve "PRO-42" to an issue ID.
 pub fn resolve_identifier(conn: &Connection, identifier: &str) -> Result<i64, LificError> {
     let parts: Vec<&str> = identifier.splitn(2, '-').collect();
@@ -1152,6 +1165,17 @@ mod tests {
         let blocked = get_issue(&conn, i2.id).unwrap();
         assert!(blocker.blocks.contains(&"TST-2".to_string()));
         assert!(blocked.blocked_by.contains(&"TST-1".to_string()));
+    }
+
+    // LIF-303: the lightweight status lookup used to annotate relation lines.
+    #[test]
+    fn issue_status_returns_current_status() {
+        let pool = test_db();
+        let conn = pool.write().unwrap();
+        let pid = seed_project(&conn, "TST");
+        let i = quick_issue(&conn, pid, "Some issue", "active", "none");
+        assert_eq!(issue_status(&conn, i.id).unwrap(), "active");
+        assert!(issue_status(&conn, 999_999).is_err());
     }
 
     // LIF-136: a source→target 'duplicate' link must surface on both issues —

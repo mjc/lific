@@ -90,6 +90,17 @@ fn fmt_steps(nodes: &[models::PlanStepNode], depth: usize, out: &mut String) {
     }
 }
 
+/// Relation identifiers annotated with the related issue's current status,
+/// used only by `get_issue` (LIF-303). Computed inside the read closure so all
+/// the status lookups share one connection.
+struct AnnotatedRelations {
+    blocks: Vec<String>,
+    blocked_by: Vec<String>,
+    relates_to: Vec<String>,
+    duplicates: Vec<String>,
+    duplicated_by: Vec<String>,
+}
+
 /// Surgical string replacement for `edit_issue` / `edit_page`.
 ///
 /// Mirrors the semantics of the Edit tool that coding agents already know:
@@ -686,9 +697,33 @@ impl LificMcp {
                 Some(mid) => queries::get_module_name(conn, mid).unwrap_or("unknown".into()),
                 None => "none".into(),
             };
-            Ok((issue, module_name))
+            // LIF-303: annotate each relation identifier with the related
+            // issue's current status (get_issue only — fmt_issue/board/list
+            // stay bare). A failed lookup falls back to the bare identifier so
+            // one bad edge never errors the whole read.
+            let annotate = |idents: &[String]| -> Vec<String> {
+                idents
+                    .iter()
+                    .map(|ident| {
+                        match queries::resolve_identifier(conn, ident)
+                            .and_then(|iid| queries::issue_status(conn, iid))
+                        {
+                            Ok(status) => format!("{ident} ({status})"),
+                            Err(_) => ident.clone(),
+                        }
+                    })
+                    .collect()
+            };
+            let rels = AnnotatedRelations {
+                blocks: annotate(&issue.blocks),
+                blocked_by: annotate(&issue.blocked_by),
+                relates_to: annotate(&issue.relates_to),
+                duplicates: annotate(&issue.duplicates),
+                duplicated_by: annotate(&issue.duplicated_by),
+            };
+            Ok((issue, module_name, rels))
         }) {
-            Ok((issue, module_name)) => {
+            Ok((issue, module_name, rels)) => {
                 if let Err(e) = require_role_mcp(&self.db, issue.project_id, models::Role::Viewer) {
                     return format!("Error: {e}");
                 }
@@ -699,23 +734,20 @@ impl LificMcp {
                 if !issue.labels.is_empty() {
                     out.push_str(&format!("Labels: {}\n", issue.labels.join(", ")));
                 }
-                if !issue.blocks.is_empty() {
-                    out.push_str(&format!("Blocks: {}\n", issue.blocks.join(", ")));
+                if !rels.blocks.is_empty() {
+                    out.push_str(&format!("Blocks: {}\n", rels.blocks.join(", ")));
                 }
-                if !issue.blocked_by.is_empty() {
-                    out.push_str(&format!("Blocked by: {}\n", issue.blocked_by.join(", ")));
+                if !rels.blocked_by.is_empty() {
+                    out.push_str(&format!("Blocked by: {}\n", rels.blocked_by.join(", ")));
                 }
-                if !issue.relates_to.is_empty() {
-                    out.push_str(&format!("Relates to: {}\n", issue.relates_to.join(", ")));
+                if !rels.relates_to.is_empty() {
+                    out.push_str(&format!("Relates to: {}\n", rels.relates_to.join(", ")));
                 }
-                if !issue.duplicates.is_empty() {
-                    out.push_str(&format!("Duplicates: {}\n", issue.duplicates.join(", ")));
+                if !rels.duplicates.is_empty() {
+                    out.push_str(&format!("Duplicates: {}\n", rels.duplicates.join(", ")));
                 }
-                if !issue.duplicated_by.is_empty() {
-                    out.push_str(&format!(
-                        "Duplicated by: {}\n",
-                        issue.duplicated_by.join(", ")
-                    ));
+                if !rels.duplicated_by.is_empty() {
+                    out.push_str(&format!("Duplicated by: {}\n", rels.duplicated_by.join(", ")));
                 }
                 if !issue.description.is_empty() {
                     out.push_str(&format!("\n{}\n", issue.description));
@@ -3475,18 +3507,57 @@ mod tests {
         }));
         assert!(result.contains("blocks"), "got: {result}");
 
-        // Verify relation shows in get_issue
+        // Verify relation shows in get_issue, now annotated with the related
+        // issue's status (LIF-303). LNK-2 is a fresh issue → backlog.
         let detail = m.get_issue(Parameters(GetIssueInput {
             identifier: "LNK-1".into(),
             ..Default::default()
         }));
-        assert!(detail.contains("Blocks"), "got: {detail}");
+        assert!(detail.contains("Blocks: LNK-2 (backlog)"), "got: {detail}");
 
         let result = m.unlink_issues(Parameters(UnlinkIssuesInput {
             source: "LNK-1".into(),
             target: "LNK-2".into(),
         }));
         assert!(result.contains("Unlinked"), "got: {result}");
+    }
+
+    // LIF-303: get_issue annotates relation identifiers with the related
+    // issue's current status; the annotation reflects each blocker's own
+    // status, not a shared one.
+    #[test]
+    fn get_issue_relations_carry_status() {
+        let m = mcp();
+        seed_project(&m, "Rel", "REL");
+        seed_issue(&m, "REL", "target"); // REL-1
+        seed_issue(&m, "REL", "blocker-a"); // REL-2
+        seed_issue(&m, "REL", "blocker-b"); // REL-3
+
+        // REL-2 and REL-3 both block REL-1; give them distinct statuses.
+        m.link_issues(Parameters(LinkIssuesInput {
+            source: "REL-2".into(),
+            target: "REL-1".into(),
+            relation_type: "blocks".into(),
+        }));
+        m.link_issues(Parameters(LinkIssuesInput {
+            source: "REL-3".into(),
+            target: "REL-1".into(),
+            relation_type: "blocks".into(),
+        }));
+        m.update_issue(Parameters(UpdateIssueInput {
+            identifier: "REL-2".into(),
+            status: Some("done".into()),
+            ..Default::default()
+        }));
+
+        let detail = m.get_issue(Parameters(GetIssueInput {
+            identifier: "REL-1".into(),
+            ..Default::default()
+        }));
+        // Each blocker carries its own status.
+        assert!(detail.contains("REL-2 (done)"), "got: {detail}");
+        assert!(detail.contains("REL-3 (backlog)"), "got: {detail}");
+        assert!(detail.contains("Blocked by:"), "got: {detail}");
     }
 
     #[test]
