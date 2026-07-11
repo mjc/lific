@@ -6923,6 +6923,136 @@ mod tests {
             "deleted plan should not be found: {got}"
         );
     }
+
+    // ── LIF-299: MCP outputs never HTML-escape stored text ──
+    //
+    // No code path in this repo escapes; the `&amp;`/`&lt;` seen in the wild
+    // arrived pre-escaped from writer clients (stored data). These are
+    // regression guards: raw punctuation the agent stores must round-trip
+    // through every read surface verbatim, and the HTML entities must never
+    // appear. If any of these fail, a formatter started escaping — fix it
+    // there, not by weakening the test.
+
+    /// The gnarly title used across the guards: ampersand, angle-bracketed
+    /// generic, and double quotes.
+    const RAW_TITLE: &str = r#"Fix & polish <Store<T>> "quotes""#;
+
+    /// Assert `s` contains the raw needles and none of the HTML entities.
+    fn assert_no_html_escape(s: &str, needles: &[&str]) {
+        for n in needles {
+            assert!(s.contains(n), "missing raw {n:?} in: {s}");
+        }
+        for ent in ["&amp;", "&lt;", "&gt;", "&quot;", "&#"] {
+            assert!(!s.contains(ent), "found HTML entity {ent:?} in: {s}");
+        }
+    }
+
+    #[test]
+    fn no_html_escape_across_issue_read_surfaces() {
+        let m = mcp();
+        seed_project(&m, "Escape", "ESC");
+        let created = m.create_issue(Parameters(CreateIssueInput {
+            project: "ESC".into(),
+            title: RAW_TITLE.into(),
+            description: Some(r#"body with & and < and > and "quotes""#.into()),
+            ..Default::default()
+        }));
+        // create_issue echoes the title.
+        assert_no_html_escape(&created, &[RAW_TITLE]);
+
+        // get_board
+        let board = m.get_board(Parameters(GetBoardInput {
+            project: "ESC".into(),
+            ..Default::default()
+        }));
+        assert_no_html_escape(&board, &[RAW_TITLE]);
+
+        // list_resources (issue path → fmt_issue)
+        let listed = m.list_resources(Parameters(ListResourcesInput {
+            resource_type: "issue".into(),
+            project: Some("ESC".into()),
+            ..Default::default()
+        }));
+        assert_no_html_escape(&listed, &[RAW_TITLE]);
+
+        // list_issues (fmt_issue path)
+        let issues = m.list_issues(Parameters(ListIssuesInput {
+            project: "ESC".into(),
+            ..Default::default()
+        }));
+        assert_no_html_escape(&issues, &[RAW_TITLE]);
+
+        // get_issue (title + description)
+        let detail = m.get_issue(Parameters(GetIssueInput {
+            identifier: "ESC-1".into(),
+            ..Default::default()
+        }));
+        assert_no_html_escape(&detail, &[RAW_TITLE, "body with & and < and >"]);
+
+        // search — both modes must return the raw text.
+        let fts = m.search(Parameters(SearchInput {
+            query: "polish".into(),
+            ..Default::default()
+        }));
+        assert_no_html_escape(&fts, &["Fix & polish"]);
+        let lit = m.search(Parameters(SearchInput {
+            query: "<Store<T>>".into(),
+            mode: Some("literal".into()),
+            ..Default::default()
+        }));
+        assert_no_html_escape(&lit, &["<Store<T>>"]);
+    }
+
+    #[test]
+    fn no_html_escape_in_comment_surfaces() {
+        let m = mcp();
+        seed_project(&m, "Escape", "ESC");
+        seed_issue(&m, "ESC", "Host issue");
+        let _guard = seed_user(&m);
+
+        let raw_comment = r#"needs & review of <T> before "ship""#;
+        m.add_comment(Parameters(AddCommentInput {
+            identifier: "ESC-1".into(),
+            content: raw_comment.into(),
+        }));
+
+        // via get_issue
+        let detail = m.get_issue(Parameters(GetIssueInput {
+            identifier: "ESC-1".into(),
+            include_comments: Some("all".into()),
+        }));
+        assert_no_html_escape(&detail, &[raw_comment]);
+
+        // via list_comments
+        let comments = m.list_comments(Parameters(ListCommentsInput {
+            identifier: "ESC-1".into(),
+            ..Default::default()
+        }));
+        assert_no_html_escape(&comments, &[raw_comment]);
+    }
+
+    #[test]
+    fn no_html_escape_in_plan_step_title() {
+        let m = mcp();
+        seed_project(&m, "Escape", "ESC");
+        let raw_step = r#"land A & B <fast> "now""#;
+        let created = m.create_plan(Parameters(CreatePlanInput {
+            project: "ESC".into(),
+            title: "Escaping plan".into(),
+            anchor_issue: None,
+            steps: Some(vec![PlanStepInput {
+                title: raw_step.into(),
+                ..Default::default()
+            }]),
+        }));
+        assert_no_html_escape(&created, &[raw_step]);
+
+        // via get_plan
+        let plan = m.get_plan(Parameters(GetPlanInput {
+            plan: "ESC-PLAN-1".into(),
+        }));
+        assert_no_html_escape(&plan, &[raw_step]);
+    }
 }
 
 /// LIF-198: project-scoped authorization enforcement across every MCP tool.
