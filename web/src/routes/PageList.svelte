@@ -35,6 +35,7 @@
     PanelRight,
   } from "lucide-svelte";
   import Select from "../lib/Select.svelte";
+  import SubTabs from "../lib/SubTabs.svelte";
   import Tooltip from "../lib/Tooltip.svelte";
   import TimeAgo from "../lib/TimeAgo.svelte";
   import Mascot from "../lib/Mascot.svelte";
@@ -44,6 +45,7 @@
   import { getContext } from "svelte";
   import { startAutoRefresh } from "../lib/autoRefresh.svelte";
   import { projectRole, loadProjectRole } from "../lib/projectRole.svelte"; // LIF-234
+  import { loadSubTab, saveSubTab } from "../lib/subtab";
 
   // LIF-234: pages are content — create/edit/delete + folder management are
   // maintainer-gated. A viewer browses the tree read-only.
@@ -101,6 +103,11 @@
   let loading = $state(true);
   let error = $state("");
 
+  // LIF-305: the selected Pages slice persists independently per project.
+  const PAGE_SUB_TAB_IDS = ["browse", "recent", "drafts", "archived"] as const;
+  type PageSubTab = (typeof PAGE_SUB_TAB_IDS)[number];
+  let activeSubTab = $state<PageSubTab>("browse");
+
   let expandedFolders = $state<Set<number>>(new Set());
 
   // Drag and drop. Pages only: the API has no endpoint for re-parenting
@@ -126,8 +133,8 @@
   // shows only that folder's subtree. null = show everything.
   let focusedFolderId = $state<number | null>(null);
 
-  // LIF-105: server-side label filter. Empty string = no filter (mirrors
-  // the issue list's filterLabel convention).
+  // LIF-105: label filter. Empty string = no filter (mirrors the issue
+  // list's filterLabel convention).
   let filterLabel = $state("");
 
   // LIF-112: lifecycle status. Picker icon + label per value, plus the
@@ -172,13 +179,51 @@
   // Default to hiding archived pages.
   let filterStatus = $state(HIDE_ARCHIVED);
 
-  // Pages after applying the client-side "hide archived" rule. When a
-  // concrete status filter is set the server already narrowed the list,
-  // so this only acts on the HIDE_ARCHIVED sentinel.
+  // Browse filters are applied locally so the same complete collection can
+  // also power the zero-config LIF-305 flat tabs.
   let visiblePages = $derived(
-    filterStatus === HIDE_ARCHIVED
-      ? pages.filter((p) => p.status !== "archived")
-      : pages,
+    pages.filter((p) => {
+      if (filterLabel && !p.labels.includes(filterLabel)) return false;
+      if (filterStatus === HIDE_ARCHIVED) return p.status !== "archived";
+      return !filterStatus || p.status === filterStatus;
+    }),
+  );
+
+  let recentPages = $derived(
+    pages
+      .filter((p) => p.status !== "archived")
+      .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
+      .slice(0, 20),
+  );
+
+  let draftPages = $derived(
+    pages
+      .filter((p) => p.status === "draft")
+      .sort((a, b) => b.updated_at.localeCompare(a.updated_at)),
+  );
+
+  let archivedPages = $derived(
+    pages
+      .filter((p) => p.status === "archived")
+      .sort((a, b) => b.updated_at.localeCompare(a.updated_at)),
+  );
+
+  let pageSubTabs = $derived([
+    { id: "browse", label: "Browse" },
+    { id: "recent", label: "Recent" },
+    { id: "drafts", label: "Drafts", count: draftPages.length },
+    { id: "archived", label: "Archived", count: archivedPages.length },
+  ]);
+
+  // Search keeps the Browse filter semantics it had when filters were
+  // server-backed: "Active" and "All" search every loaded page, while a
+  // concrete status or label narrows its candidate set.
+  let searchablePages = $derived(
+    pages.filter(
+      (p) =>
+        (!filterLabel || p.labels.includes(filterLabel)) &&
+        (filterStatus === HIDE_ARCHIVED || filterStatus === "" || p.status === filterStatus),
+    ),
   );
 
   // LIF-117/118: client-side search. A collapsed icon in the toolbar
@@ -208,7 +253,7 @@
     if (!q) return [];
 
     const hits: SearchHit[] = [];
-    for (const page of pages) {
+    for (const page of searchablePages) {
       const titleHit = fuzzyMatch(q, page.title);
       const idHit = fuzzyMatch(q, page.identifier);
       // Cap content scan: scorer is O(haystack) and pages can be long.
@@ -255,23 +300,6 @@
     loadData(id);
   });
 
-  // Refetch pages when the label or status filter changes (matches the
-  // issue-list pattern of pushing every filter through the server, so it
-  // composes cleanly with later filters like folder).
-  $effect(() => {
-    filterLabel;
-    filterStatus;
-    if (project) reloadPages();
-  });
-
-  // Map the filter selection to a concrete server-side status. The
-  // "hide archived" sentinel and "All" both mean "no server status
-  // filter" — archived hiding happens client-side via `visiblePages`.
-  function serverStatusFilter(): string | undefined {
-    if (filterStatus === HIDE_ARCHIVED || filterStatus === "") return undefined;
-    return filterStatus;
-  }
-
   async function loadData(ident: string) {
     loading = true;
     error = "";
@@ -281,9 +309,10 @@
     if (!found) { error = `Project ${ident} not found`; loading = false; return; }
     project = found;
     loadProjectRole(found.id); // LIF-234
+    activeSubTab = (loadSubTab("pages", String(found.id), PAGE_SUB_TAB_IDS) ?? "browse") as PageSubTab;
 
     const [pRes, fRes, lRes] = await Promise.all([
-      listPages(found.id, undefined, filterLabel || undefined, serverStatusFilter()),
+      listPages(found.id),
       listFolders(found.id),
       listLabels(found.id),
     ]);
@@ -306,7 +335,7 @@
   async function reloadPages() {
     if (!project) return;
     const [pagesRes, foldersRes, labelsRes] = await Promise.all([
-      listPages(project.id, undefined, filterLabel || undefined, serverStatusFilter()),
+      listPages(project.id),
       listFolders(project.id),
       listLabels(project.id),
     ]);
@@ -323,6 +352,12 @@
       }
     }
     if (labelsRes.ok) labels = labelsRes.data;
+  }
+
+  function selectSubTab(id: string) {
+    if (!PAGE_SUB_TAB_IDS.includes(id as PageSubTab)) return;
+    activeSubTab = id as PageSubTab;
+    if (project) saveSubTab("pages", String(project.id), activeSubTab);
   }
 
   // ── LIF-129: auto-refresh ────────────────────────────
@@ -620,9 +655,9 @@
 />
 
 {#snippet topbarContent()}
-  <div class="relative flex items-center gap-2 sm:gap-3 px-3 sm:px-6 py-2 w-full">
+  <div class="relative flex flex-wrap items-center gap-2 sm:gap-3 px-3 sm:px-6 py-2 w-full">
     <!-- Breadcrumb: Project > Pages. Project segment collapses below sm. -->
-    <div class="flex items-center gap-1.5 shrink-0">
+    <div class="order-1 flex items-center gap-1.5 shrink-0">
       <button
         class="hidden sm:inline text-body-sm font-mono font-medium text-[var(--text-muted)]
                hover:text-[var(--text)] transition-colors"
@@ -644,10 +679,18 @@
       {/if}
     </div>
 
+    <!-- LIF-305: the sub-tab strip takes the topbar's bottom row (order-4 +
+         basis-full, after every order-3 control) so the breadcrumb and the
+         Browse toolbar keep sharing the top row exactly as before. -->
+    <div class="order-4 basis-full">
+      <SubTabs tabs={pageSubTabs} active={activeSubTab} onselect={selectSubTab} />
+    </div>
+
+    {#if activeSubTab === "browse"}
     <!-- LIF-105: label filter. Only shown when the project has labels
          defined — keeps the toolbar clean for label-less projects. -->
     {#if labels.length > 0}
-      <div class="flex items-center gap-1.5">
+      <div class="order-3 flex items-center gap-1.5">
         <Select
           options={labelOptions}
           bind:value={filterLabel}
@@ -693,7 +736,7 @@
     <!-- LIF-112: status filter. Defaults to "Active" (hides archived);
          pick "All" to reveal archived pages, or a concrete status to
          narrow. -->
-    <div class="flex items-center gap-1.5">
+    <div class="order-3 flex items-center gap-1.5">
       <Select
         options={statusFilterOptions}
         bind:value={filterStatus}
@@ -722,7 +765,7 @@
     </div>
 
     <!-- Right zone: search + create actions -->
-    <div class="ml-auto flex items-center gap-1.5 shrink-0">
+    <div class="order-3 ml-auto flex items-center gap-1.5 shrink-0">
       <!-- LIF-231: overview/folder-navigator toggle (below lg, where the
            sidebar is off-canvas). -->
       {#if !loading && !error && (pages.length > 0 || folders.length > 0)}
@@ -898,11 +941,12 @@
       </div>
       {/if}
     </div>
+    {/if}
   </div>
 {/snippet}
 
 <div class="h-full flex flex-col">
- <div class="flex-1 flex min-h-0">
+  <div class="flex-1 flex min-h-0">
   <!-- Content — entire scroll area is the root drop zone -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
@@ -965,6 +1009,22 @@
           Project overview
         </button>
       </ErrorState>
+    {:else if activeSubTab === "recent"}
+      <div class="px-6 py-4">
+        {@render flatPageList(
+          recentPages,
+          "A blank page",
+          "Pages are your project's docs: specs, notes, decisions. Start the first one and give the ideas a home.",
+        )}
+      </div>
+    {:else if activeSubTab === "drafts"}
+      <div class="px-6 py-4">
+        {@render flatPageList(draftPages, "No drafts")}
+      </div>
+    {:else if activeSubTab === "archived"}
+      <div class="px-6 py-4">
+        {@render flatPageList(archivedPages, "No archived pages")}
+      </div>
     {:else if pages.length === 0 && folders.length === 0 && !createTarget}
       <div class="flex flex-col items-center py-16 gap-4 px-6 max-w-[460px] mx-auto text-center">
         <Mascot src="/LizzyReading.png" nativeW={487} nativeH={714} />
@@ -1173,7 +1233,7 @@
   <!-- LIF-185: right sidebar — project page overview + folder navigator.
        Fills the empty right space and lets you focus a single folder.
        LIF-231: off-canvas drawer below lg, docked at lg+. -->
-  {#if !loading && !error && (pages.length > 0 || folders.length > 0)}
+   {#if activeSubTab === "browse" && !loading && !error && (pages.length > 0 || folders.length > 0)}
     {#if overviewOpen}
       <button
         class="lg:hidden fixed inset-0 z-40 bg-black/40 backdrop-blur-[1px]"
@@ -1278,6 +1338,50 @@
   {/if}
  </div>
 </div>
+
+{#snippet flatPageList(pageList: Page[], emptyTitle: string, emptyDescription: string = "")}
+  {#if pageList.length === 0}
+    <div class="flex flex-col items-center py-16 gap-3 px-6 max-w-[460px] mx-auto text-center">
+      <Mascot src="/LizzyReading.png" nativeW={487} nativeH={714} scale={0.16} />
+      <div class="flex flex-col items-center gap-1.5">
+        <p class="text-heading font-medium text-[var(--text)]">{emptyTitle}</p>
+        {#if emptyDescription}
+          <p class="text-body-sm text-[var(--text-muted)] leading-relaxed">{emptyDescription}</p>
+        {/if}
+      </div>
+    </div>
+  {:else}
+    <div class="flex flex-col">
+      {#each pageList as page (page.id)}
+        {@const pageMeta = statusMeta(page.status)}
+        {@const containingFolder = folderName(page.folder_id)}
+        <button
+          class="w-full flex items-start gap-2 py-2 px-1.5 -mx-1.5 border-b border-[var(--border)]
+                 last:border-b-0 rounded-md text-left transition-colors hover:bg-[var(--bg-subtle)]"
+          onclick={() => navigate(`/${projectIdentifier}/pages/${page.id}`)}
+        >
+          <span
+            class="shrink-0 mt-0.5"
+            style="color: {statusColor(page.status)}"
+            title={pageMeta.label}
+          >
+            <pageMeta.icon size={17} />
+          </span>
+          <div class="flex-1 min-w-0">
+            <div class="text-body-lg text-[var(--text)] truncate">{page.title}</div>
+            <div class="flex items-center gap-2 mt-0.5 text-caption text-[var(--text-faint)]">
+              {#if containingFolder}
+                <span class="truncate">{containingFolder}</span>
+                <span>·</span>
+              {/if}
+              <TimeAgo class="tabular-nums shrink-0" date={page.updated_at} />
+            </div>
+          </div>
+        </button>
+      {/each}
+    </div>
+  {/if}
+{/snippet}
 
 <!--
   Recursive tree renderer.
