@@ -16,6 +16,8 @@
   import Mascot from "../lib/Mascot.svelte";
   import ErrorState from "../lib/ErrorState.svelte";
   import Skeleton from "../lib/Skeleton.svelte";
+  import SubTabs from "../lib/SubTabs.svelte";
+  import { loadSubTab, saveSubTab } from "../lib/subtab";
   import { getContext } from "svelte";
   import { projectRole, loadProjectRole } from "../lib/projectRole.svelte"; // LIF-234
 
@@ -54,6 +56,11 @@
     done: "Done",
     archived: "Archived",
   };
+  const TAB_IDS = ["active", "done", "archived", "all"] as const;
+  type PlanTab = (typeof TAB_IDS)[number];
+
+  // LIF-305: retain each project's selected plan slice between visits.
+  let activeTab = $state<PlanTab>("active");
 
   $effect(() => {
     const id = projectIdentifier;
@@ -79,7 +86,12 @@
     if (!found) { error = `Project ${ident} not found`; loading = false; return; }
     project = found;
     loadProjectRole(found.id); // LIF-234
+    const savedTab = loadSubTab("plans", String(found.id), TAB_IDS);
+    activeTab = isPlanTab(savedTab) ? savedTab : "active";
     await reload();
+    if (savedTab === null && plans.length > 0 && !plans.some((p) => p.status === "active")) {
+      activeTab = "all";
+    }
     loading = false;
   }
 
@@ -97,6 +109,34 @@
     }
     return groups;
   });
+
+  let activePlans = $derived(plans.filter((plan) => plan.status === "active"));
+  let donePlans = $derived(plans.filter((plan) => plan.status === "done"));
+  let archivedPlans = $derived(plans.filter((plan) => plan.status === "archived"));
+  let selectedPlans = $derived(
+    activeTab === "active" ? activePlans
+      : activeTab === "done" ? donePlans
+      : activeTab === "archived" ? archivedPlans
+      : plans,
+  );
+  let tabs = $derived([
+    { id: "active", label: "Active", count: activePlans.length },
+    { id: "done", label: "Done", count: donePlans.length },
+    { id: "archived", label: "Archived", count: archivedPlans.length },
+    { id: "all", label: "All", count: plans.length },
+  ]);
+  const canCreateInTab = $derived(activeTab === "active" || activeTab === "all");
+
+  function isPlanTab(id: string | null): id is PlanTab {
+    return id !== null && TAB_IDS.includes(id as PlanTab);
+  }
+
+  function selectTab(id: string) {
+    if (!isPlanTab(id)) return;
+    activeTab = id;
+    if (id === "done" || id === "archived") creating = false;
+    if (project) saveSubTab("plans", String(project.id), id);
+  }
 
   function startCreate() {
     creating = true;
@@ -136,7 +176,7 @@
       {/if}
     </div>
     <div class="ml-auto flex items-center gap-1.5 shrink-0">
-      {#if canEdit}
+      {#if canEdit && canCreateInTab}
         <button
           class="flex items-center gap-1 text-body-sm font-medium
                  text-[var(--btn-success-text)] bg-[var(--btn-success)]
@@ -151,6 +191,38 @@
       {/if}
     </div>
   </div>
+{/snippet}
+
+{#snippet planCard(plan: Plan)}
+  {@const frac = plan.step_count > 0 ? plan.done_count / plan.step_count : 0}
+  <button
+    class="group flex items-center gap-3.5 p-3 rounded-xl bg-[var(--surface)]
+           shadow-[0_1px_2px_rgba(0,0,0,0.06)]
+           hover:shadow-[0_6px_16px_rgba(0,0,0,0.10)]
+           transition motion-safe:hover:-translate-y-0.5 text-left"
+    onclick={() => navigate(`/${projectIdentifier}/plans/${plan.id}`)}
+  >
+    <ProgressRing value={frac} size={40} stroke={4} color="var(--success)">
+      {#snippet label()}
+        {#if plan.step_count > 0}
+          <span class="text-micro font-semibold tabular-nums text-[var(--text)] leading-none">
+            {Math.round(frac * 100)}
+          </span>
+        {:else}
+          <ListChecks size={15} class="text-[var(--text-faint)]" />
+        {/if}
+      {/snippet}
+    </ProgressRing>
+    <div class="flex-1 min-w-0">
+      <div class="text-body text-[var(--text)] truncate">{plan.title}</div>
+      <div class="text-caption text-[var(--text-faint)] font-mono">
+        {plan.identifier}{plan.anchor_identifier ? ` · anchor ${plan.anchor_identifier}` : ""}
+      </div>
+    </div>
+    <div class="text-caption text-[var(--text-muted)] tabular-nums shrink-0">
+      {plan.done_count}/{plan.step_count}
+    </div>
+  </button>
 {/snippet}
 
 <div class="h-full flex flex-col">
@@ -195,96 +267,84 @@
       </ErrorState>
     {:else}
       <div class="max-w-[860px] mx-auto px-6 py-6">
-        {#if creating}
-          <div class="mb-6 flex items-center gap-3 p-3 rounded-xl border-l-2 border-l-[var(--btn-success)] bg-[var(--surface)] shadow-[0_1px_2px_rgba(0,0,0,0.06)]">
-            <ListChecks size={16} class="text-[var(--btn-success)]" />
-            <input
-              class="flex-1 bg-transparent outline-none text-body text-[var(--text)]"
-              placeholder="Plan title…"
-              bind:value={createTitle}
-              autofocus
-              onkeydown={(e) => {
-                if (e.key === "Enter") commitCreate();
-                if (e.key === "Escape") creating = false;
-              }}
-            />
-            <button
-              class="text-body-sm font-medium text-[var(--btn-success)] hover:underline disabled:opacity-50"
-              disabled={createSaving || !createTitle.trim()}
-              onclick={commitCreate}
-            >
-              Create
-            </button>
-          </div>
-        {/if}
+        <SubTabs tabs={tabs} active={activeTab} onselect={selectTab} />
 
-        {#if plans.length === 0 && !creating}
-          <div class="flex flex-col items-center py-16 gap-4 px-6 max-w-[480px] mx-auto text-center">
-            <Mascot src="/LizzyWriting.png" nativeW={567} nativeH={562} />
-            <div class="flex flex-col items-center gap-1.5">
-              <p class="text-heading font-medium text-[var(--text)]">The drawing board's empty</p>
-              <p class="text-body-sm text-[var(--text-muted)] leading-relaxed">
-                A plan breaks a goal into a tree of steps that survives across
-                sessions. Steps can mirror issues, so closing an issue checks
-                off its step.
+        <div class="pt-6">
+          {#if creating && canCreateInTab}
+            <div class="mb-6 flex items-center gap-3 p-3 rounded-xl border-l-2 border-l-[var(--btn-success)] bg-[var(--surface)] shadow-[0_1px_2px_rgba(0,0,0,0.06)]">
+              <ListChecks size={16} class="text-[var(--btn-success)]" />
+              <input
+                class="flex-1 bg-transparent outline-none text-body text-[var(--text)]"
+                placeholder="Plan title…"
+                bind:value={createTitle}
+                autofocus
+                onkeydown={(e) => {
+                  if (e.key === "Enter") commitCreate();
+                  if (e.key === "Escape") creating = false;
+                }}
+              />
+              <button
+                class="text-body-sm font-medium text-[var(--btn-success)] hover:underline disabled:opacity-50"
+                disabled={createSaving || !createTitle.trim()}
+                onclick={commitCreate}
+              >
+                Create
+              </button>
+            </div>
+          {/if}
+
+          {#if plans.length === 0 && !creating && (activeTab === "active" || activeTab === "all")}
+            <div class="flex flex-col items-center py-16 gap-4 px-6 max-w-[480px] mx-auto text-center">
+              <Mascot src="/LizzyWriting.png" nativeW={567} nativeH={562} />
+              <div class="flex flex-col items-center gap-1.5">
+                <p class="text-heading font-medium text-[var(--text)]">The drawing board's empty</p>
+                <p class="text-body-sm text-[var(--text-muted)] leading-relaxed">
+                  A plan breaks a goal into a tree of steps that survives across
+                  sessions. Steps can mirror issues, so closing an issue checks
+                  off its step.
+                </p>
+              </div>
+              {#if canEdit}
+                <button
+                  class="flex items-center gap-1.5 mt-1 text-body-sm font-medium
+                         text-[var(--btn-success-text)] bg-[var(--btn-success)]
+                         px-3 py-1.5 rounded-md hover:bg-[var(--btn-success-hover)]
+                         transition-colors"
+                  onclick={startCreate}
+                >
+                  <Plus size={15} />
+                  Create a plan
+                </button>
+              {/if}
+            </div>
+          {:else if activeTab !== "all" && selectedPlans.length === 0 && !creating}
+            <div class="flex flex-col items-center py-16 gap-2 text-center">
+              <p class="text-heading font-medium text-[var(--text)]">
+                {activeTab === "active" ? "No active plans" : activeTab === "done" ? "No completed plans" : "No archived plans"}
               </p>
             </div>
-            {#if canEdit}
-              <button
-                class="flex items-center gap-1.5 mt-1 text-body-sm font-medium
-                       text-[var(--btn-success-text)] bg-[var(--btn-success)]
-                       px-3 py-1.5 rounded-md hover:bg-[var(--btn-success-hover)]
-                       transition-colors"
-                onclick={startCreate}
-              >
-                <Plus size={15} />
-                Create a plan
-              </button>
-            {/if}
-          </div>
-        {:else}
-          {#each grouped as group (group.status)}
-            <div class="mb-6">
-              <h2 class="text-micro font-semibold uppercase tracking-wide text-[var(--text-faint)] mb-2">
-                {STATUS_LABEL[group.status] ?? group.status}
-                <span class="ml-1 tabular-nums">{group.items.length}</span>
-              </h2>
-              <div class="flex flex-col gap-2">
-                {#each group.items as plan (plan.id)}
-                  {@const frac = plan.step_count > 0 ? plan.done_count / plan.step_count : 0}
-                  <button
-                    class="group flex items-center gap-3.5 p-3 rounded-xl bg-[var(--surface)]
-                           shadow-[0_1px_2px_rgba(0,0,0,0.06)]
-                           hover:shadow-[0_6px_16px_rgba(0,0,0,0.10)]
-                           transition motion-safe:hover:-translate-y-0.5 text-left"
-                    onclick={() => navigate(`/${projectIdentifier}/plans/${plan.id}`)}
-                  >
-                    <ProgressRing value={frac} size={40} stroke={4} color="var(--success)">
-                      {#snippet label()}
-                        {#if plan.step_count > 0}
-                          <span class="text-micro font-semibold tabular-nums text-[var(--text)] leading-none">
-                            {Math.round(frac * 100)}
-                          </span>
-                        {:else}
-                          <ListChecks size={15} class="text-[var(--text-faint)]" />
-                        {/if}
-                      {/snippet}
-                    </ProgressRing>
-                    <div class="flex-1 min-w-0">
-                      <div class="text-body text-[var(--text)] truncate">{plan.title}</div>
-                      <div class="text-caption text-[var(--text-faint)] font-mono">
-                        {plan.identifier}{plan.anchor_identifier ? ` · anchor ${plan.anchor_identifier}` : ""}
-                      </div>
-                    </div>
-                    <div class="text-caption text-[var(--text-muted)] tabular-nums shrink-0">
-                      {plan.done_count}/{plan.step_count}
-                    </div>
-                  </button>
-                {/each}
+          {:else if activeTab === "all"}
+            {#each grouped as group (group.status)}
+              <div class="mb-6">
+                <h2 class="text-micro font-semibold uppercase tracking-wide text-[var(--text-faint)] mb-2">
+                  {STATUS_LABEL[group.status] ?? group.status}
+                  <span class="ml-1 tabular-nums">{group.items.length}</span>
+                </h2>
+                <div class="flex flex-col gap-2">
+                  {#each group.items as plan (plan.id)}
+                    {@render planCard(plan)}
+                  {/each}
+                </div>
               </div>
+            {/each}
+          {:else}
+            <div class="flex flex-col gap-2">
+              {#each selectedPlans as plan (plan.id)}
+                {@render planCard(plan)}
+              {/each}
             </div>
-          {/each}
-        {/if}
+          {/if}
+        </div>
       </div>
     {/if}
   </div>
