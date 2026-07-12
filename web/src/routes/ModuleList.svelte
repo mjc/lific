@@ -26,6 +26,8 @@
   import Mascot from "../lib/Mascot.svelte";
   import ErrorState from "../lib/ErrorState.svelte";
   import Skeleton from "../lib/Skeleton.svelte";
+  import SubTabs from "../lib/SubTabs.svelte";
+  import { loadSubTab, saveSubTab } from "../lib/subtab";
   import { getContext } from "svelte";
   import { projectRole, loadProjectRole } from "../lib/projectRole.svelte"; // LIF-234
 
@@ -83,12 +85,25 @@
     cancelled: "Cancelled",
   };
 
+  type ModuleTab = "active" | "backlog" | "archive" | "all";
+  const MODULE_TAB_IDS = ["active", "backlog", "archive", "all"] as const;
+  const TAB_STATUSES: Record<Exclude<ModuleTab, "all">, readonly string[]> = {
+    active: ["active", "planned", "paused"],
+    backlog: ["backlog"],
+    archive: ["done", "cancelled"],
+  };
+
+  // LIF-305: persist each project's Modules content slice independently.
+  let activeTab = $state<ModuleTab>("active");
+
   $effect(() => {
     const id = projectIdentifier;
-    loadData(id);
+    const savedTab = loadSubTab("modules", id, MODULE_TAB_IDS);
+    activeTab = (savedTab ?? "active") as ModuleTab;
+    loadData(id, savedTab === null);
   });
 
-  async function loadData(ident: string) {
+  async function loadData(ident: string, applyTabFallback = false) {
     loading = true;
     error = "";
     creating = false;
@@ -107,11 +122,54 @@
       listModules(found.id),
       listIssues({ project_id: found.id, limit: 1000 }),
     ]);
-    if (modRes.ok) modules = modRes.data;
+    if (modRes.ok) {
+      modules = modRes.data;
+      if (
+        applyTabFallback
+        && modRes.data.length > 0
+        && !modRes.data.some((m) => TAB_STATUSES.active.includes(m.status))
+      ) {
+        activeTab = "all";
+      }
+    }
     if (issueRes.ok) issues = issueRes.data;
 
     loading = false;
   }
+
+  function selectTab(id: string) {
+    activeTab = id as ModuleTab;
+    saveSubTab("modules", projectIdentifier, id);
+  }
+
+  let moduleTabs = $derived.by(() => [
+    {
+      id: "active",
+      label: "Active",
+      count: modules.filter((m) => TAB_STATUSES.active.includes(m.status)).length,
+    },
+    {
+      id: "backlog",
+      label: "Backlog",
+      count: modules.filter((m) => TAB_STATUSES.backlog.includes(m.status)).length,
+    },
+    {
+      id: "archive",
+      label: "Archive",
+      count: modules.filter((m) => TAB_STATUSES.archive.includes(m.status)).length,
+    },
+    { id: "all", label: "All", count: modules.length },
+  ]);
+
+  let visibleModules = $derived.by(() => {
+    if (activeTab === "all") return modules;
+    const statuses = TAB_STATUSES[activeTab as Exclude<ModuleTab, "all">];
+    return modules.filter((m) => statuses.includes(m.status));
+  });
+
+  let emptyTabLabel = $derived(
+    activeTab === "active" ? "active" : activeTab === "archive" ? "archived" : "backlog",
+  );
 
   // Modules grouped by status in display order. Each entry is non-empty;
   // empty groups are dropped so the list doesn't look like a settings
@@ -119,14 +177,14 @@
   let grouped = $derived.by(() => {
     const groups: { status: string; mods: Module[] }[] = [];
     for (const s of STATUS_ORDER) {
-      const matching = modules
+      const matching = visibleModules
         .filter((m) => m.status === s)
         .sort((a, b) => a.name.localeCompare(b.name));
       if (matching.length > 0) groups.push({ status: s, mods: matching });
     }
     // Surface unknown statuses (forward-compat) at the end.
     const known = new Set(STATUS_ORDER);
-    const leftover = modules
+    const leftover = visibleModules
       .filter((m) => !known.has(m.status))
       .sort((a, b) => a.name.localeCompare(b.name));
     if (leftover.length > 0) groups.push({ status: "other", mods: leftover });
@@ -271,11 +329,17 @@
   <div class="flex-1 overflow-y-auto">
     {#if loading}
       <!-- LIF-281: structural skeleton mirroring the loaded layout — the
-           max-w-[1100px] px-6 py-6 wrapper, the portfolio hero card (ring +
-           four stat blocks), then an Active status group of bento tiles.
+           max-w-[1100px] px-6 py-6 wrapper, sub tabs, portfolio hero card
+           (ring + four stat blocks), then an Active status group of bento tiles.
            Replaces a bare centered spinner so the frame doesn't shift when
            data arrives. -->
       <div class="max-w-[1100px] mx-auto px-6 py-6">
+        <div class="mb-6 flex items-center gap-5 border-b border-[var(--border)] pb-2">
+          {#each Array(4) as _, i (i)}
+            <Skeleton variant="bar" class="h-3 w-14" />
+          {/each}
+        </div>
+
         <!-- Portfolio hero: ring + 4 stat blocks (mirrors the p-5 card). -->
         <div
           class="mb-7 rounded-xl bg-[var(--surface)] p-5
@@ -333,30 +397,39 @@
     {:else if modules.length === 0 && !creating}
       <!-- Empty state — mascot + charming copy + green CTA, matching the
            issue-list empty state vocabulary. -->
-      <div class="flex flex-col items-center py-20 gap-4 px-6 max-w-[480px] mx-auto text-center">
-        <Mascot src="/LizzySleep2.png" nativeW={1000} nativeH={420} scale={0.25} />
-        <div class="flex flex-col items-center gap-1.5">
-          <p class="text-heading font-medium text-[var(--text)]">No moving parts yet</p>
-          <p class="text-body-sm text-[var(--text-muted)] leading-relaxed">
-            Modules gather related issues into a single arc of work: a feature,
-            a release, an effort. Spin one up to start organizing.
-          </p>
+      <div class="max-w-[1100px] mx-auto px-6 py-6">
+        <div class="mb-6">
+          <SubTabs tabs={moduleTabs} active={activeTab} onselect={selectTab} />
         </div>
-        {#if canEdit}
-          <button
-            class="flex items-center gap-1.5 mt-1 text-body-sm font-medium
-                   text-[var(--btn-success-text)] bg-[var(--btn-success)]
-                   px-3 py-1.5 rounded-md hover:bg-[var(--btn-success-hover)]
-                   transition-colors"
-            onclick={startCreate}
-          >
-            <Plus size={15} />
-            Create a module
-          </button>
-        {/if}
+        <div class="flex flex-col items-center py-20 gap-4 px-6 max-w-[480px] mx-auto text-center">
+          <Mascot src="/LizzySleep2.png" nativeW={1000} nativeH={420} scale={0.25} />
+          <div class="flex flex-col items-center gap-1.5">
+            <p class="text-heading font-medium text-[var(--text)]">No moving parts yet</p>
+            <p class="text-body-sm text-[var(--text-muted)] leading-relaxed">
+              Modules gather related issues into a single arc of work: a feature,
+              a release, an effort. Spin one up to start organizing.
+            </p>
+          </div>
+          {#if canEdit}
+            <button
+              class="flex items-center gap-1.5 mt-1 text-body-sm font-medium
+                     text-[var(--btn-success-text)] bg-[var(--btn-success)]
+                     px-3 py-1.5 rounded-md hover:bg-[var(--btn-success-hover)]
+                     transition-colors"
+              onclick={startCreate}
+            >
+              <Plus size={15} />
+              Create a module
+            </button>
+          {/if}
+        </div>
       </div>
     {:else}
       <div class="max-w-[1100px] mx-auto px-6 py-6">
+        <div class="mb-6">
+          <SubTabs tabs={moduleTabs} active={activeTab} onselect={selectTab} />
+        </div>
+
         <!-- Portfolio hero: aggregate completion gauge + headline tallies.
              The dashboard "moment" unique to the Modules surface. -->
         <div
@@ -420,97 +493,121 @@
           </div>
         {/if}
 
-        {#each grouped as group (group.status)}
-          {@const isActive = group.status === "active"}
-          <section class="mb-8 last:mb-0">
-            <!-- Group header. Same uppercase-tracking treatment used by
-                 IssueList's status group headers and the sidebar section
-                 labels for visual continuity. -->
-            <div class="flex items-center gap-2 mb-3 px-1">
-              {@render statusIcon(group.status, 13)}
-              <h2
-                class="text-micro font-semibold uppercase tracking-widest
-                       text-[var(--text-muted)]"
+        {#if grouped.length === 0}
+          <div class="flex flex-col items-center py-14 gap-4 px-6 max-w-[480px] mx-auto text-center">
+            <Mascot src="/LizzySleep2.png" nativeW={1000} nativeH={420} scale={0.25} />
+            <div class="flex flex-col items-center gap-1.5">
+              <p class="text-heading font-medium text-[var(--text)]">No {emptyTabLabel} modules</p>
+              <p class="text-body-sm text-[var(--text-muted)] leading-relaxed">
+                Create a module to start organizing this slice of work.
+              </p>
+            </div>
+            {#if canEdit}
+              <button
+                class="flex items-center gap-1.5 mt-1 text-body-sm font-medium
+                       text-[var(--btn-success-text)] bg-[var(--btn-success)]
+                       px-3 py-1.5 rounded-md hover:bg-[var(--btn-success-hover)]
+                       transition-colors"
+                onclick={startCreate}
               >
-                {STATUS_LABEL[group.status] ?? group.status}
-              </h2>
-              <span class="text-micro text-[var(--text-faint)] tabular-nums">
-                {group.mods.length}
-              </span>
-            </div>
-
-            <!-- Bento grid of ring-tiles. The Active group reads as the
-                 focal lane: larger rings, two-up at most so each tile has
-                 room; other lifecycle groups pack three-up. -->
-            <div
-              class="grid grid-cols-1 sm:grid-cols-2 gap-3
-                     {isActive ? '' : 'lg:grid-cols-3'}"
-            >
-              {#each group.mods as mod (mod.id)}
-                {@const prog = moduleProgress(mod.id)}
-                {@const preview = descriptionPreview(mod.description)}
-                {@const ringSize = isActive ? 60 : 48}
-                <button
-                  class="group text-left rounded-xl bg-[var(--surface)] p-4
-                         shadow-[0_1px_2px_rgba(0,0,0,0.06)]
-                         hover:shadow-[0_6px_16px_rgba(0,0,0,0.10)]
-                         transition motion-safe:hover:-translate-y-0.5"
-                  onclick={() =>
-                    navigate(`/${projectIdentifier}/modules/${mod.id}`)}
+                <Plus size={15} />
+                Create a module
+              </button>
+            {/if}
+          </div>
+        {:else}
+          {#each grouped as group (group.status)}
+            {@const isActive = group.status === "active"}
+            <section class="mb-8 last:mb-0">
+              <!-- Group header. Same uppercase-tracking treatment used by
+                   IssueList's status group headers and the sidebar section
+                   labels for visual continuity. -->
+              <div class="flex items-center gap-2 mb-3 px-1">
+                {@render statusIcon(group.status, 13)}
+                <h2
+                  class="text-micro font-semibold uppercase tracking-widest
+                         text-[var(--text-muted)]"
                 >
-                  <div class="flex items-start gap-3.5">
-                    <ProgressRing
-                      value={prog.frac}
-                      size={ringSize}
-                      stroke={isActive ? 5 : 4}
-                      color="var(--success)"
-                    >
-                      {#snippet label()}
-                        {#if prog.total > 0}
-                          <span
-                            class="font-semibold tabular-nums text-[var(--text)] leading-none"
-                            style="font-size: {Math.round(ringSize * 0.26)}px;"
-                          >
-                            {Math.round(prog.frac * 100)}<span class="text-[0.7em] text-[var(--text-muted)]">%</span>
-                          </span>
-                        {:else if mod.emoji}
-                          <ProjectIcon value={mod.emoji} size={isActive ? 22 : 18} class="text-[var(--text-faint)]" />
-                        {:else}
-                          <Layers size={isActive ? 20 : 16} class="text-[var(--text-faint)]" />
-                        {/if}
-                      {/snippet}
-                    </ProgressRing>
+                  {STATUS_LABEL[group.status] ?? group.status}
+                </h2>
+                <span class="text-micro text-[var(--text-faint)] tabular-nums">
+                  {group.mods.length}
+                </span>
+              </div>
 
-                    <div class="flex-1 min-w-0">
-                      <div class="flex items-center gap-1.5">
-                        {#if mod.emoji}
-                          <span class="shrink-0 text-[var(--text-muted)]">
-                            <ProjectIcon value={mod.emoji} size={15} />
+              <!-- Bento grid of ring-tiles. The Active group reads as the
+                   focal lane: larger rings, two-up at most so each tile has
+                   room; other lifecycle groups pack three-up. -->
+              <div
+                class="grid grid-cols-1 sm:grid-cols-2 gap-3
+                       {isActive ? '' : 'lg:grid-cols-3'}"
+              >
+                {#each group.mods as mod (mod.id)}
+                  {@const prog = moduleProgress(mod.id)}
+                  {@const preview = descriptionPreview(mod.description)}
+                  {@const ringSize = isActive ? 60 : 48}
+                  <button
+                    class="group text-left rounded-xl bg-[var(--surface)] p-4
+                           shadow-[0_1px_2px_rgba(0,0,0,0.06)]
+                           hover:shadow-[0_6px_16px_rgba(0,0,0,0.10)]
+                           transition motion-safe:hover:-translate-y-0.5"
+                    onclick={() =>
+                      navigate(`/${projectIdentifier}/modules/${mod.id}`)}
+                  >
+                    <div class="flex items-start gap-3.5">
+                      <ProgressRing
+                        value={prog.frac}
+                        size={ringSize}
+                        stroke={isActive ? 5 : 4}
+                        color="var(--success)"
+                      >
+                        {#snippet label()}
+                          {#if prog.total > 0}
+                            <span
+                              class="font-semibold tabular-nums text-[var(--text)] leading-none"
+                              style="font-size: {Math.round(ringSize * 0.26)}px;"
+                            >
+                              {Math.round(prog.frac * 100)}<span class="text-[0.7em] text-[var(--text-muted)]">%</span>
+                            </span>
+                          {:else if mod.emoji}
+                            <ProjectIcon value={mod.emoji} size={isActive ? 22 : 18} class="text-[var(--text-faint)]" />
+                          {:else}
+                            <Layers size={isActive ? 20 : 16} class="text-[var(--text-faint)]" />
+                          {/if}
+                        {/snippet}
+                      </ProgressRing>
+
+                      <div class="flex-1 min-w-0">
+                        <div class="flex items-center gap-1.5">
+                          {#if mod.emoji}
+                            <span class="shrink-0 text-[var(--text-muted)]">
+                              <ProjectIcon value={mod.emoji} size={15} />
+                            </span>
+                          {/if}
+                          <span class="text-body-lg font-medium text-[var(--text)] truncate">
+                            {mod.name}
                           </span>
-                        {/if}
-                        <span class="text-body-lg font-medium text-[var(--text)] truncate">
-                          {mod.name}
-                        </span>
-                      </div>
-                      <p class="text-caption text-[var(--text-muted)] tabular-nums mt-1">
-                        {#if prog.total > 0}
-                          {prog.done}/{prog.total} done
-                        {:else}
-                          No issues yet
-                        {/if}
-                      </p>
-                      {#if preview}
-                        <p class="text-body-sm text-[var(--text-faint)] line-clamp-2 mt-1.5 leading-snug">
-                          {preview}
+                        </div>
+                        <p class="text-caption text-[var(--text-muted)] tabular-nums mt-1">
+                          {#if prog.total > 0}
+                            {prog.done}/{prog.total} done
+                          {:else}
+                            No issues yet
+                          {/if}
                         </p>
-                      {/if}
+                        {#if preview}
+                          <p class="text-body-sm text-[var(--text-faint)] line-clamp-2 mt-1.5 leading-snug">
+                            {preview}
+                          </p>
+                        {/if}
+                      </div>
                     </div>
-                  </div>
-                </button>
-              {/each}
-            </div>
-          </section>
-        {/each}
+                  </button>
+                {/each}
+              </div>
+            </section>
+          {/each}
+        {/if}
       </div>
     {/if}
   </div>
