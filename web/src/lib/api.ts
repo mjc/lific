@@ -521,6 +521,8 @@ export interface IssueFilters {
   module_id?: number;
   label?: string;
   workable?: boolean;
+  order_by?: string;
+  order?: "asc" | "desc";
   limit?: number;
   offset?: number;
 }
@@ -941,16 +943,24 @@ export interface Folder {
   sort_order: number;
 }
 
+export interface PageListOptions {
+  order_by?: "sort_order" | "title" | "status" | "created" | "updated";
+  order?: "asc" | "desc";
+}
+
 export async function listPages(
   projectId: number,
   folderId?: number,
   label?: string,
   status?: string,
+  options?: PageListOptions,
 ) {
   const params = new URLSearchParams({ project_id: String(projectId) });
   if (folderId !== undefined) params.set("folder_id", String(folderId));
   if (label) params.set("label", label);
   if (status) params.set("status", status);
+  if (options?.order_by) params.set("order_by", options.order_by);
+  if (options?.order) params.set("order", options.order);
   return request<Page[]>(`/pages?${params}`);
 }
 
@@ -1336,9 +1346,10 @@ export interface StepDoneEffect {
   issue_new_status?: string;
 }
 
-export async function listPlans(projectId: number, status?: string) {
+export async function listPlans(projectId: number, status?: string, limit?: number) {
   const params = new URLSearchParams({ project_id: String(projectId) });
   if (status) params.set("status", status);
+  if (limit !== undefined) params.set("limit", String(limit));
   return request<Plan[]>(`/plans?${params}`);
 }
 

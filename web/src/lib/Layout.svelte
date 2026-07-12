@@ -4,8 +4,16 @@
     clearSession,
     listProjects,
     reorderProjects,
+    listIssues,
+    listModules,
+    listPages,
+    listPlans,
     type AuthUser,
     type Project,
+    type Issue,
+    type Module,
+    type Page,
+    type Plan,
   } from "./api";
   import ProjectIcon from "./ProjectIcon.svelte";
   import CommandPalette from "./CommandPalette.svelte";
@@ -226,6 +234,84 @@
   }
 
   let activeProject = $derived(projectFromRoute());
+
+  type RecentSection = "issues" | "modules" | "pages" | "plans";
+  let recentIssues = $state<Issue[]>([]);
+  let recentModules = $state<Module[]>([]);
+  let recentPages = $state<Page[]>([]);
+  let recentPlans = $state<Plan[]>([]);
+  let recentLoading = $state<RecentSection | null>(null);
+  let recentRequest = 0;
+
+  let activeRecentProjectId = $derived(
+    projects.find((project) => project.identifier === activeProject)?.id ?? null,
+  );
+  let activeRecentSection = $derived.by<RecentSection | null>(() => {
+    if (!activeProject) return null;
+    const prefix = `/${activeProject}`;
+    if (isActive(`${prefix}/issues`)) return "issues";
+    if (isActive(`${prefix}/modules`)) return "modules";
+    if (isActive(`${prefix}/pages`)) return "pages";
+    if (isActive(`${prefix}/plans`)) return "plans";
+    return null;
+  });
+
+  // LIF-307: refresh the active resource's five most-recent items on each
+  // route entry. This deliberately has no auto-refresh loop.
+  $effect(() => {
+    route; // track re-entry to the same section, including detail routes
+    const projectId = activeRecentProjectId;
+    const section = activeRecentSection;
+    if (projectId === null || section === null) {
+      recentRequest++;
+      recentLoading = null;
+      return;
+    }
+    void loadRecents(projectId, section);
+  });
+
+  function clearRecents(section: RecentSection) {
+    if (section === "issues") recentIssues = [];
+    else if (section === "modules") recentModules = [];
+    else if (section === "pages") recentPages = [];
+    else recentPlans = [];
+  }
+
+  async function loadRecents(projectId: number, section: RecentSection) {
+    const requestId = ++recentRequest;
+    recentLoading = section;
+    clearRecents(section);
+
+    if (section === "issues") {
+      const res = await listIssues({
+        project_id: projectId,
+        order_by: "updated",
+        order: "desc",
+        limit: 5,
+      });
+      if (requestId !== recentRequest) return;
+      recentIssues = res.ok ? res.data : [];
+    } else if (section === "modules") {
+      const res = await listModules(projectId);
+      if (requestId !== recentRequest) return;
+      recentModules = res.ok
+        ? res.data.sort((a, b) => b.updated_at.localeCompare(a.updated_at)).slice(0, 5)
+        : [];
+    } else if (section === "pages") {
+      const res = await listPages(projectId, undefined, undefined, undefined, {
+        order_by: "updated",
+        order: "desc",
+      });
+      if (requestId !== recentRequest) return;
+      recentPages = res.ok ? res.data.slice(0, 5) : [];
+    } else {
+      const res = await listPlans(projectId, undefined, 5);
+      if (requestId !== recentRequest) return;
+      recentPlans = res.ok ? res.data : [];
+    }
+
+    if (requestId === recentRequest) recentLoading = null;
+  }
 
   // LIF-234: the single point that primes the shared project-role store on
   // each project switch. Resolves the route identifier to a numeric id from
@@ -485,12 +571,61 @@
                     {label}
                   </button>
                 {/snippet}
+                {#snippet recentItem(href: string, label: string, identifier: string | null)}
+                  <button
+                    class="w-full flex items-center gap-1 px-2 py-1 pl-8 rounded-md
+                           text-left text-caption transition-colors
+                           {isActive(href)
+                      ? 'text-[var(--text)] bg-[var(--bg-subtle)] font-medium'
+                      : 'text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--bg-subtle)]'}"
+                    onclick={() => navigate(href)}
+                  >
+                    {#if identifier}
+                      <span class="font-mono text-[var(--text-faint)] shrink-0">{identifier}</span>
+                    {/if}
+                    <span class="flex-1 min-w-0 truncate">{label}</span>
+                  </button>
+                {/snippet}
+                {#snippet recentItems(section: RecentSection, project: Project)}
+                  {#if recentLoading !== section}
+                    {#if section === "issues"}
+                      {#each recentIssues as issue (issue.id)}
+                        {@render recentItem(`/${project.identifier}/issues/${issue.identifier}`, issue.title, issue.identifier)}
+                      {/each}
+                    {:else if section === "modules"}
+                      {#each recentModules as module (module.id)}
+                        {@render recentItem(`/${project.identifier}/modules/${module.id}`, module.name, null)}
+                      {/each}
+                    {:else if section === "pages"}
+                      {#each recentPages as page (page.id)}
+                        {@render recentItem(`/${project.identifier}/pages/${page.id}`, page.title, null)}
+                      {/each}
+                    {:else}
+                      {#each recentPlans as plan (plan.id)}
+                        {@render recentItem(`/${project.identifier}/plans/${plan.id}`, plan.title, null)}
+                      {/each}
+                    {/if}
+                  {/if}
+                {/snippet}
                 {@render subItem(`/${project.identifier}/overview`, "Overview", LayoutDashboard)}
                 {@render subItem(`/${project.identifier}/issues`, "Issues", List)}
+                <!-- LIF-307: only the current route's resource section shows recents. -->
+                {#if isProjectActive && activeRecentSection === "issues"}
+                  {@render recentItems("issues", project)}
+                {/if}
                 {@render subItem(`/${project.identifier}/board`, "Board", LayoutGrid)}
                 {@render subItem(`/${project.identifier}/modules`, "Modules", Layers)}
+                {#if isProjectActive && activeRecentSection === "modules"}
+                  {@render recentItems("modules", project)}
+                {/if}
                 {@render subItem(`/${project.identifier}/pages`, "Pages", FileText)}
+                {#if isProjectActive && activeRecentSection === "pages"}
+                  {@render recentItems("pages", project)}
+                {/if}
                 {@render subItem(`/${project.identifier}/plans`, "Plans", ListChecks)}
+                {#if isProjectActive && activeRecentSection === "plans"}
+                  {@render recentItems("plans", project)}
+                {/if}
                 {@render subItem(`/${project.identifier}/activity`, "Activity", History)}
                 {@render subItem(`/${project.identifier}/insights`, "Insights", TrendingUp)}
               </div>
