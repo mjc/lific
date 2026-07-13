@@ -42,6 +42,10 @@ pub(super) struct PageQuery {
     order_by: Option<String>,
     /// Sort direction: asc (default) or desc.
     order: Option<String>,
+    /// Maximum number of pages to return (clamped by `list_pages`).
+    limit: Option<i64>,
+    /// Number of matching pages to skip before returning results.
+    offset: Option<i64>,
 }
 
 pub(super) async fn list_pages_handler(
@@ -60,8 +64,8 @@ pub(super) async fn list_pages_handler(
                 q.status.as_deref(),
                 q.order_by.as_deref(),
                 q.order.as_deref(),
-                None,
-                None,
+                q.limit,
+                q.offset,
             )
         })
         .map(Json);
@@ -79,8 +83,8 @@ pub(super) async fn list_pages_handler(
             q.status.as_deref(),
             q.order_by.as_deref(),
             q.order.as_deref(),
-            None,
-            None,
+            q.limit,
+            q.offset,
         )
     })?;
     Ok(Json(filter_visible(pages, &visible, |p| p.project_id)))
@@ -321,6 +325,45 @@ mod tests {
         assert_eq!(list.len(), 1);
         assert_eq!(list[0]["title"], "Archived doc");
         assert_eq!(list[0]["status"], "archived");
+    }
+
+    #[tokio::test]
+    async fn list_pages_orders_and_paginates_results() {
+        let app = test_app();
+        let (pid, _) = seed_project(&app).await;
+
+        for title in ["Delta", "Alpha", "Charlie", "Bravo"] {
+            json_post(
+                &app,
+                "/api/pages",
+                serde_json::json!({
+                    "project_id": pid,
+                    "title": title,
+                }),
+            )
+            .await;
+        }
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/pages?project_id={pid}&order_by=title&order=asc&limit=2&offset=1"
+                    ))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let list: Vec<serde_json::Value> = serde_json::from_slice(&bytes).unwrap();
+        let titles: Vec<&str> = list
+            .iter()
+            .map(|page| page["title"].as_str().unwrap())
+            .collect();
+        assert_eq!(titles, ["Bravo", "Charlie"]);
     }
 
     #[tokio::test]

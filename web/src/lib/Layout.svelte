@@ -396,15 +396,24 @@
         ? res.data.sort((a, b) => b.updated_at.localeCompare(a.updated_at)).slice(0, 5)
         : [];
     } else if (section === "pages") {
-      const res = await listPages(projectId, undefined, undefined, undefined, {
-        order_by: "updated",
-        order: "desc",
-      });
+      // Page statuses cannot be negated server-side, so fetch a bounded recent
+      // slice for each visible lifecycle state, then combine the candidates.
+      // This avoids loading every page (and its content) just to omit archived
+      // pages from the five-item sidebar list.
+      const results = await Promise.all(
+        ["draft", "active", "complete"].map((status) =>
+          listPages(projectId, undefined, undefined, status, {
+            order_by: "updated",
+            order: "desc",
+            limit: 5,
+          }),
+        ),
+      );
       if (requestId !== recentRequest) return;
-      // Archived pages are deliberately stashed — keep them out of recents.
-      recentPages = res.ok
-        ? res.data.filter((p) => p.status !== "archived").slice(0, 5)
-        : [];
+      recentPages = results
+        .flatMap((res) => (res.ok ? res.data : []))
+        .sort((a, b) => b.updated_at.localeCompare(a.updated_at) || b.id - a.id)
+        .slice(0, 5);
     } else {
       // Over-fetch so filtering archived plans out can still yield 5 rows.
       const res = await listPlans(projectId, undefined, 10);

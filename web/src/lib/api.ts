@@ -946,6 +946,8 @@ export interface Folder {
 export interface PageListOptions {
   order_by?: "sort_order" | "title" | "status" | "created" | "updated";
   order?: "asc" | "desc";
+  limit?: number;
+  offset?: number;
 }
 
 export async function listPages(
@@ -961,6 +963,8 @@ export async function listPages(
   if (status) params.set("status", status);
   if (options?.order_by) params.set("order_by", options.order_by);
   if (options?.order) params.set("order", options.order);
+  if (options?.limit !== undefined) params.set("limit", String(options.limit));
+  if (options?.offset !== undefined) params.set("offset", String(options.offset));
   return request<Page[]>(`/pages?${params}`);
 }
 
