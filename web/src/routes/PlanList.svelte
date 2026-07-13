@@ -51,6 +51,7 @@
   let createSaving = $state(false);
 
   const STATUS_ORDER = ["active", "done", "archived"];
+  const PLAN_PAGE_SIZE = 500;
   const STATUS_LABEL: Record<string, string> = {
     active: "Active",
     done: "Done",
@@ -69,7 +70,7 @@
 
   $effect(() =>
     startAutoRefresh({
-      refresh: reload,
+      refresh: async () => { await reload(); },
       isBusy: () => creating || createSaving,
       shouldRefresh: (event) =>
         event.type === "resync.required" ||
@@ -88,17 +89,33 @@
     loadProjectRole(found.id); // LIF-234
     const savedTab = loadSubTab("plans", String(found.id), TAB_IDS);
     activeTab = isPlanTab(savedTab) ? savedTab : "active";
-    await reload();
-    if (savedTab === null && plans.length > 0 && !plans.some((p) => p.status === "active")) {
+    const loaded = await reload();
+    if (loaded && savedTab === null && plans.length > 0 && !plans.some((p) => p.status === "active")) {
       activeTab = "all";
     }
     loading = false;
   }
 
   async function reload() {
-    if (!project) return;
-    const res = await listPlans(project.id);
-    if (res.ok) plans = res.data;
+    if (!project) return false;
+    const allPlans: Plan[] = [];
+    let offset = 0;
+
+    while (true) {
+      const res = await listPlans(project.id, undefined, PLAN_PAGE_SIZE, offset);
+      if (!res.ok) {
+        error = res.error;
+        return false;
+      }
+
+      allPlans.push(...res.data);
+      if (res.data.length < PLAN_PAGE_SIZE) {
+        plans = allPlans;
+        error = "";
+        return true;
+      }
+      offset += res.data.length;
+    }
   }
 
   let grouped = $derived.by(() => {
