@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::db::models::*;
 use crate::error::LificError;
@@ -251,7 +251,37 @@ pub fn resolve_page_identifier(conn: &Connection, identifier: &str) -> Result<i6
     }
 }
 
+fn validate_page_folder(
+    conn: &Connection,
+    project_id: Option<i64>,
+    folder_id: Option<i64>,
+) -> Result<(), LificError> {
+    let Some(folder_id) = folder_id else {
+        return Ok(());
+    };
+    let Some(project_id) = project_id else {
+        return Err(LificError::BadRequest(
+            "workspace pages cannot have a folder".into(),
+        ));
+    };
+    let folder_project_id: Option<i64> = conn
+        .query_row(
+            "SELECT project_id FROM folders WHERE id = ?1",
+            params![folder_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    match folder_project_id {
+        Some(folder_project_id) if folder_project_id == project_id => Ok(()),
+        Some(folder_project_id) => Err(LificError::BadRequest(format!(
+            "folder {folder_id} belongs to project {folder_project_id}, not page project {project_id}"
+        ))),
+        None => Err(LificError::BadRequest(format!("folder {folder_id} not found"))),
+    }
+}
+
 pub fn create_page(conn: &Connection, input: &CreatePage) -> Result<Page, LificError> {
+    validate_page_folder(conn, input.project_id, input.folder_id)?;
     let next_seq: i64 = if let Some(pid) = input.project_id {
         conn.query_row(
             "SELECT COALESCE(MAX(sequence), 0) + 1 FROM pages WHERE project_id = ?1",
@@ -297,7 +327,10 @@ pub fn create_page(conn: &Connection, input: &CreatePage) -> Result<Page, LificE
 }
 
 pub fn update_page(conn: &Connection, id: i64, input: &UpdatePage) -> Result<Page, LificError> {
-    get_page(conn, id)?;
+    let page = get_page(conn, id)?;
+    if let Some(folder_id) = input.folder_id {
+        validate_page_folder(conn, page.project_id, folder_id)?;
+    }
     super::savepoint(conn, "update_page", || {
         if let Some(ref title) = input.title {
             conn.execute(
@@ -401,6 +434,19 @@ mod tests {
                 project_id,
                 name: name.into(),
                 color: "#22C55E".into(),
+            },
+        )
+        .unwrap()
+        .id
+    }
+
+    fn seed_folder(conn: &rusqlite::Connection, project_id: i64, name: &str) -> i64 {
+        resources::create_folder(
+            conn,
+            &CreateFolder {
+                project_id,
+                parent_id: None,
+                name: name.into(),
             },
         )
         .unwrap()
@@ -541,6 +587,150 @@ mod tests {
         )
         .unwrap();
         assert_eq!(page.content, "# Title\n\nParagraph");
+    }
+
+    // ── LIF-311: page folder project scope ────────────────────
+
+    #[test]
+    fn create_page_rejects_folder_from_another_project() {
+        let pool = test_db();
+        let conn = pool.write().unwrap();
+        let page_project_id = seed_project(&conn, "ONE");
+        let folder_project_id = seed_project(&conn, "TWO");
+        let folder_id = seed_folder(&conn, folder_project_id, "Other project");
+
+        let result = create_page(
+            &conn,
+            &CreatePage {
+                project_id: Some(page_project_id),
+                folder_id: Some(folder_id),
+                title: "Invalid folder".into(),
+                content: String::new(),
+                status: "draft".into(),
+                labels: vec![],
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(LificError::BadRequest(message))
+                if message == format!(
+                    "folder {folder_id} belongs to project {folder_project_id}, not page project {page_project_id}"
+                )
+        ));
+    }
+
+    #[test]
+    fn update_page_rejects_folder_from_another_project() {
+        let pool = test_db();
+        let conn = pool.write().unwrap();
+        let page_project_id = seed_project(&conn, "ONE");
+        let folder_project_id = seed_project(&conn, "TWO");
+        let folder_id = seed_folder(&conn, folder_project_id, "Other project");
+        let page = create_page(&conn, &blank_page(Some(page_project_id), "Page")).unwrap();
+
+        let result = update_page(
+            &conn,
+            page.id,
+            &UpdatePage {
+                title: None,
+                content: None,
+                folder_id: Some(Some(folder_id)),
+                sort_order: None,
+                status: None,
+                pinned: None,
+                labels: None,
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(LificError::BadRequest(message))
+                if message == format!(
+                    "folder {folder_id} belongs to project {folder_project_id}, not page project {page_project_id}"
+                )
+        ));
+        assert_eq!(get_page(&conn, page.id).unwrap().folder_id, None);
+    }
+
+    #[test]
+    fn workspace_pages_reject_non_null_folders() {
+        let pool = test_db();
+        let conn = pool.write().unwrap();
+        let project_id = seed_project(&conn, "TST");
+        let folder_id = seed_folder(&conn, project_id, "Project folder");
+
+        let create_result = create_page(
+            &conn,
+            &CreatePage {
+                project_id: None,
+                folder_id: Some(folder_id),
+                title: "Workspace page".into(),
+                content: String::new(),
+                status: "draft".into(),
+                labels: vec![],
+            },
+        );
+        assert!(matches!(
+            create_result,
+            Err(LificError::BadRequest(message)) if message == "workspace pages cannot have a folder"
+        ));
+
+        let page = create_page(&conn, &blank_page(None, "Workspace page")).unwrap();
+        let update_result = update_page(
+            &conn,
+            page.id,
+            &UpdatePage {
+                title: None,
+                content: None,
+                folder_id: Some(Some(folder_id)),
+                sort_order: None,
+                status: None,
+                pinned: None,
+                labels: None,
+            },
+        );
+        assert!(matches!(
+            update_result,
+            Err(LificError::BadRequest(message)) if message == "workspace pages cannot have a folder"
+        ));
+    }
+
+    #[test]
+    fn update_page_allows_clearing_folder() {
+        let pool = test_db();
+        let conn = pool.write().unwrap();
+        let project_id = seed_project(&conn, "TST");
+        let folder_id = seed_folder(&conn, project_id, "Folder");
+        let page = create_page(
+            &conn,
+            &CreatePage {
+                project_id: Some(project_id),
+                folder_id: Some(folder_id),
+                title: "Page".into(),
+                content: String::new(),
+                status: "draft".into(),
+                labels: vec![],
+            },
+        )
+        .unwrap();
+
+        let updated = update_page(
+            &conn,
+            page.id,
+            &UpdatePage {
+                title: None,
+                content: None,
+                folder_id: Some(None),
+                sort_order: None,
+                status: None,
+                pinned: None,
+                labels: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(updated.folder_id, None);
     }
 
     // ── LIF-105: page labels ─────────────────────────────────
