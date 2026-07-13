@@ -317,6 +317,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn plan_list_id_cursor_pages_without_duplicates_and_rejects_invalid_ordering() {
+        let app = test_app();
+        let (project_id, _) = seed_project(&app).await;
+        for title in ["First", "Second", "Third"] {
+            let response = json_post(
+                &app,
+                "/api/plans",
+                serde_json::json!({"project_id": project_id, "title": title}),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+
+        let first = body_json(json_get(&app, &format!("/api/plans?project_id={project_id}&order_by=id&limit=2")).await).await;
+        let first = first.as_array().unwrap();
+        assert_eq!(first.len(), 2);
+        let first_ids = first.iter().map(|plan| plan["id"].as_i64().unwrap()).collect::<Vec<_>>();
+        let cursor_id = first[1]["id"].as_i64().unwrap();
+
+        let response = json_get(
+            &app,
+            &format!(
+                "/api/plans?project_id={project_id}&order_by=id&limit=2&before_id={cursor_id}"
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let second = body_json(response).await;
+        let second = second.as_array().unwrap();
+        assert_eq!(second.len(), 1);
+        assert!(!first_ids.contains(&second[0]["id"].as_i64().unwrap()));
+
+        for query in [
+            format!("/api/plans?project_id={project_id}&before_id={cursor_id}"),
+            format!("/api/plans?project_id={project_id}&order_by=updated&before_id={cursor_id}"),
+            format!("/api/plans?project_id={project_id}&order_by=created"),
+        ] {
+            let response = json_get(&app, &query).await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        }
+    }
+
+    #[tokio::test]
     async fn completing_cross_project_linked_step_emits_issue_updated_for_issue_project() {
         let test = test_app_with_realtime();
         let (plan_project_id, _) = seed_project(&test.app).await;

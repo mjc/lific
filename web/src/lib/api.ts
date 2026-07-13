@@ -1350,16 +1350,24 @@ export interface StepDoneEffect {
   issue_new_status?: string;
 }
 
+export interface PlanListOptions {
+  order_by?: "updated" | "id";
+  before_id?: number;
+}
+
 export async function listPlans(
   projectId: number,
   status?: string,
   limit?: number,
   offset?: number,
+  options?: PlanListOptions,
 ) {
   const params = new URLSearchParams({ project_id: String(projectId) });
   if (status) params.set("status", status);
   if (limit !== undefined) params.set("limit", String(limit));
   if (offset !== undefined) params.set("offset", String(offset));
+  if (options?.order_by) params.set("order_by", options.order_by);
+  if (options?.before_id !== undefined) params.set("before_id", String(options.before_id));
   return request<Plan[]>(`/plans?${params}`);
 }
 

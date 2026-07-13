@@ -789,6 +789,10 @@ pub struct ListPlansQuery {
     pub status: Option<String>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
+    /// Sort mode: `updated` (default) or immutable `id` for stable scans.
+    pub order_by: Option<String>,
+    /// Keyset cursor for `order_by=id` scans.
+    pub before_id: Option<i64>,
 }
 
 // ── Saved views (LIF-242) ────────────────────────────────────

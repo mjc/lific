@@ -45,6 +45,8 @@
   let plans = $state<Plan[]>([]);
   let loading = $state(true);
   let error = $state("");
+  let projectRequest = 0;
+  let reloadRequest = 0;
 
   let creating = $state(false);
   let createTitle = $state("");
@@ -65,7 +67,7 @@
 
   $effect(() => {
     const id = projectIdentifier;
-    loadData(id);
+    void loadData(id);
   });
 
   $effect(() =>
@@ -79,9 +81,11 @@
   );
 
   async function loadData(ident: string) {
+    const request = ++projectRequest;
     loading = true;
     error = "";
     const projRes = await listProjects();
+    if (!isCurrentProjectRequest(request, ident)) return;
     if (!projRes.ok) { error = projRes.error; loading = false; return; }
     const found = projRes.data.find((p) => p.identifier === ident);
     if (!found) { error = `Project ${ident} not found`; loading = false; return; }
@@ -89,32 +93,55 @@
     loadProjectRole(found.id); // LIF-234
     const savedTab = loadSubTab("plans", String(found.id), TAB_IDS);
     activeTab = isPlanTab(savedTab) ? savedTab : "active";
-    const loaded = await reload();
+    const loaded = await reload(found.id, request);
+    if (!isCurrentProjectRequest(request, ident)) return;
     if (loaded && savedTab === null && plans.length > 0 && !plans.some((p) => p.status === "active")) {
       activeTab = "all";
     }
     loading = false;
   }
 
-  async function reload() {
-    if (!project) return false;
+  function isCurrentProjectRequest(request: number, ident: string) {
+    return request === projectRequest && projectIdentifier === ident;
+  }
+
+  async function reload(projectId = project?.id, expectedProjectRequest = projectRequest) {
+    if (projectId === undefined) return false;
+    const request = ++reloadRequest;
+    const isCurrent = () =>
+      request === reloadRequest &&
+      expectedProjectRequest === projectRequest &&
+      project?.id === projectId;
     const allPlans: Plan[] = [];
-    let offset = 0;
+    const seenIds = new Set<number>();
+    let beforeId: number | undefined;
 
     while (true) {
-      const res = await listPlans(project.id, undefined, PLAN_PAGE_SIZE, offset);
+      const res = await listPlans(projectId, undefined, PLAN_PAGE_SIZE, undefined, {
+        order_by: "id",
+        before_id: beforeId,
+      });
+      if (!isCurrent()) return false;
       if (!res.ok) {
         error = res.error;
         return false;
       }
 
-      allPlans.push(...res.data);
+      for (const plan of res.data) {
+        if (!seenIds.has(plan.id)) {
+          seenIds.add(plan.id);
+          allPlans.push(plan);
+        }
+      }
       if (res.data.length < PLAN_PAGE_SIZE) {
+        if (!isCurrent()) return false;
+        allPlans.sort((a, b) => b.updated_at.localeCompare(a.updated_at) || b.id - a.id);
         plans = allPlans;
         error = "";
         return true;
       }
-      offset += res.data.length;
+      const last = res.data[res.data.length - 1];
+      beforeId = last.id;
     }
   }
 

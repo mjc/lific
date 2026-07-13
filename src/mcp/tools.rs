@@ -1717,6 +1717,7 @@ impl LificMcp {
                             status: input.status.clone(),
                             limit: Some(limit),
                             offset: Some(offset),
+                            ..Default::default()
                         },
                     )
                 }) {

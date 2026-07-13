@@ -168,6 +168,20 @@ pub fn list_plans(conn: &Connection, q: &ListPlansQuery) -> Result<Vec<Plan>, Li
     );
     let mut conditions: Vec<String> = Vec::new();
     let mut pv: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    let order_by = match q.order_by.as_deref() {
+        None | Some("updated") => "pl.updated_at DESC, pl.id DESC",
+        Some("id") => "pl.id DESC",
+        Some(order_by) => {
+            return Err(LificError::BadRequest(format!(
+                "invalid plan order_by '{order_by}'. Use updated or id."
+            )));
+        }
+    };
+    if q.before_id.is_some() && q.order_by.as_deref() != Some("id") {
+        return Err(LificError::BadRequest(
+            "before_id requires order_by=id".into(),
+        ));
+    }
 
     if let Some(pid) = q.project_id {
         conditions.push(format!("pl.project_id = ?{}", pv.len() + 1));
@@ -177,18 +191,27 @@ pub fn list_plans(conn: &Connection, q: &ListPlansQuery) -> Result<Vec<Plan>, Li
         conditions.push(format!("pl.status = ?{}", pv.len() + 1));
         pv.push(Box::new(status.clone()));
     }
+    if let Some(before_id) = q.before_id {
+        conditions.push(format!("pl.id < ?{}", pv.len() + 1));
+        pv.push(Box::new(before_id));
+    }
     if !conditions.is_empty() {
         inner.push_str(" WHERE ");
         inner.push_str(&conditions.join(" AND "));
     }
-    inner.push_str(" ORDER BY pl.updated_at DESC, pl.id DESC");
+    inner.push_str(&format!(" ORDER BY {order_by}"));
 
     // LIF-141 class: clamp limit to a sane bound, never unbounded/negative.
     let limit = q.limit.unwrap_or(50).clamp(1, 500);
-    let offset = q.offset.unwrap_or(0).max(0);
-    inner.push_str(&format!(" LIMIT ?{} OFFSET ?{}", pv.len() + 1, pv.len() + 2));
-    pv.push(Box::new(limit));
-    pv.push(Box::new(offset));
+    if q.before_id.is_some() {
+        inner.push_str(&format!(" LIMIT ?{}", pv.len() + 1));
+        pv.push(Box::new(limit));
+    } else {
+        let offset = q.offset.unwrap_or(0).max(0);
+        inner.push_str(&format!(" LIMIT ?{} OFFSET ?{}", pv.len() + 1, pv.len() + 2));
+        pv.push(Box::new(limit));
+        pv.push(Box::new(offset));
+    }
 
     let sql = format!(
         "SELECT pl.id, pl.project_id, pl.sequence, p.identifier, pl.issue_id, pl.title,
@@ -202,7 +225,7 @@ pub fn list_plans(conn: &Connection, q: &ListPlansQuery) -> Result<Vec<Plan>, Li
          JOIN projects p ON p.id = pl.project_id
          LEFT JOIN plan_steps s ON s.plan_id = pl.id
          GROUP BY pl.id
-         ORDER BY pl.updated_at DESC, pl.id DESC"
+          ORDER BY {order_by}"
     );
 
     let refs: Vec<&dyn rusqlite::types::ToSql> = pv.iter().map(|p| p.as_ref()).collect();
@@ -1013,16 +1036,114 @@ mod tests {
         for i in 0..5 {
             create_plan(&conn, &CreatePlan { project_id: pid, title: format!("Plan {i}"), issue_id: None, steps: vec![simple_step("s", None)] }).unwrap();
         }
-        let page = list_plans(&conn, &ListPlansQuery { project_id: Some(pid), status: None, limit: Some(2), offset: Some(0) }).unwrap();
+        let page = list_plans(&conn, &ListPlansQuery { project_id: Some(pid), status: None, limit: Some(2), offset: Some(0), ..Default::default() }).unwrap();
         assert_eq!(page.len(), 2);
         // Newest (highest id / latest updated_at) first.
         assert_eq!(page[0].title, "Plan 4");
         assert_eq!(page[1].title, "Plan 3");
         assert_eq!(page[0].step_count, 1);
 
-        let next = list_plans(&conn, &ListPlansQuery { project_id: Some(pid), status: None, limit: Some(2), offset: Some(2) }).unwrap();
+        let next = list_plans(&conn, &ListPlansQuery { project_id: Some(pid), status: None, limit: Some(2), offset: Some(2), ..Default::default() }).unwrap();
         assert_eq!(next.len(), 2);
         assert_eq!(next[0].title, "Plan 2");
+    }
+
+    #[test]
+    fn list_plans_id_cursor_is_stable_across_updated_at_changes() {
+        let pool = test_db();
+        let conn = pool.write().unwrap();
+        let pid = seed_project(&conn, "TST");
+        let first_created = create_plan(&conn, &CreatePlan { project_id: pid, title: "First".into(), issue_id: None, steps: vec![] }).unwrap();
+        let second_created = create_plan(&conn, &CreatePlan { project_id: pid, title: "Second".into(), issue_id: None, steps: vec![] }).unwrap();
+        let third_created = create_plan(&conn, &CreatePlan { project_id: pid, title: "Third".into(), issue_id: None, steps: vec![] }).unwrap();
+        let fourth_created = create_plan(&conn, &CreatePlan { project_id: pid, title: "Fourth".into(), issue_id: None, steps: vec![] }).unwrap();
+        conn.execute("DROP TRIGGER plans_updated", []).unwrap();
+        conn.execute(
+            "UPDATE plans SET updated_at = '2020-01-01 00:00:00' WHERE project_id = ?1",
+            params![pid],
+        )
+        .unwrap();
+
+        let first = list_plans(
+            &conn,
+            &ListPlansQuery {
+                project_id: Some(pid),
+                order_by: Some("id".into()),
+                limit: Some(2),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(first.iter().map(|plan| plan.id).collect::<Vec<_>>(), vec![fourth_created.id, third_created.id]);
+
+        // An unseen row can move in updated-at order between requests without
+        // crossing an immutable id cursor boundary.
+        conn.execute(
+            "UPDATE plans SET updated_at = '2021-01-01 00:00:00' WHERE id = ?1",
+            params![second_created.id],
+        )
+        .unwrap();
+
+        let cursor = first.last().unwrap();
+        let second = list_plans(
+            &conn,
+            &ListPlansQuery {
+                project_id: Some(pid),
+                order_by: Some("id".into()),
+                limit: Some(2),
+                before_id: Some(cursor.id),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(second.iter().map(|plan| plan.id).collect::<Vec<_>>(), vec![second_created.id, first_created.id]);
+
+        let default_order = list_plans(
+            &conn,
+            &ListPlansQuery { project_id: Some(pid), ..Default::default() },
+        )
+        .unwrap();
+        assert_eq!(default_order[0].id, second_created.id, "default ordering remains updated_at DESC, id DESC");
+    }
+
+    #[test]
+    fn list_plans_rejects_invalid_id_cursor_ordering() {
+        let pool = test_db();
+        let conn = pool.write().unwrap();
+        let pid = seed_project(&conn, "TST");
+
+        for (query, message) in [
+            (
+                ListPlansQuery {
+                    project_id: Some(pid),
+                    before_id: Some(1),
+                    ..Default::default()
+                },
+                "before_id requires order_by=id",
+            ),
+            (
+                ListPlansQuery {
+                    project_id: Some(pid),
+                    order_by: Some("updated".into()),
+                    before_id: Some(1),
+                    ..Default::default()
+                },
+                "before_id requires order_by=id",
+            ),
+            (
+                ListPlansQuery {
+                    project_id: Some(pid),
+                    order_by: Some("created".into()),
+                    ..Default::default()
+                },
+                "invalid plan order_by 'created'. Use updated or id.",
+            ),
+        ] {
+            assert!(matches!(
+                list_plans(&conn, &query),
+                Err(LificError::BadRequest(error)) if error == message
+            ));
+        }
     }
 
     // ── Audit coverage (LIF-176) ──
