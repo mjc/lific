@@ -30,16 +30,6 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
   );
 }
 
-// The section's thesis in one sentence: display face, near-title size,
-// full-contrast. Everything after it reads as support.
-function Lede({ children }: { children: React.ReactNode }) {
-  return (
-    <p className="mt-8 max-w-[44ch] font-display text-[clamp(1.375rem,2.4vw,1.75rem)] font-medium leading-snug text-text">
-      {children}
-    </p>
-  );
-}
-
 // Landing-prose paragraph: bigger than app body, muted, capped measure.
 function Body({
   children,
@@ -249,8 +239,7 @@ export default function Home() {
             <div className="flex items-end justify-between gap-8">
               <div className="max-w-4xl">
                 <SectionTitle>agents</SectionTitle>
-                <Lede>One command connects them.</Lede>
-                <Body>
+                <Body className="mt-8">
                   <Cmd>lific connect</Cmd> detects the AI tools installed on
                   your machine and writes the MCP config for each one you
                   pick:
@@ -349,12 +338,9 @@ export default function Home() {
         <section className="band mt-[clamp(8rem,18vh,11rem)] py-[clamp(3.5rem,8vh,5.5rem)]">
           <Reveal>
             <SectionTitle>humans</SectionTitle>
-            <Lede>
-              Agents work over MCP. You get the whole picture in a browser.
-            </Lede>
-            <Body>
-              The same binary serves a full web UI at{" "}
-              <Cmd>localhost:3456</Cmd>: an issue list, a kanban board, documents, modules, and{" "}
+            <Body className="mt-8">
+              Agents work over MCP. Humans get a full web UI in the same
+              binary, at <Cmd>localhost:3456</Cmd>: an issue list, a kanban board, documents, modules, and{" "}
               <Em>comment threads where you and your agents talk to each
               other</Em>. Dark mode is the default, with accent presets and a
               light theme in settings.
@@ -381,8 +367,7 @@ export default function Home() {
         <section className="mt-[clamp(8rem,18vh,11rem)]">
           <Reveal>
             <SectionTitle>teams</SectionTitle>
-            <Lede>The sprint is the plan.</Lede>
-            <Body>
+            <Body className="mt-8">
               Before an agent writes code, it writes a plan: a tree of steps,
               nested wherever a step needs its own sub-steps. Lific stores
               that tree in the tracker and ties each step to a real issue.{" "}
@@ -403,12 +388,10 @@ export default function Home() {
           </Reveal>
 
           <Reveal delay={150}>
-            <p className="mt-9 max-w-[40ch] font-display text-title font-medium leading-snug text-text">
-              Planning a quarter is the same act as planning a coding session.
-            </p>
-            <Body>
-              Just a longer tree: steps and sub-steps checked off one by one,
-              top to bottom.
+            <Body className="mt-9">
+              Planning a quarter is the same act as planning a coding
+              session, just a longer tree: steps and sub-steps checked off
+              one by one, top to bottom.
             </Body>
             <ul className="mt-8 max-w-4xl">
               <li className="border-t border-border/60 py-4 text-body leading-relaxed">
@@ -444,9 +427,9 @@ export default function Home() {
         <section className="band mt-[clamp(8rem,18vh,11rem)] py-[clamp(3.5rem,8vh,5.5rem)]">
           <Reveal>
             <SectionTitle>everyone</SectionTitle>
-            <Lede>Setup takes about a minute.</Lede>
-            <Body>
-              <Cmd>lific init</Cmd> writes the config, creates the database,
+            <Body className="mt-8">
+              Setup takes about a minute. <Cmd>lific init</Cmd> writes the
+              config, creates the database,
               and prints your API key once. It also registers a background
               service, so <Em>the server is still running tomorrow</Em>.{" "}
               <Cmd>lific connect</Cmd> finds the AI tools on your machine and
@@ -493,8 +476,8 @@ export default function Home() {
           <div className="flex flex-col items-start gap-8 py-[clamp(3rem,7vh,4.5rem)] sm:flex-row sm:items-center sm:justify-between">
             <div>
               <p className="max-w-[24ch] font-display text-[clamp(1.75rem,4vw,2.75rem)] font-semibold leading-tight tracking-tight">
-                Runs on your hardware.{" "}
-                <span className="brand-gradient-text">Answers to no one.</span>
+                Runs on{" "}
+                <span className="brand-gradient-text">your hardware.</span>
               </p>
               <div className="mt-8 flex flex-wrap items-center gap-4">
                 <a

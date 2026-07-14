@@ -19,6 +19,7 @@ export const metadata: Metadata = {
   title: "Lific · An issue tracker for prolific agents",
   description:
     "A free, self-hosted issue tracker built for coding agents. Single binary, native MCP. Plans and issues live on your server instead of in the context window, so work outlives the session.",
+  alternates: { canonical: "https://lific.dev" },
   openGraph: {
     title: "Lific · An issue tracker for prolific agents",
     description:
