@@ -3,6 +3,18 @@ import { Composition, Still } from "remotion";
 import { Ad } from "./Ad";
 import { AdB, TOTAL_FRAMES_B } from "./AdB";
 import { Hero } from "./Hero";
+import {
+  BoardLoop,
+  BOARD_LOOP_W,
+  BOARD_LOOP_H,
+  BOARD_LOOP_FRAMES,
+} from "./BoardLoop";
+import {
+  PlanSync,
+  PLAN_SYNC_W,
+  PLAN_SYNC_H,
+  PLAN_SYNC_FRAMES,
+} from "./PlanSync";
 import { TOTAL_FRAMES } from "./timing";
 import { FPS, WIDTH, HEIGHT } from "./theme";
 import "./index.css";
@@ -26,6 +38,24 @@ export const RemotionRoot: React.FC = () => {
         fps={FPS}
         width={WIDTH}
         height={HEIGHT}
+      />
+      {/* Landing-page board loop: bunx remotion render BoardLoop ../site/public/board-loop.mp4 */}
+      <Composition
+        id="BoardLoop"
+        component={BoardLoop}
+        durationInFrames={BOARD_LOOP_FRAMES}
+        fps={FPS}
+        width={BOARD_LOOP_W}
+        height={BOARD_LOOP_H}
+      />
+      {/* Landing-page plan-sync loop: bunx remotion render PlanSync ../site/public/plan-sync.mp4 */}
+      <Composition
+        id="PlanSync"
+        component={PlanSync}
+        durationInFrames={PLAN_SYNC_FRAMES}
+        fps={FPS}
+        width={PLAN_SYNC_W}
+        height={PLAN_SYNC_H}
       />
       {/* README hero image: npx remotion still Hero ../LificHero.png */}
       <Still id="Hero" component={Hero} width={1920} height={1080} />
