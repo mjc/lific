@@ -1,56 +1,251 @@
 @import "tailwindcss";
 
+/*
+ * Tokens copied verbatim from the product's dark theme —
+ * web/src/app.css (`.dark` block + @theme palette) — per the UI
+ * Guidelines page (LIF-DOC-14). The landing page IS the product's
+ * design system: same sage-tinted dark neutrals, same three-tier
+ * elevation, same indigo accent, same green CTA.
+ * If web/src/app.css changes, re-sync these.
+ */
+
 :root {
-  /* Warm paper, tinted faintly toward the indigo brand hue */
-  --paper: oklch(0.972 0.006 90);
-  --paper-raised: oklch(0.99 0.004 95);
-  --ink: oklch(0.24 0.015 285);
-  --ink-soft: oklch(0.45 0.02 285);
-  --ink-faint: oklch(0.58 0.015 285);
-  --line: oklch(0.87 0.012 285);
-  --line-soft: oklch(0.92 0.008 285);
+  /* Three-tier elevation (dark): bg = recessed floor, bg-subtle =
+     inset wells, surface = focal cards, chrome = the floating shell. */
+  --bg: #0d1110;
+  --bg-subtle: #171c1a;
+  --surface: #252c29;
+  --chrome: #1c221f;
+  --text: #e3e8e6;
+  --text-muted: #9ea9a3;
+  --text-faint: #8a978f;
+  --border: #3d4842;
 
-  /* Brand indigo (matches the app's indigo-600 accent) */
-  --accent: oklch(0.51 0.19 278);
-  --accent-deep: oklch(0.42 0.19 278);
-  --accent-wash: oklch(0.94 0.025 278);
+  /* Accent — indigo-400 family. Accent, NOT the CTA color (LIF-DOC-14 §1). */
+  --accent: #9287d7;
+  --accent-hover: #7566c0;
+  --accent-text: #141210; /* stone-950 */
+  --accent-subtle: #231e3a;
 
-  /* Terminal block — the one dark surface on the page */
-  --term: oklch(0.25 0.025 285);
-  --term-ink: oklch(0.93 0.01 285);
-  --term-faint: oklch(0.62 0.02 285);
-  --term-green: oklch(0.78 0.14 160);
+  /* Semantic green: --success for prompts/ticks, --btn-success for CTAs. */
+  --success: #4ade80;
+  --btn-success: #3bb266;
+  --btn-success-hover: #54c97e;
+  --btn-success-text: #141210;
+
+  /* Brand lizard green, sampled from logo.webp (top-left -> bottom-right). */
+  --brand-hi: #57fa56;
+  --brand-lo: #4cd748;
+}
+
+/* The logo's own gradient, applied to text. Falls back to flat brand
+   green where background-clip: text is unsupported, and carries slack
+   for descenders (clip-to-text crops them under tight line-height). */
+.brand-gradient-text {
+  color: var(--brand-lo);
+  display: inline-block;
+  padding-bottom: 0.06em;
+  margin-bottom: -0.06em;
+}
+@supports (background-clip: text) or (-webkit-background-clip: text) {
+  .brand-gradient-text {
+    background: linear-gradient(135deg, var(--brand-hi), var(--brand-lo));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    -webkit-text-fill-color: transparent;
+  }
+}
+/* Clipped glyphs ignore ::selection color; restore visible selection. */
+.brand-gradient-text::selection {
+  -webkit-text-fill-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-subtle);
 }
 
 @theme inline {
-  --color-paper: var(--paper);
-  --color-paper-raised: var(--paper-raised);
-  --color-ink: var(--ink);
-  --color-ink-soft: var(--ink-soft);
-  --color-ink-faint: var(--ink-faint);
-  --color-line: var(--line);
-  --color-line-soft: var(--line-soft);
+  --color-bg: var(--bg);
+  --color-bg-subtle: var(--bg-subtle);
+  --color-surface: var(--surface);
+  --color-chrome: var(--chrome);
+  --color-text: var(--text);
+  --color-text-muted: var(--text-muted);
+  --color-text-faint: var(--text-faint);
+  --color-border: var(--border);
   --color-accent: var(--accent);
-  --color-accent-deep: var(--accent-deep);
-  --color-accent-wash: var(--accent-wash);
-  --color-term: var(--term);
-  --color-term-ink: var(--term-ink);
-  --color-term-faint: var(--term-faint);
-  --color-term-green: var(--term-green);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-text: var(--accent-text);
+  --color-accent-subtle: var(--accent-subtle);
+  --color-success: var(--success);
+  --color-btn-success: var(--btn-success);
+  --color-btn-success-hover: var(--btn-success-hover);
+  --color-btn-success-text: var(--btn-success-text);
 
-  --font-sans: var(--font-instrument-sans), ui-sans-serif, sans-serif;
-  --font-serif: var(--font-instrument-serif), ui-serif, Georgia, serif;
-  --font-mono: var(--font-jetbrains-mono), ui-monospace, monospace;
+  /* Product font roles — web/src/app.css @theme */
+  --font-display: var(--font-space-grotesk), "DM Sans", -apple-system,
+    sans-serif;
+  --font-body: var(--font-dm-sans), -apple-system, BlinkMacSystemFont,
+    sans-serif;
+  --font-mono: ui-monospace, "Cascadia Code", "Fira Code", monospace;
+
+  /* Role-based type scale (LIF-DOC-14 §2) — same eight steps, plus the
+     display sizes get to stretch on a marketing page via clamp at the
+     call site. Never text-sm / text-base. */
+  --text-micro: 0.6875rem;
+  --text-caption: 0.75rem;
+  --text-body-sm: 0.8125rem;
+  --text-body: 0.875rem;
+  --text-body-lg: 0.9375rem;
+  --text-heading: 1.125rem;
+  --text-title: 1.375rem;
+  --text-display: 1.75rem;
+  /* Marketing-only addition to the product scale: reading size for
+     landing-page prose. The app never needs it; a pitch page does. */
+  --text-lead: 1.0625rem;
+
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 body {
-  background: var(--paper);
-  color: var(--ink);
-  font-family: var(--font-instrument-sans), ui-sans-serif, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-dm-sans), -apple-system, sans-serif;
+  line-height: 1.6;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  /* Full-bleed section bands use 100vw pseudo-elements. */
+  overflow-x: clip;
+}
+
+/* ── Full-bleed elevation bands ─────────────────────────
+   The product's three-tier elevation, applied to page sections:
+   alternating sections sit on a --bg-subtle band that runs edge to
+   edge while the content stays in the centered column. */
+.band {
+  position: relative;
+  isolation: isolate;
+}
+.band::before {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  left: 50%;
+  width: 100vw;
+  transform: translateX(-50%);
+  z-index: -1;
+  background: var(--bg-subtle);
+  border-block: 1px solid color-mix(in oklab, var(--border) 45%, transparent);
+}
+
+/* The closing band steps up one more tier and wears the brand rule.
+   The base band's 1px top border is dropped so it doesn't stack under
+   the 2px gradient rule. */
+.band-finale::before {
+  background: var(--chrome);
+  border-block-start: 0;
+}
+.band-finale::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 100vw;
+  height: 2px;
+  transform: translateX(-50%);
+  background: linear-gradient(90deg, var(--brand-hi), var(--brand-lo));
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--font-space-grotesk), sans-serif;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
 }
 
 ::selection {
-  background: var(--accent-wash);
-  color: var(--accent-deep);
+  background: var(--accent-subtle);
+  color: var(--accent);
+}
+
+/* Auto-linked identifier chip, verbatim from .prose .identifier-link
+   (web/src/app.css) — mono accent text on an accent-subtle pill. */
+.identifier-link {
+  font-family: var(--font-mono);
+  font-size: 0.8125em;
+  font-weight: 500;
+  color: var(--accent);
+  background: var(--accent-subtle);
+  padding: 0.1em 0.4em;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+/* Reveal animation + stagger delays (LIF-DOC-14 §9). */
+@keyframes reveal {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-reveal {
+  opacity: 0;
+  animation: reveal 0.5s var(--ease-out-expo) forwards;
+}
+.delay-100 {
+  animation-delay: 0.1s;
+}
+.delay-150 {
+  animation-delay: 0.15s;
+}
+.delay-200 {
+  animation-delay: 0.2s;
+}
+.delay-250 {
+  animation-delay: 0.25s;
+}
+.delay-300 {
+  animation-delay: 0.3s;
+}
+/* Scroll-entry reveals: hidden until the Reveal component sees the
+   element enter the viewport, then the same reveal keyframe plays. */
+.reveal-pending {
+  opacity: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  .animate-reveal {
+    animation: none;
+    opacity: 1;
+  }
+  .reveal-pending {
+    opacity: 1;
+  }
+}
+
+/* Themed scrollbars, same recipe as the product (LIF-DOC-14 §11). */
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background-color: var(--border);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background-color: var(--text-faint);
+  background-clip: padding-box;
+}
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
 }

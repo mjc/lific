@@ -1,0 +1,17 @@
+{
+  // lific.dev production hosting: a static-assets Worker serving the
+  // Next.js export from ./out. Deploy with `bun run deploy` (builds
+  // first) or `bunx wrangler deploy` if out/ is fresh.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "lific-dev-site",
+  "compatibility_date": "2026-07-14",
+  "assets": {
+    "directory": "./out",
+    "html_handling": "auto-trailing-slash",
+    "not_found_handling": "404-page"
+  },
+  "routes": [
+    { "pattern": "lific.dev", "custom_domain": true },
+    { "pattern": "www.lific.dev", "custom_domain": true }
+  ]
+}

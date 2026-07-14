@@ -1,41 +1,51 @@
-import type { Metadata } from "next";
-import {
-  Instrument_Sans,
-  Instrument_Serif,
-  JetBrains_Mono,
-} from "next/font/google";
+import type { Metadata, Viewport } from "next";
+import { DM_Sans, Space_Grotesk } from "next/font/google";
 import "./globals.css";
 
-const instrumentSans = Instrument_Sans({
-  variable: "--font-instrument-sans",
+// Same faces the product web UI loads (web/index.html).
+const spaceGrotesk = Space_Grotesk({
+  variable: "--font-space-grotesk",
   subsets: ["latin"],
+  weight: ["400", "500", "600", "700"],
 });
 
-const instrumentSerif = Instrument_Serif({
-  variable: "--font-instrument-serif",
-  weight: "400",
-  style: ["normal", "italic"],
-  subsets: ["latin"],
-});
-
-const jetbrainsMono = JetBrains_Mono({
-  variable: "--font-jetbrains-mono",
+const dmSans = DM_Sans({
+  variable: "--font-dm-sans",
   subsets: ["latin"],
 });
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://lific.dev"),
-  title: "Lific — Issue tracking for the agentic coding era",
+  title: "Lific · An issue tracker for prolific agents",
   description:
-    "A self-hosted, single-binary issue tracker whose primary user is often an agent. One binary, one SQLite database, MCP built in. Free and open source.",
+    "A free, self-hosted issue tracker built for coding agents. Single binary, native MCP. Plans and issues live on your server instead of in the context window, so work outlives the session.",
   openGraph: {
-    title: "Lific — Issue tracking for the agentic coding era",
+    title: "Lific · An issue tracker for prolific agents",
     description:
-      "One binary. One SQLite database. MCP built in. Install it with a single command.",
+      "An issue tracker built for coding agents. Plans and issues live on your server instead of in the context window, so work outlives the session.",
     url: "https://lific.dev",
     siteName: "Lific",
     type: "website",
+    images: [
+      {
+        url: "/og.png",
+        width: 1920,
+        height: 1080,
+        alt: "The Lific logo over the kanban board of the Lific web UI",
+      },
+    ],
   },
+  twitter: {
+    card: "summary_large_image",
+    title: "Lific · An issue tracker for prolific agents",
+    description:
+      "An issue tracker built for coding agents. Plans and issues live on your server instead of in the context window.",
+    images: ["/og.png"],
+  },
+};
+
+export const viewport: Viewport = {
+  themeColor: "#0d1110",
 };
 
 export default function RootLayout({
@@ -46,9 +56,15 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`${instrumentSans.variable} ${instrumentSerif.variable} ${jetbrainsMono.variable} h-full antialiased`}
+      className={`${spaceGrotesk.variable} ${dmSans.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col">{children}</body>
+      <body className="min-h-full flex flex-col">
+        {/* Reveal gates content behind JS; without it, show everything. */}
+        <noscript>
+          <style>{`.reveal-pending{opacity:1}`}</style>
+        </noscript>
+        {children}
+      </body>
     </html>
   );
 }
