@@ -1,0 +1,56 @@
+@import "tailwindcss";
+
+:root {
+  /* Warm paper, tinted faintly toward the indigo brand hue */
+  --paper: oklch(0.972 0.006 90);
+  --paper-raised: oklch(0.99 0.004 95);
+  --ink: oklch(0.24 0.015 285);
+  --ink-soft: oklch(0.45 0.02 285);
+  --ink-faint: oklch(0.58 0.015 285);
+  --line: oklch(0.87 0.012 285);
+  --line-soft: oklch(0.92 0.008 285);
+
+  /* Brand indigo (matches the app's indigo-600 accent) */
+  --accent: oklch(0.51 0.19 278);
+  --accent-deep: oklch(0.42 0.19 278);
+  --accent-wash: oklch(0.94 0.025 278);
+
+  /* Terminal block — the one dark surface on the page */
+  --term: oklch(0.25 0.025 285);
+  --term-ink: oklch(0.93 0.01 285);
+  --term-faint: oklch(0.62 0.02 285);
+  --term-green: oklch(0.78 0.14 160);
+}
+
+@theme inline {
+  --color-paper: var(--paper);
+  --color-paper-raised: var(--paper-raised);
+  --color-ink: var(--ink);
+  --color-ink-soft: var(--ink-soft);
+  --color-ink-faint: var(--ink-faint);
+  --color-line: var(--line);
+  --color-line-soft: var(--line-soft);
+  --color-accent: var(--accent);
+  --color-accent-deep: var(--accent-deep);
+  --color-accent-wash: var(--accent-wash);
+  --color-term: var(--term);
+  --color-term-ink: var(--term-ink);
+  --color-term-faint: var(--term-faint);
+  --color-term-green: var(--term-green);
+
+  --font-sans: var(--font-instrument-sans), ui-sans-serif, sans-serif;
+  --font-serif: var(--font-instrument-serif), ui-serif, Georgia, serif;
+  --font-mono: var(--font-jetbrains-mono), ui-monospace, monospace;
+}
+
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-instrument-sans), ui-sans-serif, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: var(--accent-wash);
+  color: var(--accent-deep);
+}
