@@ -195,10 +195,44 @@
     title: string;
     identifier?: string;
     sub?: string;
+    subIsSnippet?: boolean;
     emoji?: string | null;
     route: string;
     score: number;
   };
+
+  type SnippetSegment = { text: string; highlighted: boolean };
+
+  /** Split paired FTS `**match**` markers without interpreting any HTML. */
+  function snippetSegments(snippet: string): SnippetSegment[] {
+    const segments: SnippetSegment[] = [];
+    let cursor = 0;
+
+    while (cursor < snippet.length) {
+      const start = snippet.indexOf("**", cursor);
+      if (start === -1) {
+        segments.push({ text: snippet.slice(cursor), highlighted: false });
+        break;
+      }
+
+      const end = snippet.indexOf("**", start + 2);
+      if (end === -1) {
+        // An unmatched trailing marker is content, not formatting.
+        segments.push({ text: snippet.slice(cursor), highlighted: false });
+        break;
+      }
+
+      if (start > cursor) {
+        segments.push({ text: snippet.slice(cursor, start), highlighted: false });
+      }
+      if (end > start + 2) {
+        segments.push({ text: snippet.slice(start + 2, end), highlighted: true });
+      }
+      cursor = end + 2;
+    }
+
+    return segments;
+  }
 
   const GROUP_ORDER: PaletteResult["kind"][] = [
     "issue", "page", "project", "module", "folder",
@@ -456,6 +490,7 @@
           title: r.title,
           identifier: r.identifier ?? undefined,
           sub: r.snippet || project?.name,
+          subIsSnippet: Boolean(r.snippet),
           route,
           score: 1 - i * 0.03,
         });
@@ -739,13 +774,23 @@
                   {/if}
                 </span>
 
-                <span class="flex-1 min-w-0 flex items-baseline gap-2">
-                  <span class="text-body text-[var(--text)] truncate">
+                <span class="flex-1 min-w-0 flex flex-col gap-0.5">
+                  <span class="w-full text-body text-[var(--text)] truncate">
                     {r.title}
                   </span>
                   {#if r.sub}
-                    <span class="text-caption text-[var(--text-faint)] truncate shrink-[2]">
-                      {r.sub}
+                    <span class="w-full text-caption text-[var(--text-faint)] truncate">
+                      {#if r.subIsSnippet}
+                        {#each snippetSegments(r.sub) as segment}
+                          {#if segment.highlighted}
+                            <span class="font-medium text-[var(--text-muted)]">{segment.text}</span>
+                          {:else}
+                            {segment.text}
+                          {/if}
+                        {/each}
+                      {:else}
+                        {r.sub}
+                      {/if}
                     </span>
                   {/if}
                 </span>
