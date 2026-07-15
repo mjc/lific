@@ -460,8 +460,8 @@ export default function Compare() {
                   </>,
                   <>
                     29 tools: issues, nestable plans, pages, comments, search,
-                    audit history. The whole surface costs about 6.1k tokens of
-                    context.
+                    audit history. The whole surface costs about 6.4k tokens
+                    of context (measured below).
                   </>,
                 ],
               },
@@ -477,10 +477,10 @@ export default function Compare() {
                   </>,
                   <>stdio</>,
                   <>
-                    Dependency-aware issue graph, ready-work detection,
-                    persistent agent memory. beads&apos; own docs recommend the
-                    CLI over MCP when the agent has a shell, since it costs
-                    fewer tokens.
+                    15 tools: dependency-aware issue graph, ready-work
+                    detection, persistent agent memory. beads&apos; own docs
+                    recommend the CLI over MCP when the agent has a shell,
+                    since it costs fewer tokens.
                   </>,
                 ],
               },
@@ -494,7 +494,8 @@ export default function Compare() {
                   <>Varies by server (stdio or HTTP)</>,
                   <>
                     Tasks, projects, labels, and kanban, through whichever
-                    community server you pick and vet yourself.
+                    community server you pick and vet yourself. The one we
+                    measured exposes 53 tools; another documents 180.
                   </>,
                 ],
               },
@@ -510,9 +511,9 @@ export default function Compare() {
                   </>,
                   <>stdio, HTTP, SSE</>,
                   <>
-                    Forge-level tools. Issues get CRUD, comments, and edits;
-                    most of the surface is repositories, files, and pull
-                    requests.
+                    53 forge-level tools. Issues get CRUD, comments, and
+                    edits; most of the surface is repositories, files, and
+                    pull requests.
                   </>,
                 ],
               },
@@ -528,8 +529,8 @@ export default function Compare() {
                   </>,
                   <>Streamable HTTP (OAuth 2.1 or PAT), stdio, SSE (legacy)</>,
                   <>
-                    Plane&apos;s full API surface: work items, sprints,
-                    modules, docs, time tracking.
+                    Plane&apos;s full API surface as 139 tools: work items,
+                    sprints, modules, docs, time tracking.
                   </>,
                 ],
               },
@@ -545,13 +546,161 @@ export default function Compare() {
                   </>,
                   <>Streamable HTTP (OAuth 2.1)</>,
                   <>
-                    A curated tool set over Linear&apos;s API: issues,
-                    projects, comments, documents. Requires a Linear account.
+                    A curated set of about two dozen tools over Linear&apos;s
+                    API: issues, projects, comments, documents. Requires a
+                    Linear account.
                   </>,
                 ],
               },
             ]}
           />
+        </section>
+
+        {/* The context bill: measured tool counts and schema token costs.
+            These are our own measurements (methodology below the table),
+            anchored to the MCP project's published budget guidance so the
+            numbers have a yardstick, not just vibes. */}
+        <section className="mt-[clamp(4.5rem,10vh,7rem)]">
+          <H2 id="context-bill">The context bill</H2>
+          <Body>
+            Tool definitions are not free. Every MCP server an agent connects
+            to injects its full tool schemas into the context window before
+            any work happens. The MCP project&apos;s own{" "}
+            <Ext href="https://modelcontextprotocol.io/docs/develop/clients/client-best-practices">
+              client guidance
+            </Ext>{" "}
+            is blunt about it: loading every tool definition up front
+            &quot;wastes tokens, increases latency, and degrades model
+            performance&quot;, and it suggests budgeting tool definitions to
+            roughly 1 to 5 percent of the context window. On a 200k-token
+            model, that is 2k to 10k tokens.{" "}
+            <Ext href="https://www.anthropic.com/engineering/writing-tools-for-agents">
+              Anthropic&apos;s guidance
+            </Ext>{" "}
+            for tool authors is shorter: &quot;More tools don&apos;t always
+            lead to better outcomes.&quot;
+          </Body>
+          <Body>
+            So we measured, on {STAMP}: each server launched over stdio,
+            asked for its tool list, schemas tokenized. Numbers below are what
+            an agent pays before it reads a single line of your code.
+          </Body>
+          <ComparisonTable
+            caption="Measured tool counts and tool-schema token costs of each tracker's MCP server"
+            head={[
+              "Server measured",
+              "Tools",
+              "Schema size",
+              "Share of a 200k context",
+            ]}
+            rows={[
+              {
+                name: "Lific",
+                lific: true,
+                cells: [
+                  <>
+                    Built in: <Cmd>lific mcp</Cmd> (v2.2.0)
+                  </>,
+                  <>29</>,
+                  <>6,436 tokens</>,
+                  <>3.2%</>,
+                ],
+              },
+              {
+                name: "beads",
+                cells: [
+                  <>
+                    <Ext href="https://pypi.org/project/beads-mcp/">
+                      beads-mcp
+                    </Ext>{" "}
+                    (PyPI)
+                  </>,
+                  <>15</>,
+                  <>2,871 tokens</>,
+                  <>1.4%</>,
+                ],
+              },
+              {
+                name: "Vikunja",
+                cells: [
+                  <>
+                    <Ext href="https://github.com/aimbitgmbh/vikunja-mcp">
+                      @aimbitgmbh/vikunja-mcp
+                    </Ext>{" "}
+                    (community)
+                  </>,
+                  <>53</>,
+                  <>7,213 tokens</>,
+                  <>3.6%</>,
+                ],
+              },
+              {
+                name: "Gitea",
+                cells: [
+                  <>
+                    <Ext href="https://gitea.com/gitea/gitea-mcp">
+                      gitea-mcp
+                    </Ext>{" "}
+                    v1.3.0
+                  </>,
+                  <>53</>,
+                  <>6,676 tokens</>,
+                  <>3.3%</>,
+                ],
+              },
+              {
+                name: "Plane",
+                cells: [
+                  <>
+                    <Ext href="https://pypi.org/project/plane-mcp-server/">
+                      plane-mcp-server
+                    </Ext>{" "}
+                    (PyPI)
+                  </>,
+                  <>139</>,
+                  <>30,105 tokens</>,
+                  <>15.1%</>,
+                ],
+              },
+              {
+                name: "Linear",
+                cells: [
+                  <>Hosted at mcp.linear.app</>,
+                  <>
+                    23{" "}
+                    <Ext href="https://blog.fiberplane.com/blog/mcp-server-analysis-linear/">
+                      (published)
+                    </Ext>
+                  </>,
+                  <>Not measurable without a workspace login</>,
+                  <>unknown</>,
+                ],
+              },
+            ]}
+          />
+          <Body>
+            Four of the five measurable servers fit the budget. beads deserves
+            specific credit for the smallest bill: its server hides most
+            commands behind a <Cmd>discover_tools</Cmd> call instead of
+            declaring everything up front. Plane is the outlier. 139 tools and
+            thirty thousand tokens is 15 percent of a 200k context spent
+            before any work starts, and it exceeds{" "}
+            <Ext href="https://code.visualstudio.com/docs/chat/chat-tools">
+              VS Code&apos;s 128-tools-per-request cap
+            </Ext>{" "}
+            on its own. Linear&apos;s hosted server sits behind a workspace
+            login, so we cite the published count instead of measuring it
+            ourselves; Linear also revises its tool set regularly.
+          </Body>
+          <p className="mt-4 max-w-[75ch] text-caption leading-relaxed text-text-faint">
+            Methodology: each server was launched over stdio on {STAMP},
+            sent <Cmd>initialize</Cmd> and <Cmd>tools/list</Cmd> via the
+            official MCP Python SDK, and the returned tool definitions (name,
+            description, input schema) were serialized as compact JSON and
+            tokenized with tiktoken&apos;s o200k_base. Clients serialize
+            schemas differently, so treat small deltas as noise; the order of
+            magnitude is the point.
+          </p>
         </section>
 
         {/* Table 2: running it */}
@@ -668,7 +817,7 @@ export default function Compare() {
                 head: "A small context bill.",
                 body: (
                   <>
-                    About 6.1k tokens for the full 29-tool surface, roughly
+                    About 6.4k tokens for the full 29-tool surface, roughly
                     one long file read, so connecting the tracker doesn&apos;t
                     crowd out the actual work.
                   </>
