@@ -21,6 +21,10 @@ export default function Layout({ children }: { children: ReactNode }) {
         githubUrl={GITHUB}
         links={[
           {
+            text: "Compare",
+            url: "/compare",
+          },
+          {
             type: "icon",
             label: "Discord",
             text: "Discord",

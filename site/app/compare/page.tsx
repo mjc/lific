@@ -16,30 +16,97 @@ const STAMP_ISO = "2026-07-14";
 export const metadata: Metadata = {
   title: "Issue trackers with MCP support, compared · Lific",
   description:
-    "Lific vs beads, Vikunja, Gitea, Plane, and Linear on MCP support, transports, deployment, storage, and license, including where Lific loses. A date-stamped, sourced comparison.",
+    "A date-stamped comparison of issue trackers with MCP servers: Lific, beads, Vikunja, Gitea, Plane, and Linear. First-party support, transports, measured tool counts and token costs, deployment, licenses, and honest losses.",
   alternates: { canonical: "/compare" },
   openGraph: {
     title: "Issue trackers with MCP support, compared",
     description:
-      "Lific vs beads, Vikunja, Gitea, Plane, and Linear: real tables, real losses, and a literal 'when to use something else' section.",
+      "Lific vs beads, Vikunja, Gitea, Plane, and Linear: real tables, measured token costs, real losses, and a literal 'when to use something else' section.",
     url: "https://lific.dev/compare",
+    siteName: "Lific",
     type: "article",
+    publishedTime: STAMP_ISO,
+    modifiedTime: STAMP_ISO,
+    images: [
+      {
+        url: "/og.png",
+        width: 1920,
+        height: 1080,
+        alt: "The Lific logo over the kanban board of the Lific web UI",
+      },
+    ],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Issue trackers with MCP support, compared",
+    description:
+      "Lific vs beads, Vikunja, Gitea, Plane, and Linear: real tables, measured token costs, real losses.",
+    images: ["/og.png"],
   },
 };
 
-// Structured data: a dated TechArticle, so crawlers treat this as a
-// snapshot comparison with a real publication date.
-const JSONLD = JSON.stringify({
-  "@context": "https://schema.org",
-  "@type": "TechArticle",
-  headline: "Issue trackers with MCP support, compared",
-  description:
-    "A comparison of issue trackers usable by coding agents over the Model Context Protocol: Lific, beads, Vikunja, Gitea, Plane, and Linear.",
-  datePublished: STAMP_ISO,
-  dateModified: STAMP_ISO,
-  url: "https://lific.dev/compare",
-  author: { "@type": "Organization", name: "Lific", url: "https://lific.dev" },
-});
+// Structured data: a dated TechArticle (snapshot comparison with a real
+// publication date), breadcrumbs, and an FAQPage whose entries mirror the
+// visible FAQ section verbatim.
+const FAQS: { q: string; a: string }[] = [
+  {
+    q: "How is Lific different from beads?",
+    a: "beads stores a dependency-aware issue graph inside your repository and needs no server: the tracker branches, merges, and travels with the checkout. Lific is one server outside any single repository, tracking every project you have, with a web UI for humans and MCP, REST, and CLI for agents. If the tracker should live in the repo, use beads. If humans and agents should share one tracker across all projects, use Lific.",
+  },
+  {
+    q: "Which issue trackers have first-party MCP servers?",
+    a: "As of July 14, 2026: Lific (built into the tracker binary), beads (beads-mcp), Gitea (gitea-mcp), Plane (plane-mcp-server, also hosted at mcp.plane.so), and Linear (hosted at mcp.linear.app). Vikunja has no first-party server; several community MCP servers exist.",
+  },
+  {
+    q: "How many context tokens does an issue tracker's MCP server cost?",
+    a: "Measured against each server's tools/list output with tiktoken o200k_base on July 14, 2026: beads 2,871 tokens (15 tools), Lific 5,641 (27 tools), Gitea 6,676 (53 tools), a Vikunja community server 7,213 (53 tools), and Plane 30,105 (139 tools). MCP client guidance recommends budgeting tool definitions to roughly 1 to 5 percent of the context window, which is 2k to 10k tokens on a 200k model.",
+  },
+];
+
+const JSONLD = JSON.stringify([
+  {
+    "@context": "https://schema.org",
+    "@type": "TechArticle",
+    headline: "Issue trackers with MCP support, compared",
+    description:
+      "A comparison of issue trackers usable by coding agents over the Model Context Protocol: Lific, beads, Vikunja, Gitea, Plane, and Linear.",
+    datePublished: STAMP_ISO,
+    dateModified: STAMP_ISO,
+    url: "https://lific.dev/compare",
+    author: {
+      "@type": "Organization",
+      name: "Lific",
+      url: "https://lific.dev",
+    },
+  },
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    itemListElement: [
+      {
+        "@type": "ListItem",
+        position: 1,
+        name: "Lific",
+        item: "https://lific.dev/",
+      },
+      {
+        "@type": "ListItem",
+        position: 2,
+        name: "Compare",
+        item: "https://lific.dev/compare",
+      },
+    ],
+  },
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    mainEntity: FAQS.map(({ q, a }) => ({
+      "@type": "Question",
+      name: q,
+      acceptedAnswer: { "@type": "Answer", text: a },
+    })),
+  },
+]);
 
 // Inline command chip, same recipe as the homepage.
 function Cmd({ children }: { children: React.ReactNode }) {
@@ -561,7 +628,7 @@ export default function Compare() {
             anchored to the MCP project's published budget guidance so the
             numbers have a yardstick, not just vibes. */}
         <section className="mt-[clamp(4.5rem,10vh,7rem)]">
-          <H2 id="context-bill">The context bill</H2>
+          <H2 id="context-bill">The context bill: tool counts and token costs</H2>
           <Body>
             Tool definitions are not free. Every MCP server an agent connects
             to injects its full tool schemas into the context window before
@@ -1055,6 +1122,27 @@ export default function Compare() {
             data on your own disk, it&apos;s the lowest-friction option on
             this page.
           </AltSection>
+        </section>
+
+        {/* FAQ: rendered from the same FAQS array as the FAQPage JSON-LD,
+            so the structured data can never drift from the visible text. */}
+        <section className="mt-[clamp(4.5rem,10vh,7rem)]">
+          <H2 id="faq">Questions people actually ask</H2>
+          <div className="mt-8 max-w-4xl">
+            {FAQS.map(({ q, a }) => (
+              <section
+                key={q}
+                className="border-t border-border/60 py-5 last:border-b"
+              >
+                <h3 className="font-display text-title font-semibold tracking-tight">
+                  {q}
+                </h3>
+                <p className="mt-2 max-w-[75ch] text-body leading-relaxed text-text-muted">
+                  {a}
+                </p>
+              </section>
+            ))}
+          </div>
         </section>
 
         {/* Corrections */}
