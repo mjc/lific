@@ -277,91 +277,14 @@ export default function Compare() {
             <Ext href="https://linear.app">Linear</Ext>.
           </Body>
           <Body>
-            We build Lific, so read accordingly. To keep the table worth
+            We build Lific, so read accordingly. To keep the tables worth
             quoting anyway: every cell is checkable against the linked primary
             sources, the products we compare against are good at what they do,
-            and Lific&apos;s losses are listed first.
+            and Lific&apos;s flaws get a section of their own — no cell below
+            pretends they don&apos;t exist.
           </Body>
         </section>
 
-        {/* Losses first. This ordering is deliberate: these facts will be
-            surfaced whether or not we state them, so we state them. */}
-        <section className="mt-[clamp(4.5rem,10vh,7rem)]">
-          <H2 id="losses">Where Lific loses</H2>
-          <FactList
-            items={[
-              {
-                head: "No prebuilt Windows binary.",
-                body: (
-                  <>
-                    Releases cover Linux and macOS (x86_64 and arm64). Windows{" "}
-                    <a
-                      href="/docs/windows"
-                      className="text-text underline decoration-border underline-offset-4 hover:text-accent hover:decoration-accent"
-                    >
-                      works natively
-                    </a>
-                    , but you compile it yourself with{" "}
-                    <Cmd>cargo install lific</Cmd> — and there&apos;s no
-                    Windows service integration, so keeping the server running
-                    is on you (Task Scheduler or a terminal).
-                  </>
-                ),
-              },
-              {
-                head: "No repo-local mode.",
-                body: (
-                  <>
-                    Issues live in a server database, not in your repository.
-                    If you want the tracker versioned with the code — branching
-                    with it, merging with it, readable offline in the checkout
-                    — <a href="#beads" className="text-text underline decoration-border underline-offset-4 hover:text-accent hover:decoration-accent">beads does exactly that</a>{" "}
-                    and Lific does not.
-                  </>
-                ),
-              },
-              {
-                head: "A server is required.",
-                body: (
-                  <>
-                    Lific is an always-on service. If the process is down, so
-                    is the tracker. beads needs no server at all; Linear runs
-                    someone else&apos;s.
-                  </>
-                ),
-              },
-              {
-                head: "Single maintainer.",
-                body: <>The bus factor is one. That is a real risk and you should price it in.</>,
-              },
-              {
-                head: "Young.",
-                body: (
-                  <>
-                    First release April 2026. Short track record, small
-                    community. Weight that honestly against tools that have
-                    shipped for years.
-                  </>
-                ),
-              },
-              {
-                head: "Sized for solo developers and small teams.",
-                body: (
-                  <>
-                    SQLite on one box, project-scoped roles, and that&apos;s
-                    the ceiling. If you need SSO, org hierarchies, or
-                    enterprise scale, Plane and Linear are built for that and
-                    Lific is not.
-                  </>
-                ),
-              },
-              {
-                head: "No hosted option.",
-                body: <>There is no cloud to sign up for. You run it, or it doesn&apos;t exist.</>,
-              },
-            ]}
-          />
-        </section>
 
         {/* Table 1: the MCP story */}
         <section className="mt-[clamp(4.5rem,10vh,7rem)]">
@@ -638,6 +561,90 @@ export default function Compare() {
                     from your own shell never require a signup.
                   </>
                 ),
+              },
+            ]}
+          />
+        </section>
+
+        {/* The flaws, stated plainly, after the case is made. These facts
+            get surfaced whether or not we state them; stating them ourselves
+            means the framing is ours. */}
+        <section className="mt-[clamp(4.5rem,10vh,7rem)]">
+          <H2 id="losses">Where Lific loses</H2>
+          <Body>
+            Everything above is true, and so is this. If one of these is a
+            dealbreaker for you, the next section points you somewhere good.
+          </Body>
+          <FactList
+            items={[
+              {
+                head: "No prebuilt Windows binary.",
+                body: (
+                  <>
+                    Releases cover Linux and macOS (x86_64 and arm64). Windows{" "}
+                    <a
+                      href="/docs/windows"
+                      className="text-text underline decoration-border underline-offset-4 hover:text-accent hover:decoration-accent"
+                    >
+                      works natively
+                    </a>
+                    , but you compile it yourself with{" "}
+                    <Cmd>cargo install lific</Cmd> — and there&apos;s no
+                    Windows service integration, so keeping the server running
+                    is on you (Task Scheduler or a terminal).
+                  </>
+                ),
+              },
+              {
+                head: "No repo-local mode.",
+                body: (
+                  <>
+                    Issues live in a server database, not in your repository.
+                    If you want the tracker versioned with the code — branching
+                    with it, merging with it, readable offline in the checkout
+                    — <a href="#beads" className="text-text underline decoration-border underline-offset-4 hover:text-accent hover:decoration-accent">beads does exactly that</a>{" "}
+                    and Lific does not.
+                  </>
+                ),
+              },
+              {
+                head: "A server is required.",
+                body: (
+                  <>
+                    Lific is an always-on service. If the process is down, so
+                    is the tracker. beads needs no server at all; Linear runs
+                    someone else&apos;s.
+                  </>
+                ),
+              },
+              {
+                head: "Single maintainer.",
+                body: <>The bus factor is one. That is a real risk and you should price it in.</>,
+              },
+              {
+                head: "Young.",
+                body: (
+                  <>
+                    First release April 2026. Short track record, small
+                    community. Weight that honestly against tools that have
+                    shipped for years.
+                  </>
+                ),
+              },
+              {
+                head: "Sized for solo developers and small teams.",
+                body: (
+                  <>
+                    SQLite on one box, project-scoped roles, and that&apos;s
+                    the ceiling. If you need SSO, org hierarchies, or
+                    enterprise scale, Plane and Linear are built for that and
+                    Lific is not.
+                  </>
+                ),
+              },
+              {
+                head: "No hosted option.",
+                body: <>There is no cloud to sign up for. You run it, or it doesn&apos;t exist.</>,
               },
             ]}
           />
