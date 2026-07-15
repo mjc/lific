@@ -9,19 +9,19 @@ const DISCORD = "https://discord.gg/uWvaFC4f7D";
 const ISSUES = "https://github.com/VoidNullable/lific/issues";
 
 // The snapshot date. Bump this whenever a cell is re-verified or
-// corrected — the page is a dated snapshot, not an evergreen claim.
+// corrected; the page is a dated snapshot, not an evergreen claim.
 const STAMP = "July 14, 2026";
 const STAMP_ISO = "2026-07-14";
 
 export const metadata: Metadata = {
   title: "Issue trackers with MCP support, compared · Lific",
   description:
-    "Lific vs beads, Vikunja, Gitea, Plane, and Linear on MCP support, transports, deployment, storage, and license — including where Lific loses. A date-stamped, sourced comparison.",
+    "Lific vs beads, Vikunja, Gitea, Plane, and Linear on MCP support, transports, deployment, storage, and license, including where Lific loses. A date-stamped, sourced comparison.",
   alternates: { canonical: "/compare" },
   openGraph: {
     title: "Issue trackers with MCP support, compared",
     description:
-      "Lific vs beads, Vikunja, Gitea, Plane, and Linear — real tables, real losses, and a literal 'when to use something else' section.",
+      "Lific vs beads, Vikunja, Gitea, Plane, and Linear: real tables, real losses, and a literal 'when to use something else' section.",
     url: "https://lific.dev/compare",
     type: "article",
   },
@@ -147,7 +147,7 @@ function Body({
 }
 
 // A fact list where the lead phrase is the claim and the rest is the
-// evidence. Used for both the losses and the wins, same shape — the
+// evidence. Used for both the losses and the wins, same shape; the
 // symmetry is the point.
 function FactList({
   items,
@@ -260,12 +260,29 @@ export default function Compare() {
         {/* Title */}
         <section className="pt-[clamp(3.5rem,10vh,6rem)]">
           <p className="text-micro font-semibold uppercase tracking-widest text-text-faint">
-            Comparison · accurate at time of writing, {STAMP}
+            Comparison
           </p>
           <h1 className="mt-5 max-w-[22ch] font-display text-[clamp(2.25rem,5.5vw,3.75rem)] font-semibold leading-[1.08] tracking-tight">
             Issue trackers with MCP support,{" "}
             <span className="brand-gradient-text">compared.</span>
           </h1>
+          {/* Article-style byline. This is the disclosure: the reader sees
+              who wrote the comparison before any table cell. */}
+          <p className="mt-6 flex flex-wrap items-center gap-x-3 gap-y-1 text-body-lg text-text-muted">
+            <span>
+              Written by{" "}
+              <a
+                href="/"
+                className="font-medium text-text underline decoration-border underline-offset-4 transition-colors hover:text-accent hover:decoration-accent"
+              >
+                Lific.dev
+              </a>
+            </span>
+            <span aria-hidden className="text-text-faint">
+              ·
+            </span>
+            <span>Accurate at time of writing, {STAMP}</span>
+          </p>
           <Body>
             If you want your coding agent to work against a real issue tracker
             over the Model Context Protocol, these are the options worth
@@ -277,11 +294,10 @@ export default function Compare() {
             <Ext href="https://linear.app">Linear</Ext>.
           </Body>
           <Body>
-            We build Lific, so read accordingly. To keep the tables worth
-            quoting anyway: every cell is checkable against the linked primary
-            sources, the products we compare against are good at what they do,
-            and Lific&apos;s flaws get a section of their own — no cell below
-            pretends they don&apos;t exist.
+            Every cell below is checkable against the linked primary sources,
+            the products we compare against are good at what they do, and
+            Lific&apos;s flaws get a section of their own. No cell pretends
+            they don&apos;t exist.
           </Body>
         </section>
 
@@ -327,8 +343,8 @@ export default function Compare() {
                   <>
                     Dependency-aware issue graph, ready-work detection,
                     persistent agent memory. beads&apos; own docs recommend the
-                    CLI over MCP when the agent has a shell — it costs fewer
-                    tokens.
+                    CLI over MCP when the agent has a shell, since it costs
+                    fewer tokens.
                   </>,
                 ],
               },
@@ -341,7 +357,7 @@ export default function Compare() {
                   </>,
                   <>Varies by server (stdio or HTTP)</>,
                   <>
-                    Tasks, projects, labels, kanban — through whichever
+                    Tasks, projects, labels, and kanban, through whichever
                     community server you pick and vet yourself.
                   </>,
                 ],
@@ -389,7 +405,7 @@ export default function Compare() {
                     <Ext href="https://linear.app/docs/mcp">
                       hosted by Linear
                     </Ext>
-                    . Nothing to install — and nothing to self-host.
+                    . Nothing to install, and nothing to self-host.
                   </>,
                   <>Streamable HTTP (OAuth 2.1)</>,
                   <>
@@ -418,11 +434,11 @@ export default function Compare() {
                 cells: [
                   <>
                     One Rust binary: <Cmd>cargo install lific</Cmd>, or static
-                    binaries for Linux and macOS. Windows is cargo-only — no
-                    prebuilt binary.
+                    binaries for Linux and macOS. Windows is cargo-only, with
+                    no prebuilt binary.
                   </>,
                   <>SQLite</>,
-                  <>None — self-host only</>,
+                  <>None; self-host only</>,
                   <>Apache-2.0</>,
                 ],
               },
@@ -434,7 +450,7 @@ export default function Compare() {
                     (<Cmd>.beads/</Cmd>). No server process.
                   </>,
                   <>Dolt (versioned SQL)</>,
-                  <>None — local by design</>,
+                  <>None; local by design</>,
                   <>MIT</>,
                 ],
               },
@@ -451,7 +467,7 @@ export default function Compare() {
                 name: "Gitea",
                 cells: [
                   <>
-                    Single Go binary, or Docker — a whole code forge, not just
+                    Single Go binary, or Docker. A whole code forge, not just
                     a tracker.
                   </>,
                   <>SQLite, MySQL, or PostgreSQL</>,
@@ -474,7 +490,7 @@ export default function Compare() {
               {
                 name: "Linear",
                 cells: [
-                  <>Nothing to run — it&apos;s SaaS.</>,
+                  <>Nothing to run; it&apos;s SaaS.</>,
                   <>Managed for you</>,
                   <>Hosted only</>,
                   <>Proprietary</>,
@@ -516,8 +532,8 @@ export default function Compare() {
                 head: "A small context bill.",
                 body: (
                   <>
-                    About 6.1k tokens for the full 29-tool surface — roughly
-                    one long file read — so connecting the tracker doesn&apos;t
+                    About 6.1k tokens for the full 29-tool surface, roughly
+                    one long file read, so connecting the tracker doesn&apos;t
                     crowd out the actual work.
                   </>
                 ),
@@ -527,7 +543,7 @@ export default function Compare() {
                 body: (
                   <>
                     Issue list, kanban board, documents, and comment threads
-                    where you and your agents talk to each other — at{" "}
+                    where you and your agents talk to each other, at{" "}
                     <Cmd>localhost:3456</Cmd>, no extra deployment.
                   </>
                 ),
@@ -589,9 +605,9 @@ export default function Compare() {
                       works natively
                     </a>
                     , but you compile it yourself with{" "}
-                    <Cmd>cargo install lific</Cmd> — and there&apos;s no
-                    Windows service integration, so keeping the server running
-                    is on you (Task Scheduler or a terminal).
+                    <Cmd>cargo install lific</Cmd>. There is also no Windows
+                    service integration, so keeping the server running is on
+                    you (Task Scheduler or a terminal).
                   </>
                 ),
               },
@@ -600,9 +616,9 @@ export default function Compare() {
                 body: (
                   <>
                     Issues live in a server database, not in your repository.
-                    If you want the tracker versioned with the code — branching
-                    with it, merging with it, readable offline in the checkout
-                    — <a href="#beads" className="text-text underline decoration-border underline-offset-4 hover:text-accent hover:decoration-accent">beads does exactly that</a>{" "}
+                    If you want the tracker versioned with the code (branching
+                    with it, merging with it, readable offline in the
+                    checkout), <a href="#beads" className="text-text underline decoration-border underline-offset-4 hover:text-accent hover:decoration-accent">beads does exactly that</a>{" "}
                     and Lific does not.
                   </>
                 ),
@@ -655,7 +671,7 @@ export default function Compare() {
           <H2 id="something-else">When to use something else</H2>
           <Body className="mb-8">
             These are honest defaults, not straw men. If one of these fits,
-            use it — an issue tracker you resent is one you stop updating.
+            use it. An issue tracker you resent is one you stop updating.
           </Body>
 
           <AltSection
@@ -686,8 +702,8 @@ export default function Compare() {
               </>
             }
           >
-            If you already run Gitea — or want repos, pull requests, CI, and
-            issues in one self-hosted instance — its first-party{" "}
+            If you already run Gitea, or want repos, pull requests, CI, and
+            issues in one self-hosted instance, its first-party{" "}
             <Ext href="https://gitea.com/gitea/gitea-mcp">gitea-mcp</Ext>{" "}
             gives agents the whole forge, not just the tracker. The issue
             tools are simpler than a dedicated tracker&apos;s, but they come
@@ -703,8 +719,8 @@ export default function Compare() {
               </>
             }
           >
-            Vikunja is a mature, polished to-do and project app — lists,
-            kanban, Gantt, calendars — that happens to self-host beautifully.
+            Vikunja is a mature, polished to-do and project app (lists,
+            kanban, Gantt, calendars) that happens to self-host beautifully.
             If you&apos;re organizing life and work rather than pointing
             coding agents at a backlog, it&apos;s the better tool. MCP access
             is community-maintained rather than first-party, so vet the server
@@ -723,7 +739,7 @@ export default function Compare() {
             Plane is an open-source Jira alternative: cycles, modules, docs,
             time tracking, triage, and a first-party MCP server you can use
             hosted or self-hosted. If you have a real team and need real PM
-            machinery, Plane does far more than Lific — at the cost of a
+            machinery, Plane does far more than Lific, at the cost of a
             multi-service deployment instead of one binary.
           </AltSection>
 
@@ -750,8 +766,8 @@ export default function Compare() {
             This page is a snapshot: every claim above was checked against the
             linked sources on {STAMP}, and products ship faster than pages
             update. If a cell is wrong or has gone stale,{" "}
-            <Ext href={ISSUES}>file an issue</Ext> — we&apos;ll fix the cell
-            and the date.
+            <Ext href={ISSUES}>file an issue</Ext> and we&apos;ll fix the
+            cell and the date.
           </p>
         </section>
       </main>
