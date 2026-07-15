@@ -599,7 +599,7 @@ export default function Compare() {
                 lific: true,
                 cells: [
                   <>
-                    Built in: <Cmd>lific mcp</Cmd> (v2.3.0)
+                    Built in: <Cmd>lific mcp</Cmd> (v2.2.1)
                   </>,
                   <>27</>,
                   <>5,641 tokens</>,
@@ -701,11 +701,11 @@ export default function Compare() {
           </Body>
           <Body>
             And since we audited everyone else&apos;s schemas, the same knife
-            for our own: Lific&apos;s 5.6k fits the budget, but per tool our
-            descriptions are wordier than everyone here except Plane. The
-            audit already cost us something: it found three export tools
-            doing one verb&apos;s job, so v2.3.0 merged them into one and the
-            counts on this page got smaller.
+            for our own: Lific&apos;s 5.6k fits the budget, but per tool it is
+            still the second wordiest on this page, after Plane. The audit
+            had consequences here too: v2.2.1 merged three export tools into
+            one verb and cut the prose that repeated what tool outputs
+            already say. The numbers above are the after.
           </Body>
           <p className="mt-4 max-w-[75ch] text-caption leading-relaxed text-text-faint">
             Methodology: each server was launched over stdio on {STAMP},
