@@ -1151,8 +1151,8 @@ export default function Compare() {
             This page is a snapshot: every claim above was checked against the
             linked sources on {STAMP}, and products ship faster than pages
             update. If a cell is wrong or has gone stale,{" "}
-            <Ext href={ISSUES}>file an issue</Ext> and we&apos;ll fix the
-            cell and the date.
+            <Ext href={ISSUES}>file an issue</Ext>
+            {" and we'll fix the cell and the date."}
           </p>
         </section>
       </main>
