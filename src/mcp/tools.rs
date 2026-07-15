@@ -692,7 +692,7 @@ impl LificMcp {
     }
 
     #[tool(
-        description = "Read the audit log: who changed what, when, and through which door (web UI, MCP, API, CLI). Accepts an issue identifier (PRO-42) for that issue's history including comments/labels/relations, a page identifier (PRO-DOC-3), or a bare project identifier (PRO) for the whole project's feed. Entries are newest-first with old → new values per changed field. Perfect for 'what changed while I was gone'."
+        description = "Read the audit log: who changed what, when, and through which door (web UI, MCP, API, CLI). Takes an issue, page, or project ID; project scope covers the whole feed. Newest-first with old and new values."
     )]
     fn get_activity(&self, Parameters(input): Parameters<GetActivityInput>) -> String {
         let limit = input.limit.unwrap_or(30).clamp(1, 200);
@@ -829,7 +829,7 @@ impl LificMcp {
     }
 
     #[tool(
-        description = "Get a single issue by identifier (e.g. LIF-1). Returns full details, last 3 comments. include_comments determines which comments to attach."
+        description = "Get an issue by ID (e.g. LIF-1): full details plus the last 3 comments by default."
     )]
     fn get_issue(&self, Parameters(input): Parameters<GetIssueInput>) -> String {
         // Validate the comment-trail mode up front so a typo errors instead of
@@ -1155,7 +1155,7 @@ impl LificMcp {
     }
 
     #[tool(
-        description = "Apply field changes to every issue in a project matching a filter, in one call. Filter with filter_status / filter_priority / filter_module / filter_label (same semantics as list_issues); set new values with set_status / set_priority / set_module. Returns the number of issues updated."
+        description = "Apply field changes to every issue matching the filter_* params, in one call. Returns the number of issues updated."
     )]
     fn bulk_update(&self, Parameters(input): Parameters<BulkUpdateInput>) -> String {
         let pid = match resolve_project(&self.db, &input.project) {
@@ -1233,7 +1233,7 @@ impl LificMcp {
     }
 
     #[tool(
-        description = "Edit an issue by replacing an exact string. Targets the description field by default; pass field='title' to edit the title. Fails if old_string is not found or matches multiple places (unless replace_all=true). Cheaper than update_issue for small changes because the agent doesn't have to resend the whole field."
+        description = "Edit an issue by replacing an exact string. Targets the description by default; pass field='title' for the title. Fails if old_string is missing or ambiguous (unless replace_all=true). Cheaper than update_issue for small changes."
     )]
     fn edit_issue(&self, Parameters(input): Parameters<EditIssueInput>) -> String {
         let (id, project_id) = match self.read(|conn| {
@@ -1310,7 +1310,7 @@ impl LificMcp {
     }
 
     #[tool(
-        description = "Get board view of issues grouped by status, priority, or module. By default done/cancelled issues are omitted (status grouping shows them as count-only stubs; priority/module grouping drops them with a trailing count); pass include_closed=true to render them. Use max_per_column to cap issues rendered per column."
+        description = "Board view of issues grouped by status (default), priority, or module. Done/cancelled are count-only stubs unless include_closed=true."
     )]
     fn get_board(&self, Parameters(input): Parameters<GetBoardInput>) -> String {
         if let Some(nudge) = self.no_projects_nudge() {
@@ -1662,7 +1662,7 @@ impl LificMcp {
     }
 
     #[tool(
-        description = "Edit a page by replacing an exact string. Targets the content field by default; pass field='title' to edit the title. Fails if old_string is not found or matches multiple places (unless replace_all=true). Cheaper than update_page for small changes because the agent doesn't have to resend the whole field."
+        description = "Edit a page by exact string replacement; same contract as edit_issue. Targets the content by default; pass field='title' for the title."
     )]
     fn edit_page(&self, Parameters(input): Parameters<EditPageInput>) -> String {
         let (id, project_id) = match self.read(|conn| {
@@ -2498,7 +2498,7 @@ impl LificMcp {
     }
 
     #[tool(
-        description = "Add a comment to an issue or page. Accepts an issue identifier (LIF-42) or a page identifier (LIF-DOC-3 or DOC-3 for workspace pages). The author is the user who owns the API key authenticating this MCP session."
+        description = "Add a comment to an issue (LIF-42) or page (LIF-DOC-3; DOC-3 for workspace pages). The author is the authenticated user."
     )]
     fn add_comment(&self, Parameters(input): Parameters<AddCommentInput>) -> String {
         let parent = match resolve_comment_parent(self, &input.identifier) {
@@ -2582,7 +2582,7 @@ impl LificMcp {
     }
 
     #[tool(
-        description = "List comments on an issue or page. Accepts an issue identifier (LIF-42) or a page identifier (LIF-DOC-3 or DOC-3 for workspace pages)."
+        description = "List comments on an issue (LIF-42) or page (LIF-DOC-3; DOC-3 for workspace pages)."
     )]
     fn list_comments(&self, Parameters(input): Parameters<ListCommentsInput>) -> String {
         let parent = match resolve_comment_parent(self, &input.identifier) {
@@ -2667,7 +2667,7 @@ impl LificMcp {
     }
 
     #[tool(
-        description = "Edit an existing comment's content by its id (the handle add_comment returns). Only the comment's author or an admin may edit it. Re-resolves @mentions against the parent project's visible members."
+        description = "Edit a comment's content by id. Author or admin only; @mentions re-resolve."
     )]
     fn edit_comment(&self, Parameters(input): Parameters<EditCommentInput>) -> String {
         // Resolve the acting user the same way add_comment does: the
@@ -2725,7 +2725,7 @@ impl LificMcp {
     }
 
     #[tool(
-        description = "Delete a comment by its id (the handle add_comment returns). Only the comment's author or an admin may delete it."
+        description = "Delete a comment by id. Author or admin only."
     )]
     fn delete_comment(&self, Parameters(input): Parameters<DeleteCommentInput>) -> String {
         // Resolve the acting user the same way add_comment does.
@@ -2767,7 +2767,7 @@ impl LificMcp {
     }
 
     #[tool(
-        description = "Create step-by-step plans that survive outside context windows. Break issues into ordered steps, or create an epic that covers multiple issues. Plans are fully nestable. Steps can mirror issues using 'issue'. Closing the issue sets the step as done and vice versa."
+        description = "Create a nestable step-by-step plan that survives outside the context window. Steps can mirror issues via 'issue': closing the issue completes the step and vice versa."
     )]
     fn create_plan(&self, Parameters(input): Parameters<CreatePlanInput>) -> String {
         let pid = match resolve_project(&self.db, &input.project) {
@@ -2809,7 +2809,7 @@ impl LificMcp {
     }
 
     #[tool(
-        description = "Rehydrate a plan and its full nested step tree (e.g. LIF-PLAN-3). Call this when resuming work to recover the plan a previous session created. Step lines show `#id` (use with edit_plan_step / update_plan_step), done state, and issue provenance like 'via LIF-42' or 'reopened — LIF-42 reopened'."
+        description = "Rehydrate a plan's full step tree (e.g. LIF-PLAN-3) when resuming work. Step lines show the #id used by edit_plan_step and update_plan_step, done state, and linked issues."
     )]
     fn get_plan(&self, Parameters(input): Parameters<GetPlanInput>) -> String {
         match self.read(|conn| {
@@ -2827,7 +2827,7 @@ impl LificMcp {
     }
 
     #[tool(
-        description = "Edit a plan step's text by exact string replacement (mirrors edit_issue/edit_page). Targets description by default; pass field='title'. Fails if old_string is missing or matches multiple places unless replace_all=true."
+        description = "Edit a plan step's text by exact string replacement; same contract as edit_issue. Targets description by default; pass field='title'."
     )]
     fn edit_plan_step(&self, Parameters(input): Parameters<EditPlanStepInput>) -> String {
         let field = input.field.clone().unwrap_or_else(|| "description".into());
@@ -2878,7 +2878,7 @@ impl LificMcp {
     }
 
     #[tool(
-        description = "Mutate plans or their steps. step_id will target a step for CRUD, toggling, or attaching/detaching issues (attached issues update state from their step). No step_id will update the plan itself. Marking a plan done never closes its anchor issue that's step only. By default returns delta. echo_tree=true re-renders the full tree."
+        description = "Mutate a plan or one step. With step_id: step CRUD, done toggling, attach/detach issue (linked issues sync state). Without step_id: update the plan itself; plan status never closes the anchor issue. Returns a delta."
     )]
     fn update_plan_step(&self, Parameters(input): Parameters<UpdatePlanStepInput>) -> String {
         // LIF-198: Maintainer on the plan's own project gates every mutation

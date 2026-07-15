@@ -15,14 +15,12 @@ pub struct SearchInput {
     )]
     pub sort: Option<String>,
     #[schemars(
-        description = "Match mode: 'fts' (default, tokenized full-text with prefix matching) or 'literal' (case-insensitive substring — for punctuation-heavy needles like core:sodom, [RequiredSpecs], --trace-plans that FTS tokenizes away)."
+        description = "Match mode: 'fts' (default, tokenized with prefix matching) or 'literal' (case-insensitive substring, for punctuation-heavy needles that FTS tokenizes away)."
     )]
     pub mode: Option<String>,
     #[schemars(description = "Max results (default 20)")]
     pub limit: Option<i64>,
-    #[schemars(
-        description = "Zero-indexed offset for paging. Output appends a hint when more results exist."
-    )]
+    #[schemars(description = "Zero-indexed offset for paging")]
     pub offset: Option<i64>,
 }
 
@@ -58,9 +56,7 @@ pub struct ListIssuesInput {
     pub order: Option<String>,
     #[schemars(description = "Max results (default 50)")]
     pub limit: Option<i64>,
-    #[schemars(
-        description = "Zero-indexed offset for paging. The output appends a hint like 'has_more: use offset=N' when more results exist."
-    )]
+    #[schemars(description = "Zero-indexed offset for paging")]
     pub offset: Option<i64>,
 }
 
@@ -74,15 +70,11 @@ pub struct GetIssueInput {
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct GetActivityInput {
-    #[schemars(
-        description = "What to read history for: an issue ID (PRO-42), a page ID (PRO-DOC-3 or DOC-3), or a bare project ID (PRO) for the whole project's feed"
-    )]
+    #[schemars(description = "Issue ID (PRO-42), page ID (PRO-DOC-3), or bare project ID (PRO)")]
     pub identifier: String,
     #[schemars(description = "Max entries (default 30, cap 200)")]
     pub limit: Option<i64>,
-    #[schemars(
-        description = "Zero-indexed offset for paging. Output appends a hint when more entries exist."
-    )]
+    #[schemars(description = "Zero-indexed offset for paging")]
     pub offset: Option<i64>,
 }
 
@@ -121,7 +113,7 @@ pub struct UpdateIssueInput {
     #[schemars(description = "New priority: urgent, high, medium, low, none")]
     pub priority: Option<String>,
     #[schemars(
-        description = "New module name. Omit to leave unchanged; pass an empty string \"\" to unassign the issue from its module. (LIF-145)"
+        description = "New module name. Omit to leave unchanged; pass an empty string \"\" to unassign."
     )]
     pub module: Option<String>,
     #[schemars(description = "Replace labels")]
@@ -168,9 +160,7 @@ pub struct GetBoardInput {
         description = "Include done and cancelled issues (default false). By default closed columns appear as count-only stubs."
     )]
     pub include_closed: Option<bool>,
-    #[schemars(
-        description = "Cap issues rendered per column; a '… +N more (use list_issues)' tail shows the remainder."
-    )]
+    #[schemars(description = "Cap issues rendered per column; output notes the remainder")]
     pub max_per_column: Option<i64>,
 }
 
@@ -211,7 +201,7 @@ pub struct CreatePageInput {
     #[schemars(description = "Status: draft, active, complete, archived")]
     pub status: Option<String>,
     #[schemars(
-        description = "Label names to attach. Labels are project-scoped, so this is ignored on workspace pages (LIF-105)."
+        description = "Label names to attach (project-scoped; ignored on workspace pages)"
     )]
     pub labels: Option<Vec<String>>,
 }
@@ -225,16 +215,14 @@ pub struct UpdatePageInput {
     #[schemars(description = "New markdown content")]
     pub content: Option<String>,
     #[schemars(
-        description = "Move to folder name. Omit to leave unchanged; pass an empty string \"\" to move the page back to the project root. (LIF-145)"
+        description = "Move to folder name. Omit to leave unchanged; pass an empty string \"\" for project root."
     )]
     pub folder: Option<String>,
     #[schemars(description = "Status: draft, active, complete, archived")]
     pub status: Option<String>,
     #[schemars(description = "Pin (true) or unpin (false) the page to the top of the page list.")]
     pub pinned: Option<bool>,
-    #[schemars(
-        description = "Replace labels. Pass [] to clear all. Labels are project-scoped (LIF-105)."
-    )]
+    #[schemars(description = "Replace labels; [] clears all (project-scoped)")]
     pub labels: Option<Vec<String>>,
 }
 
@@ -302,9 +290,7 @@ pub struct ListResourcesInput {
     pub order: Option<String>,
     #[schemars(description = "Max results (applies to most lists; default 100 for issues)")]
     pub limit: Option<i64>,
-    #[schemars(
-        description = "Zero-indexed offset for paging (applies to most lists). Output hints when more results exist."
-    )]
+    #[schemars(description = "Zero-indexed offset for paging")]
     pub offset: Option<i64>,
 }
 
@@ -315,7 +301,7 @@ pub struct ManageResourceInput {
     #[schemars(description = "Action: create or update")]
     pub action: String,
     #[schemars(
-        description = "Current name identifying which module, label, or folder to update. Not used for projects — target those with `project`."
+        description = "Name of the module, label, or folder to update (projects use `project` instead)"
     )]
     pub current_name: Option<String>,
     #[schemars(
@@ -335,7 +321,7 @@ pub struct ManageResourceInput {
     #[schemars(description = "Color hex (for label, e.g. #EF4444)")]
     pub color: Option<String>,
     #[schemars(
-        description = "Icon for project or module: 'lucide:<Name>' or a literal emoji. Omit to leave unchanged; pass an empty string \"\" to clear it back to none. (LIF-145)"
+        description = "Icon for project or module: 'lucide:<Name>' or a literal emoji. Omit to leave unchanged; pass an empty string \"\" to clear."
     )]
     pub emoji: Option<String>,
 }
@@ -362,17 +348,13 @@ pub struct ListCommentsInput {
         description = "Optional maximum comments to return (cap 500). Omit to return the full thread."
     )]
     pub limit: Option<i64>,
-    #[schemars(
-        description = "Zero-indexed offset for paging in the requested order. The output appends a paging hint when more comments exist."
-    )]
+    #[schemars(description = "Zero-indexed offset for paging")]
     pub offset: Option<i64>,
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct EditCommentInput {
-    #[schemars(
-        description = "Comment id (the numeric handle returned by add_comment / shown by list_comments)"
-    )]
+    #[schemars(description = "Comment id (from add_comment or list_comments)")]
     pub comment_id: i64,
     #[schemars(description = "New comment content (markdown)")]
     pub content: String,
@@ -380,9 +362,7 @@ pub struct EditCommentInput {
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct DeleteCommentInput {
-    #[schemars(
-        description = "Comment id (the numeric handle returned by add_comment / shown by list_comments)"
-    )]
+    #[schemars(description = "Comment id (from add_comment or list_comments)")]
     pub comment_id: i64,
 }
 
@@ -390,13 +370,11 @@ pub struct DeleteCommentInput {
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct PlanStepInput {
-    #[schemars(description = "Step title — short and imperative")]
+    #[schemars(description = "Step title, short and imperative")]
     pub title: String,
     #[schemars(description = "Optional longer notes/description for this step")]
     pub description: Option<String>,
-    #[schemars(
-        description = "Issue ID this step mirrors (e.g. LIF-42). The step mirrors the issue's done/closed state and vice versa."
-    )]
+    #[schemars(description = "Issue ID this step mirrors (e.g. LIF-42)")]
     pub issue: Option<String>,
     #[schemars(description = "Pre-mark this step done (default false)")]
     pub done: Option<bool>,
@@ -415,7 +393,7 @@ pub struct CreatePlanInput {
     )]
     pub anchor_issue: Option<String>,
     #[schemars(
-        description = "Full nested step tree, authored in one call. Each step: {title, description?, issue?, done?, steps?[]}."
+        description = "Full nested step tree. Each step: {title, description?, issue?, done?, steps?[]}"
     )]
     pub steps: Option<Vec<PlanStepInput>>,
 }
@@ -460,9 +438,7 @@ pub struct UpdatePlanStepInput {
     #[schemars(description = "Clear the plan's anchor issue")]
     pub clear_anchor: Option<bool>,
     // ── Step-level (step_id set) ──
-    #[schemars(
-        description = "Set the step's done status. Status mirrors a linked issue; the result reports side effects."
-    )]
+    #[schemars(description = "Mark the step done/undone (a linked issue syncs)")]
     pub done: Option<bool>,
     #[schemars(description = "Attach an issue (e.g. LIF-42) to the step")]
     pub attach_issue: Option<String>,
@@ -482,9 +458,7 @@ pub struct UpdatePlanStepInput {
     pub move_position: Option<i64>,
     #[schemars(description = "Delete the step and its subtree")]
     pub delete: Option<bool>,
-    #[schemars(
-        description = "Return the re-rendered plan tree after the mutation. Defaults to false which only shows delta."
-    )]
+    #[schemars(description = "Return the full re-rendered tree instead of the delta (default false)")]
     pub echo_tree: Option<bool>,
 }
 
