@@ -682,15 +682,28 @@ export default function Compare() {
             Four of the five measurable servers fit the budget. beads deserves
             specific credit for the smallest bill: its server hides most
             commands behind a <Cmd>discover_tools</Cmd> call instead of
-            declaring everything up front. Plane is the outlier. 139 tools and
-            thirty thousand tokens is 15 percent of a 200k context spent
-            before any work starts, and it exceeds{" "}
+            declaring everything up front. (That same design means its
+            measured number understates the eventual cost, since full schemas
+            load on demand.) Plane is the outlier. 139 tools and thirty
+            thousand tokens is 15 percent of a 200k context spent before any
+            work starts, and it exceeds{" "}
             <Ext href="https://code.visualstudio.com/docs/chat/chat-tools">
               VS Code&apos;s 128-tools-per-request cap
             </Ext>{" "}
-            on its own. Linear&apos;s hosted server sits behind a workspace
-            login, so we cite the published count instead of measuring it
-            ourselves; Linear also revises its tool set regularly.
+            on its own. The count is not padding, it is philosophy: in our
+            dump, five of every six Plane tools are create, read, update, or
+            delete variants spread across about two dozen entity types, from
+            work items down to estimate points and property options. That is
+            an API mirror, and agents pay for the whole mirror up front.
+            Linear&apos;s hosted server sits behind a workspace login, so we
+            cite the published count instead of measuring it ourselves;
+            Linear also revises its tool set regularly.
+          </Body>
+          <Body>
+            And since we audited everyone else&apos;s schemas, the same knife
+            for our own: Lific&apos;s 6.4k fits the budget, but per tool our
+            descriptions are wordier than everyone here except Plane. We
+            filed the issue against ourselves.
           </Body>
           <p className="mt-4 max-w-[75ch] text-caption leading-relaxed text-text-faint">
             Methodology: each server was launched over stdio on {STAMP},
