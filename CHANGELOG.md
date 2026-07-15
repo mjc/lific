@@ -1,5 +1,17 @@
 # Changelog
 
+## v2.2.1 (2026-07-15)
+
+The MCP tool surface gets smaller and cheaper: 27 tools (down from 29) at about 5.6k tokens of schema (down from 6.4k), measured with tiktoken o200k_base against `tools/list` output.
+
+### One export tool instead of three
+
+`export_issue`, `export_page`, and `export_project` merged into a single `export` that dispatches on identifier shape, the same way `get_activity` already did: `PRO-42` exports the issue, `PRO-DOC-3` the page, bare `PRO` the whole project. Same Viewer gating and outputs per branch. Clients calling the old tool names must switch to `export`.
+
+### Leaner tool schemas
+
+Tool and parameter descriptions were rewritten to stop repeating what tool outputs already show at call time (paging hints, provenance markers), what sibling parameters already state, and what other tools already define (the edit-by-string contract is now stated once, in `edit_issue`). Internal tracker references leaked into five field descriptions and are gone. Net: 6,436 to 5,641 schema tokens.
+
 ## v2.2.0 (2026-07-14)
 
 The web UI goes realtime, MCP tool output slims down to respect agent context budgets, and a security fix stops clients from spoofing their IP to the rate limiter. This is also the first release with external contributions: realtime invalidation arrived as PR #4 ([@mjc](https://github.com/mjc)) and comments pagination as PR #5 ([@Joshuabaker2](https://github.com/Joshuabaker2)).
