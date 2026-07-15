@@ -16,10 +16,13 @@ const dmSans = DM_Sans({
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://lific.dev"),
+  applicationName: "Lific",
   title: "Lific · An issue tracker for prolific agents",
   description:
     "A free, self-hosted issue tracker built for coding agents. Single binary, native MCP. Plans and issues live on your server instead of in the context window, so work outlives the session.",
-  alternates: { canonical: "https://lific.dev" },
+  // NOTE: no `alternates.canonical` here. Metadata is inherited by every
+  // route; a site-wide canonical of "/" would tell crawlers all docs pages
+  // are duplicates of the homepage. Each page sets its own canonical.
   openGraph: {
     title: "Lific · An issue tracker for prolific agents",
     description:

@@ -15,6 +15,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
     ...source.getPages().map((page) => ({
       url: `https://lific.dev${page.url}`,
       changeFrequency: "weekly" as const,
+      lastModified: (page.data as { lastModified?: Date }).lastModified,
     })),
   ];
 }

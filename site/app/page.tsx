@@ -1,4 +1,5 @@
 /* eslint-disable @next/next/no-img-element */
+import type { Metadata } from "next";
 import { CopyButton } from "./components/CopyButton";
 import { StarCount } from "./components/StarCount";
 import { Reveal } from "./components/Reveal";
@@ -9,6 +10,34 @@ const GITHUB = "https://github.com/VoidNullable/lific";
 const CRATE = "https://crates.io/crates/lific";
 const DISCORD = "https://discord.gg/uWvaFC4f7D";
 const RELEASES = "https://github.com/VoidNullable/lific/releases";
+
+export const metadata: Metadata = {
+  alternates: { canonical: "/" },
+};
+
+// Structured data: tells crawlers this is a free developer application
+// and ties the site to its GitHub/crates.io/Discord identities.
+const JSONLD = JSON.stringify([
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    name: "Lific",
+    url: "https://lific.dev",
+    description:
+      "A free, self-hosted issue tracker built for coding agents. Single binary, native MCP.",
+    applicationCategory: "DeveloperApplication",
+    operatingSystem: "Linux, macOS, Windows",
+    license: "https://www.apache.org/licenses/LICENSE-2.0",
+    offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
+    sameAs: [GITHUB, CRATE, DISCORD],
+  },
+  {
+    "@context": "https://schema.org",
+    "@type": "WebSite",
+    name: "Lific",
+    url: "https://lific.dev",
+  },
+]);
 
 
 // The section-label hallmark pattern (LIF-DOC-14 §2). Used only for
@@ -134,6 +163,10 @@ const agentFacts: {
 export default function Home() {
   return (
     <div className="flex-1">
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSONLD }}
+      />
       {/* Sticky chrome bar, borrowed from the product's brand header
           (Layout.svelte): logo + font-display wordmark + mono version
           chip on --chrome. */}
