@@ -459,8 +459,8 @@ export default function Compare() {
                     <Cmd>lific mcp</Cmd>
                   </>,
                   <>
-                    29 tools: issues, nestable plans, pages, comments, search,
-                    audit history. The whole surface costs about 6.4k tokens
+                    27 tools: issues, nestable plans, pages, comments, search,
+                    audit history. The whole surface costs about 6.2k tokens
                     of context (measured below).
                   </>,
                 ],
@@ -599,11 +599,11 @@ export default function Compare() {
                 lific: true,
                 cells: [
                   <>
-                    Built in: <Cmd>lific mcp</Cmd> (v2.2.0)
+                    Built in: <Cmd>lific mcp</Cmd> (v2.3.0)
                   </>,
-                  <>29</>,
-                  <>6,436 tokens</>,
-                  <>3.2%</>,
+                  <>27</>,
+                  <>6,192 tokens</>,
+                  <>3.1%</>,
                 ],
               },
               {
@@ -701,9 +701,11 @@ export default function Compare() {
           </Body>
           <Body>
             And since we audited everyone else&apos;s schemas, the same knife
-            for our own: Lific&apos;s 6.4k fits the budget, but per tool our
-            descriptions are wordier than everyone here except Plane. We
-            filed the issue against ourselves.
+            for our own: Lific&apos;s 6.2k fits the budget, but per tool our
+            descriptions are wordier than everyone here except Plane. The
+            audit already cost us something: it found three export tools
+            doing one verb&apos;s job, so v2.3.0 merged them into one and the
+            counts on this page got smaller.
           </Body>
           <p className="mt-4 max-w-[75ch] text-caption leading-relaxed text-text-faint">
             Methodology: each server was launched over stdio on {STAMP},
@@ -830,7 +832,7 @@ export default function Compare() {
                 head: "A small context bill.",
                 body: (
                   <>
-                    About 6.4k tokens for the full 29-tool surface, roughly
+                    About 6.2k tokens for the full 27-tool surface, roughly
                     one long file read, so connecting the tracker doesn&apos;t
                     crowd out the actual work.
                   </>
