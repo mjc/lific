@@ -20,8 +20,6 @@
   &nbsp;·&nbsp;
   <a href="https://lific.dev/docs">Docs</a>
   &nbsp;·&nbsp;
-  <a href="https://lific.dev/compare">Compare</a>
-  &nbsp;·&nbsp;
   <a href="https://discord.gg/uWvaFC4f7D">Discord</a>
 </p>
 

@@ -556,6 +556,9 @@ export default function Home() {
             © 2026 · Apache-2.0 · no telemetry
           </span>
           <div className="flex gap-5">
+            <a className="transition-colors hover:text-text" href="/compare">
+              compare
+            </a>
             <a className="transition-colors hover:text-text" href={GITHUB}>
               github
             </a>
