@@ -15,6 +15,16 @@
   One binary. One SQLite database (plus an attachments dir). MCP built in.
 </p>
 
+<p align="center">
+  <a href="https://lific.dev"><strong>lific.dev</strong></a>
+  &nbsp;·&nbsp;
+  <a href="https://lific.dev/docs">Docs</a>
+  &nbsp;·&nbsp;
+  <a href="https://lific.dev/compare">Compare</a>
+  &nbsp;·&nbsp;
+  <a href="https://discord.gg/uWvaFC4f7D">Discord</a>
+</p>
+
 ---
 
 Your agent can write the code. What it can't do is remember: the plan dies with the context window, the TODO list rots in a markdown file, and the next session starts from zero. Lific is the missing memory: a self-hosted, single-binary issue tracker whose primary user is often an agent rather than a person.
