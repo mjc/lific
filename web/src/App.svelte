@@ -28,6 +28,7 @@
     routeWithCommentTarget,
     splitResourcePath,
   } from "./lib/commentLinks";
+  import { createActivityRateCounter } from "./lib/activityRate";
   import { motionReduced } from "./lib/theme";
   import { fade } from "svelte/transition";
   import { onDestroy, onMount } from "svelte";
@@ -71,6 +72,7 @@
   let realtimeDelayMs = 1000;
   let realtimeNeedsResync = false;
   let realtimeDisposed = false;
+  const realtimeActivity = createActivityRateCounter();
 
   onMount(async () => {
     if (!hasSession()) {
@@ -152,6 +154,7 @@
     }
     realtimeDelayMs = 1000;
     realtimeNeedsResync = false;
+    realtimeActivity.reset();
     const socket = realtimeSocket;
     realtimeSocket = null;
     if (socket) {
@@ -230,6 +233,9 @@
       try {
         const event = JSON.parse(message.data) as RealtimeEvent;
         if (typeof event?.type === "string") {
+          if (event.type !== "resync.required") {
+            realtimeActivity.record(Date.now());
+          }
           dispatchRealtimeEvent(event);
         }
       } catch {
@@ -487,7 +493,7 @@
     {#key routeTransitionKey}
     <div class="h-full" in:fade={routeFadeParams()}>
     {#if parsed.page === "home"}
-      <Home {navigate} />
+      <Home {navigate} realtimeActivityCounts={realtimeActivity.counts} />
     {:else if parsed.page === "settings"}
       <Settings {navigate} />
     {:else if parsed.page === "instance-settings"}
