@@ -25,6 +25,7 @@
     selectActivityRate,
     type ActivityCountsReader,
   } from "../lib/activityRate";
+  import { now } from "../lib/now.svelte";
   import StatusIcon from "../lib/StatusIcon.svelte";
   import PriorityIcon from "../lib/PriorityIcon.svelte";
   import ProjectIcon from "../lib/ProjectIcon.svelte";
@@ -62,9 +63,13 @@
   let {
     navigate,
     realtimeActivityCounts,
+    realtimeActivityReady,
+    realtimeActivityRevision,
   }: {
     navigate: (path: string) => void;
     realtimeActivityCounts: ActivityCountsReader;
+    realtimeActivityReady: boolean;
+    realtimeActivityRevision: number;
   } = $props();
 
   let user = $state<AuthUser | null>(null);
@@ -72,7 +77,6 @@
   let myIssues = $state<Issue[]>([]);
   let allPages = $state<Page[]>([]);
   let activityItems = $state<Activity[]>([]);
-  let activityNow = $state(Date.now());
   let recents = $state<RecentEntry[]>([]);
   let loading = $state(true);
   let error = $state("");
@@ -81,16 +85,6 @@
   // reused as the destination for the "New issue" quick action so it lands
   // wherever the user has been most active rather than an arbitrary project.
   let digestProjectIds = $state<number[]>([]);
-
-  // Cadence uses a one-second window, so it needs a finer-grained clock than
-  // the shared 30-second relative-time heartbeat. Keep this timer local to
-  // Home so other timestamp displays do not rerender every second.
-  $effect(() => {
-    const interval = setInterval(() => {
-      activityNow = Date.now();
-    }, 1_000);
-    return () => clearInterval(interval);
-  });
 
   $effect(() => {
     loadData();
@@ -265,7 +259,11 @@
     return a.actor_display_name || a.actor_username || "system";
   }
 
-  let activityRate = $derived(selectActivityRate(realtimeActivityCounts(activityNow)));
+  let activityRate = $derived.by(() => {
+    const current = now();
+    realtimeActivityRevision;
+    return selectActivityRate(realtimeActivityCounts(current));
+  });
 
   function activityDest(a: Activity): string | null {
     const ident = projectIdent(a.project_id);
@@ -645,12 +643,14 @@
                       Recent activity
                     </h2>
                   </div>
-                  <span
-                    class="text-micro text-[var(--text-faint)] tabular-nums text-right"
-                    title="Live websocket activity observed this session; counts use 1-second, 1-minute, 1-hour, or 1-day windows"
-                  >
-                    {activityRate.value} {activityRate.unit}
-                  </span>
+                  {#if realtimeActivityReady}
+                    <span
+                      class="text-micro text-[var(--text-faint)] tabular-nums text-right"
+                      title="Websocket activity rate; the day fallback includes the last 24 hours"
+                    >
+                      {activityRate.value} {activityRate.unit}
+                    </span>
+                  {/if}
                 </div>
                 <div class="flex flex-col gap-0.5">
                   {#each activityItems as a (a.id)}

@@ -5,6 +5,7 @@
 //! along, degrading gracefully when the actor's account is gone.
 
 use rusqlite::Connection;
+use std::collections::HashSet;
 
 use crate::db::models::{Activity, ActivityFeed};
 use crate::error::LificError;
@@ -27,6 +28,42 @@ pub enum ActivityScope {
 
 const MAX_LIMIT: i64 = 200;
 const DEFAULT_LIMIT: i64 = 50;
+
+/// Return the trailing-24-hour activity count for the websocket's initial snapshot.
+/// `None` means unrestricted visibility; `Some` limits rows to visible projects.
+pub fn activity_count(
+    conn: &Connection,
+    visible_project_ids: Option<&HashSet<i64>>,
+) -> Result<i64, LificError> {
+    let Some(project_filter) = project_filter(visible_project_ids) else {
+        return Ok(0);
+    };
+
+    let ids: Vec<i64> = visible_project_ids
+        .into_iter()
+        .flat_map(|ids| ids.iter().copied())
+        .collect();
+    let sql = format!(
+        "SELECT COUNT(*) FROM audit_log a
+         WHERE a.ts >= datetime('now', '-24 hours'){project_filter}"
+    );
+    conn.query_row(&sql, rusqlite::params_from_iter(ids.iter()), |row| row.get(0))
+        .map_err(LificError::Database)
+}
+
+fn project_filter(visible_project_ids: Option<&HashSet<i64>>) -> Option<String> {
+    match visible_project_ids {
+        None => Some(String::new()),
+        Some(ids) if ids.is_empty() => None,
+        Some(ids) => Some(format!(
+            " AND a.project_id IN ({})",
+            (1..=ids.len())
+                .map(|index| format!("?{index}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
+}
 
 /// List activity newest-first. `limit` is clamped to 1..=200 (default 50).
 /// Fetches limit+1 rows internally to compute `has_more` without a COUNT.

@@ -7,75 +7,82 @@ export type ActivityCounts = {
 
 export type ActivityCountsReader = (now: number) => ActivityCounts;
 
+type ActivityBucket = {
+  at: number;
+  count: number;
+};
+
+export type ActivityBaseline = {
+  dayCount: number;
+};
+
 export type ActivityRate = {
   value: number;
   unit: "updates/s" | "updates/min" | "updates/hr" | "updates/day";
 };
 
-const EVENT_COMPACTION_THRESHOLD = 4_096;
-
 export function createActivityRateCounter() {
-  const eventTimes: number[] = [];
-  let eventHead = 0;
-  const minuteBuckets: { minute: number; count: number }[] = [];
+  const secondBuckets: ActivityBucket[] = [];
+  const minuteBuckets: ActivityBucket[] = [];
+  let baselineDayCount = 0;
 
   function prune(now: number) {
     const minuteAgo = now - 60_000;
-    while (eventHead < eventTimes.length && eventTimes[eventHead] < minuteAgo) {
-      eventHead += 1;
+    while (secondBuckets.length > 0 && secondBuckets[0].at + 1_000 <= minuteAgo) {
+      secondBuckets.shift();
     }
-    if (eventHead > EVENT_COMPACTION_THRESHOLD && eventHead * 2 > eventTimes.length) {
-      eventTimes.splice(0, eventHead);
-      eventHead = 0;
-    }
-
     const dayAgo = now - 86_400_000;
-    while (minuteBuckets.length > 0 && (minuteBuckets[0].minute + 1) * 60_000 <= dayAgo) {
+    while (minuteBuckets.length > 0 && minuteBuckets[0].at + 60_000 <= dayAgo) {
       minuteBuckets.shift();
+    }
+  }
+
+  function addBucket(buckets: ActivityBucket[], at: number, count = 1) {
+    const bucket = buckets.at(-1);
+    if (bucket?.at === at) {
+      bucket.count += count;
+    } else {
+      buckets.push({ at, count });
     }
   }
 
   function record(now: number) {
     prune(now);
-    eventTimes.push(now);
-    const minute = Math.floor(now / 60_000);
-    const bucket = minuteBuckets.at(-1);
-    if (bucket?.minute === minute) {
-      bucket.count += 1;
-    } else {
-      minuteBuckets.push({ minute, count: 1 });
-    }
+    addBucket(secondBuckets, Math.floor(now / 1_000) * 1_000);
+    addBucket(minuteBuckets, Math.floor(now / 60_000) * 60_000);
+  }
+
+  function seed(baseline: ActivityBaseline) {
+    secondBuckets.length = 0;
+    minuteBuckets.length = 0;
+    baselineDayCount = baseline.dayCount;
+  }
+
+  function sumSince(buckets: ActivityBucket[], now: number, window: number, bucketSize: number) {
+    const cutoff = now - window;
+    return buckets.reduce(
+      (total, bucket) => total + (bucket.at + bucketSize > cutoff ? bucket.count : 0),
+      0,
+    );
   }
 
   function counts(now: number): ActivityCounts {
     prune(now);
-    let perSecond = 0;
-    for (let i = eventTimes.length - 1; i >= eventHead; i -= 1) {
-      if (eventTimes[i] < now - 1_000) break;
-      perSecond += 1;
-    }
-    let perHour = 0;
-    const hourAgo = now - 3_600_000;
-    for (let i = minuteBuckets.length - 1; i >= 0; i -= 1) {
-      const bucket = minuteBuckets[i];
-      if ((bucket.minute + 1) * 60_000 <= hourAgo) break;
-      perHour += bucket.count;
-    }
     return {
-      perSecond,
-      perMinute: eventTimes.length - eventHead,
-      perHour,
-      perDay: minuteBuckets.reduce((total, bucket) => total + bucket.count, 0),
+      perSecond: sumSince(secondBuckets, now, 1_000, 1_000),
+      perMinute: sumSince(secondBuckets, now, 60_000, 1_000),
+      perHour: sumSince(minuteBuckets, now, 3_600_000, 60_000),
+      perDay: baselineDayCount + minuteBuckets.reduce((total, bucket) => total + bucket.count, 0),
     };
   }
 
   function reset() {
-    eventTimes.length = 0;
-    eventHead = 0;
+    secondBuckets.length = 0;
     minuteBuckets.length = 0;
+    baselineDayCount = 0;
   }
 
-  return { record, counts, reset };
+  return { record, seed, counts, reset };
 }
 
 export function selectActivityRate(counts: ActivityCounts): ActivityRate {

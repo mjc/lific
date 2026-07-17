@@ -22,7 +22,10 @@
   import Toaster from "./lib/toast/Toaster.svelte"; // LIF-243
   import { hasSession, getInstance, autoLogin, saveSession, clearSession, me } from "./lib/api";
   import { REALTIME_INVALIDATE_EVENT, type RealtimeEvent } from "./lib/autoRefresh.svelte";
-  import { createActivityRateCounter } from "./lib/activityRate";
+  import {
+    createActivityRateCounter,
+    type ActivityBaseline,
+  } from "./lib/activityRate";
   import { motionReduced } from "./lib/theme";
   import { fade } from "svelte/transition";
   import { onDestroy, onMount } from "svelte";
@@ -56,6 +59,39 @@
   let realtimeNeedsResync = false;
   let realtimeDisposed = false;
   const realtimeActivity = createActivityRateCounter();
+  let realtimeActivityReady = $state(false);
+  let realtimeActivityRevision = $state(0);
+  let realtimeActivityRefresh: ReturnType<typeof setTimeout> | null = null;
+
+  function refreshRealtimeActivity() {
+    realtimeActivityRefresh = null;
+    realtimeActivityRevision += 1;
+  }
+
+  function scheduleRealtimeActivityRefresh() {
+    if (realtimeActivityRefresh) clearTimeout(realtimeActivityRefresh);
+    realtimeActivityRefresh = setTimeout(refreshRealtimeActivity, 100);
+  }
+
+  function resetRealtimeActivity() {
+    if (realtimeActivityRefresh) {
+      clearTimeout(realtimeActivityRefresh);
+      realtimeActivityRefresh = null;
+    }
+    realtimeActivity.reset();
+    realtimeActivityReady = false;
+    realtimeActivityRevision += 1;
+  }
+
+  function parseActivityBaseline(event: RealtimeEvent): ActivityBaseline | null {
+    if (event.type !== "activity.baseline") return null;
+    if (typeof event.day_count !== "number" || !Number.isFinite(event.day_count)) {
+      return null;
+    }
+    return {
+      dayCount: event.day_count,
+    };
+  }
 
   onMount(async () => {
     if (!hasSession()) {
@@ -125,7 +161,7 @@
     }
     realtimeDelayMs = 1000;
     realtimeNeedsResync = false;
-    realtimeActivity.reset();
+    resetRealtimeActivity();
     const socket = realtimeSocket;
     realtimeSocket = null;
     if (socket) {
@@ -169,6 +205,13 @@
     );
   }
 
+  function requestRealtimeActivityBaseline() {
+    const socket = realtimeSocket;
+    if (socket?.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: "activity.baseline.request" }));
+    }
+  }
+
   async function reconnectAfterFailedRealtimeAttempt(sessionToken: string | null) {
     const session = await me();
 
@@ -196,18 +239,32 @@
       realtimeDelayMs = 1000;
       if (realtimeNeedsResync) {
         realtimeNeedsResync = false;
+        resetRealtimeActivity();
         dispatchRealtimeEvent({ type: "resync.required" });
       }
+      requestRealtimeActivityBaseline();
     });
     socket.addEventListener("message", (message) => {
       if (typeof message.data !== "string") return;
       try {
         const event = JSON.parse(message.data) as RealtimeEvent;
         if (typeof event?.type === "string") {
-          if (event.type !== "resync.required") {
-            realtimeActivity.record(Date.now());
+          const baseline = parseActivityBaseline(event);
+          if (baseline) {
+            realtimeActivity.seed(baseline);
+            realtimeActivityReady = true;
+            scheduleRealtimeActivityRefresh();
+          } else if (event.type === "resync.required") {
+            resetRealtimeActivity();
+            dispatchRealtimeEvent(event);
+            requestRealtimeActivityBaseline();
+          } else {
+            if (realtimeActivityReady) {
+              realtimeActivity.record(Date.now());
+              scheduleRealtimeActivityRefresh();
+            }
+            dispatchRealtimeEvent(event);
           }
-          dispatchRealtimeEvent(event);
         }
       } catch {
         // HTTP refresh remains source of truth.
@@ -216,6 +273,7 @@
     socket.addEventListener("close", () => {
       if (realtimeSocket === socket) {
         realtimeSocket = null;
+        resetRealtimeActivity();
         realtimeNeedsResync = true;
         if (opened) {
           scheduleRealtimeReconnect();
@@ -464,7 +522,12 @@
     {#key routeTransitionKey}
     <div class="h-full" in:fade={routeFadeParams()}>
     {#if parsed.page === "home"}
-      <Home {navigate} realtimeActivityCounts={realtimeActivity.counts} />
+      <Home
+        {navigate}
+        realtimeActivityCounts={realtimeActivity.counts}
+        {realtimeActivityReady}
+        {realtimeActivityRevision}
+      />
     {:else if parsed.page === "settings"}
       <Settings {navigate} />
     {:else if parsed.page === "instance-settings"}
