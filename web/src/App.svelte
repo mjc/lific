@@ -54,6 +54,59 @@
   let realtimeDelayMs = 1000;
   let realtimeNeedsResync = false;
   let realtimeDisposed = false;
+  const realtimeEventTimes: number[] = [];
+  let realtimeEventHead = 0;
+  const realtimeMinuteBuckets: { minute: number; count: number }[] = [];
+  let realtimeDayCount = 0;
+
+  function pruneRealtimeActivity(now: number) {
+    const minuteAgo = now - 60_000;
+    while (
+      realtimeEventHead < realtimeEventTimes.length &&
+      realtimeEventTimes[realtimeEventHead] < minuteAgo
+    ) {
+      realtimeEventHead += 1;
+    }
+    if (realtimeEventHead > 4_096 && realtimeEventHead * 2 > realtimeEventTimes.length) {
+      realtimeEventTimes.splice(0, realtimeEventHead);
+      realtimeEventHead = 0;
+    }
+
+    const dayAgo = now - 86_400_000;
+    while (
+      realtimeMinuteBuckets.length > 0 &&
+      (realtimeMinuteBuckets[0].minute + 1) * 60_000 <= dayAgo
+    ) {
+      realtimeDayCount -= realtimeMinuteBuckets.shift()!.count;
+    }
+  }
+
+  function recordRealtimeActivity(now: number) {
+    pruneRealtimeActivity(now);
+    realtimeEventTimes.push(now);
+    const minute = Math.floor(now / 60_000);
+    const bucket = realtimeMinuteBuckets.at(-1);
+    if (bucket?.minute === minute) {
+      bucket.count += 1;
+    } else {
+      realtimeMinuteBuckets.push({ minute, count: 1 });
+    }
+    realtimeDayCount += 1;
+  }
+
+  function realtimeActivityCounts(now: number) {
+    pruneRealtimeActivity(now);
+    let secondCount = 0;
+    for (let i = realtimeEventTimes.length - 1; i >= realtimeEventHead; i -= 1) {
+      if (realtimeEventTimes[i] < now - 1_000) break;
+      secondCount += 1;
+    }
+    return {
+      perSecond: secondCount,
+      perMinute: realtimeEventTimes.length - realtimeEventHead,
+      perDay: realtimeDayCount,
+    };
+  }
 
   onMount(async () => {
     if (!hasSession()) {
@@ -123,6 +176,10 @@
     }
     realtimeDelayMs = 1000;
     realtimeNeedsResync = false;
+    realtimeEventTimes.length = 0;
+    realtimeEventHead = 0;
+    realtimeMinuteBuckets.length = 0;
+    realtimeDayCount = 0;
     const socket = realtimeSocket;
     realtimeSocket = null;
     if (socket) {
@@ -201,6 +258,9 @@
       try {
         const event = JSON.parse(message.data) as RealtimeEvent;
         if (typeof event?.type === "string") {
+          if (event.type !== "resync.required") {
+            recordRealtimeActivity(Date.now());
+          }
           dispatchRealtimeEvent(event);
         }
       } catch {
@@ -458,7 +518,7 @@
     {#key routeTransitionKey}
     <div class="h-full" in:fade={routeFadeParams()}>
     {#if parsed.page === "home"}
-      <Home {navigate} />
+      <Home {navigate} {realtimeActivityCounts} />
     {:else if parsed.page === "settings"}
       <Settings {navigate} />
     {:else if parsed.page === "instance-settings"}
