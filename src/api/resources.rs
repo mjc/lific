@@ -376,6 +376,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn regular_cannot_create_folder() {
+        let (db, _, _lead, regular, project_id) = setup_lead_test();
+        let regular_app = app_as_user(db, &regular);
+        let response = json_post(
+            &regular_app,
+            "/api/folders",
+            serde_json::json!({ "project_id": project_id, "name": "Docs" }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
     async fn lead_can_merge_labels_and_regular_cannot() {
         let (db, _, lead, regular, project_id) = setup_lead_test();
         let lead_app = app_as_user(db.clone(), &lead);

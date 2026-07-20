@@ -364,16 +364,9 @@ impl HttpBackend {
                 folder,
                 label,
             } => {
-                let project_id = match project {
-                    Some(project) => Some(self.project_id(project).await?),
-                    None => None,
-                };
-                let folder_id = match (project_id, folder) {
-                    (Some(project_id), Some(folder)) => {
-                        Some(self.folder_id(project_id, folder).await?)
-                    }
-                    _ => None,
-                };
+                let (project_id, folder_id) = self
+                    .page_scope(project.as_deref(), folder.as_deref())
+                    .await?;
                 let params = [
                     project_id.map(|id| ("project_id", Cow::Owned(id.to_string()))),
                     folder_id.map(|id| ("folder_id", Cow::Owned(id.to_string()))),
@@ -397,16 +390,9 @@ impl HttpBackend {
                 content,
                 labels,
             } => {
-                let project_id = match project {
-                    Some(project) => Some(self.project_id(project).await?),
-                    None => None,
-                };
-                let folder_id = match (project_id, folder) {
-                    (Some(project_id), Some(folder)) => {
-                        Some(self.folder_id(project_id, folder).await?)
-                    }
-                    _ => None,
-                };
+                let (project_id, folder_id) = self
+                    .page_scope(project.as_deref(), folder.as_deref())
+                    .await?;
                 let labels = borrowed_labels(labels.as_deref()).unwrap_or_default();
                 self.send_json(
                     Method::POST,
@@ -658,6 +644,22 @@ impl HttpBackend {
             .await
     }
 
+    async fn page_scope(
+        &self,
+        project: Option<&str>,
+        folder: Option<&str>,
+    ) -> Result<(Option<i64>, Option<i64>)> {
+        let project_id = match project {
+            Some(project) => Some(self.project_id(project).await?),
+            None => None,
+        };
+        let folder_id = match project_id.zip(folder) {
+            Some((project_id, folder)) => Some(self.folder_id(project_id, folder).await?),
+            None => None,
+        };
+        Ok((project_id, folder_id))
+    }
+
     async fn issue_id(&self, identifier: &str) -> Result<i64> {
         self.get_json(&format!("/api/issues/resolve/{}", segment(identifier)), &[])
             .await?["id"]
@@ -821,18 +823,79 @@ fn pretty(value: &Value) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::{path::PathBuf, sync::Arc};
+
+    use axum::{
+        Json, Router,
+        body::Body,
+        extract::{Request, State},
+        http::{HeaderValue, StatusCode},
+        response::Response,
+        routing::{any, get},
+    };
     use reqwest::{
         Method,
         header::{CONTENT_DISPOSITION, HeaderMap},
     };
     use serde_json::json;
+    use tokio::{net::TcpListener, sync::Mutex, task::JoinHandle};
 
-    use crate::cli::{Command, split_csv};
+    use crate::cli::{Command, ExportAction, PageAction, ProjectAction, split_csv};
 
     use super::{
         HttpBackend, IssueCreate, IssueUpdate, PageCreate, ProjectCreate, error_detail,
         export_filename, find_resource, safe_filename, segment,
     };
+
+    type CapturedRequest = Arc<Mutex<Option<(String, Option<String>)>>>;
+
+    async fn spawn_server(router: Router) -> (String, JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        (format!("http://{address}"), task)
+    }
+
+    async fn capture_request(
+        State(captured): State<CapturedRequest>,
+        request: Request,
+    ) -> Json<serde_json::Value> {
+        let authorization = request
+            .headers()
+            .get("authorization")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        *captured.lock().await = Some((request.uri().to_string(), authorization));
+        Json(json!([{"id": 1}]))
+    }
+
+    async fn failed_request() -> (StatusCode, Json<serde_json::Value>) {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "request rejected"})),
+        )
+    }
+
+    async fn export_response() -> Response {
+        let mut response = Response::new(Body::from("export contents"));
+        response.headers_mut().insert(
+            CONTENT_DISPOSITION,
+            HeaderValue::from_static("attachment; filename=report.txt"),
+        );
+        response
+    }
+
+    async fn page_scope_request(request: Request) -> Json<serde_json::Value> {
+        let value = match request.uri().path() {
+            "/api/projects" => json!([{"id": 3, "identifier": "LIF"}]),
+            "/api/folders" => json!([{"id": 8, "name": "Docs"}]),
+            "/api/pages" => json!([{"id": 9, "title": "Release notes"}]),
+            _ => json!([]),
+        };
+        Json(value)
+    }
 
     #[test]
     fn rejects_non_http_backend_urls() {
@@ -932,6 +995,107 @@ mod tests {
 
         assert_eq!(request.method(), Method::DELETE);
         assert_eq!(request.url().path(), "/api/labels/4");
+    }
+
+    #[tokio::test]
+    async fn executes_search_over_http_with_auth_and_query() {
+        let captured = Arc::new(Mutex::new(None));
+        let router = Router::new()
+            .route("/api/search", any(capture_request))
+            .with_state(captured.clone());
+        let (url, server) = spawn_server(router).await;
+        let backend = HttpBackend::new(&url, Some("test-key")).unwrap();
+
+        let output = backend
+            .execute(&Command::Search {
+                query: "term".into(),
+                project: None,
+                limit: Some(7),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(output, json!([{"id": 1}]));
+        assert_eq!(
+            captured.lock().await.as_ref(),
+            Some(&(
+                "/api/search?query=term&limit=7".into(),
+                Some("Bearer test-key".into())
+            ))
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn executes_page_list_with_project_and_folder_resolution() {
+        let router = Router::new().route("/api/{*path}", any(page_scope_request));
+        let (url, server) = spawn_server(router).await;
+        let backend = HttpBackend::new(&url, None).unwrap();
+
+        let output = backend
+            .execute(&Command::Page {
+                action: PageAction::List {
+                    project: Some("LIF".into()),
+                    folder: Some("Docs".into()),
+                    label: None,
+                },
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(output, json!([{"id": 9, "title": "Release notes"}]));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn reports_http_error_details_from_server_responses() {
+        let router = Router::new().route("/api/projects", get(failed_request));
+        let (url, server) = spawn_server(router).await;
+        let backend = HttpBackend::new(&url, None).unwrap();
+
+        let error = backend
+            .execute(&Command::Project {
+                action: ProjectAction::List,
+            })
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "HTTP backend request failed (400 Bad Request): request rejected"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn writes_http_export_response_using_server_filename() {
+        let router = Router::new().route("/api/export/issues/{identifier}", get(export_response));
+        let (url, server) = spawn_server(router).await;
+        let backend = HttpBackend::new(&url, None).unwrap();
+        let output_dir =
+            std::env::temp_dir().join(format!("lific-http-export-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&output_dir);
+
+        let output = backend
+            .execute(&Command::Export {
+                action: ExportAction::Issue {
+                    identifier: "LIF-1".into(),
+                    output: PathBuf::from(&output_dir),
+                },
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(output_dir.join("report.txt")).unwrap(),
+            "export contents"
+        );
+        assert_eq!(
+            output["files"][0],
+            output_dir.join("report.txt").display().to_string()
+        );
+        std::fs::remove_dir_all(output_dir).unwrap();
+        server.abort();
     }
 
     #[test]
