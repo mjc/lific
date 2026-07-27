@@ -12,6 +12,7 @@ use rmcp::{
 
 use crate::db::DbPool;
 use crate::db::models::AuthUser;
+use crate::links::IssueLinkContext;
 use crate::realtime::{RealtimeEvent, RealtimeHub};
 
 /// Serialization lock for MCP request handling.
@@ -34,6 +35,10 @@ static MCP_REQUEST_USER: Mutex<Option<AuthUser>> = Mutex::new(None);
 /// (which also resolves to `AuthUser = None`).
 static MCP_REQUEST_OPERATOR: Mutex<bool> = Mutex::new(false);
 
+/// Per-request external origin used for structured issue links.
+/// Protected by [`MCP_HANDLER_LOCK`] for the same reason as the identity state.
+static MCP_REQUEST_ISSUE_LINKS: Mutex<Option<IssueLinkContext>> = Mutex::new(None);
+
 /// Acquire the MCP handler lock, set the user, run the provided future,
 /// then clean up. Guarantees no identity confusion between concurrent requests.
 ///
@@ -41,12 +46,13 @@ static MCP_REQUEST_OPERATOR: Mutex<bool> = Mutex::new(false);
 /// the handler so every DB write a tool performs is attributed to this
 /// user via MCP — both the OAuth /mcp route and the authless /mcp/<token>
 /// route funnel through here.
+#[cfg(test)]
 pub async fn with_request_user<F, Fut, R>(user: Option<AuthUser>, f: F) -> R
 where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = R>,
 {
-    with_request_identity(user, false, f).await
+    with_request_context(user, false, None, f).await
 }
 
 /// LIF-261: like [`with_request_user`] but also records whether the request's
@@ -55,7 +61,24 @@ where
 /// OAuth/session tokens), so `authz` can treat it as admin-equivalent in
 /// enforced mode. `with_request_user` keeps the old signature (operator =
 /// false) for every non-unbound-key caller.
+#[cfg(test)]
 pub async fn with_request_identity<F, Fut, R>(user: Option<AuthUser>, is_operator: bool, f: F) -> R
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = R>,
+{
+    with_request_context(user, is_operator, None, f).await
+}
+
+/// Run an MCP request with its authenticated identity and optional external
+/// origin. The origin is transport metadata: stdio callers pass `None`, while
+/// HTTP callers pass the validated browser-facing base URL.
+pub async fn with_request_context<F, Fut, R>(
+    user: Option<AuthUser>,
+    is_operator: bool,
+    issue_links: Option<IssueLinkContext>,
+    f: F,
+) -> R
 where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = R>,
@@ -71,6 +94,9 @@ where
     *MCP_REQUEST_OPERATOR
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = is_operator;
+    *MCP_REQUEST_ISSUE_LINKS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = issue_links;
     let result = crate::actor::scope(actor, f()).await;
     *MCP_REQUEST_USER
         .lock()
@@ -78,6 +104,9 @@ where
     *MCP_REQUEST_OPERATOR
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = false;
+    *MCP_REQUEST_ISSUE_LINKS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
     result
 }
 
@@ -95,6 +124,15 @@ pub(crate) fn current_is_operator() -> bool {
     *MCP_REQUEST_OPERATOR
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Get the validated external origin for structured issue links, if this MCP
+/// request arrived through an HTTP transport that knows it.
+pub(crate) fn current_issue_link_context() -> Option<IssueLinkContext> {
+    MCP_REQUEST_ISSUE_LINKS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
 }
 
 /// Per-session instructions handed to every connected MCP agent via
@@ -380,6 +418,23 @@ mod tests {
             !seen,
             "with_request_user (non-unbound-key callers) must never set the operator flag"
         );
+    }
+
+    #[tokio::test]
+    async fn with_request_context_scopes_issue_link_origin() {
+        let context = IssueLinkContext::parse("https://tracker.example/base");
+        let seen = with_request_context(None, false, context, || async {
+            current_issue_link_context()
+                .expect("request origin should be visible")
+                .issue_markdown("LIF-1")
+        })
+        .await;
+
+        assert_eq!(
+            seen,
+            "[LIF-1](https://tracker.example/base/LIF/issues/LIF-1)"
+        );
+        assert!(current_issue_link_context().is_none());
     }
 
     // End-to-end: an operator-trusted unbound API key aimed at /mcp passes an

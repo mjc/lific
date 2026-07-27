@@ -5,8 +5,8 @@ use rmcp::{handler::server::wrapper::Parameters, tool, tool_router};
 
 use crate::db::{DbPool, models, queries};
 
-use super::LificMcp;
 use super::schemas::*;
+use super::{LificMcp, current_issue_link_context};
 
 /// Self-onboarding nudge (LIF-257): shown by cold read tools when the DB has
 /// **zero** projects, so the first agent connecting to a fresh install learns
@@ -24,24 +24,74 @@ impl LificMcp {
 pub(crate) fn fmt_issue(i: &models::Issue) -> String {
     let mut s = format!(
         "{} | {} | {} | {}",
-        i.identifier, i.status, i.priority, i.title
+        issue_reference(&i.identifier),
+        i.status,
+        i.priority,
+        i.title
     );
     if !i.labels.is_empty() {
         s.push_str(&format!(" [{}]", i.labels.join(", ")));
     }
     if !i.blocks.is_empty() {
-        s.push_str(&format!(" blocks:{}", i.blocks.join(",")));
+        s.push_str(&format!(
+            " blocks:{}",
+            i.blocks
+                .iter()
+                .map(|identifier| issue_reference(identifier))
+                .collect::<Vec<_>>()
+                .join(",")
+        ));
     }
     if !i.blocked_by.is_empty() {
-        s.push_str(&format!(" blocked_by:{}", i.blocked_by.join(",")));
+        s.push_str(&format!(
+            " blocked_by:{}",
+            i.blocked_by
+                .iter()
+                .map(|identifier| issue_reference(identifier))
+                .collect::<Vec<_>>()
+                .join(",")
+        ));
     }
     if !i.duplicates.is_empty() {
-        s.push_str(&format!(" duplicates:{}", i.duplicates.join(",")));
+        s.push_str(&format!(
+            " duplicates:{}",
+            i.duplicates
+                .iter()
+                .map(|identifier| issue_reference(identifier))
+                .collect::<Vec<_>>()
+                .join(",")
+        ));
     }
     if !i.duplicated_by.is_empty() {
-        s.push_str(&format!(" duplicated_by:{}", i.duplicated_by.join(",")));
+        s.push_str(&format!(
+            " duplicated_by:{}",
+            i.duplicated_by
+                .iter()
+                .map(|identifier| issue_reference(identifier))
+                .collect::<Vec<_>>()
+                .join(",")
+        ));
     }
     s
+}
+
+fn issue_reference(identifier: &str) -> String {
+    current_issue_link_context().map_or_else(
+        || identifier.to_owned(),
+        |context| context.issue_markdown(identifier),
+    )
+}
+
+fn issue_reference_with_suffix(value: &str) -> String {
+    let Some((identifier, suffix)) = value.split_once(' ') else {
+        return issue_reference(value);
+    };
+    let rendered = issue_reference(identifier);
+    if rendered == identifier {
+        value.to_owned()
+    } else {
+        format!("{rendered} {suffix}")
+    }
 }
 
 /// Render a plan + its step tree compactly for get_plan / create_plan output.
@@ -51,7 +101,7 @@ pub(crate) fn fmt_plan(p: &models::Plan) -> String {
     let anchor = p
         .anchor_identifier
         .as_ref()
-        .map(|a| format!(" — anchor {a}"))
+        .map(|a| format!(" — anchor {}", issue_reference(a)))
         .unwrap_or_default();
     let mut out = format!(
         "{} [{}] {}{} — {}/{} done\n",
@@ -215,12 +265,14 @@ fn fmt_steps(nodes: &[models::PlanStepNode], depth: usize, out: &mut String) {
         let check = if n.done { "x" } else { " " };
         // Provenance suffix for issue-linked steps.
         let suffix = match (&n.issue_identifier, n.issue_status.as_deref()) {
-            (Some(iss), Some("done")) if n.done => format!(" (via {iss})"),
-            (Some(iss), _) if n.reopened_via_issue_at.is_some() && !n.done => {
-                format!(" (reopened — {iss} reopened)")
+            (Some(iss), Some("done")) if n.done => {
+                format!(" (via {})", issue_reference(iss))
             }
-            (Some(iss), Some(st)) => format!(" [{iss}: {st}]"),
-            (Some(iss), None) => format!(" [{iss}]"),
+            (Some(iss), _) if n.reopened_via_issue_at.is_some() && !n.done => {
+                format!(" (reopened — {} reopened)", issue_reference(iss))
+            }
+            (Some(iss), Some(st)) => format!(" [{}: {st}]", issue_reference(iss)),
+            (Some(iss), None) => format!(" [{}]", issue_reference(iss)),
             _ => String::new(),
         };
         out.push_str(&format!(
@@ -391,7 +443,12 @@ fn fmt_activity(a: &models::Activity) -> String {
         _ => "system".into(),
     };
     let agent = if a.actor_is_bot { " (agent)" } else { "" };
-    let label = a.entity_label.as_deref().unwrap_or("?");
+    let raw_label = a.entity_label.as_deref().unwrap_or("?");
+    let label = if a.entity_type == "issue" {
+        issue_reference(raw_label)
+    } else {
+        raw_label.to_owned()
+    };
 
     let detail = match a.action.as_str() {
         "create" => format!(
@@ -419,13 +476,13 @@ fn fmt_activity(a: &models::Activity) -> String {
             "{} {} → {}",
             label,
             a.field.as_deref().unwrap_or("relates_to"),
-            a.new_value.as_deref().unwrap_or("?")
+            issue_reference(a.new_value.as_deref().unwrap_or("?"))
         ),
         "unlink" => format!(
             "{} un-{} → {}",
             label,
             a.field.as_deref().unwrap_or("relates_to"),
-            a.old_value.as_deref().unwrap_or("?")
+            issue_reference(a.old_value.as_deref().unwrap_or("?"))
         ),
         other => format!("{label} {other}"),
     };
@@ -676,11 +733,22 @@ impl LificMcp {
                     // match on its parent so the reader knows to open the
                     // parent issue/page to find the thread (LIF-146).
                     if r.result_type == "comment" {
-                        out.push_str(&format!("- [comment] on {ident} — {}\n", r.snippet));
+                        out.push_str(&format!(
+                            "- [comment] on {} — {}\n",
+                            issue_reference(ident),
+                            r.snippet
+                        ));
                     } else {
                         out.push_str(&format!(
                             "- [{}] {} {} — {}\n",
-                            r.result_type, ident, r.title, r.snippet
+                            r.result_type,
+                            if r.result_type == "issue" {
+                                issue_reference(ident)
+                            } else {
+                                ident.to_owned()
+                            },
+                            r.title,
+                            r.snippet
                         ));
                     }
                 }
@@ -751,10 +819,14 @@ impl LificMcp {
             .read(|conn| queries::activity::list_activity(conn, scope, Some(limit), Some(offset)))
         {
             Ok(feed) if feed.items.is_empty() && offset == 0 => {
-                format!("No recorded activity for {ident} yet.")
+                format!("No recorded activity for {} yet.", issue_reference(ident))
             }
             Ok(feed) => {
-                let mut out = format!("{} activity entries for {ident}:\n", feed.items.len());
+                let mut out = format!(
+                    "{} activity entries for {}:\n",
+                    feed.items.len(),
+                    issue_reference(ident)
+                );
                 for a in &feed.items {
                     out.push_str(&format!("- {}\n", fmt_activity(a)));
                 }
@@ -879,27 +951,63 @@ impl LificMcp {
                 }
                 let mut out = format!(
                     "{} — {}\nStatus: {} | Priority: {} | Module: {}\n",
-                    issue.identifier, issue.title, issue.status, issue.priority, module_name
+                    issue_reference(&issue.identifier),
+                    issue.title,
+                    issue.status,
+                    issue.priority,
+                    module_name
                 );
                 if !issue.labels.is_empty() {
                     out.push_str(&format!("Labels: {}\n", issue.labels.join(", ")));
                 }
                 if !rels.blocks.is_empty() {
-                    out.push_str(&format!("Blocks: {}\n", rels.blocks.join(", ")));
+                    out.push_str(&format!(
+                        "Blocks: {}\n",
+                        rels.blocks
+                            .iter()
+                            .map(|r| issue_reference_with_suffix(r))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
                 }
                 if !rels.blocked_by.is_empty() {
-                    out.push_str(&format!("Blocked by: {}\n", rels.blocked_by.join(", ")));
+                    out.push_str(&format!(
+                        "Blocked by: {}\n",
+                        rels.blocked_by
+                            .iter()
+                            .map(|r| issue_reference_with_suffix(r))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
                 }
                 if !rels.relates_to.is_empty() {
-                    out.push_str(&format!("Relates to: {}\n", rels.relates_to.join(", ")));
+                    out.push_str(&format!(
+                        "Relates to: {}\n",
+                        rels.relates_to
+                            .iter()
+                            .map(|r| issue_reference_with_suffix(r))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
                 }
                 if !rels.duplicates.is_empty() {
-                    out.push_str(&format!("Duplicates: {}\n", rels.duplicates.join(", ")));
+                    out.push_str(&format!(
+                        "Duplicates: {}\n",
+                        rels.duplicates
+                            .iter()
+                            .map(|r| issue_reference_with_suffix(r))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
                 }
                 if !rels.duplicated_by.is_empty() {
                     out.push_str(&format!(
                         "Duplicated by: {}\n",
-                        rels.duplicated_by.join(", ")
+                        rels.duplicated_by
+                            .iter()
+                            .map(|r| issue_reference_with_suffix(r))
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     ));
                 }
                 if !issue.description.is_empty() {
@@ -1060,7 +1168,11 @@ impl LificMcp {
                     project_id: issue.project_id,
                     issue_id: issue.id,
                 });
-                format!("Created {}: {}", issue.identifier, issue.title)
+                format!(
+                    "Created {}: {}",
+                    issue_reference(&issue.identifier),
+                    issue.title
+                )
             }
             Err(e) => format!("Error: {e}"),
         }
@@ -1142,7 +1254,11 @@ impl LificMcp {
                     project_id: issue.project_id,
                     issue_id: issue.id,
                 });
-                let mut output = format!("Updated {}: {}", issue.identifier, fmt_issue(&issue));
+                let mut output = format!(
+                    "Updated {}: {}",
+                    issue_reference(&issue.identifier),
+                    fmt_issue(&issue)
+                );
                 if let Some(note) = cascade_action
                     .and_then(|action| fmt_issue_plan_step_cascade(action, &cascaded_steps))
                 {
@@ -1303,7 +1419,11 @@ impl LificMcp {
                     project_id: issue.project_id,
                     issue_id: issue.id,
                 });
-                format!("Edited {}: {}", issue.identifier, fmt_issue(&issue))
+                format!(
+                    "Edited {}: {}",
+                    issue_reference(&issue.identifier),
+                    fmt_issue(&issue)
+                )
             }
             Err(e) => format!("Error: {e}"),
         }
@@ -1485,7 +1605,12 @@ impl LificMcp {
                     project_id: target.project_id,
                     issue_id: target.id,
                 });
-                format!("{} {} {}", input.source, input.relation_type, input.target)
+                format!(
+                    "{} {} {}",
+                    issue_reference(&input.source),
+                    input.relation_type,
+                    issue_reference(&input.target)
+                )
             }
             Err(e) => format!("Error: {e}"),
         }
@@ -1520,7 +1645,11 @@ impl LificMcp {
                     project_id: target.project_id,
                     issue_id: target.id,
                 });
-                format!("Unlinked {} and {}", input.source, input.target)
+                format!(
+                    "Unlinked {} and {}",
+                    issue_reference(&input.source),
+                    issue_reference(&input.target)
+                )
             }
             Err(e) => format!("Error: {e}"),
         }
@@ -1758,7 +1887,7 @@ impl LificMcp {
                             project_id: issue.project_id,
                             issue_id: issue.id,
                         });
-                        format!("Deleted issue {}", input.identifier)
+                        format!("Deleted issue {}", issue_reference(&input.identifier))
                     }
                     Err(e) => format!("Error: {e}"),
                 }
@@ -1915,7 +2044,7 @@ impl LificMcp {
                             let anchor = p
                                 .anchor_identifier
                                 .as_ref()
-                                .map(|a| format!(" — anchor {a}"))
+                                .map(|a| format!(" — anchor {}", issue_reference(a)))
                                 .unwrap_or_default();
                             out.push_str(&format!(
                                 "- {} | {} | {} ({}/{} done){}\n",
@@ -2002,7 +2131,9 @@ impl LificMcp {
                         for i in &issues {
                             out.push_str(&format!(
                                 "- {} | {} | {}\n",
-                                i.identifier, i.status, i.title
+                                issue_reference(&i.identifier),
+                                i.status,
+                                i.title
                             ));
                         }
                         append_pagination_hint(&mut out, has_more, offset + limit);
@@ -2574,7 +2705,10 @@ impl LificMcp {
                 }
                 format!(
                     "Comment #{} added to {} by {} at {}",
-                    c.id, input.identifier, c.author, c.created_at
+                    c.id,
+                    issue_reference(&input.identifier),
+                    c.author,
+                    c.created_at
                 )
             }
             Err(e) => format!("Error: {e}"),
@@ -2611,11 +2745,11 @@ impl LificMcp {
         }) {
             Ok((comments, total)) if comments.is_empty() => {
                 if total == 0 {
-                    format!("No comments on {}.", input.identifier)
+                    format!("No comments on {}.", issue_reference(&input.identifier))
                 } else {
                     format!(
                         "No comments in this range on {} (offset {offset}, {total} total).",
-                        input.identifier
+                        issue_reference(&input.identifier)
                     )
                 }
             }
@@ -2634,18 +2768,21 @@ impl LificMcp {
                     };
                     format!(
                         "Showing {shown} {edge} of {total} comment(s) on {}:\n",
-                        input.identifier
+                        issue_reference(&input.identifier)
                     )
                 } else if offset > 0 {
                     format!(
                         "Showing comments {}-{} of {total} on {} ({} first):\n",
                         offset + 1,
                         offset + shown,
-                        input.identifier,
+                        issue_reference(&input.identifier),
                         if order == "desc" { "newest" } else { "oldest" }
                     )
                 } else {
-                    format!("{total} comment(s) on {}:\n", input.identifier)
+                    format!(
+                        "{total} comment(s) on {}:\n",
+                        issue_reference(&input.identifier)
+                    )
                 };
                 for c in &comments {
                     out.push_str(&format!(
@@ -2724,9 +2861,7 @@ impl LificMcp {
         }
     }
 
-    #[tool(
-        description = "Delete a comment by id. Author or admin only."
-    )]
+    #[tool(description = "Delete a comment by id. Author or admin only.")]
     fn delete_comment(&self, Parameters(input): Parameters<DeleteCommentInput>) -> String {
         // Resolve the acting user the same way add_comment does.
         let (user_id, is_admin) = match self.resolve_comment_actor() {
@@ -2953,7 +3088,10 @@ impl LificMcp {
                         if let Some(ref ident) = input.attach_issue {
                             let iid = queries::resolve_identifier(conn, ident)?;
                             queries::plans::set_step_issue(conn, step_id, Some(iid))?;
-                            notes.push(format!("Attached {ident} to step #{step_id}"));
+                            notes.push(format!(
+                                "Attached {} to step #{step_id}",
+                                issue_reference(ident)
+                            ));
                         }
                         if input.detach_issue.unwrap_or(false) {
                             queries::plans::set_step_issue(conn, step_id, None)?;
@@ -2973,9 +3111,15 @@ impl LificMcp {
                                         project_id: issue.project_id,
                                         issue_id: issue.id,
                                     });
-                                    msg.push_str(&format!(" → {iss} marked done"));
+                                    msg.push_str(&format!(
+                                        " → {} marked done",
+                                        issue_reference(iss)
+                                    ));
                                 } else if done {
-                                    msg.push_str(&format!(" (linked {iss} already done)"));
+                                    msg.push_str(&format!(
+                                        " (linked {} already done)",
+                                        issue_reference(iss)
+                                    ));
                                 }
                             }
                             notes.push(msg);
