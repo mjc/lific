@@ -631,12 +631,7 @@ fn activity_reference(
     }
 
     match activity.entity_type.as_str() {
-        "issue"
-            if resolves_to(
-                queries::resolve_identifier(conn, label),
-                activity.entity_id,
-            ) =>
-        {
+        "issue" if resolves_to(queries::resolve_identifier(conn, label), activity.entity_id) => {
             context.issue_markdown(label)
         }
         "project"
@@ -647,22 +642,14 @@ fn activity_reference(
         {
             context.project_markdown(label)
         }
-        "page"
-            if resolves_to(
-                queries::resolve_page_identifier(conn, label),
-                activity.entity_id,
-            ) =>
-        {
-            context.page_markdown(label, activity.entity_id)
-        }
-        "plan"
-            if resolves_to(
-                queries::plans::resolve_plan_identifier(conn, label),
-                activity.entity_id,
-            ) =>
-        {
-            context.plan_markdown(label, activity.entity_id)
-        }
+        "page" if resolves_to(
+            queries::resolve_page_identifier(conn, label),
+            activity.entity_id,
+        ) => context.page_markdown(label, activity.entity_id),
+        "plan" if resolves_to(
+            queries::plans::resolve_plan_identifier(conn, label),
+            activity.entity_id,
+        ) => context.plan_markdown(label, activity.entity_id),
         "module" => match (
             project,
             queries::get_module(conn, activity.entity_id).ok(),
@@ -692,7 +679,18 @@ fn activity_issue_reference(
     };
     queries::resolve_identifier(conn, identifier).map_or_else(
         |_| identifier.to_owned(),
-        |_| context.issue_markdown(identifier),
+        |id| {
+            queries::get_issue(conn, id).map_or_else(
+                |_| identifier.to_owned(),
+                |issue| {
+                    if issue.identifier == identifier {
+                        context.issue_markdown(identifier)
+                    } else {
+                        identifier.to_owned()
+                    }
+                },
+            )
+        },
     )
 }
 
@@ -1098,17 +1096,19 @@ impl LificMcp {
             if looks_like_page_identifier(ident) {
             match self.read(|conn| {
                 let id = queries::resolve_page_identifier(conn, ident)?;
-                queries::get_page(conn, id)
+                let page = queries::get_page(conn, id)?;
+                let project_identifier = page
+                    .project_id
+                    .and_then(|project_id| queries::get_project(conn, project_id).ok())
+                    .map(|project| project.identifier);
+                let scope_reference = page_reference(&page);
+                Ok((page, scope_reference, project_identifier))
             }) {
-                Ok(page) => {
-                    let project_identifier = page
-                        .identifier
-                        .split_once("-DOC-")
-                        .map(|(project, _)| project.to_owned());
+                Ok((page, scope_reference, project_identifier)) => {
                     (
                         queries::activity::ActivityScope::Page(page.id),
                         page.project_id,
-                        page_reference(&page),
+                        scope_reference,
                         project_identifier,
                     )
                 }
@@ -1116,16 +1116,18 @@ impl LificMcp {
             }
         } else if let Ok(issue) = self.read(|conn| {
             let id = queries::resolve_identifier(conn, ident)?;
-            queries::get_issue(conn, id)
+            let issue = queries::get_issue(conn, id)?;
+            let project_identifier = queries::get_project(conn, issue.project_id)
+                .ok()
+                .map(|project| project.identifier);
+            let scope_reference = issue_reference(&issue.identifier);
+            Ok((issue, scope_reference, project_identifier))
         }) {
-            let project_identifier = issue
-                .identifier
-                .rsplit_once('-')
-                .map(|(project, _)| project.to_owned());
+            let (issue, scope_reference, project_identifier) = issue;
             (
                 queries::activity::ActivityScope::Issue(issue.id),
                 Some(issue.project_id),
-                issue_reference(&issue.identifier),
+                scope_reference,
                 project_identifier,
             )
         } else {
