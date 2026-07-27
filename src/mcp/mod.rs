@@ -35,9 +35,14 @@ static MCP_REQUEST_USER: Mutex<Option<AuthUser>> = Mutex::new(None);
 /// (which also resolves to `AuthUser = None`).
 static MCP_REQUEST_OPERATOR: Mutex<bool> = Mutex::new(false);
 
-/// Per-request external origin used for structured issue links.
+/// Per-request external origin used for structured resource links.
 /// Protected by [`MCP_HANDLER_LOCK`] for the same reason as the identity state.
 static MCP_REQUEST_ISSUE_LINKS: Mutex<Option<IssueLinkContext>> = Mutex::new(None);
+
+#[cfg(test)]
+tokio::task_local! {
+    static TEST_REQUEST_ISSUE_LINKS: Option<IssueLinkContext>;
+}
 
 /// Acquire the MCP handler lock, set the user, run the provided future,
 /// then clean up. Guarantees no identity confusion between concurrent requests.
@@ -84,6 +89,8 @@ where
     Fut: std::future::Future<Output = R>,
 {
     let _guard = MCP_HANDLER_LOCK.lock().await;
+    #[cfg(test)]
+    let test_issue_links = issue_links.clone();
     let actor = crate::actor::ActorCtx {
         user_id: user.as_ref().map(|u| u.id),
         transport: crate::actor::Transport::Mcp,
@@ -97,6 +104,11 @@ where
     *MCP_REQUEST_ISSUE_LINKS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = issue_links;
+    #[cfg(test)]
+    let result = TEST_REQUEST_ISSUE_LINKS
+        .scope(test_issue_links, crate::actor::scope(actor, f()))
+        .await;
+    #[cfg(not(test))]
     let result = crate::actor::scope(actor, f()).await;
     *MCP_REQUEST_USER
         .lock()
@@ -126,9 +138,16 @@ pub(crate) fn current_is_operator() -> bool {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// Get the validated external origin for structured issue links, if this MCP
+/// Get the validated external origin for structured resource links, if this MCP
 /// request arrived through an HTTP transport that knows it.
 pub(crate) fn current_issue_link_context() -> Option<IssueLinkContext> {
+    #[cfg(test)]
+    {
+        return TEST_REQUEST_ISSUE_LINKS
+            .try_with(Clone::clone)
+            .unwrap_or(None);
+    }
+    #[cfg(not(test))]
     MCP_REQUEST_ISSUE_LINKS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
