@@ -110,6 +110,11 @@ libc = "0.2"
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+gungraun = "0.19.4"
+
+[[bench]]
+name = "link_allocations"
+harness = false
 
 # Argon2 password hashing is memory-hard by design; in unoptimized debug
 # builds each hash/verify costs ~0.4s of CPU, and the test suite performs
@@ -125,6 +130,11 @@ opt-level = 3
 [profile.release]
 opt-level = 3
 strip = true
+
+[profile.alloc-bench]
+inherits = "release"
+debug = true
+strip = false
 
 # For distribution builds (AUR, GitHub releases):
 # cargo build --profile release-dist

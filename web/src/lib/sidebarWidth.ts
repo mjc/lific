@@ -2,10 +2,27 @@
 // swallows failures so private-mode and quota errors fall back to defaults.
 
 const storageKey = "lific:sidebar:width";
+const collapsedStorageKey = "lific:sidebar:collapsed";
 
 export const SIDEBAR_DEFAULT_WIDTH = 230;
 export const SIDEBAR_MIN_WIDTH = 180;
 export const SIDEBAR_MAX_WIDTH = 400;
+
+export function loadSidebarCollapsed(): boolean {
+  try {
+    return localStorage.getItem(collapsedStorageKey) === "true";
+  } catch {
+    return false;
+  }
+}
+
+export function saveSidebarCollapsed(collapsed: boolean): void {
+  try {
+    localStorage.setItem(collapsedStorageKey, String(collapsed));
+  } catch {
+    // ignore
+  }
+}
 
 export function clampSidebarWidth(width: number): number {
   return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, width));

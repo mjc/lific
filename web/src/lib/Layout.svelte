@@ -28,7 +28,7 @@
   import { dndzone, type DndEvent } from "svelte-dnd-action";
   import { flip } from "svelte/animate";
   import { getPreference, setPreference, resolveTheme, motionReduced, type ThemePreference } from "./theme";
-  import { Settings, List, LayoutGrid, FileText, Plus, Layers, History, ListChecks, LayoutDashboard, Search, ChevronRight, Sun, Moon, Monitor, Menu, X, Home, TrendingUp, HelpCircle, Folder, FolderPlus, FolderMinus, Pencil, Trash2 } from "lucide-svelte";
+  import { Settings, List, LayoutGrid, FileText, Plus, Layers, History, ListChecks, LayoutDashboard, Search, ChevronRight, Sun, Moon, Monitor, Menu, X, Home, TrendingUp, HelpCircle, Folder, FolderPlus, FolderMinus, Pencil, Trash2, PanelLeftClose, PanelLeftOpen } from "lucide-svelte";
   import { onDestroy, setContext } from "svelte";
   import { peekState } from "./issues/peek.svelte";
   import PeekPanel from "./issues/PeekPanel.svelte"; // LIF-248: hoisted here so it's available on every route
@@ -44,6 +44,8 @@
     clampSidebarWidth,
     loadSidebarWidth,
     saveSidebarWidth,
+    loadSidebarCollapsed,
+    saveSidebarCollapsed,
     SIDEBAR_DEFAULT_WIDTH,
     SIDEBAR_MAX_WIDTH,
     SIDEBAR_MIN_WIDTH,
@@ -63,6 +65,7 @@
   // LIF-309: only the md+ docked sidebar is resizable; the mobile drawer
   // always remains 230px. Width changes stay in memory until a drag ends.
   let sidebarWidth = $state(loadSidebarWidth());
+  let sidebarCollapsed = $state(loadSidebarCollapsed());
   let sidebarResizing = $state(false);
   let sidebarPointerId: number | null = null;
   let sidebarDragStartX = 0;
@@ -117,6 +120,11 @@
   function resetSidebarWidth() {
     sidebarWidth = SIDEBAR_DEFAULT_WIDTH;
     saveSidebarWidth(sidebarWidth);
+  }
+
+  function toggleSidebarCollapsed() {
+    sidebarCollapsed = !sidebarCollapsed;
+    saveSidebarCollapsed(sidebarCollapsed);
   }
 
   function handleSidebarResizeKeydown(event: KeyboardEvent) {
@@ -726,14 +734,26 @@
          backdrop; at md+ it docks statically into the flex row as before
          (LIF-223). -->
     <aside
-      class="w-[230px] md:w-[var(--sidebar-w)] shrink-0 flex flex-col bg-[var(--chrome)] select-none
+      class="w-[230px] {sidebarCollapsed && !drawerOpen ? 'md:w-14' : 'md:w-[var(--sidebar-w)]'} shrink-0 flex flex-col bg-[var(--chrome)] select-none
               fixed inset-y-0 left-0 z-50 transition-transform duration-200 ease-out
               {drawerOpen ? 'translate-x-0 shadow-2xl' : '-translate-x-full'}
               md:relative md:z-auto md:translate-x-0 md:shadow-none md:transition-none"
       style={`--sidebar-w: ${sidebarWidth}px`}
     >
       <!-- Brand header -->
-      <div class="px-3 pt-3 pb-2 flex items-center gap-1.5">
+      <div class="px-3 pt-3 pb-2 flex items-center gap-1.5 {sidebarCollapsed && !drawerOpen ? 'justify-center' : ''}">
+        {#if sidebarCollapsed && !drawerOpen}
+        <button
+          class="hidden md:grid size-8 shrink-0 place-items-center rounded-md
+                 text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--bg-subtle)] transition-colors"
+          aria-label="Expand sidebar"
+          title="Expand sidebar"
+          aria-expanded="false"
+          onclick={toggleSidebarCollapsed}
+        >
+          <PanelLeftOpen size={18} />
+        </button>
+        {:else}
         <a
           href="https://github.com/VoidNullable/lific"
           target="_blank"
@@ -753,6 +773,16 @@
             v{__APP_VERSION__}
           </span>
         </a>
+        <button
+          class="hidden md:grid size-8 shrink-0 place-items-center rounded-md
+                 text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--bg-subtle)] transition-colors"
+          aria-label="Collapse sidebar"
+          title="Collapse sidebar"
+          aria-expanded="true"
+          onclick={toggleSidebarCollapsed}
+        >
+          <PanelLeftClose size={17} />
+        </button>
         <!-- Drawer close affordance (mobile only). -->
         <button
           class="md:hidden size-9 shrink-0 grid place-items-center rounded-md
@@ -762,8 +792,10 @@
         >
           <X size={18} />
         </button>
+        {/if}
       </div>
 
+      {#if !sidebarCollapsed || drawerOpen}
       <!-- Jump-to / command palette trigger -->
       <div class="px-3 pb-2">
         <button
@@ -1099,6 +1131,7 @@
           <HelpCircle size={15} />
         </button>
       </div>
+      {/if}
       <!-- LIF-309: an 8px hit area keeps the 3px resize indicator easy to grab. -->
       <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
       <div
