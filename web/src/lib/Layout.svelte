@@ -29,7 +29,7 @@
   import { flip } from "svelte/animate";
   import { getPreference, setPreference, resolveTheme, motionReduced, type ThemePreference } from "./theme";
   import { Settings, List, LayoutGrid, FileText, Plus, Layers, History, ListChecks, LayoutDashboard, Search, ChevronRight, Sun, Moon, Monitor, Menu, X, Home, TrendingUp, HelpCircle, Folder, FolderPlus, FolderMinus, Pencil, Trash2, PanelLeftClose, PanelLeftOpen } from "lucide-svelte";
-  import { onDestroy, setContext } from "svelte";
+  import { onDestroy, onMount, setContext } from "svelte";
   import { peekState } from "./issues/peek.svelte";
   import PeekPanel from "./issues/PeekPanel.svelte"; // LIF-248: hoisted here so it's available on every route
   import { contextMenuState, openContextMenu } from "./contextMenuState.svelte";
@@ -61,6 +61,15 @@
   function closeDrawer() {
     drawerOpen = false;
   }
+
+  onMount(() => {
+    const desktop = window.matchMedia("(min-width: 768px)");
+    const closeDrawerOnDesktop = () => {
+      if (desktop.matches) closeDrawer();
+    };
+    desktop.addEventListener("change", closeDrawerOnDesktop);
+    return () => desktop.removeEventListener("change", closeDrawerOnDesktop);
+  });
 
   // LIF-309: only the md+ docked sidebar is resizable; the mobile drawer
   // always remains 230px. Width changes stay in memory until a drag ends.
@@ -1132,6 +1141,7 @@
         </button>
       </div>
       {/if}
+      {#if !sidebarCollapsed}
       <!-- LIF-309: an 8px hit area keeps the 3px resize indicator easy to grab. -->
       <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
       <div
@@ -1153,6 +1163,7 @@
             : 'bg-transparent group-hover:bg-[var(--border)] group-focus-visible:bg-[var(--accent)]'}"
         ></span>
       </div>
+      {/if}
     </aside>
 
     <!-- Right column: chrome topbar (continuous with sidebar) + inset panel -->

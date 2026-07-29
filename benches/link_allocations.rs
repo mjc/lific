@@ -17,13 +17,6 @@ fn writer() -> (IssueLinkContext, String) {
 }
 
 #[library_benchmark]
-#[bench::write_issue(setup = writer)]
-fn write_issue_markdown((context, mut output): (IssueLinkContext, String)) -> String {
-    write!(output, "{}", context.issue_markdown(black_box("LIF-42"))).unwrap();
-    black_box(output)
-}
-
-#[library_benchmark]
 #[bench::issue(setup = writer)]
 fn issue_markdown((context, mut output): (IssueLinkContext, String)) -> String {
     write!(output, "{}", context.issue_markdown(black_box("LIF-42"))).unwrap();
@@ -191,7 +184,6 @@ fn page_comment_url((context, mut output): (IssueLinkContext, String)) -> String
 library_benchmark_group!(
     name = link_allocations,
     benchmarks = [
-        write_issue_markdown,
         issue_markdown,
         issue_url,
         project_markdown,
