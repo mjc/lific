@@ -15,6 +15,7 @@ use rmcp::{
     ServerHandler,
     handler::server::router::tool::ToolRouter,
     model::{ProtocolVersion, ServerCapabilities, ServerInfo},
+    transport::streamable_http_server::tower::StreamableHttpServerConfig,
 };
 
 use crate::db::DbPool;
@@ -22,6 +23,18 @@ use crate::db::models::AuthUser;
 use crate::links::IssueLinkContext;
 use crate::realtime::{RealtimeEvent, RealtimeHub};
 use crate::storage::AttachmentStore;
+
+/// Build the shared Streamable HTTP transport policy used by the server and
+/// doctor probe.
+#[must_use]
+pub(crate) fn streamable_http_config(
+    allowed_hosts: impl IntoIterator<Item = impl Into<String>>,
+) -> StreamableHttpServerConfig {
+    StreamableHttpServerConfig::default()
+        .with_legacy_session_mode(false)
+        .with_json_response(true)
+        .with_allowed_hosts(allowed_hosts)
+}
 
 /// Direct-call tests still use process-wide context; production HTTP requests
 /// carry their context through rmcp's request extensions instead.
