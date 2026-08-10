@@ -7,6 +7,7 @@ mod waits;
 
 #[cfg(test)]
 use std::cell::Cell;
+use std::borrow::Cow;
 use std::sync::Arc;
 #[cfg(test)]
 use std::sync::Mutex;
@@ -31,8 +32,9 @@ pub(crate) fn streamable_http_config(
     allowed_hosts: impl IntoIterator<Item = impl Into<String>>,
 ) -> StreamableHttpServerConfig {
     StreamableHttpServerConfig::default()
-        .with_legacy_session_mode(false)
+        .with_legacy_session_mode(true)
         .with_json_response(true)
+        .with_stateless_protocol_metadata_required(true)
         .with_allowed_hosts(allowed_hosts)
 }
 
@@ -483,14 +485,16 @@ impl LificMcp {
     async fn dispatch_tool<F, Fut>(
         &self,
         f: F,
-    ) -> Result<rmcp::model::CallToolResult, rmcp::ErrorData>
+    ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData>
     where
         F: FnOnce() -> Fut,
-        Fut: std::future::Future<Output = Result<rmcp::model::CallToolResult, rmcp::ErrorData>>,
+        Fut: std::future::Future<Output = Result<rmcp::model::CallToolResponse, rmcp::ErrorData>>,
     {
         match self.with_stdio_auth(f).await {
             Ok(result) => result,
-            Err(StdioAuthFailed) => Ok(StdioAuthFailed.into_tool_result()),
+            Err(StdioAuthFailed) => Ok(rmcp::model::CallToolResponse::Complete(
+                StdioAuthFailed.into_tool_result(),
+            )),
         }
     }
 
@@ -634,6 +638,13 @@ impl LificMcp {
 }
 
 impl ServerHandler for LificMcp {
+    fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
+        Cow::Borrowed(&[
+            ProtocolVersion::V_2025_03_26,
+            ProtocolVersion::V_2026_07_28,
+        ])
+    }
+
     fn get_info(&self) -> ServerInfo {
         // Pin to 2025-03-26: rmcp defaults to 2025-06-18 which many clients
         // (including Zed) skipped, going straight from 2025-03-26 to 2025-11-25.
@@ -663,10 +674,11 @@ impl ServerHandler for LificMcp {
     ) -> impl std::future::Future<Output = Result<rmcp::model::ListToolsResult, rmcp::ErrorData>>
     + rmcp::service::MaybeSendFuture
     + '_ {
-        std::future::ready(Ok(rmcp::model::ListToolsResult {
-            tools: self.tool_router.list_all(),
-            ..Default::default()
-        }))
+        std::future::ready(Ok(
+            rmcp::model::ListToolsResult::with_all_items(self.tool_router.list_all())
+                .with_ttl_ms(3_600_000)
+                .with_cache_scope(rmcp::model::CacheScope::Public),
+        ))
     }
 
     /// The one place every MCP tool call passes through, whatever the
@@ -682,7 +694,7 @@ impl ServerHandler for LificMcp {
         &self,
         request: rmcp::model::CallToolRequestParams,
         mut context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
-    ) -> impl std::future::Future<Output = Result<rmcp::model::CallToolResult, rmcp::ErrorData>>
+    ) -> impl std::future::Future<Output = Result<rmcp::model::CallToolResponse, rmcp::ErrorData>>
     + rmcp::service::MaybeSendFuture
     + '_ {
         async move {
@@ -727,6 +739,22 @@ impl ServerHandler for LificMcp {
                         .unwrap_or_default()
                 });
                 arguments::explain_unknown_parameter(&tool, top_level.as_deref(), error)
+            })
+            .map(|response| match response {
+                rmcp::model::CallToolResponse::Complete(mut result) => {
+                    let mut meta = result.meta.unwrap_or_default();
+                    meta.insert(
+                        "io.modelcontextprotocol/serverInfo".into(),
+                        serde_json::to_value(rmcp::model::Implementation::new(
+                            "lific",
+                            env!("CARGO_PKG_VERSION"),
+                        ))
+                        .expect("MCP server info serialization cannot fail"),
+                    );
+                    result.meta = Some(meta);
+                    rmcp::model::CallToolResponse::Complete(result)
+                }
+                response => response,
             })
         }
     }
@@ -789,6 +817,28 @@ mod tests {
         assert!(alice_link.contains("alice.example"), "{alice_link}");
         assert!(bob_link.contains("bob.example"), "{bob_link}");
         assert!(current_auth_user().is_none());
+    }
+
+    #[test]
+    fn streamable_http_policy_requires_stateless_metadata_and_keeps_legacy_sessions() {
+        let config = streamable_http_config(["localhost"]);
+
+        assert!(config.stateless_protocol_metadata_required);
+        assert!(config.legacy_session_mode);
+        assert!(config.json_response);
+    }
+
+    #[test]
+    fn server_advertises_only_supported_protocol_versions() {
+        let server = LificMcp::new(crate::db::open_memory().unwrap());
+
+        assert_eq!(
+            server.supported_protocol_versions().as_ref(),
+            &[
+                ProtocolVersion::V_2025_03_26,
+                ProtocolVersion::V_2026_07_28,
+            ]
+        );
     }
 
     // ── LIF-204: OAuth-token user_id -> resolved AuthUser (MCP path) ─────

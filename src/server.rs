@@ -22,7 +22,7 @@ use axum::{
 };
 use rmcp::transport::streamable_http_server::{
     session::local::LocalSessionManager,
-    tower::{StreamableHttpServerConfig, StreamableHttpService},
+    tower::StreamableHttpService,
 };
 use rust_embed::Embed;
 use tower_http::compression::Compression;
@@ -294,10 +294,7 @@ pub(crate) fn build_app_with_store(
         mcp_allowed_hosts.push(host);
     }
 
-    let mcp_config = StreamableHttpServerConfig::default()
-        .with_stateful_mode(false)
-        .with_json_response(true)
-        .with_allowed_hosts(mcp_allowed_hosts.clone());
+    let mcp_config = mcp::streamable_http_config(mcp_allowed_hosts.clone());
 
     // rmcp 1.4.0's `Service::call` clones its config on every request. Keep
     // the service behind an `Arc` so Axum's clone boundary does not copy the
@@ -771,10 +768,7 @@ fn build_authless_mcp_router(
     realtime: realtime::RealtimeHub,
 ) -> Router {
     let allowed_hosts_for_links = allowed_hosts.clone();
-    let config = StreamableHttpServerConfig::default()
-        .with_stateful_mode(false)
-        .with_json_response(true)
-        .with_allowed_hosts(allowed_hosts);
+    let config = mcp::streamable_http_config(allowed_hosts);
     let service = Arc::new(StreamableHttpService::new(
         move || Ok(mcp::LificMcp::with_realtime(pool.clone(), realtime.clone())),
         Arc::new(LocalSessionManager::default()),
