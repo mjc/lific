@@ -1198,7 +1198,7 @@ mod tests {
     async fn mcp_server_discovery_advertises_july_protocol() {
         let pool = crate::db::open_memory().unwrap();
         let manager = crate::auth::create_key_manager().unwrap();
-        let key = crate::auth::create_api_key(&pool, &manager, "doctor-discovery").unwrap();
+        let key = crate::auth::create_api_key(&pool, &manager, "doctor-discovery", None).unwrap();
         let app = build_test_app(pool, "http://127.0.0.1");
         let base = serve_ephemeral(app).await;
 
@@ -1209,6 +1209,10 @@ mod tests {
             "params": {
                 "_meta": {
                     "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                    "io.modelcontextprotocol/clientInfo": {
+                        "name": "lific-doctor",
+                        "version": "0.1.0"
+                    },
                     "io.modelcontextprotocol/clientCapabilities": {}
                 }
             }
@@ -1225,14 +1229,112 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), reqwest::StatusCode::OK);
-        let body: serde_json::Value = response.json().await.unwrap();
+        let status = response.status();
+        let response_body = response.text().await.unwrap();
+        assert_eq!(status, reqwest::StatusCode::OK, "body: {response_body}");
+        let body: serde_json::Value = serde_json::from_str(&response_body).unwrap();
         assert!(
             body["result"]["supportedVersions"]
                 .as_array()
                 .is_some_and(|versions| versions.iter().any(|v| v == "2026-07-28")),
             "discovery response did not advertise July 2026: {body}"
         );
+    }
+
+    #[tokio::test]
+    async fn mcp_tools_call_uses_july_complete_result_type() {
+        let pool = crate::db::open_memory().unwrap();
+        let manager = crate::auth::create_key_manager().unwrap();
+        let key = crate::auth::create_api_key(&pool, &manager, "doctor-result-type", None).unwrap();
+        let app = build_test_app(pool, "http://127.0.0.1");
+        let base = serve_ephemeral(app).await;
+        let body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "search",
+                "arguments": {"query": "no-such-result"},
+                "_meta": {
+                    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                    "io.modelcontextprotocol/clientInfo": {
+                        "name": "lific-doctor",
+                        "version": "0.1.0"
+                    },
+                    "io.modelcontextprotocol/clientCapabilities": {}
+                }
+            }
+        });
+
+        let response = test_client()
+            .post(format!("{base}/mcp"))
+            .bearer_auth(key)
+            .header("Accept", "application/json, text/event-stream")
+            .header("Content-Type", "application/json")
+            .header("MCP-Protocol-Version", "2026-07-28")
+            .header("Mcp-Method", "tools/call")
+            .header("Mcp-Name", "search")
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+
+        let status = response.status();
+        let response_body = response.text().await.unwrap();
+        assert_eq!(status, reqwest::StatusCode::OK, "body: {response_body}");
+        let body: serde_json::Value = serde_json::from_str(&response_body).unwrap();
+        assert_eq!(body["result"]["resultType"], "complete", "body: {body}");
+        assert!(body["result"]["content"].is_array(), "body: {body}");
+        assert_eq!(
+            body["result"]["_meta"]["io.modelcontextprotocol/serverInfo"]["name"],
+            "lific",
+            "body: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_tools_list_includes_july_cache_metadata() {
+        let pool = crate::db::open_memory().unwrap();
+        let manager = crate::auth::create_key_manager().unwrap();
+        let key = crate::auth::create_api_key(&pool, &manager, "doctor-tools-cache", None).unwrap();
+        let app = build_test_app(pool, "http://127.0.0.1");
+        let base = serve_ephemeral(app).await;
+        let body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/list",
+            "params": {
+                "_meta": {
+                    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                    "io.modelcontextprotocol/clientInfo": {
+                        "name": "lific-doctor",
+                        "version": "0.1.0"
+                    },
+                    "io.modelcontextprotocol/clientCapabilities": {}
+                }
+            }
+        });
+
+        let response = test_client()
+            .post(format!("{base}/mcp"))
+            .bearer_auth(key)
+            .header("Accept", "application/json, text/event-stream")
+            .header("Content-Type", "application/json")
+            .header("MCP-Protocol-Version", "2026-07-28")
+            .header("Mcp-Method", "tools/list")
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+
+        let status = response.status();
+        let response_body = response.text().await.unwrap();
+        assert_eq!(status, reqwest::StatusCode::OK, "body: {response_body}");
+        let body: serde_json::Value = serde_json::from_str(&response_body).unwrap();
+        assert_eq!(body["result"]["resultType"], "complete", "body: {body}");
+        assert_eq!(body["result"]["ttlMs"], 3_600_000, "body: {body}");
+        assert_eq!(body["result"]["cacheScope"], "public", "body: {body}");
+        assert!(body["result"]["tools"].is_array(), "body: {body}");
     }
 
     #[tokio::test]
