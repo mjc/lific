@@ -877,6 +877,9 @@ async fn authorize_approve(
         let encoded = urlencoding::encode(state);
         redirect_url.push_str(&format!("&state={encoded}"));
     }
+    let issuer = effective_issuer(&oauth, &headers);
+    let encoded_issuer = urlencoding::encode(&issuer);
+    redirect_url.push_str(&format!("&iss={encoded_issuer}"));
 
     info!(client_id = %form.client_id, "OAuth authorization approved");
     Redirect::to(&redirect_url).into_response()
@@ -2510,6 +2513,15 @@ mod tests {
             resp.status().is_redirection() || resp.status() == StatusCode::SEE_OTHER,
             "expected redirect, got {}",
             resp.status()
+        );
+        let location = resp
+            .headers()
+            .get(axum::http::header::LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .expect("approval should return a redirect location");
+        assert!(
+            location.contains("iss=https%3A%2F%2Fexample.com"),
+            "authorization response must identify its issuer: {location}"
         );
     }
 
