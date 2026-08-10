@@ -689,6 +689,13 @@ pub async fn check_mcp(client: &reqwest::Client, base: &str, key: Option<&str>) 
                     format!("initialize returned HTTP {}", status.as_u16()),
                 );
             }
+            if resp.headers().contains_key("mcp-session-id") {
+                return Check::new(
+                    "mcp",
+                    Status::Fail,
+                    "July 2026 initialize unexpectedly returned a legacy session id",
+                );
+            }
             // json_response mode: the body is a plain JSON-RPC envelope.
             match resp.json::<serde_json::Value>().await {
                 Ok(body) => {
@@ -1185,6 +1192,47 @@ mod tests {
         let c = check_mcp(&test_client(), &base, Some(&key)).await;
         assert_eq!(c.status, Status::Pass, "detail: {}", c.detail);
         assert!(c.detail.contains("serverInfo"), "detail: {}", c.detail);
+    }
+
+    #[tokio::test]
+    async fn mcp_server_discovery_advertises_july_protocol() {
+        let pool = crate::db::open_memory().unwrap();
+        let manager = crate::auth::create_key_manager().unwrap();
+        let key = crate::auth::create_api_key(&pool, &manager, "doctor-discovery").unwrap();
+        let app = build_test_app(pool, "http://127.0.0.1");
+        let base = serve_ephemeral(app).await;
+
+        let body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "server/discover",
+            "params": {
+                "_meta": {
+                    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                    "io.modelcontextprotocol/clientCapabilities": {}
+                }
+            }
+        });
+        let response = test_client()
+            .post(format!("{base}/mcp"))
+            .bearer_auth(key)
+            .header("Accept", "application/json, text/event-stream")
+            .header("Content-Type", "application/json")
+            .header("MCP-Protocol-Version", "2026-07-28")
+            .header("Mcp-Method", "server/discover")
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let body: serde_json::Value = response.json().await.unwrap();
+        assert!(
+            body["result"]["supportedVersions"]
+                .as_array()
+                .is_some_and(|versions| versions.iter().any(|v| v == "2026-07-28")),
+            "discovery response did not advertise July 2026: {body}"
+        );
     }
 
     #[tokio::test]

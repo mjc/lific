@@ -2023,6 +2023,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn authorize_rejects_a_different_resource_indicator() {
+        let (app, db) = test_oauth_app();
+        let session_token = create_test_session(&db);
+        let client_id = register_client_helper(&app, "http://localhost/callback").await;
+        let body = format!(
+            "{}&resource={}",
+            authorize_body(&client_id, "http://localhost/callback", &session_token),
+            urlencoding::encode("https://other.example/mcp")
+        );
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/authorize")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .header("cookie", format!("lific_token={session_token}"))
+                    .body(axum::body::Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
     async fn authorize_accepts_valid_cookie_session() {
         let (app, db) = test_oauth_app();
         let session_token = create_test_session(&db);
