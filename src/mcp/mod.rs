@@ -149,6 +149,18 @@ impl McpHttpPolicy {
     }
 }
 
+/// Build the shared Streamable HTTP transport policy used by the server and
+/// doctor probe.
+#[must_use]
+pub(crate) fn streamable_http_config(
+    allowed_hosts: impl IntoIterator<Item = impl Into<String>>,
+) -> StreamableHttpServerConfig {
+    StreamableHttpServerConfig::default()
+        .with_legacy_session_mode(false)
+        .with_json_response(true)
+        .with_allowed_hosts(allowed_hosts)
+}
+
 /// Serialization lock for MCP request handling.
 /// Ensures only one MCP request processes at a time, preventing the race
 /// condition where concurrent requests could overwrite each other's user identity.
