@@ -14,9 +14,14 @@
 //! tested against fixture JSON; the network lives behind [`GithubFetcher`].
 
 use serde::Deserialize;
+use serde::de::DeserializeOwned;
 
 use super::{NormalizedComment, NormalizedIssue, NormalizedLabel, StatusMap};
 use crate::db::models::{Priority, Status};
+
+pub const MAX_GITHUB_ISSUES: usize = 10_000;
+pub const MAX_GITHUB_COMMENTS_PER_ISSUE: usize = 1_000;
+pub const MAX_GITHUB_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 
 /// One issue as returned by the GitHub REST API (fields we use).
 #[derive(Debug, Clone, Deserialize)]
@@ -198,7 +203,22 @@ pub fn collect(
                 out.skipped_other += 1;
             }
             let comments = fetcher.fetch_comments(issue.number)?;
+            if comments.len() > MAX_GITHUB_COMMENTS_PER_ISSUE {
+                return Err(format!(
+                    "GitHub issue #{} has too many comments ({} > {})",
+                    issue.number,
+                    comments.len(),
+                    MAX_GITHUB_COMMENTS_PER_ISSUE
+                ));
+            }
             out.issues.push(map_issue(slug, issue, &comments, map));
+            if out.issues.len() > MAX_GITHUB_ISSUES {
+                return Err(format!(
+                    "GitHub repository has too many issues ({} > {})",
+                    out.issues.len(),
+                    MAX_GITHUB_ISSUES
+                ));
+            }
         }
         if !has_next {
             break;
@@ -290,6 +310,23 @@ impl LiveGithub {
         }
         Ok(resp)
     }
+
+    fn json_bounded<T: DeserializeOwned>(
+        resp: reqwest::blocking::Response,
+        label: &str,
+    ) -> Result<T, String> {
+        let bytes = resp
+            .bytes()
+            .map_err(|e| format!("failed to read GitHub {label} response: {e}"))?;
+        if bytes.len() > MAX_GITHUB_RESPONSE_BYTES {
+            return Err(format!(
+                "GitHub {label} response exceeds {} byte limit",
+                MAX_GITHUB_RESPONSE_BYTES
+            ));
+        }
+        serde_json::from_slice(&bytes)
+            .map_err(|e| format!("failed to parse GitHub {label} JSON: {e}"))
+    }
 }
 
 impl GithubFetcher for LiveGithub {
@@ -310,9 +347,10 @@ impl GithubFetcher for LiveGithub {
             .get("link")
             .and_then(|v| v.to_str().ok())
             .map(|s| s.to_string());
-        let issues: Vec<GithubIssue> = resp
-            .json()
-            .map_err(|e| format!("failed to parse issues JSON: {e}"))?;
+        let issues: Vec<GithubIssue> = Self::json_bounded(resp, "issues")?;
+        if issues.len() > 100 {
+            return Err("GitHub issues response exceeds the per-page item limit".into());
+        }
         Ok((issues, has_next_page(link.as_deref())))
     }
 
@@ -330,9 +368,13 @@ impl GithubFetcher for LiveGithub {
                 .get("link")
                 .and_then(|v| v.to_str().ok())
                 .map(|s| s.to_string());
-            let batch: Vec<GithubComment> = resp
-                .json()
-                .map_err(|e| format!("failed to parse comments JSON: {e}"))?;
+            let batch: Vec<GithubComment> = Self::json_bounded(resp, "comments")?;
+            if batch.len() > 100 || all.len() + batch.len() > MAX_GITHUB_COMMENTS_PER_ISSUE {
+                return Err(format!(
+                    "GitHub comments exceed the {} per-issue limit",
+                    MAX_GITHUB_COMMENTS_PER_ISSUE
+                ));
+            }
             all.extend(batch);
             if !has_next_page(link.as_deref()) {
                 break;
@@ -483,5 +525,21 @@ mod tests {
         // Each real issue got one comment from the fake.
         assert!(fetched.issues.iter().all(|i| i.comments.len() == 1));
         assert_eq!(fetched.issues[0].comments[0].author, "octocat");
+    }
+
+    #[test]
+    fn collect_rejects_comment_blowup() {
+        let issue = fixture_issues().into_iter().next().unwrap();
+        let fetcher = FakeGithub {
+            pages: vec![vec![issue]],
+            comments: vec![GithubComment {
+                user: None,
+                body: Some("x".into()),
+                created_at: None,
+            }; MAX_GITHUB_COMMENTS_PER_ISSUE + 1],
+        };
+        let error = collect(&fetcher, "octocat/hello", StateFilter::All, &StatusMap::default())
+            .unwrap_err();
+        assert!(error.contains("too many comments"));
     }
 }

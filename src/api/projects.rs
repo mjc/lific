@@ -2,6 +2,8 @@ use axum::{
     Extension,
     extract::{Json, Path, Query, State},
 };
+use std::sync::{Arc, OnceLock};
+use tokio::sync::Semaphore;
 
 use crate::authz;
 use crate::db::{DbPool, models::*};
@@ -211,6 +213,8 @@ pub(super) struct GithubImportRequest {
     dry_run: bool,
 }
 
+static GITHUB_IMPORT_SLOTS: OnceLock<Arc<Semaphore>> = OnceLock::new();
+
 fn default_import_state() -> String {
     "all".to_string()
 }
@@ -241,6 +245,11 @@ pub(super) async fn import_github(
     Json(req): Json<GithubImportRequest>,
 ) -> Result<Json<crate::import::ImportSummary>, LificError> {
     require_project_lead(&db, &identity, project_id)?;
+    let _slot = GITHUB_IMPORT_SLOTS
+        .get_or_init(|| Arc::new(Semaphore::new(1)))
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| LificError::Conflict("a GitHub import is already running".into()))?;
 
     // Resolve the import-bot owner from the authenticated user (the bot is
     // owned by whoever ran the import), so audit provenance is correct. On a
