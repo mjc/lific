@@ -513,6 +513,7 @@ pub(super) async fn change_password(
     State(db): State<DbPool>,
     Extension(auth_cfg): Extension<crate::config::AuthConfig>,
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
+    Extension(realtime): Extension<crate::realtime::RealtimeHub>,
     Json(input): Json<ChangePasswordRequest>,
 ) -> Result<impl IntoResponse, LificError> {
     let user = require_user(&identity)?;
@@ -531,8 +532,10 @@ pub(super) async fn change_password(
         // Kill every existing session (including any an attacker holds), then
         // issue a fresh one for this browser.
         crate::db::queries::users::delete_all_sessions(conn, user.id)?;
+        crate::db::queries::users::revoke_all_durable_credentials(conn, user.id)?;
         crate::db::queries::users::create_session(conn, user.id, None)
     })?;
+    realtime.revoke_user(user.id);
 
     let mut headers = HeaderMap::new();
     headers.insert(
@@ -558,11 +561,14 @@ pub(super) async fn revoke_all_sessions(
     State(db): State<DbPool>,
     Extension(auth_cfg): Extension<crate::config::AuthConfig>,
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
+    Extension(realtime): Extension<crate::realtime::RealtimeHub>,
 ) -> Result<impl IntoResponse, LificError> {
     let user = require_user(&identity)?;
     with_write(&db, |conn| {
-        crate::db::queries::users::delete_all_sessions(conn, user.id)
+        crate::db::queries::users::delete_all_sessions(conn, user.id)?;
+        crate::db::queries::users::revoke_all_durable_credentials(conn, user.id)
     })?;
+    realtime.revoke_user(user.id);
     let mut resp_headers = HeaderMap::new();
     resp_headers.insert(
         "set-cookie",
