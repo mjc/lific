@@ -11,6 +11,17 @@ use crate::realtime::{RealtimeEvent, RealtimeHub};
 
 use super::{require_user, with_read};
 
+pub(crate) const MAX_COMMENT_BYTES: usize = 256 * 1024;
+
+pub(crate) fn validate_comment_content(content: &str) -> Result<(), LificError> {
+    if content.len() > MAX_COMMENT_BYTES {
+        return Err(LificError::BadRequest(format!(
+            "comment is too large (max {MAX_COMMENT_BYTES} bytes)"
+        )));
+    }
+    Ok(())
+}
+
 fn require_comment_viewer(
     db: &DbPool,
     identity: &Option<crate::resolve_caller::ResolvedIdentity>,
@@ -46,6 +57,7 @@ fn list_for_parent(
     parent: CommentParent,
     q: &ListCommentsQuery,
 ) -> Result<Json<Vec<Comment>>, LificError> {
+
     let project_id = parent_project_id(db, parent)?;
     require_comment_viewer(db, identity, project_id)?;
     with_read(db, |conn| {
@@ -54,8 +66,8 @@ fn list_for_parent(
             parent,
             q.author.as_deref(),
             q.order.as_deref(),
-            q.limit,
-            q.offset,
+            Some(q.limit.unwrap_or(50).clamp(1, 500)),
+            Some(q.offset.unwrap_or(0).max(0)),
         )
     })
     .map(Json)
@@ -68,6 +80,7 @@ fn create_for_parent(
     parent: CommentParent,
     content: &str,
 ) -> Result<Json<Comment>, LificError> {
+    validate_comment_content(content)?;
     let user = require_user(identity)?;
     let (comment, project_id) = db.transaction(|conn| {
         let project_id = parent.project_id(conn)?;
@@ -109,6 +122,7 @@ pub(super) async fn create_comment(
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
     Json(input): Json<CreateComment>,
 ) -> Result<Json<Comment>, LificError> {
+    validate_comment_content(&input.content)?;
     create_for_parent(
         &db,
         &realtime,
@@ -134,6 +148,7 @@ pub(super) async fn create_page_comment(
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
     Json(input): Json<CreateComment>,
 ) -> Result<Json<Comment>, LificError> {
+    validate_comment_content(&input.content)?;
     create_for_parent(
         &db,
         &realtime,
@@ -176,6 +191,7 @@ pub(super) async fn update_comment_handler(
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
     Json(input): Json<UpdateComment>,
 ) -> Result<Json<Comment>, LificError> {
+    validate_comment_content(&input.content)?;
     let user = require_user(&identity)?;
     let (comment, context) = db.transaction(|conn| {
         let existing = comments::get_comment(conn, id)?;
