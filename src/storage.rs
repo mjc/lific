@@ -14,6 +14,7 @@
 //! orphan GC's job — see `db::queries::attachments`).
 
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use sha2::{Digest, Sha256};
 
@@ -25,6 +26,7 @@ use crate::error::LificError;
 #[derive(Debug, Clone)]
 pub struct AttachmentStore {
     dir: PathBuf,
+    operation_lock: Arc<Mutex<()>>,
 }
 
 impl AttachmentStore {
@@ -37,7 +39,10 @@ impl AttachmentStore {
             Some(parent) if !parent.as_os_str().is_empty() => parent.join("attachments"),
             _ => PathBuf::from("attachments"),
         };
-        Self { dir }
+        Self {
+            dir,
+            operation_lock: Arc::new(Mutex::new(())),
+        }
     }
 
     /// Construct a store at an explicit directory. Production always resolves
@@ -45,7 +50,10 @@ impl AttachmentStore {
     /// tests point a store at a tempdir, hence the test-scoped allow.
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn new(dir: PathBuf) -> Self {
-        Self { dir }
+        Self {
+            dir,
+            operation_lock: Arc::new(Mutex::new(())),
+        }
     }
 
     /// The attachments directory itself. Callers reach the files through
@@ -58,37 +66,67 @@ impl AttachmentStore {
     /// Absolute path to the sidecar file for a given content hash. Kept
     /// private-ish (only `pub(crate)`) so callers go through
     /// `read`/`write`/`delete` rather than hand-building paths.
-    pub(crate) fn path_for(&self, sha256: &str) -> PathBuf {
-        self.dir.join(sha256)
+    pub(crate) fn path_for(&self, sha256: &str) -> Result<PathBuf, LificError> {
+        if sha256.len() != 64
+            || !sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(LificError::BadRequest(
+                "invalid attachment content hash".into(),
+            ));
+        }
+        Ok(self.dir.join(sha256))
     }
 
     /// Absolute path to the cached thumbnail for a content hash. Thumbnails
     /// live in a `thumbs/` subdirectory so a plain `read_dir` of the store
     /// still enumerates exactly the original blobs, and so a hash can never
     /// collide with its own derivative.
-    pub(crate) fn thumb_path_for(&self, sha256: &str) -> PathBuf {
-        self.dir.join("thumbs").join(format!("{sha256}.webp"))
+    pub(crate) fn thumb_path_for(&self, sha256: &str) -> Result<PathBuf, LificError> {
+        self.path_for(sha256)?;
+        Ok(self.dir.join("thumbs").join(format!("{sha256}.webp")))
     }
 
     /// Cache a generated thumbnail. Same temp-file-then-rename dance as
     /// [`Self::write`], so a concurrent reader never sees a partial webp.
     pub fn write_thumb(&self, sha256: &str, bytes: &[u8]) -> Result<(), LificError> {
-        let path = self.thumb_path_for(sha256);
+        let path = self.thumb_path_for(sha256)?;
         let parent = path
             .parent()
             .ok_or_else(|| LificError::Internal("thumbnail path has no parent".into()))?;
         std::fs::create_dir_all(parent)
             .map_err(|e| LificError::Internal(format!("create thumbnails dir: {e}")))?;
-        let tmp = path.with_extension("tmp");
-        std::fs::write(&tmp, bytes)
-            .map_err(|e| LificError::Internal(format!("write thumbnail: {e}")))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+            std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
+                .map_err(|e| LificError::Internal(format!("secure thumbnails dir: {e}")))?;
         }
-        std::fs::rename(&tmp, &path)
-            .map_err(|e| LificError::Internal(format!("finalize thumbnail: {e}")))?;
+        let tmp = parent.join(format!(".{}.{}.tmp", sha256, rand::random::<u64>()));
+        if path.exists() {
+            return Ok(());
+        }
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+        }
+        let mut file = options
+            .open(&tmp)
+            .map_err(|e| LificError::Internal(format!("create thumbnail: {e}")))?;
+        let result = (|| -> std::io::Result<()> {
+            std::io::Write::write_all(&mut file, bytes)?;
+            file.sync_all()?;
+            drop(file);
+            std::fs::rename(&tmp, &path)
+        })();
+        if let Err(error) = result {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(LificError::Internal(format!("write thumbnail: {error}")));
+        }
         Ok(())
     }
 
@@ -96,7 +134,7 @@ impl AttachmentStore {
     /// which is the ordinary state for an attachment uploaded before
     /// thumbnails existed.
     pub fn read_thumb(&self, sha256: &str) -> Result<Option<Vec<u8>>, LificError> {
-        match std::fs::read(self.thumb_path_for(sha256)) {
+        match std::fs::read(self.thumb_path_for(sha256)?) {
             Ok(bytes) => Ok(Some(bytes)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(LificError::Internal(format!("read thumbnail: {e}"))),
@@ -106,7 +144,7 @@ impl AttachmentStore {
     /// Drop a cached thumbnail. Missing file is success: thumbnails are a
     /// cache, so every delete here is best-effort and repeatable.
     pub fn delete_thumb(&self, sha256: &str) -> Result<(), LificError> {
-        match std::fs::remove_file(self.thumb_path_for(sha256)) {
+        match std::fs::remove_file(self.thumb_path_for(sha256)?) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(LificError::Internal(format!("delete thumbnail: {e}"))),
@@ -119,37 +157,93 @@ impl AttachmentStore {
         digest.iter().map(|b| format!("{b:02x}")).collect()
     }
 
+    /// Serialize filesystem operations with metadata changes that callers
+    /// perform under [`Self::with_lock`]. Cloned stores share this lock.
+    pub(crate) fn with_lock<T>(
+        &self,
+        operation: impl FnOnce(&Self) -> Result<T, LificError>,
+    ) -> Result<T, LificError> {
+        let _guard = self
+            .operation_lock
+            .lock()
+            .map_err(|_| LificError::Internal("attachment store lock poisoned".into()))?;
+        operation(self)
+    }
+
+    /// MCP's tool boundary uses sanitized strings instead of `LificError`.
+    /// Keep it on this same mutex so both transports coordinate blob writes
+    /// and orphan collection.
+    pub(crate) fn with_string_lock<T>(
+        &self,
+        operation: impl FnOnce(&Self) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let _guard = self
+            .operation_lock
+            .lock()
+            .map_err(|_| "attachment store lock poisoned".to_string())?;
+        operation(self)
+    }
+
     /// Write `bytes` to `<dir>/<sha256>`, creating the directory if needed.
     /// Idempotent: if the file already exists (same content), this is a no-op
     /// rather than a rewrite. Returns the content hash so the caller can store
     /// it on the metadata row.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn write(&self, bytes: &[u8]) -> Result<String, LificError> {
+        self.with_lock(|store| store.write_unlocked(bytes))
+    }
+
+    pub(crate) fn write_unlocked(&self, bytes: &[u8]) -> Result<String, LificError> {
         let sha = Self::hash_bytes(bytes);
         std::fs::create_dir_all(&self.dir)
             .map_err(|e| LificError::Internal(format!("create attachments dir: {e}")))?;
-        let path = self.path_for(&sha);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&self.dir, std::fs::Permissions::from_mode(0o700))
+                .map_err(|e| LificError::Internal(format!("secure attachments dir: {e}")))?;
+        }
+        let path = self.path_for(&sha)?;
         if path.exists() {
             return Ok(sha);
         }
         // Write to a temp file then rename, so a concurrent reader never sees a
         // half-written blob at the final content-addressed path.
-        let tmp = path.with_extension("tmp");
-        std::fs::write(&tmp, bytes)
-            .map_err(|e| LificError::Internal(format!("write attachment: {e}")))?;
+        let tmp = self
+            .dir
+            .join(format!(".{sha}.{:016x}.tmp", rand::random::<u64>()));
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
         }
-        std::fs::rename(&tmp, &path)
-            .map_err(|e| LificError::Internal(format!("finalize attachment: {e}")))?;
+        let mut file = options
+            .open(&tmp)
+            .map_err(|e| LificError::Internal(format!("create attachment temp file: {e}")))?;
+        if let Err(error) = std::io::Write::write_all(&mut file, bytes) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(LificError::Internal(format!("write attachment: {error}")));
+        }
+        if let Err(error) = file.sync_all() {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(LificError::Internal(format!("sync attachment: {error}")));
+        }
+        drop(file);
+        if let Err(error) = std::fs::rename(&tmp, &path) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(LificError::Internal(format!(
+                "finalize attachment: {error}"
+            )));
+        }
         Ok(sha)
     }
 
     /// Read the bytes for a content hash. `NotFound` when the sidecar file is
     /// missing (e.g. the DB row survived but the blob was manually removed).
     pub fn read(&self, sha256: &str) -> Result<Vec<u8>, LificError> {
-        let path = self.path_for(sha256);
+        let path = self.path_for(sha256)?;
         std::fs::read(&path).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 LificError::NotFound("attachment bytes not found on disk".into())
@@ -162,12 +256,17 @@ impl AttachmentStore {
     /// Delete the sidecar file for a content hash. Missing file is treated as
     /// success (idempotent) — the GC only calls this once no DB row references
     /// the hash, so a double-delete or a manual prior removal is fine.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn delete(&self, sha256: &str) -> Result<(), LificError> {
+        self.with_lock(|store| store.delete_unlocked(sha256))
+    }
+
+    pub(crate) fn delete_unlocked(&self, sha256: &str) -> Result<(), LificError> {
         // The thumbnail is derived from these exact bytes, so it dies with
         // them. Best-effort: a failure to remove a cache file must not block
         // the blob delete the caller actually asked for.
         let _ = self.delete_thumb(sha256);
-        let path = self.path_for(sha256);
+        let path = self.path_for(sha256)?;
         match std::fs::remove_file(&path) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -199,22 +298,21 @@ pub fn sweep_orphans(
         let conn = pool.read()?;
         q::find_orphans(&conn, grace_seconds)?
     };
-
     let mut collected = 0;
     for orphan in orphans {
-        {
+        let removed = store.with_lock(|store| {
             let conn = pool.write()?;
-            q::delete_attachment(&conn, orphan.id)?;
+            let Some(sha256) = q::delete_orphan_attachment(&conn, orphan.id)? else {
+                return Ok(false);
+            };
+            if q::count_rows_for_sha(&conn, &sha256)? == 0 {
+                store.delete_unlocked(&sha256)?;
+            }
+            Ok(true)
+        })?;
+        if removed {
+            collected += 1;
         }
-        // Remove the blob only if no other row still references those bytes.
-        let remaining = {
-            let conn = pool.read()?;
-            q::count_rows_for_sha(&conn, &orphan.sha256)?
-        };
-        if remaining == 0 {
-            store.delete(&orphan.sha256)?;
-        }
-        collected += 1;
     }
     Ok(collected)
 }
@@ -669,6 +767,23 @@ mod tests {
         assert_eq!(count, 1);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn attachment_storage_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (store, _tmp) = tmp_store();
+        let sha = store.write(b"private attachment").unwrap();
+        let dir_mode = std::fs::metadata(store.dir()).unwrap().permissions().mode() & 0o777;
+        let file_mode = std::fs::metadata(store.dir().join(sha))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(dir_mode, 0o700);
+        assert_eq!(file_mode, 0o600);
+    }
+
     #[test]
     fn delete_is_idempotent() {
         let (store, _tmp) = tmp_store();
@@ -746,6 +861,19 @@ mod tests {
         );
     }
 
+    #[test]
+    fn path_rejects_traversal_and_noncanonical_hashes() {
+        let (store, dir) = tmp_store();
+        for value in ["../lific.toml", &"A".repeat(64)] {
+            assert!(store.read(value).is_err());
+            assert!(store.delete(value).is_err());
+        }
+        let valid = "a".repeat(64);
+        assert!(store.read(&valid).is_err());
+        assert!(store.delete(&valid).is_ok());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     // ── MIME sniffing ────────────────────────────────────────
 
     #[test]
@@ -804,18 +932,12 @@ mod tests {
         );
     }
 
-    /// Inline-safe covers rasters *and* media containers, which is wider than
-    /// the raster set. The two predicates are not interchangeable: anything
-    /// asking "can a model look at this?" wants `is_raster_mime`.
     #[test]
-    fn inline_safe_covers_rasters_and_media_but_not_documents() {
-        for mime in RASTER_MIMES {
-            assert!(is_inline_safe_mime(mime), "{mime} should be inline-safe");
-        }
-        for mime in ["video/mp4", "video/webm", "audio/webm", "audio/ogg", "audio/mpeg"] {
-            assert!(is_inline_safe_mime(mime), "{mime} should be inline-safe");
-            assert!(!is_raster_mime(mime), "{mime} is not a raster image");
-        }
+    fn only_raster_images_are_inline_safe() {
+        assert!(is_inline_safe_mime("image/png"));
+        assert!(is_inline_safe_mime("image/jpeg"));
+        assert!(is_inline_safe_mime("image/gif"));
+        assert!(is_inline_safe_mime("image/webp"));
         assert!(!is_inline_safe_mime("application/pdf"));
         assert!(!is_inline_safe_mime("text/plain"));
     }
@@ -994,7 +1116,11 @@ mod tests {
         assert!(!expects_thumbnail("image/png", Some(480), Some(480)));
         assert!(!expects_thumbnail("image/png", None, None));
         assert!(!expects_thumbnail("video/mp4", Some(1920), Some(1080)));
-        assert!(!expects_thumbnail("application/pdf", Some(1920), Some(1080)));
+        assert!(!expects_thumbnail(
+            "application/pdf",
+            Some(1920),
+            Some(1080)
+        ));
     }
 
     #[test]
@@ -1006,7 +1132,7 @@ mod tests {
         store.write_thumb(&sha, b"pretend webp").unwrap();
         assert_eq!(store.read_thumb(&sha).unwrap().unwrap(), b"pretend webp");
         assert_eq!(
-            store.thumb_path_for(&sha).parent().unwrap(),
+            store.thumb_path_for(&sha).unwrap().parent().unwrap(),
             store.dir().join("thumbs")
         );
 

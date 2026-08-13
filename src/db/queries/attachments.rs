@@ -16,8 +16,8 @@ use crate::db::models::{
 };
 use crate::error::LificError;
 
-/// Insert a new attachment metadata row and return it. The caller has already
-/// written the bytes to the content-addressed store and computed `sha256`.
+/// Insert a new attachment metadata row and return it. The caller coordinates
+/// this row with the content-addressed blob write in its database transaction.
 pub fn create_attachment(
     conn: &Connection,
     sha256: &str,
@@ -146,6 +146,27 @@ pub fn links_for_attachment(
 pub fn delete_attachment(conn: &Connection, id: i64) -> Result<bool, LificError> {
     let changed = conn.execute("DELETE FROM attachments WHERE id = ?1", params![id])?;
     Ok(changed > 0)
+}
+
+/// Delete an unlinked attachment only if it is still unlinked on this writer
+/// connection. The returned hash is safe for the caller to garbage-collect
+/// after checking whether another row still shares it.
+pub fn delete_orphan_attachment(
+    conn: &Connection,
+    id: i64,
+) -> Result<Option<String>, LificError> {
+    conn.query_row(
+        "DELETE FROM attachments
+         WHERE id = ?1
+           AND NOT EXISTS (
+               SELECT 1 FROM attachment_links WHERE attachment_id = ?1
+           )
+         RETURNING sha256",
+        params![id],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()
+    .map_err(Into::into)
 }
 
 /// How many `attachments` rows still reference a given content hash. Used by
@@ -417,12 +438,10 @@ fn attachment_allowed_for_project(
 // ── Orphan GC ────────────────────────────────────────────────
 
 /// One collectable orphan: an attachment row with zero links, older than the
-/// grace window. Carries `sha256` so the sweep can decide whether to delete the
-/// sidecar file (only when no OTHER row shares the hash).
+/// grace window.
 #[derive(Debug, Clone)]
 pub struct OrphanAttachment {
     pub id: i64,
-    pub sha256: String,
 }
 
 /// Find attachments with no links whose `created_at` is older than
@@ -434,7 +453,7 @@ pub fn find_orphans(
     grace_seconds: i64,
 ) -> Result<Vec<OrphanAttachment>, LificError> {
     let mut stmt = conn.prepare_cached(
-        "SELECT a.id, a.sha256
+        "SELECT a.id
          FROM attachments a
          LEFT JOIN attachment_links l ON l.attachment_id = a.id
          WHERE l.attachment_id IS NULL
@@ -453,7 +472,6 @@ pub fn find_orphans(
     let rows = stmt.query_map(params![modifier], |row| {
         Ok(OrphanAttachment {
             id: row.get(0)?,
-            sha256: row.get(1)?,
         })
     })?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -1498,6 +1516,18 @@ mod tests {
         let found = find_orphans(&conn, -1).unwrap();
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].id, orphan.id);
+    }
+
+    #[test]
+    fn orphan_delete_rechecks_links_on_writer() {
+        let pool = test_db();
+        let conn = pool.write().unwrap();
+        let issue = seed_issue(&conn);
+        let attachment = create_attachment(&conn, "race", "a.png", "image/png", 1, None).unwrap();
+        link_attachment(&conn, attachment.id, AttachmentEntity::Issue, issue).unwrap();
+
+        assert_eq!(delete_orphan_attachment(&conn, attachment.id).unwrap(), None);
+        assert!(get_attachment(&conn, attachment.id).is_ok());
     }
 
     #[test]

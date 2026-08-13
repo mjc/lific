@@ -104,7 +104,7 @@ pub(super) async fn upload_attachment(
     let mut link_entity: Option<AttachmentEntity> = None;
     let mut link_entity_id: Option<i64> = None;
 
-    while let Some(field) = multipart
+    while let Some(mut field) = multipart
         .next_field()
         .await
         .map_err(|e| LificError::BadRequest(format!("malformed multipart: {e}")))?
@@ -116,18 +116,21 @@ pub(super) async fn upload_attachment(
                     filename = sanitize_filename(fname);
                 }
                 declared_mime = field.content_type().map(|s| s.to_string());
-                let data = field
-                    .bytes()
+                let mut data = Vec::new();
+                while let Some(chunk) = field
+                    .chunk()
                     .await
-                    .map_err(|e| LificError::BadRequest(format!("failed to read upload: {e}")))?;
-                if data.len() > config.max_bytes {
-                    return Err(LificError::BadRequest(format!(
-                        "file too large: {} bytes (max {})",
-                        data.len(),
-                        config.max_bytes
-                    )));
+                    .map_err(|e| LificError::BadRequest(format!("failed to read upload: {e}")))?
+                {
+                    if data.len().saturating_add(chunk.len()) > config.max_bytes {
+                        return Err(LificError::BadRequest(format!(
+                            "file too large: more than {} bytes",
+                            config.max_bytes
+                        )));
+                    }
+                    data.extend_from_slice(&chunk);
                 }
-                file_bytes = Some(data.to_vec());
+                file_bytes = Some(data);
             }
             "entity_type" => {
                 let v = field.text().await.unwrap_or_default();
@@ -181,58 +184,69 @@ pub(super) async fn upload_attachment(
     }
 
     let size = bytes.len() as i64;
-    // Store bytes first (content-addressed), then record metadata.
-    let sha = store.write(&bytes)?;
-
-    // LIF-418: decode dimensions and pre-generate a thumbnail for rasters.
-    // Both are best-effort: a picture the `image` crate cannot read is still a
-    // perfectly good attachment, and refusing the upload over a missing
-    // derivative would be a regression against every format it already
-    // accepted.
+    let sha = AttachmentStore::hash_bytes(&bytes);
     let dimensions = if storage::is_raster_mime(&mime) {
         storage::image_dimensions(&bytes)
     } else {
         None
     };
-    if dimensions.is_some() {
-        cache_thumbnail(&store, &sha, &bytes);
-    }
-
-    // One immediate transaction for the metadata row, the link, and the link's
-    // authorization. `with_write` would have let a role revocation or an
-    // entity move land between the gate above and the insert below, and left
-    // the attachment row behind when the link write failed.
-    let (attachment, event) = db.transaction(|conn| {
-        let mut att = q::create_attachment(conn, &sha, &filename, &mime, size, Some(user.id))?;
-        if let Some((w, h)) = dimensions {
-            q::set_dimensions(conn, att.id, i64::from(w), i64::from(h))?;
-            att = q::get_attachment(conn, att.id)?;
-        }
-        // LIF-418: index a small text upload's contents so search can find the
-        // file by what's inside it, not just by its name. Migration 042's
-        // insert trigger has already put the filename in `attachments_fts`;
-        // this fills in the text column. Non-UTF-8 bytes can't reach here for
-        // a `text/*` mime (the sniffer requires valid UTF-8), but the check
-        // keeps this honest if the allowlist ever widens.
-        if q::is_extractable(&mime, size)
-            && let Ok(text) = std::str::from_utf8(&bytes)
-        {
-            q::set_extracted_text(conn, att.id, text)?;
-        }
-        // If the caller asked to link immediately, do it here in the same txn,
-        // re-authorized on this very connection: the pre-flight gate above ran
-        // on a read connection before the blob was stored, so the decision it
-        // made is stale by the time we get here. Denial rolls the attachment
-        // row back with it.
-        let event = match link {
-            Some((entity, eid)) => {
-                authorize_link_conn(conn, &identity, entity, eid)?;
-                q::link_attachment(conn, att.id, entity, eid)?;
-                linked_entity_event(conn, entity, eid)?
+    let thumbnail = if dimensions.is_some() {
+        match storage::generate_thumbnail(&bytes) {
+            Ok(thumb) => thumb,
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to generate attachment thumbnail");
+                None
             }
-            None => None,
-        };
-        Ok((att, event))
+        }
+    } else {
+        None
+    };
+    // Serialize the blob write with metadata insertion and orphan cleanup.
+    // Otherwise GC can delete a newly written blob in the gap before its row
+    // is inserted.
+    let (attachment, event) = store.with_lock(|store| {
+        let blob_existed = store.path_for(&sha)?.exists();
+        let thumb_existed = thumbnail
+            .as_ref()
+            .map(|_| store.thumb_path_for(&sha).map(|path| path.exists()))
+            .transpose()?
+            .unwrap_or(false);
+        let result = db.transaction(|conn| {
+            let mut att = q::create_attachment(conn, &sha, &filename, &mime, size, Some(user.id))?;
+            store.write_unlocked(&bytes)?;
+            if let Some(thumb) = thumbnail.as_deref()
+                && let Err(e) = store.write_thumb(&sha, thumb)
+            {
+                tracing::warn!(error = %e, "failed to cache attachment thumbnail");
+            }
+            if let Some((w, h)) = dimensions {
+                q::set_dimensions(conn, att.id, i64::from(w), i64::from(h))?;
+                att = q::get_attachment(conn, att.id)?;
+            }
+            if q::is_extractable(&mime, size)
+                && let Ok(text) = std::str::from_utf8(&bytes)
+            {
+                q::set_extracted_text(conn, att.id, text)?;
+            }
+            let event = match link {
+                Some((entity, eid)) => {
+                    authorize_link_conn(conn, &identity, entity, eid)?;
+                    q::link_attachment(conn, att.id, entity, eid)?;
+                    linked_entity_event(conn, entity, eid)?
+                }
+                None => None,
+            };
+            Ok((att, event))
+        });
+        if result.is_err() {
+            if !blob_existed {
+                let _ = store.delete_unlocked(&sha);
+            }
+            if thumbnail.is_some() && !thumb_existed {
+                let _ = store.delete_thumb(&sha);
+            }
+        }
+        result
     })?;
     if let Some(event) = event {
         realtime.send(event);
@@ -554,22 +568,6 @@ fn parse_range(value: &str, total: u64) -> RangeRequest {
 
 // ── Thumbnails (LIF-418) ─────────────────────────────────────
 
-/// Generate and cache a thumbnail for freshly-stored bytes, swallowing every
-/// failure. A thumbnail is a convenience derived from the blob; if it cannot
-/// be produced the endpoint simply 404s and callers fall back to the original.
-/// Nothing here is allowed to fail an upload.
-fn cache_thumbnail(store: &AttachmentStore, sha: &str, bytes: &[u8]) {
-    match storage::generate_thumbnail(bytes) {
-        Ok(Some(thumb)) => {
-            if let Err(e) = store.write_thumb(sha, &thumb) {
-                tracing::warn!(error = %e, "failed to cache attachment thumbnail");
-            }
-        }
-        Ok(None) => {}
-        Err(e) => tracing::warn!(error = %e, "failed to generate attachment thumbnail"),
-    }
-}
-
 /// `GET /api/attachments/{id}/thumbnail`: a 480px-long-edge WebP preview of a
 /// raster attachment.
 ///
@@ -710,19 +708,22 @@ pub(super) async fn delete_attachment(
 
     authorize_delete(&db, &identity, &user, &attachment)?;
 
-    let events = with_write(&db, |conn| {
-        let events = linked_attachment_events(conn, id)?;
-        q::delete_attachment(conn, id)?;
+    let events = store.with_lock(|store| {
+        let events = with_write(&db, |conn| {
+            let events = linked_attachment_events(conn, id)?;
+            q::delete_attachment(conn, id)?;
+            Ok(events)
+        })?;
+
+        // GC the sidecar only when no remaining row references the same bytes.
+        let remaining = with_read(&db, |conn| q::count_rows_for_sha(conn, &attachment.sha256))?;
+        if remaining == 0 {
+            store.delete_unlocked(&attachment.sha256)?;
+        }
         Ok(events)
     })?;
     for event in events {
         realtime.send(event);
-    }
-
-    // GC the sidecar only when no remaining row references the same bytes.
-    let remaining = with_read(&db, |conn| q::count_rows_for_sha(conn, &attachment.sha256))?;
-    if remaining == 0 {
-        store.delete(&attachment.sha256)?;
     }
 
     Ok(axum::Json(serde_json::json!({ "deleted": true })))
@@ -1284,6 +1285,7 @@ mod tests {
 mod api_tests {
     use crate::api::test_helpers::*;
     use crate::db::models::*;
+    use crate::storage::AttachmentStore;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use http_body_util::BodyExt;
@@ -1839,6 +1841,10 @@ mod api_tests {
             })
             .unwrap();
         assert_eq!(links, 0);
+        let store = AttachmentStore::from_db_path(db.path());
+        let sha = AttachmentStore::hash_bytes(&png_bytes());
+        assert!(!store.path_for(&sha).unwrap().exists());
+        assert!(!store.thumb_path_for(&sha).unwrap().exists());
     }
 
     /// LIF-262's re-scan on save carries the same guarantee: the text that
