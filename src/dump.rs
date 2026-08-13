@@ -28,6 +28,15 @@ pub const ARCHIVE_MANIFEST_NAME: &str = "manifest.json";
 /// The prefix under which attachment blobs are stored inside the archive.
 pub const ARCHIVE_ATTACHMENTS_PREFIX: &str = "attachments/";
 
+/// Restore limits apply to the uncompressed archive contents. They prevent a
+/// tiny gzip/tar upload from allocating unbounded memory or filling the data
+/// volume before validation can reject it.
+pub const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
+pub const MAX_DB_BYTES: u64 = 512 * 1024 * 1024;
+pub const MAX_ATTACHMENT_BYTES: u64 = 64 * 1024 * 1024;
+pub const MAX_TOTAL_RESTORE_BYTES: u64 = 1024 * 1024 * 1024;
+pub const MAX_RESTORE_ENTRIES: u64 = 10_000;
+
 /// Metadata describing an archive's contents. Serialized as `manifest.json`
 /// at the root of every dump so a restore can validate compatibility and print
 /// a summary without opening the DB.
@@ -325,11 +334,114 @@ fn validate_attachment_entry(name: &str) -> Result<String, LificError> {
     Ok(rest.to_string())
 }
 
+fn validate_manifest_limits(manifest: &Manifest) -> Result<(), LificError> {
+    if manifest.db_size_bytes > MAX_DB_BYTES {
+        return Err(LificError::BadRequest(format!(
+            "archive database exceeds restore limit ({} > {} bytes)",
+            manifest.db_size_bytes, MAX_DB_BYTES
+        )));
+    }
+    if manifest.attachment_count > MAX_RESTORE_ENTRIES {
+        return Err(LificError::BadRequest(format!(
+            "archive has too many attachments ({} > {})",
+            manifest.attachment_count, MAX_RESTORE_ENTRIES
+        )));
+    }
+    if manifest.attachment_bytes > MAX_TOTAL_RESTORE_BYTES
+        || manifest.db_size_bytes > MAX_TOTAL_RESTORE_BYTES - manifest.attachment_bytes
+    {
+        return Err(LificError::BadRequest(
+            "archive contents exceed total restore size limit".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn read_entry_bounded<R: Read>(
+    entry: &mut tar::Entry<'_, R>,
+    max_bytes: u64,
+    label: &str,
+) -> Result<Vec<u8>, LificError> {
+    let size = entry.size();
+    if size > max_bytes {
+        return Err(LificError::BadRequest(format!(
+            "{label} exceeds restore limit ({size} > {max_bytes} bytes)"
+        )));
+    }
+    let mut buf = Vec::with_capacity(size as usize);
+    entry
+        .read_to_end(&mut buf)
+        .map_err(|e| LificError::BadRequest(format!("read {label}: {e}")))?;
+    Ok(buf)
+}
+
+fn valid_sha256(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+}
+
+/// Validate the extracted SQLite file before it can replace the live DB. This
+/// catches corrupt archives and ensures every metadata attachment reference is
+/// a safe content-addressed filename with matching staged bytes.
+fn validate_staged_database(staging: &Path) -> Result<(), LificError> {
+    let db = staging.join(ARCHIVE_DB_NAME);
+    let conn = rusqlite::Connection::open_with_flags(
+        &db,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .map_err(|e| LificError::BadRequest(format!("open staged database: {e}")))?;
+    let check: String = conn
+        .query_row("PRAGMA quick_check", [], |row| row.get(0))
+        .map_err(|e| LificError::BadRequest(format!("validate staged database: {e}")))?;
+    if check != "ok" {
+        return Err(LificError::BadRequest(format!(
+            "staged database integrity check failed: {check}"
+        )));
+    }
+
+    let has_attachments: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'attachments')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| LificError::BadRequest(format!("inspect staged schema: {e}")))?;
+    if !has_attachments {
+        return Ok(());
+    }
+
+    let mut stmt = conn
+        .prepare("SELECT sha256, size_bytes FROM attachments")
+        .map_err(|e| LificError::BadRequest(format!("read staged attachments: {e}")))?;
+    let rows = stmt
+        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))
+        .map_err(|e| LificError::BadRequest(format!("read staged attachment rows: {e}")))?;
+    for row in rows {
+        let (sha, size) = row
+            .map_err(|e| LificError::BadRequest(format!("read staged attachment row: {e}")))?;
+        if !valid_sha256(&sha) || size < 0 || size as u64 > MAX_ATTACHMENT_BYTES {
+            return Err(LificError::BadRequest(
+                "staged attachment metadata has an invalid content address or size".into(),
+            ));
+        }
+        let path = staging.join("attachments").join(&sha);
+        let metadata = std::fs::metadata(&path).map_err(|_| {
+            LificError::BadRequest(format!("staged database references missing attachment {sha}"))
+        })?;
+        if !metadata.is_file() || metadata.len() != size as u64 {
+            return Err(LificError::BadRequest(format!(
+                "staged attachment {sha} does not match database metadata"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Read and validate an archive's manifest + entry list without extracting.
 /// Returns the parsed manifest. Rejects archives missing `manifest.json` or
 /// `lific.db`, and any attachment entry that fails [`validate_attachment_entry`].
 pub fn inspect_archive(archive: &Path) -> Result<Manifest, LificError> {
     let manifest = read_manifest(archive)?;
+    validate_manifest_limits(&manifest)?;
 
     // Second pass: validate every entry name (traversal guard) and require the
     // DB member is present.
@@ -338,11 +450,19 @@ pub fn inspect_archive(archive: &Path) -> Result<Manifest, LificError> {
     let dec = flate2::read::GzDecoder::new(file);
     let mut tar = tar::Archive::new(dec);
     let mut has_db = false;
+    let mut entry_count = 0u64;
+    let mut attachment_count = 0u64;
+    let mut attachment_bytes = 0u64;
     for entry in tar
         .entries()
         .map_err(|e| LificError::BadRequest(format!("read archive entries: {e}")))?
     {
         let entry = entry.map_err(|e| LificError::BadRequest(format!("read entry: {e}")))?;
+        entry_count += 1;
+        if entry_count > MAX_RESTORE_ENTRIES + 2 {
+            return Err(LificError::BadRequest("archive has too many entries".into()));
+        }
+        let size = entry.size();
         let path = entry
             .path()
             .map_err(|e| LificError::BadRequest(format!("entry path: {e}")))?;
@@ -350,9 +470,26 @@ pub fn inspect_archive(archive: &Path) -> Result<Manifest, LificError> {
         if name == ARCHIVE_MANIFEST_NAME {
             continue;
         } else if name == ARCHIVE_DB_NAME {
+            if size > MAX_DB_BYTES {
+                return Err(LificError::BadRequest("archive database exceeds restore limit".into()));
+            }
             has_db = true;
         } else if name.starts_with(ARCHIVE_ATTACHMENTS_PREFIX) {
             validate_attachment_entry(&name)?;
+            if size > MAX_ATTACHMENT_BYTES {
+                return Err(LificError::BadRequest("archive attachment exceeds restore limit".into()));
+            }
+            attachment_count += 1;
+            attachment_bytes = attachment_bytes
+                .checked_add(size)
+                .ok_or_else(|| LificError::BadRequest("archive attachment size overflow".into()))?;
+            if attachment_count > MAX_RESTORE_ENTRIES
+                || attachment_bytes > manifest.attachment_bytes
+            {
+                return Err(LificError::BadRequest(
+                    "archive attachment contents exceed manifest limits".into(),
+                ));
+            }
         } else {
             return Err(LificError::BadRequest(format!(
                 "rejected unexpected archive entry: {name}"
@@ -362,6 +499,11 @@ pub fn inspect_archive(archive: &Path) -> Result<Manifest, LificError> {
     if !has_db {
         return Err(LificError::BadRequest(
             "archive is missing lific.db".into(),
+        ));
+    }
+    if attachment_count != manifest.attachment_count || attachment_bytes != manifest.attachment_bytes {
+        return Err(LificError::BadRequest(
+            "archive attachment entries do not match manifest".into(),
         ));
     }
     Ok(manifest)
@@ -382,10 +524,9 @@ fn read_manifest(archive: &Path) -> Result<Manifest, LificError> {
             .path()
             .map_err(|e| LificError::BadRequest(format!("entry path: {e}")))?;
         if path.to_string_lossy() == ARCHIVE_MANIFEST_NAME {
-            let mut buf = String::new();
-            entry
-                .read_to_string(&mut buf)
-                .map_err(|e| LificError::BadRequest(format!("read manifest: {e}")))?;
+            let bytes = read_entry_bounded(&mut entry, MAX_MANIFEST_BYTES, "manifest")?;
+            let buf = String::from_utf8(bytes)
+                .map_err(|e| LificError::BadRequest(format!("manifest is not UTF-8: {e}")))?;
             return serde_json::from_str(&buf)
                 .map_err(|e| LificError::BadRequest(format!("parse manifest.json: {e}")));
         }
@@ -474,6 +615,7 @@ pub fn run_restore(
         let dec = flate2::read::GzDecoder::new(file);
         let mut tar = tar::Archive::new(dec);
         let mut attachment_count = 0u64;
+        let mut total_bytes = 0u64;
         for entry in tar
             .entries()
             .map_err(|e| LificError::BadRequest(format!("read archive entries: {e}")))?
@@ -486,25 +628,32 @@ pub fn run_restore(
             let name = epath.to_string_lossy().replace('\\', "/");
             if name == ARCHIVE_MANIFEST_NAME {
                 // Persist the manifest alongside the restored DB for provenance.
-                let mut buf = Vec::new();
-                entry
-                    .read_to_end(&mut buf)
-                    .map_err(|e| LificError::BadRequest(format!("read manifest: {e}")))?;
+                let buf = read_entry_bounded(&mut entry, MAX_MANIFEST_BYTES, "manifest")?;
                 std::fs::write(staging.join(ARCHIVE_MANIFEST_NAME), &buf)
                     .map_err(|e| LificError::Internal(format!("write manifest: {e}")))?;
             } else if name == ARCHIVE_DB_NAME {
-                let mut buf = Vec::new();
-                entry
-                    .read_to_end(&mut buf)
-                    .map_err(|e| LificError::BadRequest(format!("read db from archive: {e}")))?;
+                let buf = read_entry_bounded(&mut entry, MAX_DB_BYTES, "database")?;
+                total_bytes = total_bytes
+                    .checked_add(buf.len() as u64)
+                    .ok_or_else(|| LificError::BadRequest("archive size overflow".into()))?;
+                if total_bytes > MAX_TOTAL_RESTORE_BYTES {
+                    return Err(LificError::BadRequest(
+                        "archive contents exceed total restore size limit".into(),
+                    ));
+                }
                 std::fs::write(staging.join(ARCHIVE_DB_NAME), &buf)
                     .map_err(|e| LificError::Internal(format!("write db: {e}")))?;
             } else if name.starts_with(ARCHIVE_ATTACHMENTS_PREFIX) {
                 let bare = validate_attachment_entry(&name)?;
-                let mut buf = Vec::new();
-                entry
-                    .read_to_end(&mut buf)
-                    .map_err(|e| LificError::BadRequest(format!("read attachment: {e}")))?;
+                let buf = read_entry_bounded(&mut entry, MAX_ATTACHMENT_BYTES, "attachment")?;
+                total_bytes = total_bytes
+                    .checked_add(buf.len() as u64)
+                    .ok_or_else(|| LificError::BadRequest("archive size overflow".into()))?;
+                if total_bytes > MAX_TOTAL_RESTORE_BYTES {
+                    return Err(LificError::BadRequest(
+                        "archive contents exceed total restore size limit".into(),
+                    ));
+                }
                 std::fs::write(staging.join("attachments").join(&bare), &buf)
                     .map_err(|e| LificError::Internal(format!("write attachment: {e}")))?;
                 attachment_count += 1;
@@ -519,6 +668,7 @@ pub fn run_restore(
                 "archive is missing lific.db".into(),
             ));
         }
+        validate_staged_database(&staging)?;
         Ok(attachment_count)
     })();
 
@@ -1037,11 +1187,55 @@ mod tests {
         assert!(validate_attachment_entry("attachments/.hidden").is_err());
     }
 
+    #[test]
+    fn inspect_rejects_manifest_size_bomb() {
+        let (dir, db_path) = seed_data_dir("manifest_limit");
+        let out = dir.join("source.tar.gz");
+        write_dump(&crate::db::open(&db_path).unwrap(), &db_path, &out).unwrap();
+        let mut manifest = read_manifest(&out).unwrap();
+        manifest.attachment_bytes = MAX_TOTAL_RESTORE_BYTES;
+        let rewritten = dir.join("oversized.tar.gz");
+        rewrite_archive_manifest(&out, &rewritten, &manifest);
+        let error = inspect_archive(&rewritten).unwrap_err();
+        assert!(error.to_string().contains("total restore size"));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn staged_database_rejects_missing_or_mismatched_attachment_metadata() {
+        let (dir, db_path) = seed_data_dir("staged_metadata");
+        let pool = crate::db::open(&db_path).unwrap();
+        let sha = "a".repeat(64);
+        {
+            let conn = pool.write().unwrap();
+            crate::db::queries::attachments::create_attachment(
+                &conn,
+                &sha,
+                "note.txt",
+                "text/plain",
+                4,
+                None,
+            )
+            .unwrap();
+        }
+        checkpoint_db_file(&db_path);
+        let staging = dir.join("staging");
+        fs::create_dir_all(staging.join("attachments")).unwrap();
+        fs::copy(&db_path, staging.join(ARCHIVE_DB_NAME)).unwrap();
+        let error = validate_staged_database(&staging).unwrap_err();
+        assert!(error.to_string().contains("missing attachment"));
+        fs::remove_dir_all(&dir).ok();
+    }
+
     // Test helper: re-pack an archive but overwrite the manifest's
     // schema_version, to simulate an archive from a newer binary.
     fn rewrite_archive_with_schema(src: &Path, dst: &Path, schema_version: i64) {
         let mut manifest = read_manifest(src).unwrap();
         manifest.schema_version = schema_version;
+        rewrite_archive_manifest(src, dst, &manifest);
+    }
+
+    fn rewrite_archive_manifest(src: &Path, dst: &Path, manifest: &Manifest) {
         let mj = serde_json::to_vec_pretty(&manifest).unwrap();
 
         let out = fs::File::create(dst).unwrap();
