@@ -98,7 +98,7 @@ pub(super) async fn upload_attachment(
     let mut link_entity: Option<AttachmentEntity> = None;
     let mut link_entity_id: Option<i64> = None;
 
-    while let Some(field) = multipart
+    while let Some(mut field) = multipart
         .next_field()
         .await
         .map_err(|e| LificError::BadRequest(format!("malformed multipart: {e}")))?
@@ -110,18 +110,21 @@ pub(super) async fn upload_attachment(
                     filename = sanitize_filename(fname);
                 }
                 declared_mime = field.content_type().map(|s| s.to_string());
-                let data = field
-                    .bytes()
+                let mut data = Vec::new();
+                while let Some(chunk) = field
+                    .chunk()
                     .await
-                    .map_err(|e| LificError::BadRequest(format!("failed to read upload: {e}")))?;
-                if data.len() > config.max_bytes {
-                    return Err(LificError::BadRequest(format!(
-                        "file too large: {} bytes (max {})",
-                        data.len(),
-                        config.max_bytes
-                    )));
+                    .map_err(|e| LificError::BadRequest(format!("failed to read upload: {e}")))?
+                {
+                    if data.len().saturating_add(chunk.len()) > config.max_bytes {
+                        return Err(LificError::BadRequest(format!(
+                            "file too large: more than {} bytes",
+                            config.max_bytes
+                        )));
+                    }
+                    data.extend_from_slice(&chunk);
                 }
-                file_bytes = Some(data.to_vec());
+                file_bytes = Some(data);
             }
             "entity_type" => {
                 let v = field.text().await.unwrap_or_default();
@@ -160,19 +163,22 @@ pub(super) async fn upload_attachment(
     }
 
     let size = bytes.len() as i64;
-    // Store bytes first (content-addressed), then record metadata.
-    let sha = store.write(&bytes)?;
-
-    let (attachment, event) = with_write(&db, |conn| {
-        let att = q::create_attachment(conn, &sha, &filename, &mime, size, Some(user.id))?;
-        // If the caller asked to link immediately, do it here in the same txn.
-        let event = if let (Some(entity), Some(eid)) = (link_entity, link_entity_id) {
-            q::link_attachment(conn, att.id, entity, eid)?;
-            linked_entity_event(conn, entity, eid)?
-        } else {
-            None
-        };
-        Ok((att, event))
+    // Serialize the blob write with metadata insertion and orphan cleanup.
+    // Otherwise GC can delete a newly written blob in the gap before its row
+    // is inserted.
+    let (attachment, event) = store.with_lock(|store| {
+        let sha = store.write_unlocked(&bytes)?;
+        with_write(&db, |conn| {
+            let att = q::create_attachment(conn, &sha, &filename, &mime, size, Some(user.id))?;
+            // If the caller asked to link immediately, do it here in the same txn.
+            let event = if let (Some(entity), Some(eid)) = (link_entity, link_entity_id) {
+                q::link_attachment(conn, att.id, entity, eid)?;
+                linked_entity_event(conn, entity, eid)?
+            } else {
+                None
+            };
+            Ok((att, event))
+        })
     })?;
     if let Some(event) = event {
         realtime.send(event);
@@ -273,10 +279,11 @@ pub(super) async fn download_attachment(
 
     let bytes = store.read(&attachment.sha256)?;
     let inline_safe = storage::is_inline_safe_mime(&attachment.mime);
+    let content_type = &attachment.mime;
 
     let mut builder = Response::builder()
         .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, &attachment.mime)
+        .header(header::CONTENT_TYPE, content_type)
         .header(header::CONTENT_LENGTH, bytes.len())
         // Content-addressed: the same id always returns the same bytes.
         .header(
@@ -325,19 +332,22 @@ pub(super) async fn delete_attachment(
 
     authorize_delete(&db, &identity, &user, &attachment)?;
 
-    let events = with_write(&db, |conn| {
-        let events = linked_attachment_events(conn, id)?;
-        q::delete_attachment(conn, id)?;
+    let events = store.with_lock(|store| {
+        let events = with_write(&db, |conn| {
+            let events = linked_attachment_events(conn, id)?;
+            q::delete_attachment(conn, id)?;
+            Ok(events)
+        })?;
+
+        // GC the sidecar only when no remaining row references the same bytes.
+        let remaining = with_read(&db, |conn| q::count_rows_for_sha(conn, &attachment.sha256))?;
+        if remaining == 0 {
+            store.delete_unlocked(&attachment.sha256)?;
+        }
         Ok(events)
     })?;
     for event in events {
         realtime.send(event);
-    }
-
-    // GC the sidecar only when no remaining row references the same bytes.
-    let remaining = with_read(&db, |conn| q::count_rows_for_sha(conn, &attachment.sha256))?;
-    if remaining == 0 {
-        store.delete(&attachment.sha256)?;
     }
 
     Ok(axum::Json(serde_json::json!({ "deleted": true })))

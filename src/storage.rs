@@ -14,6 +14,7 @@
 //! orphan GC's job — see `db::queries::attachments`).
 
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use sha2::{Digest, Sha256};
 
@@ -25,6 +26,7 @@ use crate::error::LificError;
 #[derive(Debug, Clone)]
 pub struct AttachmentStore {
     dir: PathBuf,
+    operation_lock: Arc<Mutex<()>>,
 }
 
 impl AttachmentStore {
@@ -37,7 +39,10 @@ impl AttachmentStore {
             Some(parent) if !parent.as_os_str().is_empty() => parent.join("attachments"),
             _ => PathBuf::from("attachments"),
         };
-        Self { dir }
+        Self {
+            dir,
+            operation_lock: Arc::new(Mutex::new(())),
+        }
     }
 
     /// Construct a store at an explicit directory. Production always resolves
@@ -45,7 +50,10 @@ impl AttachmentStore {
     /// tests point a store at a tempdir, hence the test-scoped allow.
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn new(dir: PathBuf) -> Self {
-        Self { dir }
+        Self {
+            dir,
+            operation_lock: Arc::new(Mutex::new(())),
+        }
     }
 
     /// The attachments directory itself. Callers reach the files through
@@ -58,8 +66,17 @@ impl AttachmentStore {
     /// Absolute path to the sidecar file for a given content hash. Kept
     /// private-ish (only `pub(crate)`) so callers go through
     /// `read`/`write`/`delete` rather than hand-building paths.
-    pub(crate) fn path_for(&self, sha256: &str) -> PathBuf {
-        self.dir.join(sha256)
+    pub(crate) fn path_for(&self, sha256: &str) -> Result<PathBuf, LificError> {
+        if sha256.len() != 64
+            || !sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(LificError::BadRequest(
+                "invalid attachment content hash".into(),
+            ));
+        }
+        Ok(self.dir.join(sha256))
     }
 
     /// Compute the lowercase hex SHA-256 of a byte slice — the content address.
@@ -68,37 +85,71 @@ impl AttachmentStore {
         digest.iter().map(|b| format!("{b:02x}")).collect()
     }
 
+    /// Serialize filesystem operations with metadata changes that callers
+    /// perform under [`Self::with_lock`]. Cloned stores share this lock.
+    pub(crate) fn with_lock<T>(
+        &self,
+        operation: impl FnOnce(&Self) -> Result<T, LificError>,
+    ) -> Result<T, LificError> {
+        let _guard = self
+            .operation_lock
+            .lock()
+            .map_err(|_| LificError::Internal("attachment store lock poisoned".into()))?;
+        operation(self)
+    }
+
     /// Write `bytes` to `<dir>/<sha256>`, creating the directory if needed.
     /// Idempotent: if the file already exists (same content), this is a no-op
     /// rather than a rewrite. Returns the content hash so the caller can store
     /// it on the metadata row.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn write(&self, bytes: &[u8]) -> Result<String, LificError> {
+        self.with_lock(|store| store.write_unlocked(bytes))
+    }
+
+    pub(crate) fn write_unlocked(&self, bytes: &[u8]) -> Result<String, LificError> {
         let sha = Self::hash_bytes(bytes);
         std::fs::create_dir_all(&self.dir)
             .map_err(|e| LificError::Internal(format!("create attachments dir: {e}")))?;
-        let path = self.path_for(&sha);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&self.dir, std::fs::Permissions::from_mode(0o700))
+                .map_err(|e| LificError::Internal(format!("secure attachments dir: {e}")))?;
+        }
+        let path = self.path_for(&sha)?;
         if path.exists() {
             return Ok(sha);
         }
         // Write to a temp file then rename, so a concurrent reader never sees a
         // half-written blob at the final content-addressed path.
-        let tmp = path.with_extension("tmp");
-        std::fs::write(&tmp, bytes)
-            .map_err(|e| LificError::Internal(format!("write attachment: {e}")))?;
+        let tmp = self.dir.join(format!(".{sha}.{:016x}.tmp", rand::random::<u64>()));
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
         }
-        std::fs::rename(&tmp, &path)
-            .map_err(|e| LificError::Internal(format!("finalize attachment: {e}")))?;
+        let mut file = options
+            .open(&tmp)
+            .map_err(|e| LificError::Internal(format!("create attachment temp file: {e}")))?;
+        if let Err(error) = std::io::Write::write_all(&mut file, bytes) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(LificError::Internal(format!("write attachment: {error}")));
+        }
+        drop(file);
+        if let Err(error) = std::fs::rename(&tmp, &path) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(LificError::Internal(format!("finalize attachment: {error}")));
+        }
         Ok(sha)
     }
 
     /// Read the bytes for a content hash. `NotFound` when the sidecar file is
     /// missing (e.g. the DB row survived but the blob was manually removed).
     pub fn read(&self, sha256: &str) -> Result<Vec<u8>, LificError> {
-        let path = self.path_for(sha256);
+        let path = self.path_for(sha256)?;
         std::fs::read(&path).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 LificError::NotFound("attachment bytes not found on disk".into())
@@ -111,8 +162,13 @@ impl AttachmentStore {
     /// Delete the sidecar file for a content hash. Missing file is treated as
     /// success (idempotent) — the GC only calls this once no DB row references
     /// the hash, so a double-delete or a manual prior removal is fine.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn delete(&self, sha256: &str) -> Result<(), LificError> {
-        let path = self.path_for(sha256);
+        self.with_lock(|store| store.delete_unlocked(sha256))
+    }
+
+    pub(crate) fn delete_unlocked(&self, sha256: &str) -> Result<(), LificError> {
+        let path = self.path_for(sha256)?;
         match std::fs::remove_file(&path) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -140,28 +196,27 @@ pub fn sweep_orphans(
 ) -> Result<usize, LificError> {
     use crate::db::queries::attachments as q;
 
-    let orphans = {
-        let conn = pool.read()?;
-        q::find_orphans(&conn, grace_seconds)?
-    };
+    store.with_lock(|store| {
+        let orphans = {
+            let conn = pool.read()?;
+            q::find_orphans(&conn, grace_seconds)?
+        };
 
-    let mut collected = 0;
-    for orphan in orphans {
-        {
+        let mut collected = 0;
+        for orphan in orphans {
+            // Keep both the store lock and writer lock while checking
+            // references and deleting the blob. Uploads and deletes use the
+            // same store lock, so no operation can create a row pointing at a
+            // blob between this check and removal.
             let conn = pool.write()?;
             q::delete_attachment(&conn, orphan.id)?;
+            if q::count_rows_for_sha(&conn, &orphan.sha256)? == 0 {
+                store.delete_unlocked(&orphan.sha256)?;
+            }
+            collected += 1;
         }
-        // Remove the blob only if no other row still references those bytes.
-        let remaining = {
-            let conn = pool.read()?;
-            q::count_rows_for_sha(&conn, &orphan.sha256)?
-        };
-        if remaining == 0 {
-            store.delete(&orphan.sha256)?;
-        }
-        collected += 1;
-    }
-    Ok(collected)
+        Ok(collected)
+    })
 }
 
 /// Spawn a background task that sweeps orphaned attachments hourly. Mirrors the
@@ -361,6 +416,23 @@ mod tests {
         assert_eq!(count, 1);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn attachment_storage_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (store, _tmp) = tmp_store();
+        let sha = store.write(b"private attachment").unwrap();
+        let dir_mode = std::fs::metadata(store.dir()).unwrap().permissions().mode() & 0o777;
+        let file_mode = std::fs::metadata(store.dir().join(sha))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(dir_mode, 0o700);
+        assert_eq!(file_mode, 0o600);
+    }
+
     #[test]
     fn delete_is_idempotent() {
         let (store, _tmp) = tmp_store();
@@ -383,6 +455,19 @@ mod tests {
             AttachmentStore::hash_bytes(b""),
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         );
+    }
+
+    #[test]
+    fn path_rejects_traversal_and_noncanonical_hashes() {
+        let (store, dir) = tmp_store();
+        for value in ["../lific.toml", &"A".repeat(64)] {
+            assert!(store.read(value).is_err());
+            assert!(store.delete(value).is_err());
+        }
+        let valid = "a".repeat(64);
+        assert!(store.read(&valid).is_err());
+        assert!(store.delete(&valid).is_ok());
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     // ── MIME sniffing ────────────────────────────────────────
