@@ -15,6 +15,7 @@
 
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
+use std::io::Read;
 
 use super::{NormalizedComment, NormalizedIssue, NormalizedLabel, StatusMap};
 use crate::db::models::{Priority, Status};
@@ -22,6 +23,7 @@ use crate::db::models::{Priority, Status};
 pub const MAX_GITHUB_ISSUES: usize = 10_000;
 pub const MAX_GITHUB_COMMENTS_PER_ISSUE: usize = 1_000;
 pub const MAX_GITHUB_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+pub const MAX_GITHUB_TOTAL_CONTENT_BYTES: usize = 128 * 1024 * 1024;
 
 /// One issue as returned by the GitHub REST API (fields we use).
 #[derive(Debug, Clone, Deserialize)]
@@ -190,6 +192,7 @@ pub fn collect(
     map: &StatusMap,
 ) -> Result<super::FetchedIssues, String> {
     let mut out = super::FetchedIssues::default();
+    let mut total_content_bytes = 0usize;
     let mut page = 1u32;
     loop {
         let (issues, has_next) = fetcher.fetch_issues_page(page, state)?;
@@ -211,7 +214,17 @@ pub fn collect(
                     MAX_GITHUB_COMMENTS_PER_ISSUE
                 ));
             }
-            out.issues.push(map_issue(slug, issue, &comments, map));
+            let normalized = map_issue(slug, issue, &comments, map);
+            total_content_bytes = total_content_bytes
+                .checked_add(normalized_content_bytes(&normalized))
+                .ok_or_else(|| "GitHub import content size overflow".to_string())?;
+            if total_content_bytes > MAX_GITHUB_TOTAL_CONTENT_BYTES {
+                return Err(format!(
+                    "GitHub import content exceeds {} byte limit",
+                    MAX_GITHUB_TOTAL_CONTENT_BYTES
+                ));
+            }
+            out.issues.push(normalized);
             if out.issues.len() > MAX_GITHUB_ISSUES {
                 return Err(format!(
                     "GitHub repository has too many issues ({} > {})",
@@ -230,6 +243,28 @@ pub fn collect(
         }
     }
     Ok(out)
+}
+
+fn normalized_content_bytes(issue: &NormalizedIssue) -> usize {
+    issue.source.len()
+        + issue.title.len()
+        + issue.description.len()
+        + issue.status.len()
+        + issue.priority.len()
+        + issue
+            .labels
+            .iter()
+            .map(|label| label.name.len() + label.color.as_deref().map_or(0, str::len))
+            .sum::<usize>()
+        + issue
+            .comments
+            .iter()
+            .map(|comment| {
+                comment.author.len()
+                    + comment.body.len()
+                    + comment.created_at.as_deref().map_or(0, str::len)
+            })
+            .sum::<usize>()
 }
 
 /// Parse the RFC 5988 `Link` header to decide whether a next page exists.
@@ -315,8 +350,9 @@ impl LiveGithub {
         resp: reqwest::blocking::Response,
         label: &str,
     ) -> Result<T, String> {
-        let bytes = resp
-            .bytes()
+        let mut bytes = Vec::new();
+        resp.take((MAX_GITHUB_RESPONSE_BYTES + 1) as u64)
+            .read_to_end(&mut bytes)
             .map_err(|e| format!("failed to read GitHub {label} response: {e}"))?;
         if bytes.len() > MAX_GITHUB_RESPONSE_BYTES {
             return Err(format!(
