@@ -252,6 +252,9 @@ pub fn list_plans(conn: &Connection, q: &ListPlansQuery) -> Result<Vec<Plan>, Li
 
 /// Create a plan + its full nested step tree atomically.
 pub fn create_plan(conn: &Connection, input: &CreatePlan) -> Result<Plan, LificError> {
+    if let Some(issue_id) = input.issue_id {
+        validate_issue_link(conn, input.project_id, issue_id)?;
+    }
     let next_seq: i64 = conn
         .query_row(
             "SELECT COALESCE(MAX(sequence), 0) + 1 FROM plans WHERE project_id = ?1",
@@ -281,7 +284,15 @@ fn insert_step_tree(
     parent_step_id: Option<i64>,
     steps: &[CreatePlanStep],
 ) -> Result<(), LificError> {
+    let plan_project_id: i64 = conn.query_row(
+        "SELECT project_id FROM plans WHERE id = ?1",
+        params![plan_id],
+        |row| row.get(0),
+    )?;
     for (pos, step) in steps.iter().enumerate() {
+        if let Some(issue_id) = step.issue_id {
+            validate_issue_link(conn, plan_project_id, issue_id)?;
+        }
         conn.execute(
             "INSERT INTO plan_steps (plan_id, parent_step_id, position, title, description, issue_id, done)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -304,7 +315,10 @@ fn insert_step_tree(
 }
 
 pub fn update_plan(conn: &Connection, id: i64, input: &UpdatePlan) -> Result<Plan, LificError> {
-    read_plan_row(conn, id)?;
+    let plan = read_plan_row(conn, id)?;
+    if let Some(Some(issue_id)) = input.issue_id {
+        validate_issue_link(conn, plan.project_id, issue_id)?;
+    }
     savepoint(conn, "update_plan", || {
         if let Some(ref title) = input.title {
             conn.execute("UPDATE plans SET title = ?1 WHERE id = ?2", params![title, id])?;
@@ -416,12 +430,20 @@ pub fn add_step(
     description: &str,
     issue_id: Option<i64>,
 ) -> Result<i64, LificError> {
-    // LIF-407: a parent from another plan would insert this step into that
+    // A parent from another plan would insert this step into that
     // plan's tree while the row claims `plan_id` — a cross-plan write the
     // caller was never authorized for. The single choke point for every
     // caller (REST `add_step`, MCP `update_plan_step`) is here.
     if let Some(parent) = parent_step_id {
         assert_step_in_plan(conn, plan_id, parent)?;
+    }
+    let plan_project_id: i64 = conn.query_row(
+        "SELECT project_id FROM plans WHERE id = ?1",
+        params![plan_id],
+        |row| row.get(0),
+    )?;
+    if let Some(issue_id) = issue_id {
+        validate_issue_link(conn, plan_project_id, issue_id)?;
     }
     let next_pos: i64 = conn
         .query_row(
@@ -504,7 +526,7 @@ pub fn set_step_done(
     step_id: i64,
     done: bool,
 ) -> Result<StepDoneEffect, LificError> {
-    let (issue_id, _plan_id): (Option<i64>, i64) = conn
+    let (issue_id, plan_id): (Option<i64>, i64) = conn
         .query_row(
             "SELECT issue_id, plan_id FROM plan_steps WHERE id = ?1",
             params![step_id],
@@ -512,6 +534,14 @@ pub fn set_step_done(
         )
         .optional()?
         .ok_or_else(|| LificError::NotFound(format!("plan step {step_id} not found")))?;
+    if let Some(issue_id) = issue_id {
+        let plan_project_id: i64 = conn.query_row(
+            "SELECT project_id FROM plans WHERE id = ?1",
+            params![plan_id],
+            |row| row.get(0),
+        )?;
+        validate_issue_link(conn, plan_project_id, issue_id)?;
+    }
 
     let mut effect = StepDoneEffect {
         step_id,
@@ -584,12 +614,47 @@ pub fn set_step_issue(
     step_id: i64,
     issue_id: Option<i64>,
 ) -> Result<(), LificError> {
+    if let Some(issue_id) = issue_id {
+        let plan_project_id: i64 = conn.query_row(
+            "SELECT p.project_id
+             FROM plan_steps s JOIN plans p ON p.id = s.plan_id
+             WHERE s.id = ?1",
+            params![step_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .ok_or_else(|| LificError::NotFound(format!("plan step {step_id} not found")))?;
+        validate_issue_link(conn, plan_project_id, issue_id)?;
+    }
     let changed = conn.execute(
         "UPDATE plan_steps SET issue_id = ?1, edited_at = datetime('now') WHERE id = ?2",
         params![issue_id, step_id],
     )?;
     if changed == 0 {
         return Err(LificError::NotFound(format!("plan step {step_id} not found")));
+    }
+    Ok(())
+}
+
+/// Keep every plan↔issue edge within one project. This invariant lives in the
+/// query layer so REST, MCP, imports, and future callers cannot create a
+/// cross-project side channel or let a step mutate a foreign issue.
+fn validate_issue_link(
+    conn: &Connection,
+    plan_project_id: i64,
+    issue_id: i64,
+) -> Result<(), LificError> {
+    let same_project: Option<i64> = conn
+        .query_row(
+            "SELECT 1 FROM issues WHERE id = ?1 AND project_id = ?2",
+            params![issue_id, plan_project_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if same_project.is_none() {
+        return Err(LificError::Forbidden(
+            "issue link is outside the plan project".into(),
+        ));
     }
     Ok(())
 }
@@ -1201,6 +1266,35 @@ mod tests {
         let err = assert_step_in_plan(&conn, plan_b.id, a_step).unwrap_err();
         assert!(matches!(err, LificError::BadRequest(_)), "foreign step must be rejected, got {err:?}");
         assert!(assert_step_in_plan(&conn, plan_b.id, b_step).is_ok());
+    }
+
+    #[test]
+    fn plan_issue_edges_cannot_cross_projects() {
+        let pool = test_db();
+        let conn = pool.write().unwrap();
+        let plan_project = seed_project(&conn, "PLA");
+        let issue_project = seed_project(&conn, "ISS");
+        let foreign_issue = seed_issue(&conn, issue_project, "Private", "todo");
+        let plan = create_plan(
+            &conn,
+            &CreatePlan {
+                project_id: plan_project,
+                title: "Plan".into(),
+                issue_id: None,
+                steps: vec![],
+            },
+        )
+        .unwrap();
+        let err = add_step(
+            &conn,
+            plan.id,
+            None,
+            "foreign",
+            "",
+            Some(foreign_issue.id),
+        )
+        .unwrap_err();
+        assert!(matches!(err, LificError::Forbidden(_)));
     }
 
     #[test]
