@@ -36,6 +36,37 @@ fn is_crud_command(cmd: &Command) -> bool {
         Command::Label { .. } | Command::Folder { .. }
     )
 }
+
+fn write_private_config(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
+    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let temp = parent.join(format!(
+        ".{}.{}.tmp",
+        path.file_name().unwrap_or_default().to_string_lossy(),
+        rand::random::<u64>()
+    ));
+    let result = (|| {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&temp)?;
+        std::io::Write::write_all(&mut file, contents.as_bytes())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o600))?;
+        }
+        std::fs::rename(&temp, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    result
+}
+
 use rmcp::ServiceExt;
 use tracing::info;
 
@@ -676,12 +707,30 @@ async fn cmd_init(
             && !parent.as_os_str().is_empty()
         {
             std::fs::create_dir_all(parent)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
+            }
         }
         let toml = match &default_db {
             Some(db) => Config::default_toml_with_db(db),
             None => Config::default_toml(),
         };
-        std::fs::write(&config_path, toml)?;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&config_path)?;
+        std::io::Write::write_all(&mut file, toml.as_bytes())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o600))?;
+        }
         true
     };
 
@@ -722,7 +771,7 @@ async fn cmd_init(
         // service plan) reflects required/host.
         let existing = std::fs::read_to_string(&config_path).unwrap_or_default();
         let new_toml = Config::apply_auth_mode(&existing, mode.required(), mode.host())?;
-        std::fs::write(&config_path, new_toml)?;
+        write_private_config(&config_path, &new_toml)?;
         cfg = load_config_for_init(&config_path, db_flag)?;
 
         let op_name = match name {
