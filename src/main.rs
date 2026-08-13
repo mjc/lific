@@ -17,26 +17,76 @@ mod mcp;
 mod oauth;
 mod preview;
 mod ratelimit;
-mod resolve_caller;
 mod realtime;
+mod resolve_caller;
 mod server;
 mod storage;
 
 use clap::{CommandFactory, Parser};
-use cli::{
-    BackendKind, Cli, Command, ServiceAction,
-};
+use cli::{BackendKind, Cli, Command, ServiceAction};
 use config::Config;
 
 // Commands that operate directly on the database (no server required)
 fn is_crud_command(cmd: &Command) -> bool {
-    matches!(cmd,
-        Command::Issue { .. } | Command::Project { .. } | Command::Page { .. } |
-        Command::Export { .. } |
-        Command::Search { .. } | Command::Comment { .. } | Command::Module { .. } |
-        Command::Label { .. } | Command::Folder { .. }
+    matches!(
+        cmd,
+        Command::Issue { .. }
+            | Command::Project { .. }
+            | Command::Page { .. }
+            | Command::Export { .. }
+            | Command::Search { .. }
+            | Command::Comment { .. }
+            | Command::Module { .. }
+            | Command::Label { .. }
+            | Command::Folder { .. }
     )
 }
+
+fn write_private_config(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
+    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let staging = tempfile::Builder::new()
+        .prefix(".lific-config-")
+        .tempdir_in(parent)?;
+    let temp = staging.path().join(path.file_name().unwrap_or_default());
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    let mut file = options.open(&temp)?;
+    std::io::Write::write_all(&mut file, contents.as_bytes())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    file.sync_all()?;
+    std::fs::rename(temp, path)
+}
+
+fn create_private_config(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
+    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let staging = tempfile::Builder::new()
+        .prefix(".lific-config-")
+        .tempdir_in(parent)?;
+    let temp = staging.path().join(path.file_name().unwrap_or_default());
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    let mut file = options.open(&temp)?;
+    std::io::Write::write_all(&mut file, contents.as_bytes())?;
+    file.sync_all()?;
+    // A hard link publishes only when the destination does not yet exist.
+    // It is atomic and leaves an existing configuration untouched on races.
+    std::fs::hard_link(&temp, path)
+}
+
 use rmcp::ServiceExt;
 use tracing::info;
 
@@ -83,20 +133,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .into(),
             );
         }
-        let url = http_backend_url(
-            cli.url.as_deref(),
-            cfg.server.public_url.as_deref(),
-            &cfg,
-        );
+        let url = http_backend_url(cli.url.as_deref(), cfg.server.public_url.as_deref(), &cfg);
         // LIF-408: `--api-key`/`LIFIC_API_KEY` still wins, then the stored
         // credential for `url`. `credentials::load` will only hand back a
         // `LIFIC_TOKEN` when `LIFIC_URL` names the same origin as `url`, so a
         // cwd `lific.toml` (or a `--url`) pointing at another server cannot
         // make us send the env token there.
-        let api_key = cli::resolve_http_credential(
-            cli.api_key.as_deref(),
-            || cli::credentials::load(&url),
-        )?;
+        let api_key =
+            cli::resolve_http_credential(cli.api_key.as_deref(), || cli::credentials::load(&url))?;
         let json = cli::term::wants_json(cli.json);
         return cli::http::run(&cli.command, &url, api_key.as_deref(), json)
             .await
@@ -474,11 +518,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         // CRUD commands and Completion are handled before this match
-        Command::Completion { .. } |
-        Command::Issue { .. } | Command::Project { .. } | Command::Page { .. } |
-        Command::Export { .. } |
-        Command::Search { .. } | Command::Comment { .. } | Command::Module { .. } |
-        Command::Label { .. } | Command::Folder { .. } => unreachable!(),
+        Command::Completion { .. }
+        | Command::Issue { .. }
+        | Command::Project { .. }
+        | Command::Page { .. }
+        | Command::Export { .. }
+        | Command::Search { .. }
+        | Command::Comment { .. }
+        | Command::Module { .. }
+        | Command::Label { .. }
+        | Command::Folder { .. } => unreachable!(),
     }
 
     Ok(())
@@ -591,7 +640,9 @@ fn load_config_for_init(
 /// explicit `--auth-mode` flag (non-interactive); otherwise, on a TTY, shows
 /// the interactive menu. Refuses (rather than hangs) off a TTY, matching
 /// `prompt_text`/`confirm`, and names the bypass flag.
-fn resolve_auth_mode(flag: &Option<String>) -> Result<config::AuthMode, Box<dyn std::error::Error>> {
+fn resolve_auth_mode(
+    flag: &Option<String>,
+) -> Result<config::AuthMode, Box<dyn std::error::Error>> {
     if let Some(value) = flag {
         return config::AuthMode::parse(value).ok_or_else(|| {
             format!("invalid --auth-mode '{value}': expected login-free or passwords").into()
@@ -615,13 +666,15 @@ fn resolve_auth_mode(flag: &Option<String>) -> Result<config::AuthMode, Box<dyn 
             "Passwords",
             "set a password and sign in on the web",
         );
-    let mode = prompt.interact().map_err(|e| -> Box<dyn std::error::Error> {
-        if e.kind() == std::io::ErrorKind::Interrupted {
-            "cancelled".into()
-        } else {
-            format!("auth-mode selection failed: {e}").into()
-        }
-    })?;
+    let mode = prompt
+        .interact()
+        .map_err(|e| -> Box<dyn std::error::Error> {
+            if e.kind() == std::io::ErrorKind::Interrupted {
+                "cancelled".into()
+            } else {
+                format!("auth-mode selection failed: {e}").into()
+            }
+        })?;
     if mode == config::AuthMode::LoginFree
         && !cli::term::confirm(
             &format!("{}\n\nProceed?", config::login_free_caution()),
@@ -684,13 +737,23 @@ async fn cmd_init(
         if let Some(parent) = config_path.parent()
             && !parent.as_os_str().is_empty()
         {
+            let parent_existed = parent.exists();
             std::fs::create_dir_all(parent)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if !parent_existed {
+                    std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
+                }
+            }
+            #[cfg(not(unix))]
+            let _ = parent_existed;
         }
         let toml = match &default_db {
             Some(db) => Config::default_toml_with_db(db),
             None => Config::default_toml(),
         };
-        std::fs::write(&config_path, toml)?;
+        create_private_config(&config_path, &toml)?;
         true
     };
 
@@ -731,7 +794,7 @@ async fn cmd_init(
         // service plan) reflects required/host.
         let existing = std::fs::read_to_string(&config_path).unwrap_or_default();
         let new_toml = Config::apply_auth_mode(&existing, mode.required(), mode.host())?;
-        std::fs::write(&config_path, new_toml)?;
+        write_private_config(&config_path, &new_toml)?;
         cfg = load_config_for_init(&config_path, db_flag)?;
 
         let op_name = match name {
@@ -799,8 +862,7 @@ async fn cmd_init(
                         // port while our unit crash-loops on AddrInUse), and
                         // silence alone is ambiguous. Cross-check the unit's
                         // own active state to say something precise.
-                        let active =
-                            cli::service::status(mgr).map(|s| s.active).unwrap_or(false);
+                        let active = cli::service::status(mgr).map(|s| s.active).unwrap_or(false);
                         match (healthy, active) {
                             (true, true) => {}
                             (true, false) => {
@@ -870,7 +932,10 @@ async fn cmd_init(
     } else {
         ui::step(format!("Using existing {}", config_path.display()));
     }
-    ui::step(format!("Database ready {}", ui::dim(cfg.database.path.display())));
+    ui::step(format!(
+        "Database ready {}",
+        ui::dim(cfg.database.path.display())
+    ));
 
     if let Some(ref admin) = created_admin {
         ui::step(format!(
@@ -953,9 +1018,11 @@ fn cmd_service(
     use cli::ui;
     let json = cli::term::wants_json(json_flag);
     let Some(mgr) = cli::service::detect() else {
-        return Err("no supported service manager found (needs a systemd user session on \
+        return Err(
+            "no supported service manager found (needs a systemd user session on \
                     Linux, or launchd on macOS)"
-            .into());
+                .into(),
+        );
     };
     match action {
         ServiceAction::Install => {
@@ -994,7 +1061,10 @@ fn cmd_service(
                          when you log out. Run it manually to fix that.",
                     );
                 }
-                ui::outro(format!("Logs: {}", ui::command(cli::service::logs_hint(mgr))));
+                ui::outro(format!(
+                    "Logs: {}",
+                    ui::command(cli::service::logs_hint(mgr))
+                ));
             }
         }
         ServiceAction::Uninstall => {
@@ -1006,8 +1076,14 @@ fn cmd_service(
                 );
             } else {
                 ui::intro("lific service uninstall");
-                ui::step(format!("Service stopped and uninstalled {}", ui::dim(&removed)));
-                ui::outro(format!("Reinstall anytime with {}", ui::command("lific service install")));
+                ui::step(format!(
+                    "Service stopped and uninstalled {}",
+                    ui::dim(&removed)
+                ));
+                ui::outro(format!(
+                    "Reinstall anytime with {}",
+                    ui::command("lific service install")
+                ));
             }
         }
         ServiceAction::Status => {
@@ -1052,7 +1128,10 @@ fn cmd_service(
             if json {
                 println!("{}", serde_json::json!({ "restarted": true }));
             } else {
-                ui::step(format!("Service restarted — {}", ui::command(local_url(cfg))));
+                ui::step(format!(
+                    "Service restarted — {}",
+                    ui::command(local_url(cfg))
+                ));
             }
         }
     }
@@ -1060,7 +1139,7 @@ fn cmd_service(
 }
 #[cfg(test)]
 mod init_target_tests {
-    use super::{auth, cmd_init, resolve_init_target, Config};
+    use super::{Config, auth, cmd_init, resolve_init_target};
     use crate::db;
     use std::path::{Path, PathBuf};
 
@@ -1077,7 +1156,10 @@ mod init_target_tests {
     fn bare_init_targets_os_dirs() {
         let (config, db) = resolve_init_target(None, false, false, os_default());
         assert_eq!(config, Path::new("/home/u/.config/lific/lific.toml"));
-        assert_eq!(db.as_deref(), Some(Path::new("/home/u/.local/share/lific/lific.db")));
+        assert_eq!(
+            db.as_deref(),
+            Some(Path::new("/home/u/.local/share/lific/lific.db"))
+        );
     }
 
     #[test]
@@ -1201,7 +1283,8 @@ mod init_target_tests {
             .unwrap();
         assert_eq!(out["admin"], serde_json::json!("blake"));
         assert_eq!(
-            out["keys"], serde_json::json!(false),
+            out["keys"],
+            serde_json::json!(false),
             "a human operator exists, so no unbound default key is minted"
         );
     }
@@ -1217,11 +1300,17 @@ mod init_target_tests {
         assert_eq!(first["admin"], serde_json::json!("blake"));
 
         // Second run with a different name must NOT create a second admin.
-        let second = run_init(&dir, Some("Someone Else"), Some("passwords"), Some("hunter22!"))
-            .await
-            .unwrap();
+        let second = run_init(
+            &dir,
+            Some("Someone Else"),
+            Some("passwords"),
+            Some("hunter22!"),
+        )
+        .await
+        .unwrap();
         assert_eq!(
-            second["admin"], serde_json::json!("blake"),
+            second["admin"],
+            serde_json::json!("blake"),
             "existing instance keeps its first admin"
         );
     }
@@ -1279,7 +1368,7 @@ mod init_target_tests {
 
 #[cfg(test)]
 mod http_backend_url_tests {
-    use super::{http_backend_url, Config};
+    use super::{Config, http_backend_url};
 
     #[test]
     fn maps_bind_any_hosts_to_loopback() {
@@ -1287,10 +1376,7 @@ mod http_backend_url_tests {
         cfg.server.host = "0.0.0.0".into();
         cfg.server.port = 4567;
 
-        assert_eq!(
-            http_backend_url(None, None, &cfg),
-            "http://127.0.0.1:4567"
-        );
+        assert_eq!(http_backend_url(None, None, &cfg), "http://127.0.0.1:4567");
     }
 
     #[test]
@@ -1315,7 +1401,7 @@ mod http_backend_url_tests {
 
 #[cfg(test)]
 mod display_host_tests {
-    use super::{display_host, local_url, Config};
+    use super::{Config, display_host, local_url};
 
     #[test]
     fn leaves_ipv4_and_hostnames_untouched() {

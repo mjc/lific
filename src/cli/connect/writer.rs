@@ -98,28 +98,93 @@ pub fn render(path: &Path, format: Format, entry: &CompiledEntry) -> Result<Rend
 /// directories as needed. Returns whether the file was created or updated.
 pub fn write(path: &Path, format: Format, entry: &CompiledEntry) -> Result<Action, WriteError> {
     let rendered = render(path, format, entry)?;
+    let parent_existed = path.parent().map(|parent| parent.exists()).unwrap_or(true);
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
     {
         std::fs::create_dir_all(parent)
             .map_err(|e| WriteError::new(format!("failed to create {}: {e}", parent.display())))?;
     }
-    std::fs::write(path, &rendered.contents)
-        .map_err(|e| WriteError::new(format!("failed to write {}: {e}", path.display())))?;
-    // Connector configs can embed live credentials (an API key, an OAuth
-    // token, or a LIFIC_TOKEN env entry). Don't leave those group/world
-    // readable (PR #23 review). Configs without secrets keep umask perms —
-    // some of them are shared, committed files.
+    // Only embedded credentials make this file secret-bearing. Environment
+    // variable references are configuration, not credential material.
+    let secret = rendered.contents.contains("lific_sk-") || rendered.contents.contains("lific_at_");
+    if secret && let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        if parent_existed {
+            set_private_dir(parent)?;
+        } else {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700)).map_err(
+                    |e| WriteError::new(format!("failed to secure {}: {e}", parent.display())),
+                )?;
+            }
+        }
+    }
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let staging = tempfile::Builder::new()
+        .prefix(".lific-config-")
+        .tempdir_in(parent)
+        .map_err(|e| WriteError::new(format!("could not create config staging directory: {e}")))?;
+    let tmp = staging.path().join(path.file_name().unwrap_or_default());
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
     #[cfg(unix)]
-    if rendered.contents.contains("LIFIC_TOKEN")
-        || rendered.contents.contains("lific_sk-")
-        || rendered.contents.contains("lific_at_")
+    {
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+        let mode = if secret {
+            0o600
+        } else {
+            std::fs::symlink_metadata(path)
+                .ok()
+                .map(|metadata| metadata.mode() & 0o777)
+                .filter(|mode| *mode != 0)
+                .unwrap_or(0o666)
+        };
+        options.mode(mode).custom_flags(libc::O_NOFOLLOW);
+    }
+    let mut file = options
+        .open(&tmp)
+        .map_err(|e| WriteError::new(format!("failed to create config staging file: {e}")))?;
+    std::io::Write::write_all(&mut file, rendered.contents.as_bytes())
+        .map_err(|e| WriteError::new(format!("failed to write {}: {e}", path.display())))?;
+    if secret {
+        set_private_file(&file)?;
+    }
+    file.sync_all()
+        .map_err(|e| WriteError::new(format!("failed to sync {}: {e}", path.display())))?;
+    std::fs::rename(&tmp, path)
+        .map_err(|e| WriteError::new(format!("failed to finalize {}: {e}", path.display())))?;
+    Ok(rendered.action)
+}
+
+fn set_private_file(_file: &std::fs::File) -> Result<(), WriteError> {
+    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-            .map_err(|e| WriteError::new(format!("failed to chmod {}: {e}", path.display())))?;
+        _file
+            .set_permissions(std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| WriteError::new(format!("failed to tighten config staging file: {e}")))?;
     }
-    Ok(rendered.action)
+    Ok(())
+}
+
+fn set_private_dir(_path: &Path) -> Result<(), WriteError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let mode = std::fs::metadata(_path)
+            .map_err(|e| WriteError::new(format!("failed to inspect {}: {e}", _path.display())))?
+            .mode()
+            & 0o777;
+        if mode & 0o022 != 0 {
+            return Err(WriteError::new(format!(
+                "config directory {} is writable by group/others; remove group/other write permissions before writing embedded credentials",
+                _path.display()
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Read the file if present. `Ok(None)` = doesn't exist. An unreadable file is
@@ -200,7 +265,9 @@ fn render_toml(existing: &str, entry: &CompiledEntry) -> Result<String, WriteErr
     } else {
         existing.parse::<DocumentMut>().map_err(|e| {
             WriteError::with_snippet(
-                format!("existing config.toml does not parse ({e}); not modifying it. Merge by hand:"),
+                format!(
+                    "existing config.toml does not parse ({e}); not modifying it. Merge by hand:"
+                ),
                 manual_toml_snippet(entry),
             )
         })?
@@ -245,7 +312,7 @@ fn render_toml(existing: &str, entry: &CompiledEntry) -> Result<String, WriteErr
 /// toml_edit value. Codex entries carry strings, string arrays, and — for the
 /// stdio agent token (LIFIC-18) — a nested `env` object of strings.
 fn json_to_toml_value(v: &serde_json::Value) -> Result<toml_edit::Item, WriteError> {
-    use toml_edit::{Array, Item, Value, value, InlineTable};
+    use toml_edit::{Array, InlineTable, Item, Value, value};
     match v {
         serde_json::Value::String(s) => Ok(value(s.as_str())),
         serde_json::Value::Bool(b) => Ok(value(*b)),
@@ -330,7 +397,9 @@ fn render_yaml(existing: &str, entry: &CompiledEntry) -> Result<String, WriteErr
     } else {
         serde_yaml::from_str(existing).map_err(|e| {
             WriteError::with_snippet(
-                format!("existing config.yaml does not parse ({e}); not modifying it. Merge by hand:"),
+                format!(
+                    "existing config.yaml does not parse ({e}); not modifying it. Merge by hand:"
+                ),
                 manual_yaml_snippet(entry),
             )
         })?
@@ -367,8 +436,7 @@ fn render_yaml(existing: &str, entry: &CompiledEntry) -> Result<String, WriteErr
 
 fn manual_yaml_snippet(entry: &CompiledEntry) -> String {
     let mut top = serde_yaml::Mapping::new();
-    let value_yaml =
-        serde_yaml::to_value(&entry.value).unwrap_or(serde_yaml::Value::Null);
+    let value_yaml = serde_yaml::to_value(&entry.value).unwrap_or(serde_yaml::Value::Null);
     top.insert(serde_yaml::Value::String(entry.name.clone()), value_yaml);
     let mut root = serde_yaml::Mapping::new();
     root.insert(
@@ -392,7 +460,22 @@ mod tests {
     /// has to create the parent itself. Dropping the guard removes
     /// everything, unwinding included.
     fn tmp() -> tempfile::TempDir {
-        tempfile::tempdir().unwrap()
+        let dir = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        dir
+    }
+
+    fn private_dir(path: &Path) {
+        std::fs::create_dir_all(path).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
     }
 
     #[test]
@@ -410,11 +493,52 @@ mod tests {
         assert_eq!(v["mcp"]["lific"]["type"], "remote");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn secret_config_is_owner_only_and_atomic() {
+        use std::os::unix::fs::PermissionsExt;
+        let guard = tmp();
+        let dir = guard.path().join("proj");
+        let path = dir.join("opencode.json");
+        let entry = find_client("opencode").unwrap().compile(&remote());
+        write(&path, Format::Json, &entry).unwrap();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(!std::fs::read_dir(&dir).unwrap().any(|entry| {
+            entry
+                .ok()
+                .and_then(|entry| entry.file_name().to_str().map(str::to_owned))
+                .is_some_and(|name| name.starts_with(".lific-config-"))
+        }));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn secret_config_allows_traversable_parent() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let guard = tmp();
+        let dir = guard.path().join("proj");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let path = dir.join("opencode.json");
+        let entry = find_client("opencode").unwrap().compile(&remote());
+        write(&path, Format::Json, &entry).unwrap();
+
+        assert_eq!(
+            std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
     #[test]
     fn json_preserves_sibling_servers_and_unrelated_keys() {
         let guard = tmp();
         let dir = guard.path().join("proj");
-        std::fs::create_dir_all(&dir).unwrap();
+        private_dir(&dir);
         let path = dir.join("opencode.json");
         // Pre-existing config with another MCP server and unrelated top keys.
         std::fs::write(
@@ -447,7 +571,7 @@ mod tests {
     fn json_replaces_existing_lific_entry_not_duplicates() {
         let guard = tmp();
         let dir = guard.path().join("proj");
-        std::fs::create_dir_all(&dir).unwrap();
+        private_dir(&dir);
         let path = dir.join("opencode.json");
         std::fs::write(
             &path,
@@ -473,7 +597,7 @@ mod tests {
     fn json_refuses_to_touch_unparseable_jsonc_and_returns_snippet() {
         let guard = tmp();
         let dir = guard.path().join("proj");
-        std::fs::create_dir_all(&dir).unwrap();
+        private_dir(&dir);
         let path = dir.join("opencode.json");
         // JSONC with a comment — valid for OpenCode but not strict JSON.
         let original = "{\n  // my config\n  \"mcp\": {}\n}\n";
@@ -492,9 +616,10 @@ mod tests {
     fn toml_sets_only_our_table_and_preserves_comments() {
         let guard = tmp();
         let dir = guard.path().join("proj");
-        std::fs::create_dir_all(&dir).unwrap();
+        private_dir(&dir);
         let path = dir.join("config.toml");
-        let original = "# Codex config\nmodel = \"gpt-5\"\n\n[mcp_servers.other]\nurl = \"http://other\"\n";
+        let original =
+            "# Codex config\nmodel = \"gpt-5\"\n\n[mcp_servers.other]\nurl = \"http://other\"\n";
         std::fs::write(&path, original).unwrap();
 
         let entry = find_client("codex").unwrap().compile(&remote());
@@ -503,7 +628,10 @@ mod tests {
 
         let written = std::fs::read_to_string(&path).unwrap();
         // Comment preserved.
-        assert!(written.contains("# Codex config"), "comment must survive: {written}");
+        assert!(
+            written.contains("# Codex config"),
+            "comment must survive: {written}"
+        );
         // Unrelated top-level key preserved.
         assert!(written.contains("model = \"gpt-5\""));
         // Sibling server preserved.
@@ -518,7 +646,21 @@ mod tests {
             doc["mcp_servers"]["lific"]["bearer_token_env_var"].as_str(),
             Some("LIFIC_API_KEY")
         );
-        assert!(!written.contains("lific_sk-live-K"), "must not inline the key");
+        assert!(
+            !written.contains("lific_sk-live-K"),
+            "must not inline the key"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+            write(&path, Format::Toml, &entry).unwrap();
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o644,
+                "reference-only config must not be tightened"
+            );
+        }
     }
 
     #[test]
@@ -529,8 +671,7 @@ mod tests {
         let entry = find_client("codex").unwrap().compile(&remote());
         let action = write(&path, Format::Toml, &entry).unwrap();
         assert_eq!(action, Action::Created);
-        let doc: toml_edit::DocumentMut =
-            std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        let doc: toml_edit::DocumentMut = std::fs::read_to_string(&path).unwrap().parse().unwrap();
         assert_eq!(
             doc["mcp_servers"]["lific"]["bearer_token_env_var"].as_str(),
             Some("LIFIC_API_KEY")
@@ -541,7 +682,7 @@ mod tests {
     fn toml_refuses_unparseable_and_returns_snippet() {
         let guard = tmp();
         let dir = guard.path().join("proj");
-        std::fs::create_dir_all(&dir).unwrap();
+        private_dir(&dir);
         let path = dir.join("config.toml");
         let original = "this is = = not valid toml [[[\n";
         std::fs::write(&path, original).unwrap();
@@ -555,7 +696,7 @@ mod tests {
     fn yaml_sets_extensions_lific_and_preserves_other_extensions() {
         let guard = tmp();
         let dir = guard.path().join("proj");
-        std::fs::create_dir_all(&dir).unwrap();
+        private_dir(&dir);
         let path = dir.join("config.yaml");
         std::fs::write(
             &path,
@@ -578,7 +719,10 @@ mod tests {
             v["extensions"]["lific"]["type"].as_str(),
             Some("streamable_http")
         );
-        assert_eq!(v["extensions"]["lific"]["uri"].as_str(), Some("http://127.0.0.1:3456/mcp"));
+        assert_eq!(
+            v["extensions"]["lific"]["uri"].as_str(),
+            Some("http://127.0.0.1:3456/mcp")
+        );
     }
 
     #[test]
