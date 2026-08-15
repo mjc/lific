@@ -3319,8 +3319,6 @@ impl LificMcp {
     }
 
     fn add_comment_inner(&self, input: AddCommentInput) -> Result<String, String> {
-        crate::api::comments::validate_comment_content(&input.content)
-            .map_err(|e| e.to_string())?;
         let (comment, parent, parent_identifier, event) = self.transaction(|conn| {
             let (parent, parent_identifier, project_id) =
                 resolve_comment_parent_conn(conn, &input.identifier)?;
@@ -3499,8 +3497,6 @@ impl LificMcp {
     }
 
     fn edit_comment_inner(&self, input: EditCommentInput) -> Result<String, String> {
-        crate::api::comments::validate_comment_content(&input.content)
-            .map_err(|e| e.to_string())?;
         let (comment, context) = self.transaction(|conn| {
             let actor = resolve_comment_actor_conn(conn)?;
             let existing = queries::comments::get_comment(conn, input.comment_id)?;

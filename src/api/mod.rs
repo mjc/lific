@@ -1,7 +1,7 @@
 mod activity;
 mod attachments;
 mod auth;
-pub(crate) mod comments;
+mod comments;
 mod export;
 mod insights;
 mod issues;
