@@ -1761,6 +1761,7 @@ dependencies = [
  "reqwest",
  "rmcp",
  "rusqlite",
+ "schemars",
  "rust-embed",
  "schemars",
  "serde",
