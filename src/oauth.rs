@@ -540,6 +540,7 @@ struct AuthorizeParams {
     code_challenge: Option<String>,
     code_challenge_method: Option<String>,
     scope: Option<String>,
+    resource: Option<String>,
 }
 
 async fn authorize_page(
@@ -589,6 +590,7 @@ async fn authorize_page(
         <input type="hidden" name="code_challenge" value="{code_challenge}">
         <input type="hidden" name="code_challenge_method" value="{code_challenge_method}">
         <input type="hidden" name="scope" value="{scope}">
+        <input type="hidden" name="resource" value="{resource}">
         <input type="hidden" name="csrf_token" value="{csrf_token}">
         {tool_pick_list}
         <button type="submit">Approve</button>
@@ -603,6 +605,7 @@ async fn authorize_page(
         code_challenge_method =
             html_escape(params.code_challenge_method.as_deref().unwrap_or("S256")),
         scope = html_escape(params.scope.as_deref().unwrap_or("mcp")),
+        resource = html_escape(params.resource.as_deref().unwrap_or("")),
         csrf_token = html_escape(&csrf_token),
         tool_pick_list = tool_pick_list,
     ))
@@ -620,6 +623,7 @@ struct ApproveForm {
     code_challenge: Option<String>,
     code_challenge_method: Option<String>,
     scope: Option<String>,
+    resource: Option<String>,
     csrf_token: Option<String>,
     /// LIFIC-13: which tool is connecting — a Connected Tools registry id, or
     /// empty meaning `tool_custom` holds a free-text name.
@@ -771,6 +775,20 @@ async fn authorize_approve(
         return invalid_session_page();
     }
 
+    let expected_resource = format!(
+        "{}/mcp",
+        effective_issuer(&oauth, &headers).trim_end_matches('/')
+    );
+    if let Some(resource) = form.resource.as_deref()
+        && resource != expected_resource
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Html("Invalid resource indicator.".to_string()),
+        )
+            .into_response();
+    }
+
     // Validate the redirect_uri against the client's registered URIs
     let redirect_ok = if let Ok(conn) = oauth.db.read() {
         let registered: Result<String, _> = conn.query_row(
@@ -878,7 +896,7 @@ async fn authorize_approve(
         redirect_url.push_str(&format!("&state={encoded}"));
     }
     let issuer = effective_issuer(&oauth, &headers);
-    let encoded_issuer = urlencoding::encode(&issuer);
+    let encoded_issuer = urlencoding::encode(issuer.trim_end_matches('/'));
     redirect_url.push_str(&format!("&iss={encoded_issuer}"));
 
     info!(client_id = %form.client_id, "OAuth authorization approved");
