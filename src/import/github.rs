@@ -249,8 +249,8 @@ fn normalized_content_bytes(issue: &NormalizedIssue) -> usize {
     issue.source.len()
         + issue.title.len()
         + issue.description.len()
-        + issue.status.len()
-        + issue.priority.len()
+        + issue.status.as_str().len()
+        + issue.priority.as_str().len()
         + issue
             .labels
             .iter()
