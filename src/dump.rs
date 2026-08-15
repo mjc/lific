@@ -415,17 +415,25 @@ fn validate_staged_database(staging: &Path) -> Result<(), LificError> {
     }
 
     let mut stmt = conn
-        .prepare("SELECT sha256, size_bytes FROM attachments")
+        .prepare("SELECT sha256, MIN(size_bytes), MAX(size_bytes) FROM attachments GROUP BY sha256")
         .map_err(|e| LificError::BadRequest(format!("read staged attachments: {e}")))?;
     let rows = stmt
         .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
         })
         .map_err(|e| LificError::BadRequest(format!("read staged attachment rows: {e}")))?;
     for row in rows {
-        let (sha, size) =
+        let (sha, size, max_size) =
             row.map_err(|e| LificError::BadRequest(format!("read staged attachment row: {e}")))?;
-        if !valid_sha256(&sha) || size < 0 || size as u64 > MAX_ATTACHMENT_BYTES {
+        if !valid_sha256(&sha)
+            || size < 0
+            || max_size != size
+            || size as u64 > MAX_ATTACHMENT_BYTES
+        {
             return Err(LificError::BadRequest(
                 "staged attachment metadata has an invalid content address or size".into(),
             ));
@@ -459,6 +467,7 @@ pub fn inspect_archive(archive: &Path) -> Result<Manifest, LificError> {
     let dec = flate2::read::GzDecoder::new(file);
     let mut tar = tar::Archive::new(dec);
     let mut has_db = false;
+    let mut db_bytes = None;
     let mut entry_count = 0u64;
     let mut attachment_count = 0u64;
     let mut attachment_bytes = 0u64;
@@ -487,6 +496,7 @@ pub fn inspect_archive(archive: &Path) -> Result<Manifest, LificError> {
                 ));
             }
             has_db = true;
+            db_bytes = Some(size);
         } else if name.starts_with(ARCHIVE_ATTACHMENTS_PREFIX) {
             validate_attachment_entry(&name)?;
             if size > MAX_ATTACHMENT_BYTES {
@@ -513,6 +523,11 @@ pub fn inspect_archive(archive: &Path) -> Result<Manifest, LificError> {
     }
     if !has_db {
         return Err(LificError::BadRequest("archive is missing lific.db".into()));
+    }
+    if db_bytes != Some(manifest.db_size_bytes) {
+        return Err(LificError::BadRequest(
+            "archive database size does not match manifest".into(),
+        ));
     }
     if attachment_count != manifest.attachment_count
         || attachment_bytes != manifest.attachment_bytes
@@ -711,16 +726,16 @@ pub fn run_restore(
         archive_timestamp()
     ));
     let had_attachments = attachments_dest.exists();
-    if had_attachments {
-        if let Err(e) = std::fs::rename(&attachments_dest, &attachments_backup) {
-            if let Some(moved) = &moved_existing_to {
-                let _ = std::fs::rename(moved, db_path);
-            }
-            let _ = std::fs::remove_dir_all(&staging);
-            return Err(LificError::Internal(format!(
-                "move existing attachments aside: {e}"
-            )));
+    if had_attachments
+        && let Err(e) = std::fs::rename(&attachments_dest, &attachments_backup)
+    {
+        if let Some(moved) = &moved_existing_to {
+            let _ = std::fs::rename(moved, db_path);
         }
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(LificError::Internal(format!(
+            "move existing attachments aside: {e}"
+        )));
     }
 
     let install_result = (|| -> Result<(), LificError> {
@@ -1309,7 +1324,8 @@ mod tests {
 
     #[test]
     fn inspect_rejects_manifest_size_bomb() {
-        let (dir, db_path) = seed_data_dir("manifest_limit");
+        let (dir_tmp, db_path) = seed_data_dir("manifest_limit");
+        let dir = dir_tmp.path();
         let out = dir.join("source.tar.gz");
         write_dump(&crate::db::open(&db_path).unwrap(), &db_path, &out).unwrap();
         let mut manifest = read_manifest(&out).unwrap();
@@ -1318,12 +1334,12 @@ mod tests {
         rewrite_archive_manifest(&out, &rewritten, &manifest);
         let error = inspect_archive(&rewritten).unwrap_err();
         assert!(error.to_string().contains("total restore size"));
-        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn staged_database_rejects_missing_or_mismatched_attachment_metadata() {
-        let (dir, db_path) = seed_data_dir("staged_metadata");
+        let (dir_tmp, db_path) = seed_data_dir("staged_metadata");
+        let dir = dir_tmp.path();
         let pool = crate::db::open(&db_path).unwrap();
         let sha = "a".repeat(64);
         {
@@ -1344,7 +1360,6 @@ mod tests {
         fs::copy(&db_path, staging.join(ARCHIVE_DB_NAME)).unwrap();
         let error = validate_staged_database(&staging).unwrap_err();
         assert!(error.to_string().contains("missing attachment"));
-        fs::remove_dir_all(&dir).ok();
     }
 
     // Test helper: re-pack an archive but overwrite the manifest's
