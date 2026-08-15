@@ -839,7 +839,7 @@ mod authless_mcp_tests {
             "id": 1,
             "method": "initialize",
             "params": {
-                "protocolVersion": "2025-06-18",
+                "protocolVersion": "2026-07-28",
                 "capabilities": {},
                 "clientInfo": {"name": "test", "version": "1"}
             }

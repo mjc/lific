@@ -608,15 +608,15 @@ pub async fn check_oauth_discovery(client: &reqwest::Client, base: &str) -> Chec
 
 // ── Check 6: MCP round-trip ──────────────────────────────────────────────
 
-/// The JSON-RPC `initialize` request body. Protocol version pinned to the one
-/// the server supports (`V_2025_03_26`).
+/// The JSON-RPC `initialize` request body. Pin this probe to the current
+/// Streamable HTTP contract so it exercises stateless 2026 behavior.
 fn initialize_body() -> serde_json::Value {
     serde_json::json!({
         "jsonrpc": "2.0",
         "id": 1,
         "method": "initialize",
         "params": {
-            "protocolVersion": "2025-03-26",
+            "protocolVersion": "2026-07-28",
             "capabilities": {},
             "clientInfo": { "name": "lific-doctor", "version": env!("CARGO_PKG_VERSION") }
         }
