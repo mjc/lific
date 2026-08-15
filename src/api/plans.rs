@@ -360,14 +360,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cross_project_plan_issue_link_is_rejected_before_creation() {
-        let app = test_app();
-        let (plan_project_id, _) = seed_project(&app).await;
+    async fn completing_cross_project_linked_step_emits_issue_updated_for_issue_project() {
+        let test = test_app_with_realtime();
+        let (plan_project_id, _) = seed_project(&test.app).await;
         let issue_project = body_json(
             json_post(
-                &app,
+                &test.app,
                 "/api/projects",
-                serde_json::json!({"name": "Issue Project", "identifier": "ISS"}),
+                serde_json::json!({
+                    "name": "Issue Project",
+                    "identifier": "ISS",
+                }),
             )
             .await,
         )
@@ -375,24 +378,73 @@ mod tests {
         let issue_project_id = issue_project["id"].as_i64().unwrap();
         let issue = body_json(
             json_post(
-                &app,
+                &test.app,
                 "/api/issues",
-                serde_json::json!({"project_id": issue_project_id, "title": "Private issue"}),
+                serde_json::json!({
+                    "project_id": issue_project_id,
+                    "title": "Cross-project issue",
+                }),
             )
             .await,
         )
         .await;
-        let response = json_post(
-            &app,
-            "/api/plans",
-            serde_json::json!({
-                "project_id": plan_project_id,
-                "title": "Cross-project plan",
-                "steps": [{"title": "Foreign", "issue_id": issue["id"]}],
-            }),
+        let issue_id = issue["id"].as_i64().unwrap();
+        let plan = body_json(
+            json_post(
+                &test.app,
+                "/api/plans",
+                serde_json::json!({
+                    "project_id": plan_project_id,
+                    "title": "Cross-project plan",
+                    "steps": [{"title": "Complete linked issue", "issue_id": issue_id}],
+                }),
+            )
+            .await,
         )
         .await;
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let plan_id = plan["id"].as_i64().unwrap();
+        let step_id = plan["steps"][0]["id"].as_i64().unwrap();
+        let mut events = test.realtime.subscribe();
+
+        let resp = test
+            .app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/api/plans/{plan_id}/steps/{step_id}"))
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(
+                        serde_json::to_vec(&serde_json::json!({"done": true})).unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let project_event = tokio::time::timeout(std::time::Duration::from_secs(1), events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let axum::extract::ws::Message::Text(project_text) = project_event.message else {
+            panic!("expected text realtime event");
+        };
+        let project_event: serde_json::Value = serde_json::from_str(&project_text).unwrap();
+        assert_eq!(project_event["type"], "project.updated");
+        assert_eq!(project_event["project_id"], plan_project_id);
+
+        let issue_event = tokio::time::timeout(std::time::Duration::from_secs(1), events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let axum::extract::ws::Message::Text(issue_text) = issue_event.message else {
+            panic!("expected text realtime event");
+        };
+        let issue_event: serde_json::Value = serde_json::from_str(&issue_text).unwrap();
+        assert_eq!(issue_event["type"], "issue.updated");
+        assert_eq!(issue_event["project_id"], issue_project_id);
+        assert_eq!(issue_event["issue_id"], issue_id);
     }
 
     #[tokio::test]
