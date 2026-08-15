@@ -284,11 +284,14 @@ fn insert_step_tree(
     parent_step_id: Option<i64>,
     steps: &[CreatePlanStep],
 ) -> Result<(), LificError> {
-    let plan_project_id: i64 = conn.query_row(
-        "SELECT project_id FROM plans WHERE id = ?1",
-        params![plan_id],
-        |row| row.get(0),
-    )?;
+    let plan_project_id: i64 = conn
+        .query_row(
+            "SELECT project_id FROM plans WHERE id = ?1",
+            params![plan_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .ok_or_else(|| LificError::NotFound(format!("plan {plan_id} not found")))?;
     for (pos, step) in steps.iter().enumerate() {
         if let Some(issue_id) = step.issue_id {
             validate_issue_link(conn, plan_project_id, issue_id)?;
@@ -437,11 +440,14 @@ pub fn add_step(
     if let Some(parent) = parent_step_id {
         assert_step_in_plan(conn, plan_id, parent)?;
     }
-    let plan_project_id: i64 = conn.query_row(
-        "SELECT project_id FROM plans WHERE id = ?1",
-        params![plan_id],
-        |row| row.get(0),
-    )?;
+    let plan_project_id: i64 = conn
+        .query_row(
+            "SELECT project_id FROM plans WHERE id = ?1",
+            params![plan_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .ok_or_else(|| LificError::NotFound(format!("plan {plan_id} not found")))?;
     if let Some(issue_id) = issue_id {
         validate_issue_link(conn, plan_project_id, issue_id)?;
     }
@@ -644,14 +650,16 @@ fn validate_issue_link(
     plan_project_id: i64,
     issue_id: i64,
 ) -> Result<(), LificError> {
-    let same_project: Option<i64> = conn
+    let issue_project: Option<i64> = conn
         .query_row(
-            "SELECT 1 FROM issues WHERE id = ?1 AND project_id = ?2",
-            params![issue_id, plan_project_id],
+            "SELECT project_id FROM issues WHERE id = ?1",
+            params![issue_id],
             |row| row.get(0),
         )
         .optional()?;
-    if same_project.is_none() {
+    let issue_project = issue_project
+        .ok_or_else(|| LificError::NotFound(format!("issue {issue_id} not found")))?;
+    if issue_project != plan_project_id {
         return Err(LificError::Forbidden(
             "issue link is outside the plan project".into(),
         ));
@@ -1274,7 +1282,7 @@ mod tests {
         let conn = pool.write().unwrap();
         let plan_project = seed_project(&conn, "PLA");
         let issue_project = seed_project(&conn, "ISS");
-        let foreign_issue = seed_issue(&conn, issue_project, "Private", "todo");
+        let foreign_issue = seed_issue(&conn, issue_project, "Private", Status::Todo);
         let plan = create_plan(
             &conn,
             &CreatePlan {
@@ -1295,6 +1303,28 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, LificError::Forbidden(_)));
+
+        let missing = add_step(
+            &conn,
+            plan.id,
+            None,
+            "missing",
+            "",
+            Some(999_999),
+        )
+        .unwrap_err();
+        assert!(matches!(missing, LificError::NotFound(_)));
+
+        let missing_plan = add_step(
+            &conn,
+            999_999,
+            None,
+            "missing plan",
+            "",
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(missing_plan, LificError::NotFound(_)));
     }
 
     #[test]
