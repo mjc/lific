@@ -10318,7 +10318,7 @@ mod authz_gating_tests {
             )
             .unwrap();
         }
-        let allowed = as_user(&maintainer, || {
+        let still_denied = as_user(&maintainer, || {
             m.update_plan_step(Parameters(UpdatePlanStepInput {
                 plan: "MEM-PLAN-1".into(),
                 step_id: Some(step_id),
@@ -10326,7 +10326,10 @@ mod authz_gating_tests {
                 ..Default::default()
             }))
         });
-        assert!(!is_forbidden(&allowed), "got: {allowed}");
+        assert!(
+            is_forbidden(&still_denied),
+            "cross-project plan links remain forbidden even with access to the issue project: {still_denied}"
+        );
     }
 
     // ── Workspace-level (project-less) pages: admin-only ─────────
