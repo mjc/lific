@@ -323,17 +323,11 @@ pub fn detect_clients(base: &PathBase, scope: Scope) -> Vec<DetectedClient> {
 /// The prompt names the target instance so it's impossible to wire clients to
 /// the wrong one without noticing.
 fn interactive_picker(detected: &[DetectedClient], target: &str) -> Result<Vec<String>, String> {
-    let target = target.terminal_line().to_string();
     let any_installed = detected.iter().any(|c| c.detected);
     let mut ordered: Vec<&DetectedClient> = detected.iter().filter(|c| c.detected).collect();
     ordered.extend(detected.iter().filter(|c| !c.detected));
 
-    let mut prompt = cliclack::multiselect(if any_installed {
-        format!("Which clients should connect to {target}?")
-    } else {
-        format!("No installed clients detected in this scope — pick any to configure for {target}:")
-    })
-    .required(true);
+    let mut prompt = cliclack::multiselect(picker_prompt(any_installed, target)).required(true);
     for c in &ordered {
         prompt = prompt.item(
             c.id.clone(),
@@ -356,6 +350,15 @@ fn interactive_picker(detected: &[DetectedClient], target: &str) -> Result<Vec<S
             format!("selection failed: {e}")
         }
     })
+}
+
+fn picker_prompt(any_installed: bool, target: &str) -> String {
+    let target = target.terminal_line();
+    if any_installed {
+        format!("Which clients should connect to {target}?")
+    } else {
+        format!("No installed clients detected in this scope — pick any to configure for {target}:")
+    }
 }
 
 // ── Transport selection (LIFIC-19) ───────────────────────────
@@ -1122,6 +1125,16 @@ mod tests {
         assert_eq!(target_url(&args, &cfg), "http://127.0.0.1:4000/mcp");
         args.stdio = true;
         assert!(target_url(&args, &cfg).ends_with("lific.db"));
+    }
+
+    #[test]
+    fn picker_prompt_neutralizes_control_sequences_in_target() {
+        let prompt = picker_prompt(true, "https://evil.test\x1b]8;;https://evil\x1b\\\u{202e}");
+        assert_eq!(
+            prompt,
+            "Which clients should connect to https://evil.test^[]8;;https://evil^[\\ ?"
+        );
+        assert!(!prompt.chars().any(char::is_control));
     }
 
     fn base(dir: &std::path::Path) -> PathBase {
