@@ -21,7 +21,7 @@ use std::fmt::{self, Display};
 /// Begin a command session: prints the `┌ <title>` header.
 pub fn intro(title: &str) {
     let _ = cliclack::intro(
-        console::style(format!(" {title} "))
+        console::style(format!(" {} ", title.terminal_line()))
             .on_cyan()
             .black()
             .to_string(),
@@ -30,43 +30,49 @@ pub fn intro(title: &str) {
 
 /// A completed step: `◇ <msg>`.
 pub fn step(msg: impl std::fmt::Display) {
-    let _ = cliclack::log::success(msg);
+    let _ = cliclack::log::success(msg.terminal_line());
 }
 
 /// A neutral informational line: `● <msg>`.
 pub fn info(msg: impl std::fmt::Display) {
-    let _ = cliclack::log::info(msg);
+    let _ = cliclack::log::info(msg.terminal_line());
 }
 
 /// A warning line: `▲ <msg>`.
 pub fn warn(msg: impl std::fmt::Display) {
-    let _ = cliclack::log::warning(msg);
+    let _ = cliclack::log::warning(msg.terminal_line());
 }
 
 /// An error line: `■ <msg>`.
 pub fn error(msg: impl std::fmt::Display) {
-    let _ = cliclack::log::error(msg);
+    let _ = cliclack::log::error(msg.terminal_line());
 }
 
 /// A skipped/dimmed line: `◌ <msg>` (rendered via a plain step with dim text).
 pub fn skipped(msg: impl std::fmt::Display) {
-    let _ = cliclack::log::step(console::style(msg).dim().to_string());
+    let _ = cliclack::log::step(console::style(msg.terminal_line()).dim().to_string());
 }
 
 /// A boxed note block with a title — for content the user must actually read
 /// (API keys, manual snippets, next steps).
 pub fn note(title: impl std::fmt::Display, body: impl std::fmt::Display) {
-    let _ = cliclack::note(title, body);
+    let _ = cliclack::note(title.terminal_line(), body.terminal_block());
 }
 
 /// End the session on a success: `└ <msg>`.
 pub fn outro(msg: impl std::fmt::Display) {
-    let _ = cliclack::outro(msg);
+    let _ = cliclack::outro(msg.terminal_line());
 }
 
 /// End the session on a failure: `└ <msg>` in red.
 pub fn outro_cancel(msg: impl std::fmt::Display) {
-    let _ = cliclack::outro_cancel(msg);
+    let _ = cliclack::outro_cancel(msg.terminal_line());
+}
+
+/// A plain human-readable line for commands that intentionally do not use a
+/// cliclack session.
+pub fn line(msg: impl std::fmt::Display) {
+    println!("{}", msg.terminal_line());
 }
 
 /// Style helper: dim secondary text (paths, hints) consistently.
@@ -77,6 +83,14 @@ pub fn dim(s: impl std::fmt::Display) -> String {
 /// Style helper: emphasize a command the user should run.
 pub fn command(s: impl std::fmt::Display) -> String {
     console::style(s.terminal_line()).cyan().to_string()
+}
+
+pub(crate) fn sanitize_terminal_line(s: &str) -> String {
+    s.terminal_line().to_string()
+}
+
+pub(crate) fn sanitize_terminal_block(s: &str) -> String {
+    s.terminal_block().to_string()
 }
 
 pub(crate) trait TerminalDisplay: Display + Sized {

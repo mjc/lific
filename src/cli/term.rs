@@ -14,6 +14,66 @@
 
 use std::io::IsTerminal;
 
+use crate::cli::ui::TerminalDisplay;
+
+/// Serialize JSON for terminal-visible stdout without changing its parsed value.
+///
+/// Serde escapes C0 controls, but leaves C1 and Unicode formatting controls
+/// literal. Escape those only while they are inside JSON strings; structural
+/// pretty-print whitespace remains valid JSON formatting.
+pub fn json_string<T: serde::Serialize>(value: &T) -> Result<String, serde_json::Error> {
+    let serialized = serde_json::to_string_pretty(value)?;
+    let mut output = String::with_capacity(serialized.len());
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for ch in serialized.chars() {
+        if !in_string {
+            output.push(ch);
+            in_string = ch == '"';
+            continue;
+        }
+
+        if escaped {
+            output.push(ch);
+            escaped = false;
+            continue;
+        }
+
+        match ch {
+            '\\' => {
+                output.push(ch);
+                escaped = true;
+            }
+            '"' => {
+                output.push(ch);
+                in_string = false;
+            }
+            ch if json_terminal_control(ch) => {
+                use std::fmt::Write;
+                write!(output, "\\u{:04x}", ch as u32).expect("String write cannot fail");
+            }
+            _ => output.push(ch),
+        }
+    }
+
+    Ok(output)
+}
+
+fn json_terminal_control(ch: char) -> bool {
+    ch.is_control()
+        || ch == '\u{007f}'
+        || matches!(
+            ch,
+            '\u{061c}'
+                | '\u{200b}'..='\u{200f}'
+                | '\u{2028}'..='\u{202e}'
+                | '\u{2060}'
+                | '\u{2066}'..='\u{206f}'
+                | '\u{feff}'
+        )
+}
+
 /// Whether stdout is connected to an interactive terminal.
 pub fn stdout_is_tty() -> bool {
     std::io::stdout().is_terminal()
@@ -69,7 +129,7 @@ pub fn confirm_inner<R: std::io::BufRead, W: std::io::Write>(
         ));
     }
 
-    let _ = write!(writer, "{prompt} [y/N] ");
+    let _ = write!(writer, "{} [y/N] ", prompt.terminal_line());
     let _ = writer.flush();
 
     let mut line = String::new();
@@ -110,7 +170,7 @@ pub fn prompt_text_inner<R: std::io::BufRead, W: std::io::Write>(
             "interactive input required; re-run with {bypass_flag} to supply it non-interactively"
         ));
     }
-    let _ = write!(writer, "{prompt} ");
+    let _ = write!(writer, "{} ", prompt.terminal_line());
     let _ = writer.flush();
 
     let mut line = String::new();
@@ -127,6 +187,26 @@ pub fn prompt_text_inner<R: std::io::BufRead, W: std::io::Write>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn json_string_escapes_terminal_controls_losslessly() {
+        let value = serde_json::json!({
+            "text": "\u{001b}]52;c;clipboard\u{0007}\u{009b}2J\u{007f}\u{202e}\u{200b}\u{feff}"
+        });
+        let encoded = json_string(&value).unwrap();
+
+        assert!(encoded.contains("\\u009b"));
+        assert!(encoded.contains("\\u007f"));
+        assert!(encoded.contains("\\u202e"));
+        assert!(encoded.contains("\\ufeff"));
+
+        let without_layout = encoded.replace('\n', "");
+        assert!(!without_layout.chars().any(json_terminal_control));
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&encoded).unwrap(),
+            value
+        );
+    }
 
     #[test]
     fn wants_json_explicit_flag_always_wins() {
@@ -157,7 +237,10 @@ mod tests {
             err.contains("--yes"),
             "error should name the bypass flag, got: {err}"
         );
-        assert!(err.contains("interactive"), "error should explain why: {err}");
+        assert!(
+            err.contains("interactive"),
+            "error should explain why: {err}"
+        );
     }
 
     #[test]
@@ -166,6 +249,17 @@ mod tests {
         let mut out: Vec<u8> = Vec::new();
         let ok = confirm_inner("Proceed?", "--yes", true, &mut input, &mut out).unwrap();
         assert!(ok);
+    }
+
+    #[test]
+    fn prompts_neutralize_terminal_controls() {
+        let mut input: &[u8] = b"y\n";
+        let mut out: Vec<u8> = Vec::new();
+        confirm_inner("Delete \u{001b}]52;c;clipboard\u{0007}?", "--yes", true, &mut input, &mut out)
+            .unwrap();
+        let rendered = String::from_utf8(out).unwrap();
+        assert_eq!(rendered, "Delete ^[]52;c;clipboard ? [y/N] ");
+        assert!(!rendered.chars().any(char::is_control));
     }
 
     #[test]
@@ -188,30 +282,49 @@ mod tests {
     #[test]
     fn prompt_text_refuses_without_tty_and_names_bypass_flag() {
         let mut input: &[u8] = b"";
-        let err = prompt_text_inner("What's your name?", "--name", false, &mut input, &mut Vec::new())
-            .expect_err("must refuse when stdin is not a TTY");
+        let err = prompt_text_inner(
+            "What's your name?",
+            "--name",
+            false,
+            &mut input,
+            &mut Vec::new(),
+        )
+        .expect_err("must refuse when stdin is not a TTY");
         assert!(
             err.contains("--name"),
             "error should name the bypass flag, got: {err}"
         );
-        assert!(err.contains("interactive"), "error should explain why: {err}");
+        assert!(
+            err.contains("interactive"),
+            "error should explain why: {err}"
+        );
     }
 
     #[test]
     fn prompt_text_trims_response_on_tty() {
         let mut input: &[u8] = b"  Blake Alston  \n";
-        let value =
-            prompt_text_inner("What's your name?", "--name", true, &mut input, &mut Vec::new())
-                .unwrap();
+        let value = prompt_text_inner(
+            "What's your name?",
+            "--name",
+            true,
+            &mut input,
+            &mut Vec::new(),
+        )
+        .unwrap();
         assert_eq!(value, "Blake Alston");
     }
 
     #[test]
     fn prompt_text_rejects_empty_input() {
         let mut input: &[u8] = b"\n";
-        let err =
-            prompt_text_inner("What's your name?", "--name", true, &mut input, &mut Vec::new())
-                .expect_err("empty input must fail");
+        let err = prompt_text_inner(
+            "What's your name?",
+            "--name",
+            true,
+            &mut input,
+            &mut Vec::new(),
+        )
+        .expect_err("empty input must fail");
         assert!(err.contains("empty"), "error should explain why: {err}");
     }
 }
