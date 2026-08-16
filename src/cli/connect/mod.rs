@@ -644,11 +644,15 @@ pub fn run(
     })?;
 
     // Resolve how per-tool credentials are minted (once — owner selection is
-    // run-wide). Both remote and stdio (LIFIC-18) mint a bot + key per tool;
-    // for stdio the key becomes the `LIFIC_TOKEN` written into the client's
-    // env field. `--oauth` mints nothing, and dry-run is skipped so a preview
-    // never touches the DB.
-    let needs_minting = !args.oauth && !args.dry_run;
+    // run-wide). Stdio only mints when at least one selected client can carry
+    // `LIFIC_TOKEN`; clients without an environment field intentionally run as
+    // the operator and must not create a credential that gets dropped.
+    let needs_minting = !args.oauth
+        && !args.dry_run
+        && (!args.stdio
+            || selected.iter().any(|id| {
+                clients::find_client(id).is_some_and(|spec| spec.stdio_env_key.is_some())
+            }));
     let key_source = if needs_minting {
         // For stdio (LIFIC-18), a bot+key is optional: if the owner can't be
         // resolved unambiguously (no --user on a multi-user box), degrade to a
@@ -770,9 +774,14 @@ fn write_all_clients(
             continue;
         };
 
-        // Mint this client's own key (per-tool). Only when a real remote write
-        // with minting is happening; stdio/oauth/dry-run supply their own.
-        let this_key = match (key_source, manager) {
+        // Mint this client's own key (per-tool). A stdio client without an env
+        // carrier deliberately gets no key and runs as the operator.
+        let client_key_source = if args.stdio && spec.stdio_env_key.is_none() {
+            None
+        } else {
+            key_source
+        };
+        let this_key = match (client_key_source, manager) {
             (Some(source), Some(mgr)) => match mint_for_tool(source, &spec, pool, mgr) {
                 Ok(k) => Some(k),
                 Err(e) => {
@@ -789,7 +798,7 @@ fn write_all_clients(
                 }
             },
             // Dry-run placeholder (Provided) with no manager, or provided --key.
-            _ => match key_source {
+            _ => match client_key_source {
                 Some(KeySource::Provided(k)) => Some(k.clone()),
                 _ => None,
             },
@@ -1363,6 +1372,7 @@ mod tests {
     fn run_writes_project_scope_configs_and_skips_no_project_clients() {
         let dir = tmp();
         let b = base(&dir);
+        std::fs::create_dir_all(&b.project).unwrap();
         let pool = db::open_memory().unwrap();
         let cfg = Config::default();
         // goose has no project path → should be skipped with a warning.
@@ -1462,6 +1472,28 @@ mod tests {
             .unwrap();
         assert!(is_bot, "opencode-solo must be a bot");
         assert_eq!(owner, Some(owner_id), "bot must be owned by the operator");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn run_stdio_without_env_carrier_uses_operator_without_minting() {
+        let dir = tmp();
+        let b = base(&dir);
+        std::fs::create_dir_all(&b.project).unwrap();
+        let pool = db::open_memory().unwrap();
+        seed_user(&pool, "solo", true);
+        let mut cfg = Config::default();
+        cfg.database.path = dir.join("mydb.db");
+        let mut a = args(&["cursor"], Scope::Project);
+        a.stdio = true;
+        a.key = None;
+
+        let result = run(&a, &cfg, &pool, &b).unwrap();
+        assert_eq!(result.outcomes[0].action.as_deref(), Some("created"));
+        assert!(result.outcomes[0].key.is_none());
+        assert_eq!(active_key_count(&pool, "cursor-solo"), 0);
+        let written = std::fs::read_to_string(b.project.join(".cursor/mcp.json")).unwrap();
+        assert!(!written.contains("LIFIC_TOKEN"));
         std::fs::remove_dir_all(&dir).ok();
     }
 
