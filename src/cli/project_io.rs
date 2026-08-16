@@ -40,7 +40,7 @@ pub(crate) fn replace(
     root: &Path,
     path: &Path,
     contents: &[u8],
-    contains_secret: bool,
+    _contains_secret: bool,
 ) -> io::Result<()> {
     let path = contained_path(root, path).or_else(|error| {
         if error.kind() != io::ErrorKind::NotFound {
@@ -56,7 +56,7 @@ pub(crate) fn replace(
         .truncate(true)
         .open(&path)?;
     #[cfg(unix)]
-    if contains_secret {
+    if _contains_secret {
         use std::os::unix::fs::PermissionsExt;
         file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
     }
