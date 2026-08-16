@@ -16,9 +16,16 @@
 //!   `warn`/`error` for problems, `note` for blocks the user must read (keys,
 //!   snippets, next steps), `intro`/`outro` bracketing every session.
 
+use std::fmt::{self, Display};
+
 /// Begin a command session: prints the `┌ <title>` header.
 pub fn intro(title: &str) {
-    let _ = cliclack::intro(console::style(format!(" {title} ")).on_cyan().black().to_string());
+    let _ = cliclack::intro(
+        console::style(format!(" {title} "))
+            .on_cyan()
+            .black()
+            .to_string(),
+    );
 }
 
 /// A completed step: `◇ <msg>`.
@@ -64,10 +71,104 @@ pub fn outro_cancel(msg: impl std::fmt::Display) {
 
 /// Style helper: dim secondary text (paths, hints) consistently.
 pub fn dim(s: impl std::fmt::Display) -> String {
-    console::style(s).dim().to_string()
+    console::style(s.terminal_line()).dim().to_string()
 }
 
 /// Style helper: emphasize a command the user should run.
 pub fn command(s: impl std::fmt::Display) -> String {
-    console::style(s).cyan().to_string()
+    console::style(s.terminal_line()).cyan().to_string()
+}
+
+pub(crate) trait TerminalDisplay: Display + Sized {
+    fn terminal_line(self) -> impl Display {
+        Terminal {
+            value: self,
+            preserve_layout: false,
+        }
+    }
+
+    fn terminal_block(self) -> impl Display {
+        Terminal {
+            value: self,
+            preserve_layout: true,
+        }
+    }
+}
+
+impl<T: Display> TerminalDisplay for T {}
+
+struct Terminal<T> {
+    value: T,
+    preserve_layout: bool,
+}
+
+impl<T: Display> Display for Terminal<T> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let value = if formatter.alternate() {
+            format!("{:#}", self.value)
+        } else {
+            self.value.to_string()
+        };
+        formatter.pad(&sanitize_terminal_text(&value, self.preserve_layout))
+    }
+}
+
+fn sanitize_terminal_text(input: &str, preserve_layout: bool) -> String {
+    let mut output = String::with_capacity(input.len());
+    for ch in input.chars() {
+        match ch {
+            '\n' | '\t' if preserve_layout => output.push(ch),
+            '\x1b' => output.push_str("^["),
+            ch if ch.is_control()
+                || matches!(
+                    ch,
+                    '\u{061c}'
+                        | '\u{200b}'..='\u{200f}'
+                        | '\u{2028}'..='\u{202e}'
+                        | '\u{2060}'
+                        | '\u{2066}'..='\u{206f}'
+                        | '\u{feff}'
+                ) =>
+            {
+                output.push(' ');
+            }
+            _ => output.push(ch),
+        }
+    }
+    output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TerminalDisplay;
+
+    #[test]
+    fn block_controls_are_neutralized_without_flattening_layout() {
+        assert_eq!(
+            "name\x1b[2J\r\x07\u{85}\u{202e}\u{2066}\nnext\tline\x7f"
+                .terminal_block()
+                .to_string(),
+            "name^[[2J     \nnext\tline "
+        );
+    }
+
+    #[test]
+    fn line_controls_cannot_forge_another_status_line() {
+        assert_eq!(
+            "title\n[ok]\tuser\u{061c}\u{200f}\u{2028}\u{206f}"
+                .terminal_line()
+                .to_string(),
+            "title [ok] user    "
+        );
+    }
+
+    #[test]
+    fn line_values_neutralize_osc8_c1_csi_and_backspace() {
+        let rendered = "label\x1b]8;;https://evil\x1b\\click\x1b]8;;\x1b\\\u{009b}2J\u{0008}"
+            .terminal_line()
+            .to_string();
+
+        assert_eq!(rendered, "label^[]8;;https://evil^[\\click^[]8;;^[\\ 2J ");
+        assert!(!rendered.chars().any(char::is_control));
+    }
 }
