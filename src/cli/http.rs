@@ -28,6 +28,7 @@ use crate::links::{IssueLinkContext, MarkdownReference, ResourceUrl};
 use super::{
     Command, CommentAction, ExportAction, FolderAction, IssueAction, LabelAction, ModuleAction,
     PageAction, ProjectAction, owned_labels, render,
+    ui::TerminalDisplay,
 };
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -169,7 +170,7 @@ impl HttpBackend {
     async fn human(&self, command: &Command, value: &Value) -> String {
         match self.render(command, value).await {
             Some(text) => text,
-            None => format!("{}\n", pretty(value)),
+            None => format!("{}\n", pretty(value).terminal_block()),
         }
     }
 
@@ -915,7 +916,7 @@ impl HttpBackend {
         let message = read_error_body(response).await.unwrap_or_default();
         bail!(
             "HTTP backend request failed ({status}): {}",
-            sanitize_error_detail(&error_detail(&message))
+            error_detail(&message).terminal_line()
         );
     }
 
@@ -1022,19 +1023,6 @@ async fn read_error_body(mut response: reqwest::Response) -> Result<String, reqw
         body.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
     }
     Ok(String::from_utf8_lossy(&body).into_owned())
-}
-
-fn sanitize_error_detail(detail: &str) -> String {
-    detail
-        .chars()
-        .map(|character| {
-            if character.is_ascii_control() {
-                ' '
-            } else {
-                character
-            }
-        })
-        .collect()
 }
 
 #[derive(Clone, Copy)]
@@ -1279,7 +1267,7 @@ mod tests {
         ERROR_BODY_LIMIT, HttpBackend, IssueLinkOutput, ResourceKind, error_detail,
         export_filename, find_resource, is_loopback_host, linked_comments, linked_modules,
         linked_resources, models, render, resource_from_object, resource_url, safe_filename,
-        sanitize_error_detail, segment,
+        segment,
     };
     use crate::links::IssueLinkContext;
 
@@ -1848,7 +1836,7 @@ mod tests {
         let error = error.to_string();
 
         assert!(error.starts_with(
-            "HTTP backend request failed (400 Bad Request): invalid page identifier: TST-DOC- [31m"
+            "HTTP backend request failed (400 Bad Request): invalid page identifier: TST-DOC-^[[31m"
         ));
         assert!(!error.chars().any(|character| character.is_ascii_control()));
         fixture.server.abort();
@@ -2051,14 +2039,6 @@ mod tests {
         assert_eq!(
             error_detail(r#"{"message":"access denied"}"#),
             r#"{"message":"access denied"}"#
-        );
-    }
-
-    #[test]
-    fn sanitizes_ascii_control_characters_in_error_details() {
-        assert_eq!(
-            sanitize_error_detail("access\u{1b}[31m denied\n\t"),
-            "access [31m denied  "
         );
     }
 
@@ -2462,11 +2442,14 @@ mod tests {
                 &Command::Project {
                     action: ProjectAction::List,
                 },
-                &json!({"unexpected": true}),
+                &json!({"unexpected": "safe\u{1b}[2J\u{202e}"}),
             )
             .await;
 
-        assert_eq!(rendered, "{\n  \"unexpected\": true\n}\n");
+        assert_eq!(
+            rendered,
+            "{\n  \"unexpected\": \"safe\\u001b[2J \"\n}\n"
+        );
     }
 
     #[test]
