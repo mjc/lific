@@ -88,7 +88,7 @@ fn nearest_existing_parent(path: &Path) -> io::Result<&Path> {
     Ok(current)
 }
 
-fn open_checked(path: &Path, write: bool, contains_secret: bool) -> io::Result<std::fs::File> {
+fn open_checked(path: &Path, write: bool, _contains_secret: bool) -> io::Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
     options.read(!write).write(write).create(write);
     #[cfg(unix)]
@@ -97,7 +97,7 @@ fn open_checked(path: &Path, write: bool, contains_secret: bool) -> io::Result<s
         let flags = libc::O_NOFOLLOW | if write { 0 } else { libc::O_NONBLOCK };
         options.custom_flags(flags);
         if write {
-            options.mode(if contains_secret { 0o600 } else { 0o666 });
+            options.mode(if _contains_secret { 0o600 } else { 0o666 });
         }
     }
     #[cfg(not(unix))]
@@ -122,7 +122,7 @@ fn open_checked(path: &Path, write: bool, contains_secret: bool) -> io::Result<s
                 "project config must not be hard-linked",
             ));
         }
-        if write && contains_secret {
+        if write && _contains_secret {
             use std::os::unix::fs::PermissionsExt;
             file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
         }
