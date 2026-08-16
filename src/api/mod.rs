@@ -2253,7 +2253,7 @@ mod authz_gating_tests {
         let (url, server) = websocket_test_server(db, realtime).await;
         let mut sockets = Vec::new();
 
-        for _ in 0..16 {
+        for _ in 0..crate::realtime::MAX_SOCKETS_PER_USER {
             let (mut socket, _) = tokio_tungstenite::connect_async(websocket_request(&url, &token))
                 .await
                 .unwrap();
@@ -2345,7 +2345,7 @@ mod authz_gating_tests {
             .await
             .unwrap();
 
-        for _ in 0..65 {
+        for _ in 0..=crate::realtime::MAX_CLIENT_MESSAGES_PER_WINDOW {
             socket.send(Message::Pong(Vec::new().into())).await.unwrap();
         }
 
