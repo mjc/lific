@@ -75,6 +75,11 @@ pub fn line(msg: impl std::fmt::Display) {
     println!("{}", msg.terminal_line());
 }
 
+/// A plain sanitized human-readable line for diagnostics that belong on stderr.
+pub fn stderr_line(msg: impl std::fmt::Display) {
+    eprintln!("{}", msg.terminal_line());
+}
+
 /// Style helper: dim secondary text (paths, hints) consistently.
 pub fn dim(s: impl std::fmt::Display) -> String {
     console::style(s.terminal_line()).dim().to_string()

@@ -16,31 +16,43 @@ mod links;
 mod mcp;
 mod oauth;
 mod ratelimit;
-mod resolve_caller;
 mod realtime;
+mod resolve_caller;
 mod server;
 mod storage;
 
 use clap::{CommandFactory, Parser};
-use cli::{
-    BackendKind, Cli, Command, ServiceAction,
-};
+use cli::{BackendKind, Cli, Command, ServiceAction};
+use cli::ui::TerminalDisplay;
 use config::Config;
 
 // Commands that operate directly on the database (no server required)
 fn is_crud_command(cmd: &Command) -> bool {
-    matches!(cmd,
-        Command::Issue { .. } | Command::Project { .. } | Command::Page { .. } |
-        Command::Export { .. } |
-        Command::Search { .. } | Command::Comment { .. } | Command::Module { .. } |
-        Command::Label { .. } | Command::Folder { .. }
+    matches!(
+        cmd,
+        Command::Issue { .. }
+            | Command::Project { .. }
+            | Command::Page { .. }
+            | Command::Export { .. }
+            | Command::Search { .. }
+            | Command::Comment { .. }
+            | Command::Module { .. }
+            | Command::Label { .. }
+            | Command::Folder { .. }
     )
 }
 use rmcp::ServiceExt;
 use tracing::info;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() {
+    if let Err(error) = run().await {
+        eprintln!("{}", error.to_string().terminal_line());
+        std::process::exit(1);
+    }
+}
+
+async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     // Rust ignores SIGPIPE process-wide, which makes println!/stdout writes
@@ -82,15 +94,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .into(),
             );
         }
-        let url = http_backend_url(
-            cli.url.as_deref(),
-            cfg.server.public_url.as_deref(),
-            &cfg,
-        );
-        let api_key = cli::resolve_http_credential(
-            cli.api_key.as_deref(),
-            || cli::credentials::load(&url),
-        )?;
+        let url = http_backend_url(cli.url.as_deref(), cfg.server.public_url.as_deref(), &cfg);
+        let api_key =
+            cli::resolve_http_credential(cli.api_key.as_deref(), || cli::credentials::load(&url))?;
         let json = cli::term::wants_json(cli.json);
         return cli::http::run(&cli.command, &url, api_key.as_deref(), json)
             .await
@@ -152,7 +158,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "attachment_count": m.attachment_count,
                     "attachment_bytes": m.attachment_bytes,
                 });
-                println!("{}", serde_json::to_string_pretty(&out_json)?);
+                println!("{}", cli::term::json_string(&out_json)?);
             } else {
                 use cli::ui;
                 ui::step(format!(
@@ -175,11 +181,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let json = cli::term::wants_json(cli.json);
             // Best-effort warning: a hot WAL suggests the server is still up.
             if dump::server_maybe_running(&cfg.database.path) {
-                eprintln!(
+                cli::ui::stderr_line(format_args!(
                     "warning: a hot -wal file is present next to {} — is the server still \
                      running? Stop it before restoring.",
                     cfg.database.path.display()
-                );
+                ));
             }
             let result = dump::run_restore(&archive, &cfg.database.path, force)
                 .map_err(|e| -> Box<dyn std::error::Error> { e.to_string().into() })?;
@@ -196,7 +202,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .as_ref()
                         .map(|p| p.display().to_string()),
                 });
-                println!("{}", serde_json::to_string_pretty(&out_json)?);
+                println!("{}", cli::term::json_string(&out_json)?);
             } else {
                 use cli::ui;
                 ui::intro("lific restore");
@@ -379,9 +385,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "path": target.display().to_string(),
                     "action": action.as_str(),
                 });
-                println!("{}", serde_json::to_string_pretty(&out)?);
+                println!("{}", cli::term::json_string(&out)?);
             } else {
-                println!("AGENTS.md {}: {}", action.as_str(), target.display());
+                cli::ui::line(format!(
+                    "AGENTS.md {}: {}",
+                    action.as_str(),
+                    target.display()
+                ));
             }
             return Ok(());
         }
@@ -460,11 +470,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         // CRUD commands and Completion are handled before this match
-        Command::Completion { .. } |
-        Command::Issue { .. } | Command::Project { .. } | Command::Page { .. } |
-        Command::Export { .. } |
-        Command::Search { .. } | Command::Comment { .. } | Command::Module { .. } |
-        Command::Label { .. } | Command::Folder { .. } => unreachable!(),
+        Command::Completion { .. }
+        | Command::Issue { .. }
+        | Command::Project { .. }
+        | Command::Page { .. }
+        | Command::Export { .. }
+        | Command::Search { .. }
+        | Command::Comment { .. }
+        | Command::Module { .. }
+        | Command::Label { .. }
+        | Command::Folder { .. } => unreachable!(),
     }
 
     Ok(())
@@ -560,7 +575,9 @@ fn load_config_for_init(
 /// explicit `--auth-mode` flag (non-interactive); otherwise, on a TTY, shows
 /// the interactive menu. Refuses (rather than hangs) off a TTY, matching
 /// `prompt_text`/`confirm`, and names the bypass flag.
-fn resolve_auth_mode(flag: &Option<String>) -> Result<config::AuthMode, Box<dyn std::error::Error>> {
+fn resolve_auth_mode(
+    flag: &Option<String>,
+) -> Result<config::AuthMode, Box<dyn std::error::Error>> {
     if let Some(value) = flag {
         return config::AuthMode::parse(value).ok_or_else(|| {
             format!("invalid --auth-mode '{value}': expected login-free or passwords").into()
@@ -584,13 +601,15 @@ fn resolve_auth_mode(flag: &Option<String>) -> Result<config::AuthMode, Box<dyn 
             "Passwords",
             "set a password and sign in on the web",
         );
-    let mode = prompt.interact().map_err(|e| -> Box<dyn std::error::Error> {
-        if e.kind() == std::io::ErrorKind::Interrupted {
-            "cancelled".into()
-        } else {
-            format!("auth-mode selection failed: {e}").into()
-        }
-    })?;
+    let mode = prompt
+        .interact()
+        .map_err(|e| -> Box<dyn std::error::Error> {
+            if e.kind() == std::io::ErrorKind::Interrupted {
+                "cancelled".into()
+            } else {
+                format!("auth-mode selection failed: {e}").into()
+            }
+        })?;
     if mode == config::AuthMode::LoginFree
         && !cli::term::confirm(
             &format!("{}\n\nProceed?", config::login_free_caution()),
@@ -768,8 +787,7 @@ async fn cmd_init(
                         // port while our unit crash-loops on AddrInUse), and
                         // silence alone is ambiguous. Cross-check the unit's
                         // own active state to say something precise.
-                        let active =
-                            cli::service::status(mgr).map(|s| s.active).unwrap_or(false);
+                        let active = cli::service::status(mgr).map(|s| s.active).unwrap_or(false);
                         match (healthy, active) {
                             (true, true) => {}
                             (true, false) => {
@@ -830,7 +848,7 @@ async fn cmd_init(
                 "error": service_error,
             },
         });
-        println!("{}", serde_json::to_string_pretty(&out)?);
+        println!("{}", cli::term::json_string(&out)?);
         return Ok(());
     }
 
@@ -839,7 +857,10 @@ async fn cmd_init(
     } else {
         ui::step(format!("Using existing {}", config_path.display()));
     }
-    ui::step(format!("Database ready {}", ui::dim(cfg.database.path.display())));
+    ui::step(format!(
+        "Database ready {}",
+        ui::dim(cfg.database.path.display())
+    ));
 
     if let Some(ref admin) = created_admin {
         ui::step(format!(
@@ -922,9 +943,11 @@ fn cmd_service(
     use cli::ui;
     let json = cli::term::wants_json(json_flag);
     let Some(mgr) = cli::service::detect() else {
-        return Err("no supported service manager found (needs a systemd user session on \
+        return Err(
+            "no supported service manager found (needs a systemd user session on \
                     Linux, or launchd on macOS)"
-            .into());
+                .into(),
+        );
     };
     match action {
         ServiceAction::Install => {
@@ -949,7 +972,7 @@ fn cmd_service(
             let plan = cli::service::ServicePlan::for_config_file(&config_path)?;
             let report = cli::service::install(mgr, &plan)?;
             if json {
-                println!("{}", serde_json::to_string_pretty(&report)?);
+                println!("{}", cli::term::json_string(&report)?);
             } else {
                 ui::intro("lific service install");
                 ui::step(format!(
@@ -963,7 +986,10 @@ fn cmd_service(
                          when you log out. Run it manually to fix that.",
                     );
                 }
-                ui::outro(format!("Logs: {}", ui::command(cli::service::logs_hint(mgr))));
+                ui::outro(format!(
+                    "Logs: {}",
+                    ui::command(cli::service::logs_hint(mgr))
+                ));
             }
         }
         ServiceAction::Uninstall => {
@@ -971,18 +997,27 @@ fn cmd_service(
             if json {
                 println!(
                     "{}",
-                    serde_json::json!({ "uninstalled": true, "definition": removed })
+                    cli::term::json_string(&serde_json::json!({
+                        "uninstalled": true,
+                        "definition": removed,
+                    }))?
                 );
             } else {
                 ui::intro("lific service uninstall");
-                ui::step(format!("Service stopped and uninstalled {}", ui::dim(&removed)));
-                ui::outro(format!("Reinstall anytime with {}", ui::command("lific service install")));
+                ui::step(format!(
+                    "Service stopped and uninstalled {}",
+                    ui::dim(&removed)
+                ));
+                ui::outro(format!(
+                    "Reinstall anytime with {}",
+                    ui::command("lific service install")
+                ));
             }
         }
         ServiceAction::Status => {
             let s = cli::service::status(mgr)?;
             if json {
-                println!("{}", serde_json::to_string_pretty(&s)?);
+                println!("{}", cli::term::json_string(&s)?);
             } else if s.active {
                 ui::step(format!(
                     "Service is running ({}) — {}",
@@ -1008,7 +1043,10 @@ fn cmd_service(
         ServiceAction::Stop => {
             cli::service::stop(mgr)?;
             if json {
-                println!("{}", serde_json::json!({ "stopped": true }));
+                println!(
+                    "{}",
+                    cli::term::json_string(&serde_json::json!({ "stopped": true }))?
+                );
             } else {
                 ui::step(format!(
                     "Service stopped {}",
@@ -1019,9 +1057,15 @@ fn cmd_service(
         ServiceAction::Restart => {
             cli::service::restart(mgr)?;
             if json {
-                println!("{}", serde_json::json!({ "restarted": true }));
+                println!(
+                    "{}",
+                    cli::term::json_string(&serde_json::json!({ "restarted": true }))?
+                );
             } else {
-                ui::step(format!("Service restarted — {}", ui::command(local_url(cfg))));
+                ui::step(format!(
+                    "Service restarted — {}",
+                    ui::command(local_url(cfg))
+                ));
             }
         }
     }
@@ -1029,7 +1073,7 @@ fn cmd_service(
 }
 #[cfg(test)]
 mod init_target_tests {
-    use super::{auth, cmd_init, resolve_init_target, Config};
+    use super::{Config, auth, cmd_init, resolve_init_target};
     use crate::db;
     use std::path::{Path, PathBuf};
 
@@ -1046,7 +1090,10 @@ mod init_target_tests {
     fn bare_init_targets_os_dirs() {
         let (config, db) = resolve_init_target(None, false, false, os_default());
         assert_eq!(config, Path::new("/home/u/.config/lific/lific.toml"));
-        assert_eq!(db.as_deref(), Some(Path::new("/home/u/.local/share/lific/lific.db")));
+        assert_eq!(
+            db.as_deref(),
+            Some(Path::new("/home/u/.local/share/lific/lific.db"))
+        );
     }
 
     #[test]
@@ -1188,7 +1235,8 @@ mod init_target_tests {
             .unwrap();
         assert_eq!(out["admin"], serde_json::json!("blake"));
         assert_eq!(
-            out["keys"], serde_json::json!(false),
+            out["keys"],
+            serde_json::json!(false),
             "a human operator exists, so no unbound default key is minted"
         );
     }
@@ -1204,11 +1252,17 @@ mod init_target_tests {
         assert_eq!(first["admin"], serde_json::json!("blake"));
 
         // Second run with a different name must NOT create a second admin.
-        let second = run_init(&dir, Some("Someone Else"), Some("passwords"), Some("hunter22!"))
-            .await
-            .unwrap();
+        let second = run_init(
+            &dir,
+            Some("Someone Else"),
+            Some("passwords"),
+            Some("hunter22!"),
+        )
+        .await
+        .unwrap();
         assert_eq!(
-            second["admin"], serde_json::json!("blake"),
+            second["admin"],
+            serde_json::json!("blake"),
             "existing instance keeps its first admin"
         );
     }
@@ -1266,7 +1320,7 @@ mod init_target_tests {
 
 #[cfg(test)]
 mod http_backend_url_tests {
-    use super::{http_backend_url, Config};
+    use super::{Config, http_backend_url};
 
     #[test]
     fn maps_bind_any_hosts_to_loopback() {
@@ -1274,10 +1328,7 @@ mod http_backend_url_tests {
         cfg.server.host = "0.0.0.0".into();
         cfg.server.port = 4567;
 
-        assert_eq!(
-            http_backend_url(None, None, &cfg),
-            "http://127.0.0.1:4567"
-        );
+        assert_eq!(http_backend_url(None, None, &cfg), "http://127.0.0.1:4567");
     }
 
     #[test]

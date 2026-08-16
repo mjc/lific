@@ -81,7 +81,7 @@ impl FileStore {
             // Tighten the parent dir to 0700 (best-effort; only meaningful on unix).
             set_dir_private(parent);
         }
-        let json = serde_json::to_string_pretty(map).map_err(std::io::Error::other)?;
+        let json = crate::cli::term::json_string(map).map_err(std::io::Error::other)?;
         std::fs::write(&self.path, json)?;
         set_file_private(&self.path);
         Ok(())
@@ -148,11 +148,11 @@ pub fn store(base_url: &str, token: &str) -> Result<(), String> {
             let store = FileStore::new(
                 default_file_path().ok_or_else(|| "cannot resolve config dir".to_string())?,
             );
-            eprintln!(
+            crate::cli::ui::stderr_line(format_args!(
                 "warning: OS keyring unavailable ({e}); storing token in PLAINTEXT at {} (0600). \
                  Set up a Secret Service/Keychain to secure it, or use {TOKEN_ENV} to avoid on-disk storage.",
                 store.path.display()
-            );
+            ));
             store
                 .store(&key, token)
                 .map_err(|e| format!("failed to write credentials file: {e}"))
@@ -365,7 +365,9 @@ mod tests {
     fn env_var_takes_precedence_over_file() {
         let _lock = ENV_LOCK.lock().unwrap();
         let (store, _g) = tmp_store();
-        store.store(&normalize_base_url("http://envtest"), "file-tok").unwrap();
+        store
+            .store(&normalize_base_url("http://envtest"), "file-tok")
+            .unwrap();
 
         // With env set, load() must return the env token regardless of file.
         // SAFETY: guarded by ENV_LOCK; restored below.

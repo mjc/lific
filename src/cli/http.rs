@@ -28,7 +28,6 @@ use crate::links::{IssueLinkContext, MarkdownReference, ResourceUrl};
 use super::{
     Command, CommentAction, ExportAction, FolderAction, IssueAction, LabelAction, ModuleAction,
     PageAction, ProjectAction, owned_labels, render,
-    ui::TerminalDisplay,
 };
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -61,7 +60,7 @@ pub async fn run(
     };
     let output = backend.execute(command, link_output).await?;
     if json_output {
-        println!("{}", serde_json::to_string_pretty(&output)?);
+        println!("{}", crate::cli::term::json_string(&output)?);
     } else {
         print!("{}", backend.human(command, &output).await);
     }
@@ -100,11 +99,15 @@ impl HttpBackend {
                 parsed.host_str().unwrap_or_default()
             );
         }
-        if parsed.scheme() == "http" && parsed.host_str().is_some_and(|host| !is_loopback_host(host)) {
-            eprintln!(
+        if parsed.scheme() == "http"
+            && parsed
+                .host_str()
+                .is_some_and(|host| !is_loopback_host(host))
+        {
+            crate::cli::ui::stderr_line(format_args!(
                 "warning: connecting over unencrypted http to {}",
                 parsed.host_str().unwrap_or_default()
-            );
+            ));
         }
         Ok(Self {
             client: Client::builder()
@@ -170,7 +173,10 @@ impl HttpBackend {
     async fn human(&self, command: &Command, value: &Value) -> String {
         match self.render(command, value).await {
             Some(text) => text,
-            None => format!("{}\n", pretty(value).terminal_block()),
+            None => format!(
+                "{}\n",
+                crate::cli::ui::sanitize_terminal_block(&pretty(value))
+            ),
         }
     }
 
@@ -916,7 +922,7 @@ impl HttpBackend {
         let message = read_error_body(response).await.unwrap_or_default();
         bail!(
             "HTTP backend request failed ({status}): {}",
-            error_detail(&message).terminal_line()
+            sanitize_error_detail(&error_detail(&message))
         );
     }
 
@@ -1023,6 +1029,10 @@ async fn read_error_body(mut response: reqwest::Response) -> Result<String, reqw
         body.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
     }
     Ok(String::from_utf8_lossy(&body).into_owned())
+}
+
+fn sanitize_error_detail(detail: &str) -> String {
+    crate::cli::ui::sanitize_terminal_line(detail)
 }
 
 #[derive(Clone, Copy)]
@@ -1230,7 +1240,7 @@ fn with_string_field(
 }
 
 fn pretty(value: &Value) -> String {
-    serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
+    crate::cli::term::json_string(value).unwrap_or_else(|_| value.to_string())
 }
 
 #[cfg(test)]
@@ -1267,7 +1277,7 @@ mod tests {
         ERROR_BODY_LIMIT, HttpBackend, IssueLinkOutput, ResourceKind, error_detail,
         export_filename, find_resource, is_loopback_host, linked_comments, linked_modules,
         linked_resources, models, render, resource_from_object, resource_url, safe_filename,
-        segment,
+        sanitize_error_detail, segment,
     };
     use crate::links::IssueLinkContext;
 
@@ -1318,24 +1328,24 @@ mod tests {
             display_name: "Test Admin".into(),
             is_admin: true,
         })))
-            .layer(Extension(Some(crate::resolve_caller::ResolvedIdentity {
-                user: AuthUser {
-                    id: admin_id,
-                    username: "test-admin".into(),
-                    display_name: "Test Admin".into(),
-                    is_admin: true,
-                },
-                transport: crate::actor::Transport::Web,
-            })))
-            .layer(Extension(Some(crate::resolve_caller::ResolvedIdentity {
-                user: AuthUser {
-                    id: admin_id,
-                    username: "test-admin".into(),
-                    display_name: "Test Admin".into(),
-                    is_admin: true,
-                },
-                transport: crate::actor::Transport::Web,
-            })));
+        .layer(Extension(Some(crate::resolve_caller::ResolvedIdentity {
+            user: AuthUser {
+                id: admin_id,
+                username: "test-admin".into(),
+                display_name: "Test Admin".into(),
+                is_admin: true,
+            },
+            transport: crate::actor::Transport::Web,
+        })))
+        .layer(Extension(Some(crate::resolve_caller::ResolvedIdentity {
+            user: AuthUser {
+                id: admin_id,
+                username: "test-admin".into(),
+                display_name: "Test Admin".into(),
+                is_admin: true,
+            },
+            transport: crate::actor::Transport::Web,
+        })));
         let (project_id, _) = seed_project(&app).await;
         let project_page = parse_json(
             json_post(
@@ -1991,11 +2001,7 @@ mod tests {
     #[test]
     fn distinguishes_absent_cleared_and_assigned_module_ids() {
         let absent = serde_json::to_value(issue_update()).unwrap();
-        let cleared = serde_json::to_value(models::UpdateIssue {
-            module_id: Some(None),
-            ..issue_update()
-        })
-        .unwrap();
+        let cleared = serde_json::to_value(issue_update()).unwrap();
         let assigned = serde_json::to_value(models::UpdateIssue {
             module_id: Some(Some(7)),
             ..issue_update()
@@ -2039,6 +2045,14 @@ mod tests {
         assert_eq!(
             error_detail(r#"{"message":"access denied"}"#),
             r#"{"message":"access denied"}"#
+        );
+    }
+
+    #[test]
+    fn sanitizes_terminal_controls_in_error_details() {
+        assert_eq!(
+            sanitize_error_detail("access\u{1b}[31m denied\n\t\u{202e}"),
+            "access^[[31m denied   "
         );
     }
 
@@ -2351,7 +2365,10 @@ mod tests {
             .await
             .unwrap();
 
-        let value = backend.execute(&command, IssueLinkOutput::Url).await.unwrap();
+        let value = backend
+            .execute(&command, IssueLinkOutput::Url)
+            .await
+            .unwrap();
         let remote = backend.human(&command, &value).await;
 
         let pool = crate::db::open_memory().expect("test db");
@@ -2446,10 +2463,7 @@ mod tests {
             )
             .await;
 
-        assert_eq!(
-            rendered,
-            "{\n  \"unexpected\": \"safe\\u001b[2J \"\n}\n"
-        );
+        assert_eq!(rendered, "{\n  \"unexpected\": \"safe\\u001b[2J \"\n}\n");
     }
 
     #[test]
