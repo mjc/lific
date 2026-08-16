@@ -248,7 +248,7 @@ lific connect [--client <CLIENT>]... [--scope <SCOPE>] [--stdio] [--oauth] [--ur
 
 - `--client <CLIENT>` selects a client. Repeat the flag to select multiple clients.
 - `--scope <SCOPE>` selects `global` or `project`. The default is `global`.
-- `--stdio` writes a local MCP configuration that runs `lific --db <PATH> mcp`. When `--key` is omitted, it mints a per-tool bot and key and writes the key into the entry's environment as `LIFIC_TOKEN`; with `--key`, it reuses the provided key.
+- `--stdio` writes a local MCP configuration that runs `lific --db <PATH> mcp`. It mints a per-tool bot and key and writes the key into the entry's environment as `LIFIC_TOKEN`.
 - `--oauth` writes a remote configuration without an authorization header. The client performs its own OAuth flow. It conflicts with `--stdio` and `--key`.
 - `--url <URL>` overrides the remote MCP URL. The default uses `server.public_url` with `/mcp`, or `http://127.0.0.1:<port>/mcp`.
 - `--key <API_KEY>` writes this API key instead of creating connection keys.

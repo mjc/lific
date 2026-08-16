@@ -29,7 +29,6 @@ use crate::config::Config;
 
 /// The device-code grant type string (RFC 8628).
 const DEVICE_CODE_GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
-const MAX_OAUTH_RESPONSE_BYTES: usize = 64 * 1024;
 
 /// Resolve the base URL: explicit `--url` wins, else `server.public_url`, else
 /// `http://127.0.0.1:<port>`.
@@ -196,11 +195,19 @@ impl DeviceFlow for HttpDeviceFlow {
             .form(&form)
             .send()
             .map_err(|e| format!("token poll failed: {e}"))?;
-        let status = resp.status().as_u16();
-        let body = resp
-            .bytes()
-            .map_err(|e| format!("token poll response failed (HTTP {status}): {e}"))?;
-        parse_poll_response(status, &body)
+        let status = resp.status();
+        let body: serde_json::Value = resp.json().unwrap_or(serde_json::json!({}));
+        if status.is_success() {
+            let token = body
+                .get("access_token")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "token response missing access_token".to_string())?;
+            return Ok(PollSignal::Terminal(PollOutcome::Approved(
+                token.to_string(),
+            )));
+        }
+        let err = body.get("error").and_then(|v| v.as_str()).unwrap_or("");
+        Ok(classify_poll_error(err))
     }
 
     fn revoke(&self, token: &str) -> Result<(), String> {
@@ -216,27 +223,6 @@ impl DeviceFlow for HttpDeviceFlow {
             .map_err(|e| format!("revoke request failed: {e}"))?;
         Ok(())
     }
-}
-
-fn parse_poll_response(status: u16, body: &[u8]) -> Result<PollSignal, String> {
-    if body.len() > MAX_OAUTH_RESPONSE_BYTES {
-        return Err(format!(
-            "token poll failed (HTTP {status}): response exceeds {MAX_OAUTH_RESPONSE_BYTES} bytes"
-        ));
-    }
-    let body: serde_json::Value = serde_json::from_slice(body)
-        .map_err(|e| format!("token poll failed (HTTP {status}): invalid JSON response: {e}"))?;
-    if (200..300).contains(&status) {
-        let token = body
-            .get("access_token")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| "token response missing access_token".to_string())?;
-        return Ok(PollSignal::Terminal(PollOutcome::Approved(
-            token.to_string(),
-        )));
-    }
-    let err = body.get("error").and_then(|v| v.as_str()).unwrap_or("");
-    Ok(classify_poll_error(err))
 }
 
 /// Map an RFC 8628 §3.5 `error` code to a poll signal.
@@ -442,20 +428,6 @@ mod tests {
             classify_poll_error("invalid_grant"),
             PollSignal::Terminal(PollOutcome::Expired)
         );
-    }
-
-    #[test]
-    fn malformed_token_response_reports_http_status() {
-        let error = parse_poll_response(502, b"not-json").unwrap_err();
-        assert!(error.contains("HTTP 502"), "{error}");
-        assert!(error.contains("invalid JSON response"), "{error}");
-    }
-
-    #[test]
-    fn oversized_token_response_is_rejected_before_parsing() {
-        let body = vec![b' '; MAX_OAUTH_RESPONSE_BYTES + 1];
-        let error = parse_poll_response(500, &body).unwrap_err();
-        assert!(error.contains("exceeds"), "{error}");
     }
 
     #[test]

@@ -44,14 +44,6 @@ fn is_crud_command(cmd: &Command) -> bool {
 use rmcp::ServiceExt;
 use tracing::info;
 
-fn trusted_connect_source(
-    explicit_config: bool,
-    explicit_db: bool,
-    discovered_config: bool,
-) -> bool {
-    explicit_config || explicit_db || discovered_config
-}
-
 #[tokio::main]
 async fn main() {
     if let Err(error) = run().await {
@@ -88,7 +80,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // Load config (CLI flags override config values). A malformed config is
     // fatal: booting on defaults would silently widen the instance.
-    let discovered_config = Config::discover_path();
     let mut cfg = Config::load(cli.config.as_deref())?;
 
     // CLI overrides
@@ -324,18 +315,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             dry_run,
             skip_agents,
         } => {
-            if !trusted_connect_source(
-                cli.config.is_some(),
-                cli.db.is_some(),
-                discovered_config.is_some(),
-            ) {
-                return Err(
-                    "refusing to connect against the fallback ./lific.db with no discovered \
-                     configuration; pass --config or --db, or run from an initialized \
-                     instance with lific.toml"
-                        .into(),
-                );
-            }
             let json = cli::term::wants_json(cli.json);
             let scope = match scope.as_str() {
                 "global" => cli::connect::clients::Scope::Global,
@@ -438,7 +417,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     tracing_subscriber::EnvFilter::try_from_default_env()
                         .unwrap_or_else(|_| format!("lific={}", cfg.log.level).into()),
                 )
-                .with_writer(cli::term::sanitized_stderr())
+                .with_writer(std::io::stderr)
                 .init();
 
             let pool = db::open(&cfg.database.path)?;
@@ -884,15 +863,9 @@ async fn cmd_init(
     ));
 
     if let Some(ref admin) = created_admin {
-        let mode = if cfg.auth.required {
-            "password mode"
-        } else {
-            "login-free mode"
-        };
         ui::step(format!(
-            "First operator {} created — {} is on",
-            ui::command(&admin.display_name),
-            mode
+            "First operator {} created — passwordless mode is on",
+            ui::command(&admin.display_name)
         ));
     }
 
@@ -939,29 +912,15 @@ async fn cmd_init(
         ));
     }
 
-    let next_steps = if let Some(ref admin) = created_admin {
-        let sign_in = if cfg.auth.required {
-            format!(
-                "Open {url} and sign in as {}",
-                ui::command(&admin.display_name)
-            )
-        } else {
-            format!("Open {url}; the browser signs you in automatically")
-        };
-        format!(
-            "1. {sign_in}\n2. {}   {}",
-            ui::command("lific connect"),
-            ui::dim("# wire up your AI tools")
-        )
-    } else {
+    ui::note(
+        "Next steps",
         format!(
             "1. Open {url} and create your account\n2. {}\n3. {}   {}",
             ui::command("lific user promote --username <you>"),
             ui::command("lific connect"),
-            ui::dim("# wire up your AI tools")
-        )
-    };
-    ui::note("Next steps", next_steps);
+            ui::dim("# wire up your AI tools"),
+        ),
+    );
 
     let mut outro_msg = format!("Verify anytime with {}", ui::command("lific doctor"));
     if service_report.is_some() {
@@ -1114,7 +1073,7 @@ fn cmd_service(
 }
 #[cfg(test)]
 mod init_target_tests {
-    use super::{Config, auth, cmd_init, resolve_init_target, trusted_connect_source};
+    use super::{Config, auth, cmd_init, resolve_init_target};
     use crate::db;
     use std::path::{Path, PathBuf};
 
@@ -1163,14 +1122,6 @@ mod init_target_tests {
         );
         assert_eq!(config, Path::new("/srv/lific/lific.toml"));
         assert_eq!(db, None);
-    }
-
-    #[test]
-    fn connect_rejects_fallback_database_without_config() {
-        assert!(!trusted_connect_source(false, false, false));
-        assert!(trusted_connect_source(true, false, false));
-        assert!(trusted_connect_source(false, true, false));
-        assert!(trusted_connect_source(false, false, true));
     }
 
     #[test]

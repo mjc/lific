@@ -9,7 +9,6 @@ pub mod instance;
 pub mod key;
 pub mod login;
 pub mod member;
-pub(crate) mod project_io;
 pub mod render;
 pub mod service;
 pub mod term;

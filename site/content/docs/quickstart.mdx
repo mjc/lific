@@ -27,8 +27,6 @@ lific init --no-service --auth-mode login-free --name "Your Name"
 lific init --no-service --auth-mode passwords --name "Your Name" --password "<PASSWORD>"
 ```
 
-The interactive password prompt is the default and avoids exposing the password in process listings or shell history. Use `--password` only when a script requires it, and protect the command and its logs accordingly.
-
 Without `--here` or `--config`, `lific init` uses operating system configuration and data directories. On Linux, it writes the configuration file to `~/.config/lific/lific.toml` and the database to `~/.local/share/lific/lific.db`. On Windows, it writes the configuration file to `%APPDATA%\lific\lific.toml` and the database to `%LOCALAPPDATA%\lific\lific.db`. [Windows](/docs/windows) has a full walkthrough for that platform.
 
 Use `--here` to create a directory-local instance with `./lific.toml` and `./lific.db`.

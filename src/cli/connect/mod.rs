@@ -644,15 +644,11 @@ pub fn run(
     })?;
 
     // Resolve how per-tool credentials are minted (once — owner selection is
-    // run-wide). Stdio only mints when at least one selected client can carry
-    // `LIFIC_TOKEN`; clients without an environment field intentionally run as
-    // the operator and must not create a credential that gets dropped.
-    let needs_minting = !args.oauth
-        && !args.dry_run
-        && (!args.stdio
-            || selected.iter().any(|id| {
-                clients::find_client(id).is_some_and(|spec| spec.stdio_env_key.is_some())
-            }));
+    // run-wide). Both remote and stdio (LIFIC-18) mint a bot + key per tool;
+    // for stdio the key becomes the `LIFIC_TOKEN` written into the client's
+    // env field. `--oauth` mints nothing, and dry-run is skipped so a preview
+    // never touches the DB.
+    let needs_minting = !args.oauth && !args.dry_run;
     let key_source = if needs_minting {
         // For stdio (LIFIC-18), a bot+key is optional: if the owner can't be
         // resolved unambiguously (no --user on a multi-user box), degrade to a
@@ -749,10 +745,7 @@ fn write_all_clients(
                 id: id.clone(),
                 display: spec.display.to_string(),
                 format: spec.format.as_str().to_string(),
-                error: Some(format!(
-                    "{} does not support --oauth; skipped",
-                    spec.display
-                )),
+                error: Some(format!("{} does not support --oauth; skipped", spec.display)),
                 notes: vec![reason.to_string()],
                 ..Default::default()
             });
@@ -774,14 +767,9 @@ fn write_all_clients(
             continue;
         };
 
-        // Mint this client's own key (per-tool). A stdio client without an env
-        // carrier deliberately gets no key and runs as the operator.
-        let client_key_source = if args.stdio && spec.stdio_env_key.is_none() {
-            None
-        } else {
-            key_source
-        };
-        let this_key = match (client_key_source, manager) {
+        // Mint this client's own key (per-tool). Only when a real remote write
+        // with minting is happening; stdio/oauth/dry-run supply their own.
+        let this_key = match (key_source, manager) {
             (Some(source), Some(mgr)) => match mint_for_tool(source, &spec, pool, mgr) {
                 Ok(k) => Some(k),
                 Err(e) => {
@@ -798,7 +786,7 @@ fn write_all_clients(
                 }
             },
             // Dry-run placeholder (Provided) with no manager, or provided --key.
-            _ => match client_key_source {
+            _ => match key_source {
                 Some(KeySource::Provided(k)) => Some(k.clone()),
                 _ => None,
             },
@@ -823,12 +811,7 @@ fn write_all_clients(
         };
 
         if args.dry_run {
-            let rendered = if args.scope == Scope::Project {
-                writer::render_project(&base.project, &path, spec.format, &entry)
-            } else {
-                writer::render(&path, spec.format, &entry)
-            };
-            match rendered {
+            match writer::render(&path, spec.format, &entry) {
                 Ok(rendered) => outcomes.push(ClientOutcome {
                     id: id.clone(),
                     display: spec.display.to_string(),
@@ -853,18 +836,7 @@ fn write_all_clients(
                 }),
             }
         } else {
-            let written = if args.scope == Scope::Project {
-                writer::write_project_with_secret(
-                    &base.project,
-                    &path,
-                    spec.format,
-                    &entry,
-                    out_key.is_some(),
-                )
-            } else {
-                writer::write_with_secret(&path, spec.format, &entry, out_key.is_some())
-            };
-            match written {
+            match writer::write(&path, spec.format, &entry) {
                 Ok(action) => outcomes.push(ClientOutcome {
                     id: id.clone(),
                     display: spec.display.to_string(),
@@ -911,7 +883,8 @@ fn maybe_write_agents_md(
         return Ok(None);
     }
 
-    let looks_like_project = args.scope == Scope::Project || base.project.join(".git").exists();
+    let looks_like_project =
+        args.scope == Scope::Project || base.project.join(".git").exists();
     if !looks_like_project {
         return Ok(None);
     }
@@ -1216,8 +1189,14 @@ mod tests {
     fn resolve_unknown_client_errors() {
         let dir = tmp();
         let b = base(&dir);
-        let err = resolve_clients_inner(&["nope".into()], true, &b, Scope::Global, no_picker)
-            .unwrap_err();
+        let err = resolve_clients_inner(
+            &["nope".into()],
+            true,
+            &b,
+            Scope::Global,
+            no_picker,
+        )
+        .unwrap_err();
         assert!(err.contains("unknown client"));
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -1236,9 +1215,10 @@ mod tests {
     fn resolve_no_client_tty_calls_picker() {
         let dir = tmp();
         let b = base(&dir);
-        let got =
-            resolve_clients_inner(&[], true, &b, Scope::Global, |_| Ok(vec!["cursor".into()]))
-                .unwrap();
+        let got = resolve_clients_inner(&[], true, &b, Scope::Global, |_| {
+            Ok(vec!["cursor".into()])
+        })
+        .unwrap();
         assert_eq!(got, vec!["cursor".to_string()]);
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -1280,12 +1260,14 @@ mod tests {
 
     #[test]
     fn transport_tty_no_flag_calls_picker() {
-        let got = resolve_transport_inner(false, false, true, || Ok(TransportMode::Stdio)).unwrap();
+        let got =
+            resolve_transport_inner(false, false, true, || Ok(TransportMode::Stdio)).unwrap();
         assert_eq!(got, TransportMode::Stdio);
         let got =
             resolve_transport_inner(false, false, true, || Ok(TransportMode::Remote)).unwrap();
         assert_eq!(got, TransportMode::Remote);
-        let got = resolve_transport_inner(false, false, true, || Ok(TransportMode::Oauth)).unwrap();
+        let got =
+            resolve_transport_inner(false, false, true, || Ok(TransportMode::Oauth)).unwrap();
         assert_eq!(got, TransportMode::Oauth);
     }
 
@@ -1372,7 +1354,6 @@ mod tests {
     fn run_writes_project_scope_configs_and_skips_no_project_clients() {
         let dir = tmp();
         let b = base(&dir);
-        std::fs::create_dir_all(&b.project).unwrap();
         let pool = db::open_memory().unwrap();
         let cfg = Config::default();
         // goose has no project path → should be skipped with a warning.
@@ -1420,7 +1401,8 @@ mod tests {
             "stdio needs no key"
         );
 
-        let written = std::fs::read_to_string(b.project.join("opencode.json")).unwrap();
+        let written =
+            std::fs::read_to_string(b.project.join("opencode.json")).unwrap();
         let v: serde_json::Value = serde_json::from_str(&written).unwrap();
         assert_eq!(v["mcp"]["lific"]["type"], "local");
         let cmd = v["mcp"]["lific"]["command"].as_array().unwrap();
@@ -1453,7 +1435,8 @@ mod tests {
         // config MUST carry the minted agent token in the env field.
         assert!(result.outcomes.iter().all(|o| o.key.is_none()));
 
-        let written = std::fs::read_to_string(b.project.join("opencode.json")).unwrap();
+        let written =
+            std::fs::read_to_string(b.project.join("opencode.json")).unwrap();
         let v: serde_json::Value = serde_json::from_str(&written).unwrap();
         assert_eq!(v["mcp"]["lific"]["type"], "local");
         let token = v["mcp"]["lific"]["environment"]["LIFIC_TOKEN"]
@@ -1472,28 +1455,6 @@ mod tests {
             .unwrap();
         assert!(is_bot, "opencode-solo must be a bot");
         assert_eq!(owner, Some(owner_id), "bot must be owned by the operator");
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn run_stdio_without_env_carrier_uses_operator_without_minting() {
-        let dir = tmp();
-        let b = base(&dir);
-        std::fs::create_dir_all(&b.project).unwrap();
-        let pool = db::open_memory().unwrap();
-        seed_user(&pool, "solo", true);
-        let mut cfg = Config::default();
-        cfg.database.path = dir.join("mydb.db");
-        let mut a = args(&["cursor"], Scope::Project);
-        a.stdio = true;
-        a.key = None;
-
-        let result = run(&a, &cfg, &pool, &b).unwrap();
-        assert_eq!(result.outcomes[0].action.as_deref(), Some("created"));
-        assert!(result.outcomes[0].key.is_none());
-        assert_eq!(active_key_count(&pool, "cursor-solo"), 0);
-        let written = std::fs::read_to_string(b.project.join(".cursor/mcp.json")).unwrap();
-        assert!(!written.contains("LIFIC_TOKEN"));
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -1518,7 +1479,8 @@ mod tests {
         let result = run(&a, &cfg, &pool, &b).unwrap();
         assert_eq!(result.outcomes[0].action.as_deref(), Some("updated"));
 
-        let written = std::fs::read_to_string(b.project.join("opencode.json")).unwrap();
+        let written =
+            std::fs::read_to_string(b.project.join("opencode.json")).unwrap();
         let v: serde_json::Value = serde_json::from_str(&written).unwrap();
         // Unrelated entries survive.
         assert_eq!(v["mcp"]["other"]["url"], "http://other");
@@ -1562,20 +1524,14 @@ mod tests {
         let result = run(&a, &cfg, &pool, &b).unwrap();
         assert_eq!(result.outcomes[0].action.as_deref(), Some("updated"));
 
-        let v: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(b.project.join("opencode.json")).unwrap(),
-        )
-        .unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(b.project.join("opencode.json")).unwrap())
+                .unwrap();
         // Lific entry healed: command kept, token env added.
         assert_eq!(v["mcp"]["lific"]["type"], "local");
         assert_eq!(
             v["mcp"]["lific"]["command"],
-            serde_json::json!([
-                "lific",
-                "--db",
-                dir.join("mydb.db").display().to_string(),
-                "mcp"
-            ])
+            serde_json::json!(["lific", "--db", dir.join("mydb.db").display().to_string(), "mcp"])
         );
         let token = v["mcp"]["lific"]["environment"]["LIFIC_TOKEN"]
             .as_str()
@@ -1617,11 +1573,7 @@ mod tests {
         let _ = run(&a, &cfg, &pool, &b).unwrap();
         let conn = pool.read().unwrap();
         let bots: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM users WHERE username = 'opencode-solo'",
-                [],
-                |r| r.get(0),
-            )
+            .query_row("SELECT COUNT(*) FROM users WHERE username = 'opencode-solo'", [], |r| r.get(0))
             .unwrap();
         let keys: i64 = conn
             .query_row(
@@ -1635,10 +1587,9 @@ mod tests {
 
         // The config remains well-formed and carries a live token after run #2
         // (a re-connect may rotate the key — that is a valid fresh plaintext).
-        let second_v: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(b.project.join("opencode.json")).unwrap(),
-        )
-        .unwrap();
+        let second_v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(b.project.join("opencode.json")).unwrap())
+                .unwrap();
         let second_token = second_v["mcp"]["lific"]["environment"]["LIFIC_TOKEN"]
             .as_str()
             .expect("token must be present after rerun");
@@ -1668,7 +1619,8 @@ mod tests {
             outcome.error
         );
 
-        let written = std::fs::read_to_string(b.project.join(".codex/config.toml")).unwrap();
+        let written =
+            std::fs::read_to_string(b.project.join(".codex/config.toml")).unwrap();
         // The stdio command and the env table with LIFIC_TOKEN both land.
         assert!(
             written.contains("command = \"lific\""),
@@ -1713,7 +1665,8 @@ mod tests {
         let result = run(&a, &cfg, &pool, &b).unwrap();
         assert_eq!(result.outcomes[0].action.as_deref(), Some("updated"));
 
-        let written = std::fs::read_to_string(b.project.join(".codex/config.toml")).unwrap();
+        let written =
+            std::fs::read_to_string(b.project.join(".codex/config.toml")).unwrap();
         // Unrelated config survives.
         assert!(
             written.contains("model = \"gpt-5\""),
@@ -1834,8 +1787,10 @@ mod tests {
             assert_eq!(uid, None, "{name} key must be unassigned");
         }
         // Each config file contains its own key.
-        let oc_body =
-            std::fs::read_to_string(b.home.join(".config/opencode/opencode.json")).unwrap();
+        let oc_body = std::fs::read_to_string(
+            b.home.join(".config/opencode/opencode.json"),
+        )
+        .unwrap();
         assert!(oc_body.contains(&ock));
         let cur_body = std::fs::read_to_string(b.home.join(".cursor/mcp.json")).unwrap();
         assert!(cur_body.contains(&curk));
@@ -2091,17 +2046,13 @@ mod tests {
 
         // Plain stdio config: command present, but NO token (no env field,
         // because no owner resolved → no LIFIC_TOKEN to bind).
-        let written = std::fs::read_to_string(b.project.join("opencode.json")).unwrap();
+        let written =
+            std::fs::read_to_string(b.project.join("opencode.json")).unwrap();
         let v: serde_json::Value = serde_json::from_str(&written).unwrap();
         assert_eq!(v["mcp"]["lific"]["type"], "local");
         assert_eq!(
             v["mcp"]["lific"]["command"],
-            serde_json::json!([
-                "lific",
-                "--db",
-                dir.join("mydb.db").display().to_string(),
-                "mcp"
-            ])
+            serde_json::json!(["lific", "--db", dir.join("mydb.db").display().to_string(), "mcp"])
         );
         assert!(
             v["mcp"]["lific"].get("environment").is_none(),
@@ -2132,7 +2083,8 @@ mod tests {
         assert_eq!(oc.auth_hint.as_deref(), Some("opencode mcp auth lific"));
 
         // The written config has a url and NO headers key at all.
-        let body = std::fs::read_to_string(b.home.join(".config/opencode/opencode.json")).unwrap();
+        let body =
+            std::fs::read_to_string(b.home.join(".config/opencode/opencode.json")).unwrap();
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(v["mcp"]["lific"]["url"], "http://127.0.0.1:3456/mcp");
         assert!(
@@ -2146,9 +2098,7 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM api_keys", [], |r| r.get(0))
             .unwrap();
         let bots: i64 = conn
-            .query_row("SELECT COUNT(*) FROM users WHERE is_bot = 1", [], |r| {
-                r.get(0)
-            })
+            .query_row("SELECT COUNT(*) FROM users WHERE is_bot = 1", [], |r| r.get(0))
             .unwrap();
         assert_eq!(keys, 0, "oauth mints no keys");
         assert_eq!(bots, 0, "oauth creates no bots");
@@ -2173,9 +2123,7 @@ mod tests {
             Some("http://127.0.0.1:3456/mcp")
         );
         assert!(
-            doc["mcp_servers"]["lific"]
-                .get("bearer_token_env_var")
-                .is_none(),
+            doc["mcp_servers"]["lific"].get("bearer_token_env_var").is_none(),
             "oauth codex must not set bearer_token_env_var: {body}"
         );
         std::fs::remove_dir_all(&dir).ok();
@@ -2196,10 +2144,7 @@ mod tests {
             let oc = result.outcomes.iter().find(|o| o.id == id).unwrap();
             assert!(oc.action.is_none(), "{id} must be skipped, not written");
             assert!(
-                oc.error
-                    .as_ref()
-                    .unwrap()
-                    .contains("does not support --oauth"),
+                oc.error.as_ref().unwrap().contains("does not support --oauth"),
                 "{id} skip must explain why"
             );
             assert!(!oc.notes.is_empty(), "{id} must carry an explanatory note");

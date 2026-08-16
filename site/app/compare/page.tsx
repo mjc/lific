@@ -11,8 +11,6 @@ const ISSUES = "https://github.com/VoidNullable/lific/issues";
 // corrected; the page is a dated snapshot, not an evergreen claim.
 const STAMP = "July 14, 2026";
 const STAMP_ISO = "2026-07-14";
-const LIFIC_REMEASUREMENT_STAMP = "August 15, 2026";
-const LIFIC_TOKEN_COUNT = "5,753";
 
 export const metadata: Metadata = {
   title: "Issue trackers with MCP support, compared · Lific",
@@ -479,7 +477,7 @@ export default function Compare() {
                   </>,
                   <>
                     27 tools: issues, nestable plans, pages, comments, search,
-                    audit history. The whole surface costs about {LIFIC_TOKEN_COUNT} tokens
+                    audit history. The whole surface costs about 5.6k tokens
                     of context (measured below).
                   </>,
                 ],
@@ -603,7 +601,7 @@ export default function Compare() {
             So we measured, on {STAMP}: each server launched over stdio,
             asked for its tool list, schemas tokenized. Numbers below are what
             an agent pays before it reads a single line of your code. Lific&apos;s
-            own row was measured again the same way on {LIFIC_REMEASUREMENT_STAMP}, against
+            own row was measured again the same way on August 15, 2026, against
             v2.6.0; the other rows are the {STAMP} figures.
           </Body>
           <ComparisonTable
@@ -727,7 +725,7 @@ export default function Compare() {
           </Body>
           <p className="mt-4 max-w-[75ch] text-caption leading-relaxed text-text-faint">
             Methodology: each server was launched over stdio (the others on{" "}
-            {STAMP}, Lific again on {LIFIC_REMEASUREMENT_STAMP}),
+            {STAMP}, Lific again on August 15, 2026),
             sent <Cmd>initialize</Cmd> and <Cmd>tools/list</Cmd> via the
             official MCP Python SDK, and the returned tool definitions (name,
             description, input schema) were serialized as compact JSON and
@@ -850,7 +848,7 @@ export default function Compare() {
                 head: "A small context bill.",
                 body: (
                   <>
-                    About {LIFIC_TOKEN_COUNT} tokens for the full 27-tool surface, roughly
+                    About 5.6k tokens for the full 27-tool surface, roughly
                     one long file read, so connecting the tracker doesn&apos;t
                     crowd out the actual work.
                   </>

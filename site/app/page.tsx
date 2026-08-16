@@ -430,8 +430,8 @@ export default function Home() {
             </Body>
             <Body>
               Running solo, that&apos;s the whole ceremony. Keys minted from
-              your own shell are <Em>operator-trusted</Em>, and the
-              initialization flow creates the login-free administrator for you.
+              your own shell are <Em>operator-trusted</Em>, and you never make
+              an account.
             </Body>
           </Reveal>
           <Reveal delay={100} className="mt-9 min-w-0">
