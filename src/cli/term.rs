@@ -315,6 +315,32 @@ mod tests {
     }
 
     #[test]
+    fn cli_json_sinks_do_not_bypass_terminal_encoder() {
+        for path in [
+            "src/main.rs",
+            "src/cli/exec.rs",
+            "src/cli/http.rs",
+            "src/cli/instance.rs",
+            "src/cli/member.rs",
+            "src/cli/user.rs",
+            "src/cli/key.rs",
+            "src/cli/import.rs",
+            "src/cli/doctor.rs",
+            "src/cli/login.rs",
+            "src/cli/connect/mod.rs",
+        ] {
+            let source = std::fs::read_to_string(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(path),
+            )
+            .unwrap();
+            assert!(
+                !source.contains("serde_json::to_string_pretty"),
+                "{path} must use term::json_string for terminal JSON"
+            );
+        }
+    }
+
+    #[test]
     fn confirm_reads_no_on_tty() {
         let mut input: &[u8] = b"n\n";
         let mut out: Vec<u8> = Vec::new();
