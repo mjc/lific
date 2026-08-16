@@ -26,7 +26,7 @@ lific init
 lific service status
 ```
 
-On a fresh install, `lific init` also asks how you want to sign in and creates the first administrator with that choice. For a self-hosted instance that other people reach, take the `passwords` mode: it keeps `[auth] required = true` and leaves your bind host alone. The `login-free` alternative writes `[auth] required = false` and pins `[server] host` to `127.0.0.1`, which is the right shape for a single-operator machine and the wrong shape for a server. Pass `--auth-mode passwords` with `--name` and `--password` to make the choice non-interactively.
+On a fresh install, `lific init` also asks how you want to sign in and creates the first administrator with that choice. For a self-hosted instance that other people reach, take the `passwords` mode: it keeps `[auth] required = true` and leaves your bind host alone. The `login-free` alternative writes `[auth] required = false` and pins `[server] host` to `127.0.0.1`, which is the right shape for a single-operator machine and the wrong shape for a server. Pass `--auth-mode passwords` with `--name` and `--password` to make the choice non-interactively. The interactive password prompt is safer; a command-line password is visible to process inspection and shell history.
 
 On Linux, `lific service install` writes a systemd user unit. On macOS, it writes a LaunchAgent. The Linux service installation attempts to enable user lingering so the service can continue after logout.
 

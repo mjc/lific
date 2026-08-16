@@ -42,7 +42,7 @@ Every entry is named `lific`. The shape follows each client's own configuration 
 - Codex uses TOML and references the key through `bearer_token_env_var = "LIFIC_API_KEY"`. See [Codex environment variable](#codex-environment-variable) below for the required export step. The key is never written into the file or into your shell startup files.
 - Claude Desktop does not support remote MCP servers natively. Its entry launches `npx -y mcp-remote <url>` with the bearer header as an argument.
 
-In stdio mode, the entry runs `lific --db <absolute-db-path> mcp` and carries the minted token in the client's environment field as `LIFIC_TOKEN`. The field name follows the client: `environment` for OpenCode, `env` for Claude Code and Codex. Clients with no environment field in their MCP schema get the launch command alone, and that session runs as the operator.
+In stdio mode, the entry runs `lific --db <absolute-db-path> mcp` and carries the token in the client's environment field as `LIFIC_TOKEN`. The field name follows the client: `environment` for OpenCode, `env` for Claude Code and Codex. Clients with no environment field cannot carry a per-tool token, so `lific connect` writes the launch command without minting a dropped credential; that session runs as the operator.
 
 Writes are merge-preserving. Unrelated keys and sibling MCP server entries remain in place. Only the `lific` entry is inserted or replaced. If an existing configuration file fails to parse, `lific connect` leaves the file unchanged and reports the failure with the entry contents for manual editing.
 
@@ -98,7 +98,7 @@ lific connect --url https://your-server.example/mcp --client opencode --yes
 
 `lific connect` writes one of three entry forms. The interactive menu offers all three and preselects stdio.
 
-- `--stdio` writes a local command form, `lific --db <absolute-db-path> mcp`, and mints the tool a bot and key that it writes into the entry's environment as `LIFIC_TOKEN`. The client launches Lific as a subprocess and there is no network authentication. This suits a machine where the client and the database live together.
+- `--stdio` writes a local command form, `lific --db <absolute-db-path> mcp`. For clients with an environment field, it mints the tool a bot and key and writes it as `LIFIC_TOKEN`; clients without one launch without a token and run as the operator. The client launches Lific as a subprocess and there is no network authentication. This suits a machine where the client and the database live together.
 - Remote HTTP with a bearer key. This is the transport a non-interactive run uses when neither transport flag is passed.
 - `--oauth` writes the URL with no credentials. An OAuth-capable client completes the [OAuth 2.1 flow](/docs/mcp) on first connection. `--oauth` conflicts with `--stdio` and `--key`.
 
