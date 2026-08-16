@@ -34,16 +34,19 @@ pub fn run(
                         })
                     })
                     .collect();
-                println!("{}", serde_json::to_string_pretty(&out)?);
+                println!("{}", crate::cli::term::json_string(&out)?);
             } else if members.is_empty() {
-                println!(
+                ui::line(format!(
                     "No members on '{project}'. Grant access with `lific member add \
                      --project {project} --user <name>`."
-                );
+                ));
             } else {
-                println!("{} member(s) of {}:", members.len(), project);
+                ui::line(format!("{} member(s) of {}:", members.len(), project));
                 for m in &members {
-                    println!("  {} | {} | since {}", m.username, m.role, m.created_at);
+                    ui::line(format!(
+                        "  {} | {} | since {}",
+                        m.username, m.role, m.created_at
+                    ));
                 }
             }
         }
@@ -76,7 +79,7 @@ pub fn run(
                         "granted": granted,
                         "already_member": skipped,
                     });
-                    println!("{}", serde_json::to_string_pretty(&out)?);
+                    println!("{}", crate::cli::term::json_string(&out)?);
                 } else {
                     ui::step(format!(
                         "Granted '{}' {role} access to {} project(s){}",
@@ -85,7 +88,11 @@ pub fn run(
                         if skipped.is_empty() {
                             String::new()
                         } else {
-                            format!(" ({} already a member: {})", skipped.len(), skipped.join(", "))
+                            format!(
+                                " ({} already a member: {})",
+                                skipped.len(),
+                                skipped.join(", ")
+                            )
                         }
                     ));
                 }
@@ -100,12 +107,11 @@ pub fn run(
                         "user": u.username,
                         "role": member.role.as_str(),
                     });
-                    println!("{}", serde_json::to_string_pretty(&out)?);
+                    println!("{}", crate::cli::term::json_string(&out)?);
                 } else {
                     ui::step(format!(
                         "Added '{}' to {ident} as {}",
-                        u.username,
-                        member.role
+                        u.username, member.role
                     ));
                 }
             }
@@ -125,7 +131,7 @@ pub fn run(
                     "user": u.username,
                     "role": member.role.as_str(),
                 });
-                println!("{}", serde_json::to_string_pretty(&out)?);
+                println!("{}", crate::cli::term::json_string(&out)?);
             } else {
                 ui::step(format!(
                     "'{}' is now {} on {project}",
@@ -144,7 +150,7 @@ pub fn run(
                     "user": u.username,
                     "removed": true,
                 });
-                println!("{}", serde_json::to_string_pretty(&out)?);
+                println!("{}", crate::cli::term::json_string(&out)?);
             } else {
                 ui::step(format!("Removed '{}' from {project}", u.username));
             }

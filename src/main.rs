@@ -417,7 +417,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     tracing_subscriber::EnvFilter::try_from_default_env()
                         .unwrap_or_else(|_| format!("lific={}", cfg.log.level).into()),
                 )
-                .with_writer(std::io::stderr)
+                .with_writer(cli::term::sanitized_stderr())
                 .init();
 
             let pool = db::open(&cfg.database.path)?;

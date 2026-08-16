@@ -60,7 +60,7 @@ fn export(
 // ── Helpers ──────────────────────────────────────────────────
 
 fn print_json<T: serde::Serialize>(val: &T) {
-    println!("{}", serde_json::to_string_pretty(val).unwrap());
+    println!("{}", term::json_string(val).unwrap());
 }
 
 fn page_folder_id(
@@ -616,7 +616,10 @@ fn module(
             queries::delete_module(&conn, module_id)?;
 
             if json {
-                println!("{{\"deleted\": true, \"name\": {:?}}}", name);
+                println!(
+                    "{}",
+                    term::json_string(&serde_json::json!({"deleted": true, "name": name})).unwrap()
+                );
             } else {
                 print!("{}", render::module_deleted(name));
             }
@@ -700,7 +703,10 @@ fn label(
             queries::delete_label(&conn, label_id)?;
 
             if json {
-                println!("{{\"deleted\": true, \"name\": {:?}}}", name);
+                println!(
+                    "{}",
+                    term::json_string(&serde_json::json!({"deleted": true, "name": name})).unwrap()
+                );
             } else {
                 print!("{}", render::label_deleted(name));
             }
@@ -778,7 +784,10 @@ fn folder(
             queries::delete_folder(&conn, folder_id)?;
 
             if json {
-                println!("{{\"deleted\": true, \"name\": {:?}}}", name);
+                println!(
+                    "{}",
+                    term::json_string(&serde_json::json!({"deleted": true, "name": name})).unwrap()
+                );
             } else {
                 print!("{}", render::folder_deleted(name));
             }

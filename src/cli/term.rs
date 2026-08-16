@@ -12,9 +12,44 @@
 //!    A confirmation prompt that blocks forever in CI is a hang; instead we
 //!    error and name the flag that bypasses the prompt non-interactively.
 
-use std::io::IsTerminal;
+use std::io::{self, IsTerminal, Write};
 
 use crate::cli::ui::TerminalDisplay;
+
+/// A tracing writer that makes every formatted event safe for a terminal.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct SanitizedStderr;
+
+pub(crate) fn sanitized_stderr() -> SanitizedStderr {
+    SanitizedStderr
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for SanitizedStderr {
+    type Writer = SanitizedWriter<io::Stderr>;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        SanitizedWriter {
+            inner: io::stderr(),
+        }
+    }
+}
+
+pub(crate) struct SanitizedWriter<W> {
+    inner: W,
+}
+
+impl<W: Write> Write for SanitizedWriter<W> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let text = String::from_utf8_lossy(bytes);
+        let safe = crate::cli::ui::sanitize_terminal_block(&text);
+        self.inner.write_all(safe.as_bytes())?;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
 
 /// Serialize JSON for terminal-visible stdout without changing its parsed value.
 ///
@@ -259,7 +294,24 @@ mod tests {
             .unwrap();
         let rendered = String::from_utf8(out).unwrap();
         assert_eq!(rendered, "Delete ^[]52;c;clipboard ? [y/N] ");
-        assert!(!rendered.chars().any(char::is_control));
+        assert!(rendered
+            .lines()
+            .all(|line| !line.chars().any(char::is_control)));
+    }
+
+    #[test]
+    fn tracing_writer_neutralizes_control_sequences() {
+        use std::io::Write;
+
+        let mut writer = SanitizedWriter { inner: Vec::new() };
+        writer
+            .write_all("path: evil\x1b]8;;https://evil\x1b\\\u{009b}2J\n".as_bytes())
+            .unwrap();
+        let rendered = String::from_utf8(writer.inner).unwrap();
+        assert_eq!(rendered, "path: evil^[]8;;https://evil^[\\ 2J\n");
+        assert!(rendered
+            .lines()
+            .all(|line| !line.chars().any(char::is_control)));
     }
 
     #[test]

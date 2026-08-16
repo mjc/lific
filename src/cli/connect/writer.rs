@@ -80,6 +80,25 @@ impl std::error::Error for WriteError {}
 /// both `--dry-run` and the real write path (which then just writes the result).
 pub fn render(path: &Path, format: Format, entry: &CompiledEntry) -> Result<Rendered, WriteError> {
     let existing = read_existing(path)?;
+    render_existing(existing, format, entry)
+}
+
+pub fn render_project(
+    root: &Path,
+    path: &Path,
+    format: Format,
+    entry: &CompiledEntry,
+) -> Result<Rendered, WriteError> {
+    let existing = crate::cli::project_io::read(root, path)
+        .map_err(|e| WriteError::new(format!("failed to read {}: {e}", path.display())))?;
+    render_existing(existing, format, entry)
+}
+
+fn render_existing(
+    existing: Option<String>,
+    format: Format,
+    entry: &CompiledEntry,
+) -> Result<Rendered, WriteError> {
     let action = if existing.is_some() {
         Action::Updated
     } else {
@@ -96,7 +115,17 @@ pub fn render(path: &Path, format: Format, entry: &CompiledEntry) -> Result<Rend
 
 /// Merge `entry` into the config at `path` and write it back, creating parent
 /// directories as needed. Returns whether the file was created or updated.
+#[cfg(test)]
 pub fn write(path: &Path, format: Format, entry: &CompiledEntry) -> Result<Action, WriteError> {
+    write_with_secret(path, format, entry, false)
+}
+
+pub fn write_with_secret(
+    path: &Path,
+    format: Format,
+    entry: &CompiledEntry,
+    contains_secret: bool,
+) -> Result<Action, WriteError> {
     let rendered = render(path, format, entry)?;
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
@@ -104,29 +133,111 @@ pub fn write(path: &Path, format: Format, entry: &CompiledEntry) -> Result<Actio
         std::fs::create_dir_all(parent)
             .map_err(|e| WriteError::new(format!("failed to create {}: {e}", parent.display())))?;
     }
-    std::fs::write(path, &rendered.contents)
+    if contains_secret {
+        write_secret_atomic(path, rendered.contents.as_bytes())?;
+    } else {
+        std::fs::write(path, &rendered.contents)
+            .map_err(|e| WriteError::new(format!("failed to write {}: {e}", path.display())))?;
+    }
+    Ok(rendered.action)
+}
+
+fn write_secret_atomic(path: &Path, contents: &[u8]) -> Result<(), WriteError> {
+    use std::io::Write;
+
+    let target = match std::fs::canonicalize(path) {
+        Ok(target) => target,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => path.to_path_buf(),
+        Err(error) => {
+            return Err(WriteError::new(format!(
+                "failed to resolve {}: {error}",
+                path.display()
+            )));
+        }
+    };
+    let parent = target
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let mut temporary = tempfile::NamedTempFile::new_in(parent).map_err(|error| {
+        WriteError::new(format!(
+            "failed to create temporary file beside {}: {error}",
+            target.display()
+        ))
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        temporary
+            .as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o600))
+            .map_err(|error| {
+                WriteError::new(format!(
+                    "failed to chmod {}: {error}",
+                    temporary.path().display()
+                ))
+            })?;
+    }
+    temporary
+        .write_all(contents)
+        .and_then(|()| temporary.as_file().sync_all())
+        .map_err(|error| {
+            WriteError::new(format!(
+                "failed to write temporary config for {}: {error}",
+                target.display()
+            ))
+        })?;
+    temporary.persist(&target).map_err(|error| {
+        WriteError::new(format!(
+            "failed to replace {}: {}",
+            target.display(),
+            error.error
+        ))
+    })?;
+    #[cfg(unix)]
+    std::fs::File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| {
+            WriteError::new(format!(
+                "failed to sync config directory {}: {error}",
+                parent.display()
+            ))
+        })?;
+    Ok(())
+}
+
+pub fn write_project_with_secret(
+    root: &Path,
+    path: &Path,
+    format: Format,
+    entry: &CompiledEntry,
+    contains_secret: bool,
+) -> Result<Action, WriteError> {
+    let rendered = render_project(root, path, format, entry)?;
+    write_rendered(root, path, &rendered, contains_secret)?;
+    Ok(rendered.action)
+}
+
+fn write_rendered(
+    root: &Path,
+    path: &Path,
+    rendered: &Rendered,
+    contains_secret: bool,
+) -> Result<(), WriteError> {
+    crate::cli::project_io::replace(root, path, rendered.contents.as_bytes(), contains_secret)
         .map_err(|e| WriteError::new(format!("failed to write {}: {e}", path.display())))?;
     // Connector configs can embed live credentials (an API key, an OAuth
     // token, or a LIFIC_TOKEN env entry). Don't leave those group/world
     // readable (PR #23 review). Configs without secrets keep umask perms —
     // some of them are shared, committed files.
-    #[cfg(unix)]
-    if rendered.contents.contains("LIFIC_TOKEN")
-        || rendered.contents.contains("lific_sk-")
-        || rendered.contents.contains("lific_at_")
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-            .map_err(|e| WriteError::new(format!("failed to chmod {}: {e}", path.display())))?;
-    }
-    Ok(rendered.action)
+    Ok(())
 }
 
 /// Read the file if present. `Ok(None)` = doesn't exist. An unreadable file is
 /// an error (permissions, etc.).
 fn read_existing(path: &Path) -> Result<Option<String>, WriteError> {
     match std::fs::read_to_string(path) {
-        Ok(s) => Ok(Some(s)),
+        Ok(contents) => Ok(Some(contents)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(WriteError::new(format!(
             "failed to read {}: {e}",
@@ -176,7 +287,7 @@ fn render_json(existing: &str, entry: &CompiledEntry) -> Result<String, WriteErr
     // Insert/replace only our own server entry, preserving siblings.
     top_map.insert(entry.name.clone(), entry.value.clone());
 
-    let mut out = serde_json::to_string_pretty(&root)
+    let mut out = crate::cli::term::json_string(&root)
         .map_err(|e| WriteError::new(format!("failed to serialize JSON: {e}")))?;
     out.push('\n');
     Ok(out)
@@ -187,7 +298,7 @@ fn manual_json_snippet(entry: &CompiledEntry) -> String {
     let snippet = serde_json::json!({
         entry.top_key.clone(): { entry.name.clone(): entry.value.clone() }
     });
-    serde_json::to_string_pretty(&snippet).unwrap_or_default()
+    crate::cli::term::json_string(&snippet).unwrap_or_default()
 }
 
 // ── TOML (Codex) ─────────────────────────────────────────────
@@ -200,7 +311,9 @@ fn render_toml(existing: &str, entry: &CompiledEntry) -> Result<String, WriteErr
     } else {
         existing.parse::<DocumentMut>().map_err(|e| {
             WriteError::with_snippet(
-                format!("existing config.toml does not parse ({e}); not modifying it. Merge by hand:"),
+                format!(
+                    "existing config.toml does not parse ({e}); not modifying it. Merge by hand:"
+                ),
                 manual_toml_snippet(entry),
             )
         })?
@@ -245,7 +358,7 @@ fn render_toml(existing: &str, entry: &CompiledEntry) -> Result<String, WriteErr
 /// toml_edit value. Codex entries carry strings, string arrays, and — for the
 /// stdio agent token (LIFIC-18) — a nested `env` object of strings.
 fn json_to_toml_value(v: &serde_json::Value) -> Result<toml_edit::Item, WriteError> {
-    use toml_edit::{Array, Item, Value, value, InlineTable};
+    use toml_edit::{Array, InlineTable, Item, Value, value};
     match v {
         serde_json::Value::String(s) => Ok(value(s.as_str())),
         serde_json::Value::Bool(b) => Ok(value(*b)),
@@ -330,7 +443,9 @@ fn render_yaml(existing: &str, entry: &CompiledEntry) -> Result<String, WriteErr
     } else {
         serde_yaml::from_str(existing).map_err(|e| {
             WriteError::with_snippet(
-                format!("existing config.yaml does not parse ({e}); not modifying it. Merge by hand:"),
+                format!(
+                    "existing config.yaml does not parse ({e}); not modifying it. Merge by hand:"
+                ),
                 manual_yaml_snippet(entry),
             )
         })?
@@ -367,8 +482,7 @@ fn render_yaml(existing: &str, entry: &CompiledEntry) -> Result<String, WriteErr
 
 fn manual_yaml_snippet(entry: &CompiledEntry) -> String {
     let mut top = serde_yaml::Mapping::new();
-    let value_yaml =
-        serde_yaml::to_value(&entry.value).unwrap_or(serde_yaml::Value::Null);
+    let value_yaml = serde_yaml::to_value(&entry.value).unwrap_or(serde_yaml::Value::Null);
     top.insert(serde_yaml::Value::String(entry.name.clone()), value_yaml);
     let mut root = serde_yaml::Mapping::new();
     root.insert(
@@ -422,7 +536,7 @@ mod tests {
         // Pre-existing config with another MCP server and unrelated top keys.
         std::fs::write(
             &path,
-            serde_json::to_string_pretty(&serde_json::json!({
+            crate::cli::term::json_string(&serde_json::json!({
                 "theme": "dark",
                 "mcp": {
                     "other": { "type": "remote", "url": "http://other" }
@@ -454,7 +568,7 @@ mod tests {
         let path = dir.join("opencode.json");
         std::fs::write(
             &path,
-            serde_json::to_string_pretty(&serde_json::json!({
+            crate::cli::term::json_string(&serde_json::json!({
                 "mcp": { "lific": { "type": "remote", "url": "http://stale" } }
             }))
             .unwrap(),
@@ -470,6 +584,34 @@ mod tests {
         // Exactly one lific key (object semantics guarantee no dup, but assert
         // the map has just the one server we expect).
         assert_eq!(v["mcp"].as_object().unwrap().len(), 1);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn secret_write_atomically_updates_a_symlink_target() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
+
+        let dir = tmp();
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("real.json");
+        let path = dir.join("config.json");
+        std::fs::write(&target, b"old secret").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).unwrap();
+        symlink(&target, &path).unwrap();
+
+        write_secret_atomic(&path, b"new secret").unwrap();
+
+        assert_eq!(std::fs::read(&target).unwrap(), b"new secret");
+        assert!(
+            std::fs::symlink_metadata(&path)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        let metadata = std::fs::metadata(&target).unwrap();
+        assert_eq!(metadata.mode() & 0o777, 0o600);
+        assert_eq!(metadata.nlink(), 1);
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -497,7 +639,8 @@ mod tests {
         let dir = tmp();
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.toml");
-        let original = "# Codex config\nmodel = \"gpt-5\"\n\n[mcp_servers.other]\nurl = \"http://other\"\n";
+        let original =
+            "# Codex config\nmodel = \"gpt-5\"\n\n[mcp_servers.other]\nurl = \"http://other\"\n";
         std::fs::write(&path, original).unwrap();
 
         let entry = find_client("codex").unwrap().compile(&remote());
@@ -506,7 +649,10 @@ mod tests {
 
         let written = std::fs::read_to_string(&path).unwrap();
         // Comment preserved.
-        assert!(written.contains("# Codex config"), "comment must survive: {written}");
+        assert!(
+            written.contains("# Codex config"),
+            "comment must survive: {written}"
+        );
         // Unrelated top-level key preserved.
         assert!(written.contains("model = \"gpt-5\""));
         // Sibling server preserved.
@@ -521,7 +667,10 @@ mod tests {
             doc["mcp_servers"]["lific"]["bearer_token_env_var"].as_str(),
             Some("LIFIC_API_KEY")
         );
-        assert!(!written.contains("lific_sk-live-K"), "must not inline the key");
+        assert!(
+            !written.contains("lific_sk-live-K"),
+            "must not inline the key"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -532,8 +681,7 @@ mod tests {
         let entry = find_client("codex").unwrap().compile(&remote());
         let action = write(&path, Format::Toml, &entry).unwrap();
         assert_eq!(action, Action::Created);
-        let doc: toml_edit::DocumentMut =
-            std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        let doc: toml_edit::DocumentMut = std::fs::read_to_string(&path).unwrap().parse().unwrap();
         assert_eq!(
             doc["mcp_servers"]["lific"]["bearer_token_env_var"].as_str(),
             Some("LIFIC_API_KEY")
@@ -581,7 +729,10 @@ mod tests {
             v["extensions"]["lific"]["type"].as_str(),
             Some("streamable_http")
         );
-        assert_eq!(v["extensions"]["lific"]["uri"].as_str(), Some("http://127.0.0.1:3456/mcp"));
+        assert_eq!(
+            v["extensions"]["lific"]["uri"].as_str(),
+            Some("http://127.0.0.1:3456/mcp")
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
