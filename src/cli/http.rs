@@ -2463,7 +2463,7 @@ mod tests {
             )
             .await;
 
-        assert_eq!(rendered, "{\n  \"unexpected\": \"safe\\u001b[2J \"\n}\n");
+        assert_eq!(rendered, "{\n  \"unexpected\": \"safe\\u001b[2J\\u202e\"\n}\n");
     }
 
     #[test]
