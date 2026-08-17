@@ -1348,8 +1348,22 @@ impl LificMcp {
     }
 
     fn search_inner(&self, input: SearchInput) -> Result<String, String> {
+        let visible = visible_project_ids_mcp(&self.db)?;
         let project_id = match &input.project {
-            Some(p) => Some(resolve_project(&*self.read_conn()?, p)?),
+            Some(p) => {
+                let conn = self.read_conn()?;
+                match queries::resolve_project_identifier(&conn, p) {
+                    Ok(project_id)
+                        if visible.as_ref().is_none_or(|ids| ids.contains(&project_id)) =>
+                    {
+                        Some(project_id)
+                    }
+                    Ok(_) | Err(crate::error::LificError::NotFound(_)) => {
+                        return Ok("No results found.".into());
+                    }
+                    Err(error) => return Err(error.to_string()),
+                }
+            }
             None => None,
         };
         // The query owns the default (20) and the cap; clamping here too gives
@@ -1360,11 +1374,6 @@ impl LificMcp {
             queries::DEFAULT_SEARCH_LIMIT,
             queries::MAX_PAGE_LIMIT,
         );
-        // Cross-project read (LIF-198 scope item 2): non-visible projects'
-        // hits are silently absent, never a 403 — even when `project` narrows
-        // the search to one project a non-member can't see, mirroring the
-        // REST /api/search handler.
-        let visible = visible_project_ids_mcp(&self.db)?;
         let hits = self.read(|conn| {
             queries::search_page(
                 conn,
@@ -1377,10 +1386,11 @@ impl LificMcp {
                     limit: Some(limit),
                     offset: Some(offset),
                 },
+                visible.as_ref(),
             )
         })?;
         let has_more = hits.has_more;
-        let results = filter_visible(hits.items, &visible, |r| r.project_id);
+        let results = hits.items;
         if results.is_empty() {
             // LIF-257: nudge only when the search itself came up
             // empty AND the DB has no projects — checked after the
