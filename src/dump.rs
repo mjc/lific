@@ -72,18 +72,13 @@ fn attachments_dir_for(db_path: &Path) -> PathBuf {
 
 /// Take a consistent snapshot of the live DB into `dest` using `VACUUM INTO`.
 ///
-/// `VACUUM INTO` runs on a read connection, holds no long writer lock, and
-/// compacts + snapshots in one step — safe while the server is running. The
-/// destination must not already exist (SQLite requirement).
+/// The SQLite online backup API runs on a read connection, holds no long
+/// writer lock, and snapshots into the already-reserved staging file — safe
+/// while the server is running.
 fn snapshot_db(pool: &DbPool, dest: &Path) -> Result<(), LificError> {
-    if dest.exists() {
-        std::fs::remove_file(dest)
-            .map_err(|e| LificError::Internal(format!("clear snapshot target: {e}")))?;
-    }
     let conn = pool.read()?;
-    // Parameterized VACUUM INTO with the destination path as a bound value.
-    conn.execute("VACUUM INTO ?1", [&dest.to_string_lossy()])
-        .map_err(|e| LificError::Internal(format!("VACUUM INTO snapshot failed: {e}")))?;
+    conn.backup(rusqlite::DatabaseName::Main, dest, None)
+        .map_err(|e| LificError::Internal(format!("SQLite backup failed: {e}")))?;
     Ok(())
 }
 
@@ -101,6 +96,24 @@ fn set_owner_only(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+struct TempPath(PathBuf);
+
+impl TempPath {
+    fn new(path: PathBuf) -> Self {
+        Self(path)
+    }
+
+    fn as_path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempPath {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 /// Write a self-contained dump archive to `out_path`.
 ///
 /// Shared code path used by both `lific dump` and the interval backup task.
@@ -113,17 +126,17 @@ fn set_owner_only(path: &Path) -> std::io::Result<()> {
 pub fn write_dump(pool: &DbPool, db_path: &Path, out_path: &Path) -> Result<Manifest, LificError> {
     // Snapshot the DB to a temp file next to the output, so the archive holds a
     // consistent point-in-time copy rather than a possibly-mid-write live file.
-    let tmp_db = out_path.with_extension("dbsnapshot.tmp");
-    snapshot_db(pool, &tmp_db)?;
+    let tmp_db = owner_only_temp_path(out_path, "dbsnapshot")?;
+    snapshot_db(pool, tmp_db.as_path())?;
 
-    // Staging path for the archive itself; the closure writes here and
-    // atomically renames into place on success. Declared out here so the
-    // error path below can clean up a partial archive (LIF-329).
-    let tmp_archive = out_path.with_extension("archive.tmp");
+    // Staging path for the archive itself; both temporary paths clean up on
+    // every return path, while the archive is atomically renamed on success.
+    let tmp_archive = owner_only_temp_path(out_path, "archive")?;
 
-    // Guard: always clean the temp snapshot even on the error paths below.
-    let result = (|| {
-        let db_size_bytes = std::fs::metadata(&tmp_db).map(|m| m.len()).unwrap_or(0);
+    (|| {
+        let db_size_bytes = std::fs::metadata(tmp_db.as_path())
+            .map(|m| m.len())
+            .unwrap_or(0);
 
         // Gather attachment blobs (skip .tmp in-progress writes).
         let attachments_dir = attachments_dir_for(db_path);
@@ -165,7 +178,7 @@ pub fn write_dump(pool: &DbPool, db_path: &Path, out_path: &Path) -> Result<Mani
         // Build the archive into a temp file, then atomically rename into place
         // so a partial write is never observed at the final path.
         {
-            let file = std::fs::File::create(&tmp_archive)
+            let file = std::fs::File::create(tmp_archive.as_path())
                 .map_err(|e| LificError::Internal(format!("create archive: {e}")))?;
             let enc = flate2::write::GzEncoder::new(file, flate2::Compression::default());
             let mut tar = tar::Builder::new(enc);
@@ -173,14 +186,13 @@ pub fn write_dump(pool: &DbPool, db_path: &Path, out_path: &Path) -> Result<Mani
             // manifest.json
             append_bytes(&mut tar, ARCHIVE_MANIFEST_NAME, &manifest_json)?;
             // lific.db (from the snapshot file)
-            tar.append_path_with_name(&tmp_db, ARCHIVE_DB_NAME)
+            tar.append_path_with_name(tmp_db.as_path(), ARCHIVE_DB_NAME)
                 .map_err(|e| LificError::Internal(format!("append db to archive: {e}")))?;
             // attachments/<sha256>
             for (name, path, _size) in &blobs {
                 let entry_name = format!("{ARCHIVE_ATTACHMENTS_PREFIX}{name}");
-                tar.append_path_with_name(path, &entry_name).map_err(|e| {
-                    LificError::Internal(format!("append attachment {name}: {e}"))
-                })?;
+                tar.append_path_with_name(path, &entry_name)
+                    .map_err(|e| LificError::Internal(format!("append attachment {name}: {e}")))?;
             }
 
             let enc = tar
@@ -190,22 +202,91 @@ pub fn write_dump(pool: &DbPool, db_path: &Path, out_path: &Path) -> Result<Mani
                 .map_err(|e| LificError::Internal(format!("finalize gzip: {e}")))?;
         }
 
-        set_owner_only(&tmp_archive)
+        set_owner_only(tmp_archive.as_path())
             .map_err(|e| LificError::Internal(format!("chmod archive: {e}")))?;
-        std::fs::rename(&tmp_archive, out_path)
+        std::fs::rename(tmp_archive.as_path(), out_path)
             .map_err(|e| LificError::Internal(format!("finalize archive: {e}")))?;
 
         Ok(manifest)
-    })();
+    })()
+}
 
-    let _ = std::fs::remove_file(&tmp_db);
-    if result.is_err() {
-        // A failure after the archive staging file was created would otherwise
-        // strand a partial `*.archive.tmp` that rotation never touches
-        // (LIF-329).
-        let _ = std::fs::remove_file(&tmp_archive);
+fn unique_temp_path(out_path: &Path, kind: &str) -> Result<PathBuf, LificError> {
+    let parent = out_path.parent().unwrap_or_else(|| Path::new("."));
+    let name = out_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("lific-dump");
+    for _ in 0..8 {
+        let candidate = parent.join(format!(".{name}.{kind}.{:016x}.tmp", rand::random::<u64>()));
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        match options.open(&candidate)
+        {
+            Ok(file) => {
+                drop(file);
+                return Ok(candidate);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(LificError::Internal(format!(
+                    "could not allocate a unique dump staging path: {error}"
+                )));
+            }
+        }
     }
-    result
+    Err(LificError::Internal(
+        "could not allocate a unique dump staging path".into(),
+    ))
+}
+
+fn owner_only_temp_path(out_path: &Path, kind: &str) -> Result<TempPath, LificError> {
+    let path = unique_temp_path(out_path, kind)?;
+    if let Err(error) = set_owner_only(&path) {
+        let _ = std::fs::remove_file(&path);
+        return Err(LificError::Internal(format!(
+            "secure dump staging file: {error}"
+        )));
+    }
+    Ok(TempPath::new(path))
+}
+
+fn write_owner_only(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    if let Err(error) = set_owner_only(path) {
+        let _ = std::fs::remove_file(path);
+        return Err(error);
+    }
+    if let Err(error) = std::io::Write::write_all(&mut file, bytes) {
+        let _ = std::fs::remove_file(path);
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn set_owner_only_dir(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+    Ok(())
 }
 
 /// Append raw bytes as a tar entry with the given name.
@@ -360,9 +441,7 @@ pub fn inspect_archive(archive: &Path) -> Result<Manifest, LificError> {
         }
     }
     if !has_db {
-        return Err(LificError::BadRequest(
-            "archive is missing lific.db".into(),
-        ));
+        return Err(LificError::BadRequest("archive is missing lific.db".into()));
     }
     Ok(manifest)
 }
@@ -399,7 +478,9 @@ fn read_manifest(archive: &Path) -> Result<Manifest, LificError> {
 /// may still be running (best-effort — see command help).
 fn wal_is_hot(db_path: &Path) -> bool {
     let wal = PathBuf::from(format!("{}-wal", db_path.display()));
-    std::fs::metadata(&wal).map(|m| m.len() > 0).unwrap_or(false)
+    std::fs::metadata(&wal)
+        .map(|m| m.len() > 0)
+        .unwrap_or(false)
 }
 
 /// Run `lific restore`: validate the archive, then stage-extract it into the
@@ -430,6 +511,8 @@ pub fn run_restore(
         .unwrap_or_else(|| PathBuf::from("."));
     std::fs::create_dir_all(&data_dir)
         .map_err(|e| LificError::Internal(format!("create data dir: {e}")))?;
+    set_owner_only_dir(&data_dir)
+        .map_err(|e| LificError::Internal(format!("secure data dir: {e}")))?;
 
     // Existing-DB guard.
     let mut moved_existing_to = None;
@@ -467,6 +550,10 @@ pub fn run_restore(
     }
     std::fs::create_dir_all(staging.join("attachments"))
         .map_err(|e| LificError::Internal(format!("create staging dir: {e}")))?;
+    set_owner_only_dir(&staging)
+        .map_err(|e| LificError::Internal(format!("secure restore staging dir: {e}")))?;
+    set_owner_only_dir(&staging.join("attachments"))
+        .map_err(|e| LificError::Internal(format!("secure restore attachments dir: {e}")))?;
 
     let extract = (|| -> Result<u64, LificError> {
         let file = std::fs::File::open(archive)
@@ -490,14 +577,14 @@ pub fn run_restore(
                 entry
                     .read_to_end(&mut buf)
                     .map_err(|e| LificError::BadRequest(format!("read manifest: {e}")))?;
-                std::fs::write(staging.join(ARCHIVE_MANIFEST_NAME), &buf)
+                write_owner_only(&staging.join(ARCHIVE_MANIFEST_NAME), &buf)
                     .map_err(|e| LificError::Internal(format!("write manifest: {e}")))?;
             } else if name == ARCHIVE_DB_NAME {
                 let mut buf = Vec::new();
                 entry
                     .read_to_end(&mut buf)
                     .map_err(|e| LificError::BadRequest(format!("read db from archive: {e}")))?;
-                std::fs::write(staging.join(ARCHIVE_DB_NAME), &buf)
+                write_owner_only(&staging.join(ARCHIVE_DB_NAME), &buf)
                     .map_err(|e| LificError::Internal(format!("write db: {e}")))?;
             } else if name.starts_with(ARCHIVE_ATTACHMENTS_PREFIX) {
                 let bare = validate_attachment_entry(&name)?;
@@ -505,7 +592,7 @@ pub fn run_restore(
                 entry
                     .read_to_end(&mut buf)
                     .map_err(|e| LificError::BadRequest(format!("read attachment: {e}")))?;
-                std::fs::write(staging.join("attachments").join(&bare), &buf)
+                write_owner_only(&staging.join("attachments").join(&bare), &buf)
                     .map_err(|e| LificError::Internal(format!("write attachment: {e}")))?;
                 attachment_count += 1;
             } else {
@@ -515,9 +602,7 @@ pub fn run_restore(
             }
         }
         if !staging.join(ARCHIVE_DB_NAME).exists() {
-            return Err(LificError::BadRequest(
-                "archive is missing lific.db".into(),
-            ));
+            return Err(LificError::BadRequest("archive is missing lific.db".into()));
         }
         Ok(attachment_count)
     })();
@@ -539,8 +624,7 @@ pub fn run_restore(
     // Move restored files into place. DB first, then swap the attachments dir.
     std::fs::rename(staging.join(ARCHIVE_DB_NAME), db_path)
         .map_err(|e| LificError::Internal(format!("install restored db: {e}")))?;
-    set_owner_only(db_path)
-        .map_err(|e| LificError::Internal(format!("chmod restored db: {e}")))?;
+    set_owner_only(db_path).map_err(|e| LificError::Internal(format!("chmod restored db: {e}")))?;
 
     let attachments_dest = attachments_dir_for(db_path);
     if attachments_dest.exists() {
@@ -651,7 +735,13 @@ mod tests {
         let mut tar = tar::Archive::new(dec);
         tar.entries()
             .unwrap()
-            .map(|e| e.unwrap().path().unwrap().to_string_lossy().replace('\\', "/"))
+            .map(|e| {
+                e.unwrap()
+                    .path()
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
             .collect()
     }
 
@@ -673,9 +763,15 @@ mod tests {
         );
 
         assert_eq!(manifest.attachment_count, 2);
-        assert_eq!(manifest.attachment_bytes, (b"blob one".len() + b"second blob bytes".len()) as u64);
+        assert_eq!(
+            manifest.attachment_bytes,
+            (b"blob one".len() + b"second blob bytes".len()) as u64
+        );
         assert_eq!(manifest.lific_version, env!("CARGO_PKG_VERSION"));
-        assert_eq!(manifest.schema_version, crate::db::migrate::latest_version());
+        assert_eq!(
+            manifest.schema_version,
+            crate::db::migrate::latest_version()
+        );
         assert!(manifest.db_size_bytes > 0);
     }
 
@@ -778,9 +874,11 @@ mod tests {
         let pool = crate::db::open(&dst_db).unwrap();
         let conn = pool.read().unwrap();
         let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM projects WHERE identifier = 'DMP'", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT COUNT(*) FROM projects WHERE identifier = 'DMP'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(count, 1);
 
@@ -793,6 +891,27 @@ mod tests {
             fs::read(dst_dir.join("attachments").join("deadbeef02")).unwrap(),
             b"second blob bytes"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restore_protects_data_and_attachment_paths() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (src_dir_tmp, src_db) = seed_data_dir("perms_src");
+        let out = src_dir_tmp.path().join("backup.tar.gz");
+        write_dump(&crate::db::open(&src_db).unwrap(), &src_db, &out).unwrap();
+
+        let dst_dir_tmp = temp_dir("perms_dst");
+        let dst_dir = dst_dir_tmp.path();
+        let dst_db = dst_dir.join("lific.db");
+        run_restore(&out, &dst_db, false).unwrap();
+
+        let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(dst_dir), 0o700);
+        assert_eq!(mode(&dst_dir.join("attachments")), 0o700);
+        assert_eq!(mode(&dst_db), 0o600);
+        assert_eq!(mode(&dst_dir.join("attachments/deadbeef01")), 0o600);
     }
 
     #[test]
@@ -841,24 +960,38 @@ mod tests {
         }
 
         let res = run_restore(&out, &dst_db, true).unwrap();
-        let moved = res.moved_existing_to.expect("existing db should be moved aside");
+        let moved = res
+            .moved_existing_to
+            .expect("existing db should be moved aside");
         assert!(moved.exists(), "moved-aside db must still exist");
         assert!(
-            moved.file_name().unwrap().to_string_lossy().contains("pre-restore-"),
+            moved
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .contains("pre-restore-"),
             "moved db name must include pre-restore-: {}",
             moved.display()
         );
         // The moved-aside db still has the OLD project.
         let conn = rusqlite::Connection::open(&moved).unwrap();
         let old: i64 = conn
-            .query_row("SELECT COUNT(*) FROM projects WHERE identifier='OLD'", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM projects WHERE identifier='OLD'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(old, 1);
         // The live db now has the restored project.
         let pool = crate::db::open(&dst_db).unwrap();
         let conn = pool.read().unwrap();
         let dmp: i64 = conn
-            .query_row("SELECT COUNT(*) FROM projects WHERE identifier='DMP'", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM projects WHERE identifier='DMP'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(dmp, 1);
     }
@@ -880,7 +1013,10 @@ mod tests {
         let dst_db = dst_dir.join("lific.db");
         let err = run_restore(&bumped, &dst_db, false).unwrap_err();
         assert!(matches!(err, LificError::BadRequest(_)), "got {err:?}");
-        assert!(!dst_db.exists(), "nothing should be restored on schema refusal");
+        assert!(
+            !dst_db.exists(),
+            "nothing should be restored on schema refusal"
+        );
     }
 
     #[test]
@@ -971,7 +1107,11 @@ mod tests {
         let pool = crate::db::open(&dst_db).unwrap();
         let conn = pool.read().unwrap();
         let org: i64 = conn
-            .query_row("SELECT COUNT(*) FROM projects WHERE identifier='ORG'", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM projects WHERE identifier='ORG'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(org, 1, "original data must survive a failed restore");
     }

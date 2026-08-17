@@ -73,18 +73,33 @@ impl ServicePlan {
         let workdir = config
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
-            .ok_or_else(|| {
-                format!(
-                    "config path {} has no parent directory",
-                    config.display()
-                )
-            })?
+            .ok_or_else(|| format!("config path {} has no parent directory", config.display()))?
             .to_path_buf();
+        reject_control_paths([exe.as_path(), config.as_path(), workdir.as_path()])?;
         Ok(Self {
             exe,
             config,
             workdir,
         })
+    }
+}
+
+fn reject_control_paths<'a>(paths: impl IntoIterator<Item = &'a Path>) -> Result<(), String> {
+    if paths.into_iter().any(path_contains_control) {
+        return Err("service paths must not contain control characters".into());
+    }
+    Ok(())
+}
+
+fn path_contains_control(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        path.as_os_str().as_bytes().iter().any(u8::is_ascii_control)
+    }
+    #[cfg(not(unix))]
+    {
+        path.to_string_lossy().chars().any(char::is_control)
     }
 }
 
@@ -118,7 +133,8 @@ pub fn definition_path(manager: Manager) -> Result<PathBuf, String> {
     // passwd entry when `HOME` is unset (which happens in some service and cron
     // contexts, where "HOME is not set" was a confusing way to fail), and it
     // resolves on Windows too, where a raw `HOME` read always came up empty.
-    let home = dirs::home_dir().ok_or_else(|| "cannot determine your home directory".to_string())?;
+    let home =
+        dirs::home_dir().ok_or_else(|| "cannot determine your home directory".to_string())?;
     Ok(match manager {
         Manager::SystemdUser => home
             .join(".config")
@@ -143,6 +159,7 @@ After=network.target
 [Service]
 ExecStart={exe} start --config {config}
 WorkingDirectory={workdir}
+UMask=0077
 Restart=on-failure
 RestartSec=2
 
@@ -151,7 +168,7 @@ WantedBy=default.target
 "#,
         exe = systemd_quote(&plan.exe),
         config = systemd_quote(&plan.config),
-        workdir = plan.workdir.display(),
+        workdir = systemd_quote(&plan.workdir),
     )
 }
 
@@ -159,10 +176,15 @@ WantedBy=default.target
 /// quotes/backslashes). systemd's quoting rules accept this for paths.
 fn systemd_quote(p: &Path) -> String {
     let s = p.display().to_string();
+    let escaped = s
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('$', "$$")
+        .replace('%', "%%");
     if s.contains(' ') || s.contains('"') || s.contains('\\') {
-        format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+        format!("\"{escaped}\"")
     } else {
-        s
+        escaped
     }
 }
 
@@ -208,7 +230,9 @@ pub fn launchd_plist(plan: &ServicePlan) -> String {
 }
 
 fn xml_escape(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 /// The launchd domain every `launchctl` invocation below is addressed to:
@@ -444,6 +468,7 @@ mod tests {
         assert!(unit.contains("WorkingDirectory=/home/u/tracker"));
         assert!(unit.contains("WantedBy=default.target"));
         assert!(unit.contains("Restart=on-failure"));
+        assert!(unit.contains("UMask=0077"));
     }
 
     #[test]
@@ -458,6 +483,28 @@ mod tests {
             ),
             "unit was:\n{unit}"
         );
+    }
+
+    #[test]
+    fn systemd_unit_escapes_expansion_characters() {
+        let mut p = plan();
+        p.exe = PathBuf::from("/home/u/bin/$lific%bin");
+        p.config = PathBuf::from("/home/u/config/$env%file.toml");
+        p.workdir = PathBuf::from("/home/u/$data%dir");
+        let unit = systemd_unit(&p);
+        assert!(unit.contains("/home/u/bin/$$lific%%bin"), "unit was:\n{unit}");
+        assert!(unit.contains("/home/u/config/$$env%%file.toml"), "unit was:\n{unit}");
+        assert!(unit.contains("/home/u/$$data%%dir"), "unit was:\n{unit}");
+    }
+
+    #[test]
+    fn config_path_with_control_character_is_rejected() {
+        // Validate the path before touching the filesystem: Windows cannot
+        // create a filename containing a newline in order to reach the same
+        // check through `canonicalize`.
+        let config = PathBuf::from(format!("lific_svc_control_{}\n", std::process::id()));
+        let error = reject_control_paths([config.as_path()]).unwrap_err();
+        assert!(error.contains("control characters"));
     }
 
     #[test]
@@ -499,10 +546,9 @@ mod tests {
 
     #[test]
     fn for_config_file_errors_on_missing_config() {
-        let err = ServicePlan::for_config_file(Path::new(
-            "/tmp/nonexistent_lific_dir_12345/lific.toml",
-        ))
-        .unwrap_err();
+        let err =
+            ServicePlan::for_config_file(Path::new("/tmp/nonexistent_lific_dir_12345/lific.toml"))
+                .unwrap_err();
         assert!(err.contains("cannot resolve config path"), "got: {err}");
     }
 

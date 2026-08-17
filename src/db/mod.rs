@@ -216,10 +216,14 @@ pub fn open_memory() -> Result<DbPool, LificError> {
 /// Open (or create) the SQLite database, run migrations, and return a pool.
 pub fn open(path: &Path) -> Result<DbPool, LificError> {
     disable_sqlite_memstatus();
+    secure_parent(path)?;
+    ensure_private_file(path)?;
     // Writer connection — runs migrations
     let writer = Connection::open(path)?;
+    secure_file(path)?;
     apply_pragmas(&writer)?;
     migrate::run(&writer)?;
+    secure_sidecars(path)?;
 
     // LIF-155: clear any actor left over from a previous process (the
     // `_actor_state` row persists). Writes before the first request stamp
@@ -244,6 +248,60 @@ pub fn open(path: &Path) -> Result<DbPool, LificError> {
         readers: Arc::new(readers),
         path: path.to_path_buf(),
     })
+}
+
+fn ensure_private_file(path: &Path) -> Result<(), LificError> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    match options.open(path) {
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(error) => Err(LificError::Internal(format!(
+            "create database file: {error}"
+        ))),
+    }
+}
+
+fn secure_parent(path: &Path) -> Result<(), LificError> {
+    let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) else {
+        return Ok(());
+    };
+    std::fs::create_dir_all(parent)
+        .map_err(|error| LificError::Internal(format!("create database directory: {error}")))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
+            .map_err(|error| LificError::Internal(format!("secure database directory: {error}")))?;
+    }
+    Ok(())
+}
+
+fn secure_file(_path: &Path) -> Result<(), LificError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(_path, std::fs::Permissions::from_mode(0o600))
+            .map_err(|error| LificError::Internal(format!("secure database file: {error}")))?;
+    }
+    Ok(())
+}
+
+fn secure_sidecars(path: &Path) -> Result<(), LificError> {
+    for suffix in ["-wal", "-shm"] {
+        let mut sidecar = path.as_os_str().to_os_string();
+        sidecar.push(suffix);
+        let sidecar = PathBuf::from(sidecar);
+        if sidecar.exists() {
+            secure_file(&sidecar)?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
