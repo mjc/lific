@@ -437,6 +437,7 @@ struct AuthorizeParams {
     code_challenge: Option<String>,
     code_challenge_method: Option<String>,
     scope: Option<String>,
+    resource: Option<String>,
 }
 
 async fn authorize_page(
@@ -486,6 +487,7 @@ async fn authorize_page(
         <input type="hidden" name="code_challenge" value="{code_challenge}">
         <input type="hidden" name="code_challenge_method" value="{code_challenge_method}">
         <input type="hidden" name="scope" value="{scope}">
+        <input type="hidden" name="resource" value="{resource}">
         <input type="hidden" name="csrf_token" value="{csrf_token}">
         {tool_pick_list}
         <button type="submit">Approve</button>
@@ -500,6 +502,7 @@ async fn authorize_page(
         code_challenge_method =
             html_escape(params.code_challenge_method.as_deref().unwrap_or("S256")),
         scope = html_escape(params.scope.as_deref().unwrap_or("mcp")),
+        resource = html_escape(params.resource.as_deref().unwrap_or("")),
         csrf_token = html_escape(&csrf_token),
         tool_pick_list = tool_pick_list,
     ))
@@ -517,6 +520,7 @@ struct ApproveForm {
     code_challenge: Option<String>,
     code_challenge_method: Option<String>,
     scope: Option<String>,
+    resource: Option<String>,
     csrf_token: Option<String>,
     /// LIFIC-13: which tool is connecting — a Connected Tools registry id, or
     /// empty meaning `tool_custom` holds a free-text name.
@@ -592,6 +596,20 @@ async fn authorize_approve(
         )
             .into_response();
     };
+
+    let expected_resource = format!(
+        "{}/mcp",
+        effective_issuer(&oauth, &headers).trim_end_matches('/')
+    );
+    if let Some(resource) = form.resource.as_deref()
+        && resource != expected_resource
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Html("Invalid resource indicator.".to_string()),
+        )
+            .into_response();
+    }
 
     // Validate the redirect_uri against the client's registered URIs
     let redirect_ok = if let Ok(conn) = oauth.db.read() {
@@ -670,6 +688,9 @@ async fn authorize_approve(
         let encoded = urlencoding::encode(state);
         redirect_url.push_str(&format!("&state={encoded}"));
     }
+    let issuer = effective_issuer(&oauth, &headers);
+    let encoded_issuer = urlencoding::encode(issuer.trim_end_matches('/'));
+    redirect_url.push_str(&format!("&iss={encoded_issuer}"));
 
     info!(client_id = %form.client_id, "OAuth authorization approved");
     Redirect::to(&redirect_url).into_response()
@@ -2056,6 +2077,41 @@ mod tests {
             "expected redirect, got {}",
             resp.status()
         );
+        let location = resp
+            .headers()
+            .get(axum::http::header::LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .expect("approval should return a redirect location");
+        assert!(
+            location.contains("iss=https%3A%2F%2Fexample.com"),
+            "authorization response must identify its issuer: {location}"
+        );
+    }
+
+    #[tokio::test]
+    async fn authorize_rejects_a_different_resource_indicator() {
+        let (app, db) = test_oauth_app();
+        let session_token = create_test_session(&db);
+        let client_id = register_client_helper(&app, "http://localhost/callback").await;
+        let body = format!(
+            "{}&resource={}",
+            authorize_body(&client_id, "http://localhost/callback", &session_token),
+            urlencoding::encode("https://other.example/mcp")
+        );
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/authorize")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .header("cookie", format!("lific_token={session_token}"))
+                    .body(axum::body::Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
