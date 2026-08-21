@@ -23,7 +23,7 @@ use crate::db::models::{Priority, Status};
 pub const MAX_GITHUB_ISSUES: usize = 10_000;
 pub const MAX_GITHUB_COMMENTS_PER_ISSUE: usize = 1_000;
 pub const MAX_GITHUB_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
-pub const MAX_GITHUB_TOTAL_CONTENT_BYTES: usize = 128 * 1024 * 1024;
+pub const MAX_GITHUB_NORMALIZED_BYTES: usize = 128 * 1024 * 1024;
 
 /// One issue as returned by the GitHub REST API (fields we use).
 #[derive(Debug, Clone, Deserialize)]
@@ -192,7 +192,7 @@ pub fn collect(
     map: &StatusMap,
 ) -> Result<super::FetchedIssues, String> {
     let mut out = super::FetchedIssues::default();
-    let mut total_content_bytes = 0usize;
+    let mut total_normalized_bytes = 0usize;
     let mut page = 1u32;
     loop {
         let (issues, has_next) = fetcher.fetch_issues_page(page, state)?;
@@ -215,13 +215,23 @@ pub fn collect(
                 ));
             }
             let normalized = map_issue(slug, issue, &comments, map);
-            total_content_bytes = total_content_bytes
-                .checked_add(normalized_content_bytes(&normalized))
+            let previous_capacity = out.issues.capacity();
+            out.issues
+                .try_reserve(1)
+                .map_err(|_| "GitHub import normalized allocation failed".to_string())?;
+            let issue_slots = out
+                .issues
+                .capacity()
+                .saturating_sub(previous_capacity)
+                .saturating_mul(std::mem::size_of::<NormalizedIssue>());
+            total_normalized_bytes = total_normalized_bytes
+                .checked_add(issue_slots)
+                .and_then(|bytes| bytes.checked_add(normalized_retained_bytes(&normalized)))
                 .ok_or_else(|| "GitHub import content size overflow".to_string())?;
-            if total_content_bytes > MAX_GITHUB_TOTAL_CONTENT_BYTES {
+            if total_normalized_bytes > MAX_GITHUB_NORMALIZED_BYTES {
                 return Err(format!(
-                    "GitHub import content exceeds {} byte limit",
-                    MAX_GITHUB_TOTAL_CONTENT_BYTES
+                    "GitHub import normalized data exceeds {} byte limit",
+                    MAX_GITHUB_NORMALIZED_BYTES
                 ));
             }
             out.issues.push(normalized);
@@ -245,26 +255,38 @@ pub fn collect(
     Ok(out)
 }
 
-fn normalized_content_bytes(issue: &NormalizedIssue) -> usize {
-    issue.source.len()
-        + issue.title.len()
-        + issue.description.len()
-        + issue.status.as_str().len()
-        + issue.priority.as_str().len()
-        + issue
+fn normalized_retained_bytes(issue: &NormalizedIssue) -> usize {
+    let label_bytes = issue.labels.iter().fold(
+        issue
             .labels
-            .iter()
-            .map(|label| label.name.len() + label.color.as_deref().map_or(0, str::len))
-            .sum::<usize>()
-        + issue
+            .capacity()
+            .saturating_mul(std::mem::size_of::<NormalizedLabel>()),
+        |bytes, label| {
+            bytes
+                .saturating_add(label.name.capacity())
+                .saturating_add(label.color.as_ref().map_or(0, String::capacity))
+        },
+    );
+    let comment_bytes = issue.comments.iter().fold(
+        issue
             .comments
-            .iter()
-            .map(|comment| {
-                comment.author.len()
-                    + comment.body.len()
-                    + comment.created_at.as_deref().map_or(0, str::len)
-            })
-            .sum::<usize>()
+            .capacity()
+            .saturating_mul(std::mem::size_of::<NormalizedComment>()),
+        |bytes, comment| {
+            bytes
+                .saturating_add(comment.author.capacity())
+                .saturating_add(comment.body.capacity())
+                .saturating_add(comment.created_at.as_ref().map_or(0, String::capacity))
+        },
+    );
+
+    issue
+        .source
+        .capacity()
+        .saturating_add(issue.title.capacity())
+        .saturating_add(issue.description.capacity())
+        .saturating_add(label_bytes)
+        .saturating_add(comment_bytes)
 }
 
 /// Parse the RFC 5988 `Link` header to decide whether a next page exists.
@@ -553,8 +575,13 @@ mod tests {
                 created_at: Some("2024-01-01T00:00:00Z".into()),
             }],
         };
-        let fetched =
-            collect(&fetcher, "octocat/hello", StateFilter::All, &StatusMap::default()).unwrap();
+        let fetched = collect(
+            &fetcher,
+            "octocat/hello",
+            StateFilter::All,
+            &StatusMap::default(),
+        )
+        .unwrap();
         // Fixture: 3 real issues + 1 PR.
         assert_eq!(fetched.issues.len(), 3);
         assert_eq!(fetched.skipped_non_issues, 1);
@@ -568,14 +595,41 @@ mod tests {
         let issue = fixture_issues().into_iter().next().unwrap();
         let fetcher = FakeGithub {
             pages: vec![vec![issue]],
-            comments: vec![GithubComment {
-                user: None,
-                body: Some("x".into()),
-                created_at: None,
-            }; MAX_GITHUB_COMMENTS_PER_ISSUE + 1],
+            comments: vec![
+                GithubComment {
+                    user: None,
+                    body: Some("x".into()),
+                    created_at: None,
+                };
+                MAX_GITHUB_COMMENTS_PER_ISSUE + 1
+            ],
         };
-        let error = collect(&fetcher, "octocat/hello", StateFilter::All, &StatusMap::default())
-            .unwrap_err();
+        let error = collect(
+            &fetcher,
+            "octocat/hello",
+            StateFilter::All,
+            &StatusMap::default(),
+        )
+        .unwrap_err();
         assert!(error.contains("too many comments"));
+    }
+
+    #[test]
+    fn normalized_size_counts_empty_comment_allocations() {
+        let issue = fixture_issues().into_iter().next().unwrap();
+        let comments = vec![
+            GithubComment {
+                user: None,
+                body: None,
+                created_at: None,
+            };
+            MAX_GITHUB_COMMENTS_PER_ISSUE
+        ];
+        let normalized = map_issue("octocat/hello", &issue, &comments, &StatusMap::default());
+
+        assert!(
+            normalized_retained_bytes(&normalized)
+                >= comments.len() * std::mem::size_of::<super::super::NormalizedComment>()
+        );
     }
 }
