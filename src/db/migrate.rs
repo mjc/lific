@@ -216,6 +216,11 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "oauth client indexes",
         include_str!("../../migrations/044_oauth_client_indexes.sql"),
     ),
+    (
+        45,
+        "oauth device scope",
+        include_str!("../../migrations/045_oauth_device_scope.sql"),
+    ),
 ];
 
 /// Migrations that rebuild a table other tables reference by foreign key.
