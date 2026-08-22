@@ -466,20 +466,39 @@ fn validate_attachment_schema(conn: &rusqlite::Connection) -> Result<(), LificEr
             |row| row.get(0),
         )
         .map_err(|e| LificError::BadRequest(format!("read staged attachment schema: {e}")))?;
-    let sql = sql
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_ascii_lowercase();
-    let required = [
-        "check (length(sha256) = 64 and sha256 not glob '*[^0-9a-f]*')",
-        "mime text not null check (mime in (",
-        "size_bytes integer not null check (size_bytes >= 0)",
-    ];
-    if required.iter().any(|fragment| !sql.contains(fragment)) {
-        return Err(LificError::BadRequest(
-            "staged attachment table is missing required integrity constraints".into(),
-        ));
+    let probe = rusqlite::Connection::open_in_memory()
+        .map_err(|e| LificError::BadRequest(format!("create staged schema probe: {e}")))?;
+    probe
+        .execute_batch("CREATE TABLE users (id INTEGER PRIMARY KEY);")
+        .map_err(|e| LificError::BadRequest(format!("create staged schema probe: {e}")))?;
+    probe
+        .execute_batch(&sql)
+        .map_err(|e| LificError::BadRequest(format!("create staged schema probe: {e}")))?;
+
+    let insert = |sha256: &str, mime: &str, size_bytes: i64| {
+        probe.execute(
+            "INSERT INTO attachments (sha256, filename, mime, size_bytes)
+             VALUES (?1, 'schema-probe', ?2, ?3)",
+            rusqlite::params![sha256, mime, size_bytes],
+        )
+    };
+    let valid_sha = crate::storage::AttachmentStore::hash_bytes(b"schema-probe");
+    let invalid_mime_sha = "b".repeat(64);
+    let invalid_size_sha = "c".repeat(64);
+    insert(&valid_sha, "text/plain", 0).map_err(|e| {
+        LificError::BadRequest(format!("staged attachment schema rejects valid metadata: {e}"))
+    })?;
+
+    for (sha256, mime, size_bytes) in [
+        ("../outside", "text/plain", 0),
+        (invalid_mime_sha.as_str(), "application/octet-stream", 0),
+        (invalid_size_sha.as_str(), "text/plain", -1),
+    ] {
+        if insert(sha256, mime, size_bytes).is_ok() {
+            return Err(LificError::BadRequest(
+                "staged attachment table is missing required integrity constraints".into(),
+            ));
+        }
     }
     Ok(())
 }
@@ -602,7 +621,7 @@ fn validate_staged_database(staging: &Path, manifest: &Manifest) -> Result<(), L
         }
 
         let mut mime_stmt = conn
-            .prepare("SELECT sha256, mime FROM attachments")
+            .prepare("SELECT DISTINCT sha256, mime FROM attachments")
             .map_err(|e| LificError::BadRequest(format!("read staged attachment MIME: {e}")))?;
         let mime_rows = mime_stmt
             .query_map([], |row| {
@@ -1843,8 +1862,10 @@ mod tests {
         conn.execute_batch(
             "CREATE TABLE attachments (
                 sha256 TEXT NOT NULL,
-                mime TEXT NOT NULL,
-                size_bytes INTEGER NOT NULL
+                filename TEXT NOT NULL,
+                mime TEXT NOT NULL /* mime TEXT NOT NULL CHECK (mime IN ( */,
+                size_bytes INTEGER NOT NULL /* size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0) */
+                /* CHECK (length(sha256) = 64 AND sha256 NOT GLOB '*[^0-9a-f]*') */
             )",
         )
         .unwrap();
