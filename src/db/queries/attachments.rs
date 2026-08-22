@@ -118,11 +118,7 @@ pub fn update_alt_text(
 /// screenshot into two projects produces two rows over one blob, and this is
 /// how `GET /api/attachments/{id}/links` finds the twin so a caller can see
 /// the file is already in the tracker before uploading a third copy.
-pub fn duplicates_of(
-    conn: &Connection,
-    id: i64,
-    sha256: &str,
-) -> Result<Vec<Attachment>, LificError> {
+pub fn duplicates_of(conn: &Connection, id: i64, sha256: &str) -> Result<Vec<Attachment>, LificError> {
     let mut stmt = conn.prepare_cached(&format!(
         "SELECT {ATTACHMENT_COLUMNS} FROM attachments
          WHERE sha256 = ?1 AND id != ?2 ORDER BY id"
@@ -644,10 +640,11 @@ pub fn list_project_attachments(
          WHERE {where_clause}"
     );
     let totals_params = base_params();
-    let (total_count, total_bytes): (i64, i64) =
-        conn.query_row(&totals_sql, bind(&totals_params).as_slice(), |row| {
-            Ok((row.get(0)?, row.get(1)?))
-        })?;
+    let (total_count, total_bytes): (i64, i64) = conn.query_row(
+        &totals_sql,
+        bind(&totals_params).as_slice(),
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
 
     let ids: Vec<i64> = items.iter().map(|item| item.id).collect();
     let mut entities = linked_entities_in_project(conn, project_id, &ids)?;
