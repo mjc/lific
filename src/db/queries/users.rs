@@ -1867,8 +1867,8 @@ mod tests {
         .unwrap();
         conn.execute(
             "INSERT INTO attachments (sha256, filename, mime, size_bytes, uploader_id)
-             VALUES ('abc', 'f.png', 'image/png', 1, ?1)",
-            params![loser],
+             VALUES (?1, 'f.png', 'image/png', 1, ?2)",
+            params![crate::storage::AttachmentStore::hash_bytes(b"abc"), loser],
         )
         .unwrap();
         conn.execute("UPDATE projects SET lead_user_id = ?1", params![loser])

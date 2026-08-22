@@ -206,6 +206,11 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "attachment search",
         include_str!("../../migrations/042_attachment_search.sql"),
     ),
+    (
+        43,
+        "attachment integrity",
+        include_str!("../../migrations/043_attachment_integrity.sql"),
+    ),
 ];
 
 /// Migrations that rebuild a table other tables reference by foreign key.
@@ -234,7 +239,7 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
 /// before its savepoint releases, and `run_inner` repeats the check
 /// batch-wide before commit to cover every other migration that ran while
 /// enforcement was off.
-const FK_REBUILD_MIGRATIONS: &[i64] = &[39];
+const FK_REBUILD_MIGRATIONS: &[i64] = &[39, 43];
 
 /// Highest migration version this binary knows how to apply. Used by
 /// `lific dump`/`restore` (LIF-266) to stamp and gate archives on schema
@@ -640,7 +645,10 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(has_column, 0, "fixture must start on the pre-checksum shape");
+        assert_eq!(
+            has_column, 0,
+            "fixture must start on the pre-checksum shape"
+        );
 
         run(&conn).expect("a legacy database must upgrade cleanly");
 
