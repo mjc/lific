@@ -38,6 +38,7 @@ pub const MAX_ATTACHMENT_BYTES: u64 = 64 * 1024 * 1024;
 pub const MAX_TOTAL_RESTORE_BYTES: u64 = 1024 * 1024 * 1024;
 pub const MAX_RESTORE_ENTRIES: u64 = 10_000;
 const ATTACHMENTS_SCHEMA_VERSION: i64 = 31;
+const ATTACHMENT_INTEGRITY_SCHEMA_VERSION: i64 = 43;
 const TAR_ENTRY_OVERHEAD: u64 = 1024;
 const TAR_END_MARKER_BYTES: u64 = 1024;
 const MAX_ARCHIVE_DECOMPRESSED_BYTES: u64 =
@@ -507,6 +508,41 @@ fn validate_attachment_schema(conn: &rusqlite::Connection) -> Result<(), LificEr
     Ok(())
 }
 
+struct RestoreLock {
+    path: PathBuf,
+}
+
+impl RestoreLock {
+    fn acquire(data_dir: &Path) -> Result<Self, LificError> {
+        let path = data_dir.join(".lific-restore.lock");
+        match std::fs::create_dir(&path) {
+            Ok(()) => Ok(Self { path }),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                Err(LificError::Conflict(
+                    "another restore is already running for this data directory".into(),
+                ))
+            }
+            Err(error) => Err(LificError::Internal(format!(
+                "create restore lock: {error}"
+            ))),
+        }
+    }
+}
+
+impl Drop for RestoreLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir(&self.path);
+    }
+}
+
+fn create_staging_file(path: &Path) -> Result<std::fs::File, LificError> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|e| LificError::Internal(format!("create staging file: {e}")))
+}
+
 /// Validate the extracted SQLite file before it can replace the live DB. This
 /// catches corrupt archives and ensures every metadata attachment reference is
 /// a safe content-addressed filename with matching staged bytes.
@@ -566,8 +602,10 @@ fn validate_staged_database(staging: &Path, manifest: &Manifest) -> Result<(), L
         ));
     }
 
-    if has_attachments {
+    if has_attachments && schema_version >= ATTACHMENT_INTEGRITY_SCHEMA_VERSION {
         validate_attachment_schema(&conn)?;
+    }
+    if has_attachments {
         let mime_placeholders = vec!["?"; crate::storage::ALLOWED_MIMES.len()].join(", ");
         let mut stmt = conn
             .prepare(&format!(
@@ -875,6 +913,8 @@ pub fn run_restore(
     std::fs::create_dir_all(&data_dir)
         .map_err(|e| LificError::Internal(format!("create data dir: {e}")))?;
 
+    let _restore_lock = RestoreLock::acquire(&data_dir)?;
+
     if db_path.exists() && !force {
         return Err(LificError::Conflict(format!(
             "{} already exists; pass --force to restore over it (stop the server first)",
@@ -883,12 +923,12 @@ pub fn run_restore(
     }
 
     // Stage and validate the complete restore before moving any live state.
-    let staging = data_dir.join(format!(".lific-restore-{}", archive_timestamp()));
-    if staging.exists() {
-        std::fs::remove_dir_all(&staging)
-            .map_err(|e| LificError::Internal(format!("clear staging dir: {e}")))?;
-    }
-    std::fs::create_dir_all(staging.join("attachments"))
+    let staging = tempfile::Builder::new()
+        .prefix(".lific-restore-")
+        .tempdir_in(&data_dir)
+        .map_err(|e| LificError::Internal(format!("create staging dir: {e}")))?;
+    let staging_path = staging.path();
+    std::fs::create_dir(staging_path.join("attachments"))
         .map_err(|e| LificError::Internal(format!("create staging dir: {e}")))?;
 
     let extract = (|| -> Result<u64, LificError> {
@@ -913,12 +953,13 @@ pub fn run_restore(
                 // Keep the manifest in staging for validation; return it to the
                 // caller in RestoreResult after the install succeeds.
                 let buf = read_entry_bounded(&mut entry, MAX_MANIFEST_BYTES, "manifest")?;
-                std::fs::write(staging.join(ARCHIVE_MANIFEST_NAME), &buf)
+                let mut output = create_staging_file(&staging_path.join(ARCHIVE_MANIFEST_NAME))?;
+                output
+                    .write_all(&buf)
                     .map_err(|e| LificError::Internal(format!("write manifest: {e}")))?;
             } else if name == ARCHIVE_DB_NAME {
-                let db = staging.join(ARCHIVE_DB_NAME);
-                let mut output = std::fs::File::create(&db)
-                    .map_err(|e| LificError::Internal(format!("create staged db: {e}")))?;
+                let db = staging_path.join(ARCHIVE_DB_NAME);
+                let mut output = create_staging_file(&db)?;
                 copy_entry_bounded(
                     &mut entry,
                     &mut output,
@@ -930,9 +971,8 @@ pub fn run_restore(
                     .map_err(|e| LificError::Internal(format!("chmod staged db: {e}")))?;
             } else if name.starts_with(ARCHIVE_ATTACHMENTS_PREFIX) {
                 let bare = validate_attachment_entry(&name)?;
-                let path = staging.join("attachments").join(&bare);
-                let mut output = std::fs::File::create(&path)
-                    .map_err(|e| LificError::Internal(format!("create staged attachment: {e}")))?;
+                let path = staging_path.join("attachments").join(&bare);
+                let mut output = create_staging_file(&path)?;
                 copy_entry_bounded(
                     &mut entry,
                     &mut output,
@@ -949,17 +989,16 @@ pub fn run_restore(
                 )));
             }
         }
-        if !staging.join(ARCHIVE_DB_NAME).exists() {
+        if !staging_path.join(ARCHIVE_DB_NAME).exists() {
             return Err(LificError::BadRequest("archive is missing lific.db".into()));
         }
-        validate_staged_database(&staging, &manifest)?;
+        validate_staged_database(staging_path, &manifest)?;
         Ok(attachment_count)
     })();
 
     let attachment_count = match extract {
         Ok(n) => n,
         Err(e) => {
-            let _ = std::fs::remove_dir_all(&staging);
             return Err(e);
         }
     };
@@ -967,7 +1006,6 @@ pub fn run_restore(
     // Recheck after staging in case another process created the destination
     // while the archive was being validated.
     if db_path.exists() && !force {
-        let _ = std::fs::remove_dir_all(&staging);
         return Err(LificError::Conflict(format!(
             "{} already exists; pass --force to restore over it (stop the server first)",
             db_path.display()
@@ -975,15 +1013,23 @@ pub fn run_restore(
     }
 
     let mut moved_existing_to = None;
+    let restore_id = staging
+        .path()
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("restore")
+        .to_string();
     if db_path.exists() {
-        if let Err(error) = checkpoint_db_file(db_path) {
-            let _ = std::fs::remove_dir_all(&staging);
-            return Err(error);
-        }
-        let suffix = format!("pre-restore-{}", archive_timestamp());
+        checkpoint_db_file(db_path)?;
+        let suffix = format!("pre-restore-{restore_id}");
         let dest = PathBuf::from(format!("{}.{suffix}", db_path.display()));
+        if std::fs::symlink_metadata(&dest).is_ok() {
+            return Err(LificError::Conflict(format!(
+                "restore backup already exists: {}",
+                dest.display()
+            )));
+        }
         if let Err(error) = std::fs::rename(db_path, &dest) {
-            let _ = std::fs::remove_dir_all(&staging);
             return Err(LificError::Internal(format!(
                 "move existing db aside: {error}"
             )));
@@ -991,7 +1037,6 @@ pub fn run_restore(
         for ext in ["-wal", "-shm"] {
             let side = PathBuf::from(format!("{}{ext}", db_path.display()));
             if let Err(error) = remove_file_if_present(&side) {
-                let _ = std::fs::remove_dir_all(&staging);
                 let cause = LificError::Internal(format!("remove old {ext}: {error}"));
                 return Err(rollback_moved_db(&dest, db_path, cause));
             }
@@ -1006,11 +1051,16 @@ pub fn run_restore(
     let attachments_backup = PathBuf::from(format!(
         "{}.pre-restore-{}",
         attachments_dest.display(),
-        archive_timestamp()
+        restore_id
     ));
     let had_attachments = attachments_dest.exists();
+    if had_attachments && std::fs::symlink_metadata(&attachments_backup).is_ok() {
+        return Err(LificError::Conflict(format!(
+            "restore attachment backup already exists: {}",
+            attachments_backup.display()
+        )));
+    }
     if had_attachments && let Err(e) = std::fs::rename(&attachments_dest, &attachments_backup) {
-        let _ = std::fs::remove_dir_all(&staging);
         let cause = LificError::Internal(format!("move existing attachments aside: {e}"));
         return Err(match &moved_existing_to {
             Some(moved) => rollback_moved_db(moved, db_path, cause),
@@ -1019,11 +1069,11 @@ pub fn run_restore(
     }
 
     let install_result = (|| -> Result<(), LificError> {
-        std::fs::rename(staging.join(ARCHIVE_DB_NAME), db_path)
+        std::fs::rename(staging_path.join(ARCHIVE_DB_NAME), db_path)
             .map_err(|e| LificError::Internal(format!("install restored db: {e}")))?;
         set_owner_only(db_path)
             .map_err(|e| LificError::Internal(format!("chmod restored db: {e}")))?;
-        std::fs::rename(staging.join("attachments"), &attachments_dest)
+        std::fs::rename(staging_path.join("attachments"), &attachments_dest)
             .map_err(|e| LificError::Internal(format!("install restored attachments: {e}")))?;
         Ok(())
     })();
@@ -1031,7 +1081,7 @@ pub fn run_restore(
     if let Err(error) = install_result {
         return Err(rollback_install(
             error,
-            &staging,
+            staging_path,
             db_path,
             &attachments_dest,
             &attachments_backup,
@@ -1043,8 +1093,6 @@ pub fn run_restore(
     if had_attachments {
         let _ = std::fs::remove_dir_all(&attachments_backup);
     }
-
-    let _ = std::fs::remove_dir_all(&staging);
 
     Ok(RestoreResult {
         manifest,
@@ -1573,6 +1621,50 @@ mod tests {
     }
 
     #[test]
+    fn staged_database_accepts_pre_integrity_attachment_schema() {
+        let dir_tmp = temp_dir("legacy_attachments");
+        let dir = dir_tmp.path();
+        let db = dir.join(ARCHIVE_DB_NAME);
+        let sha = crate::storage::AttachmentStore::hash_bytes(b"legacy");
+        {
+            let conn = rusqlite::Connection::open(&db).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE _migrations (version INTEGER PRIMARY KEY);
+                 INSERT INTO _migrations (version) VALUES (42);
+                 CREATE TABLE attachments (
+                     sha256 TEXT NOT NULL,
+                     filename TEXT NOT NULL,
+                     mime TEXT NOT NULL,
+                     size_bytes INTEGER NOT NULL
+                 );",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO attachments (sha256, filename, mime, size_bytes)
+                 VALUES (?1, 'legacy.txt', 'text/plain', 6)",
+                rusqlite::params![sha],
+            )
+            .unwrap();
+        }
+
+        let staging = dir.join("staging");
+        fs::create_dir_all(staging.join("attachments")).unwrap();
+        fs::copy(&db, staging.join(ARCHIVE_DB_NAME)).unwrap();
+        fs::write(staging.join("attachments").join(&sha), b"legacy").unwrap();
+        let manifest = Manifest {
+            lific_version: "old".into(),
+            schema_version: 42,
+            created_at: "now".into(),
+            db_size_bytes: fs::metadata(&db).unwrap().len(),
+            attachment_count: 1,
+            attachment_bytes: 6,
+        };
+
+        validate_staged_database(&staging, &manifest)
+            .expect("pre-integrity archives remain restorable");
+    }
+
+    #[test]
     fn restore_rejects_path_traversal_entry() {
         let dir_tmp = temp_dir("traversal");
         let dir = dir_tmp.path();
@@ -1877,6 +1969,55 @@ mod tests {
 
         let error = validate_attachment_schema(&conn).unwrap_err();
         assert!(error.to_string().contains("integrity constraints"));
+    }
+
+    #[test]
+    fn staged_schema_probe_does_not_trust_source_triggers() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE attachments (
+                sha256 TEXT NOT NULL,
+                filename TEXT NOT NULL,
+                mime TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL
+            );
+            CREATE TRIGGER reject_probe_values BEFORE INSERT ON attachments
+            WHEN NEW.sha256 = '../outside'
+              OR NEW.mime = 'application/octet-stream'
+              OR NEW.size_bytes < 0
+            BEGIN
+                SELECT RAISE(ABORT, 'probe value rejected');
+            END;",
+        )
+        .unwrap();
+
+        let error = validate_attachment_schema(&conn).unwrap_err();
+        assert!(error.to_string().contains("integrity constraints"));
+    }
+
+    #[test]
+    fn restore_lock_serializes_restores() {
+        let dir = temp_dir("restore_lock");
+        let first = RestoreLock::acquire(dir.path()).unwrap();
+        assert!(matches!(
+            RestoreLock::acquire(dir.path()),
+            Err(LificError::Conflict(_))
+        ));
+        drop(first);
+        RestoreLock::acquire(dir.path()).expect("lock is released after restore");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn staging_file_does_not_follow_symlinks() {
+        let dir = temp_dir("staging_symlink");
+        let target = dir.path().join("outside");
+        let link = dir.path().join("staged");
+        fs::write(&target, b"untouched").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        assert!(create_staging_file(&link).is_err());
+        assert_eq!(fs::read(target).unwrap(), b"untouched");
     }
 
     #[test]
