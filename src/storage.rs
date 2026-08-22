@@ -27,6 +27,13 @@ pub struct AttachmentStore {
     dir: PathBuf,
 }
 
+pub(crate) fn valid_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
 impl AttachmentStore {
     /// Build a store rooted at `<parent-of-db>/attachments`. Mirrors
     /// `Config::backup_dir`'s "resolve relative to the database file" rule so
@@ -58,22 +65,32 @@ impl AttachmentStore {
     /// Absolute path to the sidecar file for a given content hash. Kept
     /// private-ish (only `pub(crate)`) so callers go through
     /// `read`/`write`/`delete` rather than hand-building paths.
-    pub(crate) fn path_for(&self, sha256: &str) -> PathBuf {
-        self.dir.join(sha256)
+    pub(crate) fn path_for(&self, sha256: &str) -> Result<PathBuf, LificError> {
+        if !valid_sha256(sha256) {
+            return Err(LificError::BadRequest(
+                "attachment hash must be 64 lowercase hexadecimal characters".into(),
+            ));
+        }
+        Ok(self.dir.join(sha256))
     }
 
     /// Absolute path to the cached thumbnail for a content hash. Thumbnails
     /// live in a `thumbs/` subdirectory so a plain `read_dir` of the store
     /// still enumerates exactly the original blobs, and so a hash can never
     /// collide with its own derivative.
-    pub(crate) fn thumb_path_for(&self, sha256: &str) -> PathBuf {
-        self.dir.join("thumbs").join(format!("{sha256}.webp"))
+    pub(crate) fn thumb_path_for(&self, sha256: &str) -> Result<PathBuf, LificError> {
+        if !valid_sha256(sha256) {
+            return Err(LificError::BadRequest(
+                "attachment hash must be 64 lowercase hexadecimal characters".into(),
+            ));
+        }
+        Ok(self.dir.join("thumbs").join(format!("{sha256}.webp")))
     }
 
     /// Cache a generated thumbnail. Same temp-file-then-rename dance as
     /// [`Self::write`], so a concurrent reader never sees a partial webp.
     pub fn write_thumb(&self, sha256: &str, bytes: &[u8]) -> Result<(), LificError> {
-        let path = self.thumb_path_for(sha256);
+        let path = self.thumb_path_for(sha256)?;
         let parent = path
             .parent()
             .ok_or_else(|| LificError::Internal("thumbnail path has no parent".into()))?;
@@ -96,7 +113,7 @@ impl AttachmentStore {
     /// which is the ordinary state for an attachment uploaded before
     /// thumbnails existed.
     pub fn read_thumb(&self, sha256: &str) -> Result<Option<Vec<u8>>, LificError> {
-        match std::fs::read(self.thumb_path_for(sha256)) {
+        match std::fs::read(self.thumb_path_for(sha256)?) {
             Ok(bytes) => Ok(Some(bytes)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(LificError::Internal(format!("read thumbnail: {e}"))),
@@ -106,7 +123,7 @@ impl AttachmentStore {
     /// Drop a cached thumbnail. Missing file is success: thumbnails are a
     /// cache, so every delete here is best-effort and repeatable.
     pub fn delete_thumb(&self, sha256: &str) -> Result<(), LificError> {
-        match std::fs::remove_file(self.thumb_path_for(sha256)) {
+        match std::fs::remove_file(self.thumb_path_for(sha256)?) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(LificError::Internal(format!("delete thumbnail: {e}"))),
@@ -127,7 +144,7 @@ impl AttachmentStore {
         let sha = Self::hash_bytes(bytes);
         std::fs::create_dir_all(&self.dir)
             .map_err(|e| LificError::Internal(format!("create attachments dir: {e}")))?;
-        let path = self.path_for(&sha);
+        let path = self.path_for(&sha)?;
         if path.exists() {
             return Ok(sha);
         }
@@ -149,7 +166,7 @@ impl AttachmentStore {
     /// Read the bytes for a content hash. `NotFound` when the sidecar file is
     /// missing (e.g. the DB row survived but the blob was manually removed).
     pub fn read(&self, sha256: &str) -> Result<Vec<u8>, LificError> {
-        let path = self.path_for(sha256);
+        let path = self.path_for(sha256)?;
         std::fs::read(&path).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 LificError::NotFound("attachment bytes not found on disk".into())
@@ -167,7 +184,7 @@ impl AttachmentStore {
         // them. Best-effort: a failure to remove a cache file must not block
         // the blob delete the caller actually asked for.
         let _ = self.delete_thumb(sha256);
-        let path = self.path_for(sha256);
+        let path = self.path_for(sha256)?;
         match std::fs::remove_file(&path) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -679,6 +696,19 @@ mod tests {
     }
 
     #[test]
+    fn invalid_hashes_cannot_escape_the_store() {
+        let (store, tmp) = tmp_store();
+        let outside = tmp.path().join("outside");
+        std::fs::write(&outside, b"must survive").unwrap();
+
+        assert!(store.read("../outside").is_err());
+        assert!(store.delete("../outside").is_err());
+        assert!(store.read_thumb("../outside").is_err());
+        assert!(store.delete_thumb("../outside").is_err());
+        assert_eq!(std::fs::read(outside).unwrap(), b"must survive");
+    }
+
+    #[test]
     fn from_db_path_puts_attachments_next_to_db() {
         let store = AttachmentStore::from_db_path(Path::new("/data/lific/lific.db"));
         assert_eq!(store.dir(), Path::new("/data/lific/attachments"));
@@ -722,8 +752,8 @@ mod tests {
         // A row whose blob is missing from disk must be skipped, not fatal.
         {
             let conn = pool.write().unwrap();
-            q::create_attachment(&conn, "no-such-blob", "ghost.log", "text/plain", 10, None)
-                .unwrap();
+            let sha = AttachmentStore::hash_bytes(b"no-such-blob");
+            q::create_attachment(&conn, &sha, "ghost.log", "text/plain", 10, None).unwrap();
         }
 
         assert_eq!(backfill_attachment_text(&pool, &store).unwrap(), 1);
@@ -988,7 +1018,11 @@ mod tests {
         assert!(!expects_thumbnail("image/png", Some(480), Some(480)));
         assert!(!expects_thumbnail("image/png", None, None));
         assert!(!expects_thumbnail("video/mp4", Some(1920), Some(1080)));
-        assert!(!expects_thumbnail("application/pdf", Some(1920), Some(1080)));
+        assert!(!expects_thumbnail(
+            "application/pdf",
+            Some(1920),
+            Some(1080)
+        ));
     }
 
     #[test]
@@ -1000,7 +1034,7 @@ mod tests {
         store.write_thumb(&sha, b"pretend webp").unwrap();
         assert_eq!(store.read_thumb(&sha).unwrap().unwrap(), b"pretend webp");
         assert_eq!(
-            store.thumb_path_for(&sha).parent().unwrap(),
+            store.thumb_path_for(&sha).unwrap().parent().unwrap(),
             store.dir().join("thumbs")
         );
 

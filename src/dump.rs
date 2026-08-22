@@ -13,10 +13,11 @@
 //! it back into a data dir. The interval backup task (`src/backup.rs`) emits
 //! the *same* artifact via [`write_dump`], so there is exactly one backup shape.
 
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::db::DbPool;
 use crate::error::LificError;
@@ -27,6 +28,19 @@ pub const ARCHIVE_DB_NAME: &str = "lific.db";
 pub const ARCHIVE_MANIFEST_NAME: &str = "manifest.json";
 /// The prefix under which attachment blobs are stored inside the archive.
 pub const ARCHIVE_ATTACHMENTS_PREFIX: &str = "attachments/";
+
+/// Restore limits apply to the uncompressed archive contents. They prevent a
+/// tiny gzip/tar upload from allocating unbounded memory or filling the data
+/// volume before validation can reject it.
+pub const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
+pub const MAX_DB_BYTES: u64 = 512 * 1024 * 1024;
+pub const MAX_ATTACHMENT_BYTES: u64 = 64 * 1024 * 1024;
+pub const MAX_TOTAL_RESTORE_BYTES: u64 = 1024 * 1024 * 1024;
+pub const MAX_RESTORE_ENTRIES: u64 = 10_000;
+const ATTACHMENTS_SCHEMA_VERSION: i64 = 31;
+const TAR_ENTRY_OVERHEAD: u64 = 1024;
+const MAX_ARCHIVE_DECOMPRESSED_BYTES: u64 =
+    MAX_TOTAL_RESTORE_BYTES + MAX_MANIFEST_BYTES + (MAX_RESTORE_ENTRIES + 2) * TAR_ENTRY_OVERHEAD;
 
 /// Metadata describing an archive's contents. Serialized as `manifest.json`
 /// at the root of every dump so a restore can validate compatibility and print
@@ -178,9 +192,8 @@ pub fn write_dump(pool: &DbPool, db_path: &Path, out_path: &Path) -> Result<Mani
             // attachments/<sha256>
             for (name, path, _size) in &blobs {
                 let entry_name = format!("{ARCHIVE_ATTACHMENTS_PREFIX}{name}");
-                tar.append_path_with_name(path, &entry_name).map_err(|e| {
-                    LificError::Internal(format!("append attachment {name}: {e}"))
-                })?;
+                tar.append_path_with_name(path, &entry_name)
+                    .map_err(|e| LificError::Internal(format!("append attachment {name}: {e}")))?;
             }
 
             let enc = tar
@@ -322,7 +335,285 @@ fn validate_attachment_entry(name: &str) -> Result<String, LificError> {
             "rejected attachment entry (path traversal or invalid name): {name}"
         )));
     }
+    if !crate::storage::valid_sha256(rest) {
+        return Err(LificError::BadRequest(format!(
+            "rejected attachment entry (expected lowercase SHA-256): {name}"
+        )));
+    }
     Ok(rest.to_string())
+}
+
+fn validate_manifest_limits(manifest: &Manifest) -> Result<(), LificError> {
+    if manifest.db_size_bytes > MAX_DB_BYTES {
+        return Err(LificError::BadRequest(format!(
+            "archive database exceeds restore limit ({} > {} bytes)",
+            manifest.db_size_bytes, MAX_DB_BYTES
+        )));
+    }
+    if manifest.attachment_count > MAX_RESTORE_ENTRIES {
+        return Err(LificError::BadRequest(format!(
+            "archive has too many attachments ({} > {})",
+            manifest.attachment_count, MAX_RESTORE_ENTRIES
+        )));
+    }
+    if manifest.attachment_bytes > MAX_TOTAL_RESTORE_BYTES
+        || manifest.db_size_bytes > MAX_TOTAL_RESTORE_BYTES - manifest.attachment_bytes
+    {
+        return Err(LificError::BadRequest(
+            "archive contents exceed total restore size limit".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn read_entry_bounded<R: Read>(
+    entry: &mut tar::Entry<'_, R>,
+    max_bytes: u64,
+    label: &str,
+) -> Result<Vec<u8>, LificError> {
+    let size = entry.size();
+    if size > max_bytes {
+        return Err(LificError::BadRequest(format!(
+            "{label} exceeds restore limit ({size} > {max_bytes} bytes)"
+        )));
+    }
+    let mut buf = Vec::with_capacity(size as usize);
+    entry
+        .read_to_end(&mut buf)
+        .map_err(|e| LificError::BadRequest(format!("read {label}: {e}")))?;
+    Ok(buf)
+}
+
+fn bounded_archive_with_limit(
+    file: std::fs::File,
+    max_decompressed_bytes: u64,
+) -> tar::Archive<std::io::Take<flate2::read::GzDecoder<std::fs::File>>> {
+    let decoder = flate2::read::GzDecoder::new(file);
+    tar::Archive::new(decoder.take(max_decompressed_bytes))
+}
+
+fn bounded_archive(
+    file: std::fs::File,
+) -> tar::Archive<std::io::Take<flate2::read::GzDecoder<std::fs::File>>> {
+    bounded_archive_with_limit(file, MAX_ARCHIVE_DECOMPRESSED_BYTES)
+}
+
+fn validate_tar_entry_type<R: Read>(entry: &tar::Entry<'_, R>) -> Result<(), LificError> {
+    if !entry.header().entry_type().is_file() {
+        return Err(LificError::BadRequest(
+            "archive contains an unsupported tar entry type".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn copy_entry_bounded<R: Read, W: Write>(
+    entry: &mut tar::Entry<'_, R>,
+    output: &mut W,
+    max_bytes: u64,
+    total_bytes: &mut u64,
+    label: &str,
+) -> Result<u64, LificError> {
+    let size = entry.size();
+    if size > max_bytes {
+        return Err(LificError::BadRequest(format!(
+            "{label} exceeds restore limit ({size} > {max_bytes} bytes)"
+        )));
+    }
+    let new_total = total_bytes
+        .checked_add(size)
+        .ok_or_else(|| LificError::BadRequest("archive size overflow".into()))?;
+    if new_total > MAX_TOTAL_RESTORE_BYTES {
+        return Err(LificError::BadRequest(
+            "archive contents exceed total restore size limit".into(),
+        ));
+    }
+
+    let copied = std::io::copy(entry, output)
+        .map_err(|e| LificError::BadRequest(format!("read {label}: {e}")))?;
+    if copied != size {
+        return Err(LificError::BadRequest(format!(
+            "read {label}: expected {size} bytes, got {copied}"
+        )));
+    }
+    *total_bytes = new_total;
+    Ok(copied)
+}
+
+fn hash_file(path: &Path) -> Result<String, LificError> {
+    let mut file = std::fs::File::open(path)
+        .map_err(|e| LificError::BadRequest(format!("open attachment: {e}")))?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0; 8192];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|e| LificError::BadRequest(format!("read attachment: {e}")))?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    let digest = digest.finalize();
+    Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+/// Validate the extracted SQLite file before it can replace the live DB. This
+/// catches corrupt archives and ensures every metadata attachment reference is
+/// a safe content-addressed filename with matching staged bytes.
+fn validate_staged_database(staging: &Path, manifest: &Manifest) -> Result<(), LificError> {
+    let db = staging.join(ARCHIVE_DB_NAME);
+    let conn =
+        rusqlite::Connection::open_with_flags(&db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|e| LificError::BadRequest(format!("open staged database: {e}")))?;
+    let check: String = conn
+        .query_row("PRAGMA quick_check", [], |row| row.get(0))
+        .map_err(|e| LificError::BadRequest(format!("validate staged database: {e}")))?;
+    if check != "ok" {
+        return Err(LificError::BadRequest(format!(
+            "staged database integrity check failed: {check}"
+        )));
+    }
+
+    let schema_version: i64 = conn
+        .query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM _migrations",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| LificError::BadRequest(format!("read staged schema version: {e}")))?;
+    if schema_version != manifest.schema_version {
+        return Err(LificError::BadRequest(format!(
+            "staged database schema version {schema_version} does not match manifest {}",
+            manifest.schema_version
+        )));
+    }
+    if schema_version > crate::db::migrate::latest_version() {
+        return Err(LificError::BadRequest(format!(
+            "staged database schema version {schema_version} is newer than this binary"
+        )));
+    }
+
+    let has_attachments: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'attachments')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| LificError::BadRequest(format!("inspect staged schema: {e}")))?;
+    if !has_attachments
+        && (schema_version >= ATTACHMENTS_SCHEMA_VERSION
+            || manifest.attachment_count != 0
+            || manifest.attachment_bytes != 0)
+    {
+        return Err(LificError::BadRequest(
+            "staged database is missing the attachments table".into(),
+        ));
+    }
+
+    if has_attachments && schema_version < ATTACHMENTS_SCHEMA_VERSION {
+        return Err(LificError::BadRequest(
+            "staged database has attachment tables at an unsupported schema version".into(),
+        ));
+    }
+
+    if has_attachments {
+        let mime_placeholders = vec!["?"; crate::storage::ALLOWED_MIMES.len()].join(", ");
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT sha256, MIN(size_bytes), MAX(size_bytes),
+                        SUM(CASE WHEN mime IN ({mime_placeholders}) THEN 0 ELSE 1 END)
+                 FROM attachments
+                 GROUP BY sha256"
+            ))
+            .map_err(|e| LificError::BadRequest(format!("read staged attachment metadata: {e}")))?;
+        let rows = stmt
+            .query_map(
+                rusqlite::params_from_iter(crate::storage::ALLOWED_MIMES.iter().copied()),
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                    ))
+                },
+            )
+            .map_err(|e| LificError::BadRequest(format!("read staged attachment metadata: {e}")))?;
+        for row in rows {
+            let (sha, min_size, max_size, invalid_mimes) = row.map_err(|e| {
+                LificError::BadRequest(format!("read staged attachment metadata: {e}"))
+            })?;
+            if !crate::storage::valid_sha256(&sha)
+                || min_size < 0
+                || min_size != max_size
+                || max_size as u64 > MAX_ATTACHMENT_BYTES
+                || invalid_mimes != 0
+            {
+                return Err(LificError::BadRequest(
+                    "staged attachment metadata has an invalid content address, MIME, or size"
+                        .into(),
+                ));
+            }
+            let size = max_size as u64;
+            let path = staging.join("attachments").join(&sha);
+            let metadata = std::fs::metadata(&path).map_err(|_| {
+                LificError::BadRequest(format!(
+                    "staged database references missing attachment {sha}"
+                ))
+            })?;
+            if !metadata.is_file() || metadata.len() != size {
+                return Err(LificError::BadRequest(format!(
+                    "staged attachment {sha} does not match database metadata"
+                )));
+            }
+            if hash_file(&path)? != sha {
+                return Err(LificError::BadRequest(format!(
+                    "staged attachment {sha} does not match its content address"
+                )));
+            }
+        }
+    }
+
+    let attachments_dir = staging.join("attachments");
+    for entry in std::fs::read_dir(&attachments_dir)
+        .map_err(|e| LificError::BadRequest(format!("read staged attachments: {e}")))?
+    {
+        let entry = entry
+            .map_err(|e| LificError::BadRequest(format!("read staged attachment: {e}")))?;
+        let path = entry.path();
+        let metadata = std::fs::symlink_metadata(&path).map_err(|e| {
+            LificError::BadRequest(format!("inspect staged attachment {}: {e}", path.display()))
+        })?;
+        if !metadata.is_file() {
+            return Err(LificError::BadRequest(format!(
+                "staged attachment is not a regular file: {}",
+                path.display()
+            )));
+        }
+        let name = entry.file_name().into_string().map_err(|_| {
+            LificError::BadRequest(format!(
+                "staged attachment has a non-UTF-8 name: {}",
+                path.display()
+            ))
+        })?;
+        if !crate::storage::valid_sha256(&name) {
+            return Err(LificError::BadRequest(format!(
+                "staged attachment has an invalid content address: {name}"
+            )));
+        }
+        if metadata.len() > MAX_ATTACHMENT_BYTES {
+            return Err(LificError::BadRequest(format!(
+                "staged attachment exceeds restore limit: {name}"
+            )));
+        }
+        if hash_file(&path)? != name {
+            return Err(LificError::BadRequest(format!(
+                "staged attachment {name} does not match its content address"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Read and validate an archive's manifest + entry list without extracting.
@@ -330,29 +621,90 @@ fn validate_attachment_entry(name: &str) -> Result<String, LificError> {
 /// `lific.db`, and any attachment entry that fails [`validate_attachment_entry`].
 pub fn inspect_archive(archive: &Path) -> Result<Manifest, LificError> {
     let manifest = read_manifest(archive)?;
+    validate_manifest_limits(&manifest)?;
 
     // Second pass: validate every entry name (traversal guard) and require the
     // DB member is present.
     let file = std::fs::File::open(archive)
         .map_err(|e| LificError::BadRequest(format!("open archive: {e}")))?;
-    let dec = flate2::read::GzDecoder::new(file);
-    let mut tar = tar::Archive::new(dec);
+    let mut tar = bounded_archive(file);
     let mut has_db = false;
+    let mut db_bytes = None;
+    let mut manifest_entries = 0u64;
+    let mut attachment_names = std::collections::HashSet::new();
+    let mut entry_count = 0u64;
+    let mut attachment_count = 0u64;
+    let mut attachment_bytes = 0u64;
+    let mut payload_bytes = 0u64;
     for entry in tar
         .entries()
         .map_err(|e| LificError::BadRequest(format!("read archive entries: {e}")))?
+        .raw(true)
     {
         let entry = entry.map_err(|e| LificError::BadRequest(format!("read entry: {e}")))?;
+        validate_tar_entry_type(&entry)?;
+        entry_count += 1;
+        if entry_count > MAX_RESTORE_ENTRIES + 2 {
+            return Err(LificError::BadRequest(
+                "archive has too many entries".into(),
+            ));
+        }
+        let size = entry.size();
         let path = entry
             .path()
             .map_err(|e| LificError::BadRequest(format!("entry path: {e}")))?;
         let name = path.to_string_lossy().replace('\\', "/");
         if name == ARCHIVE_MANIFEST_NAME {
+            manifest_entries += 1;
+            if manifest_entries > 1 {
+                return Err(LificError::BadRequest(
+                    "archive contains duplicate manifests".into(),
+                ));
+            }
             continue;
         } else if name == ARCHIVE_DB_NAME {
+            if has_db {
+                return Err(LificError::BadRequest(
+                    "archive contains duplicate databases".into(),
+                ));
+            }
+            if size > MAX_DB_BYTES {
+                return Err(LificError::BadRequest(
+                    "archive database exceeds restore limit".into(),
+                ));
+            }
             has_db = true;
+            db_bytes = Some(size);
+            payload_bytes = payload_bytes
+                .checked_add(size)
+                .ok_or_else(|| LificError::BadRequest("archive size overflow".into()))?;
         } else if name.starts_with(ARCHIVE_ATTACHMENTS_PREFIX) {
             validate_attachment_entry(&name)?;
+            if !attachment_names.insert(name.clone()) {
+                return Err(LificError::BadRequest(format!(
+                    "archive contains duplicate attachment: {name}"
+                )));
+            }
+            if size > MAX_ATTACHMENT_BYTES {
+                return Err(LificError::BadRequest(
+                    "archive attachment exceeds restore limit".into(),
+                ));
+            }
+            attachment_count += 1;
+            attachment_bytes = attachment_bytes
+                .checked_add(size)
+                .ok_or_else(|| LificError::BadRequest("archive attachment size overflow".into()))?;
+            payload_bytes = payload_bytes
+                .checked_add(size)
+                .ok_or_else(|| LificError::BadRequest("archive size overflow".into()))?;
+            if attachment_count > MAX_RESTORE_ENTRIES
+                || attachment_bytes > manifest.attachment_bytes
+                || payload_bytes > MAX_TOTAL_RESTORE_BYTES
+            {
+                return Err(LificError::BadRequest(
+                    "archive attachment contents exceed manifest limits".into(),
+                ));
+            }
         } else {
             return Err(LificError::BadRequest(format!(
                 "rejected unexpected archive entry: {name}"
@@ -360,8 +712,18 @@ pub fn inspect_archive(archive: &Path) -> Result<Manifest, LificError> {
         }
     }
     if !has_db {
+        return Err(LificError::BadRequest("archive is missing lific.db".into()));
+    }
+    if db_bytes != Some(manifest.db_size_bytes) {
         return Err(LificError::BadRequest(
-            "archive is missing lific.db".into(),
+            "archive database size does not match manifest".into(),
+        ));
+    }
+    if attachment_count != manifest.attachment_count
+        || attachment_bytes != manifest.attachment_bytes
+    {
+        return Err(LificError::BadRequest(
+            "archive attachment entries do not match manifest".into(),
         ));
     }
     Ok(manifest)
@@ -371,21 +733,28 @@ pub fn inspect_archive(archive: &Path) -> Result<Manifest, LificError> {
 fn read_manifest(archive: &Path) -> Result<Manifest, LificError> {
     let file = std::fs::File::open(archive)
         .map_err(|e| LificError::BadRequest(format!("open archive: {e}")))?;
-    let dec = flate2::read::GzDecoder::new(file);
-    let mut tar = tar::Archive::new(dec);
+    let mut tar = bounded_archive(file);
+    let mut entry_count = 0u64;
     for entry in tar
         .entries()
         .map_err(|e| LificError::BadRequest(format!("read archive entries: {e}")))?
+        .raw(true)
     {
         let mut entry = entry.map_err(|e| LificError::BadRequest(format!("read entry: {e}")))?;
+        validate_tar_entry_type(&entry)?;
+        entry_count += 1;
+        if entry_count > MAX_RESTORE_ENTRIES + 2 {
+            return Err(LificError::BadRequest(
+                "archive has too many entries before its manifest".into(),
+            ));
+        }
         let path = entry
             .path()
             .map_err(|e| LificError::BadRequest(format!("entry path: {e}")))?;
         if path.to_string_lossy() == ARCHIVE_MANIFEST_NAME {
-            let mut buf = String::new();
-            entry
-                .read_to_string(&mut buf)
-                .map_err(|e| LificError::BadRequest(format!("read manifest: {e}")))?;
+            let bytes = read_entry_bounded(&mut entry, MAX_MANIFEST_BYTES, "manifest")?;
+            let buf = String::from_utf8(bytes)
+                .map_err(|e| LificError::BadRequest(format!("manifest is not UTF-8: {e}")))?;
             return serde_json::from_str(&buf)
                 .map_err(|e| LificError::BadRequest(format!("parse manifest.json: {e}")));
         }
@@ -399,7 +768,9 @@ fn read_manifest(archive: &Path) -> Result<Manifest, LificError> {
 /// may still be running (best-effort — see command help).
 fn wal_is_hot(db_path: &Path) -> bool {
     let wal = PathBuf::from(format!("{}-wal", db_path.display()));
-    std::fs::metadata(&wal).map(|m| m.len() > 0).unwrap_or(false)
+    std::fs::metadata(&wal)
+        .map(|m| m.len() > 0)
+        .unwrap_or(false)
 }
 
 /// Run `lific restore`: validate the archive, then stage-extract it into the
@@ -431,39 +802,18 @@ pub fn run_restore(
     std::fs::create_dir_all(&data_dir)
         .map_err(|e| LificError::Internal(format!("create data dir: {e}")))?;
 
-    // Existing-DB guard.
-    let mut moved_existing_to = None;
-    if db_path.exists() {
-        if !force {
-            return Err(LificError::Conflict(format!(
-                "{} already exists; pass --force to restore over it (stop the server first)",
-                db_path.display()
-            )));
-        }
-        // --force: move the existing DB aside rather than deleting, so a
-        // mistaken restore is recoverable. First checkpoint its WAL into the
-        // main file so the moved-aside `.db` is self-contained (the WAL/SHM are
-        // named after the live path and won't follow a rename). Best-effort —
-        // if the server holds the db open we still move what's on disk.
-        checkpoint_db_file(db_path);
-        let ts = archive_timestamp();
-        let suffix = format!("pre-restore-{ts}");
-        let dest = PathBuf::from(format!("{}.{suffix}", db_path.display()));
-        std::fs::rename(db_path, &dest)
-            .map_err(|e| LificError::Internal(format!("move existing db aside: {e}")))?;
-        // Discard the now-redundant WAL/SHM (already folded into the moved db).
-        for ext in ["-wal", "-shm"] {
-            let side = PathBuf::from(format!("{}{ext}", db_path.display()));
-            let _ = std::fs::remove_file(&side);
-        }
-        moved_existing_to = Some(dest);
+    if db_path.exists() && !force {
+        return Err(LificError::Conflict(format!(
+            "{} already exists; pass --force to restore over it (stop the server first)",
+            db_path.display()
+        )));
     }
 
-    // Staged extraction: unpack into a temp dir next to the data dir, then move
-    // into place. A failure mid-extract leaves the original data dir untouched.
+    // Stage and validate the complete restore before moving any live state.
     let staging = data_dir.join(format!(".lific-restore-{}", archive_timestamp()));
     if staging.exists() {
-        let _ = std::fs::remove_dir_all(&staging);
+        std::fs::remove_dir_all(&staging)
+            .map_err(|e| LificError::Internal(format!("clear staging dir: {e}")))?;
     }
     std::fs::create_dir_all(staging.join("attachments"))
         .map_err(|e| LificError::Internal(format!("create staging dir: {e}")))?;
@@ -471,42 +821,53 @@ pub fn run_restore(
     let extract = (|| -> Result<u64, LificError> {
         let file = std::fs::File::open(archive)
             .map_err(|e| LificError::BadRequest(format!("open archive: {e}")))?;
-        let dec = flate2::read::GzDecoder::new(file);
-        let mut tar = tar::Archive::new(dec);
+        let mut tar = bounded_archive(file);
         let mut attachment_count = 0u64;
+        let mut total_bytes = 0u64;
         for entry in tar
             .entries()
             .map_err(|e| LificError::BadRequest(format!("read archive entries: {e}")))?
+            .raw(true)
         {
             let mut entry =
                 entry.map_err(|e| LificError::BadRequest(format!("read entry: {e}")))?;
+            validate_tar_entry_type(&entry)?;
             let epath = entry
                 .path()
                 .map_err(|e| LificError::BadRequest(format!("entry path: {e}")))?;
             let name = epath.to_string_lossy().replace('\\', "/");
             if name == ARCHIVE_MANIFEST_NAME {
                 // Persist the manifest alongside the restored DB for provenance.
-                let mut buf = Vec::new();
-                entry
-                    .read_to_end(&mut buf)
-                    .map_err(|e| LificError::BadRequest(format!("read manifest: {e}")))?;
+                let buf = read_entry_bounded(&mut entry, MAX_MANIFEST_BYTES, "manifest")?;
                 std::fs::write(staging.join(ARCHIVE_MANIFEST_NAME), &buf)
                     .map_err(|e| LificError::Internal(format!("write manifest: {e}")))?;
             } else if name == ARCHIVE_DB_NAME {
-                let mut buf = Vec::new();
-                entry
-                    .read_to_end(&mut buf)
-                    .map_err(|e| LificError::BadRequest(format!("read db from archive: {e}")))?;
-                std::fs::write(staging.join(ARCHIVE_DB_NAME), &buf)
-                    .map_err(|e| LificError::Internal(format!("write db: {e}")))?;
+                let db = staging.join(ARCHIVE_DB_NAME);
+                let mut output = std::fs::File::create(&db)
+                    .map_err(|e| LificError::Internal(format!("create staged db: {e}")))?;
+                copy_entry_bounded(
+                    &mut entry,
+                    &mut output,
+                    MAX_DB_BYTES,
+                    &mut total_bytes,
+                    "database",
+                )?;
+                set_owner_only(&db)
+                    .map_err(|e| LificError::Internal(format!("chmod staged db: {e}")))?;
             } else if name.starts_with(ARCHIVE_ATTACHMENTS_PREFIX) {
                 let bare = validate_attachment_entry(&name)?;
-                let mut buf = Vec::new();
-                entry
-                    .read_to_end(&mut buf)
-                    .map_err(|e| LificError::BadRequest(format!("read attachment: {e}")))?;
-                std::fs::write(staging.join("attachments").join(&bare), &buf)
-                    .map_err(|e| LificError::Internal(format!("write attachment: {e}")))?;
+                let path = staging.join("attachments").join(&bare);
+                let mut output = std::fs::File::create(&path)
+                    .map_err(|e| LificError::Internal(format!("create staged attachment: {e}")))?;
+                copy_entry_bounded(
+                    &mut entry,
+                    &mut output,
+                    MAX_ATTACHMENT_BYTES,
+                    &mut total_bytes,
+                    "attachment",
+                )?;
+                set_owner_only(&path)
+                    .map_err(|e| LificError::Internal(format!("chmod staged attachment: {e}")))?;
                 attachment_count += 1;
             } else {
                 return Err(LificError::BadRequest(format!(
@@ -515,39 +876,99 @@ pub fn run_restore(
             }
         }
         if !staging.join(ARCHIVE_DB_NAME).exists() {
-            return Err(LificError::BadRequest(
-                "archive is missing lific.db".into(),
-            ));
+            return Err(LificError::BadRequest("archive is missing lific.db".into()));
         }
+        validate_staged_database(&staging, &manifest)?;
         Ok(attachment_count)
     })();
 
     let attachment_count = match extract {
         Ok(n) => n,
         Err(e) => {
-            // Roll back: discard staging; restore the moved-aside DB if any.
-            // The moved db is self-contained (WAL was checkpointed before the
-            // move), so a bare rename back is enough.
             let _ = std::fs::remove_dir_all(&staging);
-            return Err(match &moved_existing_to {
-                Some(moved) => rollback_moved_db(moved, db_path, e),
-                None => e,
-            });
+            return Err(e);
         }
     };
 
-    // Move restored files into place. DB first, then swap the attachments dir.
-    std::fs::rename(staging.join(ARCHIVE_DB_NAME), db_path)
-        .map_err(|e| LificError::Internal(format!("install restored db: {e}")))?;
-    set_owner_only(db_path)
-        .map_err(|e| LificError::Internal(format!("chmod restored db: {e}")))?;
-
-    let attachments_dest = attachments_dir_for(db_path);
-    if attachments_dest.exists() {
-        let _ = std::fs::remove_dir_all(&attachments_dest);
+    // Recheck after staging in case another process created the destination
+    // while the archive was being validated.
+    if db_path.exists() && !force {
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(LificError::Conflict(format!(
+            "{} already exists; pass --force to restore over it (stop the server first)",
+            db_path.display()
+        )));
     }
-    std::fs::rename(staging.join("attachments"), &attachments_dest)
-        .map_err(|e| LificError::Internal(format!("install restored attachments: {e}")))?;
+
+    let mut moved_existing_to = None;
+    if db_path.exists() {
+        if let Err(error) = checkpoint_db_file(db_path) {
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(error);
+        }
+        let suffix = format!("pre-restore-{}", archive_timestamp());
+        let dest = PathBuf::from(format!("{}.{suffix}", db_path.display()));
+        if let Err(error) = std::fs::rename(db_path, &dest) {
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(LificError::Internal(format!(
+                "move existing db aside: {error}"
+            )));
+        }
+        for ext in ["-wal", "-shm"] {
+            let side = PathBuf::from(format!("{}{ext}", db_path.display()));
+            if let Err(error) = remove_file_if_present(&side) {
+                let _ = std::fs::remove_dir_all(&staging);
+                let cause = LificError::Internal(format!("remove old {ext}: {error}"));
+                return Err(rollback_moved_db(&dest, db_path, cause));
+            }
+        }
+        moved_existing_to = Some(dest);
+    }
+
+    // Move restored files into place as one recoverable transaction. Keep the
+    // old attachment directory until both the DB and new directory are live so
+    // a filesystem failure cannot leave mismatched metadata and blobs.
+    let attachments_dest = attachments_dir_for(db_path);
+    let attachments_backup = PathBuf::from(format!(
+        "{}.pre-restore-{}",
+        attachments_dest.display(),
+        archive_timestamp()
+    ));
+    let had_attachments = attachments_dest.exists();
+    if had_attachments && let Err(e) = std::fs::rename(&attachments_dest, &attachments_backup) {
+        let _ = std::fs::remove_dir_all(&staging);
+        let cause = LificError::Internal(format!("move existing attachments aside: {e}"));
+        return Err(match &moved_existing_to {
+            Some(moved) => rollback_moved_db(moved, db_path, cause),
+            None => cause,
+        });
+    }
+
+    let install_result = (|| -> Result<(), LificError> {
+        std::fs::rename(staging.join(ARCHIVE_DB_NAME), db_path)
+            .map_err(|e| LificError::Internal(format!("install restored db: {e}")))?;
+        set_owner_only(db_path)
+            .map_err(|e| LificError::Internal(format!("chmod restored db: {e}")))?;
+        std::fs::rename(staging.join("attachments"), &attachments_dest)
+            .map_err(|e| LificError::Internal(format!("install restored attachments: {e}")))?;
+        Ok(())
+    })();
+
+    if let Err(error) = install_result {
+        return Err(rollback_install(
+            error,
+            &staging,
+            db_path,
+            &attachments_dest,
+            &attachments_backup,
+            had_attachments,
+            moved_existing_to.as_deref(),
+        ));
+    }
+
+    if had_attachments {
+        let _ = std::fs::remove_dir_all(&attachments_backup);
+    }
 
     let _ = std::fs::remove_dir_all(&staging);
 
@@ -559,14 +980,71 @@ pub fn run_restore(
     })
 }
 
+fn remove_file_if_present(path: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn remove_dir_if_present(path: &Path) -> std::io::Result<()> {
+    match std::fs::remove_dir_all(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn rollback_install(
+    cause: LificError,
+    staging: &Path,
+    db_path: &Path,
+    attachments_dest: &Path,
+    attachments_backup: &Path,
+    had_attachments: bool,
+    moved_existing_to: Option<&Path>,
+) -> LificError {
+    let mut failures = Vec::new();
+    if let Err(error) = remove_file_if_present(db_path) {
+        failures.push(format!("remove installed database: {error}"));
+    }
+    if let Err(error) = remove_dir_if_present(attachments_dest) {
+        failures.push(format!("remove installed attachments: {error}"));
+    }
+    if had_attachments && let Err(error) = std::fs::rename(attachments_backup, attachments_dest) {
+        failures.push(format!("restore previous attachments: {error}"));
+    }
+    if let Some(moved) = moved_existing_to
+        && let Err(error) = std::fs::rename(moved, db_path)
+    {
+        failures.push(format!(
+            "restore previous database from {}: {error}",
+            moved.display()
+        ));
+    }
+    if let Err(error) = remove_dir_if_present(staging) {
+        failures.push(format!("remove staging directory: {error}"));
+    }
+
+    if failures.is_empty() {
+        cause
+    } else {
+        LificError::Internal(format!(
+            "restore failed ({cause}); rollback also failed: {}",
+            failures.join("; ")
+        ))
+    }
+}
+
 /// Put the database that `--force` moved aside back at `db_path` after a failed
 /// restore, and decide which error the caller should surface.
 ///
 /// On success the original failure (`cause`) is returned unchanged. If the
 /// rollback rename itself fails, swallowing it would tell the user only that
 /// the restore failed while their database sits at a path they were never
-/// shown, reading exactly like data loss (LIF-371). So that case returns a
-/// combined error carrying both failures and the exact path the original
+/// shown, reading exactly like data loss. So that case returns a combined
+/// error carrying both failures and the exact path the original
 /// database still occupies, plus where to move it back to.
 fn rollback_moved_db(moved: &Path, db_path: &Path, cause: LificError) -> LificError {
     match std::fs::rename(moved, db_path) {
@@ -584,12 +1062,20 @@ fn rollback_moved_db(moved: &Path, db_path: &Path, cause: LificError) -> LificEr
 
 /// Checkpoint a database file's WAL into the main file, so the `.db` is
 /// self-contained (used before moving an existing db aside under `--force`).
-/// Best-effort: opening or checkpointing failure is ignored (nothing on disk
-/// changes for the worse).
-fn checkpoint_db_file(db_path: &Path) {
-    if let Ok(conn) = rusqlite::Connection::open(db_path) {
-        let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+/// Failing closed is important: deleting the sidecars after a failed
+/// checkpoint could discard committed WAL-backed data.
+fn checkpoint_db_file(db_path: &Path) -> Result<(), LificError> {
+    let conn = rusqlite::Connection::open(db_path)
+        .map_err(|e| LificError::Internal(format!("open database for WAL checkpoint: {e}")))?;
+    let busy: i64 = conn
+        .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))
+        .map_err(|e| LificError::Internal(format!("checkpoint database WAL: {e}")))?;
+    if busy != 0 {
+        return Err(LificError::Conflict(
+            "database WAL is busy; stop the server before forcing a restore".into(),
+        ));
     }
+    Ok(())
 }
 
 /// True when a hot WAL warns the server may be running. Exposed so the CLI can
@@ -638,9 +1124,23 @@ mod tests {
         }
         let att = dir.join("attachments");
         fs::create_dir_all(&att).unwrap();
-        fs::write(att.join("deadbeef01"), b"blob one").unwrap();
-        fs::write(att.join("deadbeef02"), b"second blob bytes").unwrap();
-        fs::write(att.join("deadbeef02.tmp"), b"partial write").unwrap();
+        let first_sha = crate::storage::AttachmentStore::hash_bytes(b"blob one");
+        let second_sha = crate::storage::AttachmentStore::hash_bytes(b"second blob bytes");
+        fs::write(
+            att.join(&first_sha),
+            b"blob one",
+        )
+        .unwrap();
+        fs::write(
+            att.join(&second_sha),
+            b"second blob bytes",
+        )
+        .unwrap();
+        fs::write(
+            att.join(format!("{second_sha}.tmp")),
+            b"partial write",
+        )
+        .unwrap();
         (tmp, db_path)
     }
 
@@ -651,7 +1151,13 @@ mod tests {
         let mut tar = tar::Archive::new(dec);
         tar.entries()
             .unwrap()
-            .map(|e| e.unwrap().path().unwrap().to_string_lossy().replace('\\', "/"))
+            .map(|e| {
+                e.unwrap()
+                    .path()
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
             .collect()
     }
 
@@ -665,17 +1171,29 @@ mod tests {
         let entries = archive_entries(&out);
         assert!(entries.contains(&ARCHIVE_DB_NAME.to_string()));
         assert!(entries.contains(&ARCHIVE_MANIFEST_NAME.to_string()));
-        assert!(entries.contains(&"attachments/deadbeef01".to_string()));
-        assert!(entries.contains(&"attachments/deadbeef02".to_string()));
+        assert!(entries.contains(&format!(
+            "{ARCHIVE_ATTACHMENTS_PREFIX}{}",
+            crate::storage::AttachmentStore::hash_bytes(b"blob one")
+        )));
+        assert!(entries.contains(&format!(
+            "{ARCHIVE_ATTACHMENTS_PREFIX}{}",
+            crate::storage::AttachmentStore::hash_bytes(b"second blob bytes")
+        )));
         assert!(
             !entries.iter().any(|e| e.ends_with(".tmp")),
             "in-progress .tmp writes must be excluded: {entries:?}"
         );
 
         assert_eq!(manifest.attachment_count, 2);
-        assert_eq!(manifest.attachment_bytes, (b"blob one".len() + b"second blob bytes".len()) as u64);
+        assert_eq!(
+            manifest.attachment_bytes,
+            (b"blob one".len() + b"second blob bytes".len()) as u64
+        );
         assert_eq!(manifest.lific_version, env!("CARGO_PKG_VERSION"));
-        assert_eq!(manifest.schema_version, crate::db::migrate::latest_version());
+        assert_eq!(
+            manifest.schema_version,
+            crate::db::migrate::latest_version()
+        );
         assert!(manifest.db_size_bytes > 0);
     }
 
@@ -778,19 +1296,27 @@ mod tests {
         let pool = crate::db::open(&dst_db).unwrap();
         let conn = pool.read().unwrap();
         let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM projects WHERE identifier = 'DMP'", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT COUNT(*) FROM projects WHERE identifier = 'DMP'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(count, 1);
 
         // Blob bytes identical.
         assert_eq!(
-            fs::read(dst_dir.join("attachments").join("deadbeef01")).unwrap(),
+            fs::read(dst_dir.join("attachments").join(
+                crate::storage::AttachmentStore::hash_bytes(b"blob one"),
+            ))
+            .unwrap(),
             b"blob one"
         );
         assert_eq!(
-            fs::read(dst_dir.join("attachments").join("deadbeef02")).unwrap(),
+            fs::read(dst_dir.join("attachments").join(
+                crate::storage::AttachmentStore::hash_bytes(b"second blob bytes"),
+            ))
+            .unwrap(),
             b"second blob bytes"
         );
     }
@@ -841,26 +1367,62 @@ mod tests {
         }
 
         let res = run_restore(&out, &dst_db, true).unwrap();
-        let moved = res.moved_existing_to.expect("existing db should be moved aside");
+        let moved = res
+            .moved_existing_to
+            .expect("existing db should be moved aside");
         assert!(moved.exists(), "moved-aside db must still exist");
         assert!(
-            moved.file_name().unwrap().to_string_lossy().contains("pre-restore-"),
+            moved
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .contains("pre-restore-"),
             "moved db name must include pre-restore-: {}",
             moved.display()
         );
         // The moved-aside db still has the OLD project.
         let conn = rusqlite::Connection::open(&moved).unwrap();
         let old: i64 = conn
-            .query_row("SELECT COUNT(*) FROM projects WHERE identifier='OLD'", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM projects WHERE identifier='OLD'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(old, 1);
         // The live db now has the restored project.
         let pool = crate::db::open(&dst_db).unwrap();
         let conn = pool.read().unwrap();
         let dmp: i64 = conn
-            .query_row("SELECT COUNT(*) FROM projects WHERE identifier='DMP'", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM projects WHERE identifier='DMP'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(dmp, 1);
+    }
+
+    #[test]
+    fn force_restore_refuses_an_uncheckpointable_database() {
+        let (src_dir_tmp, src_db) = seed_data_dir("checkpoint_src");
+        let archive = src_dir_tmp.path().join("backup.tar.gz");
+        write_dump(&crate::db::open(&src_db).unwrap(), &src_db, &archive).unwrap();
+
+        let destination = temp_dir("checkpoint_dst");
+        let db_path = destination.path().join(ARCHIVE_DB_NAME);
+        fs::create_dir(&db_path).unwrap();
+        let sentinel = db_path.join("must-survive");
+        fs::write(&sentinel, b"original state").unwrap();
+
+        let error = run_restore(&archive, &db_path, true).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("open database for WAL checkpoint")
+        );
+        assert!(db_path.is_dir());
+        assert_eq!(fs::read(sentinel).unwrap(), b"original state");
     }
 
     #[test]
@@ -880,7 +1442,60 @@ mod tests {
         let dst_db = dst_dir.join("lific.db");
         let err = run_restore(&bumped, &dst_db, false).unwrap_err();
         assert!(matches!(err, LificError::BadRequest(_)), "got {err:?}");
-        assert!(!dst_db.exists(), "nothing should be restored on schema refusal");
+        assert!(
+            !dst_db.exists(),
+            "nothing should be restored on schema refusal"
+        );
+    }
+
+    #[test]
+    fn restore_accepts_pre_attachment_schema_without_attachment_table() {
+        let dir_tmp = temp_dir("legacy_schema");
+        let dir = dir_tmp.path();
+        let legacy_db = dir.join("legacy.db");
+        {
+            let conn = rusqlite::Connection::open(&legacy_db).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE _migrations (version INTEGER PRIMARY KEY);
+                 INSERT INTO _migrations (version) VALUES (30);",
+            )
+            .unwrap();
+        }
+
+        let archive = dir.join("legacy.tar.gz");
+        let manifest = Manifest {
+            lific_version: "old".into(),
+            schema_version: 30,
+            created_at: "now".into(),
+            db_size_bytes: fs::metadata(&legacy_db).unwrap().len(),
+            attachment_count: 0,
+            attachment_bytes: 0,
+        };
+        let file = fs::File::create(&archive).unwrap();
+        let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+        let mut builder = tar::Builder::new(encoder);
+        append_bytes(
+            &mut builder,
+            ARCHIVE_MANIFEST_NAME,
+            &serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        builder
+            .append_path_with_name(&legacy_db, ARCHIVE_DB_NAME)
+            .unwrap();
+        builder.into_inner().unwrap().finish().unwrap();
+
+        let destination = temp_dir("legacy_schema_dst");
+        let db_path = destination.path().join(ARCHIVE_DB_NAME);
+        run_restore(&archive, &db_path, false).expect("older empty backups remain restorable");
+        assert!(db_path.exists());
+        assert!(
+            !destination
+                .path()
+                .join("attachments")
+                .join("unexpected")
+                .exists()
+        );
     }
 
     #[test]
@@ -971,7 +1586,11 @@ mod tests {
         let pool = crate::db::open(&dst_db).unwrap();
         let conn = pool.read().unwrap();
         let org: i64 = conn
-            .query_row("SELECT COUNT(*) FROM projects WHERE identifier='ORG'", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM projects WHERE identifier='ORG'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(org, 1, "original data must survive a failed restore");
     }
@@ -1029,7 +1648,12 @@ mod tests {
 
     #[test]
     fn validate_attachment_entry_accepts_bare_hash_rejects_traversal() {
-        assert!(validate_attachment_entry("attachments/abc123def").is_ok());
+        assert!(
+            validate_attachment_entry(
+                "attachments/0000000000000000000000000000000000000000000000000000000000000001"
+            )
+            .is_ok()
+        );
         assert!(validate_attachment_entry("attachments/../etc/passwd").is_err());
         assert!(validate_attachment_entry("attachments/sub/dir").is_err());
         assert!(validate_attachment_entry("attachments/").is_err());
@@ -1037,11 +1661,308 @@ mod tests {
         assert!(validate_attachment_entry("attachments/.hidden").is_err());
     }
 
+    #[test]
+    fn inspect_rejects_manifest_size_bomb() {
+        let (dir_tmp, db_path) = seed_data_dir("manifest_limit");
+        let dir = dir_tmp.path();
+        let out = dir.join("source.tar.gz");
+        write_dump(&crate::db::open(&db_path).unwrap(), &db_path, &out).unwrap();
+        let mut manifest = read_manifest(&out).unwrap();
+        manifest.attachment_bytes = MAX_TOTAL_RESTORE_BYTES;
+        let rewritten = dir.join("oversized.tar.gz");
+        rewrite_archive_manifest(&out, &rewritten, &manifest);
+        let error = inspect_archive(&rewritten).unwrap_err();
+        assert!(error.to_string().contains("total restore size"));
+    }
+
+    #[test]
+    fn compressed_archive_expansion_is_bounded() {
+        const TEST_LIMIT: u64 = 1024 * 1024;
+        let dir_tmp = temp_dir("compressed_expansion");
+        let archive = dir_tmp.path().join("bomb.tar.gz");
+        let expanded_bytes = vec![b'x'; (TEST_LIMIT * 2) as usize];
+        let file = fs::File::create(&archive).unwrap();
+        let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::best());
+        let mut builder = tar::Builder::new(encoder);
+        append_bytes(&mut builder, "payload", &expanded_bytes).unwrap();
+        builder.into_inner().unwrap().finish().unwrap();
+
+        assert!(
+            fs::metadata(&archive).unwrap().len() < expanded_bytes.len() as u64 / 100,
+            "the fixture must be much smaller while expanding past the reader limit"
+        );
+        let file = fs::File::open(&archive).unwrap();
+        let mut archive = bounded_archive_with_limit(file, TEST_LIMIT);
+        let mut entries = archive.entries().unwrap().raw(true);
+        let mut entry = entries.next().unwrap().unwrap();
+        let mut total_bytes = 0;
+        let error = copy_entry_bounded(
+            &mut entry,
+            &mut std::io::sink(),
+            MAX_ATTACHMENT_BYTES,
+            &mut total_bytes,
+            "payload",
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("expected 2097152 bytes"));
+    }
+
+    #[test]
+    fn inspect_rejects_tar_extension_entries_before_reading_their_body() {
+        let dir_tmp = temp_dir("tar_extension");
+        let archive = dir_tmp.path().join("extension.tar.gz");
+        let file = fs::File::create(&archive).unwrap();
+        let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::best());
+        let mut builder = tar::Builder::new(encoder);
+        let extension = vec![b'x'; MAX_MANIFEST_BYTES as usize + 1];
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(tar::EntryType::XHeader);
+        header.set_size(extension.len() as u64);
+        header.set_mode(0o600);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, "pax", extension.as_slice())
+            .unwrap();
+        builder.into_inner().unwrap().finish().unwrap();
+
+        let error = inspect_archive(&archive).unwrap_err();
+        assert!(error.to_string().contains("unsupported tar entry type"));
+    }
+
+    #[test]
+    fn manifest_scan_rejects_excessive_entries_before_manifest() {
+        let dir_tmp = temp_dir("manifest_entries");
+        let archive = dir_tmp.path().join("too-many.tar.gz");
+        let file = fs::File::create(&archive).unwrap();
+        let enc = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+        let mut builder = tar::Builder::new(enc);
+        for index in 0..(MAX_RESTORE_ENTRIES + 3) {
+            append_bytes(&mut builder, &format!("ignored-{index}"), &[0]).unwrap();
+        }
+        let encoder = builder.into_inner().unwrap();
+        encoder.finish().unwrap();
+        let error = inspect_archive(&archive).unwrap_err();
+        assert!(error.to_string().contains("before its manifest"));
+    }
+
+    #[test]
+    fn inspect_rejects_duplicate_control_entries() {
+        let dir_tmp = temp_dir("duplicate_entries");
+        let archive = dir_tmp.path().join("duplicate.tar.gz");
+        let file = fs::File::create(&archive).unwrap();
+        let enc = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+        let mut builder = tar::Builder::new(enc);
+        let manifest = Manifest {
+            lific_version: env!("CARGO_PKG_VERSION").into(),
+            schema_version: 1,
+            created_at: String::new(),
+            db_size_bytes: 1,
+            attachment_count: 0,
+            attachment_bytes: 0,
+        };
+        let bytes = serde_json::to_vec(&manifest).unwrap();
+        append_bytes(&mut builder, ARCHIVE_MANIFEST_NAME, &bytes).unwrap();
+        append_bytes(&mut builder, ARCHIVE_MANIFEST_NAME, &bytes).unwrap();
+        let encoder = builder.into_inner().unwrap();
+        encoder.finish().unwrap();
+        let error = inspect_archive(&archive).unwrap_err();
+        assert!(error.to_string().contains("duplicate manifest"));
+    }
+
+    #[test]
+    fn restore_rejects_manifest_schema_that_does_not_match_database() {
+        let (dir_tmp, db_path) = seed_data_dir("schema_mismatch");
+        let archive = dir_tmp.path().join("source.tar.gz");
+        write_dump(&crate::db::open(&db_path).unwrap(), &db_path, &archive).unwrap();
+        let rewritten = dir_tmp.path().join("mismatch.tar.gz");
+        rewrite_archive_with_schema(
+            &archive,
+            &rewritten,
+            crate::db::migrate::latest_version() - 1,
+        );
+
+        let destination = temp_dir("schema_mismatch_dst");
+        let error =
+            run_restore(&rewritten, &destination.path().join(ARCHIVE_DB_NAME), false).unwrap_err();
+        assert!(error.to_string().contains("does not match manifest"));
+    }
+
+    #[test]
+    fn staged_database_rejects_blob_content_hash_mismatch() {
+        let (dir_tmp, db_path) = seed_data_dir("content_hash");
+        let dir = dir_tmp.path();
+        let pool = crate::db::open(&db_path).unwrap();
+        let sha = crate::storage::AttachmentStore::hash_bytes(b"good");
+        {
+            let conn = pool.write().unwrap();
+            crate::db::queries::attachments::create_attachment(
+                &conn,
+                &sha,
+                "note.txt",
+                "text/plain",
+                4,
+                None,
+            )
+            .unwrap();
+        }
+        checkpoint_db_file(&db_path).unwrap();
+        let staging = dir.join("staging");
+        fs::create_dir_all(staging.join("attachments")).unwrap();
+        fs::copy(&db_path, staging.join(ARCHIVE_DB_NAME)).unwrap();
+        fs::write(staging.join("attachments").join(&sha), b"evil").unwrap();
+        let manifest = Manifest {
+            lific_version: env!("CARGO_PKG_VERSION").into(),
+            schema_version: crate::db::migrate::latest_version(),
+            created_at: String::new(),
+            db_size_bytes: fs::metadata(&db_path).unwrap().len(),
+            attachment_count: 1,
+            attachment_bytes: 4,
+        };
+
+        let error = validate_staged_database(&staging, &manifest).unwrap_err();
+        assert!(error.to_string().contains("content address"));
+    }
+
+    #[test]
+    fn staged_database_rejects_duplicate_hashes_with_inconsistent_sizes() {
+        let (dir_tmp, db_path) = seed_data_dir("duplicate_sizes");
+        let dir = dir_tmp.path();
+        let pool = crate::db::open(&db_path).unwrap();
+        let sha = crate::storage::AttachmentStore::hash_bytes(b"good");
+        {
+            let conn = pool.write().unwrap();
+            for (filename, size) in [("one.txt", 4), ("two.txt", 5)] {
+                crate::db::queries::attachments::create_attachment(
+                    &conn,
+                    &sha,
+                    filename,
+                    "text/plain",
+                    size,
+                    None,
+                )
+                .unwrap();
+            }
+        }
+        checkpoint_db_file(&db_path).unwrap();
+        let staging = dir.join("staging");
+        fs::create_dir_all(staging.join("attachments")).unwrap();
+        fs::copy(&db_path, staging.join(ARCHIVE_DB_NAME)).unwrap();
+        fs::write(staging.join("attachments").join(&sha), b"good").unwrap();
+        let manifest = Manifest {
+            lific_version: env!("CARGO_PKG_VERSION").into(),
+            schema_version: crate::db::migrate::latest_version(),
+            created_at: String::new(),
+            db_size_bytes: fs::metadata(&db_path).unwrap().len(),
+            attachment_count: 1,
+            attachment_bytes: 4,
+        };
+
+        let error = validate_staged_database(&staging, &manifest).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("invalid content address, MIME, or size"));
+    }
+
+    #[test]
+    fn staged_database_rejects_unreferenced_blob_content_hash_mismatch() {
+        let (dir_tmp, db_path) = seed_data_dir("unreferenced_content_hash");
+        let dir = dir_tmp.path();
+        let pool = crate::db::open(&db_path).unwrap();
+        checkpoint_db_file(&db_path).unwrap();
+        drop(pool);
+
+        let staging = dir.join("staging");
+        fs::create_dir_all(staging.join("attachments")).unwrap();
+        fs::copy(&db_path, staging.join(ARCHIVE_DB_NAME)).unwrap();
+        let sha = crate::storage::AttachmentStore::hash_bytes(b"good");
+        fs::write(staging.join("attachments").join(&sha), b"evil").unwrap();
+        let manifest = Manifest {
+            lific_version: env!("CARGO_PKG_VERSION").into(),
+            schema_version: crate::db::migrate::latest_version(),
+            created_at: String::new(),
+            db_size_bytes: fs::metadata(&db_path).unwrap().len(),
+            attachment_count: 1,
+            attachment_bytes: 4,
+        };
+
+        let error = validate_staged_database(&staging, &manifest).unwrap_err();
+        assert!(error.to_string().contains("content address"));
+    }
+
+    #[test]
+    fn staged_database_requires_attachment_table() {
+        let (dir_tmp, db_path) = seed_data_dir("missing_attachments_table");
+        let dir = dir_tmp.path();
+        checkpoint_db_file(&db_path).unwrap();
+        let staging = dir.join("staging");
+        fs::create_dir_all(staging.join("attachments")).unwrap();
+        fs::copy(&db_path, staging.join(ARCHIVE_DB_NAME)).unwrap();
+        {
+            let conn = rusqlite::Connection::open(staging.join(ARCHIVE_DB_NAME)).unwrap();
+            conn.execute_batch(
+                "DROP TRIGGER IF EXISTS attachments_fts_ai;
+                 DROP TRIGGER IF EXISTS attachments_fts_au;
+                 DROP TRIGGER IF EXISTS attachments_fts_ad;
+                 DROP TABLE attachments;",
+            )
+            .unwrap();
+        }
+        let manifest = Manifest {
+            lific_version: env!("CARGO_PKG_VERSION").into(),
+            schema_version: crate::db::migrate::latest_version(),
+            created_at: String::new(),
+            db_size_bytes: 0,
+            attachment_count: 0,
+            attachment_bytes: 0,
+        };
+
+        let error = validate_staged_database(&staging, &manifest).unwrap_err();
+        assert!(error.to_string().contains("attachments table"));
+    }
+
+    #[test]
+    fn staged_database_rejects_missing_or_mismatched_attachment_metadata() {
+        let (dir_tmp, db_path) = seed_data_dir("staged_metadata");
+        let dir = dir_tmp.path();
+        let pool = crate::db::open(&db_path).unwrap();
+        let sha = "a".repeat(64);
+        {
+            let conn = pool.write().unwrap();
+            crate::db::queries::attachments::create_attachment(
+                &conn,
+                &sha,
+                "note.txt",
+                "text/plain",
+                4,
+                None,
+            )
+            .unwrap();
+        }
+        checkpoint_db_file(&db_path).unwrap();
+        let staging = dir.join("staging");
+        fs::create_dir_all(staging.join("attachments")).unwrap();
+        fs::copy(&db_path, staging.join(ARCHIVE_DB_NAME)).unwrap();
+        let manifest = Manifest {
+            lific_version: env!("CARGO_PKG_VERSION").into(),
+            schema_version: crate::db::migrate::latest_version(),
+            created_at: String::new(),
+            db_size_bytes: fs::metadata(&db_path).unwrap().len(),
+            attachment_count: 1,
+            attachment_bytes: 4,
+        };
+        let error = validate_staged_database(&staging, &manifest).unwrap_err();
+        assert!(error.to_string().contains("missing attachment"));
+    }
+
     // Test helper: re-pack an archive but overwrite the manifest's
     // schema_version, to simulate an archive from a newer binary.
     fn rewrite_archive_with_schema(src: &Path, dst: &Path, schema_version: i64) {
         let mut manifest = read_manifest(src).unwrap();
         manifest.schema_version = schema_version;
+        rewrite_archive_manifest(src, dst, &manifest);
+    }
+
+    fn rewrite_archive_manifest(src: &Path, dst: &Path, manifest: &Manifest) {
         let mj = serde_json::to_vec_pretty(&manifest).unwrap();
 
         let out = fs::File::create(dst).unwrap();
