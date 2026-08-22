@@ -1018,11 +1018,7 @@ mod tests {
         assert!(!expects_thumbnail("image/png", Some(480), Some(480)));
         assert!(!expects_thumbnail("image/png", None, None));
         assert!(!expects_thumbnail("video/mp4", Some(1920), Some(1080)));
-        assert!(!expects_thumbnail(
-            "application/pdf",
-            Some(1920),
-            Some(1080)
-        ));
+        assert!(!expects_thumbnail("application/pdf", Some(1920), Some(1080)));
     }
 
     #[test]

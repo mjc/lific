@@ -645,10 +645,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(
-            has_column, 0,
-            "fixture must start on the pre-checksum shape"
-        );
+        assert_eq!(has_column, 0, "fixture must start on the pre-checksum shape");
 
         run(&conn).expect("a legacy database must upgrade cleanly");
 
