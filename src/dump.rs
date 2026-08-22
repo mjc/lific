@@ -13,7 +13,6 @@
 //! it back into a data dir. The interval backup task (`src/backup.rs`) emits
 //! the *same* artifact via [`write_dump`], so there is exactly one backup shape.
 
-use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
@@ -385,11 +384,27 @@ fn read_entry_bounded<R: Read>(
     Ok(buf)
 }
 
+fn bounded_archive_with_limit(
+    file: std::fs::File,
+    max_decompressed_bytes: u64,
+) -> tar::Archive<std::io::Take<flate2::read::GzDecoder<std::fs::File>>> {
+    let decoder = flate2::read::GzDecoder::new(file);
+    tar::Archive::new(decoder.take(max_decompressed_bytes))
+}
+
 fn bounded_archive(
     file: std::fs::File,
 ) -> tar::Archive<std::io::Take<flate2::read::GzDecoder<std::fs::File>>> {
-    let decoder = flate2::read::GzDecoder::new(file);
-    tar::Archive::new(decoder.take(MAX_ARCHIVE_DECOMPRESSED_BYTES))
+    bounded_archive_with_limit(file, MAX_ARCHIVE_DECOMPRESSED_BYTES)
+}
+
+fn validate_tar_entry_type<R: Read>(entry: &tar::Entry<'_, R>) -> Result<(), LificError> {
+    if !entry.header().entry_type().is_file() {
+        return Err(LificError::BadRequest(
+            "archive contains an unsupported tar entry type".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn copy_entry_bounded<R: Read, W: Write>(
@@ -486,68 +501,78 @@ fn validate_staged_database(staging: &Path, manifest: &Manifest) -> Result<(), L
             |row| row.get(0),
         )
         .map_err(|e| LificError::BadRequest(format!("inspect staged schema: {e}")))?;
-    if !has_attachments {
+    if !has_attachments
+        && (schema_version >= ATTACHMENTS_SCHEMA_VERSION
+            || manifest.attachment_count != 0
+            || manifest.attachment_bytes != 0)
+    {
         return Err(LificError::BadRequest(
             "staged database is missing the attachments table".into(),
         ));
     }
 
-    if schema_version < ATTACHMENTS_SCHEMA_VERSION {
+    if has_attachments && schema_version < ATTACHMENTS_SCHEMA_VERSION {
         return Err(LificError::BadRequest(
             "staged database has attachment tables at an unsupported schema version".into(),
         ));
     }
 
-    let mut stmt = conn
-        .prepare("SELECT sha256, mime, size_bytes FROM attachments")
-        .map_err(|e| LificError::BadRequest(format!("read staged attachments: {e}")))?;
-    let rows = stmt
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, i64>(2)?,
+    if has_attachments {
+        let mime_placeholders = vec!["?"; crate::storage::ALLOWED_MIMES.len()].join(", ");
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT sha256, MIN(size_bytes), MAX(size_bytes),
+                        SUM(CASE WHEN mime IN ({mime_placeholders}) THEN 0 ELSE 1 END)
+                 FROM attachments
+                 GROUP BY sha256"
             ))
-        })
-        .map_err(|e| LificError::BadRequest(format!("read staged attachment rows: {e}")))?;
-    let mut validated_sizes = HashMap::new();
-    for row in rows {
-        let (sha, mime, size) =
-            row.map_err(|e| LificError::BadRequest(format!("read staged attachment row: {e}")))?;
-        if !crate::storage::valid_sha256(&sha)
-            || size < 0
-            || size as u64 > MAX_ATTACHMENT_BYTES
-            || !crate::storage::ALLOWED_MIMES.contains(&mime.as_str())
-        {
-            return Err(LificError::BadRequest(
-                "staged attachment metadata has an invalid content address, MIME, or size".into(),
-            ));
+            .map_err(|e| LificError::BadRequest(format!("read staged attachment metadata: {e}")))?;
+        let rows = stmt
+            .query_map(
+                rusqlite::params_from_iter(crate::storage::ALLOWED_MIMES.iter().copied()),
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                    ))
+                },
+            )
+            .map_err(|e| LificError::BadRequest(format!("read staged attachment metadata: {e}")))?;
+        for row in rows {
+            let (sha, min_size, max_size, invalid_mimes) = row.map_err(|e| {
+                LificError::BadRequest(format!("read staged attachment metadata: {e}"))
+            })?;
+            if !crate::storage::valid_sha256(&sha)
+                || min_size < 0
+                || min_size != max_size
+                || max_size as u64 > MAX_ATTACHMENT_BYTES
+                || invalid_mimes != 0
+            {
+                return Err(LificError::BadRequest(
+                    "staged attachment metadata has an invalid content address, MIME, or size"
+                        .into(),
+                ));
+            }
+            let size = max_size as u64;
+            let path = staging.join("attachments").join(&sha);
+            let metadata = std::fs::metadata(&path).map_err(|_| {
+                LificError::BadRequest(format!(
+                    "staged database references missing attachment {sha}"
+                ))
+            })?;
+            if !metadata.is_file() || metadata.len() != size {
+                return Err(LificError::BadRequest(format!(
+                    "staged attachment {sha} does not match database metadata"
+                )));
+            }
+            if hash_file(&path)? != sha {
+                return Err(LificError::BadRequest(format!(
+                    "staged attachment {sha} does not match its content address"
+                )));
+            }
         }
-        let size = size as u64;
-        if let Some(previous_size) = validated_sizes.get(&sha)
-            && *previous_size != size
-        {
-            return Err(LificError::BadRequest(format!(
-                "staged attachment {sha} has inconsistent sizes"
-            )));
-        }
-        let path = staging.join("attachments").join(&sha);
-        let metadata = std::fs::metadata(&path).map_err(|_| {
-            LificError::BadRequest(format!(
-                "staged database references missing attachment {sha}"
-            ))
-        })?;
-        if !metadata.is_file() || metadata.len() != size {
-            return Err(LificError::BadRequest(format!(
-                "staged attachment {sha} does not match database metadata"
-            )));
-        }
-        if !validated_sizes.contains_key(&sha) && hash_file(&path)? != sha {
-            return Err(LificError::BadRequest(format!(
-                "staged attachment {sha} does not match its content address"
-            )));
-        }
-        validated_sizes.insert(sha, size);
     }
 
     let attachments_dir = staging.join("attachments");
@@ -614,8 +639,10 @@ pub fn inspect_archive(archive: &Path) -> Result<Manifest, LificError> {
     for entry in tar
         .entries()
         .map_err(|e| LificError::BadRequest(format!("read archive entries: {e}")))?
+        .raw(true)
     {
         let entry = entry.map_err(|e| LificError::BadRequest(format!("read entry: {e}")))?;
+        validate_tar_entry_type(&entry)?;
         entry_count += 1;
         if entry_count > MAX_RESTORE_ENTRIES + 2 {
             return Err(LificError::BadRequest(
@@ -711,8 +738,10 @@ fn read_manifest(archive: &Path) -> Result<Manifest, LificError> {
     for entry in tar
         .entries()
         .map_err(|e| LificError::BadRequest(format!("read archive entries: {e}")))?
+        .raw(true)
     {
         let mut entry = entry.map_err(|e| LificError::BadRequest(format!("read entry: {e}")))?;
+        validate_tar_entry_type(&entry)?;
         entry_count += 1;
         if entry_count > MAX_RESTORE_ENTRIES + 2 {
             return Err(LificError::BadRequest(
@@ -798,9 +827,11 @@ pub fn run_restore(
         for entry in tar
             .entries()
             .map_err(|e| LificError::BadRequest(format!("read archive entries: {e}")))?
+            .raw(true)
         {
             let mut entry =
                 entry.map_err(|e| LificError::BadRequest(format!("read entry: {e}")))?;
+            validate_tar_entry_type(&entry)?;
             let epath = entry
                 .path()
                 .map_err(|e| LificError::BadRequest(format!("entry path: {e}")))?;
@@ -871,7 +902,10 @@ pub fn run_restore(
 
     let mut moved_existing_to = None;
     if db_path.exists() {
-        checkpoint_db_file(db_path);
+        if let Err(error) = checkpoint_db_file(db_path) {
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(error);
+        }
         let suffix = format!("pre-restore-{}", archive_timestamp());
         let dest = PathBuf::from(format!("{}.{suffix}", db_path.display()));
         if let Err(error) = std::fs::rename(db_path, &dest) {
@@ -1028,12 +1062,20 @@ fn rollback_moved_db(moved: &Path, db_path: &Path, cause: LificError) -> LificEr
 
 /// Checkpoint a database file's WAL into the main file, so the `.db` is
 /// self-contained (used before moving an existing db aside under `--force`).
-/// Best-effort: opening or checkpointing failure is ignored (nothing on disk
-/// changes for the worse).
-fn checkpoint_db_file(db_path: &Path) {
-    if let Ok(conn) = rusqlite::Connection::open(db_path) {
-        let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+/// Failing closed is important: deleting the sidecars after a failed
+/// checkpoint could discard committed WAL-backed data.
+fn checkpoint_db_file(db_path: &Path) -> Result<(), LificError> {
+    let conn = rusqlite::Connection::open(db_path)
+        .map_err(|e| LificError::Internal(format!("open database for WAL checkpoint: {e}")))?;
+    let busy: i64 = conn
+        .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))
+        .map_err(|e| LificError::Internal(format!("checkpoint database WAL: {e}")))?;
+    if busy != 0 {
+        return Err(LificError::Conflict(
+            "database WAL is busy; stop the server before forcing a restore".into(),
+        ));
     }
+    Ok(())
 }
 
 /// True when a hot WAL warns the server may be running. Exposed so the CLI can
@@ -1362,6 +1404,28 @@ mod tests {
     }
 
     #[test]
+    fn force_restore_refuses_an_uncheckpointable_database() {
+        let (src_dir_tmp, src_db) = seed_data_dir("checkpoint_src");
+        let archive = src_dir_tmp.path().join("backup.tar.gz");
+        write_dump(&crate::db::open(&src_db).unwrap(), &src_db, &archive).unwrap();
+
+        let destination = temp_dir("checkpoint_dst");
+        let db_path = destination.path().join(ARCHIVE_DB_NAME);
+        fs::create_dir(&db_path).unwrap();
+        let sentinel = db_path.join("must-survive");
+        fs::write(&sentinel, b"original state").unwrap();
+
+        let error = run_restore(&archive, &db_path, true).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("open database for WAL checkpoint")
+        );
+        assert!(db_path.is_dir());
+        assert_eq!(fs::read(sentinel).unwrap(), b"original state");
+    }
+
+    #[test]
     fn restore_refuses_newer_schema_version() {
         let (src_dir_tmp, src_db) = seed_data_dir("newer_src");
         let src_dir = src_dir_tmp.path();
@@ -1381,6 +1445,56 @@ mod tests {
         assert!(
             !dst_db.exists(),
             "nothing should be restored on schema refusal"
+        );
+    }
+
+    #[test]
+    fn restore_accepts_pre_attachment_schema_without_attachment_table() {
+        let dir_tmp = temp_dir("legacy_schema");
+        let dir = dir_tmp.path();
+        let legacy_db = dir.join("legacy.db");
+        {
+            let conn = rusqlite::Connection::open(&legacy_db).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE _migrations (version INTEGER PRIMARY KEY);
+                 INSERT INTO _migrations (version) VALUES (30);",
+            )
+            .unwrap();
+        }
+
+        let archive = dir.join("legacy.tar.gz");
+        let manifest = Manifest {
+            lific_version: "old".into(),
+            schema_version: 30,
+            created_at: "now".into(),
+            db_size_bytes: fs::metadata(&legacy_db).unwrap().len(),
+            attachment_count: 0,
+            attachment_bytes: 0,
+        };
+        let file = fs::File::create(&archive).unwrap();
+        let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+        let mut builder = tar::Builder::new(encoder);
+        append_bytes(
+            &mut builder,
+            ARCHIVE_MANIFEST_NAME,
+            &serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        builder
+            .append_path_with_name(&legacy_db, ARCHIVE_DB_NAME)
+            .unwrap();
+        builder.into_inner().unwrap().finish().unwrap();
+
+        let destination = temp_dir("legacy_schema_dst");
+        let db_path = destination.path().join(ARCHIVE_DB_NAME);
+        run_restore(&archive, &db_path, false).expect("older empty backups remain restorable");
+        assert!(db_path.exists());
+        assert!(
+            !destination
+                .path()
+                .join("attachments")
+                .join("unexpected")
+                .exists()
         );
     }
 
@@ -1562,6 +1676,60 @@ mod tests {
     }
 
     #[test]
+    fn compressed_archive_expansion_is_bounded() {
+        const TEST_LIMIT: u64 = 1024 * 1024;
+        let dir_tmp = temp_dir("compressed_expansion");
+        let archive = dir_tmp.path().join("bomb.tar.gz");
+        let expanded_bytes = vec![b'x'; (TEST_LIMIT * 2) as usize];
+        let file = fs::File::create(&archive).unwrap();
+        let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::best());
+        let mut builder = tar::Builder::new(encoder);
+        append_bytes(&mut builder, "payload", &expanded_bytes).unwrap();
+        builder.into_inner().unwrap().finish().unwrap();
+
+        assert!(
+            fs::metadata(&archive).unwrap().len() < expanded_bytes.len() as u64 / 100,
+            "the fixture must be much smaller while expanding past the reader limit"
+        );
+        let file = fs::File::open(&archive).unwrap();
+        let mut archive = bounded_archive_with_limit(file, TEST_LIMIT);
+        let mut entries = archive.entries().unwrap().raw(true);
+        let mut entry = entries.next().unwrap().unwrap();
+        let mut total_bytes = 0;
+        let error = copy_entry_bounded(
+            &mut entry,
+            &mut std::io::sink(),
+            MAX_ATTACHMENT_BYTES,
+            &mut total_bytes,
+            "payload",
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("expected 2097152 bytes"));
+    }
+
+    #[test]
+    fn inspect_rejects_tar_extension_entries_before_reading_their_body() {
+        let dir_tmp = temp_dir("tar_extension");
+        let archive = dir_tmp.path().join("extension.tar.gz");
+        let file = fs::File::create(&archive).unwrap();
+        let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::best());
+        let mut builder = tar::Builder::new(encoder);
+        let extension = vec![b'x'; MAX_MANIFEST_BYTES as usize + 1];
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(tar::EntryType::XHeader);
+        header.set_size(extension.len() as u64);
+        header.set_mode(0o600);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, "pax", extension.as_slice())
+            .unwrap();
+        builder.into_inner().unwrap().finish().unwrap();
+
+        let error = inspect_archive(&archive).unwrap_err();
+        assert!(error.to_string().contains("unsupported tar entry type"));
+    }
+
+    #[test]
     fn manifest_scan_rejects_excessive_entries_before_manifest() {
         let dir_tmp = temp_dir("manifest_entries");
         let archive = dir_tmp.path().join("too-many.tar.gz");
@@ -1637,7 +1805,7 @@ mod tests {
             )
             .unwrap();
         }
-        checkpoint_db_file(&db_path);
+        checkpoint_db_file(&db_path).unwrap();
         let staging = dir.join("staging");
         fs::create_dir_all(staging.join("attachments")).unwrap();
         fs::copy(&db_path, staging.join(ARCHIVE_DB_NAME)).unwrap();
@@ -1656,11 +1824,51 @@ mod tests {
     }
 
     #[test]
+    fn staged_database_rejects_duplicate_hashes_with_inconsistent_sizes() {
+        let (dir_tmp, db_path) = seed_data_dir("duplicate_sizes");
+        let dir = dir_tmp.path();
+        let pool = crate::db::open(&db_path).unwrap();
+        let sha = crate::storage::AttachmentStore::hash_bytes(b"good");
+        {
+            let conn = pool.write().unwrap();
+            for (filename, size) in [("one.txt", 4), ("two.txt", 5)] {
+                crate::db::queries::attachments::create_attachment(
+                    &conn,
+                    &sha,
+                    filename,
+                    "text/plain",
+                    size,
+                    None,
+                )
+                .unwrap();
+            }
+        }
+        checkpoint_db_file(&db_path).unwrap();
+        let staging = dir.join("staging");
+        fs::create_dir_all(staging.join("attachments")).unwrap();
+        fs::copy(&db_path, staging.join(ARCHIVE_DB_NAME)).unwrap();
+        fs::write(staging.join("attachments").join(&sha), b"good").unwrap();
+        let manifest = Manifest {
+            lific_version: env!("CARGO_PKG_VERSION").into(),
+            schema_version: crate::db::migrate::latest_version(),
+            created_at: String::new(),
+            db_size_bytes: fs::metadata(&db_path).unwrap().len(),
+            attachment_count: 1,
+            attachment_bytes: 4,
+        };
+
+        let error = validate_staged_database(&staging, &manifest).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("invalid content address, MIME, or size"));
+    }
+
+    #[test]
     fn staged_database_rejects_unreferenced_blob_content_hash_mismatch() {
         let (dir_tmp, db_path) = seed_data_dir("unreferenced_content_hash");
         let dir = dir_tmp.path();
         let pool = crate::db::open(&db_path).unwrap();
-        checkpoint_db_file(&db_path);
+        checkpoint_db_file(&db_path).unwrap();
         drop(pool);
 
         let staging = dir.join("staging");
@@ -1685,7 +1893,7 @@ mod tests {
     fn staged_database_requires_attachment_table() {
         let (dir_tmp, db_path) = seed_data_dir("missing_attachments_table");
         let dir = dir_tmp.path();
-        checkpoint_db_file(&db_path);
+        checkpoint_db_file(&db_path).unwrap();
         let staging = dir.join("staging");
         fs::create_dir_all(staging.join("attachments")).unwrap();
         fs::copy(&db_path, staging.join(ARCHIVE_DB_NAME)).unwrap();
@@ -1730,7 +1938,7 @@ mod tests {
             )
             .unwrap();
         }
-        checkpoint_db_file(&db_path);
+        checkpoint_db_file(&db_path).unwrap();
         let staging = dir.join("staging");
         fs::create_dir_all(staging.join("attachments")).unwrap();
         fs::copy(&db_path, staging.join(ARCHIVE_DB_NAME)).unwrap();
