@@ -491,12 +491,9 @@ fn validate_staged_database(staging: &Path, manifest: &Manifest) -> Result<(), L
         )
         .map_err(|e| LificError::BadRequest(format!("inspect staged schema: {e}")))?;
     if !has_attachments {
-        if manifest.attachment_count != 0 || manifest.attachment_bytes != 0 {
-            return Err(LificError::BadRequest(
-                "manifest contains attachments but staged schema does not support them".into(),
-            ));
-        }
-        return Ok(());
+        return Err(LificError::BadRequest(
+            "staged database is missing the attachments table".into(),
+        ));
     }
 
     if schema_version < ATTACHMENTS_SCHEMA_VERSION {
@@ -555,6 +552,45 @@ fn validate_staged_database(staging: &Path, manifest: &Manifest) -> Result<(), L
             )));
         }
         validated_sizes.insert(sha, size);
+    }
+
+    let attachments_dir = staging.join("attachments");
+    for entry in std::fs::read_dir(&attachments_dir)
+        .map_err(|e| LificError::BadRequest(format!("read staged attachments: {e}")))?
+    {
+        let entry = entry
+            .map_err(|e| LificError::BadRequest(format!("read staged attachment: {e}")))?;
+        let path = entry.path();
+        let metadata = std::fs::symlink_metadata(&path).map_err(|e| {
+            LificError::BadRequest(format!("inspect staged attachment {}: {e}", path.display()))
+        })?;
+        if !metadata.is_file() {
+            return Err(LificError::BadRequest(format!(
+                "staged attachment is not a regular file: {}",
+                path.display()
+            )));
+        }
+        let name = entry.file_name().into_string().map_err(|_| {
+            LificError::BadRequest(format!(
+                "staged attachment has a non-UTF-8 name: {}",
+                path.display()
+            ))
+        })?;
+        if !crate::storage::valid_sha256(&name) {
+            return Err(LificError::BadRequest(format!(
+                "staged attachment has an invalid content address: {name}"
+            )));
+        }
+        if metadata.len() > MAX_ATTACHMENT_BYTES {
+            return Err(LificError::BadRequest(format!(
+                "staged attachment exceeds restore limit: {name}"
+            )));
+        }
+        if hash_file(&path)? != name {
+            return Err(LificError::BadRequest(format!(
+                "staged attachment {name} does not match its content address"
+            )));
+        }
     }
     Ok(())
 }
@@ -1051,18 +1087,20 @@ mod tests {
         }
         let att = dir.join("attachments");
         fs::create_dir_all(&att).unwrap();
+        let first_sha = crate::storage::AttachmentStore::hash_bytes(b"blob one");
+        let second_sha = crate::storage::AttachmentStore::hash_bytes(b"second blob bytes");
         fs::write(
-            att.join("0000000000000000000000000000000000000000000000000000000000000001"),
+            att.join(&first_sha),
             b"blob one",
         )
         .unwrap();
         fs::write(
-            att.join("0000000000000000000000000000000000000000000000000000000000000002"),
+            att.join(&second_sha),
             b"second blob bytes",
         )
         .unwrap();
         fs::write(
-            att.join("0000000000000000000000000000000000000000000000000000000000000002.tmp"),
+            att.join(format!("{second_sha}.tmp")),
             b"partial write",
         )
         .unwrap();
@@ -1096,18 +1134,14 @@ mod tests {
         let entries = archive_entries(&out);
         assert!(entries.contains(&ARCHIVE_DB_NAME.to_string()));
         assert!(entries.contains(&ARCHIVE_MANIFEST_NAME.to_string()));
-        assert!(
-            entries.contains(
-                &"attachments/0000000000000000000000000000000000000000000000000000000000000001"
-                    .to_string()
-            )
-        );
-        assert!(
-            entries.contains(
-                &"attachments/0000000000000000000000000000000000000000000000000000000000000002"
-                    .to_string()
-            )
-        );
+        assert!(entries.contains(&format!(
+            "{ARCHIVE_ATTACHMENTS_PREFIX}{}",
+            crate::storage::AttachmentStore::hash_bytes(b"blob one")
+        )));
+        assert!(entries.contains(&format!(
+            "{ARCHIVE_ATTACHMENTS_PREFIX}{}",
+            crate::storage::AttachmentStore::hash_bytes(b"second blob bytes")
+        )));
         assert!(
             !entries.iter().any(|e| e.ends_with(".tmp")),
             "in-progress .tmp writes must be excluded: {entries:?}"
@@ -1235,20 +1269,16 @@ mod tests {
 
         // Blob bytes identical.
         assert_eq!(
-            fs::read(
-                dst_dir
-                    .join("attachments")
-                    .join("0000000000000000000000000000000000000000000000000000000000000001")
-            )
+            fs::read(dst_dir.join("attachments").join(
+                crate::storage::AttachmentStore::hash_bytes(b"blob one"),
+            ))
             .unwrap(),
             b"blob one"
         );
         assert_eq!(
-            fs::read(
-                dst_dir
-                    .join("attachments")
-                    .join("0000000000000000000000000000000000000000000000000000000000000002")
-            )
+            fs::read(dst_dir.join("attachments").join(
+                crate::storage::AttachmentStore::hash_bytes(b"second blob bytes"),
+            ))
             .unwrap(),
             b"second blob bytes"
         );
@@ -1628,6 +1658,63 @@ mod tests {
 
         let error = validate_staged_database(&staging, &manifest).unwrap_err();
         assert!(error.to_string().contains("content address"));
+    }
+
+    #[test]
+    fn staged_database_rejects_unreferenced_blob_content_hash_mismatch() {
+        let (dir_tmp, db_path) = seed_data_dir("unreferenced_content_hash");
+        let dir = dir_tmp.path();
+        let pool = crate::db::open(&db_path).unwrap();
+        checkpoint_db_file(&db_path);
+        drop(pool);
+
+        let staging = dir.join("staging");
+        fs::create_dir_all(staging.join("attachments")).unwrap();
+        fs::copy(&db_path, staging.join(ARCHIVE_DB_NAME)).unwrap();
+        let sha = crate::storage::AttachmentStore::hash_bytes(b"good");
+        fs::write(staging.join("attachments").join(&sha), b"evil").unwrap();
+        let manifest = Manifest {
+            lific_version: env!("CARGO_PKG_VERSION").into(),
+            schema_version: crate::db::migrate::latest_version(),
+            created_at: String::new(),
+            db_size_bytes: fs::metadata(&db_path).unwrap().len(),
+            attachment_count: 1,
+            attachment_bytes: 4,
+        };
+
+        let error = validate_staged_database(&staging, &manifest).unwrap_err();
+        assert!(error.to_string().contains("content address"));
+    }
+
+    #[test]
+    fn staged_database_requires_attachment_table() {
+        let (dir_tmp, db_path) = seed_data_dir("missing_attachments_table");
+        let dir = dir_tmp.path();
+        checkpoint_db_file(&db_path);
+        let staging = dir.join("staging");
+        fs::create_dir_all(staging.join("attachments")).unwrap();
+        fs::copy(&db_path, staging.join(ARCHIVE_DB_NAME)).unwrap();
+        {
+            let conn = rusqlite::Connection::open(staging.join(ARCHIVE_DB_NAME)).unwrap();
+            conn.execute_batch(
+                "DROP TRIGGER IF EXISTS attachments_fts_ai;
+                 DROP TRIGGER IF EXISTS attachments_fts_au;
+                 DROP TRIGGER IF EXISTS attachments_fts_ad;
+                 DROP TABLE attachments;",
+            )
+            .unwrap();
+        }
+        let manifest = Manifest {
+            lific_version: env!("CARGO_PKG_VERSION").into(),
+            schema_version: crate::db::migrate::latest_version(),
+            created_at: String::new(),
+            db_size_bytes: 0,
+            attachment_count: 0,
+            attachment_bytes: 0,
+        };
+
+        let error = validate_staged_database(&staging, &manifest).unwrap_err();
+        assert!(error.to_string().contains("attachments table"));
     }
 
     #[test]
