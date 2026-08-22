@@ -458,6 +458,32 @@ fn hash_file(path: &Path) -> Result<String, LificError> {
     Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
+fn validate_attachment_schema(conn: &rusqlite::Connection) -> Result<(), LificError> {
+    let sql: String = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'attachments'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| LificError::BadRequest(format!("read staged attachment schema: {e}")))?;
+    let sql = sql
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+    let required = [
+        "check (length(sha256) = 64 and sha256 not glob '*[^0-9a-f]*')",
+        "mime text not null check (mime in (",
+        "size_bytes integer not null check (size_bytes >= 0)",
+    ];
+    if required.iter().any(|fragment| !sql.contains(fragment)) {
+        return Err(LificError::BadRequest(
+            "staged attachment table is missing required integrity constraints".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Validate the extracted SQLite file before it can replace the live DB. This
 /// catches corrupt archives and ensures every metadata attachment reference is
 /// a safe content-addressed filename with matching staged bytes.
@@ -518,6 +544,7 @@ fn validate_staged_database(staging: &Path, manifest: &Manifest) -> Result<(), L
     }
 
     if has_attachments {
+        validate_attachment_schema(&conn)?;
         let mime_placeholders = vec!["?"; crate::storage::ALLOWED_MIMES.len()].join(", ");
         let mut stmt = conn
             .prepare(&format!(
@@ -570,6 +597,29 @@ fn validate_staged_database(staging: &Path, manifest: &Manifest) -> Result<(), L
             if hash_file(&path)? != sha {
                 return Err(LificError::BadRequest(format!(
                     "staged attachment {sha} does not match its content address"
+                )));
+            }
+        }
+
+        let mut mime_stmt = conn
+            .prepare("SELECT sha256, mime FROM attachments")
+            .map_err(|e| LificError::BadRequest(format!("read staged attachment MIME: {e}")))?;
+        let mime_rows = mime_stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|e| LificError::BadRequest(format!("read staged attachment MIME: {e}")))?;
+        for row in mime_rows {
+            let (sha, declared_mime) = row
+                .map_err(|e| LificError::BadRequest(format!("read staged attachment MIME: {e}")))?;
+            let path = staging.join("attachments").join(&sha);
+            let bytes = std::fs::read(&path).map_err(|e| {
+                LificError::BadRequest(format!("read staged attachment {sha}: {e}"))
+            })?;
+            let detected_mime = crate::storage::sniff_and_validate(&bytes, Some(&declared_mime))?;
+            if detected_mime != declared_mime {
+                return Err(LificError::BadRequest(format!(
+                    "staged attachment {sha} MIME {declared_mime} does not match its content ({detected_mime})"
                 )));
             }
         }
@@ -1788,6 +1838,22 @@ mod tests {
     }
 
     #[test]
+    fn staged_database_rejects_unconstrained_attachment_schema() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE attachments (
+                sha256 TEXT NOT NULL,
+                mime TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL
+            )",
+        )
+        .unwrap();
+
+        let error = validate_attachment_schema(&conn).unwrap_err();
+        assert!(error.to_string().contains("integrity constraints"));
+    }
+
+    #[test]
     fn staged_database_rejects_blob_content_hash_mismatch() {
         let (dir_tmp, db_path) = seed_data_dir("content_hash");
         let dir = dir_tmp.path();
@@ -1821,6 +1887,42 @@ mod tests {
 
         let error = validate_staged_database(&staging, &manifest).unwrap_err();
         assert!(error.to_string().contains("content address"));
+    }
+
+    #[test]
+    fn staged_database_rejects_blob_content_mime_mismatch() {
+        let (dir_tmp, db_path) = seed_data_dir("content_mime");
+        let dir = dir_tmp.path();
+        let pool = crate::db::open(&db_path).unwrap();
+        let sha = crate::storage::AttachmentStore::hash_bytes(b"good");
+        {
+            let conn = pool.write().unwrap();
+            crate::db::queries::attachments::create_attachment(
+                &conn,
+                &sha,
+                "image.png",
+                "image/png",
+                4,
+                None,
+            )
+            .unwrap();
+        }
+        checkpoint_db_file(&db_path).unwrap();
+        let staging = dir.join("staging");
+        fs::create_dir_all(staging.join("attachments")).unwrap();
+        fs::copy(&db_path, staging.join(ARCHIVE_DB_NAME)).unwrap();
+        fs::write(staging.join("attachments").join(&sha), b"good").unwrap();
+        let manifest = Manifest {
+            lific_version: env!("CARGO_PKG_VERSION").into(),
+            schema_version: crate::db::migrate::latest_version(),
+            created_at: String::new(),
+            db_size_bytes: fs::metadata(&db_path).unwrap().len(),
+            attachment_count: 1,
+            attachment_bytes: 4,
+        };
+
+        let error = validate_staged_database(&staging, &manifest).unwrap_err();
+        assert!(error.to_string().contains("MIME image/png"));
     }
 
     #[test]
