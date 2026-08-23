@@ -478,6 +478,15 @@ fn websocket_request_scheme(headers: &HeaderMap) -> Option<&str> {
                     })
                 })
         })
+        // LIF-431: no forwarding metadata means the peer reached our own
+        // listener directly, and that listener only speaks plaintext HTTP —
+        // the browser-visible scheme is definitionally "http". Without this
+        // fallback every direct same-origin handshake (`lific start` +
+        // http://localhost:3456) was rejected 403, because browsers always
+        // send an Origin header on WebSocket upgrades. An `https://` Origin
+        // still mismatches and rejects, so a TLS-terminating proxy that
+        // strips forwarding headers fails closed exactly as before.
+        .or(Some("http"))
 }
 
 fn websocket_same_origin(origin: &str, host: &str, request_scheme: Option<&str>) -> bool {
@@ -2945,5 +2954,46 @@ mod authz_gating_tests {
         );
         same_origin.insert("x-forwarded-proto", "http".parse().unwrap());
         super::validate_websocket_request(&db, &same_origin, &[]).unwrap();
+    }
+
+    /// LIF-431: a browser talking straight to the server (no reverse proxy)
+    /// sends no `x-forwarded-proto`/`forwarded` headers, and the same-origin
+    /// check used to fail closed on the missing scheme — every direct
+    /// handshake at http://localhost:3456 got a 403 and realtime never
+    /// worked outside a proxy. Direct plaintext handshakes must pass; an
+    /// https Origin against the plaintext listener must still be rejected.
+    #[tokio::test]
+    async fn websocket_origin_policy_accepts_direct_connections_without_proxy_headers() {
+        let (db, token) = websocket_session();
+
+        let mut direct = axum::http::HeaderMap::new();
+        direct.insert(
+            axum::http::header::ORIGIN,
+            "http://localhost:3456".parse().unwrap(),
+        );
+        direct.insert(axum::http::header::HOST, "localhost:3456".parse().unwrap());
+        direct.insert(
+            axum::http::header::COOKIE,
+            format!("lific_token={token}").parse().unwrap(),
+        );
+        super::validate_websocket_request(&db, &direct, &[]).unwrap();
+
+        // TLS-terminating proxy that strips forwarding metadata: the https
+        // Origin mismatches the plaintext fallback scheme and fails closed,
+        // exactly as before the fallback existed.
+        let mut mismatched = axum::http::HeaderMap::new();
+        mismatched.insert(
+            axum::http::header::ORIGIN,
+            "https://localhost:3456".parse().unwrap(),
+        );
+        mismatched.insert(axum::http::header::HOST, "localhost:3456".parse().unwrap());
+        mismatched.insert(
+            axum::http::header::COOKIE,
+            format!("lific_token={token}").parse().unwrap(),
+        );
+        assert!(matches!(
+            super::validate_websocket_request(&db, &mismatched, &[]),
+            Err(crate::error::LificError::Forbidden(_))
+        ));
     }
 }
