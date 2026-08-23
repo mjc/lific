@@ -6836,6 +6836,27 @@ mod tests {
         }
     }
 
+    /// LIF-397: the MCP schema documents six module statuses; an agent
+    /// passing anything else must get a real error, not a module wearing an
+    /// arbitrary string.
+    #[test]
+    fn manage_resource_rejects_undocumented_module_status() {
+        let (m, _rx, _guard) = mcp_with_realtime();
+        let _ag = first_admin_guard();
+        seed_project(&m, "Status Guard", "STG");
+
+        let out = m.manage_resource(Parameters(ManageResourceInput {
+            resource_type: "module".into(),
+            action: "create".into(),
+            project: Some("STG".into()),
+            name: Some("Core".into()),
+            status: Some("bananas".into()),
+            ..Default::default()
+        }));
+        assert!(out.starts_with("Error"), "got: {out}");
+        assert!(out.contains("invalid module status"), "got: {out}");
+    }
+
     // ── write_issue ──
 
     struct FailingWriter;

@@ -284,6 +284,23 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     }
 
+    /// LIF-397: the REST boundary must surface the module-status validation
+    /// as a 400, not persist garbage (the column is TEXT; only six values
+    /// are documented).
+    #[tokio::test]
+    async fn module_status_is_validated_over_rest() {
+        let (db, _, lead, _regular, project_id) = setup_lead_test();
+        let lead_app = app_as_user(db, &lead);
+
+        let body = serde_json::json!({
+            "project_id": project_id,
+            "name": "Bad Status",
+            "status": "bananas"
+        });
+        let resp = json_post(&lead_app, "/api/modules", body).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
     #[tokio::test]
     async fn lead_can_manage_labels() {
         let (db, _, lead, regular, project_id) = setup_lead_test();

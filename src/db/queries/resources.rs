@@ -176,7 +176,26 @@ pub fn list_modules(conn: &Connection, project_id: i64) -> Result<Vec<Module>, L
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
 
+/// LIF-397: module status is stored as TEXT, but only these six values are
+/// documented, shown by the UI, and promised by the MCP `manage_resource`
+/// schema. Reject anything else at the query boundary so REST, MCP, and the
+/// CLI all get the same contract (mirrors how issue status became a real
+/// type in 286d4ac; modules keep the lighter String representation because
+/// nothing branches on module status server-side).
+const MODULE_STATUSES: [&str; 6] = ["backlog", "planned", "active", "paused", "done", "cancelled"];
+
+fn validate_module_status(status: &str) -> Result<(), LificError> {
+    if MODULE_STATUSES.contains(&status) {
+        Ok(())
+    } else {
+        Err(LificError::BadRequest(format!(
+            "invalid module status '{status}'. Use backlog, planned, active, paused, done, or cancelled."
+        )))
+    }
+}
+
 pub fn create_module(conn: &Connection, input: &CreateModule) -> Result<Module, LificError> {
+    validate_module_status(&input.status)?;
     conn.execute(
         "INSERT INTO modules (project_id, name, description, status, emoji) VALUES (?1, ?2, ?3, ?4, ?5)",
         params![
@@ -218,6 +237,7 @@ pub fn update_module(
             )?;
         }
         if let Some(ref status) = input.status {
+            validate_module_status(status)?;
             conn.execute(
                 "UPDATE modules SET status = ?1 WHERE id = ?2",
                 params![status, id],
@@ -528,6 +548,68 @@ mod tests {
 
         delete_module(&conn, module.id).unwrap();
         assert_eq!(list_modules(&conn, pid).unwrap().len(), 0);
+    }
+
+    /// LIF-397: docs and the MCP schema promise six module statuses, but the
+    /// column is TEXT and used to take anything ("bananas" included). The six
+    /// documented values round-trip; everything else is a BadRequest naming
+    /// them, on both create and update, and a rejected update leaves the row
+    /// untouched.
+    #[test]
+    fn module_status_rejects_undocumented_values() {
+        let pool = test_db();
+        let conn = pool.write().unwrap();
+        let pid = seed_project(&conn);
+
+        let err = create_module(
+            &conn,
+            &CreateModule {
+                project_id: pid,
+                name: "Bad".into(),
+                description: String::new(),
+                status: "bananas".into(),
+                emoji: None,
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, LificError::BadRequest(_)), "got: {err:?}");
+        assert!(err.to_string().contains("paused"), "error must list the six: {err}");
+
+        let module = create_module(
+            &conn,
+            &CreateModule {
+                project_id: pid,
+                name: "Guarded".into(),
+                description: String::new(),
+                status: "backlog".into(),
+                emoji: None,
+            },
+        )
+        .unwrap();
+        for status in ["backlog", "planned", "active", "paused", "done", "cancelled"] {
+            update_module(
+                &conn,
+                module.id,
+                &UpdateModule {
+                    status: Some(status.into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+
+        let err = update_module(
+            &conn,
+            module.id,
+            &UpdateModule {
+                status: Some("shipped".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, LificError::BadRequest(_)), "got: {err:?}");
+        // The rejected update must not have altered the stored status.
+        assert_eq!(get_module(&conn, module.id).unwrap().status, "cancelled");
     }
 
     #[test]
