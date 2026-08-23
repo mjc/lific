@@ -59,6 +59,26 @@ jobs:
       - name: Test
         run: cargo test --all-targets
 
+  web:
+    # The frontend used to ship completely unverified: ci.yml only ran
+    # `mkdir -p web/dist` so rust-embed would compile, and nothing ever
+    # typechecked or built web/. That is how v2.7.0 released with every issue
+    # page broken (LIF-428/LIF-429). This job catches type and template
+    # errors; the `smoke` job below catches runtime-only breakage.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+        working-directory: web
+      - name: Typecheck (svelte-check + tsc)
+        run: bun run check
+        working-directory: web
+      - name: Build
+        run: bun run build
+        working-directory: web
+
   docs:
     runs-on: ubuntu-latest
     steps:
