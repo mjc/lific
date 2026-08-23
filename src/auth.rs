@@ -1212,10 +1212,12 @@ mod tests {
         db::open_memory().expect("test db")
     }
 
-    // Serializes env mutation (LIFIC_TOKEN) across the stdio-token tests —
-    // the process env is global, so every test that touches it must share one
-    // lock, not declare its own.
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // Serializes env mutation (LIFIC_TOKEN) across the stdio-token tests.
+    // The process env is global, so every test that touches it must share
+    // one lock — and "every test" spans modules: the credentials and doctor
+    // tests read the same variable, which is why this is the crate-wide
+    // lock from `test_env` rather than a module-local static (LIF-401).
+    use crate::test_env::lock_lific_token_env_blocking;
 
     // ── Expiry is compared as a datetime, not as text ────────
     //
@@ -3358,10 +3360,10 @@ mod tests {
     #[test]
     fn resolve_stdio_token_without_env_is_ok_none() {
         // No LIFIC_TOKEN in the environment → Ok(None): the operator fallback.
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = lock_lific_token_env_blocking();
         let pool = test_db();
         let manager = create_key_manager().unwrap();
-        // SAFETY: guarded by ENV_LOCK.
+        // SAFETY: guarded by the crate-wide LIFIC_TOKEN lock.
         unsafe { std::env::remove_var("LIFIC_TOKEN") };
         let resolved = resolve_stdio_token(&pool, &manager).unwrap();
         assert!(resolved.is_none(), "absent token must be Ok(None)");
@@ -3369,7 +3371,7 @@ mod tests {
 
     #[test]
     fn resolve_stdio_token_valid_env_resolves_bound_user() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = lock_lific_token_env_blocking();
         let pool = test_db();
         let manager = create_key_manager().unwrap();
         let uid = {
@@ -3389,7 +3391,7 @@ mod tests {
             .id
         };
         let key = create_api_key(&pool, &manager, "codex-agent", Some(uid)).unwrap();
-        // SAFETY: guarded by ENV_LOCK; restored every path below.
+        // SAFETY: guarded by the crate-wide LIFIC_TOKEN lock; restored every path below.
         unsafe { std::env::set_var("LIFIC_TOKEN", &key) };
         let resolved = resolve_stdio_token(&pool, &manager).unwrap();
         unsafe { std::env::remove_var("LIFIC_TOKEN") };

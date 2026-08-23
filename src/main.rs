@@ -21,6 +21,8 @@ mod resolve_caller;
 mod realtime;
 mod server;
 mod storage;
+#[cfg(test)]
+mod test_env;
 
 use clap::{CommandFactory, Parser};
 use cli::{

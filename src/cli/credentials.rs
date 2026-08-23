@@ -545,19 +545,21 @@ mod tests {
         assert_eq!(env_token_for(None, None, "https://ci.example"), EnvToken::Absent);
     }
 
-    // The remaining tests mutate the process env, so they serialize on a mutex
-    // (LIF-401). They touch `LIFIC_TOKEN` only, never `LIFIC_URL`, which the
-    // clap tests in `cli::mod` read.
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // The remaining tests mutate the process env, so they serialize on the
+    // crate-wide `LIFIC_TOKEN` lock (LIF-401) — the auth and doctor tests
+    // read the same variable, and a module-local mutex cannot serialize
+    // against them. They touch `LIFIC_TOKEN` only, never `LIFIC_URL`, which
+    // the clap tests in `cli::mod` read.
+    use crate::test_env::lock_lific_token_env_blocking;
 
     #[test]
     fn unbound_env_var_does_not_shadow_stored_credentials() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = lock_lific_token_env_blocking();
         // A target no plausible ambient LIFIC_URL names, so the env token is
         // unbound whatever the developer's shell exports.
         let target = "http://unbound-envtest.invalid:1";
 
-        // SAFETY: guarded by ENV_LOCK; restored below.
+        // SAFETY: guarded by the crate-wide LIFIC_TOKEN lock; restored below.
         unsafe { std::env::set_var(TOKEN_ENV, "env-tok") };
         let got = load(target);
         unsafe { std::env::remove_var(TOKEN_ENV) };
@@ -571,7 +573,7 @@ mod tests {
 
     #[test]
     fn empty_env_var_is_ignored() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = lock_lific_token_env_blocking();
         unsafe { std::env::set_var(TOKEN_ENV, "   ") };
         // An all-whitespace env var must not shadow real backends.
         let got_source = load_with_source("http://noenv-empty");

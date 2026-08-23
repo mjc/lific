@@ -1231,6 +1231,12 @@ mod tests {
 
     #[tokio::test]
     async fn full_report_offline_has_no_fails_and_skips_http() {
+        // build_report reaches credentials::load_with_source, which reads
+        // LIFIC_TOKEN from the process env. Other tests mutate that variable
+        // with unsafe setenv; an unsynchronized getenv racing one of those
+        // can observe a reallocated environ. Hold the crate-wide lock across
+        // the whole report build (LIF-401).
+        let _env = crate::test_env::lock_lific_token_env().await;
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
         let mut cfg = Config::default();
