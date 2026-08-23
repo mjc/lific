@@ -1,0 +1,11 @@
+{
+  "name": "lific-e2e",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "smoke": "bun smoke.ts"
+  },
+  "devDependencies": {
+    "playwright": "^1.58.0"
+  }
+}

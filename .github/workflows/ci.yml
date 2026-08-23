@@ -79,6 +79,37 @@ jobs:
         run: bun run build
         working-directory: web
 
+  smoke:
+    # svelte-check reported 0 errors on the code that shipped v2.7.0 with
+    # every issue page broken — the crash was a runtime reactive-effect loop,
+    # so only running the app catches that class of bug. e2e/smoke.ts spawns
+    # the real binary on a scratch DB, seeds data through the CLI, signs in
+    # through the real login page, and drives headless Chromium through the
+    # main routes, failing on the error-boundary fallback, console errors,
+    # uncaught exceptions, or missing seeded content (LIF-429). Its first
+    # local run also caught LIF-431, a 403 on every direct-connection
+    # realtime WebSocket handshake.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: oven-sh/setup-bun@v2
+      - name: Build frontend
+        run: bun install --frozen-lockfile && bun run build
+        working-directory: web
+      - name: Build binary
+        # Debug on purpose: rust-embed serves web/dist from disk in debug
+        # builds, so the freshly built frontend is exercised without paying
+        # for a release compile. Release embedding is covered by release.yml.
+        run: cargo build
+      - name: Install e2e dependencies and browser
+        run: bun install --frozen-lockfile && bunx playwright install --with-deps chromium
+        working-directory: e2e
+      - name: Browser smoke test
+        run: bun run smoke
+        working-directory: e2e
+
   docs:
     runs-on: ubuntu-latest
     steps:
