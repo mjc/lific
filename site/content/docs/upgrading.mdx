@@ -69,6 +69,12 @@ Stop the background service before replacing the binary or restoring a backup. K
 
 ### v2.7
 
+<Callout type="warn">
+  Go to **2.7.1**, not 2.7.0. In 2.7.0 every issue page in the web UI failed to
+  render, on every instance. 2.7.1 fixes it and changes nothing else. The two
+  releases are otherwise identical, so everything below applies to both.
+</Callout>
+
 The largest upgrade since 2.0. Three things need an operator decision before you roll it out: `server.trusted_proxies` stops defaulting to loopback, an older binary will refuse to open the database once 2.7 has touched it, and account recovery revokes much more than it used to. Take the pre-upgrade archive described above; on this release it is the only way back.
 
 **Account recovery changed shape.** Read this part before rolling out if anything automated holds an API key.
