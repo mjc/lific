@@ -804,12 +804,18 @@ mod tests {
         );
     }
 
+    /// Inline-safe covers rasters *and* media containers, which is wider than
+    /// the raster set. The two predicates are not interchangeable: anything
+    /// asking "can a model look at this?" wants `is_raster_mime`.
     #[test]
-    fn only_raster_images_are_inline_safe() {
-        assert!(is_inline_safe_mime("image/png"));
-        assert!(is_inline_safe_mime("image/jpeg"));
-        assert!(is_inline_safe_mime("image/gif"));
-        assert!(is_inline_safe_mime("image/webp"));
+    fn inline_safe_covers_rasters_and_media_but_not_documents() {
+        for mime in RASTER_MIMES {
+            assert!(is_inline_safe_mime(mime), "{mime} should be inline-safe");
+        }
+        for mime in ["video/mp4", "video/webm", "audio/webm", "audio/ogg", "audio/mpeg"] {
+            assert!(is_inline_safe_mime(mime), "{mime} should be inline-safe");
+            assert!(!is_raster_mime(mime), "{mime} is not a raster image");
+        }
         assert!(!is_inline_safe_mime("application/pdf"));
         assert!(!is_inline_safe_mime("text/plain"));
     }
