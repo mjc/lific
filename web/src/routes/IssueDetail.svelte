@@ -44,6 +44,7 @@
     upsertComment,
   } from "../lib/commentState";
   import { ArrowUpRight, ChevronDown } from "lucide-svelte";
+  import { untrack } from "svelte";
 
   let {
     navigate,
@@ -232,7 +233,14 @@
     // user makes while it is in flight is newer truth than it holds.
     const op = claimCommentOp();
     const epoch = commentMutationEpoch;
-    const loadedRows = comments.length;
+    // `untrack` is load-bearing, not a tidy-up. The route effect clears
+    // `comments` and then calls this function synchronously, so a tracked read
+    // here makes that effect depend on the very state it just wrote: Svelte
+    // re-runs it, it clears and reads again, and the route dies with
+    // `effect_update_depth_exceeded` before anything paints. Only a background
+    // refresh uses this count, and it wants the rows on screen right now, not a
+    // subscription to them.
+    const loadedRows = untrack(() => comments.length);
     const res = await resolveIssue(identifier);
     if (gen !== loadGen) return;
     if (!res.ok) {

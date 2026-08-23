@@ -612,7 +612,17 @@
   </Layout>
 {:else}
   <Layout {navigate} {route} bind:onProjectChange>
-    <svelte:boundary>
+    <svelte:boundary
+      onerror={(error) => {
+        // The `failed` snippet below deliberately shows the reader nothing but
+        // a generic message. That is right for the UI and wrong for everything
+        // else: with no handler here the exception is swallowed whole, it never
+        // reaches `window.onerror`, and a route that dies on every load leaves
+        // no evidence anywhere. Log it to the console, which the reader does
+        // not see but anyone diagnosing a broken route does.
+        console.error("[lific] route render failed:", error);
+      }}
+    >
     {#key routeTransitionKey}
     <div class="h-full" in:fade={routeFadeParams()}>
     {#if parsed.page === "home"}
