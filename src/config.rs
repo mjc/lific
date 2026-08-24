@@ -2,21 +2,57 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tracing::info;
 
-use crate::filesystem;
-
 const CONFIG_FILENAME: &str = "lific.toml";
 
-fn tighten_config_permissions(path: &Path) -> std::io::Result<()> {
-    filesystem::set_private_file_path(path)
+/// A config file that has been opened and read.
+///
+/// The descriptor is kept alongside the contents so permission tightening
+/// acts on the file we read, not a later resolution of the same pathname.
+struct ConfigFile {
+    contents: String,
+    #[cfg(unix)]
+    file: std::fs::File,
 }
 
-fn read_config_file(path: &Path) -> std::io::Result<String> {
-    use std::io::Read;
+#[cfg_attr(not(unix), expect(clippy::unnecessary_wraps, reason = "fallible on Unix"))]
+fn tighten_config_permissions(_config: &ConfigFile) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let metadata = _config.file.metadata()?;
+        if metadata.mode() & 0o077 != 0 {
+            _config
+                .file
+                .set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        }
+    }
+    Ok(())
+}
 
-    let mut file = filesystem::open(path)?;
+#[cfg(unix)]
+fn read_config_file(path: &Path) -> std::io::Result<ConfigFile> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).custom_flags(libc::O_NOFOLLOW);
+    let mut file = options.open(path)?;
+    if !file.metadata()?.file_type().is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "configuration path must be a regular file",
+        ));
+    }
     let mut contents = String::new();
     file.read_to_string(&mut contents)?;
-    Ok(contents)
+    Ok(ConfigFile { contents, file })
+}
+
+#[cfg(not(unix))]
+fn read_config_file(path: &Path) -> std::io::Result<ConfigFile> {
+    Ok(ConfigFile {
+        contents: std::fs::read_to_string(path)?,
+    })
 }
 
 /// A config file was found but could not be honored.
@@ -338,47 +374,8 @@ impl Config {
         let candidates = Self::candidate_paths(explicit_path);
 
         for path in &candidates {
-            match std::fs::symlink_metadata(path) {
-                Ok(_) => match read_config_file(path) {
-                    Ok(file) => match toml::from_str::<Config>(&file.contents) {
-                        Ok(mut config) => {
-                            if let Err(source) = tighten_config_permissions(&file)
-                                && source.kind() != std::io::ErrorKind::PermissionDenied
-                            {
-                                return Err(ConfigError::Read {
-                                    path: path.clone(),
-                                    source,
-                                });
-                            }
-                            info!(path = %path.display(), "loaded config");
-                            // Anchor a relative database path to the config
-                            // file's own directory, not the process cwd —
-                            // `lific --config /srv/lific/lific.toml <cmd>` must
-                            // find /srv/lific/lific.db no matter where it runs
-                            // from. (backup_dir derives from database.path, so
-                            // backups inherit the same anchoring.)
-                            if config.database.path.is_relative()
-                                && let Some(parent) = path.parent()
-                                && !parent.as_os_str().is_empty()
-                            {
-                                config.database.path = parent.join(&config.database.path);
-                            }
-                            return Ok(config);
-                        }
-                        Err(source) => {
-                            return Err(ConfigError::Parse {
-                                path: path.clone(),
-                                source: Box::new(source),
-                            });
-                        }
-                    },
-                    Err(source) => {
-                        return Err(ConfigError::Read {
-                            path: path.clone(),
-                            source,
-                        });
-                    }
-                },
+            let file = match read_config_file(path) {
+                Ok(file) => file,
                 Err(source) if source.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(source) => {
                     return Err(ConfigError::Read {
@@ -386,7 +383,29 @@ impl Config {
                         source,
                     });
                 }
+            };
+            let mut config = toml::from_str::<Config>(&file.contents).map_err(|source| {
+                ConfigError::Parse {
+                    path: path.clone(),
+                    source: Box::new(source),
+                }
+            })?;
+            if let Err(source) = tighten_config_permissions(&file)
+                && source.kind() != std::io::ErrorKind::PermissionDenied
+            {
+                return Err(ConfigError::Read {
+                    path: path.clone(),
+                    source,
+                });
             }
+            info!(path = %path.display(), "loaded config");
+            if config.database.path.is_relative()
+                && let Some(parent) = path.parent()
+                && !parent.as_os_str().is_empty()
+            {
+                config.database.path = parent.join(&config.database.path);
+            }
+            return Ok(config);
         }
 
         Ok(Config::default())
@@ -597,6 +616,21 @@ enabled = false
             std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
             0o644
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn loading_config_rejects_dangling_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let link = tmp.path().join("lific.toml");
+        symlink(tmp.path().join("missing.toml"), &link).unwrap();
+
+        assert!(matches!(
+            Config::load(Some(&link)),
+            Err(ConfigError::Read { .. })
+        ));
     }
 
     /// The chmod rides the descriptor the contents were read from, so it can
