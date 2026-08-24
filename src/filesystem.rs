@@ -4,6 +4,14 @@ use std::path::{Component, Path, PathBuf};
 
 /// Reject a path that contains a symlink in any existing component.
 pub(crate) fn reject_symlink_ancestors(path: &Path) -> io::Result<()> {
+    inspect_ancestors(path, false)
+}
+
+fn reject_unsafe_ancestors(path: &Path) -> io::Result<()> {
+    inspect_ancestors(path, true)
+}
+
+fn inspect_ancestors(path: &Path, reject_writable: bool) -> io::Result<()> {
     let mut current = PathBuf::new();
     for component in path.components() {
         if matches!(component, Component::CurDir) {
@@ -14,7 +22,21 @@ pub(crate) fn reject_symlink_ancestors(path: &Path) -> io::Result<()> {
             Ok(metadata) if is_link(&metadata) => {
                 return Err(unsafe_path(path, "must not contain a symlink"));
             }
-            Ok(_) => {}
+            Ok(metadata) => {
+                #[cfg(unix)]
+                if reject_writable && metadata.is_dir() {
+                    use std::os::unix::fs::MetadataExt;
+                    let mode = metadata.mode();
+                    if mode & 0o1000 == 0 && mode & 0o022 != 0 {
+                        return Err(unsafe_path(
+                            &current,
+                            "is group/world-writable without sticky protection",
+                        ));
+                    }
+                }
+                #[cfg(not(unix))]
+                let _ = reject_writable;
+            }
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
             Err(error) => return Err(error),
         }
@@ -32,6 +54,7 @@ pub(crate) fn ensure_private_dir(path: &Path) -> io::Result<()> {
 /// Create a private parent when absent, or validate an existing parent without
 /// changing a safe, traversable mode such as 0755.
 pub(crate) fn ensure_private_parent(path: &Path) -> io::Result<()> {
+    reject_unsafe_ancestors(path)?;
     let existed = symlink_metadata_if_exists(path)?.is_some();
     ensure_dir(path)?;
     if existed {
@@ -53,19 +76,7 @@ pub(crate) fn ensure_dir(path: &Path) -> io::Result<()> {
 /// Validate a directory that will receive private output. Sticky directories
 /// are allowed because they protect entries from other users' renames.
 pub(crate) fn validate_private_parent(path: &Path) -> io::Result<()> {
-    reject_symlink_ancestors(path)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        let mode = fs::symlink_metadata(path)?.mode();
-        if mode & 0o1000 == 0 && mode & 0o022 != 0 {
-            return Err(unsafe_path(
-                path,
-                "is group/world-writable without sticky protection",
-            ));
-        }
-    }
-    Ok(())
+    reject_unsafe_ancestors(path)
 }
 
 /// Open an existing file without following symlinks.
@@ -107,9 +118,7 @@ pub(crate) fn create_private(path: &Path) -> io::Result<File> {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let file = open_with_options(&mut options, path)?;
-    set_private_file(&file)?;
-    Ok(file)
+    open_with_options(&mut options, path)
 }
 
 /// Create a private temporary file in `parent`, removed automatically unless
@@ -365,6 +374,19 @@ mod tests {
             std::os::unix::fs::symlink(&real, &link).unwrap();
             assert!(ensure_private_dir(&link.join("child")).is_err());
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_directory_rejects_writable_ancestor() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let shared = root.path().join("shared");
+        std::fs::create_dir(&shared).unwrap();
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o777)).unwrap();
+
+        assert!(ensure_private_dir(&shared.join("private")).is_err());
     }
 
     #[cfg(unix)]
