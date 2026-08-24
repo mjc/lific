@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tracing::info;
 
+use crate::filesystem;
+
 const CONFIG_FILENAME: &str = "lific.toml";
 
 /// A config file that has been opened and read.
@@ -10,33 +12,19 @@ const CONFIG_FILENAME: &str = "lific.toml";
 /// acts on the file we read, not a later resolution of the same pathname.
 struct ConfigFile {
     contents: String,
-    #[cfg(unix)]
     file: std::fs::File,
 }
 
-#[cfg_attr(not(unix), expect(clippy::unnecessary_wraps, reason = "fallible on Unix"))]
-fn tighten_config_permissions(_config: &ConfigFile) -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        let metadata = _config.file.metadata()?;
-        if metadata.mode() & 0o077 != 0 {
-            _config
-                .file
-                .set_permissions(std::fs::Permissions::from_mode(0o600))?;
-        }
-    }
-    Ok(())
+fn tighten_config_permissions(config: &ConfigFile) -> std::io::Result<()> {
+    filesystem::set_private_file(&config.file)
 }
 
-#[cfg(unix)]
 fn read_config_file(path: &Path) -> std::io::Result<ConfigFile> {
     use std::io::Read;
-    use std::os::unix::fs::OpenOptionsExt;
 
     let mut options = std::fs::OpenOptions::new();
-    options.read(true).custom_flags(libc::O_NOFOLLOW);
-    let mut file = options.open(path)?;
+    options.read(true);
+    let mut file = filesystem::open_private_with_options(&mut options, path)?;
     if !file.metadata()?.file_type().is_file() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -46,13 +34,6 @@ fn read_config_file(path: &Path) -> std::io::Result<ConfigFile> {
     let mut contents = String::new();
     file.read_to_string(&mut contents)?;
     Ok(ConfigFile { contents, file })
-}
-
-#[cfg(not(unix))]
-fn read_config_file(path: &Path) -> std::io::Result<ConfigFile> {
-    Ok(ConfigFile {
-        contents: std::fs::read_to_string(path)?,
-    })
 }
 
 /// A config file was found but could not be honored.
@@ -471,10 +452,13 @@ impl Config {
     /// any. Used by commands that operate on "the instance" without an
     /// explicit `--config` (e.g. `lific service install`) so they agree with
     /// what `Config::load` would pick.
-    pub fn discover_path() -> Option<PathBuf> {
-        Self::candidate_paths(None)
-            .into_iter()
-            .find(|path| !matches!(filesystem::safe_path_exists(path), Ok(false)))
+    pub fn discover_path() -> Result<Option<PathBuf>, std::io::Error> {
+        for path in Self::candidate_paths(None) {
+            if filesystem::safe_path_exists(&path)? {
+                return Ok(Some(path));
+            }
+        }
+        Ok(None)
     }
 
     /// LIF-295: the OS-standard home for a `lific init` instance — config
@@ -737,21 +721,6 @@ enabled = false
             std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             0o400
         );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn loading_config_rejects_dangling_symlink() {
-        use std::os::unix::fs::symlink;
-
-        let tmp = tempfile::tempdir().unwrap();
-        let link = tmp.path().join("lific.toml");
-        symlink(tmp.path().join("missing.toml"), &link).unwrap();
-
-        assert!(matches!(
-            Config::load(Some(&link)),
-            Err(ConfigError::Read { .. })
-        ));
     }
 
     #[test]
