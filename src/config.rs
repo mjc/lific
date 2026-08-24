@@ -167,11 +167,9 @@ fn editable_document(existing: &str) -> Result<toml_edit::DocumentMut, String> {
 #[cfg(unix)]
 fn read_config_file(path: &Path) -> std::io::Result<ConfigFile> {
     use std::io::Read;
-    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    use std::os::unix::fs::MetadataExt;
 
-    let mut options = std::fs::OpenOptions::new();
-    options.read(true).custom_flags(libc::O_NOFOLLOW);
-    let file = options.open(path)?;
+    let file = filesystem::open(path)?;
     // A directory opens fine on Linux and only fails at read time. Devices and
     // FIFOs are not configuration files either, so reject them before reading.
     if !file.metadata()?.file_type().is_file() {

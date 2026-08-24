@@ -279,9 +279,7 @@ pub fn open(path: &Path) -> Result<DbPool, LificError> {
 }
 
 fn ensure_private_file(path: &Path) -> Result<(), LificError> {
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    match filesystem::open_private(&mut options, path) {
+    match filesystem::create_private(path) {
         Ok(_) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
             let metadata = std::fs::symlink_metadata(path)

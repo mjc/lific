@@ -287,9 +287,7 @@ struct TempFile {
 
 impl TempFile {
     fn create(path: PathBuf) -> Result<Self, LificError> {
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        let file = filesystem::open_private(&mut options, &path).map_err(|error| {
+        let file = filesystem::create_private(&path).map_err(|error| {
             LificError::Internal(format!("create secure staging file: {error}"))
         })?;
         Ok(Self { file, path })
@@ -1252,9 +1250,7 @@ pub fn inspect_archive(archive: &Path, limits: &RestoreLimits) -> Result<Manifes
 
     // Second pass: validate every entry name (traversal guard) and require the
     // DB member is present.
-    let mut options = std::fs::OpenOptions::new();
-    options.read(true);
-    let file = filesystem::open_no_follow(&mut options, archive)
+    let file = filesystem::open(archive)
         .map_err(|e| LificError::BadRequest(format!("open archive: {e}")))?;
     let mut tar = bounded_archive(file, limits);
     let mut has_db = false;
@@ -1360,9 +1356,7 @@ pub fn inspect_archive(archive: &Path, limits: &RestoreLimits) -> Result<Manifes
 
 /// Read just the manifest from the archive (first matching entry).
 fn read_manifest(archive: &Path, limits: &RestoreLimits) -> Result<Manifest, LificError> {
-    let mut options = std::fs::OpenOptions::new();
-    options.read(true);
-    let file = filesystem::open_no_follow(&mut options, archive)
+    let file = filesystem::open(archive)
         .map_err(|e| LificError::BadRequest(format!("open archive: {e}")))?;
     let mut tar = bounded_archive(file, limits);
     let mut entry_count = 0u64;
@@ -1471,9 +1465,7 @@ pub fn run_restore_with(
         .map_err(|e| LificError::Internal(format!("secure restore attachments dir: {e}")))?;
 
     let extract = (|| -> Result<u64, LificError> {
-        let mut options = std::fs::OpenOptions::new();
-        options.read(true);
-        let file = filesystem::open_no_follow(&mut options, archive)
+        let file = filesystem::open(archive)
             .map_err(|e| LificError::BadRequest(format!("open archive: {e}")))?;
         let mut tar = bounded_archive(file, limits);
         let mut attachment_count = 0u64;
