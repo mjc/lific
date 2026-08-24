@@ -194,22 +194,11 @@ pub(crate) fn staging_is_locked(path: &Path) -> bool {
 /// Take a consistent snapshot of the live DB into the already-reserved staging
 /// file `dest`.
 ///
-/// The SQLite online backup API holds no long writer lock and copies into a
-/// file this process created with `O_CREAT|O_EXCL|O_NOFOLLOW` — so, unlike
-/// `VACUUM INTO`, nothing resolves a pathname a second time between reserving
-/// the destination and writing it.
-///
-/// The source is a dedicated read-only connection opened here and dropped when
-/// the snapshot finishes, not a pooled reader. Pooled connections carry
-/// `mmap_size = 64MB` and never close, and the backup API reads the entire
-/// database — so routing snapshots through the pool faulted each reader's full
-/// mmap window into RSS permanently. On the production instance that cost
-/// ~430MB of resident double-counted page-cache mappings (one 64MB window per
-/// reader the 30-minute backup task had ever touched). A short-lived source
-/// connection with SQLite's default `mmap_size = 0` reads through plain I/O
-/// and gives every page back when it closes; the pooled readers only ever map
-/// what their own queries touch.
-fn snapshot_db(db_path: &Path, dest: &TempFile) -> Result<(), LificError> {
+/// The SQLite online backup API runs on a dedicated read connection, holds no
+/// long writer lock, and copies into a file this process created with
+/// `O_CREAT|O_EXCL|O_NOFOLLOW` — so, unlike `VACUUM INTO`, nothing resolves a
+/// pathname a second time between reserving the destination and writing it.
+fn snapshot_db(db_path: &Path, dest: &Path) -> Result<(), LificError> {
     let conn = rusqlite::Connection::open_with_flags(
         db_path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
@@ -218,7 +207,7 @@ fn snapshot_db(db_path: &Path, dest: &TempFile) -> Result<(), LificError> {
     conn.busy_timeout(std::time::Duration::from_millis(5000))
         .map_err(|e| LificError::Internal(format!("set snapshot busy timeout: {e}")))?;
     let mut destination = rusqlite::Connection::open_with_flags(
-        dest.path(),
+        dest,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
     )
     .map_err(|e| LificError::Internal(format!("open SQLite staging file: {e}")))?;
@@ -242,24 +231,6 @@ fn set_owner_only(path: &Path) -> std::io::Result<()> {
     filesystem::set_private_file_path(path)
 }
 
-/// Set 0600 on an already-open handle, so no pathname is resolved again.
-#[cfg_attr(
-    not(unix),
-    expect(clippy::unnecessary_wraps, reason = "fallible on Unix")
-)]
-fn set_owner_only_file(file: &File) -> std::io::Result<()> {
-    filesystem::set_private_file(file)
-}
-
-/// Set 0700 permissions on a directory (owner-only) on Unix. No-op elsewhere.
-#[cfg_attr(
-    not(unix),
-    expect(clippy::unnecessary_wraps, reason = "fallible on Unix")
-)]
-fn set_owner_only_dir(path: &Path) -> std::io::Result<()> {
-    filesystem::set_private_dir(path)
-}
-
 /// fsync a directory so a rename into it is durable. Unix only: Windows has no
 /// directory handle to sync, and its rename ordering does not need one.
 #[cfg_attr(
@@ -276,32 +247,6 @@ fn sync_dir(path: &Path) -> std::io::Result<()> {
         let _ = path;
     }
     Ok(())
-}
-
-/// A file this process created exclusively and owns for its lifetime; removed
-/// on drop, including while a `?` unwinds out of [`write_dump`].
-struct TempFile {
-    file: File,
-    path: PathBuf,
-}
-
-impl TempFile {
-    fn create(path: PathBuf) -> Result<Self, LificError> {
-        let file = filesystem::create_private(&path).map_err(|error| {
-            LificError::Internal(format!("create secure staging file: {error}"))
-        })?;
-        Ok(Self { file, path })
-    }
-
-    fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for TempFile {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
-    }
 }
 
 /// An advisory exclusive lock held for the lifetime of one dump's staging
@@ -383,19 +328,22 @@ fn write_dump_locked(
     filesystem::set_private_dir(staging.path())
         .map_err(|e| LificError::Internal(format!("secure dump staging directory: {e}")))?;
     let _lock = StagingLock::create(&staging.path().join("lock"))?;
-    let activity = TempFile::create(staging.path().join("activity"))?;
-    refresh_activity(&activity.file)
+    let activity = filesystem::create_private(&staging.path().join("activity"))
+        .map_err(|e| LificError::Internal(format!("create secure staging file: {e}")))?;
+    refresh_activity(&activity)
         .map_err(|e| LificError::Internal(format!("mark dump staging active: {e}")))?;
 
-    let tmp_db = TempFile::create(staging.path().join("dbsnapshot"))?;
-    snapshot_db(db_path, &tmp_db)?;
-    refresh_activity(&activity.file)
+    let tmp_db = filesystem::private_tempfile_in(staging.path(), "dbsnapshot")
+        .map_err(|e| LificError::Internal(format!("create secure staging file: {e}")))?;
+    snapshot_db(db_path, tmp_db.path())?;
+    refresh_activity(&activity)
         .map_err(|e| LificError::Internal(format!("refresh dump staging activity: {e}")))?;
 
-    let tmp_archive = TempFile::create(staging.path().join("archive"))?;
+    let tmp_archive = filesystem::private_tempfile_in(staging.path(), "archive")
+        .map_err(|e| LificError::Internal(format!("create secure staging file: {e}")))?;
 
     let db_size_bytes = tmp_db
-        .file
+        .as_file()
         .metadata()
         .map(|m| m.len())
         .map_err(|e| LificError::Internal(format!("size db snapshot: {e}")))?;
@@ -450,7 +398,7 @@ fn write_dump_locked(
     // it into place so a partial write is never observed at the final path.
     {
         let file = tmp_archive
-            .file
+            .as_file()
             .try_clone()
             .map_err(|e| LificError::Internal(format!("open archive staging handle: {e}")))?;
         let enc = flate2::write::GzEncoder::new(file, flate2::Compression::default());
@@ -464,7 +412,7 @@ fn write_dump_locked(
         // attachments/<sha256>. One handle is open at a time, so a store with
         // thousands of blobs cannot exhaust the process's file descriptors.
         for (name, path, identity) in &blobs {
-            refresh_activity(&activity.file)
+            refresh_activity(&activity)
                 .map_err(|e| LificError::Internal(format!("refresh dump staging activity: {e}")))?;
             let Some(mut blob) = open_verified_blob(path)? else {
                 return Err(LificError::Internal(format!(
@@ -488,11 +436,9 @@ fn write_dump_locked(
     }
 
     tmp_archive
-        .file
+        .as_file()
         .sync_all()
         .map_err(|e| LificError::Internal(format!("sync archive: {e}")))?;
-    set_owner_only_file(&tmp_archive.file)
-        .map_err(|e| LificError::Internal(format!("chmod archive: {e}")))?;
     filesystem::atomic_replace(tmp_archive.path(), out_path)
         .map_err(|e| LificError::Internal(format!("finalize archive: {e}")))?;
     // The rename is only durable once the directory entry is on disk.
@@ -1457,11 +1403,7 @@ pub fn run_restore_with(
     let staging_path = staging.path();
     filesystem::set_private_dir(staging_path)
         .map_err(|e| LificError::Internal(format!("secure restore staging dir: {e}")))?;
-    filesystem::ensure_dir(&staging_path.join("attachments"))
-        .map_err(|e| LificError::Internal(format!("create staging dir: {e}")))?;
-    set_owner_only_dir(staging_path)
-        .map_err(|e| LificError::Internal(format!("secure restore staging dir: {e}")))?;
-    set_owner_only_dir(&staging_path.join("attachments"))
+    filesystem::ensure_private_dir(&staging_path.join("attachments"))
         .map_err(|e| LificError::Internal(format!("secure restore attachments dir: {e}")))?;
 
     let extract = (|| -> Result<u64, LificError> {

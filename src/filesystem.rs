@@ -111,6 +111,20 @@ pub(crate) fn create_private(path: &Path) -> io::Result<File> {
     Ok(file)
 }
 
+/// Create a private temporary file in `parent`, removed automatically unless
+/// its path is published elsewhere.
+pub(crate) fn private_tempfile_in(
+    parent: &Path,
+    prefix: &str,
+) -> io::Result<tempfile::NamedTempFile> {
+    reject_symlink_ancestors(parent)?;
+    let file = tempfile::Builder::new()
+        .prefix(prefix)
+        .tempfile_in(parent)?;
+    set_private_file(file.as_file())?;
+    Ok(file)
+}
+
 /// Tighten permissions on an already-open file without reopening its path.
 pub(crate) fn set_private_file(file: &File) -> io::Result<()> {
     #[cfg(unix)]
@@ -307,7 +321,8 @@ fn unsafe_path(path: &Path, reason: &str) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::{
-        atomic_replace, create_private, ensure_private_dir, open, safe_destination_exists,
+        atomic_replace, create_private, ensure_private_dir, open, private_tempfile_in,
+        safe_destination_exists,
     };
 
     #[test]
@@ -383,5 +398,19 @@ mod tests {
         let file = create_private(&path).unwrap();
 
         assert_eq!(file.metadata().unwrap().permissions().mode() & 0o777, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_temporary_file_applies_owner_only_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let file = private_tempfile_in(root.path(), "private-").unwrap();
+
+        assert_eq!(
+            file.as_file().metadata().unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 }
