@@ -307,7 +307,7 @@ pub fn install(manager: Manager, plan: &ServicePlan) -> Result<InstallReport, St
     }
     match manager {
         Manager::SystemdUser => {
-            filesystem::write_atomic(&path, systemd_unit(plan).as_bytes(), true)
+            filesystem::write_atomic(&path, systemd_unit(plan).as_bytes(), false)
                 .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
             run_ok("systemctl", &["--user", "daemon-reload"])?;
             run_ok(
@@ -329,7 +329,7 @@ pub fn install(manager: Manager, plan: &ServicePlan) -> Result<InstallReport, St
             })
         }
         Manager::Launchd => {
-            filesystem::write_atomic(&path, launchd_plist(plan).as_bytes(), true)
+            filesystem::write_atomic(&path, launchd_plist(plan).as_bytes(), false)
                 .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
             launchd_bootstrap(&path)?;
             Ok(InstallReport {
