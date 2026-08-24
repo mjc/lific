@@ -12,9 +12,12 @@ fn reject_unsafe_ancestors(path: &Path) -> io::Result<()> {
 }
 
 fn inspect_ancestors(path: &Path, reject_writable: bool) -> io::Result<()> {
+    if path.components().any(|component| component == Component::ParentDir) {
+        return Err(unsafe_path(path, "must not contain parent traversal"));
+    }
     let mut current = PathBuf::new();
     for component in path.components() {
-        if matches!(component, Component::CurDir) {
+        if component == Component::CurDir {
             continue;
         }
         current.push(component);
@@ -380,6 +383,19 @@ mod tests {
             std::os::unix::fs::symlink(&real, &link).unwrap();
             assert!(ensure_private_dir(&link.join("child")).is_err());
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn directory_creation_rejects_parent_traversal_before_writing() {
+        let root = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let link = root.path().join("link");
+        std::os::unix::fs::symlink(elsewhere.path(), &link).unwrap();
+        let path = root.path().join("missing/../link/child");
+
+        assert!(super::ensure_dir(&path).is_err());
+        assert!(!elsewhere.path().join("child").exists());
     }
 
     #[cfg(unix)]
