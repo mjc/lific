@@ -122,23 +122,13 @@ pub fn write(path: &Path, format: Format, entry: &CompiledEntry) -> Result<Actio
 /// Read the file if present. `Ok(None)` = doesn't exist. An unreadable file is
 /// an error (permissions, etc.).
 fn read_existing(path: &Path) -> Result<Option<String>, WriteError> {
-    let mut file = match filesystem::open(path) {
-        Ok(file) => file,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => {
-            return Err(WriteError::new(format!(
-                "failed to read {}: {e}",
-                path.display()
-            )));
-        }
-    };
-    let mut contents = String::new();
-    match std::io::Read::read_to_string(&mut file, &mut contents) {
-        Ok(_) => Ok(Some(contents)),
+    match filesystem::read_to_string(path) {
+        Ok(contents) => Ok(Some(contents)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(WriteError::new(format!(
             "failed to read {}: {e}",
             path.display()
-        )))
+        ))),
     }
 }
 

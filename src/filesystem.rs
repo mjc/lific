@@ -1,5 +1,5 @@
 use std::fs::{self, File, Metadata, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
 
 /// Reject a path that contains a symlink in any existing component.
@@ -87,6 +87,18 @@ pub(crate) fn open(path: &Path) -> io::Result<File> {
     open_with_options(&mut options, path)
 }
 
+pub(crate) fn read(path: &Path) -> io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    open(path)?.read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+pub(crate) fn read_to_string(path: &Path) -> io::Result<String> {
+    let mut contents = String::new();
+    open(path)?.read_to_string(&mut contents)?;
+    Ok(contents)
+}
+
 fn open_with_options(options: &mut OpenOptions, path: &Path) -> io::Result<File> {
     reject_symlink_ancestors(path)?;
     #[cfg(unix)]
@@ -132,20 +144,7 @@ pub(crate) fn private_tempfile_in(
     let file = tempfile::Builder::new()
         .prefix(prefix)
         .tempfile_in(parent)?;
-    set_private_file(file.as_file())?;
     Ok(file)
-}
-
-/// Tighten permissions on an already-open file without reopening its path.
-fn set_private_file(file: &File) -> io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        file.set_permissions(fs::Permissions::from_mode(0o600))?;
-    }
-    #[cfg(not(unix))]
-    let _ = file;
-    Ok(())
 }
 
 /// Tighten permissions on a file path without first reopening it through a
@@ -153,10 +152,12 @@ fn set_private_file(file: &File) -> io::Result<()> {
 pub(crate) fn set_private_file_path(path: &Path) -> io::Result<()> {
     #[cfg(unix)]
     {
+        use std::os::unix::fs::PermissionsExt;
+
         let mut options = OpenOptions::new();
         options.read(true);
         let file = open_with_options(&mut options, path)?;
-        set_private_file(&file)?;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
     }
     #[cfg(not(unix))]
     reject_symlink(path)?;

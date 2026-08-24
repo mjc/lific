@@ -208,14 +208,9 @@ impl AttachmentStore {
     /// thumbnails existed.
     pub fn read_thumb(&self, sha256: &str) -> Result<Option<Vec<u8>>, LificError> {
         let path = self.thumb_path_for(sha256)?;
-        let mut file = match filesystem::open(&path) {
-            Ok(file) => file,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(LificError::Internal(format!("read thumbnail: {e}"))),
-        };
-        let mut bytes = Vec::new();
-        match std::io::Read::read_to_end(&mut file, &mut bytes) {
-            Ok(_) => Ok(Some(bytes)),
+        match filesystem::read(&path) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(LificError::Internal(format!("read thumbnail: {e}"))),
         }
     }
@@ -447,17 +442,13 @@ impl AttachmentStore {
     /// missing (e.g. the DB row survived but the blob was manually removed).
     pub fn read(&self, sha256: &str) -> Result<Vec<u8>, LificError> {
         let path = self.path_for(sha256)?;
-        let mut file = filesystem::open(&path).map_err(|e| {
+        filesystem::read(&path).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 LificError::NotFound("attachment bytes not found on disk".into())
             } else {
                 LificError::Internal(format!("read attachment: {e}"))
             }
-        })?;
-        let mut bytes = Vec::new();
-        std::io::Read::read_to_end(&mut file, &mut bytes)
-            .map(|_| bytes)
-            .map_err(|e| LificError::Internal(format!("read attachment: {e}")))
+        })
     }
 
     /// Delete the sidecar file for a content hash. Missing file is treated as
