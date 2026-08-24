@@ -1,8 +1,6 @@
 use std::fs::{self, File, Metadata, OpenOptions};
-use std::io;
+use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
-
-use std::io::Write;
 
 /// Reject a path that contains a symlink in any existing component.
 pub(crate) fn reject_symlink_ancestors(path: &Path) -> io::Result<()> {
@@ -27,12 +25,20 @@ pub(crate) fn reject_symlink_ancestors(path: &Path) -> io::Result<()> {
 /// Create a directory tree with owner-only permissions where the platform
 /// supports them. Existing group/other-writable directories are rejected.
 pub(crate) fn ensure_private_dir(path: &Path) -> io::Result<()> {
-    let existed = fs::symlink_metadata(path).is_ok();
+    ensure_private_parent(path)?;
+    set_private_dir(path)
+}
+
+/// Create a private parent when absent, or validate an existing parent without
+/// changing a safe, traversable mode such as 0755.
+pub(crate) fn ensure_private_parent(path: &Path) -> io::Result<()> {
+    let existed = symlink_metadata_if_exists(path)?.is_some();
     ensure_dir(path)?;
     if existed {
-        reject_group_writable(path)?;
+        reject_group_writable(path)
+    } else {
+        set_private_dir(path)
     }
-    set_private_dir(path)
 }
 
 /// Create a directory tree after checking every existing component for
@@ -78,7 +84,12 @@ pub(crate) fn open_no_follow(options: &mut OpenOptions, path: &Path) -> io::Resu
         // final reparse point when opening the file.
         options.custom_flags(0x0020_0000);
     }
-    options.open(path)
+    let file = options.open(path)?;
+    #[cfg(windows)]
+    if file.metadata()?.file_type().is_symlink() {
+        return Err(unsafe_path(path, "must not be a symlink"));
+    }
+    Ok(file)
 }
 
 /// Open a file with owner-only mode on Unix and no-follow semantics.
@@ -108,24 +119,31 @@ pub(crate) fn set_private_file(file: &File) -> io::Result<()> {
 /// Tighten permissions on a file path without first reopening it through a
 /// possibly swapped symlink.
 pub(crate) fn set_private_file_path(path: &Path) -> io::Result<()> {
-    reject_symlink(path)?;
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+        let mut options = OpenOptions::new();
+        options.read(true);
+        let file = open_no_follow(&mut options, path)?;
+        set_private_file(&file)?;
     }
+    #[cfg(not(unix))]
+    reject_symlink(path)?;
     Ok(())
 }
 
 /// Tighten permissions on an existing directory after verifying it is not a
 /// symlink. Directory permission changes are a no-op on Windows.
 pub(crate) fn set_private_dir(path: &Path) -> io::Result<()> {
-    reject_symlink(path)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+        let mut options = OpenOptions::new();
+        options.read(true);
+        let directory = open_no_follow(&mut options, path)?;
+        directory.set_permissions(fs::Permissions::from_mode(0o700))?;
     }
+    #[cfg(not(unix))]
+    reject_symlink(path)?;
     Ok(())
 }
 
@@ -142,7 +160,7 @@ pub(crate) fn reject_symlink(path: &Path) -> io::Result<()> {
 /// Existing symlinks and hard-linked files are refused before publication.
 pub(crate) fn atomic_replace(temp: &Path, destination: &Path) -> io::Result<()> {
     reject_symlink_ancestors(destination)?;
-    reject_unsafe_destination(destination)?;
+    safe_destination_exists(destination)?;
 
     #[cfg(not(windows))]
     {
@@ -180,13 +198,8 @@ pub(crate) fn atomic_replace(temp: &Path, destination: &Path) -> io::Result<()> 
     }
 }
 
-pub(crate) fn reject_unsafe_destination(path: &Path) -> io::Result<()> {
-    if let Ok(metadata) = fs::symlink_metadata(path)
-        && (metadata.file_type().is_symlink() || number_of_links(&metadata) > 1)
-    {
-        return Err(unsafe_path(path, "must not be a symlink or hard link"));
-    }
-    Ok(())
+pub(crate) fn safe_destination_exists(path: &Path) -> io::Result<bool> {
+    Ok(destination_metadata(path)?.is_some())
 }
 
 /// Write bytes to a private staging file and publish them in one operation.
@@ -204,6 +217,15 @@ pub(crate) fn write_atomic(path: &Path, contents: &[u8], private: bool) -> io::R
     let temp = staging.path().join(path.file_name().unwrap_or_default());
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
+    #[cfg(unix)]
+    if !private {
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+        let mode = destination_metadata(path)?
+            .map(|metadata| metadata.mode() & 0o777)
+            .filter(|mode| *mode != 0)
+            .unwrap_or(0o666);
+        options.mode(mode);
+    }
     let mut file = if private {
         open_private(&mut options, &temp)?
     } else {
@@ -230,6 +252,24 @@ fn reject_group_writable(path: &Path) -> io::Result<()> {
     #[cfg(not(unix))]
     let _ = path;
     Ok(())
+}
+
+fn destination_metadata(path: &Path) -> io::Result<Option<Metadata>> {
+    let Some(metadata) = symlink_metadata_if_exists(path)? else {
+        return Ok(None);
+    };
+    if metadata.file_type().is_symlink() || number_of_links(&metadata) > 1 {
+        return Err(unsafe_path(path, "must not be a symlink or hard link"));
+    }
+    Ok(Some(metadata))
+}
+
+fn symlink_metadata_if_exists(path: &Path) -> io::Result<Option<Metadata>> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => Ok(Some(metadata)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
 }
 
 fn number_of_links(metadata: &Metadata) -> u64 {
@@ -261,7 +301,7 @@ fn unsafe_path(path: &Path, reason: &str) -> io::Error {
 mod tests {
     use std::fs::OpenOptions;
 
-    use super::{atomic_replace, ensure_private_dir, open_private};
+    use super::{atomic_replace, ensure_private_dir, open_private, safe_destination_exists};
 
     #[test]
     fn private_directory_rejects_symlinked_ancestor() {
@@ -317,6 +357,15 @@ mod tests {
 
         assert!(atomic_replace(&temp, &destination).is_err());
         assert_eq!(std::fs::read_to_string(existing).unwrap(), "old");
+    }
+
+    #[test]
+    fn destination_check_propagates_metadata_errors() {
+        let root = tempfile::tempdir().unwrap();
+        let file = root.path().join("file");
+        std::fs::write(&file, "not a directory").unwrap();
+
+        assert!(safe_destination_exists(&file.join("child")).is_err());
     }
 
     #[cfg(unix)]
