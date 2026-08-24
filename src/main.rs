@@ -726,17 +726,7 @@ async fn cmd_init(options: InitOptions<'_>) -> Result<(), Box<dyn std::error::Er
         if let Some(parent) = config_path.parent()
             && !parent.as_os_str().is_empty()
         {
-            let parent_existed = parent.exists();
-            std::fs::create_dir_all(parent)?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                if !parent_existed {
-                    std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
-                }
-            }
-            #[cfg(not(unix))]
-            let _ = parent_existed;
+            filesystem::ensure_private_parent(parent)?;
         }
         let toml = match &target.initial_database {
             Some(db) => Config::default_toml_with_db(db),
