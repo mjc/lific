@@ -11,7 +11,7 @@ pub(crate) fn reject_symlink_ancestors(path: &Path) -> io::Result<()> {
         }
         current.push(component);
         match fs::symlink_metadata(&current) {
-            Ok(metadata) if metadata.file_type().is_symlink() => {
+            Ok(metadata) if is_link(&metadata) => {
                 return Err(unsafe_path(path, "must not contain a symlink"));
             }
             Ok(_) => {}
@@ -85,13 +85,14 @@ fn open_with_options(options: &mut OpenOptions, path: &Path) -> io::Result<File>
     #[cfg(windows)]
     {
         use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
         // FILE_FLAG_OPEN_REPARSE_POINT prevents Windows from traversing a
         // final reparse point when opening the file.
-        options.custom_flags(0x0020_0000);
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
     }
     let file = options.open(path)?;
     #[cfg(windows)]
-    if file.metadata()?.file_type().is_symlink() {
+    if is_link(&file.metadata()?) {
         return Err(unsafe_path(path, "must not be a symlink"));
     }
     Ok(file)
@@ -185,14 +186,16 @@ pub(crate) fn atomic_replace(temp: &Path, destination: &Path) -> io::Result<()> 
             MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
         };
 
-        let wide = |path: &Path| {
-            path.as_os_str()
-                .encode_wide()
-                .chain(std::iter::once(0))
-                .collect::<Vec<_>>()
+        let wide = |path: &Path| -> io::Result<Vec<u16>> {
+            let mut wide = path.as_os_str().encode_wide().collect::<Vec<_>>();
+            if wide.contains(&0) {
+                return Err(unsafe_path(path, "must not contain NUL"));
+            }
+            wide.push(0);
+            Ok(wide)
         };
-        let temp = wide(temp);
-        let destination = wide(destination);
+        let temp = wide(temp)?;
+        let destination = wide(destination)?;
         // SAFETY: both vectors are NUL-terminated UTF-16 paths owned for the
         // duration of the call, and MoveFileExW does not retain the pointers.
         let ok = unsafe {
@@ -290,10 +293,7 @@ fn destination_metadata(path: &Path) -> io::Result<Option<Metadata>> {
 
 fn safe_metadata(path: &Path) -> io::Result<Option<Metadata>> {
     let metadata = symlink_metadata_if_exists(path)?;
-    if metadata
-        .as_ref()
-        .is_some_and(|metadata| metadata.file_type().is_symlink())
-    {
+    if metadata.as_ref().is_some_and(is_link) {
         return Err(unsafe_path(path, "must not be a symlink"));
     }
     Ok(metadata)
@@ -316,13 +316,27 @@ fn number_of_links(metadata: &Metadata) -> u64 {
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
-        return u64::from(metadata.number_of_links().unwrap_or(1));
+        u64::from(metadata.number_of_links().unwrap_or(1))
     }
     #[cfg(not(any(unix, windows)))]
     {
         let _ = metadata;
         1
     }
+}
+
+fn is_link(metadata: &Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+    #[cfg(not(windows))]
+    false
 }
 
 fn unsafe_path(path: &Path, reason: &str) -> io::Error {

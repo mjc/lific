@@ -111,19 +111,21 @@ fn render_from(
 /// directories as needed. Returns whether the file was created or updated.
 pub fn write(path: &Path, format: Format, entry: &CompiledEntry) -> Result<Action, WriteError> {
     let rendered = render(path, format, entry)?;
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        filesystem::ensure_dir(parent)
-            .map_err(|e| WriteError::new(format!("failed to create {}: {e}", parent.display())))?;
-    }
     // Only embedded credentials make this file secret-bearing. Environment
     // variable references are configuration, not credential material.
     let secret = rendered.contents.contains("lific_sk-") || rendered.contents.contains("lific_at_");
-    if secret && let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-        filesystem::ensure_private_parent(parent).map_err(|e| {
-            WriteError::new(format!("failed to secure {}: {e}", parent.display()))
-        })?;
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        if secret {
+            filesystem::ensure_private_parent(parent).map_err(|e| {
+                WriteError::new(format!("failed to secure {}: {e}", parent.display()))
+            })?;
+        } else {
+            filesystem::ensure_dir(parent).map_err(|e| {
+                WriteError::new(format!("failed to create {}: {e}", parent.display()))
+            })?;
+        }
     }
     filesystem::write_atomic(path, rendered.contents.as_bytes(), secret)
         .map_err(|e| WriteError::new(format!("failed to write {}: {e}", path.display())))?;
@@ -458,6 +460,10 @@ mod tests {
         assert_eq!(
             std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             0o600
+        );
+        assert_eq!(
+            std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            0o700
         );
         assert!(!std::fs::read_dir(&dir).unwrap().any(|entry| {
             entry
