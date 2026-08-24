@@ -231,7 +231,7 @@ impl FileStore {
             filesystem::ensure_private_dir(parent)?;
         }
         let json = serde_json::to_string_pretty(map).map_err(std::io::Error::other)?;
-        filesystem::write_atomic(&self.path, json.as_bytes(), true)
+        filesystem::write_private_atomic(&self.path, json.as_bytes())
     }
 
     /// Store `token` under `key`, creating the file if needed.

@@ -598,7 +598,7 @@ pub fn write_bundle_to_directory(
     let mut written = Vec::new();
     for file in &bundle.files {
         let full_path = prepare_output_path(target_dir, &file.path)?;
-        filesystem::write_atomic(&full_path, file.content.as_bytes(), false).map_err(io_error)?;
+        filesystem::write_atomic(&full_path, file.content.as_bytes()).map_err(io_error)?;
         written.push(full_path);
     }
     Ok(written)
@@ -687,7 +687,7 @@ fn unpack_zip_with_limits(
         }
         expanded += read;
 
-        filesystem::write_atomic(&full_path, &content, false).map_err(io_error)?;
+        filesystem::write_atomic(&full_path, &content).map_err(io_error)?;
         written.push(full_path);
     }
     Ok(written)

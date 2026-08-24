@@ -260,8 +260,18 @@ fn reject_symlink(path: &Path) -> io::Result<()> {
     }
 }
 
-/// Write bytes to a staging file and publish them in one operation.
-pub(crate) fn write_atomic(path: &Path, contents: &[u8], private: bool) -> io::Result<()> {
+/// Write bytes atomically, preserving an existing file's mode where supported.
+pub(crate) fn write_atomic(path: &Path, contents: &[u8]) -> io::Result<()> {
+    write_atomic_with_mode(path, contents, false)
+}
+
+/// Write bytes atomically to an owner-only file and secure newly-created parent
+/// directories.
+pub(crate) fn write_private_atomic(path: &Path, contents: &[u8]) -> io::Result<()> {
+    write_atomic_with_mode(path, contents, true)
+}
+
+fn write_atomic_with_mode(path: &Path, contents: &[u8], private: bool) -> io::Result<()> {
     let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty());
