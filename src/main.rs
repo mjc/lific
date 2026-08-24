@@ -719,11 +719,7 @@ async fn cmd_init(
         if let Some(parent) = config_path.parent()
             && !parent.as_os_str().is_empty()
         {
-            let parent_existed = parent.exists();
-            filesystem::ensure_dir(parent)?;
-            if !parent_existed {
-                filesystem::set_private_dir(parent)?;
-            }
+            filesystem::ensure_private_parent(parent)?;
         }
         let toml = match &default_db {
             Some(db) => Config::default_toml_with_db(db),
