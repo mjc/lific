@@ -220,9 +220,7 @@ impl FileStore {
     }
 
     fn read_map(&self) -> BTreeMap<String, String> {
-        let mut options = std::fs::OpenOptions::new();
-        options.read(true);
-        let mut file = match filesystem::open_no_follow(&mut options, &self.path) {
+        let mut file = match filesystem::open(&self.path) {
             Ok(file) => file,
             Err(_) => return BTreeMap::new(),
         };

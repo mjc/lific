@@ -29,7 +29,7 @@ mod test_env;
 use clap::{CommandFactory, Parser};
 use cli::{BackendKind, Cli, Command, ServiceAction};
 use config::Config;
-use filesystem::{open_private, write_atomic};
+use filesystem::{create_private, write_atomic};
 
 // Commands that operate directly on the database (no server required)
 fn is_crud_command(cmd: &Command) -> bool {
@@ -57,9 +57,7 @@ fn create_private_config(path: &std::path::Path, contents: &str) -> std::io::Res
         .prefix(".lific-config-")
         .tempdir_in(parent)?;
     let temp = staging.path().join(path.file_name().unwrap_or_default());
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    let mut file = open_private(&mut options, &temp)?;
+    let mut file = create_private(&temp)?;
     std::io::Write::write_all(&mut file, contents.as_bytes())?;
     file.sync_all()?;
     // A hard link publishes only when the destination does not yet exist.
