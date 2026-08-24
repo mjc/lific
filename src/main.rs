@@ -28,7 +28,7 @@ mod test_env;
 use clap::{CommandFactory, Parser};
 use cli::{BackendKind, Cli, Command, ServiceAction};
 use config::Config;
-use filesystem::{create_private, write_atomic};
+use filesystem::{create_private, write_private_atomic};
 
 // Commands that operate directly on the database (no server required)
 fn is_crud_command(cmd: &Command) -> bool {
@@ -47,7 +47,7 @@ fn is_crud_command(cmd: &Command) -> bool {
 }
 
 fn write_private_config(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
-    write_atomic(path, contents.as_bytes(), true)
+    write_private_atomic(path, contents.as_bytes())
 }
 
 fn create_private_config(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
