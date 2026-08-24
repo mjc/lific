@@ -13,9 +13,7 @@ fn tighten_config_permissions(path: &Path) -> std::io::Result<()> {
 fn read_config_file(path: &Path) -> std::io::Result<String> {
     use std::io::Read;
 
-    let mut options = std::fs::OpenOptions::new();
-    options.read(true);
-    let mut file = filesystem::open_no_follow(&mut options, path)?;
+    let mut file = filesystem::open(path)?;
     let mut contents = String::new();
     file.read_to_string(&mut contents)?;
     Ok(contents)

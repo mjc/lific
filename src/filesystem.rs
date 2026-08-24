@@ -68,9 +68,14 @@ pub(crate) fn validate_private_parent(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Open a path without following a final symlink where the platform exposes
-/// that flag. Callers choose read/write/create/truncate semantics on `options`.
-pub(crate) fn open_no_follow(options: &mut OpenOptions, path: &Path) -> io::Result<File> {
+/// Open an existing file without following symlinks.
+pub(crate) fn open(path: &Path) -> io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    open_with_options(&mut options, path)
+}
+
+fn open_with_options(options: &mut OpenOptions, path: &Path) -> io::Result<File> {
     reject_symlink_ancestors(path)?;
     #[cfg(unix)]
     {
@@ -92,14 +97,16 @@ pub(crate) fn open_no_follow(options: &mut OpenOptions, path: &Path) -> io::Resu
     Ok(file)
 }
 
-/// Open a file with owner-only mode on Unix and no-follow semantics.
-pub(crate) fn open_private(options: &mut OpenOptions, path: &Path) -> io::Result<File> {
+/// Create a new owner-only file without following symlinks.
+pub(crate) fn create_private(path: &Path) -> io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let file = open_no_follow(options, path)?;
+    let file = open_with_options(&mut options, path)?;
     set_private_file(&file)?;
     Ok(file)
 }
@@ -123,7 +130,7 @@ pub(crate) fn set_private_file_path(path: &Path) -> io::Result<()> {
     {
         let mut options = OpenOptions::new();
         options.read(true);
-        let file = open_no_follow(&mut options, path)?;
+        let file = open_with_options(&mut options, path)?;
         set_private_file(&file)?;
     }
     #[cfg(not(unix))]
@@ -139,7 +146,7 @@ pub(crate) fn set_private_dir(path: &Path) -> io::Result<()> {
         use std::os::unix::fs::PermissionsExt;
         let mut options = OpenOptions::new();
         options.read(true);
-        let directory = open_no_follow(&mut options, path)?;
+        let directory = open_with_options(&mut options, path)?;
         directory.set_permissions(fs::Permissions::from_mode(0o700))?;
     }
     #[cfg(not(unix))]
@@ -227,9 +234,9 @@ pub(crate) fn write_atomic(path: &Path, contents: &[u8], private: bool) -> io::R
         options.mode(mode);
     }
     let mut file = if private {
-        open_private(&mut options, &temp)?
+        create_private(&temp)?
     } else {
-        open_no_follow(&mut options, &temp)?
+        open_with_options(&mut options, &temp)?
     };
     file.write_all(contents)?;
     file.sync_all()?;
@@ -299,9 +306,9 @@ fn unsafe_path(path: &Path, reason: &str) -> io::Error {
 
 #[cfg(test)]
 mod tests {
-    use std::fs::OpenOptions;
-
-    use super::{atomic_replace, ensure_private_dir, open_private, safe_destination_exists};
+    use super::{
+        atomic_replace, create_private, ensure_private_dir, open, safe_destination_exists,
+    };
 
     #[test]
     fn private_directory_rejects_symlinked_ancestor() {
@@ -326,9 +333,7 @@ mod tests {
         std::fs::write(&target, "secret").unwrap();
         std::os::unix::fs::symlink(&target, &link).unwrap();
 
-        let mut options = OpenOptions::new();
-        options.read(true);
-        assert!(open_private(&mut options, &link).is_err());
+        assert!(open(&link).is_err());
     }
 
     #[test]
@@ -375,9 +380,7 @@ mod tests {
 
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("private");
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        let file = open_private(&mut options, &path).unwrap();
+        let file = create_private(&path).unwrap();
 
         assert_eq!(file.metadata().unwrap().permissions().mode() & 0o777, 0o600);
     }
