@@ -27,8 +27,8 @@ pub(crate) fn reject_symlink_ancestors(path: &Path) -> io::Result<()> {
 /// Create a directory tree with owner-only permissions where the platform
 /// supports them. Existing group/other-writable directories are rejected.
 pub(crate) fn ensure_private_dir(path: &Path) -> io::Result<()> {
-    ensure_dir(path)?;
     let existed = fs::symlink_metadata(path).is_ok();
+    ensure_dir(path)?;
     if existed {
         reject_group_writable(path)?;
     }
