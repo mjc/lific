@@ -114,8 +114,12 @@ pub fn write(path: &Path, format: Format, entry: &CompiledEntry) -> Result<Actio
     // Only embedded credentials make this file secret-bearing. Environment
     // variable references are configuration, not credential material.
     let secret = rendered.contents.contains("lific_sk-") || rendered.contents.contains("lific_at_");
-    filesystem::write_atomic(path, rendered.contents.as_bytes(), secret)
-        .map_err(|e| WriteError::new(format!("failed to write {}: {e}", path.display())))?;
+    let result = if secret {
+        filesystem::write_private_atomic(path, rendered.contents.as_bytes())
+    } else {
+        filesystem::write_atomic(path, rendered.contents.as_bytes())
+    };
+    result.map_err(|e| WriteError::new(format!("failed to write {}: {e}", path.display())))?;
     Ok(rendered.action)
 }
 

@@ -198,7 +198,7 @@ impl AttachmentStore {
         {
             return Ok(());
         }
-        filesystem::write_atomic(&path, bytes, true)
+        filesystem::write_private_atomic(&path, bytes)
             .map_err(|error| LificError::Internal(format!("write thumbnail: {error}")))
     }
 
@@ -432,7 +432,7 @@ impl AttachmentStore {
         {
             return Ok(sha);
         }
-        filesystem::write_atomic(&path, bytes, true)
+        filesystem::write_private_atomic(&path, bytes)
             .map_err(|error| LificError::Internal(format!("write attachment: {error}")))?;
         Ok(sha)
     }
