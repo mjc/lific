@@ -126,7 +126,7 @@ pub(crate) fn private_tempfile_in(
 }
 
 /// Tighten permissions on an already-open file without reopening its path.
-pub(crate) fn set_private_file(file: &File) -> io::Result<()> {
+fn set_private_file(file: &File) -> io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -154,7 +154,7 @@ pub(crate) fn set_private_file_path(path: &Path) -> io::Result<()> {
 
 /// Tighten permissions on an existing directory after verifying it is not a
 /// symlink. Directory permission changes are a no-op on Windows.
-pub(crate) fn set_private_dir(path: &Path) -> io::Result<()> {
+fn set_private_dir(path: &Path) -> io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -165,15 +165,6 @@ pub(crate) fn set_private_dir(path: &Path) -> io::Result<()> {
     }
     #[cfg(not(unix))]
     reject_symlink(path)?;
-    Ok(())
-}
-
-/// Reject a symlink at exactly `path` without following it.
-pub(crate) fn reject_symlink(path: &Path) -> io::Result<()> {
-    let metadata = fs::symlink_metadata(path)?;
-    if metadata.file_type().is_symlink() {
-        return Err(unsafe_path(path, "must not be a symlink"));
-    }
     Ok(())
 }
 
@@ -221,6 +212,18 @@ pub(crate) fn atomic_replace(temp: &Path, destination: &Path) -> io::Result<()> 
 
 pub(crate) fn safe_destination_exists(path: &Path) -> io::Result<bool> {
     Ok(destination_metadata(path)?.is_some())
+}
+
+pub(crate) fn safe_path_exists(path: &Path) -> io::Result<bool> {
+    Ok(safe_metadata(path)?.is_some())
+}
+
+#[cfg(not(unix))]
+fn reject_symlink(path: &Path) -> io::Result<()> {
+    match safe_metadata(path)? {
+        Some(_) => Ok(()),
+        None => Err(io::ErrorKind::NotFound.into()),
+    }
 }
 
 /// Write bytes to a private staging file and publish them in one operation.
@@ -276,13 +279,24 @@ fn reject_group_writable(path: &Path) -> io::Result<()> {
 }
 
 fn destination_metadata(path: &Path) -> io::Result<Option<Metadata>> {
-    let Some(metadata) = symlink_metadata_if_exists(path)? else {
+    let Some(metadata) = safe_metadata(path)? else {
         return Ok(None);
     };
-    if metadata.file_type().is_symlink() || number_of_links(&metadata) > 1 {
-        return Err(unsafe_path(path, "must not be a symlink or hard link"));
+    if number_of_links(&metadata) > 1 {
+        return Err(unsafe_path(path, "must not be a hard link"));
     }
     Ok(Some(metadata))
+}
+
+fn safe_metadata(path: &Path) -> io::Result<Option<Metadata>> {
+    let metadata = symlink_metadata_if_exists(path)?;
+    if metadata
+        .as_ref()
+        .is_some_and(|metadata| metadata.file_type().is_symlink())
+    {
+        return Err(unsafe_path(path, "must not be a symlink"));
+    }
+    Ok(metadata)
 }
 
 fn symlink_metadata_if_exists(path: &Path) -> io::Result<Option<Metadata>> {
@@ -322,7 +336,7 @@ fn unsafe_path(path: &Path, reason: &str) -> io::Error {
 mod tests {
     use super::{
         atomic_replace, create_private, ensure_private_dir, open, private_tempfile_in,
-        safe_destination_exists,
+        safe_destination_exists, safe_path_exists,
     };
 
     #[test]
@@ -349,6 +363,7 @@ mod tests {
         std::os::unix::fs::symlink(&target, &link).unwrap();
 
         assert!(open(&link).is_err());
+        assert!(safe_path_exists(&link).is_err());
     }
 
     #[test]
