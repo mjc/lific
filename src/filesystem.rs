@@ -48,6 +48,7 @@ fn inspect_ancestors(path: &Path, reject_writable: bool) -> io::Result<()> {
 /// supports them. Existing group/other-writable directories are rejected.
 pub(crate) fn ensure_private_dir(path: &Path) -> io::Result<()> {
     ensure_private_parent(path)?;
+    reject_group_writable(path)?;
     set_private_dir(path)
 }
 
@@ -57,10 +58,10 @@ pub(crate) fn ensure_private_parent(path: &Path) -> io::Result<()> {
     reject_unsafe_ancestors(path)?;
     let existed = symlink_metadata_if_exists(path)?.is_some();
     ensure_dir(path)?;
-    if existed {
-        reject_group_writable(path)
-    } else {
+    if !existed {
         set_private_dir(path)
+    } else {
+        Ok(())
     }
 }
 
@@ -181,7 +182,6 @@ fn set_private_dir(path: &Path) -> io::Result<()> {
 /// Publish a fully-written temporary file over a regular destination.
 /// Existing symlinks and hard-linked files are refused before publication.
 pub(crate) fn atomic_replace(temp: &Path, destination: &Path) -> io::Result<()> {
-    reject_symlink_ancestors(destination)?;
     safe_destination_exists(destination)?;
 
     #[cfg(not(windows))]
@@ -244,7 +244,11 @@ pub(crate) fn write_atomic(path: &Path, contents: &[u8], private: bool) -> io::R
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty());
     if let Some(parent) = parent {
-        ensure_dir(parent)?;
+        if private {
+            ensure_private_parent(parent)?;
+        } else {
+            ensure_dir(parent)?;
+        }
     }
     let parent = parent.unwrap_or_else(|| Path::new("."));
     let staging = tempfile::Builder::new()
@@ -301,6 +305,7 @@ fn destination_metadata(path: &Path) -> io::Result<Option<Metadata>> {
 }
 
 fn safe_metadata(path: &Path) -> io::Result<Option<Metadata>> {
+    reject_symlink_ancestors(path)?;
     let metadata = symlink_metadata_if_exists(path)?;
     if metadata.as_ref().is_some_and(is_link) {
         return Err(unsafe_path(path, "must not be a symlink"));
