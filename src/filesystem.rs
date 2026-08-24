@@ -2,6 +2,8 @@ use std::fs::{self, File, Metadata, OpenOptions};
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
+use std::io::Write;
+
 /// Reject a path that contains a symlink in any existing component.
 pub(crate) fn reject_symlink_ancestors(path: &Path) -> io::Result<()> {
     let mut current = PathBuf::new();
@@ -25,14 +27,39 @@ pub(crate) fn reject_symlink_ancestors(path: &Path) -> io::Result<()> {
 /// Create a directory tree with owner-only permissions where the platform
 /// supports them. Existing group/other-writable directories are rejected.
 pub(crate) fn ensure_private_dir(path: &Path) -> io::Result<()> {
-    reject_symlink_ancestors(path)?;
+    ensure_dir(path)?;
     let existed = fs::symlink_metadata(path).is_ok();
-    fs::create_dir_all(path)?;
-    reject_symlink_ancestors(path)?;
     if existed {
         reject_group_writable(path)?;
     }
     set_private_dir(path)
+}
+
+/// Create a directory tree after checking every existing component for
+/// symlinks. This is for non-secret output directories that should retain their
+/// normal permissions.
+pub(crate) fn ensure_dir(path: &Path) -> io::Result<()> {
+    reject_symlink_ancestors(path)?;
+    fs::create_dir_all(path)?;
+    reject_symlink_ancestors(path)
+}
+
+/// Validate a directory that will receive private output. Sticky directories
+/// are allowed because they protect entries from other users' renames.
+pub(crate) fn validate_private_parent(path: &Path) -> io::Result<()> {
+    reject_symlink_ancestors(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let mode = fs::symlink_metadata(path)?.mode();
+        if mode & 0o1000 == 0 && mode & 0o022 != 0 {
+            return Err(unsafe_path(
+                path,
+                "is group/world-writable without sticky protection",
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Open a path without following a final symlink where the platform exposes
@@ -78,6 +105,18 @@ pub(crate) fn set_private_file(file: &File) -> io::Result<()> {
     Ok(())
 }
 
+/// Tighten permissions on a file path without first reopening it through a
+/// possibly swapped symlink.
+pub(crate) fn set_private_file_path(path: &Path) -> io::Result<()> {
+    reject_symlink(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}
+
 /// Tighten permissions on an existing directory after verifying it is not a
 /// symlink. Directory permission changes are a no-op on Windows.
 pub(crate) fn set_private_dir(path: &Path) -> io::Result<()> {
@@ -103,14 +142,7 @@ pub(crate) fn reject_symlink(path: &Path) -> io::Result<()> {
 /// Existing symlinks and hard-linked files are refused before publication.
 pub(crate) fn atomic_replace(temp: &Path, destination: &Path) -> io::Result<()> {
     reject_symlink_ancestors(destination)?;
-    if let Ok(metadata) = fs::symlink_metadata(destination) {
-        if metadata.file_type().is_symlink() || number_of_links(&metadata) > 1 {
-            return Err(unsafe_path(
-                destination,
-                "must not be a symlink or hard link",
-            ));
-        }
-    }
+    reject_unsafe_destination(destination)?;
 
     #[cfg(not(windows))]
     {
@@ -120,7 +152,7 @@ pub(crate) fn atomic_replace(temp: &Path, destination: &Path) -> io::Result<()> 
     {
         use std::os::windows::ffi::OsStrExt;
         use windows_sys::Win32::Storage::FileSystem::{
-            MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+            MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
         };
 
         let wide = |path: &Path| {
@@ -146,6 +178,41 @@ pub(crate) fn atomic_replace(temp: &Path, destination: &Path) -> io::Result<()> 
             Ok(())
         }
     }
+}
+
+pub(crate) fn reject_unsafe_destination(path: &Path) -> io::Result<()> {
+    if let Ok(metadata) = fs::symlink_metadata(path)
+        && (metadata.file_type().is_symlink() || number_of_links(&metadata) > 1)
+    {
+        return Err(unsafe_path(path, "must not be a symlink or hard link"));
+    }
+    Ok(())
+}
+
+/// Write bytes to a private staging file and publish them in one operation.
+pub(crate) fn write_atomic(path: &Path, contents: &[u8], private: bool) -> io::Result<()> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty());
+    if let Some(parent) = parent {
+        ensure_dir(parent)?;
+    }
+    let parent = parent.unwrap_or_else(|| Path::new("."));
+    let staging = tempfile::Builder::new()
+        .prefix(".lific-write-")
+        .tempdir_in(parent)?;
+    let temp = staging.path().join(path.file_name().unwrap_or_default());
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    let mut file = if private {
+        open_private(&mut options, &temp)?
+    } else {
+        open_no_follow(&mut options, &temp)?
+    };
+    file.write_all(contents)?;
+    file.sync_all()?;
+    drop(file);
+    atomic_replace(&temp, path)
 }
 
 fn reject_group_writable(path: &Path) -> io::Result<()> {

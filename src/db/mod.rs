@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::error::LificError;
+use crate::filesystem;
 
 /// Number of read connections in the pool.
 /// SQLite WAL mode supports unlimited concurrent readers.
@@ -239,7 +240,12 @@ pub fn open(path: &Path) -> Result<DbPool, LificError> {
     secure_parent(path)?;
     ensure_private_file(path)?;
     // Writer connection — runs migrations
-    let writer = Connection::open(path)?;
+    let writer = Connection::open_with_flags(
+        path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE
+            | rusqlite::OpenFlags::SQLITE_OPEN_CREATE
+            | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
+    )?;
     secure_file(path)?;
     apply_pragmas(&writer)?;
     secure_sidecars(path)?;
@@ -275,12 +281,7 @@ pub fn open(path: &Path) -> Result<DbPool, LificError> {
 fn ensure_private_file(path: &Path) -> Result<(), LificError> {
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW).mode(0o600);
-    }
-    match options.open(path) {
+    match filesystem::open_private(&mut options, path) {
         Ok(_) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
             let metadata = std::fs::symlink_metadata(path)
@@ -308,49 +309,13 @@ fn secure_parent(path: &Path) -> Result<(), LificError> {
     let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) else {
         return Ok(());
     };
-    #[cfg(unix)]
-    let existed = parent.exists();
-    std::fs::create_dir_all(parent)
-        .map_err(|error| LificError::Internal(format!("create database directory: {error}")))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        let metadata = parent.symlink_metadata().map_err(|error| {
-            LificError::Internal(format!("inspect database directory: {error}"))
-        })?;
-        if metadata.file_type().is_symlink() {
-            return Err(LificError::Internal(
-                "database directory must not be a symlink".into(),
-            ));
-        }
-        let mode = metadata.mode() & 0o777;
-        if existed && mode & 0o022 != 0 {
-            return Err(LificError::Internal(format!(
-                "database directory {} is writable by group/others; remove group/other write permissions or choose a private data directory",
-                parent.display()
-            )));
-        }
-        if !existed {
-            std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700)).map_err(
-                |error| LificError::Internal(format!("secure database directory: {error}")),
-            )?;
-        }
-    }
-    Ok(())
+    filesystem::ensure_private_dir(parent)
+        .map_err(|error| LificError::Internal(format!("secure database directory: {error}")))
 }
 
-#[cfg_attr(
-    not(unix),
-    expect(clippy::unnecessary_wraps, reason = "fallible on Unix")
-)]
-fn secure_file(_path: &Path) -> Result<(), LificError> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(_path, std::fs::Permissions::from_mode(0o600))
-            .map_err(|error| LificError::Internal(format!("secure database file: {error}")))?;
-    }
-    Ok(())
+fn secure_file(path: &Path) -> Result<(), LificError> {
+    filesystem::set_private_file_path(path)
+        .map_err(|error| LificError::Internal(format!("secure database file: {error}")))
 }
 
 fn secure_sidecars(path: &Path) -> Result<(), LificError> {

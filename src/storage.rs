@@ -22,6 +22,7 @@ use fs2::FileExt;
 use sha2::{Digest, Sha256};
 
 use crate::error::LificError;
+use crate::filesystem;
 
 /// Cross-process advisory lock file for the store.
 ///
@@ -191,33 +192,25 @@ impl AttachmentStore {
         let parent = path
             .parent()
             .ok_or_else(|| LificError::Internal("thumbnail path has no parent".into()))?;
-        std::fs::create_dir_all(parent)
+        filesystem::ensure_dir(parent)
             .map_err(|e| LificError::Internal(format!("create thumbnails dir: {e}")))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
-                .map_err(|e| LificError::Internal(format!("secure thumbnails dir: {e}")))?;
-        }
+        filesystem::set_private_dir(parent)
+            .map_err(|e| LificError::Internal(format!("secure thumbnails dir: {e}")))?;
         let tmp = parent.join(format!(".{}.{}.tmp", sha256, rand::random::<u64>()));
-        if existing_regular_file(&path, "thumbnail")? {
+        if std::fs::symlink_metadata(&path).is_ok() {
+            filesystem::reject_unsafe_destination(&path)
+                .map_err(|e| LificError::Internal(format!("inspect thumbnail: {e}")))?;
             return Ok(());
         }
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-        }
-        let mut file = options
-            .open(&tmp)
+        let mut file = filesystem::open_private(&mut options, &tmp)
             .map_err(|e| LificError::Internal(format!("create thumbnail: {e}")))?;
         let result = (|| -> std::io::Result<()> {
             std::io::Write::write_all(&mut file, bytes)?;
             file.sync_all()?;
             drop(file);
-            std::fs::rename(&tmp, &path)
+            filesystem::atomic_replace(&tmp, &path)
         })();
         if let Err(error) = result {
             let _ = std::fs::remove_file(&tmp);
@@ -231,9 +224,17 @@ impl AttachmentStore {
     /// which is the ordinary state for an attachment uploaded before
     /// thumbnails existed.
     pub fn read_thumb(&self, sha256: &str) -> Result<Option<Vec<u8>>, LificError> {
-        match std::fs::read(self.thumb_path_for(sha256)?) {
-            Ok(bytes) => Ok(Some(bytes)),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        let path = self.thumb_path_for(sha256)?;
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true);
+        let mut file = match filesystem::open_no_follow(&mut options, &path) {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(LificError::Internal(format!("read thumbnail: {e}"))),
+        };
+        let mut bytes = Vec::new();
+        match std::io::Read::read_to_end(&mut file, &mut bytes) {
+            Ok(_) => Ok(Some(bytes)),
             Err(e) => Err(LificError::Internal(format!("read thumbnail: {e}"))),
         }
     }
@@ -448,16 +449,14 @@ impl AttachmentStore {
 
     pub(crate) fn write_unlocked(&self, bytes: &[u8]) -> Result<String, LificError> {
         let sha = Self::hash_bytes(bytes);
-        std::fs::create_dir_all(&self.dir)
+        filesystem::ensure_dir(&self.dir)
             .map_err(|e| LificError::Internal(format!("create attachments dir: {e}")))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&self.dir, std::fs::Permissions::from_mode(0o700))
-                .map_err(|e| LificError::Internal(format!("secure attachments dir: {e}")))?;
-        }
+        filesystem::set_private_dir(&self.dir)
+            .map_err(|e| LificError::Internal(format!("secure attachments dir: {e}")))?;
         let path = self.path_for(&sha)?;
-        if existing_regular_file(&path, "attachment")? {
+        if std::fs::symlink_metadata(&path).is_ok() {
+            filesystem::reject_unsafe_destination(&path)
+                .map_err(|e| LificError::Internal(format!("inspect attachment: {e}")))?;
             return Ok(sha);
         }
         // Write to a temp file then rename, so a concurrent reader never sees a
@@ -467,13 +466,7 @@ impl AttachmentStore {
             .join(format!(".{sha}.{:016x}.tmp", rand::random::<u64>()));
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-        }
-        let mut file = options
-            .open(&tmp)
+        let mut file = filesystem::open_private(&mut options, &tmp)
             .map_err(|e| LificError::Internal(format!("create attachment temp file: {e}")))?;
         if let Err(error) = std::io::Write::write_all(&mut file, bytes) {
             let _ = std::fs::remove_file(&tmp);
@@ -484,7 +477,7 @@ impl AttachmentStore {
             return Err(LificError::Internal(format!("sync attachment: {error}")));
         }
         drop(file);
-        if let Err(error) = std::fs::rename(&tmp, &path) {
+        if let Err(error) = filesystem::atomic_replace(&tmp, &path) {
             let _ = std::fs::remove_file(&tmp);
             return Err(LificError::Internal(format!(
                 "finalize attachment: {error}"
@@ -498,13 +491,19 @@ impl AttachmentStore {
     /// missing (e.g. the DB row survived but the blob was manually removed).
     pub fn read(&self, sha256: &str) -> Result<Vec<u8>, LificError> {
         let path = self.path_for(sha256)?;
-        std::fs::read(&path).map_err(|e| {
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true);
+        let mut file = filesystem::open_no_follow(&mut options, &path).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 LificError::NotFound("attachment bytes not found on disk".into())
             } else {
                 LificError::Internal(format!("read attachment: {e}"))
             }
-        })
+        })?;
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut file, &mut bytes)
+            .map(|_| bytes)
+            .map_err(|e| LificError::Internal(format!("read attachment: {e}")))
     }
 
     /// Delete the sidecar file for a content hash. Missing file is treated as

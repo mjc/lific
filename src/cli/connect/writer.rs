@@ -14,6 +14,8 @@
 
 use std::path::Path;
 
+use crate::filesystem;
+
 use super::clients::{CompiledEntry, Format};
 
 /// What a write did.
@@ -108,212 +110,48 @@ fn render_from(
 /// Merge `entry` into the config at `path` and write it back, creating parent
 /// directories as needed. Returns whether the file was created or updated.
 pub fn write(path: &Path, format: Format, entry: &CompiledEntry) -> Result<Action, WriteError> {
-    let existing = read_existing(path)?;
-    let rendered = render_from(existing.as_ref(), format, entry)?;
-    let parent_existed = path.parent().is_none_or(|parent| parent.exists());
+    let rendered = render(path, format, entry)?;
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
     {
-        std::fs::create_dir_all(parent)
+        filesystem::ensure_dir(parent)
             .map_err(|e| WriteError::new(format!("failed to create {}: {e}", parent.display())))?;
     }
     // Only embedded credentials make this file secret-bearing. Environment
     // variable references are configuration, not credential material.
     let secret = rendered.contents.contains("lific_sk-") || rendered.contents.contains("lific_at_");
     if secret && let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-        if parent_existed {
-            set_private_dir(parent)?;
-        } else {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700)).map_err(
-                    |e| WriteError::new(format!("failed to secure {}: {e}", parent.display())),
-                )?;
-            }
-        }
+        filesystem::ensure_private_dir(parent).map_err(|e| {
+            WriteError::new(format!("failed to secure {}: {e}", parent.display()))
+        })?;
     }
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let staging = tempfile::Builder::new()
-        .prefix(".lific-config-")
-        .tempdir_in(parent)
-        .map_err(|e| WriteError::new(format!("could not create config staging directory: {e}")))?;
-    let tmp = staging.path().join(path.file_name().unwrap_or_default());
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        // The mode comes from the descriptor we already read the file through,
-        // never from a fresh lookup of the pathname: a config swapped for a
-        // symlink between the read and the write cannot dictate the mode of
-        // the regular file we publish in its place.
-        let mode = if secret {
-            0o600
-        } else {
-            existing
-                .as_ref()
-                .map(|existing| existing.mode)
-                .filter(|mode| *mode != 0)
-                .unwrap_or(0o666)
-        };
-        options.mode(mode).custom_flags(libc::O_NOFOLLOW);
-    }
-    let mut file = options
-        .open(&tmp)
-        .map_err(|e| WriteError::new(format!("failed to create config staging file: {e}")))?;
-    std::io::Write::write_all(&mut file, rendered.contents.as_bytes())
+    filesystem::write_atomic(path, rendered.contents.as_bytes(), secret)
         .map_err(|e| WriteError::new(format!("failed to write {}: {e}", path.display())))?;
-    if secret {
-        set_private_file(&file)?;
-    }
-    file.sync_all()
-        .map_err(|e| WriteError::new(format!("failed to sync {}: {e}", path.display())))?;
-    std::fs::rename(&tmp, path)
-        .map_err(|e| WriteError::new(format!("failed to finalize {}: {e}", path.display())))?;
-    sync_parent_dir(parent)?;
     Ok(rendered.action)
-}
-
-/// Flush the directory entry the rename above created, so a crash right after
-/// `connect` cannot leave the config missing even though the write reported
-/// success. Unix only: Windows exposes no directory handle to sync, and
-/// `fsync` on a directory has no meaning there.
-#[cfg_attr(
-    not(unix),
-    expect(clippy::unnecessary_wraps, reason = "fallible on Unix")
-)]
-fn sync_parent_dir(_dir: &Path) -> Result<(), WriteError> {
-    #[cfg(unix)]
-    {
-        std::fs::File::open(_dir)
-            .and_then(|dir| dir.sync_all())
-            .map_err(|e| WriteError::new(format!("failed to sync {}: {e}", _dir.display())))?;
-    }
-    Ok(())
-}
-
-#[cfg_attr(
-    not(unix),
-    expect(clippy::unnecessary_wraps, reason = "fallible on Unix")
-)]
-fn set_private_file(_file: &std::fs::File) -> Result<(), WriteError> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        _file
-            .set_permissions(std::fs::Permissions::from_mode(0o600))
-            .map_err(|e| WriteError::new(format!("failed to tighten config staging file: {e}")))?;
-    }
-    Ok(())
-}
-
-#[cfg_attr(
-    not(unix),
-    expect(clippy::unnecessary_wraps, reason = "fallible on Unix")
-)]
-fn set_private_dir(_path: &Path) -> Result<(), WriteError> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        let mode = std::fs::metadata(_path)
-            .map_err(|e| WriteError::new(format!("failed to inspect {}: {e}", _path.display())))?
-            .mode()
-            & 0o777;
-        if mode & 0o022 != 0 {
-            return Err(WriteError::new(format!(
-                "config directory {} is writable by group/others; remove group/other write permissions before writing embedded credentials",
-                _path.display()
-            )));
-        }
-    }
-    Ok(())
-}
-
-/// An existing config file, read through one descriptor.
-///
-/// The permission bits travel with the contents on purpose. Publishing works
-/// by writing a fresh file and renaming it over the old one, so the mode has
-/// to be carried forward; taking it from a second lookup of the pathname would
-/// mean the bytes we merged and the mode we applied could come from two
-/// different files.
-struct Existing {
-    contents: String,
-    /// Permission bits of the file the contents came from (unix only).
-    #[cfg(unix)]
-    mode: u32,
 }
 
 /// Read the file if present. `Ok(None)` = doesn't exist. An unreadable file is
 /// an error (permissions, etc.).
-///
-/// A symlink at `path` is refused rather than followed. Following one would
-/// read whatever it points at — potentially a file full of secrets that has
-/// nothing to do with MCP — merge Lific's entry into it, and then publish the
-/// result as a brand new regular file at `path` wearing a mode we inferred
-/// from the link. The target's contents would land in a file the target's own
-/// permissions never sanctioned. Refusing is also what a user means by
-/// symlinking a config: edit the target, not the link.
-#[cfg(unix)]
-fn read_existing(path: &Path) -> Result<Option<Existing>, WriteError> {
-    use std::io::Read;
-    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-
+fn read_existing(path: &Path) -> Result<Option<String>, WriteError> {
     let mut options = std::fs::OpenOptions::new();
-    options.read(true).custom_flags(libc::O_NOFOLLOW);
-    let mut file = match options.open(path) {
+    options.read(true);
+    let mut file = match filesystem::open_no_follow(&mut options, path) {
         Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => {
-            // O_NOFOLLOW turns a symlink into ELOOP; say so plainly rather
-            // than handing back the raw errno.
-            if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
-                return Err(WriteError::new(format!(
-                    "{} is a symlink; edit the file it points at instead",
-                    path.display()
-                )));
-            }
             return Err(WriteError::new(format!(
                 "failed to read {}: {e}",
                 path.display()
             )));
         }
     };
-    let metadata = file
-        .metadata()
-        .map_err(|e| WriteError::new(format!("failed to inspect {}: {e}", path.display())))?;
-    if !metadata.file_type().is_file() {
-        return Err(WriteError::new(format!(
-            "{} is not a regular file",
-            path.display()
-        )));
-    }
-    // A hard link means another name still points at this inode. Renaming over
-    // it silently detaches that other name from the config we just updated.
-    if metadata.nlink() != 1 {
-        return Err(WriteError::new(format!(
-            "{} is hard-linked; resolve the extra link before writing",
-            path.display()
-        )));
-    }
     let mut contents = String::new();
-    file.read_to_string(&mut contents)
-        .map_err(|e| WriteError::new(format!("failed to read {}: {e}", path.display())))?;
-    Ok(Some(Existing {
-        contents,
-        mode: metadata.mode() & 0o777,
-    }))
-}
-
-#[cfg(not(unix))]
-fn read_existing(path: &Path) -> Result<Option<Existing>, WriteError> {
-    match std::fs::read_to_string(path) {
-        Ok(contents) => Ok(Some(Existing { contents })),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+    match std::io::Read::read_to_string(&mut file, &mut contents) {
+        Ok(_) => Ok(Some(contents)),
         Err(e) => Err(WriteError::new(format!(
             "failed to read {}: {e}",
             path.display()
-        ))),
+        )))
     }
 }
 
