@@ -194,7 +194,7 @@ impl AttachmentStore {
             .ok_or_else(|| LificError::Internal("thumbnail path has no parent".into()))?;
         filesystem::ensure_private_dir(parent)
             .map_err(|e| LificError::Internal(format!("secure thumbnails dir: {e}")))?;
-        if filesystem::safe_destination_exists(&path)
+        if filesystem::safe_path_exists(&path)
             .map_err(|e| LificError::Internal(format!("inspect thumbnail: {e}")))?
         {
             return Ok(());
@@ -433,7 +433,7 @@ impl AttachmentStore {
         filesystem::ensure_private_dir(&self.dir)
             .map_err(|e| LificError::Internal(format!("secure attachments dir: {e}")))?;
         let path = self.path_for(&sha)?;
-        if filesystem::safe_destination_exists(&path)
+        if filesystem::safe_path_exists(&path)
             .map_err(|e| LificError::Internal(format!("inspect attachment: {e}")))?
         {
             return Ok(sha);
