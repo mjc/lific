@@ -11,6 +11,7 @@ mod db;
 mod dump;
 mod error;
 mod export;
+mod filesystem;
 mod import;
 mod links;
 mod mcp;
