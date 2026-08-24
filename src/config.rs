@@ -2,67 +2,23 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tracing::info;
 
+use crate::filesystem;
+
 const CONFIG_FILENAME: &str = "lific.toml";
 
-/// A config file that has been opened and read.
-///
-/// The descriptor is kept alongside the contents so the permission tightening
-/// below acts on *the file we read*, not on whatever the pathname resolves to
-/// a moment later. Checking a path and then chmod-ing that same path is two
-/// lookups: between them the file can be replaced with a symlink to something
-/// else, and the chmod lands on the attacker's choice of target.
-struct ConfigFile {
-    contents: String,
-    /// Held only for `fchmod` on unix; nothing else reads it.
-    #[cfg(unix)]
-    file: std::fs::File,
+fn tighten_config_permissions(path: &Path) -> std::io::Result<()> {
+    filesystem::set_private_file_path(path)
 }
 
-/// Make a group/other-readable config owner-only, through the descriptor it
-/// was read from. Fails closed on symlinks: [`read_config_file`] opens with
-/// `O_NOFOLLOW`, so a symlinked config never produces a [`ConfigFile`] to
-/// tighten in the first place.
-#[cfg_attr(not(unix), expect(clippy::unnecessary_wraps, reason = "fallible on Unix"))]
-fn tighten_config_permissions(_config: &ConfigFile) -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        let metadata = _config.file.metadata()?;
-        if metadata.mode() & 0o077 != 0 {
-            _config
-                .file
-                .set_permissions(std::fs::Permissions::from_mode(0o600))?;
-        }
-    }
-    Ok(())
-}
-
-#[cfg(unix)]
-fn read_config_file(path: &Path) -> std::io::Result<ConfigFile> {
+fn read_config_file(path: &Path) -> std::io::Result<String> {
     use std::io::Read;
-    use std::os::unix::fs::OpenOptionsExt;
+
     let mut options = std::fs::OpenOptions::new();
-    options.read(true).custom_flags(libc::O_NOFOLLOW);
-    let mut file = options.open(path)?;
-    // A directory opens fine on Linux and only fails at read time; a device or
-    // fifo is never a config either. Reject anything that is not a plain file
-    // before its mode is touched.
-    if !file.metadata()?.file_type().is_file() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "configuration path must be a regular file",
-        ));
-    }
+    options.read(true);
+    let mut file = filesystem::open_no_follow(&mut options, path)?;
     let mut contents = String::new();
     file.read_to_string(&mut contents)?;
-    Ok(ConfigFile { contents, file })
-}
-
-#[cfg(not(unix))]
-fn read_config_file(path: &Path) -> std::io::Result<ConfigFile> {
-    Ok(ConfigFile {
-        contents: std::fs::read_to_string(path)?,
-    })
+    Ok(contents)
 }
 
 /// A config file was found but could not be honored.
@@ -369,7 +325,7 @@ impl Default for BackupConfig {
             enabled: true,
             dir: PathBuf::from("backups"),
             interval_minutes: 60,
-            retain: 24, // keep 24 hourly backups = 1 day of history
+            retain: 24,                 // keep 24 hourly backups = 1 day of history
             audit_retention_days: None, // keep audit history forever
         }
     }
@@ -598,10 +554,7 @@ mod tests {
         let config = Config::default();
         assert_eq!(config.server.host, "0.0.0.0");
         assert_eq!(config.server.port, 3456);
-        assert_eq!(
-            config.server.trusted_proxies,
-            Vec::<String>::new()
-        );
+        assert_eq!(config.server.trusted_proxies, Vec::<String>::new());
         assert_eq!(config.database.path, PathBuf::from("lific.db"));
         assert!(config.backup.enabled);
         assert_eq!(config.backup.retain, 24);
@@ -650,7 +603,10 @@ enabled = false
 
         Config::load(Some(&path)).unwrap();
 
-        assert_eq!(std::fs::metadata(path).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 
     #[cfg(unix)]
@@ -783,7 +739,11 @@ enabled = false
     fn absolute_db_path_is_untouched_by_anchoring() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("lific.toml");
-        std::fs::write(&path, format!("[database]\npath = \"{ABSOLUTE_DB_PATH}\"\n")).unwrap();
+        std::fs::write(
+            &path,
+            format!("[database]\npath = \"{ABSOLUTE_DB_PATH}\"\n"),
+        )
+        .unwrap();
 
         let config = Config::load(Some(&path)).unwrap();
         assert_eq!(config.database.path, PathBuf::from(ABSOLUTE_DB_PATH));
@@ -1076,17 +1036,14 @@ enabled = false
     // LIFIC-24: the startup guard's bind-host check.
     #[test]
     fn is_localhost_host_accepts_only_loopback() {
-        for host in [
-            "127.0.0.1",
-            "127.5.5.5",
-            "::1",
-            "localhost",
-            "LOCALHOST",
-        ] {
+        for host in ["127.0.0.1", "127.5.5.5", "::1", "localhost", "LOCALHOST"] {
             assert!(is_localhost_host(host), "{host} should count as loopback");
         }
         for host in ["0.0.0.0", "::", "[::]", "192.168.1.10", "lific.example", ""] {
-            assert!(!is_localhost_host(host), "{host} must NOT count as loopback");
+            assert!(
+                !is_localhost_host(host),
+                "{host} must NOT count as loopback"
+            );
         }
     }
 

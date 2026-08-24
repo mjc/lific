@@ -29,6 +29,7 @@ mod test_env;
 use clap::{CommandFactory, Parser};
 use cli::{BackendKind, Cli, Command, ServiceAction};
 use config::Config;
+use filesystem::{open_private, write_atomic};
 
 // Commands that operate directly on the database (no server required)
 fn is_crud_command(cmd: &Command) -> bool {
@@ -47,41 +48,7 @@ fn is_crud_command(cmd: &Command) -> bool {
 }
 
 fn write_private_config(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
-    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-    let staging = tempfile::Builder::new()
-        .prefix(".lific-config-")
-        .tempdir_in(parent)?;
-    let temp = staging.path().join(path.file_name().unwrap_or_default());
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-    }
-    let mut file = options.open(&temp)?;
-    std::io::Write::write_all(&mut file, contents.as_bytes())?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-    }
-    file.sync_all()?;
-    std::fs::rename(temp, path)?;
-    sync_parent_dir(parent)
-}
-
-/// Flush the directory entry that publishes a config file. The file's own
-/// `sync_all` persists its bytes; the name that reaches them lives in the
-/// parent directory and survives a crash only once that is synced too.
-/// Unix only: Windows exposes no directory handle to sync.
-#[cfg_attr(not(unix), expect(clippy::unnecessary_wraps, reason = "fallible on Unix"))]
-fn sync_parent_dir(_dir: &std::path::Path) -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        std::fs::File::open(_dir)?.sync_all()?;
-    }
-    Ok(())
+    write_atomic(path, contents.as_bytes(), true)
 }
 
 fn create_private_config(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
@@ -92,12 +59,7 @@ fn create_private_config(path: &std::path::Path, contents: &str) -> std::io::Res
     let temp = staging.path().join(path.file_name().unwrap_or_default());
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-    }
-    let mut file = options.open(&temp)?;
+    let mut file = open_private(&mut options, &temp)?;
     std::io::Write::write_all(&mut file, contents.as_bytes())?;
     file.sync_all()?;
     // A hard link publishes only when the destination does not yet exist.
@@ -760,16 +722,10 @@ async fn cmd_init(
             && !parent.as_os_str().is_empty()
         {
             let parent_existed = parent.exists();
-            std::fs::create_dir_all(parent)?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                if !parent_existed {
-                    std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
-                }
+            filesystem::ensure_dir(parent)?;
+            if !parent_existed {
+                filesystem::set_private_dir(parent)?;
             }
-            #[cfg(not(unix))]
-            let _ = parent_existed;
         }
         let toml = match &default_db {
             Some(db) => Config::default_toml_with_db(db),
@@ -794,7 +750,7 @@ async fn cmd_init(
     if let Some(parent) = cfg.database.path.parent()
         && !parent.as_os_str().is_empty()
     {
-        std::fs::create_dir_all(parent)?;
+        filesystem::ensure_dir(parent)?;
     }
     let pool = db::open(&cfg.database.path)?;
     {
