@@ -664,7 +664,9 @@ impl Config {
     /// explicit `--config` (e.g. `lific service install`) so they agree with
     /// what `Config::load` would pick.
     pub fn discover_path() -> Option<PathBuf> {
-        Self::candidate_paths(None).into_iter().find(|p| p.exists())
+        Self::candidate_paths(None)
+            .into_iter()
+            .find(|path| !matches!(filesystem::safe_path_exists(path), Ok(false)))
     }
 
     /// LIF-295: the OS-standard home for a `lific init` instance — config

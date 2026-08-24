@@ -155,10 +155,7 @@ pub(crate) fn private_tempfile_in(
     prefix: &str,
 ) -> io::Result<tempfile::NamedTempFile> {
     reject_symlink_ancestors(parent)?;
-    let file = tempfile::Builder::new()
-        .prefix(prefix)
-        .tempfile_in(parent)?;
-    Ok(file)
+    tempfile::Builder::new().prefix(prefix).tempfile_in(parent)
 }
 
 /// Tighten permissions on a file path without first reopening it through a
@@ -263,7 +260,7 @@ fn reject_symlink(path: &Path) -> io::Result<()> {
     }
 }
 
-/// Write bytes to a private staging file and publish them in one operation.
+/// Write bytes to a staging file and publish them in one operation.
 pub(crate) fn write_atomic(path: &Path, contents: &[u8], private: bool) -> io::Result<()> {
     let parent = path
         .parent()
@@ -382,6 +379,7 @@ mod tests {
         safe_path_exists,
     };
 
+    #[cfg(unix)]
     #[test]
     fn private_directory_rejects_symlinked_ancestor() {
         let root = tempfile::tempdir().unwrap();
@@ -389,11 +387,8 @@ mod tests {
         let link = root.path().join("link");
         std::fs::create_dir(&real).unwrap();
 
-        #[cfg(unix)]
-        {
-            std::os::unix::fs::symlink(&real, &link).unwrap();
-            assert!(ensure_private_dir(&link.join("child")).is_err());
-        }
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        assert!(ensure_private_dir(&link.join("child")).is_err());
     }
 
     #[cfg(unix)]
