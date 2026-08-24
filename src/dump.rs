@@ -222,46 +222,19 @@ fn snapshot_db(pool: &DbPool, dest: &TempFile) -> Result<(), LificError> {
     )
 )]
 fn set_owner_only(path: &Path) -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-    }
-    Ok(())
+    filesystem::set_private_file_path(path)
 }
 
 /// Set 0600 on an already-open handle, so no pathname is resolved again.
 #[cfg_attr(not(unix), expect(clippy::unnecessary_wraps, reason = "fallible on Unix"))]
 fn set_owner_only_file(file: &File) -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = file;
-    }
-    Ok(())
+    filesystem::set_private_file(file)
 }
 
 /// Set 0700 permissions on a directory (owner-only) on Unix. No-op elsewhere.
 #[cfg_attr(not(unix), expect(clippy::unnecessary_wraps, reason = "fallible on Unix"))]
 fn set_owner_only_dir(path: &Path) -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-    }
-    Ok(())
+    filesystem::set_private_dir(path)
 }
 
 /// fsync a directory so a rename into it is durable. Unix only: Windows has no
@@ -290,14 +263,9 @@ impl TempFile {
     fn create(path: PathBuf) -> Result<Self, LificError> {
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-        }
-        let file = options
-            .open(&path)
-            .map_err(|error| LificError::Internal(format!("create secure staging file: {error}")))?;
+        let file = filesystem::open_private(&mut options, &path).map_err(|error| {
+            LificError::Internal(format!("create secure staging file: {error}"))
+        })?;
         Ok(Self { file, path })
     }
 
@@ -387,7 +355,7 @@ fn write_dump_locked(
         .prefix(".lific-dump-")
         .tempdir_in(parent)
         .map_err(|e| LificError::Internal(format!("create dump staging directory: {e}")))?;
-    set_owner_only_dir(staging.path())
+    filesystem::set_private_dir(staging.path())
         .map_err(|e| LificError::Internal(format!("secure dump staging directory: {e}")))?;
     let _lock = StagingLock::create(&staging.path().join("lock"))?;
     let activity = TempFile::create(staging.path().join("activity"))?;
@@ -500,7 +468,7 @@ fn write_dump_locked(
         .map_err(|e| LificError::Internal(format!("sync archive: {e}")))?;
     set_owner_only_file(&tmp_archive.file)
         .map_err(|e| LificError::Internal(format!("chmod archive: {e}")))?;
-    std::fs::rename(tmp_archive.path(), out_path)
+    filesystem::atomic_replace(tmp_archive.path(), out_path)
         .map_err(|e| LificError::Internal(format!("finalize archive: {e}")))?;
     // The rename is only durable once the directory entry is on disk.
     sync_dir(parent).map_err(|e| LificError::Internal(format!("sync dump destination: {e}")))?;
@@ -555,12 +523,7 @@ fn is_symlink(error: &std::io::Error) -> bool {
 fn open_verified_blob(path: &Path) -> Result<Option<VerifiedBlob>, LificError> {
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW);
-    }
-    let file = match options.open(path) {
+    let file = match filesystem::open_no_follow(&mut options, path) {
         Ok(file) => file,
         // A concurrent GC can remove a blob between readdir and open, and
         // O_NOFOLLOW refuses a symlink. Neither is a reason to fail the dump;
@@ -707,39 +670,11 @@ impl<R: Read> Read for HashingReader<R> {
 /// group/world-writable parent without the sticky bit.
 #[cfg_attr(not(unix), expect(clippy::unnecessary_wraps, reason = "fallible on Unix"))]
 fn validate_dump_destination(out_path: &Path) -> Result<(), LificError> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        let parent = out_path.parent().unwrap_or_else(|| Path::new("."));
-        let parent = if parent.as_os_str().is_empty() {
-            Path::new(".")
-        } else {
-            parent
-        };
-        let parent_metadata = std::fs::symlink_metadata(parent)
-            .map_err(|e| LificError::Internal(format!("inspect dump destination: {e}")))?;
-        if parent_metadata.file_type().is_symlink() {
-            return Err(LificError::Internal(
-                "dump destination parent is a symlink".into(),
-            ));
-        }
-        let mode = parent_metadata.mode();
-        if mode & 0o1000 == 0 && mode & 0o022 != 0 {
-            return Err(LificError::Internal(
-                "dump destination parent is group/world-writable without sticky protection".into(),
-            ));
-        }
-        if let Ok(metadata) = std::fs::symlink_metadata(out_path)
-            && (metadata.file_type().is_symlink() || metadata.nlink() > 1)
-        {
-            return Err(LificError::Internal(
-                "dump destination must not be a symlink or hard link".into(),
-            ));
-        }
-    }
-    #[cfg(not(unix))]
-    let _ = out_path;
-    Ok(())
+    let parent = out_path.parent().unwrap_or_else(|| Path::new("."));
+    filesystem::validate_private_parent(parent)
+        .map_err(|e| LificError::Internal(format!("inspect dump destination: {e}")))?;
+    filesystem::reject_unsafe_destination(out_path)
+        .map_err(|e| LificError::Internal(format!("inspect dump destination: {e}")))
 }
 
 /// Append raw bytes as a tar entry with the given name.
@@ -1041,15 +976,7 @@ impl RestoreLock {
         let path = data_dir.join(".lific-restore.lock");
         let mut options = std::fs::OpenOptions::new();
         options.read(true).write(true).create(true).truncate(false);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            // No-follow: the lock file must not be a symlink someone planted
-            // to have us open (and later truncate-free-write) a file elsewhere.
-            options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-        }
-        let file = options
-            .open(&path)
+        let file = filesystem::open_private(&mut options, &path)
             .map_err(|error| LificError::Internal(format!("create restore lock: {error}")))?;
         file.try_lock_exclusive().map_err(|_| {
             LificError::Conflict(
@@ -1074,13 +1001,7 @@ impl Drop for RestoreLock {
 fn create_staging_file(path: &Path) -> Result<File, LificError> {
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-    }
-    options
-        .open(path)
+    filesystem::open_private(&mut options, path)
         .map_err(|e| LificError::Internal(format!("create staging file: {e}")))
 }
 
@@ -1297,7 +1218,9 @@ pub fn inspect_archive(archive: &Path, limits: &RestoreLimits) -> Result<Manifes
 
     // Second pass: validate every entry name (traversal guard) and require the
     // DB member is present.
-    let file = std::fs::File::open(archive)
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    let file = filesystem::open_no_follow(&mut options, archive)
         .map_err(|e| LificError::BadRequest(format!("open archive: {e}")))?;
     let mut tar = bounded_archive(file, limits);
     let mut has_db = false;
@@ -1403,7 +1326,9 @@ pub fn inspect_archive(archive: &Path, limits: &RestoreLimits) -> Result<Manifes
 
 /// Read just the manifest from the archive (first matching entry).
 fn read_manifest(archive: &Path, limits: &RestoreLimits) -> Result<Manifest, LificError> {
-    let file = std::fs::File::open(archive)
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    let file = filesystem::open_no_follow(&mut options, archive)
         .map_err(|e| LificError::BadRequest(format!("open archive: {e}")))?;
     let mut tar = bounded_archive(file, limits);
     let mut entry_count = 0u64;
@@ -1484,8 +1409,8 @@ pub fn run_restore_with(
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .map_or_else(|| PathBuf::from("."), |p| p.to_path_buf());
-    std::fs::create_dir_all(&data_dir)
-        .map_err(|e| LificError::Internal(format!("create data dir: {e}")))?;
+    filesystem::ensure_private_dir(&data_dir)
+        .map_err(|e| LificError::Internal(format!("secure data dir: {e}")))?;
 
     let _restore_lock = RestoreLock::acquire(&data_dir)?;
 
@@ -1502,7 +1427,9 @@ pub fn run_restore_with(
         .tempdir_in(&data_dir)
         .map_err(|e| LificError::Internal(format!("create staging dir: {e}")))?;
     let staging_path = staging.path();
-    std::fs::create_dir(staging_path.join("attachments"))
+    filesystem::set_private_dir(staging_path)
+        .map_err(|e| LificError::Internal(format!("secure restore staging dir: {e}")))?;
+    filesystem::ensure_dir(&staging_path.join("attachments"))
         .map_err(|e| LificError::Internal(format!("create staging dir: {e}")))?;
     set_owner_only_dir(staging_path)
         .map_err(|e| LificError::Internal(format!("secure restore staging dir: {e}")))?;
@@ -1510,7 +1437,9 @@ pub fn run_restore_with(
         .map_err(|e| LificError::Internal(format!("secure restore attachments dir: {e}")))?;
 
     let extract = (|| -> Result<u64, LificError> {
-        let file = std::fs::File::open(archive)
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true);
+        let file = filesystem::open_no_follow(&mut options, archive)
             .map_err(|e| LificError::BadRequest(format!("open archive: {e}")))?;
         let mut tar = bounded_archive(file, limits);
         let mut attachment_count = 0u64;

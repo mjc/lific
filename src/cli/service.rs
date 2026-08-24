@@ -22,6 +22,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::filesystem;
+
 /// The service name / launchd label. One service per user by design: Lific's
 /// target persona runs a single personal instance.
 pub const SYSTEMD_UNIT_NAME: &str = "lific.service";
@@ -300,12 +302,12 @@ pub struct InstallReport {
 pub fn install(manager: Manager, plan: &ServicePlan) -> Result<InstallReport, String> {
     let path = definition_path(manager)?;
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)
+        filesystem::ensure_dir(dir)
             .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
     }
     match manager {
         Manager::SystemdUser => {
-            std::fs::write(&path, systemd_unit(plan))
+            filesystem::write_atomic(&path, systemd_unit(plan).as_bytes(), true)
                 .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
             run_ok("systemctl", &["--user", "daemon-reload"])?;
             run_ok(
@@ -327,7 +329,7 @@ pub fn install(manager: Manager, plan: &ServicePlan) -> Result<InstallReport, St
             })
         }
         Manager::Launchd => {
-            std::fs::write(&path, launchd_plist(plan))
+            filesystem::write_atomic(&path, launchd_plist(plan).as_bytes(), true)
                 .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
             launchd_bootstrap(&path)?;
             Ok(InstallReport {

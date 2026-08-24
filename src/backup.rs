@@ -8,6 +8,7 @@ use tracing::{error, info, warn};
 use crate::config::BackupConfig;
 use crate::db::DbPool;
 use crate::dump;
+use crate::filesystem;
 
 /// Start the background backup task. Returns the JoinHandle.
 pub fn start_backup_task(
@@ -29,7 +30,7 @@ pub fn start_backup_task(
     let audit_retention_days = config.audit_retention_days;
 
     tokio::spawn(async move {
-        if let Err(e) = std::fs::create_dir_all(&backup_dir) {
+        if let Err(e) = filesystem::ensure_private_dir(&backup_dir) {
             error!(dir = %backup_dir.display(), error = %e, "failed to create backup directory");
             return;
         }
