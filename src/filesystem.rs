@@ -179,10 +179,11 @@ fn set_private_dir(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Publish a fully-written temporary file over a regular destination.
-/// Existing symlinks and hard-linked files are refused before publication.
+/// Publish a fully-written temporary file over a destination without following
+/// symlinks. Replacing a hard link safely detaches that directory entry from
+/// the old inode.
 pub(crate) fn atomic_replace(temp: &Path, destination: &Path) -> io::Result<()> {
-    safe_destination_exists(destination)?;
+    safe_path_exists(destination)?;
 
     #[cfg(not(windows))]
     {
@@ -222,12 +223,21 @@ pub(crate) fn atomic_replace(temp: &Path, destination: &Path) -> io::Result<()> 
     }
 }
 
-pub(crate) fn safe_destination_exists(path: &Path) -> io::Result<bool> {
-    Ok(destination_metadata(path)?.is_some())
-}
-
 pub(crate) fn safe_path_exists(path: &Path) -> io::Result<bool> {
     Ok(safe_metadata(path)?.is_some())
+}
+
+/// Reject an existing file with multiple names. Dump output uses this stricter
+/// policy so it cannot replace only one name for a file the user may expect to
+/// remain linked.
+pub(crate) fn reject_hard_link(path: &Path) -> io::Result<()> {
+    if safe_metadata(path)?
+        .as_ref()
+        .is_some_and(|metadata| number_of_links(metadata) > 1)
+    {
+        return Err(unsafe_path(path, "must not be a hard link"));
+    }
+    Ok(())
 }
 
 #[cfg(not(unix))]
@@ -260,7 +270,7 @@ pub(crate) fn write_atomic(path: &Path, contents: &[u8], private: bool) -> io::R
     #[cfg(unix)]
     if !private {
         use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-        let mode = destination_metadata(path)?
+        let mode = safe_metadata(path)?
             .map(|metadata| metadata.mode() & 0o777)
             .filter(|mode| *mode != 0)
             .unwrap_or(0o666);
@@ -292,16 +302,6 @@ fn reject_group_writable(path: &Path) -> io::Result<()> {
     #[cfg(not(unix))]
     let _ = path;
     Ok(())
-}
-
-fn destination_metadata(path: &Path) -> io::Result<Option<Metadata>> {
-    let Some(metadata) = safe_metadata(path)? else {
-        return Ok(None);
-    };
-    if number_of_links(&metadata) > 1 {
-        return Err(unsafe_path(path, "must not be a hard link"));
-    }
-    Ok(Some(metadata))
 }
 
 fn safe_metadata(path: &Path) -> io::Result<Option<Metadata>> {
@@ -364,7 +364,7 @@ fn unsafe_path(path: &Path, reason: &str) -> io::Error {
 mod tests {
     use super::{
         atomic_replace, create_private, ensure_private_dir, open, private_tempfile_in,
-        safe_destination_exists, safe_path_exists,
+        safe_path_exists,
     };
 
     #[test]
@@ -422,7 +422,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn atomic_replace_rejects_hard_link_destination() {
+    fn atomic_replace_detaches_hard_link_destination() {
         let root = tempfile::tempdir().unwrap();
         let existing = root.path().join("existing");
         let destination = root.path().join("destination");
@@ -431,7 +431,8 @@ mod tests {
         std::fs::hard_link(&existing, &destination).unwrap();
         std::fs::write(&temp, "new").unwrap();
 
-        assert!(atomic_replace(&temp, &destination).is_err());
+        atomic_replace(&temp, &destination).unwrap();
+        assert_eq!(std::fs::read_to_string(destination).unwrap(), "new");
         assert_eq!(std::fs::read_to_string(existing).unwrap(), "old");
     }
 
@@ -441,7 +442,7 @@ mod tests {
         let file = root.path().join("file");
         std::fs::write(&file, "not a directory").unwrap();
 
-        assert!(safe_destination_exists(&file.join("child")).is_err());
+        assert!(safe_path_exists(&file.join("child")).is_err());
     }
 
     #[cfg(unix)]
