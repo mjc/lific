@@ -28,7 +28,7 @@ mod test_env;
 use clap::{CommandFactory, Parser};
 use cli::{BackendKind, Cli, Command, ServiceAction};
 use config::Config;
-use filesystem::{create_private, write_private_atomic};
+use filesystem::{create_private, sync_dir, write_private_atomic};
 
 // Commands that operate directly on the database (no server required)
 fn is_crud_command(cmd: &Command) -> bool {
@@ -62,7 +62,7 @@ fn create_private_config(path: &std::path::Path, contents: &str) -> std::io::Res
     // A hard link publishes only when the destination does not yet exist.
     // It is atomic and leaves an existing configuration untouched on races.
     std::fs::hard_link(&temp, path)?;
-    sync_parent_dir(parent)
+    sync_dir(parent)
 }
 
 use rmcp::ServiceExt;
@@ -763,7 +763,7 @@ async fn cmd_init(
         // change set `[auth] required` and `[server] host`; every other section
         // and setting survives). Reload cfg so downstream (local_url, JSON,
         // service plan) reflects required/host.
-        let existing = std::fs::read_to_string(&config_path).unwrap_or_default();
+        let existing = filesystem::read_to_string(&config_path)?;
         let new_toml = Config::apply_auth_mode(&existing, mode.required(), mode.host())?;
         write_private_config(&config_path, &new_toml)?;
         cfg = load_config_for_init(&config_path, db_flag)?;
@@ -1004,7 +1004,7 @@ fn cmd_service(
             // that a bare `lific init` created.
             let config_path: std::path::PathBuf = match config_flag {
                 Some(p) => p.to_path_buf(),
-                None => Config::discover_path()
+                None => Config::discover_path()?
                     .unwrap_or_else(|| std::path::PathBuf::from("lific.toml")),
             };
             if !config_path.exists() {
