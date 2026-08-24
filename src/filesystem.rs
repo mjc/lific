@@ -12,7 +12,10 @@ fn reject_unsafe_ancestors(path: &Path) -> io::Result<()> {
 }
 
 fn inspect_ancestors(path: &Path, reject_writable: bool) -> io::Result<()> {
-    if path.components().any(|component| component == Component::ParentDir) {
+    if path
+        .components()
+        .any(|component| component == Component::ParentDir)
+    {
         return Err(unsafe_path(path, "must not contain parent traversal"));
     }
     let mut current = PathBuf::new();
@@ -59,13 +62,21 @@ pub(crate) fn ensure_private_dir(path: &Path) -> io::Result<()> {
 /// changing a safe, traversable mode such as 0755.
 pub(crate) fn ensure_private_parent(path: &Path) -> io::Result<()> {
     reject_unsafe_ancestors(path)?;
-    let existed = symlink_metadata_if_exists(path)?.is_some();
-    ensure_dir(path)?;
-    if !existed {
-        set_private_dir(path)
-    } else {
-        Ok(())
-    }
+    create_private_dir_all(path)?;
+    reject_unsafe_ancestors(path)
+}
+
+#[cfg(unix)]
+fn create_private_dir_all(path: &Path) -> io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true).mode(0o700).create(path)
+}
+
+#[cfg(not(unix))]
+fn create_private_dir_all(path: &Path) -> io::Result<()> {
+    fs::create_dir_all(path)
 }
 
 /// Create a directory tree after checking every existing component for
@@ -472,6 +483,25 @@ mod tests {
         let file = create_private(&path).unwrap();
 
         assert_eq!(file.metadata().unwrap().permissions().mode() & 0o777, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_parent_creates_owner_only_directory_tree() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let intermediate = root.path().join("intermediate");
+        let parent = intermediate.join("parent");
+
+        super::ensure_private_parent(&parent).unwrap();
+
+        for path in [intermediate, parent] {
+            assert_eq!(
+                std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+        }
     }
 
     #[cfg(unix)]
