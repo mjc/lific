@@ -30,6 +30,7 @@
     routeWithCommentTarget,
     splitResourcePath,
   } from "./lib/commentLinks";
+  import { loadLayout } from "./lib/issues/persistence"; // LIF-434
   import {
     createActivityRateCounter,
     isActivityRealtimeEvent,
@@ -66,6 +67,50 @@
   }
 
   let route = $state(pathRoute ?? (window.location.hash.slice(1) || "/"));
+
+  // LIF-434: a detail view opened as the app's entry point (an issue link
+  // tapped in a chat, a new tab, a PWA launch) has no in-app history under
+  // it, so the system back button leaves the app instead of going "up" to
+  // the list the view belongs to, the thing a phone user actually expects.
+  // Synthesize that parent entry once at boot: replace the lone entry with
+  // the parent list route, then push the current URL back on top. Back then
+  // lands on the list (via the hashchange listener below); a second back
+  // exits as before. Guarded on "nothing to go back to", so a same-tab
+  // navigation from elsewhere keeps its real history untouched.
+  function parentListRoute(input: string): string | null {
+    const p = parseRoute(input);
+    if (p.type !== "app") return null;
+    switch (p.page) {
+      case "issue-detail":
+        // Mirror IssueDetail's back arrow: board when that's the layout
+        // the user last had this project's list in.
+        return loadLayout(p.project) === "board"
+          ? `/${p.project}/board`
+          : `/${p.project}/issues`;
+      case "page-detail":
+        return `/${p.project}/pages`;
+      case "module-detail":
+        return `/${p.project}/modules`;
+      case "plan-detail":
+        return `/${p.project}/plans`;
+      default:
+        return null;
+    }
+  }
+  {
+    // Chrome exposes the Navigation API's canGoBack; elsewhere fall back to
+    // history.length, which over-counts across prior sites but is only ever
+    // wrong toward leaving history alone.
+    const nav = (window as { navigation?: { canGoBack?: boolean } }).navigation;
+    const canGoBack =
+      typeof nav?.canGoBack === "boolean" ? nav.canGoBack : history.length > 1;
+    const parentRoute = canGoBack ? null : parentListRoute(route);
+    if (parentRoute) {
+      const entry = window.location.href;
+      history.replaceState(null, "", appBasePath + "/#" + parentRoute);
+      history.pushState(null, "", entry);
+    }
+  }
 
   // LIF-215: single-user mode. On a cold load with no session, ask the
   // instance whether web auto-login is enabled; if so, silently mint an admin

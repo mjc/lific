@@ -63,6 +63,19 @@ export function saveListState(id: string, snapshot: PersistedListState): void {
 
 // ── Layout (list vs board) ──
 
+/** Layout the project's issue list was last using. Drives IssueDetail's
+ *  back arrow and the synthesized back entry for deep-linked issue views
+ *  (App.svelte, LIF-434). */
+export function loadLayout(id: string): "board" | "list" {
+  try {
+    const raw = localStorage.getItem(layoutKey(id));
+    if (raw === "board" || raw === "list") return raw;
+  } catch {
+    // ignore
+  }
+  return "list";
+}
+
 export function saveLayout(id: string, layout: string): void {
   try {
     localStorage.setItem(layoutKey(id), layout);

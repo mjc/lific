@@ -29,6 +29,7 @@
   import { updateIssueWithUndo } from "../lib/issues/state.svelte"; // LIF-243
   import { scheduleDelete } from "../lib/issues/deferredDelete.svelte"; // LIF-283
   import { openPeek } from "../lib/issues/peek.svelte"; // LIF-248
+  import { loadLayout } from "../lib/issues/persistence"; // LIF-434
   import { projectRole, loadProjectRole } from "../lib/projectRole.svelte"; // LIF-234
   import { startAutoRefresh } from "../lib/autoRefresh.svelte";
   import { toast } from "../lib/toast/toast.svelte"; // LIF-284
@@ -70,22 +71,13 @@
   // Back-arrow destination mirrors whichever list layout the user was
   // last viewing for this project (set by IssueList). Falling back to
   // the flat issues list preserves prior behavior when nothing's stored.
-  function storedLayout(): "board" | "list" {
-    try {
-      const raw = localStorage.getItem(`lific:list:layout:${projectIdentifier}`);
-      if (raw === "board" || raw === "list") return raw;
-    } catch {
-      // ignore
-    }
-    return "list";
-  }
   function backHref(): string {
-    return storedLayout() === "board"
+    return loadLayout(projectIdentifier) === "board"
       ? `/${projectIdentifier}/board`
       : `/${projectIdentifier}/issues`;
   }
   function backText(): string {
-    return storedLayout() === "board" ? "Board" : "Issues";
+    return loadLayout(projectIdentifier) === "board" ? "Board" : "Issues";
   }
 
   let issue = $state<Issue | null>(null);

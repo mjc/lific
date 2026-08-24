@@ -213,6 +213,49 @@ async function main(): Promise<number> {
       }
       console.log(`${failures.some((f) => f.startsWith(`${route.path}:`)) ? "FAIL" : "ok  "} ${route.path}`);
     }
+
+    // ---- deep-link back synthesis (LIF-434) ----------------------------
+    // A detail view opened as the app's entry point gets a synthesized
+    // parent-list history entry at boot, so the system back button goes
+    // "up" to the list instead of leaving the app. Fresh page = fresh
+    // history, which is exactly the deep-link case.
+    {
+      const scenario = "deep-link back";
+      const page = await context.newPage();
+      try {
+        await page.goto(`${base}/DEMO/issues/DEMO-1`, { waitUntil: "load", timeout: 15_000 });
+        await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => {});
+        // goBack() resolves null for same-document (hash) navigations, so
+        // the URL, not the response, is the assertion. The parent is the
+        // issue list or the board, whichever layout localStorage last saw
+        // (the board route above persisted "board" for this context).
+        await page.goBack({ timeout: 5_000 }).catch(() => null);
+        await page.waitForURL(/#\/DEMO\/(issues|board)$/, { timeout: 5_000 }).catch(() => {});
+        if (!/#\/DEMO\/(issues|board)$/.test(page.url())) {
+          failures.push(
+            `${scenario}: back from deep-linked issue landed on ${page.url()}, ` +
+              `not the issue list; parent entry was not synthesized`,
+          );
+        } else {
+          // The list still has to fetch after the hash flips; wait for the
+          // seeded issue to actually render rather than sampling the body.
+          const rendered = await page
+            .waitForFunction(() => document.body.innerText.includes("Smoke issue"), undefined, {
+              timeout: 10_000,
+            })
+            .then(() => true)
+            .catch(() => false);
+          if (!rendered) {
+            failures.push(`${scenario}: issue list after back did not render the seeded issue`);
+          }
+        }
+      } catch (e) {
+        failures.push(`${scenario}: ${e}`);
+      } finally {
+        await page.close();
+      }
+      console.log(`${failures.some((f) => f.startsWith(`${scenario}:`)) ? "FAIL" : "ok  "} ${scenario} (LIF-434)`);
+    }
   } catch (e) {
     failures.push(`harness error: ${e instanceof Error ? (e.stack ?? e.message) : e}`);
   } finally {
