@@ -232,7 +232,12 @@ fn sweep_stale_tmps(backup_dir: &Path, db_stem: &str) {
         if !is_new_staging_dir && !is_legacy_tmp {
             continue;
         }
-        let stale = std::fs::symlink_metadata(&path)
+        let age_path = if is_new_staging_dir {
+            path.join("activity")
+        } else {
+            path.clone()
+        };
+        let stale = std::fs::symlink_metadata(&age_path)
             .and_then(|m| m.modified())
             .ok()
             .and_then(|modified| modified.elapsed().ok())
@@ -459,13 +464,15 @@ mod tests {
             fs::write(p, "x").unwrap();
         }
         fs::create_dir(&stale_dir).unwrap();
-        fs::write(stale_dir.join("archive"), "x").unwrap();
+        fs::write(stale_dir.join("activity"), "stale").unwrap();
         backdate(&stale_snap, old);
         backdate(&stale_arch, old);
         backdate(&other_stem, old);
         backdate(&real_backup, old);
-        #[cfg(unix)]
-        backdate(&stale_dir, old);
+        backdate(
+            &stale_dir.join("activity"),
+            old,
+        );
 
         sweep_stale_tmps(dir, "lific");
 
@@ -474,7 +481,6 @@ mod tests {
         assert!(fresh_arch.exists(), "fresh staging tmp must survive");
         assert!(other_stem.exists(), "other stems are not ours to sweep");
         assert!(real_backup.exists(), "real archives are rotation's job, not the sweep's");
-        #[cfg(unix)]
         assert!(!stale_dir.exists(), "stale dump staging directory must be swept");
     }
 
@@ -495,8 +501,10 @@ mod tests {
             .open(staging.join("lock"))
             .unwrap();
         lock.try_lock_exclusive().unwrap();
-        backdate(&staging, STALE_TMP_AGE + Duration::from_secs(60));
-        backdate(&staging.join("activity"), STALE_TMP_AGE + Duration::from_secs(60));
+        backdate(
+            &staging.join("activity"),
+            STALE_TMP_AGE + Duration::from_secs(60),
+        );
 
         sweep_stale_tmps(dir, "lific");
 
