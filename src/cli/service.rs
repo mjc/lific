@@ -396,10 +396,6 @@ pub struct InstallReport {
 /// Write the service definition and start it now + on boot.
 pub fn install(manager: Manager, plan: &ServicePlan) -> Result<InstallReport, String> {
     let path = definition_path(manager)?;
-    if let Some(dir) = path.parent() {
-        filesystem::ensure_dir(dir)
-            .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
-    }
     match manager {
         Manager::SystemdUser => {
             filesystem::write_atomic(&path, systemd_unit(plan).as_bytes(), false)
