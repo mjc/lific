@@ -236,7 +236,7 @@ fn number_of_links(metadata: &Metadata) -> u64 {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        return metadata.nlink();
+        metadata.nlink()
     }
     #[cfg(windows)]
     {
