@@ -707,11 +707,14 @@ fn prepare_output_path(target_dir: &Path, name: &str) -> Result<PathBuf, LificEr
     let relative = contained_path(name)?;
 
     let full_path = target_dir.join(&relative);
-    filesystem::reject_symlink_ancestors(&full_path).map_err(|_| {
-        LificError::BadRequest(format!(
+    if let Err(error) = filesystem::reject_symlink_ancestors(&full_path) {
+        if error.kind() != io::ErrorKind::InvalidInput {
+            return Err(io_error(error));
+        }
+        return Err(LificError::BadRequest(format!(
             "export entry '{name}' would write through a symlink in the output directory"
-        ))
-    })?;
+        )));
+    }
     if let Some(parent) = full_path.parent() {
         filesystem::ensure_dir(parent).map_err(io_error)?;
         let canonical_root = std::fs::canonicalize(target_dir).map_err(io_error)?;
@@ -1428,6 +1431,28 @@ mod tests {
             !elsewhere.join("evil.md").exists(),
             "the write followed the symlink out of the output directory"
         );
+    }
+
+    #[test]
+    fn reports_output_filesystem_errors_without_calling_them_symlinks() {
+        let root = scratch_dir("bundle-output-io-error");
+        let output = root.path().join("not-a-directory");
+        std::fs::write(&output, "occupied").unwrap();
+
+        let error = write_bundle_to_directory(
+            &ExportBundle {
+                root: "EXP".into(),
+                files: vec![ExportFile {
+                    path: "EXP/evil.md".into(),
+                    content: "owned".into(),
+                }],
+            },
+            &output,
+        )
+        .expect_err("a file cannot be an output directory");
+
+        assert!(matches!(error, LificError::Internal(_)));
+        assert!(!error.to_string().contains("symlink"));
     }
 
     /// Same protection on the archive path, where the symlink can be planted
