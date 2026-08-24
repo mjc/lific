@@ -244,6 +244,7 @@ pub fn open(path: &Path) -> Result<DbPool, LificError> {
         path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE
             | rusqlite::OpenFlags::SQLITE_OPEN_CREATE
+            | rusqlite::OpenFlags::SQLITE_OPEN_URI
             | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
     )?;
     secure_file(path)?;
@@ -282,20 +283,15 @@ fn ensure_private_file(path: &Path) -> Result<(), LificError> {
     match filesystem::create_private(path) {
         Ok(_) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            let metadata = std::fs::symlink_metadata(path)
-                .map_err(|error| LificError::Internal(format!("inspect database file: {error}")))?;
-            if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
-                return Err(LificError::Internal(
-                    "database path must be a regular file, not a link".into(),
-                ));
-            }
-            #[cfg(unix)]
-            if std::os::unix::fs::MetadataExt::nlink(&metadata) != 1 {
-                return Err(LificError::Internal(
-                    "database path must not have multiple hard links".into(),
-                ));
-            }
-            Ok(())
+            filesystem::safe_regular_file_exists(path)
+                .map_err(|error| LificError::Internal(format!("inspect database file: {error}")))
+                .and_then(|exists| {
+                    if exists {
+                        Ok(())
+                    } else {
+                        Err(LificError::Internal("database file disappeared".into()))
+                    }
+                })
         }
         Err(error) => Err(LificError::Internal(format!(
             "create database file: {error}"

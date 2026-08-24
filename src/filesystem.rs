@@ -41,7 +41,7 @@ fn inspect_ancestors(path: &Path, reject_writable: bool) -> io::Result<()> {
                     }
                 }
                 #[cfg(not(unix))]
-                let _ = reject_writable;
+                let _ = (&metadata, reject_writable);
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
             Err(error) => return Err(error),
@@ -91,7 +91,12 @@ pub(crate) fn ensure_dir(path: &Path) -> io::Result<()> {
 /// Validate a directory that will receive private output. Sticky directories
 /// are allowed because they protect entries from other users' renames.
 pub(crate) fn validate_private_parent(path: &Path) -> io::Result<()> {
-    reject_unsafe_ancestors(path)
+    reject_unsafe_ancestors(path)?;
+    match symlink_metadata_if_exists(path)? {
+        Some(metadata) if metadata.is_dir() => Ok(()),
+        Some(_) => Err(unsafe_path(path, "must be a directory")),
+        None => Err(io::ErrorKind::NotFound.into()),
+    }
 }
 
 /// Open an existing file without following symlinks.
@@ -99,6 +104,18 @@ pub(crate) fn open(path: &Path) -> io::Result<File> {
     let mut options = OpenOptions::new();
     options.read(true);
     open_with_options(&mut options, path)
+}
+
+pub(crate) fn open_private_with_options(
+    options: &mut OpenOptions,
+    path: &Path,
+) -> io::Result<File> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    open_with_options(options, path)
 }
 
 pub(crate) fn read(path: &Path) -> io::Result<Vec<u8>> {
@@ -140,12 +157,7 @@ fn open_with_options(options: &mut OpenOptions, path: &Path) -> io::Result<File>
 pub(crate) fn create_private(path: &Path) -> io::Result<File> {
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    open_with_options(&mut options, path)
+    open_private_with_options(&mut options, path)
 }
 
 /// Create a private temporary file in `parent`, removed automatically unless
@@ -172,6 +184,20 @@ pub(crate) fn set_private_file_path(path: &Path) -> io::Result<()> {
     }
     #[cfg(not(unix))]
     reject_symlink(path)?;
+    Ok(())
+}
+
+pub(crate) fn set_private_file(file: &File) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        if file.metadata()?.mode() & 0o077 != 0 {
+            file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = file;
     Ok(())
 }
 
@@ -239,14 +265,36 @@ pub(crate) fn safe_path_exists(path: &Path) -> io::Result<bool> {
     Ok(safe_metadata(path)?.is_some())
 }
 
+pub(crate) fn safe_regular_file_exists(path: &Path) -> io::Result<bool> {
+    let Some(metadata) = safe_metadata(path)? else {
+        return Ok(false);
+    };
+    if !metadata.file_type().is_file() {
+        return Err(unsafe_path(path, "must be a regular file"));
+    }
+    if link_count(path, &metadata)? != 1 {
+        return Err(unsafe_path(path, "must not be a hard link"));
+    }
+    Ok(true)
+}
+
 /// Reject an existing file with multiple names. Dump output uses this stricter
 /// policy so it cannot replace only one name for a file the user may expect to
 /// remain linked.
 pub(crate) fn reject_hard_link(path: &Path) -> io::Result<()> {
-    if safe_metadata(path)?
-        .as_ref()
-        .is_some_and(|metadata| number_of_links(metadata) > 1)
+    if let Some(metadata) = safe_metadata(path)?
+        && link_count(path, &metadata)? > 1
     {
+        return Err(unsafe_path(path, "must not be a hard link"));
+    }
+    Ok(())
+}
+
+/// Reject an already-open file with multiple names without resolving its path
+/// again.
+pub(crate) fn reject_hard_link_file(path: &Path, file: &File) -> io::Result<()> {
+    let metadata = file.metadata()?;
+    if file_link_count(file, &metadata)? > 1 {
         return Err(unsafe_path(path, "must not be a hard link"));
     }
     Ok(())
@@ -290,23 +338,34 @@ fn write_atomic_with_mode(path: &Path, contents: &[u8], private: bool) -> io::Re
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
-    if !private {
-        use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-        let mode = safe_metadata(path)?
-            .map(|metadata| metadata.mode() & 0o777)
-            .filter(|mode| *mode != 0)
-            .unwrap_or(0o666);
-        options.mode(mode);
-    }
+    let preserved_mode = if private {
+        None
+    } else {
+        use std::os::unix::fs::MetadataExt;
+        safe_metadata(path)?.map(|metadata| metadata.mode() & 0o777)
+    };
     let mut file = if private {
         create_private(&temp)?
     } else {
         open_with_options(&mut options, &temp)?
     };
+    #[cfg(unix)]
+    if let Some(mode) = preserved_mode {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(fs::Permissions::from_mode(mode))?;
+    }
     file.write_all(contents)?;
     file.sync_all()?;
     drop(file);
-    atomic_replace(&temp, path)
+    atomic_replace(&temp, path)?;
+    sync_dir(parent)
+}
+
+#[cfg_attr(not(unix), expect(clippy::unnecessary_wraps, reason = "fallible on Unix"))]
+pub(crate) fn sync_dir(_path: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    File::open(_path)?.sync_all()?;
+    Ok(())
 }
 
 fn reject_group_writable(path: &Path) -> io::Result<()> {
@@ -343,21 +402,67 @@ fn symlink_metadata_if_exists(path: &Path) -> io::Result<Option<Metadata>> {
     }
 }
 
-fn number_of_links(metadata: &Metadata) -> u64 {
+#[cfg_attr(
+    not(windows),
+    expect(
+        clippy::unnecessary_wraps,
+        reason = "Windows link inspection can fail and must fail closed"
+    )
+)]
+fn link_count(path: &Path, metadata: &Metadata) -> io::Result<u64> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        metadata.nlink()
+        let _ = path;
+        Ok(metadata.nlink())
     }
     #[cfg(windows)]
     {
-        use std::os::windows::fs::MetadataExt;
-        u64::from(metadata.number_of_links().unwrap_or(1))
+        let file = open(path)?;
+        file_link_count(&file, metadata)
     }
     #[cfg(not(any(unix, windows)))]
     {
+        let _ = (path, metadata);
+        Ok(1)
+    }
+}
+
+#[cfg_attr(
+    not(windows),
+    expect(
+        clippy::unnecessary_wraps,
+        reason = "Windows handle inspection can fail and must fail closed"
+    )
+)]
+fn file_link_count(file: &File, metadata: &Metadata) -> io::Result<u64> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let _ = file;
+        Ok(metadata.nlink())
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::{
+            BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+        };
+
         let _ = metadata;
-        1
+        let mut information = BY_HANDLE_FILE_INFORMATION::default();
+        // SAFETY: `information` is a valid writable struct and the handle
+        // remains open for the duration of the call.
+        let result = unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut information) };
+        if result == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(u64::from(information.nNumberOfLinks))
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (file, metadata);
+        Ok(1)
     }
 }
 
@@ -384,10 +489,10 @@ fn unsafe_path(path: &Path, reason: &str) -> io::Error {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        atomic_replace, create_private, ensure_private_dir, open, private_tempfile_in,
-        safe_path_exists,
-    };
+    use super::{atomic_replace, reject_hard_link_file, safe_path_exists, validate_private_parent};
+
+    #[cfg(unix)]
+    use super::{create_private, ensure_private_dir, open, private_tempfile_in};
 
     #[cfg(unix)]
     #[test]
@@ -453,6 +558,29 @@ mod tests {
         assert_eq!(std::fs::read_to_string(destination).unwrap(), "new");
     }
 
+    #[test]
+    fn existing_private_parent_is_required() {
+        let root = tempfile::tempdir().unwrap();
+        let missing = root.path().join("missing");
+
+        assert_eq!(
+            validate_private_parent(&missing).unwrap_err().kind(),
+            std::io::ErrorKind::NotFound
+        );
+    }
+
+    #[test]
+    fn open_hard_link_is_rejected() {
+        let root = tempfile::tempdir().unwrap();
+        let original = root.path().join("original");
+        let linked = root.path().join("linked");
+        std::fs::write(&original, "contents").unwrap();
+        std::fs::hard_link(&original, &linked).unwrap();
+        let file = std::fs::File::open(&linked).unwrap();
+
+        assert!(reject_hard_link_file(&linked, &file).is_err());
+    }
+
     #[cfg(unix)]
     #[test]
     fn atomic_replace_detaches_hard_link_destination() {
@@ -467,6 +595,24 @@ mod tests {
         atomic_replace(&temp, &destination).unwrap();
         assert_eq!(std::fs::read_to_string(destination).unwrap(), "new");
         assert_eq!(std::fs::read_to_string(existing).unwrap(), "old");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_preserves_existing_mode_exactly() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let destination = root.path().join("destination");
+        std::fs::write(&destination, "old").unwrap();
+        std::fs::set_permissions(&destination, std::fs::Permissions::from_mode(0o620)).unwrap();
+
+        super::write_atomic(&destination, b"new").unwrap();
+
+        assert_eq!(
+            std::fs::metadata(destination).unwrap().permissions().mode() & 0o777,
+            0o620
+        );
     }
 
     #[test]

@@ -23,6 +23,7 @@ use sha2::{Digest, Sha256};
 
 use crate::db::DbPool;
 use crate::error::LificError;
+use crate::filesystem;
 
 /// The DB filename inside every archive, independent of the on-disk name.
 pub const ARCHIVE_DB_NAME: &str = "lific.db";
@@ -219,34 +220,9 @@ fn snapshot_db(db_path: &Path, dest: &Path) -> Result<(), LificError> {
     Ok(())
 }
 
-/// Set 0600 permissions on a file (owner-only) on Unix. No-op elsewhere.
-#[cfg_attr(
-    not(unix),
-    expect(
-        clippy::unnecessary_wraps,
-        reason = "keep one fallible cross-platform dump API"
-    )
-)]
+/// Set owner-only permissions where the platform supports them.
 fn set_owner_only(path: &Path) -> std::io::Result<()> {
     filesystem::set_private_file_path(path)
-}
-
-/// fsync a directory so a rename into it is durable. Unix only: Windows has no
-/// directory handle to sync, and its rename ordering does not need one.
-#[cfg_attr(
-    not(unix),
-    expect(clippy::unnecessary_wraps, reason = "fallible on Unix")
-)]
-fn sync_dir(path: &Path) -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        File::open(path)?.sync_all()?;
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-    }
-    Ok(())
 }
 
 /// An advisory exclusive lock held for the lifetime of one dump's staging
@@ -325,7 +301,7 @@ fn write_dump_locked(
         .prefix(".lific-dump-")
         .tempdir_in(parent)
         .map_err(|e| LificError::Internal(format!("create dump staging directory: {e}")))?;
-    filesystem::set_private_dir(staging.path())
+    filesystem::ensure_private_dir(staging.path())
         .map_err(|e| LificError::Internal(format!("secure dump staging directory: {e}")))?;
     let _lock = StagingLock::create(&staging.path().join("lock"))?;
     let activity = filesystem::create_private(&staging.path().join("activity"))
@@ -442,7 +418,8 @@ fn write_dump_locked(
     filesystem::atomic_replace(tmp_archive.path(), out_path)
         .map_err(|e| LificError::Internal(format!("finalize archive: {e}")))?;
     // The rename is only durable once the directory entry is on disk.
-    sync_dir(parent).map_err(|e| LificError::Internal(format!("sync dump destination: {e}")))?;
+    filesystem::sync_dir(parent)
+        .map_err(|e| LificError::Internal(format!("sync dump destination: {e}")))?;
 
     Ok(manifest)
 }
@@ -492,14 +469,17 @@ fn is_symlink(error: &std::io::Error) -> bool {
 /// entry that vanished mid-scan); `Err` means the store is in a state a dump
 /// must not silently paper over.
 fn open_verified_blob(path: &Path) -> Result<Option<VerifiedBlob>, LificError> {
-    let mut options = std::fs::OpenOptions::new();
-    options.read(true);
-    let file = match filesystem::open_no_follow(&mut options, path) {
+    let file = match filesystem::open(path) {
         Ok(file) => file,
         // A concurrent GC can remove a blob between readdir and open, and
         // O_NOFOLLOW refuses a symlink. Neither is a reason to fail the dump;
         // both mean "nothing of ours to archive here".
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound || is_symlink(&error) => {
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotFound
+                || is_symlink(&error)
+                || std::fs::symlink_metadata(path)
+                    .is_ok_and(|metadata| metadata.file_type().is_symlink()) =>
+        {
             return Ok(None);
         }
         Err(error) => {
@@ -516,18 +496,8 @@ fn open_verified_blob(path: &Path) -> Result<Option<VerifiedBlob>, LificError> {
     if !metadata.is_file() {
         return Ok(None);
     }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        // A hard link means the same inode is reachable from outside the
-        // store, so its bytes are not under Lific's control.
-        if metadata.nlink() != 1 {
-            return Err(LificError::Internal(format!(
-                "attachment entry is hard-linked: {}",
-                path.display()
-            )));
-        }
-    }
+    filesystem::reject_hard_link_file(path, &file)
+        .map_err(|e| LificError::Internal(format!("inspect attachment {}: {e}", path.display())))?;
     let mtime = metadata
         .modified()
         .ok()
@@ -640,10 +610,6 @@ impl<R: Read> Read for HashingReader<R> {
 /// Refuse to publish a dump onto a destination another user could have
 /// prepared: a symlink or hard link at the target, a symlinked parent, or a
 /// group/world-writable parent without the sticky bit.
-#[cfg_attr(
-    not(unix),
-    expect(clippy::unnecessary_wraps, reason = "fallible on Unix")
-)]
 fn validate_dump_destination(out_path: &Path) -> Result<(), LificError> {
     let parent = out_path.parent().unwrap_or_else(|| Path::new("."));
     filesystem::validate_private_parent(parent)
@@ -953,7 +919,7 @@ impl RestoreLock {
         let path = data_dir.join(".lific-restore.lock");
         let mut options = std::fs::OpenOptions::new();
         options.read(true).write(true).create(true).truncate(false);
-        let file = filesystem::open_private(&mut options, &path)
+        let file = filesystem::open_private_with_options(&mut options, &path)
             .map_err(|error| LificError::Internal(format!("create restore lock: {error}")))?;
         file.try_lock_exclusive().map_err(|_| {
             LificError::Conflict(
@@ -976,9 +942,7 @@ impl Drop for RestoreLock {
 /// Create a staging file this process exclusively owns: never following a
 /// symlink, never adopting an existing file, owner-only from creation.
 fn create_staging_file(path: &Path) -> Result<File, LificError> {
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    filesystem::open_private(&mut options, path)
+    filesystem::create_private(path)
         .map_err(|e| LificError::Internal(format!("create staging file: {e}")))
 }
 
@@ -1400,7 +1364,7 @@ pub fn run_restore_with(
         .tempdir_in(&data_dir)
         .map_err(|e| LificError::Internal(format!("create staging dir: {e}")))?;
     let staging_path = staging.path();
-    filesystem::set_private_dir(staging_path)
+    filesystem::ensure_private_dir(staging_path)
         .map_err(|e| LificError::Internal(format!("secure restore staging dir: {e}")))?;
     filesystem::ensure_private_dir(&staging_path.join("attachments"))
         .map_err(|e| LificError::Internal(format!("secure restore attachments dir: {e}")))?;
@@ -1603,7 +1567,7 @@ fn install_restore(
             .parent()
             .filter(|path| !path.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."));
-        sync_dir(data_dir)
+        filesystem::sync_dir(data_dir)
             .map_err(|e| LificError::Internal(format!("sync restored data directory: {e}")))?;
         Ok(())
     })();
@@ -1900,7 +1864,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn dump_failing_after_staging_exists_still_cleans_up() {
         // A hard-linked blob fails the scan, which happens *after* the private
@@ -1915,7 +1878,7 @@ mod tests {
         let out = dir.join("late.tar.gz");
         let error = write_dump(&crate::db::open(&db_path).unwrap(), &db_path, &out).unwrap_err();
 
-        assert!(error.to_string().contains("hard-linked"), "got {error}");
+        assert!(error.to_string().contains("hard link"), "got {error}");
         assert!(!out.exists(), "a failed dump publishes nothing");
         assert!(
             !has_dump_staging(dir),
@@ -2002,9 +1965,25 @@ mod tests {
         .expect("a private parent directory is a fine destination");
     }
 
+    #[test]
+    fn dump_refuses_hard_linked_blob() {
+        let (dir_tmp, db_path) = seed_data_dir("unsafe_hard_linked_attachment");
+        let dir = dir_tmp.path();
+        let attachments = dir.join("attachments");
+        let name = "c".repeat(64);
+        let entry = attachments.join(&name);
+        let outside = dir.join("outside");
+        fs::write(&outside, b"outside secret").unwrap();
+        fs::hard_link(&outside, &entry).unwrap();
+
+        let out = dir.join("hardlink.tar.gz");
+        let error = write_dump(&crate::db::open(&db_path).unwrap(), &db_path, &out).unwrap_err();
+        assert!(error.to_string().contains("hard link"), "got {error}");
+    }
+
     #[cfg(unix)]
     #[test]
-    fn dump_skips_symlinked_blobs_and_refuses_hard_linked_ones() {
+    fn dump_skips_symlinked_blobs() {
         use std::os::unix::fs::symlink;
 
         let (dir_tmp, db_path) = seed_data_dir("unsafe_attachments");
@@ -2023,13 +2002,6 @@ mod tests {
         assert!(!archive_entries(&out).contains(&format!("attachments/{name}")));
         assert_eq!(manifest.attachment_count, 2, "only the real blobs count");
 
-        // A hard link means the same bytes are reachable and mutable from
-        // outside the store, so the dump refuses rather than guessing.
-        fs::remove_file(&entry).unwrap();
-        fs::hard_link(&outside, &entry).unwrap();
-        let out = dir.join("hardlink.tar.gz");
-        let error = write_dump(&crate::db::open(&db_path).unwrap(), &db_path, &out).unwrap_err();
-        assert!(error.to_string().contains("hard-linked"), "got {error}");
     }
 
     #[test]

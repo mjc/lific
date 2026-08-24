@@ -67,49 +67,8 @@ pub struct AttachmentStore {
 }
 
 fn existing_regular_file(path: &Path, label: &str) -> Result<bool, LificError> {
-    let metadata = match std::fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => {
-            return Err(LificError::Internal(format!(
-                "inspect {label} path: {error}"
-            )));
-        }
-    };
-    if !metadata.file_type().is_file() {
-        return Err(LificError::Internal(format!(
-            "{label} path is not a regular file"
-        )));
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        if metadata.nlink() != 1 {
-            return Err(LificError::Internal(format!("{label} path is hard-linked")));
-        }
-    }
-    Ok(true)
-}
-
-/// Flush the directory entry a rename just created.
-///
-/// `sync_all` on the file itself only guarantees the *bytes* survive a crash;
-/// the name that makes them findable lives in the parent directory and needs
-/// its own fsync. Without this, a crash right after an upload can leave a
-/// database row pointing at a blob whose directory entry never landed.
-/// Unix only: Windows has no directory handle to sync.
-#[cfg_attr(
-    not(unix),
-    expect(clippy::unnecessary_wraps, reason = "fallible on Unix")
-)]
-fn sync_dir(_dir: &Path) -> Result<(), LificError> {
-    #[cfg(unix)]
-    {
-        std::fs::File::open(_dir)
-            .and_then(|dir| dir.sync_all())
-            .map_err(|e| LificError::Internal(format!("sync directory: {e}")))?;
-    }
-    Ok(())
+    filesystem::safe_regular_file_exists(path)
+        .map_err(|error| LificError::Internal(format!("inspect {label} path: {error}")))
 }
 
 pub(crate) fn valid_sha256(value: &str) -> bool {
@@ -194,9 +153,7 @@ impl AttachmentStore {
             .ok_or_else(|| LificError::Internal("thumbnail path has no parent".into()))?;
         filesystem::ensure_private_dir(parent)
             .map_err(|e| LificError::Internal(format!("secure thumbnails dir: {e}")))?;
-        if filesystem::safe_path_exists(&path)
-            .map_err(|e| LificError::Internal(format!("inspect thumbnail: {e}")))?
-        {
+        if existing_regular_file(&path, "thumbnail")? {
             return Ok(());
         }
         filesystem::write_private_atomic(&path, bytes)
@@ -261,16 +218,11 @@ impl AttachmentStore {
         if let Some(parent) = self.lock_path.parent()
             && !parent.as_os_str().is_empty()
         {
-            std::fs::create_dir_all(parent)?;
+            filesystem::ensure_private_parent(parent)?;
         }
         let mut options = std::fs::OpenOptions::new();
         options.read(true).write(true).create(true).truncate(false);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-        }
-        options.open(self.lock_path())
+        filesystem::open_private_with_options(&mut options, self.lock_path())
     }
 
     /// Take the store's advisory exclusive lock, blocking until it is free.
@@ -428,9 +380,7 @@ impl AttachmentStore {
         filesystem::ensure_private_dir(&self.dir)
             .map_err(|e| LificError::Internal(format!("secure attachments dir: {e}")))?;
         let path = self.path_for(&sha)?;
-        if filesystem::safe_path_exists(&path)
-            .map_err(|e| LificError::Internal(format!("inspect attachment: {e}")))?
-        {
+        if existing_regular_file(&path, "attachment")? {
             return Ok(sha);
         }
         filesystem::write_private_atomic(&path, bytes)
@@ -1454,6 +1404,42 @@ mod tests {
         let target = store.dir().join("outside.webp");
         std::fs::write(&target, b"outside").unwrap();
         symlink(&target, &thumbnail).unwrap();
+
+        assert!(store.write_thumb(&sha, b"thumbnail").is_err());
+    }
+
+    #[test]
+    fn attachment_write_rejects_existing_directory() {
+        let (store, _tmp) = tmp_store();
+        let bytes = b"private attachment";
+        let sha = AttachmentStore::hash_bytes(bytes);
+        std::fs::create_dir_all(store.dir()).unwrap();
+        std::fs::create_dir(store.dir().join(sha)).unwrap();
+
+        assert!(store.write(bytes).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn attachment_write_rejects_existing_hard_link() {
+        let (store, tmp) = tmp_store();
+        let bytes = b"private attachment";
+        let sha = AttachmentStore::hash_bytes(bytes);
+        std::fs::create_dir_all(store.dir()).unwrap();
+        let outside = tmp.path().join("outside");
+        std::fs::write(&outside, bytes).unwrap();
+        std::fs::hard_link(outside, store.dir().join(sha)).unwrap();
+
+        assert!(store.write(bytes).is_err());
+    }
+
+    #[test]
+    fn thumbnail_write_rejects_existing_directory() {
+        let (store, _tmp) = tmp_store();
+        let sha = "a".repeat(64);
+        let thumbnail = store.thumb_path_for(&sha).unwrap();
+        std::fs::create_dir_all(thumbnail.parent().unwrap()).unwrap();
+        std::fs::create_dir(&thumbnail).unwrap();
 
         assert!(store.write_thumb(&sha, b"thumbnail").is_err());
     }
