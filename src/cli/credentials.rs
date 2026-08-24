@@ -220,15 +220,10 @@ impl FileStore {
     }
 
     fn read_map(&self) -> BTreeMap<String, String> {
-        let mut file = match filesystem::open(&self.path) {
-            Ok(file) => file,
-            Err(_) => return BTreeMap::new(),
-        };
-        let mut contents = String::new();
-        if std::io::Read::read_to_string(&mut file, &mut contents).is_err() {
-            return BTreeMap::new();
-        }
-        serde_json::from_str(&contents).unwrap_or_default()
+        filesystem::read_to_string(&self.path)
+            .ok()
+            .and_then(|contents| serde_json::from_str(&contents).ok())
+            .unwrap_or_default()
     }
 
     fn write_map(&self, map: &BTreeMap<String, String>) -> std::io::Result<()> {
