@@ -228,8 +228,29 @@ pub fn write_dump(pool: &DbPool, db_path: &Path, out_path: &Path) -> Result<Mani
                 let entry = entry
                     .map_err(|e| LificError::Internal(format!("read attachments entry: {e}")))?;
                 let path = entry.path();
-                if !path.is_file() {
+                if !entry
+                    .file_type()
+                    .map_err(|e| LificError::Internal(format!("inspect attachment entry: {e}")))?
+                    .is_file()
+                {
                     continue;
+                }
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::MetadataExt;
+                    if entry
+                        .metadata()
+                        .map_err(|e| {
+                            LificError::Internal(format!("inspect attachment metadata: {e}"))
+                        })?
+                        .nlink()
+                        != 1
+                    {
+                        return Err(LificError::Internal(format!(
+                            "attachment entry is hard-linked: {}",
+                            path.display()
+                        )));
+                    }
                 }
                 if path.extension().and_then(|e| e.to_str()) == Some("tmp") {
                     continue;
@@ -997,6 +1018,30 @@ mod tests {
         symlink(&real_parent, &parent_link).unwrap();
         let nested = parent_link.join("nested.tar.gz");
         assert!(write_dump(&crate::db::open(&db_path).unwrap(), &db_path, &nested).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dump_rejects_symlink_and_hard_linked_attachments() {
+        use std::os::unix::fs::symlink;
+
+        let (dir_tmp, db_path) = seed_data_dir("unsafe-attachments");
+        let dir = dir_tmp.path();
+        let attachments = dir.join("attachments");
+        let name = "c".repeat(64);
+        let entry = attachments.join(&name);
+        let outside = dir.join("outside");
+        fs::write(&outside, b"outside").unwrap();
+        symlink(&outside, &entry).unwrap();
+
+        let out = dir.join("symlink.tar.gz");
+        write_dump(&crate::db::open(&db_path).unwrap(), &db_path, &out).unwrap();
+        assert!(!archive_entries(&out).contains(&format!("attachments/{name}")));
+
+        fs::remove_file(&entry).unwrap();
+        fs::hard_link(&outside, &entry).unwrap();
+        let out = dir.join("hardlink.tar.gz");
+        assert!(write_dump(&crate::db::open(&db_path).unwrap(), &db_path, &out).is_err());
     }
 
     #[test]

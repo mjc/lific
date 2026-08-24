@@ -29,6 +29,33 @@ pub struct AttachmentStore {
     operation_lock: Arc<Mutex<()>>,
 }
 
+fn existing_regular_file(path: &Path, label: &str) -> Result<bool, LificError> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(LificError::Internal(format!(
+                "inspect {label} path: {error}"
+            )))
+        }
+    };
+    if !metadata.file_type().is_file() {
+        return Err(LificError::Internal(format!(
+            "{label} path is not a regular file"
+        )));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.nlink() != 1 {
+            return Err(LificError::Internal(format!(
+                "{label} path is hard-linked"
+            )));
+        }
+    }
+    Ok(true)
+}
+
 impl AttachmentStore {
     /// Build a store rooted at `<parent-of-db>/attachments`. Mirrors
     /// `Config::backup_dir`'s "resolve relative to the database file" rule so
@@ -104,7 +131,7 @@ impl AttachmentStore {
                 .map_err(|e| LificError::Internal(format!("secure thumbnails dir: {e}")))?;
         }
         let tmp = parent.join(format!(".{}.{}.tmp", sha256, rand::random::<u64>()));
-        if path.exists() {
+        if existing_regular_file(&path, "thumbnail")? {
             return Ok(());
         }
         let mut options = std::fs::OpenOptions::new();
@@ -204,7 +231,7 @@ impl AttachmentStore {
                 .map_err(|e| LificError::Internal(format!("secure attachments dir: {e}")))?;
         }
         let path = self.path_for(&sha)?;
-        if path.exists() {
+        if existing_regular_file(&path, "attachment")? {
             return Ok(sha);
         }
         // Write to a temp file then rename, so a concurrent reader never sees a
@@ -782,6 +809,38 @@ mod tests {
             & 0o777;
         assert_eq!(dir_mode, 0o700);
         assert_eq!(file_mode, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn attachment_write_rejects_existing_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let (store, _tmp) = tmp_store();
+        let bytes = b"private attachment";
+        let sha = AttachmentStore::hash_bytes(bytes);
+        std::fs::create_dir_all(store.dir()).unwrap();
+        let target = store.dir().join("outside");
+        std::fs::write(&target, b"outside").unwrap();
+        symlink(&target, store.dir().join(&sha)).unwrap();
+
+        assert!(store.write(bytes).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn thumbnail_write_rejects_existing_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let (store, _tmp) = tmp_store();
+        let sha = "a".repeat(64);
+        let thumbnail = store.thumb_path_for(&sha).unwrap();
+        std::fs::create_dir_all(thumbnail.parent().unwrap()).unwrap();
+        let target = store.dir().join("outside.webp");
+        std::fs::write(&target, b"outside").unwrap();
+        symlink(&target, &thumbnail).unwrap();
+
+        assert!(store.write_thumb(&sha, b"thumbnail").is_err());
     }
 
     #[test]
