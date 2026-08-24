@@ -704,7 +704,8 @@ fn validate_dump_destination(out_path: &Path) -> Result<(), LificError> {
     let parent = out_path.parent().unwrap_or_else(|| Path::new("."));
     filesystem::validate_private_parent(parent)
         .map_err(|e| LificError::Internal(format!("inspect dump destination: {e}")))?;
-    filesystem::reject_unsafe_destination(out_path)
+    filesystem::safe_destination_exists(out_path)
+        .map(|_| ())
         .map_err(|e| LificError::Internal(format!("inspect dump destination: {e}")))
 }
 
@@ -1556,7 +1557,10 @@ pub fn run_restore_with(
 
     // Recheck after staging in case another process created the destination
     // while the archive was being validated.
-    if db_path.exists() && !force {
+    if filesystem::safe_destination_exists(db_path)
+        .map_err(|e| LificError::Internal(format!("inspect existing db: {e}")))?
+        && !force
+    {
         return Err(LificError::Conflict(format!(
             "{} already exists; pass --force to restore over it (stop the server first)",
             db_path.display()

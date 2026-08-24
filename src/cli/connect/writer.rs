@@ -121,7 +121,7 @@ pub fn write(path: &Path, format: Format, entry: &CompiledEntry) -> Result<Actio
     // variable references are configuration, not credential material.
     let secret = rendered.contents.contains("lific_sk-") || rendered.contents.contains("lific_at_");
     if secret && let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-        filesystem::ensure_private_dir(parent).map_err(|e| {
+        filesystem::ensure_private_parent(parent).map_err(|e| {
             WriteError::new(format!("failed to secure {}: {e}", parent.display()))
         })?;
     }
@@ -487,6 +487,10 @@ mod tests {
             std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
             0o600
         );
+        assert_eq!(
+            std::fs::metadata(dir).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
     }
 
     #[test]
@@ -616,6 +620,27 @@ mod tests {
                 "reference-only config must not be tightened"
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reference_only_config_preserves_restrictive_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let guard = tmp();
+        let dir = guard.path().join("proj");
+        private_dir(&dir);
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "model = \"gpt-5\"\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        let entry = find_client("codex").unwrap().compile(&remote());
+        write(&path, Format::Toml, &entry).unwrap();
+
+        assert_eq!(
+            std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 
     #[test]

@@ -197,9 +197,9 @@ impl AttachmentStore {
         filesystem::set_private_dir(parent)
             .map_err(|e| LificError::Internal(format!("secure thumbnails dir: {e}")))?;
         let tmp = parent.join(format!(".{}.{}.tmp", sha256, rand::random::<u64>()));
-        if std::fs::symlink_metadata(&path).is_ok() {
-            filesystem::reject_unsafe_destination(&path)
-                .map_err(|e| LificError::Internal(format!("inspect thumbnail: {e}")))?;
+        if filesystem::safe_destination_exists(&path)
+            .map_err(|e| LificError::Internal(format!("inspect thumbnail: {e}")))?
+        {
             return Ok(());
         }
         let mut options = std::fs::OpenOptions::new();
@@ -454,9 +454,9 @@ impl AttachmentStore {
         filesystem::set_private_dir(&self.dir)
             .map_err(|e| LificError::Internal(format!("secure attachments dir: {e}")))?;
         let path = self.path_for(&sha)?;
-        if std::fs::symlink_metadata(&path).is_ok() {
-            filesystem::reject_unsafe_destination(&path)
-                .map_err(|e| LificError::Internal(format!("inspect attachment: {e}")))?;
+        if filesystem::safe_destination_exists(&path)
+            .map_err(|e| LificError::Internal(format!("inspect attachment: {e}")))?
+        {
             return Ok(sha);
         }
         // Write to a temp file then rename, so a concurrent reader never sees a

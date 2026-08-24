@@ -309,7 +309,7 @@ fn secure_parent(path: &Path) -> Result<(), LificError> {
     let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) else {
         return Ok(());
     };
-    filesystem::ensure_private_dir(parent)
+    filesystem::ensure_private_parent(parent)
         .map_err(|error| LificError::Internal(format!("secure database directory: {error}")))
 }
 
@@ -366,6 +366,10 @@ mod tests {
 
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
         secure_parent(&db_path).unwrap();
+        assert_eq!(
+            std::fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
 
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o775)).unwrap();
         assert!(secure_parent(&db_path).is_err());
