@@ -10,6 +10,7 @@ use crate::db::{
     models::Comment, models::Folder, models::Issue, models::Page, models::Project, queries,
 };
 use crate::error::LificError;
+use crate::filesystem;
 
 /// `Deserialize` matters as much as `Serialize` here: the CLI's HTTP backend
 /// asks the server for the bundle and hands it straight to
@@ -597,7 +598,7 @@ pub fn write_bundle_to_directory(
     let mut written = Vec::new();
     for file in &bundle.files {
         let full_path = prepare_output_path(target_dir, &file.path)?;
-        std::fs::write(&full_path, &file.content).map_err(io_error)?;
+        filesystem::write_atomic(&full_path, file.content.as_bytes(), false).map_err(io_error)?;
         written.push(full_path);
     }
     Ok(written)
@@ -686,7 +687,7 @@ fn unpack_zip_with_limits(
         }
         expanded += read;
 
-        std::fs::write(&full_path, &content).map_err(io_error)?;
+        filesystem::write_atomic(&full_path, &content, false).map_err(io_error)?;
         written.push(full_path);
     }
     Ok(written)
@@ -705,21 +706,14 @@ fn unpack_zip_with_limits(
 fn prepare_output_path(target_dir: &Path, name: &str) -> Result<PathBuf, LificError> {
     let relative = contained_path(name)?;
 
-    let mut current = target_dir.to_path_buf();
-    for component in relative.components() {
-        current.push(component);
-        if let Ok(metadata) = std::fs::symlink_metadata(&current)
-            && metadata.file_type().is_symlink()
-        {
-            return Err(LificError::BadRequest(format!(
-                "export entry '{name}' would write through a symlink in the output directory"
-            )));
-        }
-    }
-
     let full_path = target_dir.join(&relative);
+    filesystem::reject_symlink_ancestors(&full_path).map_err(|_| {
+        LificError::BadRequest(format!(
+            "export entry '{name}' would write through a symlink in the output directory"
+        ))
+    })?;
     if let Some(parent) = full_path.parent() {
-        std::fs::create_dir_all(parent).map_err(io_error)?;
+        filesystem::ensure_dir(parent).map_err(io_error)?;
         let canonical_root = std::fs::canonicalize(target_dir).map_err(io_error)?;
         let canonical_parent = std::fs::canonicalize(parent).map_err(io_error)?;
         if !canonical_parent.starts_with(&canonical_root) {

@@ -38,7 +38,9 @@
 //! Service is gated `#[ignore]` (CI has none).
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+
+use crate::filesystem;
 
 /// Environment variable carrying an OAuth token, used in place of stored
 /// credentials when it is bound to the target origin (see [`env_token_for`]).
@@ -218,22 +220,25 @@ impl FileStore {
     }
 
     fn read_map(&self) -> BTreeMap<String, String> {
-        match std::fs::read_to_string(&self.path) {
-            Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
-            Err(_) => BTreeMap::new(),
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true);
+        let mut file = match filesystem::open_no_follow(&mut options, &self.path) {
+            Ok(file) => file,
+            Err(_) => return BTreeMap::new(),
+        };
+        let mut contents = String::new();
+        if std::io::Read::read_to_string(&mut file, &mut contents).is_err() {
+            return BTreeMap::new();
         }
+        serde_json::from_str(&contents).unwrap_or_default()
     }
 
     fn write_map(&self, map: &BTreeMap<String, String>) -> std::io::Result<()> {
         if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent)?;
-            // Tighten the parent dir to 0700 (best-effort; only meaningful on unix).
-            set_dir_private(parent);
+            filesystem::ensure_private_dir(parent)?;
         }
         let json = serde_json::to_string_pretty(map).map_err(std::io::Error::other)?;
-        std::fs::write(&self.path, json)?;
-        set_file_private(&self.path);
-        Ok(())
+        filesystem::write_atomic(&self.path, json.as_bytes(), true)
     }
 
     /// Store `token` under `key`, creating the file if needed.
@@ -256,32 +261,6 @@ impl FileStore {
             self.write_map(&map)?;
         }
         Ok(removed)
-    }
-}
-
-/// Best-effort chmod 0600 on the credentials file (unix only).
-fn set_file_private(path: &Path) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-    }
-}
-
-/// Best-effort chmod 0700 on the parent dir (unix only).
-fn set_dir_private(dir: &Path) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = dir;
     }
 }
 
