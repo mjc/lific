@@ -180,7 +180,7 @@ fn effective_issuer(state: &OAuthState, headers: &HeaderMap) -> String {
     }
 }
 
-fn mcp_resource(issuer: &str) -> String {
+pub(crate) fn mcp_resource(issuer: &str) -> String {
     format!("{}/mcp", issuer.trim_end_matches('/'))
 }
 
@@ -2275,6 +2275,26 @@ pub enum OAuthReject {
 /// binding, the bound user, and the bot owner's liveness in one joined query so
 /// revocation cannot land between those decisions.
 pub fn resolve_oauth_credential(db: &DbPool, token: &str) -> Result<OAuthCredential, OAuthReject> {
+    resolve_oauth_credential_inner(db, token, None)
+}
+
+/// Resolve an OAuth bearer token for the MCP resource it is being presented
+/// to. The general resolver intentionally retains its legacy behavior for
+/// REST callers and old database rows; MCP must additionally require an
+/// exact RFC 8707 audience binding.
+pub fn resolve_oauth_credential_for_resource(
+    db: &DbPool,
+    token: &str,
+    expected_resource: &str,
+) -> Result<OAuthCredential, OAuthReject> {
+    resolve_oauth_credential_inner(db, token, Some(expected_resource))
+}
+
+fn resolve_oauth_credential_inner(
+    db: &DbPool,
+    token: &str,
+    expected_resource: Option<&str>,
+) -> Result<OAuthCredential, OAuthReject> {
     if !token.starts_with("lific_at_") {
         return Err(OAuthReject::Invalid);
     }
@@ -2294,6 +2314,7 @@ pub fn resolve_oauth_credential(db: &DbPool, token: &str) -> Result<OAuthCredent
         is_bot: Option<bool>,
         owner_id: Option<i64>,
         owner_is_active: Option<bool>,
+        resource: Option<String>,
     }
 
     let row = conn
@@ -2301,6 +2322,7 @@ pub fn resolve_oauth_credential(db: &DbPool, token: &str) -> Result<OAuthCredent
             "SELECT token.user_id,
                     user.id, user.username, user.display_name, user.is_admin,
                     user.is_active, user.is_bot, user.owner_id, owner.is_active
+                    , token.resource
              FROM oauth_tokens token
              LEFT JOIN users user ON user.id = token.user_id
              LEFT JOIN users owner ON owner.id = user.owner_id
@@ -2318,6 +2340,7 @@ pub fn resolve_oauth_credential(db: &DbPool, token: &str) -> Result<OAuthCredent
                     is_bot: row.get(6)?,
                     owner_id: row.get(7)?,
                     owner_is_active: row.get(8)?,
+                    resource: row.get(9)?,
                 })
             },
         )
@@ -2327,6 +2350,12 @@ pub fn resolve_oauth_credential(db: &DbPool, token: &str) -> Result<OAuthCredent
             OAuthReject::Unavailable
         })?
         .ok_or(OAuthReject::Invalid)?;
+
+    if let Some(expected_resource) = expected_resource
+        && row.resource.as_deref() != Some(expected_resource)
+    {
+        return Err(OAuthReject::Invalid);
+    }
 
     let Some(bound_user_id) = row.bound_user_id else {
         return Ok(OAuthCredential::LegacyUnbound);
