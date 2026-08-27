@@ -3894,7 +3894,9 @@ mod tests {
                     .uri("/device_authorization")
                     .header("content-type", "application/x-www-form-urlencoded")
                     .header("x-forwarded-for", "198.51.100.201")
-                    .body(axum::body::Body::from("client_name=New+source"))
+                    .body(axum::body::Body::from(
+                        "client_name=New+source&resource=https%3A%2F%2Fexample.com%2Fmcp",
+                    ))
                     .unwrap(),
             )
             .await

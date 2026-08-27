@@ -2310,6 +2310,16 @@ mod tests {
         token
     }
 
+    fn make_legacy_rest_oauth_token(pool: &db::DbPool, token: &str) {
+        pool.write()
+            .unwrap()
+            .execute(
+                "UPDATE oauth_tokens SET resource = NULL WHERE access_token = ?1",
+                params![sha256_hex(token.as_bytes())],
+            )
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn oauth_token_rest_request_resolves_to_correct_auth_user() {
         let pool = test_db();
@@ -2643,6 +2653,7 @@ mod tests {
         let pool = test_db();
         let (owner_id, bot_id) = owner_and_bot(&pool);
         let token = insert_oauth_token(&pool, "ownerdeact", Some(bot_id));
+        make_legacy_rest_oauth_token(&pool, &token);
 
         let (status, body) = echo_with_bearer(&pool, &token).await;
         assert_eq!(status, StatusCode::OK);
@@ -3110,6 +3121,7 @@ mod tests {
         // resolve it to first_admin — the operator bypass is "the first admin
         // is trusted," not credential-type-specific.)
         let token = insert_oauth_token(&pool, "legacy-unbound", None);
+        make_legacy_rest_oauth_token(&pool, &token);
 
         let app = gate_app(test_auth_state(&pool), pool.clone(), project);
         assert_eq!(
@@ -3422,6 +3434,7 @@ mod tests {
             .id
         };
         let token = insert_oauth_token(&pool, "bound-oauth", Some(user_id));
+        make_legacy_rest_oauth_token(&pool, &token);
 
         let body = identity_body(identity_echo_app(test_auth_state(&pool)), Some(&token)).await;
         assert_eq!(
@@ -3440,6 +3453,7 @@ mod tests {
         let pool = test_db();
         let admin_id = seed_admin(&pool, "admin");
         let token = insert_oauth_token(&pool, "legacy-unbound-id", None);
+        make_legacy_rest_oauth_token(&pool, &token);
 
         let body = identity_body(identity_echo_app(test_auth_state(&pool)), Some(&token)).await;
         assert_eq!(
@@ -3846,7 +3860,9 @@ mod tests {
     async fn oauth_transport_matches_between_actor_and_resolved_identity() {
         let pool = test_db();
         let uid = seed_user(&pool, "transportuser");
-        let token = insert_oauth_token(&pool, "transport", Some(uid));
+        let mcp_token = insert_oauth_token(&pool, "transport-mcp", Some(uid));
+        let rest_token = insert_oauth_token(&pool, "transport-rest", Some(uid));
+        make_legacy_rest_oauth_token(&pool, &rest_token);
 
         async fn probe(
             Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
@@ -3861,7 +3877,10 @@ mod tests {
             )
         }
 
-        for (uri, expected) in [("/mcp", "mcp|mcp"), ("/echo", "api|api")] {
+        for (uri, expected, token) in [
+            ("/mcp", "mcp|mcp", &mcp_token),
+            ("/echo", "api|api", &rest_token),
+        ] {
             let app = Router::new()
                 .route("/mcp", axum::routing::post(probe))
                 .route("/echo", axum::routing::post(probe))
