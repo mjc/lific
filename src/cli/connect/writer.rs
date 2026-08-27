@@ -185,9 +185,7 @@ fn sync_parent_dir(_dir: &Path) -> Result<(), WriteError> {
     {
         std::fs::File::open(_dir)
             .and_then(|dir| dir.sync_all())
-            .map_err(|e| {
-                WriteError::new(format!("failed to sync {}: {e}", _dir.display()))
-            })?;
+            .map_err(|e| WriteError::new(format!("failed to sync {}: {e}", _dir.display())))?;
     }
     Ok(())
 }
@@ -593,7 +591,7 @@ mod tests {
         let guard = tmp();
         let dir = guard.path().join("proj");
         let path = dir.join("opencode.json");
-        let entry = find_client("opencode").unwrap().compile(&remote());
+        let entry = find_client("opencode").unwrap().compile(&remote()).unwrap();
         let action = write(&path, Format::Json, &entry).unwrap();
         assert_eq!(action, Action::Created);
 
@@ -610,7 +608,7 @@ mod tests {
         let guard = tmp();
         let dir = guard.path().join("proj");
         let path = dir.join("opencode.json");
-        let entry = find_client("opencode").unwrap().compile(&remote());
+        let entry = find_client("opencode").unwrap().compile(&remote()).unwrap();
         write(&path, Format::Json, &entry).unwrap();
         assert_eq!(
             std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
@@ -635,7 +633,7 @@ mod tests {
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         let path = dir.join("opencode.json");
-        let entry = find_client("opencode").unwrap().compile(&remote());
+        let entry = find_client("opencode").unwrap().compile(&remote()).unwrap();
         write(&path, Format::Json, &entry).unwrap();
 
         assert_eq!(
@@ -663,7 +661,7 @@ mod tests {
         )
         .unwrap();
 
-        let entry = find_client("opencode").unwrap().compile(&remote());
+        let entry = find_client("opencode").unwrap().compile(&remote()).unwrap();
         let action = write(&path, Format::Json, &entry).unwrap();
         assert_eq!(action, Action::Updated);
 
@@ -692,7 +690,7 @@ mod tests {
         )
         .unwrap();
 
-        let entry = find_client("opencode").unwrap().compile(&remote());
+        let entry = find_client("opencode").unwrap().compile(&remote()).unwrap();
         write(&path, Format::Json, &entry).unwrap();
 
         let v: serde_json::Value =
@@ -713,7 +711,7 @@ mod tests {
         let original = "{\n  // my config\n  \"mcp\": {}\n}\n";
         std::fs::write(&path, original).unwrap();
 
-        let entry = find_client("opencode").unwrap().compile(&remote());
+        let entry = find_client("opencode").unwrap().compile(&remote()).unwrap();
         let err = write(&path, Format::Json, &entry).unwrap_err();
         assert!(err.manual_snippet.is_some(), "must hand back a snippet");
         let snippet = err.manual_snippet.unwrap();
@@ -732,7 +730,7 @@ mod tests {
             "# Codex config\nmodel = \"gpt-5\"\n\n[mcp_servers.other]\nurl = \"http://other\"\n";
         std::fs::write(&path, original).unwrap();
 
-        let entry = find_client("codex").unwrap().compile(&remote());
+        let entry = find_client("codex").unwrap().compile(&remote()).unwrap();
         let action = write(&path, Format::Toml, &entry).unwrap();
         assert_eq!(action, Action::Updated);
 
@@ -778,7 +776,7 @@ mod tests {
         let guard = tmp();
         let dir = guard.path().join("proj");
         let path = dir.join("config.toml");
-        let entry = find_client("codex").unwrap().compile(&remote());
+        let entry = find_client("codex").unwrap().compile(&remote()).unwrap();
         let action = write(&path, Format::Toml, &entry).unwrap();
         assert_eq!(action, Action::Created);
         let doc: toml_edit::DocumentMut = std::fs::read_to_string(&path).unwrap().parse().unwrap();
@@ -796,7 +794,7 @@ mod tests {
         let path = dir.join("config.toml");
         let original = "this is = = not valid toml [[[\n";
         std::fs::write(&path, original).unwrap();
-        let entry = find_client("codex").unwrap().compile(&remote());
+        let entry = find_client("codex").unwrap().compile(&remote()).unwrap();
         let err = write(&path, Format::Toml, &entry).unwrap_err();
         assert!(err.manual_snippet.is_some());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
@@ -814,7 +812,7 @@ mod tests {
         )
         .unwrap();
 
-        let entry = find_client("goose").unwrap().compile(&remote());
+        let entry = find_client("goose").unwrap().compile(&remote()).unwrap();
         let action = write(&path, Format::Yaml, &entry).unwrap();
         assert_eq!(action, Action::Updated);
 
@@ -856,7 +854,7 @@ mod tests {
         let path = dir.join("opencode.json");
         symlink(&target, &path).unwrap();
 
-        let entry = find_client("opencode").unwrap().compile(&remote());
+        let entry = find_client("opencode").unwrap().compile(&remote()).unwrap();
         let err = write(&path, Format::Json, &entry).unwrap_err();
         assert!(err.to_string().contains("symlink"), "{err}");
 
@@ -897,7 +895,7 @@ mod tests {
         let missing = dir.join("nowhere.json");
         symlink(&missing, &path).unwrap();
 
-        let entry = find_client("opencode").unwrap().compile(&remote());
+        let entry = find_client("opencode").unwrap().compile(&remote()).unwrap();
         assert!(write(&path, Format::Json, &entry).is_err());
         assert!(!missing.exists(), "must not materialize the link's target");
     }
@@ -914,7 +912,7 @@ mod tests {
         std::fs::write(&path, "model = \"gpt-5\"\n").unwrap();
         std::fs::hard_link(&path, dir.join("config.toml.bak")).unwrap();
 
-        let entry = find_client("codex").unwrap().compile(&remote());
+        let entry = find_client("codex").unwrap().compile(&remote()).unwrap();
         let err = write(&path, Format::Toml, &entry).unwrap_err();
         assert!(err.to_string().contains("hard-linked"), "{err}");
         assert_eq!(
@@ -930,7 +928,7 @@ mod tests {
     fn update_preserves_the_mode_of_the_file_it_read() {
         use std::os::unix::fs::PermissionsExt;
 
-        let entry = find_client("codex").unwrap().compile(&remote());
+        let entry = find_client("codex").unwrap().compile(&remote()).unwrap();
         for mode in [0o600, 0o640, 0o644] {
             let guard = tmp();
             let dir = guard.path().join("proj");
@@ -958,7 +956,7 @@ mod tests {
         let guard = tmp();
         let dir = guard.path().join("proj");
         let path = dir.join("opencode.json");
-        let entry = find_client("opencode").unwrap().compile(&remote());
+        let entry = find_client("opencode").unwrap().compile(&remote()).unwrap();
         let rendered = render(&path, Format::Json, &entry).unwrap();
         assert_eq!(rendered.action, Action::Created);
         assert!(rendered.contents.contains("lific"));
