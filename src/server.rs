@@ -325,7 +325,7 @@ fn build_app_with_store(
                 request
                     .extensions_mut()
                     .insert(mcp::McpRequestContext::new(auth_user, issue_links));
-                mcp_service.handle(request).await.into_response()
+                handle_mcp_http_request(&mcp_service, request).await
             }),
         )
         .layer(axum::Extension(realtime.clone()))
@@ -683,6 +683,33 @@ fn build_global_cors(cors_origins: &[String]) -> CorsLayer {
     }
 }
 
+/// Keep the retained legacy session transport from leaking into an explicit
+/// July request. Rewriting only the method lets rmcp run its own Host/Origin
+/// validation before producing the 405 response; legacy GET/DELETE requests
+/// still reach its session implementation unchanged.
+async fn handle_mcp_http_request(
+    service: &StreamableHttpService<mcp::LificMcp, LocalSessionManager>,
+    mut request: Request<Body>,
+) -> axum::response::Response {
+    let july_non_post = request.method() != Method::POST
+        && request
+            .headers()
+            .get("mcp-protocol-version")
+            .and_then(|value| value.to_str().ok())
+            == Some("2026-07-28");
+    if july_non_post {
+        *request.method_mut() = Method::PATCH;
+    }
+
+    let mut response = service.handle(request).await.into_response();
+    if july_non_post && response.status() == StatusCode::METHOD_NOT_ALLOWED {
+        response
+            .headers_mut()
+            .insert(header::ALLOW, HeaderValue::from_static("POST"));
+    }
+    response
+}
+
 /// Build the authless MCP router mounted at `/mcp/<token>`.
 ///
 /// This endpoint deliberately bypasses the OAuth/API-key auth middleware: the
@@ -729,7 +756,7 @@ fn build_authless_mcp_router(
             request
                 .extensions_mut()
                 .insert(mcp::McpRequestContext::new(user.clone(), issue_links));
-            service.handle(request).await.into_response()
+            handle_mcp_http_request(&service, request).await
         }),
     )
 }
@@ -1134,8 +1161,11 @@ mod authless_mcp_tests {
     use std::convert::Infallible;
 
     use axum::body::Bytes;
+    use axum::http::HeaderMap;
     use http_body_util::BodyExt;
     use tower::ServiceExt;
+
+    const PATH_TOKEN: &str = "contract-path-token";
 
     fn legacy_initialize_body() -> Body {
         let body = serde_json::json!({
@@ -1200,6 +1230,102 @@ mod authless_mcp_tests {
             )
             .await
             .unwrap()
+    }
+
+    fn modern_meta(version: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "io.modelcontextprotocol/protocolVersion": version,
+            "io.modelcontextprotocol/clientInfo": {
+                "name": "lific-http-contract-test",
+                "version": "1"
+            },
+            "io.modelcontextprotocol/clientCapabilities": {}
+        })
+    }
+
+    fn discover_body(version: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "server/discover",
+            "params": {"_meta": modern_meta(version)}
+        })
+    }
+
+    fn tools_call_body() -> serde_json::Value {
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "search",
+                "arguments": {"query": "lific-http-contract-no-match"},
+                "_meta": modern_meta(serde_json::json!("2026-07-28"))
+            }
+        })
+    }
+
+    async fn post_mcp(
+        app: Router,
+        uri: &str,
+        key: Option<&str>,
+        body: &serde_json::Value,
+        headers: &[(&str, &str)],
+    ) -> (StatusCode, HeaderMap, Vec<u8>) {
+        let mut request = Request::builder()
+            .method(Method::POST)
+            .uri(uri)
+            .header("host", "localhost")
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream");
+        if let Some(key) = key {
+            request = request.header("authorization", format!("Bearer {key}"));
+        }
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        let response = app
+            .oneshot(
+                request
+                    .body(Body::from(serde_json::to_vec(body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let headers = response.headers().clone();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        (status, headers, body.to_vec())
+    }
+
+    fn contract_app() -> (Router, String) {
+        let pool = db::open_memory().unwrap();
+        let manager = auth::create_key_manager().unwrap();
+        let key = auth::create_api_key(&pool, &manager, "mcp-contract", None).unwrap();
+        let mut cfg = Config::default();
+        cfg.server.host = "127.0.0.1".into();
+        cfg.server.public_url = Some("http://localhost".into());
+        cfg.server.mcp_path_token = Some(PATH_TOKEN.into());
+        let app = build_app(
+            &cfg,
+            pool,
+            manager,
+            realtime::RealtimeHub::new(),
+            Arc::from([]),
+        );
+        (app, key)
+    }
+
+    fn assert_jsonrpc_error(
+        label: &str,
+        status: StatusCode,
+        body: &[u8],
+        expected_code: i64,
+    ) {
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{label}: {body:?}");
+        let value: serde_json::Value = serde_json::from_slice(body)
+            .unwrap_or_else(|error| panic!("{label}: non-JSON error body: {error}: {body:?}"));
+        assert_eq!(value["error"]["code"], expected_code, "{label}: {value}");
     }
 
     /// The whole point: a request to /mcp/<token> with NO Authorization header
@@ -1525,5 +1651,269 @@ mod authless_mcp_tests {
 
         let res = router.oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+    #[tokio::test]
+    async fn july_header_contract_matches_on_authenticated_and_path_token_routes() {
+        let (app, key) = contract_app();
+        let endpoints = [
+            ("authenticated", "/mcp", Some(key.as_str())),
+            ("path-token", "/mcp/contract-path-token", None),
+        ];
+        let july = serde_json::json!("2026-07-28");
+        let failures = [
+            (
+                "missing protocol header",
+                discover_body(july.clone()),
+                vec![("mcp-method", "server/discover")],
+                -32020,
+            ),
+            (
+                "malformed protocol metadata",
+                discover_body(serde_json::json!(42)),
+                vec![
+                    ("mcp-protocol-version", "2026-07-28"),
+                    ("mcp-method", "server/discover"),
+                ],
+                -32602,
+            ),
+            (
+                "unsupported known protocol",
+                discover_body(serde_json::json!("2025-11-25")),
+                vec![
+                    ("mcp-protocol-version", "2025-11-25"),
+                    ("mcp-method", "server/discover"),
+                ],
+                -32022,
+            ),
+            (
+                "mismatched protocol header",
+                discover_body(serde_json::json!("2025-11-25")),
+                vec![
+                    ("mcp-protocol-version", "2026-07-28"),
+                    ("mcp-method", "server/discover"),
+                ],
+                -32020,
+            ),
+            (
+                "missing method header",
+                discover_body(july.clone()),
+                vec![("mcp-protocol-version", "2026-07-28")],
+                -32020,
+            ),
+            (
+                "malformed method header",
+                discover_body(july.clone()),
+                vec![
+                    ("mcp-protocol-version", "2026-07-28"),
+                    ("mcp-method", "=?base64?%%%?="),
+                ],
+                -32020,
+            ),
+            (
+                "mismatched method header",
+                discover_body(july.clone()),
+                vec![
+                    ("mcp-protocol-version", "2026-07-28"),
+                    ("mcp-method", "tools/list"),
+                ],
+                -32020,
+            ),
+            (
+                "missing name header",
+                tools_call_body(),
+                vec![
+                    ("mcp-protocol-version", "2026-07-28"),
+                    ("mcp-method", "tools/call"),
+                ],
+                -32020,
+            ),
+            (
+                "malformed name header",
+                tools_call_body(),
+                vec![
+                    ("mcp-protocol-version", "2026-07-28"),
+                    ("mcp-method", "tools/call"),
+                    ("mcp-name", "=?base64?%%%?="),
+                ],
+                -32020,
+            ),
+            (
+                "mismatched name header",
+                tools_call_body(),
+                vec![
+                    ("mcp-protocol-version", "2026-07-28"),
+                    ("mcp-method", "tools/call"),
+                    ("mcp-name", "list_issues"),
+                ],
+                -32020,
+            ),
+        ];
+
+        for (endpoint, uri, authorization) in endpoints {
+            for (case, body, headers, expected_code) in &failures {
+                let label = format!("{endpoint}: {case}");
+                let (status, _, response_body) = post_mcp(
+                    app.clone(),
+                    uri,
+                    authorization,
+                    body,
+                    headers,
+                )
+                .await;
+                assert_jsonrpc_error(&label, status, &response_body, *expected_code);
+            }
+
+            for (method, name, body) in [
+                ("server/discover", None, discover_body(july.clone())),
+                (
+                    "tools/list",
+                    None,
+                    serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": 3,
+                        "method": "tools/list",
+                        "params": {"_meta": modern_meta(july.clone())}
+                    }),
+                ),
+                ("tools/call", Some("search"), tools_call_body()),
+            ] {
+                let mut request_headers = vec![
+                    ("mcp-protocol-version", "2026-07-28"),
+                    ("mcp-method", method),
+                ];
+                if let Some(name) = name {
+                    request_headers.push(("mcp-name", name));
+                }
+                let (status, response_headers, response_body) = post_mcp(
+                    app.clone(),
+                    uri,
+                    authorization,
+                    &body,
+                    &request_headers,
+                )
+                .await;
+                let value: serde_json::Value = serde_json::from_slice(&response_body).unwrap();
+                assert_eq!(status, StatusCode::OK, "{endpoint}: {method}: {value}");
+                assert_eq!(
+                    value["result"]["resultType"],
+                    "complete",
+                    "{endpoint}: {method}: {value}"
+                );
+                assert!(
+                    !response_headers.contains_key("mcp-session-id"),
+                    "{endpoint}: {method} leaked a legacy session"
+                );
+                assert!(
+                    !response_headers.contains_key("last-event-id"),
+                    "{endpoint}: {method} leaked replay state"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn incomplete_request_does_not_block_an_independent_mcp_request() {
+        let pool = db::open_memory().unwrap();
+        let token = "independent-request-token";
+        let router = build_authless_mcp_router(
+            pool,
+            token,
+            None,
+            vec!["localhost".into()],
+            crate::mcp::default_allowed_origins(),
+            None,
+            realtime::RealtimeHub::new(),
+        );
+
+        let (body_polled_tx, body_polled_rx) = tokio::sync::oneshot::channel();
+        let mut body_polled_tx = Some(body_polled_tx);
+        let stalled_body = futures_util::stream::poll_fn(move |_| {
+            if let Some(sender) = body_polled_tx.take() {
+                let _ = sender.send(());
+            }
+            std::task::Poll::<Option<Result<Bytes, Infallible>>>::Pending
+        });
+        let stalled_request = Request::builder()
+            .method(Method::POST)
+            .uri(format!("/mcp/{token}"))
+            .header("host", "localhost")
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream")
+            .body(Body::from_stream(stalled_body))
+            .unwrap();
+        let stalled = tokio::spawn(router.clone().oneshot(stalled_request));
+        body_polled_rx.await.expect("server polled stalled body");
+
+        let valid_request = Request::builder()
+            .method(Method::POST)
+            .uri(format!("/mcp/{token}"))
+            .header("host", "localhost")
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream")
+            .body(legacy_initialize_body())
+            .unwrap();
+        let response = tokio::time::timeout(
+            std::time::Duration::from_millis(250),
+            router.oneshot(valid_request),
+        )
+        .await
+        .expect("an incomplete request must not serialize independent MCP traffic")
+        .unwrap();
+        stalled.abort();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn july_requests_do_not_expose_legacy_get_or_delete_routes() {
+        let (app, key) = contract_app();
+        for (endpoint, uri, authorization) in [
+            ("authenticated", "/mcp", Some(key.as_str())),
+            ("path-token", "/mcp/contract-path-token", None),
+        ] {
+            for method in [Method::GET, Method::DELETE] {
+                let mut request = Request::builder()
+                    .method(method.clone())
+                    .uri(uri)
+                    .header("host", "localhost")
+                    .header("mcp-protocol-version", "2026-07-28");
+                if let Some(key) = authorization {
+                    request = request.header("authorization", format!("Bearer {key}"));
+                }
+                let response = app
+                    .clone()
+                    .oneshot(request.body(Body::empty()).unwrap())
+                    .await
+                    .unwrap();
+
+                assert_eq!(
+                    response.status(),
+                    StatusCode::METHOD_NOT_ALLOWED,
+                    "{endpoint}: {method} is not part of the July transport"
+                );
+                assert_eq!(response.headers().get(header::ALLOW).unwrap(), "POST");
+            }
+
+            let mut invalid_origin = Request::builder()
+                .method(Method::GET)
+                .uri(uri)
+                .header("host", "localhost")
+                .header("origin", "https://evil.example")
+                .header("mcp-protocol-version", "2026-07-28");
+            if let Some(key) = authorization {
+                invalid_origin =
+                    invalid_origin.header("authorization", format!("Bearer {key}"));
+            }
+            let response = app
+                .clone()
+                .oneshot(invalid_origin.body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::FORBIDDEN,
+                "{endpoint}: Origin validation must run before method gating"
+            );
+        }
     }
 }
