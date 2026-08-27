@@ -31,10 +31,13 @@ The repository includes `scripts/mcp-conformance.sh` for the official July
 scripts/mcp-conformance.sh http://127.0.0.1:3456/mcp
 ```
 
-The script pins the conformance runner and runs every available server
-scenario for `2026-07-28`, including the stateless, header-validation, DNS
-rebinding, and caching checks. Its output is the conformance evidence; the
-suite's optional scenarios may be reported separately by the runner.
+The script pins the conformance runner and runs the July scenarios applicable
+to Lific's tools-only server surface: stateless requests, tool listing,
+completion, protocol errors, DNS rebinding, and HTTP header validation. The
+four narrowly baselined stateless checks require diagnostic fixture tools that
+Lific does not expose; every other failure remains fatal. Optional MCP
+capabilities such as prompts, resources, elicitation, sampling, and tasks are
+not advertised by Lific and are not included in this server run.
 
 ## API key authentication
 
@@ -64,10 +67,10 @@ OAuth-capable MCP clients can connect to the endpoint URL and complete the autho
 Lific prefers Client ID Metadata Documents: a client can use an HTTPS URL with a
 path as its `client_id`, and Lific validates the fetched JSON metadata and exact
 redirect URI before approval. Dynamic client registration at `/oauth/register`
-remains the compatibility path. Registered redirect URIs must be absolute HTTP
-or HTTPS URLs. The July `resource` indicator is required in both authorization
-and token requests, and issued access tokens are accepted only for the exact MCP
-resource they name.
+remains the compatibility path. Registered redirect URIs must use HTTPS, or HTTP
+on localhost/loopback for native clients. The July `resource` indicator is
+required in both authorization and token requests, and issued access tokens are
+accepted only for the exact MCP resource they name.
 
 Both grants are approved from a signed-in browser, and only from one: an OAuth access token cannot approve an authorization request or a device code. The browser session must also have signed in within the last 15 minutes, because approving a connection mints a 30-day credential for the tool.
 
