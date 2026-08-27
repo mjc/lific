@@ -269,7 +269,8 @@ fn build_app_with_store(
         required: cfg.auth.required,
     };
 
-    let mcp_config = mcp::streamable_http_config(mcp_allowed_hosts.clone());
+    let mcp_config =
+        mcp::streamable_http_config(mcp_allowed_hosts.clone(), mcp_allowed_origins.clone());
 
     let mcp_service = StreamableHttpService::new(
         move || {
@@ -703,7 +704,7 @@ fn build_authless_mcp_router(
     realtime: realtime::RealtimeHub,
 ) -> Router {
     let allowed_hosts_for_links = allowed_hosts.clone();
-    let config = mcp::streamable_http_config(allowed_hosts);
+    let config = mcp::streamable_http_config(allowed_hosts, allowed_origins);
     let service = StreamableHttpService::new(
         move || {
             Ok(mcp::LificMcp::with_realtime(
@@ -1136,7 +1137,7 @@ mod authless_mcp_tests {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
-    fn initialize_body() -> Body {
+    fn legacy_initialize_body() -> Body {
         let body = serde_json::json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -1202,7 +1203,7 @@ mod authless_mcp_tests {
     }
 
     /// The whole point: a request to /mcp/<token> with NO Authorization header
-    /// drives a full MCP `initialize` and returns 200. This is the path that
+    /// drives a full legacy MCP `initialize` and returns 200. This is the path that
     /// works around claude.ai web's broken OAuth connector flow.
     #[tokio::test]
     async fn authless_path_serves_mcp_without_auth() {
@@ -1224,7 +1225,7 @@ mod authless_mcp_tests {
             .header("host", "localhost")
             .header("content-type", "application/json")
             .header("accept", "application/json, text/event-stream")
-            .body(initialize_body())
+            .body(legacy_initialize_body())
             .unwrap();
 
         let res = router.clone().oneshot(req).await.unwrap();
@@ -1363,7 +1364,7 @@ mod authless_mcp_tests {
             .header("host", "localhost")
             .header("content-type", "application/json")
             .header("accept", "application/json, text/event-stream")
-            .body(initialize_body())
+            .body(legacy_initialize_body())
             .unwrap();
 
         let res = router.oneshot(req).await.unwrap();
@@ -1496,5 +1497,33 @@ mod authless_mcp_tests {
             let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
             assert_eq!(value["error"]["code"], -32601, "method: {method}");
         }
+    }
+
+    #[tokio::test]
+    async fn authless_path_rejects_disallowed_origin() {
+        let pool = db::open_memory().unwrap();
+        let token = "origin-token-abcdef";
+        let router = build_authless_mcp_router(
+            pool,
+            token,
+            None,
+            vec!["localhost".into()],
+            crate::mcp::default_allowed_origins(),
+            None,
+            realtime::RealtimeHub::new(),
+        );
+
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri(format!("/mcp/{token}"))
+            .header("host", "localhost")
+            .header("origin", "https://evil.example")
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream")
+            .body(legacy_initialize_body())
+            .unwrap();
+
+        let res = router.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
     }
 }

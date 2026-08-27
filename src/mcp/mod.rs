@@ -157,12 +157,21 @@ impl McpHttpPolicy {
 #[must_use]
 pub(crate) fn streamable_http_config(
     allowed_hosts: impl IntoIterator<Item = impl Into<String>>,
+    allowed_origins: impl IntoIterator<Item = impl Into<String>>,
 ) -> StreamableHttpServerConfig {
     StreamableHttpServerConfig::default()
         .with_legacy_session_mode(true)
         .with_json_response(true)
         .with_stateless_protocol_metadata_required(true)
         .with_allowed_hosts(allowed_hosts)
+        .with_allowed_origins(allowed_origins)
+}
+
+pub(crate) fn default_allowed_origins() -> Vec<String> {
+    ["http://localhost", "http://127.0.0.1", "http://[::1]"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
 }
 
 /// Start a stdio server without consuming the first request as an
@@ -856,11 +865,22 @@ mod tests {
 
     #[test]
     fn streamable_http_policy_requires_stateless_metadata_and_keeps_legacy_sessions() {
-        let config = streamable_http_config(["localhost"]);
+        let config = streamable_http_config(["localhost"], default_allowed_origins());
 
         assert!(config.stateless_protocol_metadata_required);
         assert!(config.legacy_session_mode);
         assert!(config.json_response);
+    }
+
+    #[test]
+    fn streamable_http_policy_validates_origins() {
+        let config = streamable_http_config(["localhost"], default_allowed_origins());
+
+        assert!(!config.allowed_origins.is_empty());
+        assert!(!config
+            .allowed_origins
+            .iter()
+            .any(|origin| origin == "https://evil.example"));
     }
 
     #[test]
