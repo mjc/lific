@@ -254,6 +254,160 @@ mod tests {
         project_id
     }
 
+    // ── LIF-441: `expected_seq` as an optimistic-concurrency precondition ──
+
+    async fn put(
+        app: &axum::Router,
+        uri: &str,
+        body: serde_json::Value,
+    ) -> axum::response::Response {
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    /// Create one page and hand back (id, its seq).
+    async fn seed_page_with_seq(app: &axum::Router, project_id: i64, title: &str) -> (i64, i64) {
+        let created = parse_json(
+            json_post(
+                app,
+                "/api/pages",
+                serde_json::json!({"project_id": project_id, "title": title}),
+            )
+            .await,
+        )
+        .await;
+        (
+            created["id"].as_i64().unwrap(),
+            created["seq"].as_i64().unwrap(),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_stale_expected_seq_is_refused_with_the_current_page() {
+        let app = test_app();
+        let pid = seed_project_with_labels(&app).await;
+        let (id, stale_seq) = seed_page_with_seq(&app, pid, "Contended").await;
+
+        put(
+            &app,
+            &format!("/api/pages/{id}"),
+            serde_json::json!({"content": "someone else got here first"}),
+        )
+        .await;
+
+        let resp = put(
+            &app,
+            &format!("/api/pages/{id}"),
+            serde_json::json!({"content": "clobber", "expected_seq": stale_seq}),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        let body = parse_json(resp).await;
+        assert_eq!(body["code"], "update_conflict");
+        assert!(
+            body["error"].as_str().unwrap().contains("TST-DOC-1"),
+            "the message names the entity: {body}"
+        );
+
+        let fresh = parse_json(json_get(&app, &format!("/api/pages/{id}")).await).await;
+        assert_eq!(body["current"], fresh);
+        assert_eq!(fresh["content"], "someone else got here first");
+    }
+
+    #[tokio::test]
+    async fn a_fresh_expected_seq_updates_the_page_and_returns_the_new_seq() {
+        let app = test_app();
+        let pid = seed_project_with_labels(&app).await;
+        let (id, seq) = seed_page_with_seq(&app, pid, "Uncontended").await;
+
+        let resp = put(
+            &app,
+            &format!("/api/pages/{id}"),
+            serde_json::json!({"title": "Edited", "expected_seq": seq}),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let updated = parse_json(resp).await;
+        assert_eq!(updated["title"], "Edited");
+        assert!(updated["seq"].as_i64().unwrap() > seq);
+    }
+
+    #[tokio::test]
+    async fn omitting_expected_seq_keeps_page_updates_last_writer_wins() {
+        let app = test_app();
+        let pid = seed_project_with_labels(&app).await;
+        let (id, _) = seed_page_with_seq(&app, pid, "Unguarded").await;
+
+        put(
+            &app,
+            &format!("/api/pages/{id}"),
+            serde_json::json!({"content": "first"}),
+        )
+        .await;
+        let resp = put(
+            &app,
+            &format!("/api/pages/{id}"),
+            serde_json::json!({"content": "second"}),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(parse_json(resp).await["content"], "second");
+    }
+
+    #[tokio::test]
+    async fn a_deleted_page_is_a_404_even_with_a_precondition() {
+        let app = test_app();
+        let pid = seed_project_with_labels(&app).await;
+        let (id, seq) = seed_page_with_seq(&app, pid, "Doomed").await;
+        json_delete(&app, &format!("/api/pages/{id}")).await;
+
+        for expected in [seq, seq + 999] {
+            let resp = put(
+                &app,
+                &format!("/api/pages/{id}"),
+                serde_json::json!({"title": "Ghost", "expected_seq": expected}),
+            )
+            .await;
+            assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        }
+    }
+
+    /// Regression guard for the LIF-441 partial-update audit: page updates
+    /// must only write the fields the caller sent.
+    #[tokio::test]
+    async fn field_disjoint_page_updates_without_preconditions_both_land() {
+        let app = test_app();
+        let pid = seed_project_with_labels(&app).await;
+        let (id, _) = seed_page_with_seq(&app, pid, "Shared").await;
+
+        put(
+            &app,
+            &format!("/api/pages/{id}"),
+            serde_json::json!({"content": "body text"}),
+        )
+        .await;
+        put(
+            &app,
+            &format!("/api/pages/{id}"),
+            serde_json::json!({"status": "active"}),
+        )
+        .await;
+
+        let page = parse_json(json_get(&app, &format!("/api/pages/{id}")).await).await;
+        assert_eq!(page["content"], "body text");
+        assert_eq!(page["status"], "active");
+        assert_eq!(page["title"], "Shared");
+    }
+
     // ── LIF-438: delete is a tombstone, restore undoes it ────
 
     #[tokio::test]

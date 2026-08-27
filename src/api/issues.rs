@@ -412,6 +412,157 @@ mod tests {
         serde_json::from_slice(&bytes).unwrap()
     }
 
+    // ── LIF-441: `expected_seq` as an optimistic-concurrency precondition ──
+
+    /// Create one issue and hand back (id, its seq).
+    async fn seed_issue_with_seq(app: &axum::Router, project_id: i64, title: &str) -> (i64, i64) {
+        let created = body_of(
+            json_post(
+                app,
+                "/api/issues",
+                serde_json::json!({"project_id": project_id, "title": title}),
+            )
+            .await,
+        )
+        .await;
+        (
+            created["id"].as_i64().unwrap(),
+            created["seq"].as_i64().unwrap(),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_stale_expected_seq_is_refused_with_the_current_issue() {
+        let app = test_app();
+        let (project_id, _) = seed_project(&app).await;
+        let (id, stale_seq) = seed_issue_with_seq(&app, project_id, "Contended").await;
+
+        // Somebody else writes first, moving the seq past what we hold.
+        json_put(
+            &app,
+            &format!("/api/issues/{id}"),
+            serde_json::json!({"status": "active"}),
+        )
+        .await;
+
+        let resp = json_put(
+            &app,
+            &format!("/api/issues/{id}"),
+            serde_json::json!({"title": "Clobbered", "expected_seq": stale_seq}),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        let body = body_of(resp).await;
+        assert_eq!(body["code"], "update_conflict");
+        assert!(
+            body["error"].as_str().unwrap().contains("TST-1"),
+            "the message names the entity: {body}"
+        );
+
+        // `current` is exactly what a fresh GET returns, so the caller can
+        // merge from this response alone — no second round trip.
+        let fresh = body_of(json_get(&app, &format!("/api/issues/{id}")).await).await;
+        assert_eq!(body["current"], fresh);
+        assert_eq!(
+            fresh["title"], "Contended",
+            "the refused write landed nowhere"
+        );
+        assert_eq!(fresh["status"], "active");
+    }
+
+    #[tokio::test]
+    async fn a_fresh_expected_seq_lets_the_update_through_and_returns_the_new_seq() {
+        let app = test_app();
+        let (project_id, _) = seed_project(&app).await;
+        let (id, seq) = seed_issue_with_seq(&app, project_id, "Uncontended").await;
+
+        let resp = json_put(
+            &app,
+            &format!("/api/issues/{id}"),
+            serde_json::json!({"title": "Edited", "expected_seq": seq}),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let updated = body_of(resp).await;
+        assert_eq!(updated["title"], "Edited");
+        assert!(
+            updated["seq"].as_i64().unwrap() > seq,
+            "the response carries the new seq the next precondition should use"
+        );
+    }
+
+    #[tokio::test]
+    async fn omitting_expected_seq_keeps_last_writer_wins() {
+        let app = test_app();
+        let (project_id, _) = seed_project(&app).await;
+        let (id, _) = seed_issue_with_seq(&app, project_id, "Unguarded").await;
+
+        json_put(
+            &app,
+            &format!("/api/issues/{id}"),
+            serde_json::json!({"status": "active"}),
+        )
+        .await;
+        // Stale by any measure, but no precondition was asked for.
+        let resp = json_put(
+            &app,
+            &format!("/api/issues/{id}"),
+            serde_json::json!({"title": "Later writer"}),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(body_of(resp).await["title"], "Later writer");
+    }
+
+    /// A tombstone is invisible, and it stays invisible: the precondition
+    /// never gets a chance to turn a 404 into a 409.
+    #[tokio::test]
+    async fn a_deleted_issue_is_a_404_even_with_a_precondition() {
+        let app = test_app();
+        let (project_id, _) = seed_project(&app).await;
+        let (id, seq) = seed_issue_with_seq(&app, project_id, "Doomed").await;
+        json_delete(&app, &format!("/api/issues/{id}")).await;
+
+        for expected in [seq, seq + 999] {
+            let resp = json_put(
+                &app,
+                &format!("/api/issues/{id}"),
+                serde_json::json!({"title": "Ghost", "expected_seq": expected}),
+            )
+            .await;
+            assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        }
+    }
+
+    /// Regression guard for the partial-update contract LIF-441 audited:
+    /// two writers touching different fields without preconditions must both
+    /// land. If an update ever started writing fields the caller omitted,
+    /// the second write here would revert the first.
+    #[tokio::test]
+    async fn field_disjoint_updates_without_preconditions_both_land() {
+        let app = test_app();
+        let (project_id, _) = seed_project(&app).await;
+        let (id, _) = seed_issue_with_seq(&app, project_id, "Shared").await;
+
+        json_put(
+            &app,
+            &format!("/api/issues/{id}"),
+            serde_json::json!({"status": "active"}),
+        )
+        .await;
+        json_put(
+            &app,
+            &format!("/api/issues/{id}"),
+            serde_json::json!({"priority": "high"}),
+        )
+        .await;
+
+        let issue = body_of(json_get(&app, &format!("/api/issues/{id}")).await).await;
+        assert_eq!(issue["status"], "active");
+        assert_eq!(issue["priority"], "high");
+        assert_eq!(issue["title"], "Shared");
+    }
+
     #[tokio::test]
     async fn deleted_issue_is_gone_from_every_read_surface() {
         let app = test_app();

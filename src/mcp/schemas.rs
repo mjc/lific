@@ -126,6 +126,10 @@ pub struct UpdateIssueInput {
     pub start_date: Option<String>,
     #[schemars(description = "New target/due date (ISO 8601 date, e.g. 2026-06-15)")]
     pub target_date: Option<String>,
+    #[schemars(
+        description = "Optional concurrency check: the 'seq' you last read for this issue. The update is refused if the issue has changed since. Omit for last-writer-wins."
+    )]
+    pub expected_seq: Option<i64>,
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -228,6 +232,10 @@ pub struct UpdatePageInput {
     pub pinned: Option<bool>,
     #[schemars(description = "Replace labels; [] clears all (project-scoped)")]
     pub labels: Option<Vec<String>>,
+    #[schemars(
+        description = "Optional concurrency check: the 'seq' you last read for this page. The update is refused if the page has changed since. Omit for last-writer-wins."
+    )]
+    pub expected_seq: Option<i64>,
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]

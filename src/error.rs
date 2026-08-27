@@ -20,6 +20,19 @@ pub enum LificError {
     #[error("Conflict: {0}")]
     Conflict(String),
 
+    /// LIF-441: an `expected_seq` precondition that no longer holds. The
+    /// caller read the entity at one `seq`, someone else wrote it since, and
+    /// applying this update would silently clobber that write.
+    ///
+    /// Distinct from [`LificError::Conflict`] because it carries `current`:
+    /// the entity as it stands now, in exactly the shape the GET endpoint
+    /// returns, so a client can merge and retry without a second round trip.
+    #[error("{message}")]
+    UpdateConflict {
+        message: String,
+        current: Box<serde_json::Value>,
+    },
+
     #[error("Too many requests: {0}")]
     TooManyRequests(String),
 
@@ -40,6 +53,55 @@ pub enum LificError {
 
     #[error("Internal error: {0}")]
     Internal(String),
+}
+
+impl LificError {
+    /// Build the LIF-441 precondition failure for `entity` (an identifier the
+    /// caller recognizes, e.g. `LIF-441` or `LIF-DOC-2`).
+    ///
+    /// `current` is serialized here rather than by each caller so the body
+    /// under `current` is always the entity's own JSON representation, the
+    /// same one `GET` serves.
+    pub fn update_conflict<T: serde::Serialize>(
+        entity: &str,
+        expected: i64,
+        actual: i64,
+        current: &T,
+    ) -> LificError {
+        match serde_json::to_value(current) {
+            Ok(current) => LificError::UpdateConflict {
+                message: format!(
+                    "{entity} has changed since seq {expected} (current seq {actual}); \
+                     re-read it, merge your change, and retry"
+                ),
+                current: Box::new(current),
+            },
+            Err(error) => LificError::Internal(format!(
+                "failed to serialize conflicting {entity}: {error}"
+            )),
+        }
+    }
+
+    /// A one-line digest of the conflicting entity for text transports (MCP),
+    /// which get no structured `current` body to read. Only the fields an
+    /// agent needs to decide what to do: whatever of title, status, priority
+    /// and updated_at the entity actually has.
+    pub fn conflict_summary(current: &serde_json::Value) -> String {
+        let fields: Vec<String> = ["title", "status", "priority", "updated_at"]
+            .into_iter()
+            .filter_map(|field| {
+                let value = current.get(field)?;
+                if value.is_null() {
+                    return None;
+                }
+                Some(match value.as_str() {
+                    Some(text) => format!("{field}: {text}"),
+                    None => format!("{field}: {value}"),
+                })
+            })
+            .collect();
+        fields.join(", ")
+    }
 }
 
 /// A GitHub import that hit a deliberate ceiling is the caller's problem and
@@ -70,6 +132,7 @@ impl IntoResponse for LificError {
             LificError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
             LificError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg.clone()),
             LificError::Conflict(msg) => (StatusCode::CONFLICT, msg.clone()),
+            LificError::UpdateConflict { message, .. } => (StatusCode::CONFLICT, message.clone()),
             LificError::TooManyRequests(msg) => (StatusCode::TOO_MANY_REQUESTS, msg.clone()),
             LificError::PayloadTooLarge(msg) => (StatusCode::PAYLOAD_TOO_LARGE, msg.clone()),
             LificError::Unavailable(msg) => (StatusCode::SERVICE_UNAVAILABLE, msg.clone()),
@@ -82,7 +145,17 @@ impl IntoResponse for LificError {
             }
         };
 
-        let body = json!({ "error": message });
+        let body = match &self {
+            // LIF-441: the standard `error` field, plus a machine-readable
+            // code and the entity's current state so a client can resolve the
+            // conflict from this response alone.
+            LificError::UpdateConflict { current, .. } => json!({
+                "error": message,
+                "code": "update_conflict",
+                "current": current.as_ref(),
+            }),
+            _ => json!({ "error": message }),
+        };
         let mut response = (status, axum::Json(body)).into_response();
         if matches!(self, LificError::Unavailable(_)) {
             // Whatever holds the store (a backup, a restore) is measured in

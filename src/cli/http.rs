@@ -439,6 +439,9 @@ impl HttpBackend {
                     start_date: None,
                     target_date: None,
                     labels: owned_labels(labels.as_deref()),
+                    // LIF-441: the CLI has no read-modify-write cycle to
+                    // guard, so it stays on last-writer-wins.
+                    expected_seq: None,
                 };
                 self.send_json(Method::PUT, &format!("/api/issues/{id}"), &body)
                     .await
@@ -566,6 +569,8 @@ impl HttpBackend {
                     status: None,
                     pinned: None,
                     labels: owned_labels(labels.as_deref()),
+                    // LIF-441: see the issue path.
+                    expected_seq: None,
                 };
                 self.send_json(Method::PUT, &format!("/api/pages/{id}"), &body)
                     .await
@@ -2792,6 +2797,7 @@ mod tests {
             start_date: None,
             target_date: None,
             labels: None,
+            expected_seq: None,
         }
     }
 

@@ -435,6 +435,18 @@ pub(crate) fn sanitize_error(error: crate::error::LificError) -> String {
             tracing::error!(error = %message, "internal error");
             "internal server error".to_string()
         }
+        // LIF-441: REST hands the whole conflicting entity back under
+        // `current`; an agent gets a one-line digest instead. Enough to see
+        // what changed and decide, without spending its context on a body it
+        // can re-read with one tool call if it needs the rest.
+        LificError::UpdateConflict { message, current } => {
+            let summary = LificError::conflict_summary(current);
+            if summary.is_empty() {
+                message.clone()
+            } else {
+                format!("{message}. Current state: {summary}")
+            }
+        }
         other => other.to_string(),
     }
 }

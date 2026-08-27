@@ -2107,6 +2107,8 @@ impl LificMcp {
                     start_date: input.start_date.clone(),
                     target_date: input.target_date.clone(),
                     labels: input.labels.clone(),
+                    // LIF-441: omitted means last-writer-wins, unchanged.
+                    expected_seq: input.expected_seq,
                     ..Default::default()
                 },
             )?;
@@ -2714,6 +2716,8 @@ impl LificMcp {
                     status: input.status.clone(),
                     pinned: input.pinned,
                     labels: input.labels.clone(),
+                    // LIF-441: omitted means last-writer-wins, unchanged.
+                    expected_seq: input.expected_seq,
                     ..Default::default()
                 },
             )?;
@@ -5338,6 +5342,187 @@ mod tests {
         );
     }
 
+    // ── LIF-441: `expected_seq` as an optimistic-concurrency precondition ──
+
+    fn issue_seq_of(m: &LificMcp, identifier: &str) -> i64 {
+        m.read(|conn| {
+            let id = queries::resolve_identifier(conn, identifier)?;
+            Ok(queries::get_issue(conn, id)?.seq)
+        })
+        .expect("issue seq")
+    }
+
+    fn page_seq_of(m: &LificMcp, identifier: &str) -> i64 {
+        m.read(|conn| {
+            let id = queries::resolve_page_identifier(conn, identifier)?;
+            Ok(queries::get_page(conn, id)?.seq)
+        })
+        .expect("page seq")
+    }
+
+    #[test]
+    fn update_issue_with_a_stale_expected_seq_reports_the_current_state() {
+        let (m, _guard) = mcp();
+        seed_project(&m, "Test", "OCC");
+        seed_issue(&m, "OCC", "Contended");
+        let stale_seq = issue_seq_of(&m, "OCC-1");
+
+        // Another writer lands first.
+        m.update_issue(Parameters(UpdateIssueInput {
+            identifier: "OCC-1".into(),
+            status: Some("active".into()),
+            priority: Some("high".into()),
+            ..Default::default()
+        }));
+        let current_seq = issue_seq_of(&m, "OCC-1");
+
+        let result = m.update_issue(Parameters(UpdateIssueInput {
+            identifier: "OCC-1".into(),
+            title: Some("Clobbered".into()),
+            expected_seq: Some(stale_seq),
+            ..Default::default()
+        }));
+
+        assert!(result.starts_with("Error: "), "got: {result}");
+        assert!(
+            result.contains(&format!("current seq {current_seq}")),
+            "the agent needs the seq to retry with: {result}"
+        );
+        assert!(result.contains("retry"), "got: {result}");
+        // The compact digest, not a dump: the fields an agent decides on.
+        assert!(result.contains("title: Contended"), "got: {result}");
+        assert!(result.contains("status: active"), "got: {result}");
+        assert!(result.contains("priority: high"), "got: {result}");
+        assert!(result.contains("updated_at: "), "got: {result}");
+        assert!(
+            !result.contains("description"),
+            "the full body stays out of the agent's context: {result}"
+        );
+
+        let issue = m
+            .read(|conn| {
+                let id = queries::resolve_identifier(conn, "OCC-1")?;
+                queries::get_issue(conn, id)
+            })
+            .unwrap();
+        assert_eq!(issue.title, "Contended", "the refused write landed nowhere");
+        assert_eq!(issue.seq, current_seq, "and did not bump the seq");
+    }
+
+    #[test]
+    fn update_issue_with_a_fresh_expected_seq_succeeds() {
+        let (m, _guard) = mcp();
+        seed_project(&m, "Test", "OCF");
+        seed_issue(&m, "OCF", "Uncontended");
+        let seq = issue_seq_of(&m, "OCF-1");
+
+        let result = m.update_issue(Parameters(UpdateIssueInput {
+            identifier: "OCF-1".into(),
+            title: Some("Edited".into()),
+            expected_seq: Some(seq),
+            ..Default::default()
+        }));
+
+        assert!(result.starts_with("Updated OCF-1"), "got: {result}");
+        assert!(result.contains("Edited"), "got: {result}");
+        assert!(issue_seq_of(&m, "OCF-1") > seq);
+    }
+
+    #[test]
+    fn update_page_with_a_stale_expected_seq_reports_the_current_state() {
+        let (m, _guard) = mcp();
+        seed_project(&m, "Test", "OCP");
+        m.create_page(Parameters(CreatePageInput {
+            project: Some("OCP".into()),
+            title: "Contended doc".into(),
+            content: Some("original".into()),
+            folder: None,
+            status: None,
+            labels: None,
+        }));
+        let stale_seq = page_seq_of(&m, "OCP-DOC-1");
+
+        m.update_page(Parameters(UpdatePageInput {
+            identifier: "OCP-DOC-1".into(),
+            content: Some("someone else got here first".into()),
+            ..Default::default()
+        }));
+        let current_seq = page_seq_of(&m, "OCP-DOC-1");
+
+        let result = m.update_page(Parameters(UpdatePageInput {
+            identifier: "OCP-DOC-1".into(),
+            content: Some("clobber".into()),
+            expected_seq: Some(stale_seq),
+            ..Default::default()
+        }));
+
+        assert!(result.starts_with("Error: "), "got: {result}");
+        assert!(
+            result.contains(&format!("current seq {current_seq}")),
+            "got: {result}"
+        );
+        assert!(result.contains("title: Contended doc"), "got: {result}");
+        assert!(
+            !result.contains("someone else got here first"),
+            "the page body stays out of the agent's context: {result}"
+        );
+    }
+
+    #[test]
+    fn update_page_with_a_fresh_expected_seq_succeeds() {
+        let (m, _guard) = mcp();
+        seed_project(&m, "Test", "OPF");
+        m.create_page(Parameters(CreatePageInput {
+            project: Some("OPF".into()),
+            title: "Uncontended doc".into(),
+            content: None,
+            folder: None,
+            status: None,
+            labels: None,
+        }));
+        let seq = page_seq_of(&m, "OPF-DOC-1");
+
+        let result = m.update_page(Parameters(UpdatePageInput {
+            identifier: "OPF-DOC-1".into(),
+            title: Some("Edited doc".into()),
+            expected_seq: Some(seq),
+            ..Default::default()
+        }));
+
+        assert!(result.contains("Edited doc"), "got: {result}");
+        assert!(page_seq_of(&m, "OPF-DOC-1") > seq);
+    }
+
+    /// Without preconditions, two writers touching different fields must both
+    /// land: the update path only writes what the caller sent.
+    #[test]
+    fn field_disjoint_mcp_updates_without_preconditions_both_land() {
+        let (m, _guard) = mcp();
+        seed_project(&m, "Test", "OCD");
+        seed_issue(&m, "OCD", "Shared");
+
+        m.update_issue(Parameters(UpdateIssueInput {
+            identifier: "OCD-1".into(),
+            status: Some("active".into()),
+            ..Default::default()
+        }));
+        m.update_issue(Parameters(UpdateIssueInput {
+            identifier: "OCD-1".into(),
+            priority: Some("high".into()),
+            ..Default::default()
+        }));
+
+        let issue = m
+            .read(|conn| {
+                let id = queries::resolve_identifier(conn, "OCD-1")?;
+                queries::get_issue(conn, id)
+            })
+            .unwrap();
+        assert_eq!(issue.status.as_str(), "active");
+        assert_eq!(issue.priority.as_str(), "high");
+        assert_eq!(issue.title, "Shared");
+    }
+
     // LIF-144: start_date/target_date are settable through the MCP layer.
 
     #[test]
@@ -6334,6 +6519,7 @@ mod tests {
             status: None,
             pinned: None,
             labels: None,
+            expected_seq: None,
         }));
         assert!(updated.contains("Updated Doc"), "got: {updated}");
     }
@@ -8841,6 +9027,7 @@ mod tests {
             status: None,
             pinned: None,
             labels: Some(vec!["draft".into()]),
+            expected_seq: None,
         }));
 
         let detail = m.get_page(Parameters(GetPageInput {
@@ -8948,6 +9135,7 @@ mod tests {
             status: None,
             pinned: None,
             labels: None,
+            expected_seq: None,
         }));
         assert!(!moved.starts_with("Error"), "move failed: {moved}");
         {
@@ -8965,6 +9153,7 @@ mod tests {
             status: None,
             pinned: None,
             labels: None,
+            expected_seq: None,
         }));
         assert!(!rooted.starts_with("Error"), "root failed: {rooted}");
         let conn = m.db.read().unwrap();

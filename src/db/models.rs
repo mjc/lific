@@ -363,6 +363,13 @@ pub struct UpdateIssue {
     pub target_date: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub labels: Option<Vec<String>>,
+    /// LIF-441: optimistic-concurrency precondition. `None` (the default, and
+    /// what every existing client sends) keeps last-writer-wins. `Some(seq)`
+    /// makes the update conditional on the row still carrying that `seq` when
+    /// the write runs; if it doesn't, the update is refused with
+    /// [`crate::error::LificError::UpdateConflict`] and nothing is written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_seq: Option<i64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -573,6 +580,10 @@ pub struct UpdatePage {
     /// no-ops for workspace pages.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub labels: Option<Vec<String>>,
+    /// LIF-441: optimistic-concurrency precondition, exactly as on
+    /// [`UpdateIssue`]. `None` keeps last-writer-wins.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_seq: Option<i64>,
 }
 
 fn default_page_status() -> String {

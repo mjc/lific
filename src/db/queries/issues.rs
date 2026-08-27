@@ -586,6 +586,21 @@ pub fn update_issue(conn: &Connection, id: i64, input: &UpdateIssue) -> Result<I
     }
 
     super::savepoint(conn, "update_issue", || {
+        // LIF-441: the precondition is checked inside the savepoint, on the
+        // same connection and transaction that writes, so no one can slip a
+        // write between the check and the update. Re-read rather than reusing
+        // the copy above for the same reason.
+        if let Some(expected) = input.expected_seq {
+            let current = get_issue(conn, id)?;
+            if current.seq != expected {
+                return Err(LificError::update_conflict(
+                    &current.identifier,
+                    expected,
+                    current.seq,
+                    &current,
+                ));
+            }
+        }
         if let Some(ref title) = input.title {
             conn.execute(
                 "UPDATE issues SET title = ?1 WHERE id = ?2",

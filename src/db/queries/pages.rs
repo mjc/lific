@@ -376,6 +376,19 @@ pub fn update_page(conn: &Connection, id: i64, input: &UpdatePage) -> Result<Pag
         validate_page_folder(conn, page.project_id, folder_id)?;
     }
     super::savepoint(conn, "update_page", || {
+        // LIF-441: see `update_issue` — checked inside the savepoint so the
+        // precondition and the write cannot be separated.
+        if let Some(expected) = input.expected_seq {
+            let current = get_page(conn, id)?;
+            if current.seq != expected {
+                return Err(LificError::update_conflict(
+                    &current.identifier,
+                    expected,
+                    current.seq,
+                    &current,
+                ));
+            }
+        }
         if let Some(ref title) = input.title {
             conn.execute(
                 "UPDATE pages SET title = ?1 WHERE id = ?2",
