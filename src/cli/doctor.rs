@@ -1029,7 +1029,7 @@ pub async fn check_mcp_legacy(
         req = req.bearer_auth(k);
     }
 
-    let mut resp = match req.send().await {
+    let resp = match req.send().await {
         Ok(r) => r,
         Err(e) => return Check::new("mcp", Status::Fail, format!("request failed: {e}")),
     };
@@ -1070,72 +1070,129 @@ pub async fn check_mcp_legacy(
             format!("legacy initialize returned HTTP {}", status.as_u16()),
         ),
         Some(_) => {
-            let mut text = String::new();
-            let mut stream_error = None;
-            for _ in 0..16 {
-                match resp.chunk().await {
-                    Ok(Some(bytes)) => {
-                        text.push_str(&String::from_utf8_lossy(&bytes));
-                        if text.lines().any(|line| {
-                            line.strip_prefix("data: ")
-                                .is_some_and(|payload| !payload.trim().is_empty())
-                        }) {
-                            break;
-                        }
-                    }
-                    Ok(None) => break,
-                    Err(e) => {
-                        stream_error = Some(e.to_string());
-                        break;
-                    }
+            let session_id = resp
+                .headers()
+                .get("mcp-session-id")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned);
+            let parsed = match response_json(resp).await {
+                Ok(body) => body,
+                Err(e) => {
+                    return Check::new(
+                        "mcp",
+                        Status::Fail,
+                        format!(
+                            "legacy initialize body was not JSON: {e} (status {}, content-type {}, session {})",
+                            status.as_u16(),
+                            content_type,
+                            has_session,
+                        ),
+                    );
                 }
-            }
-            let parsed: Result<serde_json::Value, String> = if let Some(error) = stream_error {
-                Err(error)
-            } else {
-                serde_json::from_str::<serde_json::Value>(&text)
-                    .or_else(|_| {
-                        text.lines()
-                            .find_map(|line| {
-                                line.strip_prefix("data: ")
-                                    .filter(|payload| !payload.trim().is_empty())
-                            })
-                            .ok_or_else(|| {
-                                serde_json::Error::io(std::io::Error::new(
-                                    std::io::ErrorKind::InvalidData,
-                                    "legacy response did not contain JSON",
-                                ))
-                            })
-                            .and_then(serde_json::from_str)
-                    })
-                    .map_err(|e| e.to_string())
             };
-            match parsed {
-                Ok(body)
-                    if has_session
-                        && body["result"]["protocolVersion"] == "2025-03-26"
-                        && body["result"]["serverInfo"].is_object() =>
-                {
-                    Check::new("mcp", Status::Pass, "legacy initialize succeeded with a session")
-                }
-                Ok(body) => Check::new(
+            if !has_session
+                || parsed["result"]["protocolVersion"] != "2025-03-26"
+                || !parsed["result"]["serverInfo"].is_object()
+            {
+                return Check::new(
                     "mcp",
                     Status::Fail,
-                    format!("legacy initialize response was incomplete: {body}"),
-                ),
-                Err(e) => Check::new(
+                    format!("legacy initialize response was incomplete: {parsed}"),
+                );
+            }
+            let Some(session_id) = session_id else {
+                return Check::new("mcp", Status::Fail, "legacy initialize omitted its session id");
+            };
+            match check_mcp_legacy_tools(client, base, key.unwrap(), &session_id).await {
+                Ok(detail) => Check::new(
                     "mcp",
-                    Status::Fail,
-                    format!(
-                        "legacy initialize body was not JSON: {e} (status {}, content-type {}, session {}, raw {:?})",
-                        status.as_u16(),
-                        content_type,
-                        has_session,
-                        text,
-                    ),
+                    Status::Pass,
+                    format!("legacy initialize succeeded with a session; {detail}"),
                 ),
+                Err(detail) => Check::new("mcp", Status::Fail, detail),
             }
         }
+    }
+}
+
+async fn response_json(response: reqwest::Response) -> Result<serde_json::Value, String> {
+    let text = response
+        .text()
+        .await
+        .map_err(|e| format!("response body could not be read: {e}"))?;
+    serde_json::from_str::<serde_json::Value>(&text)
+        .or_else(|_| {
+            text.lines()
+                .find_map(|line| {
+                    line.strip_prefix("data: ")
+                        .filter(|payload| !payload.trim().is_empty())
+                })
+                .ok_or_else(|| {
+                    serde_json::Error::io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "response did not contain JSON",
+                    ))
+                })
+                .and_then(serde_json::from_str)
+        })
+        .map_err(|e| e.to_string())
+}
+
+async fn check_mcp_legacy_tools(
+    client: &reqwest::Client,
+    base: &str,
+    key: &str,
+    session_id: &str,
+) -> Result<String, String> {
+    let url = format!("{}/mcp", base.trim_end_matches('/'));
+    let request = |id: i64, method: &str, params: serde_json::Value| {
+        let body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": method,
+            "params": params,
+        });
+        client
+            .post(&url)
+            .bearer_auth(key)
+            .header("Accept", "application/json, text/event-stream")
+            .header("Content-Type", "application/json")
+            .header("MCP-Protocol-Version", "2025-03-26")
+            .header("MCP-Session-Id", session_id)
+            .json(&body)
+    };
+
+    let list = request(2, "tools/list", serde_json::json!({}))
+        .send()
+        .await
+        .map_err(|e| format!("legacy tools/list request failed: {e}"))?;
+    if !list.status().is_success() {
+        return Err(format!("legacy tools/list returned HTTP {}", list.status().as_u16()));
+    }
+    let list_body = response_json(list).await?;
+    if list_body["result"]["tools"].is_array() {
+        // Continue to a harmless call below; listing alone does not prove the
+        // initialized session can dispatch a tool.
+    } else {
+        return Err(format!("legacy tools/list response was incomplete: {list_body}"));
+    }
+
+    let call_body = serde_json::json!({
+        "name": "search",
+        "arguments": {"query": "lific-doctor-legacy-no-such-result"}
+    });
+    let call = request(3, "tools/call", call_body)
+        .send()
+        .await
+        .map_err(|e| format!("legacy tools/call request failed: {e}"))?;
+    if !call.status().is_success() {
+        return Err(format!("legacy tools/call returned HTTP {}", call.status().as_u16()));
+    }
+    let call_body = response_json(call).await?;
+    if call_body["result"]["content"].is_array() {
+        Ok("tools/list and harmless tools/call succeeded".into())
+    } else {
+        Err(format!("legacy tools/call response was incomplete: {call_body}"))
     }
 }
 
