@@ -83,24 +83,56 @@ export function removeComment(comments: Comment[], id: number): Comment[] {
   return comments.filter((comment) => comment.id !== id);
 }
 
-/** Identity of the thread exactly as it is currently rendered.
+/** FNV-1a, seeded so several values can be folded into one running digest. */
+function fold(input: string, seed: number): number {
+  let hash = seed;
+  for (let i = 0; i < input.length; i++) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return hash >>> 0;
+}
+
+/** Identity of everything the thread currently renders *from*.
  *
  *  Changes when a comment is posted, an older page is prepended, a body is
- *  edited, or a comment is deleted; stable across everything else. Comments
- *  keys its shared Mermaid budget on this: an aggregate cap over a thread is
- *  only honest if every body on screen is charged against the *same* budget,
- *  which means rebuilding it and re-rendering all of them whenever the set of
- *  bodies changes. Otherwise the diagrams already drawn cost nothing and each
- *  new comment shows up with the full allowance to itself.
+ *  edited, or a comment is deleted — and when the mention roster changes,
+ *  because every body is rendered with `mentions={candidates}` and a new
+ *  roster makes Markdown recompute its HTML, replace its blocks, and render
+ *  its diagrams again. Stable across everything else.
  *
- *  The body text is part of the key rather than `updated_at` alone, because
- *  that column has one-second resolution: an edit landing in the same second
- *  as its create would otherwise read as no change at all. The length prefix
- *  keeps a body that contains the separator from forging another entry. */
-export function commentThreadRevision(comments: Comment[]): string {
-  return comments
-    .map((c) => `${c.id}:${c.updated_at}:${c.content.length}:${c.content}`)
-    .join("\n\u0000\n");
+ *  Comments keys its shared Mermaid budget on this. An aggregate cap over a
+ *  thread is only honest if every body on screen is charged against the *same*
+ *  budget, so all of them are remounted together against one fresh object
+ *  whenever this moves. Without the roster in the key, candidates arriving
+ *  from their fetch would re-render every body against the budget those same
+ *  bodies had already spent, double-charging diagrams that never left screen.
+ *
+ *  Body text is folded in rather than trusting `updated_at`, which has
+ *  one-second resolution: an edit landing in the same second as its create
+ *  would otherwise read as no change. It is hashed rather than concatenated so
+ *  the key stays a few dozen bytes instead of a second copy of the thread.
+ *  Two independently seeded digests per side keep an accidental collision (a
+ *  missed remount) out of reach. */
+export function commentThreadRevision(
+  comments: Comment[],
+  mentions: readonly { username: string; display_name: string }[] = [],
+): string {
+  let a = 0x811c9dc5;
+  let b = 0x7fffffff;
+  for (const c of comments) {
+    const head = `${c.id}:${c.updated_at}:${c.content.length}:`;
+    a = fold(c.content, fold(head, a));
+    b = fold(c.content, fold(head, b));
+  }
+  let m = 0x811c9dc5;
+  let n = 0x7fffffff;
+  for (const user of mentions) {
+    const entry = `${user.username.length}:${user.username}:${user.display_name}`;
+    m = fold(entry, m);
+    n = fold(entry, n);
+  }
+  return `${comments.length}-${a}-${b}/${mentions.length}-${m}-${n}`;
 }
 
 // ── Bounded, stable comment paging ──────────────────────────

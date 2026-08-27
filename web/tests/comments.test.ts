@@ -164,6 +164,42 @@ test("the thread revision changes for every way the rendered thread can change",
 
   // Deleted.
   expect(commentThreadRevision(removeComment(thread, 2))).not.toBe(base);
+
+  // Cheap to hold: a digest, not a second copy of the thread.
+  expect(commentThreadRevision([comment({ content: "x".repeat(50_000) })]).length)
+    .toBeLessThan(80);
+});
+
+test("the thread revision tracks the mention roster the bodies render with", () => {
+  // Every body is rendered with `mentions={candidates}`, so a roster arriving
+  // from its fetch re-renders all of them. Unless the revision moves with it,
+  // that rerender charges diagrams that never left the screen a second time
+  // against the budget those same bodies already spent.
+  const thread = [comment({ id: 1, content: "one" })];
+  const roster = [{ user_id: 3, username: "owner", display_name: "Owner" }];
+  const withRoster = commentThreadRevision(thread, roster);
+
+  expect(withRoster).not.toBe(commentThreadRevision(thread, []));
+  // Same roster, fresh objects: no churn.
+  expect(commentThreadRevision(thread, [{ ...roster[0] }])).toBe(withRoster);
+  // A renamed member changes what the bodies render, so it counts.
+  expect(
+    commentThreadRevision(thread, [{ ...roster[0], display_name: "Owner II" }]),
+  ).not.toBe(withRoster);
+  // So does an added one.
+  expect(
+    commentThreadRevision(thread, [...roster, { user_id: 4, username: "ada", display_name: "Ada" }]),
+  ).not.toBe(withRoster);
+
+  // One revision for the whole thread, not one per comment: the roster and a
+  // three-comment thread still collapse to a single key, which is what makes
+  // the budget keyed on it shared rather than per body.
+  const longer = [...thread, comment({ id: 2 }), comment({ id: 3 })];
+  const keys = new Set([
+    commentThreadRevision(longer, roster),
+    commentThreadRevision(longer, roster),
+  ]);
+  expect(keys.size).toBe(1);
 });
 
 test("every comment body renders its diagrams inside the thread", () => {

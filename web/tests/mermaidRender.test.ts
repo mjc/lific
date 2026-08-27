@@ -171,6 +171,36 @@ describe("renderMermaidBlock", () => {
     expect(refreshed[2].textContent).toContain("too many diagrams");
   });
 
+  test("a mention-roster rerender charges one shared budget, not one per body", async () => {
+    const render = async () => ({ svg: "<svg></svg>" });
+    const bodies = (count: number) =>
+      Array.from({ length: count }, (_, i) =>
+        block(encodeURIComponent(`graph TD\nA${i}-->B${i}`)),
+      );
+
+    // Three comments, one diagram each: the aggregate cap refuses the third.
+    const first = bodies(3);
+    const firstBudget = createMermaidBudget();
+    for (const target of first) {
+      await renderMermaidBlock(target, render, firstBudget, () => false);
+    }
+    expect(first.map((b) => b.dataset.rendered)).toEqual(["true", "true", "error"]);
+
+    // Candidates land and every body re-renders. One fresh budget for the whole
+    // remount, so the two diagrams still on screen are charged exactly once and
+    // the third is still refused — not three bodies with an allowance each, and
+    // not the old budget charged twice over.
+    const second = bodies(3);
+    const secondBudget = createMermaidBudget();
+    for (const target of second) {
+      await renderMermaidBlock(target, render, secondBudget, () => false);
+    }
+
+    expect(second.map((b) => b.dataset.rendered)).toEqual(["true", "true", "error"]);
+    expect(secondBudget.blocks).toBe(2);
+    expect(firstBudget).toEqual(secondBudget);
+  });
+
   test("reports success and failure while active", async () => {
     const success = block(encodeURIComponent("graph TD\nA-->B"));
     const failure = block(encodeURIComponent("graph TD\nA-->B"));

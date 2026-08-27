@@ -100,17 +100,6 @@
   let updatingId = $state<number | null>(null);
   let deletingId = $state<number | null>(null);
   let menuId = $state<number | null>(null);
-  // One aggregate diagram budget for the whole thread on screen, rebuilt
-  // whenever that thread changes (post, older page, edit, delete). The
-  // `{#key}` around each body remounts every Markdown instance against the
-  // fresh object, so previously drawn diagrams are charged again instead of
-  // riding for free and letting each new comment arrive with the full
-  // MAX_BLOCKS / MAX_TOTAL_SOURCE_BYTES allowance.
-  let threadRevision = $derived(commentThreadRevision(comments));
-  let mermaidBudget = $derived.by(() => {
-    threadRevision;
-    return createMermaidBudget();
-  });
   let confirmDeleteId = $state<number | null>(null);
 
   let pendingCommentTarget = $state(commentTargetFromHash(window.location.hash));
@@ -202,6 +191,22 @@
     return () => {
       cancelled = true;
     };
+  });
+
+  // One aggregate diagram budget for the whole thread on screen, rebuilt
+  // whenever anything the bodies render from changes: the thread itself (post,
+  // older page, edit, delete) and the mention roster above, which every body
+  // is rendered with and which arrives asynchronously. The `{#key}` around
+  // each body remounts every Markdown instance against the fresh object, so
+  // previously drawn diagrams are charged again instead of riding for free
+  // (letting each new comment claim the full MAX_BLOCKS /
+  // MAX_TOTAL_SOURCE_BYTES allowance) or being charged a second time against a
+  // budget they had already spent. Declared after `candidates` so it reads in
+  // dependency order.
+  let threadRevision = $derived(commentThreadRevision(comments, candidates));
+  let mermaidBudget = $derived.by(() => {
+    threadRevision;
+    return createMermaidBudget();
   });
 
   // Active mention query: `@` + the partial token immediately left of the
