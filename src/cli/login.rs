@@ -29,6 +29,7 @@ use crate::config::Config;
 
 /// The device-code grant type string (RFC 8628).
 const DEVICE_CODE_GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
+const DEVICE_CLIENT_ID: &str = "lific-cli";
 
 /// Resolve the base URL: explicit `--url` wins, else `server.public_url`, else
 /// `http://127.0.0.1:<port>`.
@@ -165,7 +166,10 @@ impl DeviceFlow for HttpDeviceFlow {
     fn request_device_code(&self, label: Option<&str>) -> Result<DeviceAuthResponse, String> {
         let url = format!("{}/oauth/device_authorization", self.base);
         let resource = format!("{}/mcp", self.base.trim_end_matches('/'));
-        let mut form: Vec<(&str, &str)> = vec![("resource", &resource)];
+        let mut form: Vec<(&str, &str)> = vec![
+            ("client_id", DEVICE_CLIENT_ID),
+            ("resource", &resource),
+        ];
         if let Some(l) = label {
             form.push(("client_name", l));
         }
@@ -190,6 +194,7 @@ impl DeviceFlow for HttpDeviceFlow {
         let form = [
             ("grant_type", DEVICE_CODE_GRANT),
             ("device_code", device_code),
+            ("client_id", DEVICE_CLIENT_ID),
             ("resource", resource.as_str()),
         ];
         let resp = self

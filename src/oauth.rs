@@ -23,6 +23,7 @@ use crate::ratelimit::RateLimiter;
 type HmacSha256 = Hmac<Sha256>;
 
 const MAX_OAUTH_BODY_BYTES: usize = 64 * 1024;
+const MAX_CLIENT_ID_BYTES: usize = 2048;
 const MAX_CLIENT_NAME_BYTES: usize = 128;
 const MAX_REDIRECT_URIS: usize = 8;
 const MAX_REDIRECT_URI_BYTES: usize = 2048;
@@ -1367,6 +1368,7 @@ fn cleanup_expired_device_codes(conn: &Connection) -> rusqlite::Result<usize> {
 
 #[derive(Deserialize)]
 struct DeviceAuthRequest {
+    client_id: Option<String>,
     #[serde(default)]
     client_name: Option<String>,
     /// Device grants support the same single `mcp` scope as authorization-code
@@ -1414,6 +1416,7 @@ async fn device_authorization(
         .unwrap_or("");
     let req: DeviceAuthRequest = if content_type.contains("application/json") {
         serde_json::from_slice(&body).unwrap_or(DeviceAuthRequest {
+            client_id: None,
             client_name: None,
             scope: None,
             resource: None,
@@ -1421,12 +1424,27 @@ async fn device_authorization(
     } else {
         // application/x-www-form-urlencoded (default)
         serde_urlencoded::from_bytes(&body).unwrap_or(DeviceAuthRequest {
+            client_id: None,
             client_name: None,
             scope: None,
             resource: None,
         })
     };
 
+    let Some(client_id) = req.client_id.as_deref().filter(|id| !id.is_empty()) else {
+        return device_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            Some("missing client_id"),
+        );
+    };
+    if client_id.len() > MAX_CLIENT_ID_BYTES || client_id.chars().any(char::is_control) {
+        return device_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            Some("client_id is too long or contains control characters"),
+        );
+    }
     if req
         .client_name
         .as_deref()
@@ -1507,11 +1525,13 @@ async fn device_authorization(
     for _ in 0..5 {
         let res = conn.execute(
             "INSERT INTO oauth_device_codes
-                (device_code_hash, user_code, client_name, expires_at, interval_seconds, status, resource)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6)",
+                (device_code_hash, user_code, client_id, client_name, expires_at,
+                 interval_seconds, status, resource)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7)",
             params![
                 device_code_hash,
                 user_code,
+                client_id,
                 req.client_name,
                 expires_at.to_rfc3339(),
                 DEVICE_CODE_INTERVAL,
@@ -1799,6 +1819,13 @@ async fn token_exchange(
     axum::Form(req): axum::Form<TokenRequest>,
 ) -> Response {
     if req.grant_type == DEVICE_CODE_GRANT {
+        if req.client_id.as_deref().is_none_or(str::is_empty) {
+            return device_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                Some("missing client_id"),
+            );
+        }
         if req.resource.as_deref().is_none_or(str::is_empty) {
             return device_error(
                 StatusCode::BAD_REQUEST,
@@ -2096,10 +2123,13 @@ fn device_token_exchange(state: &OAuthState, req: &TokenRequest) -> Response {
         interval_seconds: i64,
         last_polled_at: Option<String>,
         resource: Option<String>,
+        client_id: Option<String>,
+        client_name: Option<String>,
     }
 
     let row: Result<DeviceRow, _> = conn.query_row(
-        "SELECT status, user_id, expires_at, interval_seconds, last_polled_at, resource
+        "SELECT status, user_id, expires_at, interval_seconds, last_polled_at, resource,
+                client_id, client_name
          FROM oauth_device_codes WHERE device_code_hash = ?1",
         params![device_code_hash],
         |r| {
@@ -2110,6 +2140,8 @@ fn device_token_exchange(state: &OAuthState, req: &TokenRequest) -> Response {
                 interval_seconds: r.get(3)?,
                 last_polled_at: r.get(4)?,
                 resource: r.get(5)?,
+                client_id: r.get(6)?,
+                client_name: r.get(7)?,
             })
         },
     );
@@ -2124,6 +2156,16 @@ fn device_token_exchange(state: &OAuthState, req: &TokenRequest) -> Response {
         finish!(
             conn,
             device_error(StatusCode::BAD_REQUEST, "invalid_grant", Some("resource mismatch"))
+        );
+    }
+    if row.client_id.as_deref() != req.client_id.as_deref() {
+        finish!(
+            conn,
+            device_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_grant",
+                Some("client_id mismatch")
+            )
         );
     }
 
@@ -2227,7 +2269,16 @@ fn device_token_exchange(state: &OAuthState, req: &TokenRequest) -> Response {
                 );
             }
             let scope = "mcp";
-            let client_id = "device";
+            let Some(client_id) = row.client_id.as_deref() else {
+                finish!(
+                    conn,
+                    device_error(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_grant",
+                        Some("device authorization is not bound to a client")
+                    )
+                );
+            };
 
             let access_token = format!("lific_at_{}", uuid_v4());
             let token_hash = sha256_hex(access_token.as_bytes());
@@ -2247,8 +2298,11 @@ fn device_token_exchange(state: &OAuthState, req: &TokenRequest) -> Response {
             // Ensure a client row exists so the FK on oauth_tokens is satisfied.
             let _ = tx.execute(
                 "INSERT OR IGNORE INTO oauth_clients (client_id, client_name, redirect_uris)
-                 VALUES ('device', 'Device Authorization', '[]')",
-                [],
+                 VALUES (?1, ?2, '[]')",
+                params![
+                    client_id,
+                    row.client_name.as_deref().unwrap_or("Device Authorization")
+                ],
             );
 
             if let Err(e) = tx.execute(
@@ -2649,6 +2703,7 @@ mod tests {
     use tower::ServiceExt;
 
     const TEST_PKCE_CHALLENGE: &str = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
+    const TEST_DEVICE_CLIENT_ID: &str = "lific-test-client";
 
     fn test_oauth_app() -> (Router, DbPool) {
         test_oauth_app_with_register_limit(1000)
@@ -4053,7 +4108,7 @@ mod tests {
                     .header("content-type", "application/x-www-form-urlencoded")
                     .header("x-forwarded-for", "198.51.100.201")
                     .body(axum::body::Body::from(
-                        "client_name=New+source&resource=https%3A%2F%2Fexample.com%2Fmcp",
+                        "client_id=lific-test-client&client_name=New+source&resource=https%3A%2F%2Fexample.com%2Fmcp",
                     ))
                     .unwrap(),
             )
@@ -4637,7 +4692,9 @@ mod tests {
 
     /// POST /oauth/device_authorization and return the parsed JSON.
     async fn request_device_code(app: &Router, client_name: Option<&str>) -> serde_json::Value {
-        let mut body = "resource=https%3A%2F%2Fexample.com%2Fmcp".to_string();
+        let mut body = format!(
+            "client_id={TEST_DEVICE_CLIENT_ID}&resource=https%3A%2F%2Fexample.com%2Fmcp"
+        );
         if let Some(n) = client_name {
             body.push_str(&format!("&client_name={}", urlencoding::encode(n)));
         }
@@ -4663,11 +4720,25 @@ mod tests {
         app: &Router,
         device_code: &str,
     ) -> (StatusCode, serde_json::Value) {
-        let body = format!(
+        poll_device_token_as(app, device_code, Some(TEST_DEVICE_CLIENT_ID)).await
+    }
+
+    async fn poll_device_token_as(
+        app: &Router,
+        device_code: &str,
+        client_id: Option<&str>,
+    ) -> (StatusCode, serde_json::Value) {
+        let mut body = format!(
             "grant_type={}&device_code={}&resource=https%3A%2F%2Fexample.com%2Fmcp",
             urlencoding::encode("urn:ietf:params:oauth:grant-type:device_code"),
             urlencoding::encode(device_code),
         );
+        if let Some(client_id) = client_id {
+            body.push_str(&format!(
+                "&client_id={}",
+                urlencoding::encode(client_id)
+            ));
+        }
         let resp = app
             .clone()
             .oneshot(
@@ -4719,7 +4790,7 @@ mod tests {
                     .uri("/oauth/device_authorization")
                     .header("content-type", "application/x-www-form-urlencoded")
                     .body(axum::body::Body::from(
-                        "client_name=Bad+Scope&scope=admin&resource=https%3A%2F%2Fexample.com%2Fmcp",
+                        "client_id=lific-test-client&client_name=Bad+Scope&scope=admin&resource=https%3A%2F%2Fexample.com%2Fmcp",
                     ))
                     .unwrap(),
             )
@@ -4735,6 +4806,56 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM oauth_device_codes", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn device_authorization_requires_a_client_id() {
+        let (app, db) = test_oauth_app();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/device_authorization")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(axum::body::Body::from(
+                        "client_name=Missing+Client&resource=https%3A%2F%2Fexample.com%2Fmcp",
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"], "invalid_request");
+        let count: i64 = db
+            .read()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM oauth_device_codes", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn device_polling_requires_the_client_that_started_the_grant() {
+        let (app, _) = test_oauth_app();
+        let grant = request_device_code(&app, Some("Bound client")).await;
+        let device_code = grant["device_code"].as_str().unwrap();
+
+        let (status, body) = poll_device_token_as(&app, device_code, None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"], "invalid_request");
+
+        let (status, body) = poll_device_token_as(&app, device_code, Some("other-client")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"], "invalid_grant");
+
+        let (status, body) = poll_device_token(&app, device_code).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body["error"], "authorization_pending",
+            "failed binding checks must not mutate the grant"
+        );
     }
 
     #[tokio::test]
@@ -4883,6 +5004,16 @@ mod tests {
         assert!(access_token.starts_with("lific_at_"));
         assert_eq!(bound_user(&db, access_token), Some(bot_id));
         assert_ne!(bot_id, user_id, "bot must differ from the approving human");
+        let token_client: String = db
+            .read()
+            .unwrap()
+            .query_row(
+                "SELECT client_id FROM oauth_tokens WHERE access_token = ?1",
+                params![sha256_hex(access_token.as_bytes())],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(token_client, TEST_DEVICE_CLIENT_ID);
 
         // Single-use: a replay poll now fails (consumed → invalid_grant).
         reset_last_poll(&db);
