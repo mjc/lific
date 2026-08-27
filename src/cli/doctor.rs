@@ -710,7 +710,7 @@ pub async fn check_mcp(client: &reqwest::Client, base: &str, key: Option<&str>) 
                 )
             }
         }
-        Some(_) => {
+        Some(key) => {
             if status == reqwest::StatusCode::UNAUTHORIZED {
                 return Check::new(
                     "mcp",
@@ -725,51 +725,126 @@ pub async fn check_mcp(client: &reqwest::Client, base: &str, key: Option<&str>) 
                     format!("initialize returned HTTP {}", status.as_u16()),
                 );
             }
-            match resp.text().await {
-                Ok(body) => match parse_mcp_response_body(&body) {
-                    Ok(body) => {
-                        if body
-                            .get("result")
-                            .and_then(|r| r.get("serverInfo"))
-                            .is_some()
-                        {
-                            let name = body
-                                .pointer("/result/serverInfo/name")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("lific");
-                            Check::new(
-                                "mcp",
-                                Status::Pass,
-                                format!("authorized initialize succeeded (serverInfo: {name})"),
-                            )
-                        } else if body.get("error").is_some() {
-                            Check::new(
-                                "mcp",
-                                Status::Fail,
-                                format!("initialize returned a JSON-RPC error: {}", body["error"]),
-                            )
-                        } else {
-                            Check::new(
-                                "mcp",
-                                Status::Fail,
-                                "200 but result had no serverInfo",
-                            )
-                        }
-                    }
-                    Err(e) => Check::new(
+            let Some(session_id) = resp
+                .headers()
+                .get("mcp-session-id")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned)
+            else {
+                return Check::new("mcp", Status::Fail, "initialize omitted its session id");
+            };
+            let body = match response_json(resp).await {
+                Ok(body) => body,
+                Err(error) => {
+                    return Check::new(
                         "mcp",
                         Status::Fail,
-                        format!("200 but body was not JSON: {e}"),
-                    ),
-                },
-                Err(e) => Check::new(
+                        format!("initialize body was not JSON: {error}"),
+                    );
+                }
+            };
+            if body["result"]["protocolVersion"] != "2025-03-26"
+                || !body["result"]["serverInfo"].is_object()
+            {
+                return Check::new(
                     "mcp",
                     Status::Fail,
-                    format!("could not read initialize response: {e}"),
+                    format!("initialize response was incomplete: {body}"),
+                );
+            }
+            let name = body["result"]["serverInfo"]["name"]
+                .as_str()
+                .unwrap_or("lific");
+            match check_mcp_session(client, &url, key, &session_id).await {
+                Ok(detail) => Check::new(
+                    "mcp",
+                    Status::Pass,
+                    format!("legacy lifecycle succeeded (serverInfo: {name}); {detail}"),
                 ),
+                Err(detail) => Check::new("mcp", Status::Fail, detail),
             }
         }
     }
+}
+
+async fn response_json(response: reqwest::Response) -> Result<serde_json::Value, String> {
+    let body = response
+        .text()
+        .await
+        .map_err(|error| format!("response body could not be read: {error}"))?;
+    parse_mcp_response_body(&body)
+}
+
+async fn check_mcp_session(
+    client: &reqwest::Client,
+    url: &str,
+    key: &str,
+    session_id: &str,
+) -> Result<String, String> {
+    let request = |body: serde_json::Value| {
+        client
+            .post(url)
+            .bearer_auth(key)
+            .header("Accept", "application/json, text/event-stream")
+            .header("Content-Type", "application/json")
+            .header("MCP-Protocol-Version", "2025-03-26")
+            .header("MCP-Session-Id", session_id)
+            .json(&body)
+    };
+
+    let initialized = request(serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "notifications/initialized",
+        "params": {}
+    }))
+    .send()
+    .await
+    .map_err(|error| format!("initialized notification failed: {error}"))?;
+    if !initialized.status().is_success() {
+        return Err(format!(
+            "initialized notification returned HTTP {}",
+            initialized.status().as_u16()
+        ));
+    }
+
+    let list = request(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/list",
+        "params": {}
+    }))
+    .send()
+    .await
+    .map_err(|error| format!("tools/list request failed: {error}"))?;
+    if !list.status().is_success() {
+        return Err(format!("tools/list returned HTTP {}", list.status().as_u16()));
+    }
+    let list = response_json(list).await?;
+    if list["id"] != 2 || !list["result"]["tools"].is_array() {
+        return Err(format!("tools/list response was incomplete: {list}"));
+    }
+
+    let call = request(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": {
+            "name": "search",
+            "arguments": {"query": "lific-doctor-no-such-result"}
+        }
+    }))
+    .send()
+    .await
+    .map_err(|error| format!("tools/call request failed: {error}"))?;
+    if !call.status().is_success() {
+        return Err(format!("tools/call returned HTTP {}", call.status().as_u16()));
+    }
+    let call = response_json(call).await?;
+    if call["id"] != 3 || !call["result"]["content"].is_array() {
+        return Err(format!("tools/call response was incomplete: {call}"));
+    }
+
+    Ok("initialized, tools/list, and harmless tools/call succeeded".into())
 }
 
 // ── Check 7: public_url ──────────────────────────────────────────────────
@@ -1258,7 +1333,8 @@ mod tests {
 
         let c = check_mcp(&test_client(), &base, Some(&key)).await;
         assert_eq!(c.status, Status::Pass, "detail: {}", c.detail);
-        assert!(c.detail.contains("serverInfo"), "detail: {}", c.detail);
+        assert!(c.detail.contains("legacy lifecycle"), "detail: {}", c.detail);
+        assert!(c.detail.contains("tools/list"), "detail: {}", c.detail);
     }
 
     #[tokio::test]
