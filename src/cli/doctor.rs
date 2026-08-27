@@ -742,7 +742,7 @@ pub async fn check_mcp(client: &reqwest::Client, base: &str, key: Option<&str>) 
                 )
             }
         }
-        Some(_) => {
+        Some(key) => {
             if status == reqwest::StatusCode::UNAUTHORIZED {
                 return Check::new(
                     "mcp",
@@ -787,11 +787,14 @@ pub async fn check_mcp(client: &reqwest::Client, base: &str, key: Option<&str>) 
                             .pointer("/result/_meta/io.modelcontextprotocol~1serverInfo/name")
                             .and_then(|v| v.as_str())
                             .unwrap_or("lific");
-                        Check::new(
-                            "mcp",
-                            Status::Pass,
-                            format!("server/discover succeeded (serverInfo: {name})"),
-                        )
+                        match check_mcp_tools(client, base, key).await {
+                            Ok(detail) => Check::new(
+                                "mcp",
+                                Status::Pass,
+                                format!("server/discover succeeded (serverInfo: {name}); {detail}"),
+                            ),
+                            Err(detail) => Check::new("mcp", Status::Fail, detail),
+                        }
                     } else if body.get("error").is_some() {
                         Check::new(
                             "mcp",
@@ -912,6 +915,87 @@ async fn check_mcp_session(
     }
 
     Ok("initialized, tools/list, and harmless tools/call succeeded".into())
+}
+
+async fn check_mcp_tools(
+    client: &reqwest::Client,
+    base: &str,
+    key: &str,
+) -> Result<String, String> {
+    let url = format!("{}/mcp", base.trim_end_matches('/'));
+    let metadata = serde_json::json!({
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientInfo": {
+            "name": "lific-doctor",
+            "version": env!("CARGO_PKG_VERSION")
+        },
+        "io.modelcontextprotocol/clientCapabilities": {}
+    });
+    let list_body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/list",
+        "params": {"_meta": metadata.clone()}
+    });
+    let list = client
+        .post(&url)
+        .bearer_auth(key)
+        .header("Accept", "application/json, text/event-stream")
+        .header("Content-Type", "application/json")
+        .header("MCP-Protocol-Version", "2026-07-28")
+        .header("Mcp-Method", "tools/list")
+        .json(&list_body)
+        .send()
+        .await
+        .map_err(|e| format!("tools/list request failed: {e}"))?;
+    if !list.status().is_success() {
+        return Err(format!("tools/list returned HTTP {}", list.status().as_u16()));
+    }
+    let list_body: serde_json::Value = list
+        .json()
+        .await
+        .map_err(|e| format!("tools/list response was not JSON: {e}"))?;
+    if list_body["result"]["resultType"] != "complete"
+        || !list_body["result"]["tools"].is_array()
+    {
+        return Err(format!("tools/list response was incomplete: {list_body}"));
+    }
+
+    let call_body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": {
+            "name": "search",
+            "arguments": {"query": "lific-doctor-no-such-result"},
+            "_meta": metadata
+        }
+    });
+    let call = client
+        .post(&url)
+        .bearer_auth(key)
+        .header("Accept", "application/json, text/event-stream")
+        .header("Content-Type", "application/json")
+        .header("MCP-Protocol-Version", "2026-07-28")
+        .header("Mcp-Method", "tools/call")
+        .header("Mcp-Name", "search")
+        .json(&call_body)
+        .send()
+        .await
+        .map_err(|e| format!("tools/call request failed: {e}"))?;
+    if !call.status().is_success() {
+        return Err(format!("tools/call returned HTTP {}", call.status().as_u16()));
+    }
+    let call_body: serde_json::Value = call
+        .json()
+        .await
+        .map_err(|e| format!("tools/call response was not JSON: {e}"))?;
+    if call_body["result"]["resultType"] != "complete"
+        || !call_body["result"]["content"].is_array()
+    {
+        return Err(format!("tools/call response was incomplete: {call_body}"));
+    }
+    Ok("tools/list and harmless tools/call succeeded".into())
 }
 
 /// Probe the retained pre-July MCP lifecycle explicitly. This is intentionally
