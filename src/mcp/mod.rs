@@ -187,7 +187,7 @@ impl StdioAuthFailed {
          restart the MCP server.";
 
     fn into_tool_result(self) -> rmcp::model::CallToolResult {
-        rmcp::model::CallToolResult::error(vec![rmcp::model::Content::text(Self::MESSAGE)])
+        rmcp::model::CallToolResult::error(vec![rmcp::model::ContentBlock::text(Self::MESSAGE)])
     }
 }
 
@@ -1047,7 +1047,7 @@ mod tests {
                 )
                 .unwrap();
                 Ok(rmcp::model::CallToolResult::success(vec![
-                    rmcp::model::Content::text("ran"),
+                    rmcp::model::ContentBlock::text("ran"),
                 ]))
             }) as ToolBody
         };

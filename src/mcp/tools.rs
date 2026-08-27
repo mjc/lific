@@ -4267,15 +4267,15 @@ impl LificMcp {
         // parse one shape everywhere.
         let contents = self
             .get_attachment_inner(input)
-            .unwrap_or_else(|error| vec![rmcp::model::Content::text(error_response(error))]);
+            .unwrap_or_else(|error| vec![rmcp::model::ContentBlock::text(error_response(error))]);
         rmcp::model::CallToolResult::success(contents)
     }
 
     fn get_attachment_inner(
         &self,
         input: GetAttachmentInput,
-    ) -> Result<Vec<rmcp::model::Content>, String> {
-        use rmcp::model::Content;
+    ) -> Result<Vec<rmcp::model::ContentBlock>, String> {
+        use rmcp::model::ContentBlock;
 
         let attachment =
             self.read(|conn| queries::attachments::get_attachment(conn, input.attachment_id))?;
@@ -4293,7 +4293,7 @@ impl LificMcp {
             .map_err(sanitize_error)?;
 
         if attachment.mime.starts_with("text/") {
-            return Ok(vec![Content::text(render_attachment_text(
+            return Ok(vec![ContentBlock::text(render_attachment_text(
                 &attachment,
                 &bytes,
                 input.offset,
@@ -4302,22 +4302,26 @@ impl LificMcp {
         }
         if crate::storage::is_raster_mime(&attachment.mime) {
             // The raster formats a multimodal agent can actually look at.
-            // SVG is deliberately excluded, matching `is_inline_safe_mime`.
+            // Deliberately NOT `is_inline_safe_mime`: that allowlist governs
+            // what a *browser* may navigate to as a top-level document, so it
+            // also carries mp4/webm/ogg/mp3. Handing a video to an MCP client
+            // as `ContentBlock::image` mislabels it and base64-inflates megabytes
+            // of container into the agent's context. SVG is excluded by both.
             return Ok(vec![
-                Content::text(format!(
+                ContentBlock::text(format!(
                     "attachment {}: {} ({}, {})",
                     attachment.id,
                     attachment.filename,
                     attachment.mime,
                     HumanSize(attachment.size_bytes)
                 )),
-                Content::image(
+                ContentBlock::image(
                     base64::engine::general_purpose::STANDARD.encode(&bytes),
                     attachment.mime.clone(),
                 ),
             ]);
         }
-        Ok(vec![Content::text(format!(
+        Ok(vec![ContentBlock::text(format!(
             "attachment {}: {} ({}, {}, sha {}). Binary, download at /api/attachments/{}",
             attachment.id,
             attachment.filename,
@@ -11298,6 +11302,40 @@ mod tests {
         );
     }
 
+    /// Regression: `get_attachment` used to gate image content on
+    /// `is_inline_safe_mime`, which is the *browser* allowlist and therefore
+    /// carries mp4/webm/ogg/mp3. A video came back tagged as `ContentBlock::image`,
+    /// mislabelling it and inflating megabytes of container into base64 in the
+    /// agent's context. The predicate is `is_raster_mime`; media summarizes.
+    #[test]
+    fn get_attachment_does_not_hand_back_video_as_image_content() {
+        let (m, _tmp, _guard, _identity) = mcp_with_attachments();
+        // ISO base media: a `ftyp` box at offset 4 with a non-QuickTime brand.
+        let mut mp4 = Vec::from(&b"\x00\x00\x00\x18ftypisom"[..]);
+        mp4.extend_from_slice(b"\x00\x00\x02\x00isomiso2");
+        let id = attachment_id_from(&m.upload_attachment(Parameters(UploadAttachmentInput {
+            filename: "clip.mp4".into(),
+            content_base64: base64::engine::general_purpose::STANDARD.encode(&mp4),
+            entity: None,
+            comment_id: None,
+        })));
+
+        let result = m.get_attachment(Parameters(GetAttachmentInput {
+            attachment_id: id,
+            offset: None,
+            limit: None,
+        }));
+        assert!(
+            result.content.iter().all(|c| c.as_image().is_none()),
+            "a video must not be handed back as image content"
+        );
+        let text = text_of(&result);
+        assert!(text.contains("video/mp4"), "{text}");
+        assert!(
+            text.ends_with(&format!("Binary, download at /api/attachments/{id}")),
+            "{text}"
+        );
+    }
     #[test]
     fn get_attachment_reports_an_unknown_id_as_not_found() {
         let (m, _tmp, _guard, _identity) = mcp_with_attachments();
