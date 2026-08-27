@@ -591,6 +591,48 @@ struct AuthorizeParams {
     resource: Option<String>,
 }
 
+struct ValidatedAuthorization<'a> {
+    scope: &'a str,
+    resource: &'a str,
+}
+
+fn validate_authorization_request<'a>(
+    response_type: &str,
+    code_challenge: Option<&str>,
+    code_challenge_method: Option<&str>,
+    scope: Option<&'a str>,
+    resource: Option<&'a str>,
+    expected_resource: &str,
+) -> Result<ValidatedAuthorization<'a>, &'static str> {
+    if response_type != "code" {
+        return Err("Unsupported response_type.");
+    }
+    if code_challenge_method != Some("S256") {
+        return Err("PKCE code_challenge_method must be S256.");
+    }
+    let Some(code_challenge) = code_challenge else {
+        return Err("A PKCE code_challenge is required.");
+    };
+    if code_challenge.len() != 43
+        || !code_challenge
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err("PKCE code_challenge is malformed.");
+    }
+    let scope = scope.unwrap_or("mcp");
+    if scope != "mcp" {
+        return Err("Unsupported OAuth scope.");
+    }
+    let Some(resource) = resource.filter(|resource| !resource.is_empty()) else {
+        return Err("A resource indicator is required.");
+    };
+    if resource != expected_resource {
+        return Err("Invalid resource indicator.");
+    }
+    Ok(ValidatedAuthorization { scope, resource })
+}
+
 async fn authorize_page(
     State(oauth): State<OAuthState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -603,6 +645,17 @@ async fn authorize_page(
             Html(format!("<h1>Invalid redirect URI</h1><p>{reason}</p>")),
         )
             .into_response();
+    }
+    let expected_resource = mcp_resource(&effective_issuer(&oauth, &headers));
+    if let Err(reason) = validate_authorization_request(
+        &params.response_type,
+        params.code_challenge.as_deref(),
+        params.code_challenge_method.as_deref(),
+        params.scope.as_deref(),
+        params.resource.as_deref(),
+        &expected_resource,
+    ) {
+        return (StatusCode::BAD_REQUEST, Html(reason.to_string())).into_response();
     }
     if let Err(response) = reserve_cimd_lookup(&oauth, peer, &headers, &params.client_id) {
         return *response;
@@ -747,9 +800,6 @@ async fn load_cimd_metadata(
 struct ApproveForm {
     client_id: String,
     redirect_uri: String,
-    /// Round-tripped from the authorize form so the POST body stays a valid
-    /// OAuth request, but the value is fixed at `code` and never branched on.
-    #[allow(dead_code)]
     response_type: String,
     state: Option<String>,
     code_challenge: Option<String>,
@@ -909,20 +959,19 @@ async fn authorize_approve(
     }
 
     let expected_resource = mcp_resource(&effective_issuer(&oauth, &headers));
-    let Some(resource) = form.resource.as_deref().filter(|r| !r.is_empty()) else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Html("A resource indicator is required.".to_string()),
-        )
-            .into_response();
+    let validated = match validate_authorization_request(
+        &form.response_type,
+        form.code_challenge.as_deref(),
+        form.code_challenge_method.as_deref(),
+        form.scope.as_deref(),
+        form.resource.as_deref(),
+        &expected_resource,
+    ) {
+        Ok(validated) => validated,
+        Err(reason) => {
+            return (StatusCode::BAD_REQUEST, Html(reason.to_string())).into_response();
+        }
     };
-    if resource != expected_resource {
-        return (
-            StatusCode::BAD_REQUEST,
-            Html("Invalid resource indicator.".to_string()),
-        )
-            .into_response();
-    }
 
     if let Err(response) = reserve_cimd_lookup(&oauth, peer, &headers, &form.client_id) {
         return *response;
@@ -964,7 +1013,8 @@ async fn authorize_approve(
 
     let code = uuid_v4();
     let expires = chrono::Utc::now() + chrono::Duration::minutes(10);
-    let scope = form.scope.as_deref().unwrap_or("mcp");
+    let scope = validated.scope;
+    let resource = validated.resource;
 
     // One transaction for the authorization decision and everything it
     // produces: revalidate the approving session, mint or reuse the tool's
@@ -1319,10 +1369,9 @@ fn cleanup_expired_device_codes(conn: &Connection) -> rusqlite::Result<usize> {
 struct DeviceAuthRequest {
     #[serde(default)]
     client_name: Option<String>,
-    /// Accepted per RFC 8628 so conforming clients are not rejected, but
-    /// device grants always issue the fixed `mcp` scope.
+    /// Device grants support the same single `mcp` scope as authorization-code
+    /// grants.
     #[serde(default)]
-    #[allow(dead_code)]
     scope: Option<String>,
     resource: Option<String>,
 }
@@ -1391,6 +1440,13 @@ async fn device_authorization(
             })),
         )
             .into_response();
+    }
+    if req.scope.as_deref().is_some_and(|scope| scope != "mcp") {
+        return device_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_scope",
+            Some("only the mcp scope is supported"),
+        );
     }
 
     let expected_resource = mcp_resource(&effective_issuer(&state, &headers));
@@ -2332,8 +2388,16 @@ async fn revoke_token(
 // ── Helpers ──────────────────────────────────────────────────────────────
 
 fn validate_pkce(verifier: &str, challenge: &str, method: &str) -> bool {
-    // OAuth 2.1 requires S256 only. Reject empty challenges/verifiers.
-    if verifier.is_empty() || challenge.is_empty() {
+    // RFC 7636 verifier syntax plus OAuth 2.1's S256-only requirement.
+    if !(43..=128).contains(&verifier.len())
+        || !verifier.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~')
+        })
+        || challenge.len() != 43
+        || !challenge
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
         return false;
     }
     match method {
@@ -2584,6 +2648,8 @@ mod tests {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
+    const TEST_PKCE_CHALLENGE: &str = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
+
     fn test_oauth_app() -> (Router, DbPool) {
         test_oauth_app_with_register_limit(1000)
     }
@@ -2705,11 +2771,7 @@ mod tests {
             },
         };
         let (app, _) = test_oauth_app_with_fetcher(1, Arc::new(fake));
-        let uri = format!(
-            "/oauth/authorize?client_id={}&redirect_uri={}&response_type=code",
-            urlencoding::encode(client_id),
-            urlencoding::encode(redirect_uri),
-        );
+        let uri = authorize_uri(client_id, redirect_uri);
 
         let first = app
             .clone()
@@ -2813,10 +2875,18 @@ mod tests {
     fn authorize_body(client_id: &str, redirect_uri: &str, binding: &str) -> String {
         let csrf = generate_csrf_token(binding);
         format!(
-            "client_id={}&redirect_uri={}&response_type=code&code_challenge=abc&code_challenge_method=S256&scope=mcp&resource=https%3A%2F%2Fexample.com%2Fmcp&csrf_token={}&tool=claude-code",
+            "client_id={}&redirect_uri={}&response_type=code&code_challenge={TEST_PKCE_CHALLENGE}&code_challenge_method=S256&scope=mcp&resource=https%3A%2F%2Fexample.com%2Fmcp&csrf_token={}&tool=claude-code",
             client_id,
             urlencoding::encode(redirect_uri),
             urlencoding::encode(&csrf),
+        )
+    }
+
+    fn authorize_uri(client_id: &str, redirect_uri: &str) -> String {
+        format!(
+            "/oauth/authorize?client_id={}&redirect_uri={}&response_type=code&code_challenge={TEST_PKCE_CHALLENGE}&code_challenge_method=S256&scope=mcp&resource=https%3A%2F%2Fexample.com%2Fmcp",
+            urlencoding::encode(client_id),
+            urlencoding::encode(redirect_uri),
         )
     }
 
@@ -2928,6 +2998,78 @@ mod tests {
             location.contains("iss=https%3A%2F%2Fexample.com"),
             "authorization response must identify its issuer: {location}"
         );
+    }
+
+    #[tokio::test]
+    async fn authorize_rejects_invalid_protocol_parameters_without_minting_codes() {
+        let (app, db) = test_oauth_app();
+        let session_token = create_test_session(&db);
+        let client_id = register_client_helper(&app, "http://localhost/callback").await;
+        let valid = authorize_body(&client_id, "http://localhost/callback", &session_token);
+        let cases = [
+            (
+                "unsupported response type",
+                valid.replace("response_type=code", "response_type=token"),
+            ),
+            (
+                "malformed S256 challenge",
+                valid.replace(TEST_PKCE_CHALLENGE, "short"),
+            ),
+            (
+                "non-S256 challenge method",
+                valid.replace("code_challenge_method=S256", "code_challenge_method=plain"),
+            ),
+            (
+                "unsupported scope",
+                valid.replace("scope=mcp", "scope=admin"),
+            ),
+        ];
+
+        for (case, body) in cases {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/oauth/authorize")
+                        .header("content-type", "application/x-www-form-urlencoded")
+                        .header("cookie", format!("lific_token={session_token}"))
+                        .body(axum::body::Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{case}");
+        }
+        let code_count: i64 = db
+            .read()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM oauth_codes", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(code_count, 0, "invalid requests must not mint codes");
+    }
+
+    #[tokio::test]
+    async fn authorize_page_rejects_invalid_protocol_parameters_before_rendering() {
+        let (app, _) = test_oauth_app();
+        let redirect_uri = "http://localhost/callback";
+        let client_id = register_client_helper(&app, redirect_uri).await;
+        let uri = format!(
+            "/oauth/authorize?client_id={}&redirect_uri={}&response_type=token&code_challenge={TEST_PKCE_CHALLENGE}&code_challenge_method=S256&scope=mcp&resource=https%3A%2F%2Fexample.com%2Fmcp",
+            urlencoding::encode(&client_id),
+            urlencoding::encode(redirect_uri),
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
@@ -3089,6 +3231,22 @@ mod tests {
         assert_eq!(hex_decode(&hex_encode(b"lific")).unwrap(), b"lific");
         assert!(hex_decode("abc").is_err(), "odd length rejected");
         assert!(hex_decode("zz").is_err(), "non-hex rejected");
+    }
+
+    #[test]
+    fn pkce_requires_an_rfc7636_verifier_and_s256_challenge() {
+        let verifier = "test_verifier_abcdefghijklmnopqrstuvwxyz_0123456789";
+        let challenge = base64_url_encode(&Sha256::digest(verifier.as_bytes()));
+
+        assert!(validate_pkce(verifier, &challenge, "S256"));
+        assert!(!validate_pkce("short", &challenge, "S256"));
+        assert!(!validate_pkce(
+            "test verifier with spaces that is definitely long enough",
+            &challenge,
+            "S256"
+        ));
+        assert!(!validate_pkce(verifier, &challenge, "plain"));
+        assert!(!validate_pkce(verifier, "short", "S256"));
     }
 
     // ── LIF-49: metadata does not advertise refresh_token ────
@@ -4173,7 +4331,7 @@ mod tests {
 
         let approve = |app: Router, csrf: &str| {
             let body = format!(
-                "client_id={}&redirect_uri={}&response_type=code&code_challenge=abc&code_challenge_method=S256&scope=mcp&resource=https%3A%2F%2Fexample.com%2Fmcp&csrf_token={}&tool=opencode",
+                "client_id={}&redirect_uri={}&response_type=code&code_challenge={TEST_PKCE_CHALLENGE}&code_challenge_method=S256&scope=mcp&resource=https%3A%2F%2Fexample.com%2Fmcp&csrf_token={}&tool=opencode",
                 client_id,
                 urlencoding::encode("http://localhost/callback"),
                 urlencoding::encode(csrf),
@@ -4280,7 +4438,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri(format!("/oauth/authorize?client_id={client_id}&redirect_uri={}&response_type=code", urlencoding::encode("http://localhost/callback")))
+                    .uri(authorize_uri(&client_id, "http://localhost/callback"))
                     .body(axum::body::Body::empty())
                     .unwrap(),
             )
@@ -4320,7 +4478,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri(format!("/oauth/authorize?client_id={client_id}&redirect_uri={}&response_type=code", urlencoding::encode("http://localhost/callback")))
+                    .uri(authorize_uri(&client_id, "http://localhost/callback"))
                     .body(axum::body::Body::empty())
                     .unwrap(),
             )
@@ -4348,7 +4506,7 @@ mod tests {
         let csrf = generate_csrf_token(&session_token);
         // No tool, no tool_custom → must be rejected, not silently attributed.
         let body = format!(
-            "client_id={}&redirect_uri={}&response_type=code&code_challenge=abc&code_challenge_method=S256&scope=mcp&resource=https%3A%2F%2Fexample.com%2Fmcp&csrf_token={}",
+            "client_id={}&redirect_uri={}&response_type=code&code_challenge={TEST_PKCE_CHALLENGE}&code_challenge_method=S256&scope=mcp&resource=https%3A%2F%2Fexample.com%2Fmcp&csrf_token={}",
             client_id,
             urlencoding::encode("http://localhost/callback"),
             urlencoding::encode(&csrf),
@@ -4376,7 +4534,7 @@ mod tests {
         let client_id = register_client_helper(&app, "http://localhost/callback").await;
         let csrf = generate_csrf_token(&session_token);
         let body = format!(
-            "client_id={}&redirect_uri={}&response_type=code&code_challenge=abc&code_challenge_method=S256&scope=mcp&resource=https%3A%2F%2Fexample.com%2Fmcp&csrf_token={}&tool=__custom__&tool_custom=admin",
+            "client_id={}&redirect_uri={}&response_type=code&code_challenge={TEST_PKCE_CHALLENGE}&code_challenge_method=S256&scope=mcp&resource=https%3A%2F%2Fexample.com%2Fmcp&csrf_token={}&tool=__custom__&tool_custom=admin",
             client_id,
             urlencoding::encode("http://localhost/callback"),
             urlencoding::encode(&csrf),
@@ -4406,7 +4564,7 @@ mod tests {
         let client_id = register_client_helper(&app, "http://localhost/callback").await;
         let csrf = generate_csrf_token(&session_token);
         let body = format!(
-            "client_id={}&redirect_uri={}&response_type=code&code_challenge=abc&code_challenge_method=S256&scope=mcp&resource=https%3A%2F%2Fexample.com%2Fmcp&csrf_token={}&tool=__custom__&tool_custom=My Editor",
+            "client_id={}&redirect_uri={}&response_type=code&code_challenge={TEST_PKCE_CHALLENGE}&code_challenge_method=S256&scope=mcp&resource=https%3A%2F%2Fexample.com%2Fmcp&csrf_token={}&tool=__custom__&tool_custom=My Editor",
             client_id,
             urlencoding::encode("http://localhost/callback"),
             urlencoding::encode(&csrf),
@@ -4549,6 +4707,34 @@ mod tests {
         assert!(vuri.ends_with("/oauth/device"));
         let vuc = v["verification_uri_complete"].as_str().unwrap();
         assert!(vuc.contains("user_code="));
+    }
+
+    #[tokio::test]
+    async fn device_authorization_rejects_an_unsupported_scope() {
+        let (app, db) = test_oauth_app();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/device_authorization")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(axum::body::Body::from(
+                        "client_name=Bad+Scope&scope=admin&resource=https%3A%2F%2Fexample.com%2Fmcp",
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"], "invalid_scope");
+        let count: i64 = db
+            .read()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM oauth_device_codes", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
     }
 
     #[tokio::test]
