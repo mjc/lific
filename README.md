@@ -100,7 +100,7 @@ Each client gets its native schema (`mcpServers` vs `servers` vs `mcp`, Codex TO
 <details>
 <summary>OAuth, if you'd rather auth as yourself</summary>
 
-Lific implements the full MCP authorization spec (RFC 9728 protected-resource metadata, dynamic client registration, PKCE), so OAuth-capable clients can connect with **just the URL** and complete auth in the browser:
+Lific implements MCP OAuth authorization for the July 2026 lifecycle (RFC 9728 protected-resource metadata, dynamic client registration, PKCE, issuer signaling, and resource-bound tokens), so OAuth-capable clients can connect with **just the URL** and complete auth in the browser. Dynamic client registration is retained as the compatibility path while Client ID Metadata Documents are not advertised:
 
 ```bash
 lific connect --oauth --client opencode   # writes a header-less config, mints nothing
@@ -178,7 +178,7 @@ Issues stay flat and lateral; the hierarchy lives on the plan. It's the differen
 ## Built for agents, not just reachable by them
 
 - **`lific agents-md`** writes an idempotent, marker-delimited block into your repo's `AGENTS.md` telling every agent that this project uses Lific: project identifier, CLI examples, and the workflow conventions. `lific connect` offers to do this automatically in project context.
-- **Session instructions.** The MCP server ships its conventions in the `initialize` response, so connected agents know how Lific wants to be used without you explaining it.
+- **Server instructions.** The MCP server ships its conventions in the July `server/discover` response, so connected agents know how Lific wants to be used without you explaining it.
 - **Self-onboarding.** On a fresh database, the MCP tools tell the agent exactly how to bootstrap (`create a project first: manage_resource(...)`) instead of returning an empty list.
 - **Pipe-native CLI.** Output auto-upgrades to JSON when piped, so `lific issue list --project APP | jq` just works, no `--json` needed (though it's there). Prompts never hang a non-interactive caller; they fail fast and name the bypass flag.
 - **Shell completions:** `lific completion fish | source` (bash, zsh, fish, powershell, elvish).
