@@ -1603,7 +1603,8 @@ mod tests {
         let pool = test_db();
         let conn = pool.write().unwrap();
         let issue = seed_issue(&conn);
-        let attachment = create_attachment(&conn, "race", "a.png", "image/png", 1, None).unwrap();
+        let attachment =
+            create_attachment(&conn, &test_sha("race"), "a.png", "image/png", 1, None).unwrap();
         link_attachment(&conn, attachment.id, AttachmentEntity::Issue, issue).unwrap();
 
         assert_eq!(delete_orphan_attachment(&conn, attachment.id).unwrap(), None);
