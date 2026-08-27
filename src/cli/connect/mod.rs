@@ -1428,6 +1428,42 @@ mod tests {
     }
 
     #[test]
+    fn run_stdio_rejects_missing_identity_carrier_before_minting() {
+        let guard = tmp();
+        let dir = guard.path();
+        let b = base(dir);
+        let pool = db::open_memory().unwrap();
+        seed_user(&pool, "solo", true);
+        let mut cfg = Config::default();
+        cfg.database.path = dir.join("mydb.db");
+        let mut a = args(&["cursor"], Scope::Global);
+        a.stdio = true;
+        a.key = None;
+
+        let result = run(&a, &cfg, &pool, &b).unwrap();
+        let outcome = &result.outcomes[0];
+        assert!(
+            outcome
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("cannot carry LIFIC_TOKEN")),
+            "missing identity carrier must be explicit: {:?}",
+            outcome.error
+        );
+        assert!(!b.home.join(".cursor/mcp.json").exists());
+
+        let conn = pool.read().unwrap();
+        let bot_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM users WHERE username = 'cursor-solo'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(bot_count, 0, "a skipped client must not mint an identity");
+    }
+
+    #[test]
     fn run_stdio_openconfig_merges_with_existing_entries() {
         let guard = tmp();
         let dir = guard.path();

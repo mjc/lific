@@ -1084,6 +1084,14 @@ mod tests {
     }
 
     #[test]
+    fn claude_desktop_stdio_token_writes_into_env_field() {
+        let e = find_client("claude-desktop")
+            .unwrap()
+            .compile(&stdio_token_cfg());
+        assert_eq!(e.value["env"]["LIFIC_TOKEN"], "lific_sk-live-AGENTTOKEN");
+    }
+
+    #[test]
     fn codex_stdio_token_writes_into_env_field() {
         let e = find_client("codex").unwrap().compile(&stdio_token_cfg());
         assert_eq!(e.value["env"]["LIFIC_TOKEN"], "lific_sk-live-AGENTTOKEN");
