@@ -23,8 +23,28 @@ pub enum LificError {
     #[error("Too many requests: {0}")]
     TooManyRequests(String),
 
+    /// The caller asked Lific to take on more data than it will accept — an
+    /// import from a repository past the resource ceilings, say. Deliberate
+    /// refusal, not a fault: the message names the limit and is safe to
+    /// return verbatim.
+    #[error("Payload too large: {0}")]
+    PayloadTooLarge(String),
+
     #[error("Internal error: {0}")]
     Internal(String),
+}
+
+/// A GitHub import that hit a deliberate ceiling is the caller's problem and
+/// gets a 413 naming the limit. Everything else (GitHub unreachable, a
+/// malformed response, an allocation failure here) stays a server-side fault
+/// and keeps the generic 500 it has always returned.
+impl From<crate::import::github::GithubImportError> for LificError {
+    fn from(error: crate::import::github::GithubImportError) -> LificError {
+        match error.limit() {
+            Some(limit) => LificError::PayloadTooLarge(limit.to_string()),
+            None => LificError::Internal(error.to_string()),
+        }
+    }
 }
 
 impl IntoResponse for LificError {
@@ -43,6 +63,7 @@ impl IntoResponse for LificError {
             LificError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg.clone()),
             LificError::Conflict(msg) => (StatusCode::CONFLICT, msg.clone()),
             LificError::TooManyRequests(msg) => (StatusCode::TOO_MANY_REQUESTS, msg.clone()),
+            LificError::PayloadTooLarge(msg) => (StatusCode::PAYLOAD_TOO_LARGE, msg.clone()),
             LificError::Internal(msg) => {
                 error!(error = %msg, "internal error");
                 (

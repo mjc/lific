@@ -25,6 +25,88 @@ pub const MAX_GITHUB_COMMENTS_PER_ISSUE: usize = 1_000;
 pub const MAX_GITHUB_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_GITHUB_NORMALIZED_BYTES: usize = 128 * 1024 * 1024;
 
+/// Which deliberate ceiling an import ran into.
+///
+/// Each variant carries the numbers that produced it rather than a
+/// pre-rendered sentence, so callers (and tests) can branch on *which* limit
+/// fired without pattern-matching prose. `Display` renders the operator-facing
+/// message, which is the only place the wording lives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GithubLimit {
+    /// The repository has more issues than Lific will import.
+    Issues { max: usize },
+    /// One issue carries more comments than Lific will import.
+    CommentsPerIssue { issue_number: i64, max: usize },
+    /// A single GitHub response body was larger than we will buffer.
+    ResponseBytes { label: &'static str, max: usize },
+    /// A single page returned more items than GitHub's own `per_page` allows.
+    PageItems { label: &'static str, max: usize },
+    /// The normalized issues retained in memory outgrew the import budget.
+    NormalizedBytes { max: usize },
+}
+
+impl std::fmt::Display for GithubLimit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GithubLimit::Issues { max } => {
+                write!(f, "GitHub repository has too many issues (more than {max})")
+            }
+            GithubLimit::CommentsPerIssue { issue_number, max } => write!(
+                f,
+                "GitHub issue #{issue_number} has too many comments (more than {max})"
+            ),
+            GithubLimit::ResponseBytes { label, max } => {
+                write!(f, "GitHub {label} response exceeds the {max} byte limit")
+            }
+            GithubLimit::PageItems { label, max } => write!(
+                f,
+                "GitHub {label} response exceeds the per-page limit of {max} items"
+            ),
+            GithubLimit::NormalizedBytes { max } => write!(
+                f,
+                "GitHub import normalized data exceeds the {max} byte limit"
+            ),
+        }
+    }
+}
+
+/// Why a GitHub import stopped.
+///
+/// The split exists so the HTTP layer can answer correctly. A [`Limit`] is a
+/// deliberate refusal: the repository is bigger than Lific will import, the
+/// caller asked for something we will not do, and no amount of retrying
+/// changes that. Collapsing it into a `String` meant the import endpoint
+/// answered `500 internal server error`, which reads as a Lific bug and hides
+/// the one fact the operator needs. [`Upstream`] (GitHub or the network) and
+/// [`Internal`] (an allocation or arithmetic failure on our side) stay
+/// server-side faults.
+///
+/// [`Limit`]: GithubImportError::Limit
+/// [`Upstream`]: GithubImportError::Upstream
+/// [`Internal`]: GithubImportError::Internal
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum GithubImportError {
+    /// A resource ceiling was hit on purpose. Client-facing, actionable.
+    #[error("{0}")]
+    Limit(GithubLimit),
+    /// GitHub was unreachable, refused us, or sent something unparseable.
+    #[error("{0}")]
+    Upstream(String),
+    /// Lific-side failure while assembling the import.
+    #[error("{0}")]
+    Internal(String),
+}
+
+impl GithubImportError {
+    /// The limit this error reports, if it reports one.
+    pub fn limit(&self) -> Option<GithubLimit> {
+        match self {
+            GithubImportError::Limit(limit) => Some(*limit),
+            _ => None,
+        }
+    }
+}
+
 /// One issue as returned by the GitHub REST API (fields we use).
 #[derive(Debug, Clone, Deserialize)]
 pub struct GithubIssue {
@@ -176,10 +258,10 @@ pub trait GithubFetcher {
         &self,
         page: u32,
         state: StateFilter,
-    ) -> Result<(Vec<GithubIssue>, bool), String>;
+    ) -> Result<(Vec<GithubIssue>, bool), GithubImportError>;
 
     /// Fetch all comments for one issue number.
-    fn fetch_comments(&self, issue_number: i64) -> Result<Vec<GithubComment>, String>;
+    fn fetch_comments(&self, issue_number: i64) -> Result<Vec<GithubComment>, GithubImportError>;
 }
 
 /// Walk all pages of a [`GithubFetcher`], filtering out PRs, and normalize
@@ -190,7 +272,7 @@ pub fn collect(
     slug: &str,
     state: StateFilter,
     map: &StatusMap,
-) -> Result<super::FetchedIssues, String> {
+) -> Result<super::FetchedIssues, GithubImportError> {
     let mut out = super::FetchedIssues::default();
     let mut total_normalized_bytes = 0usize;
     let mut page = 1u32;
@@ -202,10 +284,9 @@ pub fn collect(
                 continue;
             }
             if out.issues.len() >= MAX_GITHUB_ISSUES {
-                return Err(format!(
-                    "GitHub repository has too many issues (more than {})",
-                    MAX_GITHUB_ISSUES
-                ));
+                return Err(GithubImportError::Limit(GithubLimit::Issues {
+                    max: MAX_GITHUB_ISSUES,
+                }));
             }
             out.skipped_assignees += issue.assignees.len();
             if issue.milestone.is_some() {
@@ -213,18 +294,18 @@ pub fn collect(
             }
             let comments = fetcher.fetch_comments(issue.number)?;
             if comments.len() > MAX_GITHUB_COMMENTS_PER_ISSUE {
-                return Err(format!(
-                    "GitHub issue #{} has too many comments ({} > {})",
-                    issue.number,
-                    comments.len(),
-                    MAX_GITHUB_COMMENTS_PER_ISSUE
-                ));
+                return Err(GithubImportError::Limit(GithubLimit::CommentsPerIssue {
+                    issue_number: issue.number,
+                    max: MAX_GITHUB_COMMENTS_PER_ISSUE,
+                }));
             }
             let normalized = map_issue(slug, issue, &comments, map);
             let previous_capacity = out.issues.capacity();
-            out.issues
-                .try_reserve(1)
-                .map_err(|_| "GitHub import normalized allocation failed".to_string())?;
+            out.issues.try_reserve(1).map_err(|_| {
+                GithubImportError::Internal(
+                    "GitHub import normalized allocation failed".to_string(),
+                )
+            })?;
             let issue_slots = out
                 .issues
                 .capacity()
@@ -233,12 +314,13 @@ pub fn collect(
             total_normalized_bytes = total_normalized_bytes
                 .checked_add(issue_slots)
                 .and_then(|bytes| bytes.checked_add(normalized_retained_bytes(&normalized)))
-                .ok_or_else(|| "GitHub import content size overflow".to_string())?;
+                .ok_or_else(|| {
+                    GithubImportError::Internal("GitHub import content size overflow".to_string())
+                })?;
             if total_normalized_bytes > MAX_GITHUB_NORMALIZED_BYTES {
-                return Err(format!(
-                    "GitHub import normalized data exceeds {} byte limit",
-                    MAX_GITHUB_NORMALIZED_BYTES
-                ));
+                return Err(GithubImportError::Limit(GithubLimit::NormalizedBytes {
+                    max: MAX_GITHUB_NORMALIZED_BYTES,
+                }));
             }
             out.issues.push(normalized);
         }
@@ -306,12 +388,16 @@ pub struct LiveGithub {
 }
 
 impl LiveGithub {
-    pub fn new(owner: &str, repo: &str, token: Option<String>) -> Result<LiveGithub, String> {
+    pub fn new(
+        owner: &str,
+        repo: &str,
+        token: Option<String>,
+    ) -> Result<LiveGithub, GithubImportError> {
         let client = reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .user_agent("lific-import/1.0")
             .build()
-            .map_err(|e| format!("http client init failed: {e}"))?;
+            .map_err(|e| GithubImportError::Internal(format!("http client init failed: {e}")))?;
         Ok(LiveGithub {
             client,
             owner: owner.to_string(),
@@ -320,7 +406,7 @@ impl LiveGithub {
         })
     }
 
-    fn get(&self, url: &str) -> Result<reqwest::blocking::Response, String> {
+    fn get(&self, url: &str) -> Result<reqwest::blocking::Response, GithubImportError> {
         let mut req = self
             .client
             .get(url)
@@ -329,7 +415,9 @@ impl LiveGithub {
         if let Some(t) = &self.token {
             req = req.header("Authorization", format!("Bearer {t}"));
         }
-        let resp = req.send().map_err(|e| format!("request failed: {e}"))?;
+        let resp = req
+            .send()
+            .map_err(|e| GithubImportError::Upstream(format!("request failed: {e}")))?;
         // Respect the rate-limit budget: if we're out, surface a clear error
         // rather than hammering. GitHub sets X-RateLimit-Remaining: 0 and a
         // reset epoch when throttled (HTTP 403).
@@ -345,45 +433,53 @@ impl LiveGithub {
                     .get("x-ratelimit-reset")
                     .and_then(|v| v.to_str().ok())
                     .unwrap_or("soon");
-                return Err(format!(
+                return Err(GithubImportError::Upstream(format!(
                     "GitHub rate limit exhausted; resets at epoch {reset}. \
                      Provide a token (--token / GITHUB_TOKEN) for a higher budget."
-                ));
+                )));
             }
-            return Err("GitHub returned 403 (forbidden) — check token permissions".into());
-        }
-        if resp.status().as_u16() == 401 {
-            return Err("GitHub authentication failed — check your token".into());
-        }
-        if resp.status().as_u16() == 404 {
-            return Err(format!(
-                "repo {}/{} not found (or private and token lacks access)",
-                self.owner, self.repo
+            return Err(GithubImportError::Upstream(
+                "GitHub returned 403 (forbidden) — check token permissions".into(),
             ));
         }
+        if resp.status().as_u16() == 401 {
+            return Err(GithubImportError::Upstream(
+                "GitHub authentication failed — check your token".into(),
+            ));
+        }
+        if resp.status().as_u16() == 404 {
+            return Err(GithubImportError::Upstream(format!(
+                "repo {}/{} not found (or private and token lacks access)",
+                self.owner, self.repo
+            )));
+        }
         if !resp.status().is_success() {
-            return Err(format!("GitHub returned HTTP {}", resp.status()));
+            return Err(GithubImportError::Upstream(format!(
+                "GitHub returned HTTP {}",
+                resp.status()
+            )));
         }
         Ok(resp)
     }
 
     fn json_bounded<T: DeserializeOwned>(
         resp: reqwest::blocking::Response,
-        label: &str,
-    ) -> Result<T, String> {
+        label: &'static str,
+    ) -> Result<T, GithubImportError> {
         let mut bytes = Vec::new();
         let mut reader = resp.take((MAX_GITHUB_RESPONSE_BYTES + 1) as u64);
-        reader
-            .read_to_end(&mut bytes)
-            .map_err(|e| format!("failed to read GitHub {label} response: {e}"))?;
+        reader.read_to_end(&mut bytes).map_err(|e| {
+            GithubImportError::Upstream(format!("failed to read GitHub {label} response: {e}"))
+        })?;
         if bytes.len() > MAX_GITHUB_RESPONSE_BYTES {
-            return Err(format!(
-                "GitHub {label} response exceeds {} byte limit",
-                MAX_GITHUB_RESPONSE_BYTES
-            ));
+            return Err(GithubImportError::Limit(GithubLimit::ResponseBytes {
+                label,
+                max: MAX_GITHUB_RESPONSE_BYTES,
+            }));
         }
-        serde_json::from_slice(&bytes)
-            .map_err(|e| format!("failed to parse GitHub {label} JSON: {e}"))
+        serde_json::from_slice(&bytes).map_err(|e| {
+            GithubImportError::Upstream(format!("failed to parse GitHub {label} JSON: {e}"))
+        })
     }
 }
 
@@ -392,7 +488,7 @@ impl GithubFetcher for LiveGithub {
         &self,
         page: u32,
         state: StateFilter,
-    ) -> Result<(Vec<GithubIssue>, bool), String> {
+    ) -> Result<(Vec<GithubIssue>, bool), GithubImportError> {
         let url = format!(
             "https://api.github.com/repos/{}/{}/issues?state={}&per_page=100&page={page}",
             self.owner,
@@ -407,12 +503,15 @@ impl GithubFetcher for LiveGithub {
             .map(|s| s.to_string());
         let issues: Vec<GithubIssue> = Self::json_bounded(resp, "issues")?;
         if issues.len() > 100 {
-            return Err("GitHub issues response exceeds the per-page item limit".into());
+            return Err(GithubImportError::Limit(GithubLimit::PageItems {
+                label: "issues",
+                max: 100,
+            }));
         }
         Ok((issues, has_next_page(link.as_deref())))
     }
 
-    fn fetch_comments(&self, issue_number: i64) -> Result<Vec<GithubComment>, String> {
+    fn fetch_comments(&self, issue_number: i64) -> Result<Vec<GithubComment>, GithubImportError> {
         let mut all = Vec::new();
         let mut page = 1u32;
         loop {
@@ -427,11 +526,17 @@ impl GithubFetcher for LiveGithub {
                 .and_then(|v| v.to_str().ok())
                 .map(|s| s.to_string());
             let batch: Vec<GithubComment> = Self::json_bounded(resp, "comments")?;
-            if batch.len() > 100 || all.len() + batch.len() > MAX_GITHUB_COMMENTS_PER_ISSUE {
-                return Err(format!(
-                    "GitHub comments exceed the {} per-issue limit",
-                    MAX_GITHUB_COMMENTS_PER_ISSUE
-                ));
+            if batch.len() > 100 {
+                return Err(GithubImportError::Limit(GithubLimit::PageItems {
+                    label: "comments",
+                    max: 100,
+                }));
+            }
+            if all.len() + batch.len() > MAX_GITHUB_COMMENTS_PER_ISSUE {
+                return Err(GithubImportError::Limit(GithubLimit::CommentsPerIssue {
+                    issue_number,
+                    max: MAX_GITHUB_COMMENTS_PER_ISSUE,
+                }));
             }
             all.extend(batch);
             if !has_next_page(link.as_deref()) {
@@ -544,22 +649,51 @@ mod tests {
         pages: Vec<Vec<GithubIssue>>,
         comments: Vec<GithubComment>,
         comment_fetches: std::cell::Cell<usize>,
+        /// When set, `fetch_comments` fails with this instead of returning
+        /// `comments`, standing in for GitHub or the network dropping out.
+        comment_failure: Option<GithubImportError>,
     }
+
+    impl FakeGithub {
+        fn new(pages: Vec<Vec<GithubIssue>>, comments: Vec<GithubComment>) -> FakeGithub {
+            FakeGithub {
+                pages,
+                comments,
+                comment_fetches: std::cell::Cell::new(0),
+                comment_failure: None,
+            }
+        }
+    }
+
     impl GithubFetcher for FakeGithub {
         fn fetch_issues_page(
             &self,
             page: u32,
             _state: StateFilter,
-        ) -> Result<(Vec<GithubIssue>, bool), String> {
+        ) -> Result<(Vec<GithubIssue>, bool), GithubImportError> {
             let idx = (page - 1) as usize;
             let issues = self.pages.get(idx).cloned().unwrap_or_default();
             let has_next = idx + 1 < self.pages.len();
             Ok((issues, has_next))
         }
-        fn fetch_comments(&self, _n: i64) -> Result<Vec<GithubComment>, String> {
+        fn fetch_comments(&self, _n: i64) -> Result<Vec<GithubComment>, GithubImportError> {
             self.comment_fetches.set(self.comment_fetches.get() + 1);
-            Ok(self.comments.clone())
+            match &self.comment_failure {
+                Some(error) => Err(error.clone()),
+                None => Ok(self.comments.clone()),
+            }
         }
+    }
+
+    fn collect_with(
+        fetcher: &FakeGithub,
+    ) -> Result<super::super::FetchedIssues, GithubImportError> {
+        collect(
+            fetcher,
+            "octocat/hello",
+            StateFilter::All,
+            &StatusMap::default(),
+        )
     }
 
     #[test]
@@ -567,24 +701,17 @@ mod tests {
         let all = fixture_issues();
         // Split fixture across two pages to exercise pagination.
         let (p1, p2) = all.split_at(2);
-        let fetcher = FakeGithub {
-            pages: vec![p1.to_vec(), p2.to_vec()],
-            comments: vec![GithubComment {
+        let fetcher = FakeGithub::new(
+            vec![p1.to_vec(), p2.to_vec()],
+            vec![GithubComment {
                 user: Some(GithubUser {
                     login: "octocat".into(),
                 }),
                 body: Some("a comment".into()),
                 created_at: Some("2024-01-01T00:00:00Z".into()),
             }],
-            comment_fetches: std::cell::Cell::new(0),
-        };
-        let fetched = collect(
-            &fetcher,
-            "octocat/hello",
-            StateFilter::All,
-            &StatusMap::default(),
-        )
-        .unwrap();
+        );
+        let fetched = collect_with(&fetcher).unwrap();
         // Fixture: 3 real issues + 1 PR.
         assert_eq!(fetched.issues.len(), 3);
         assert_eq!(fetched.skipped_non_issues, 1);
@@ -596,9 +723,10 @@ mod tests {
     #[test]
     fn collect_rejects_comment_blowup() {
         let issue = fixture_issues().into_iter().next().unwrap();
-        let fetcher = FakeGithub {
-            pages: vec![vec![issue]],
-            comments: vec![
+        let number = issue.number;
+        let fetcher = FakeGithub::new(
+            vec![vec![issue]],
+            vec![
                 GithubComment {
                     user: None,
                     body: Some("x".into()),
@@ -606,36 +734,103 @@ mod tests {
                 };
                 MAX_GITHUB_COMMENTS_PER_ISSUE + 1
             ],
-            comment_fetches: std::cell::Cell::new(0),
-        };
-        let error = collect(
-            &fetcher,
-            "octocat/hello",
-            StateFilter::All,
-            &StatusMap::default(),
-        )
-        .unwrap_err();
-        assert!(error.contains("too many comments"));
+        );
+        let error = collect_with(&fetcher).unwrap_err();
+        assert_eq!(
+            error.limit(),
+            Some(GithubLimit::CommentsPerIssue {
+                issue_number: number,
+                max: MAX_GITHUB_COMMENTS_PER_ISSUE,
+            })
+        );
     }
 
     #[test]
     fn collect_rejects_issue_limit_before_fetching_comments() {
         let issue = fixture_issues().into_iter().next().unwrap();
-        let fetcher = FakeGithub {
-            pages: vec![vec![issue; MAX_GITHUB_ISSUES + 1]],
-            comments: Vec::new(),
-            comment_fetches: std::cell::Cell::new(0),
-        };
-        let error = collect(
-            &fetcher,
-            "octocat/hello",
-            StateFilter::All,
-            &StatusMap::default(),
-        )
-        .unwrap_err();
+        let fetcher = FakeGithub::new(vec![vec![issue; MAX_GITHUB_ISSUES + 1]], Vec::new());
+        let error = collect_with(&fetcher).unwrap_err();
 
-        assert!(error.contains("too many issues"));
+        assert_eq!(
+            error.limit(),
+            Some(GithubLimit::Issues {
+                max: MAX_GITHUB_ISSUES
+            })
+        );
         assert_eq!(fetcher.comment_fetches.get(), MAX_GITHUB_ISSUES);
+    }
+
+    /// The normalized-size ceiling is about retained memory, not issue count,
+    /// so it has to fire on a handful of very large issues too.
+    #[test]
+    fn collect_rejects_normalized_size_blowup() {
+        let mut issue = fixture_issues().into_iter().next().unwrap();
+        // ~4 MiB of description each; 32 of them clear the 128 MiB budget
+        // while staying far under MAX_GITHUB_ISSUES.
+        issue.body = Some("x".repeat(4 * 1024 * 1024));
+        let fetcher = FakeGithub::new(vec![vec![issue; 64]], Vec::new());
+
+        let error = collect_with(&fetcher).unwrap_err();
+        assert_eq!(
+            error.limit(),
+            Some(GithubLimit::NormalizedBytes {
+                max: MAX_GITHUB_NORMALIZED_BYTES
+            })
+        );
+    }
+
+    /// A limit is a refusal we chose; GitHub failing is not. They must not
+    /// collapse into the same variant, because the HTTP layer answers them
+    /// with different statuses.
+    #[test]
+    fn upstream_failures_are_not_limits() {
+        let issue = fixture_issues().into_iter().next().unwrap();
+        let mut fetcher = FakeGithub::new(vec![vec![issue]], Vec::new());
+        fetcher.comment_failure = Some(GithubImportError::Upstream(
+            "request failed: connection reset".into(),
+        ));
+
+        let error = collect_with(&fetcher).unwrap_err();
+        assert_eq!(error.limit(), None, "a network drop is not a resource limit");
+        assert!(matches!(error, GithubImportError::Upstream(_)));
+    }
+
+    /// `Display` is the only place the operator-facing wording lives; keep it
+    /// pointing at the number that triggered the refusal.
+    #[test]
+    fn limits_render_the_ceiling_they_hit() {
+        assert_eq!(
+            GithubLimit::Issues { max: 10 }.to_string(),
+            "GitHub repository has too many issues (more than 10)"
+        );
+        assert_eq!(
+            GithubLimit::CommentsPerIssue {
+                issue_number: 42,
+                max: 7
+            }
+            .to_string(),
+            "GitHub issue #42 has too many comments (more than 7)"
+        );
+        assert_eq!(
+            GithubLimit::NormalizedBytes { max: 128 }.to_string(),
+            "GitHub import normalized data exceeds the 128 byte limit"
+        );
+        assert_eq!(
+            GithubLimit::ResponseBytes {
+                label: "comments",
+                max: 8
+            }
+            .to_string(),
+            "GitHub comments response exceeds the 8 byte limit"
+        );
+        assert_eq!(
+            GithubLimit::PageItems {
+                label: "issues",
+                max: 100
+            }
+            .to_string(),
+            "GitHub issues response exceeds the per-page limit of 100 items"
+        );
     }
 
     #[test]

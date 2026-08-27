@@ -432,8 +432,7 @@ fn run_github_import_blocking(
         crate::import::github::parse_repo(&req.repo).map_err(LificError::BadRequest)?;
     let state =
         crate::import::github::StateFilter::parse(&req.state).map_err(LificError::BadRequest)?;
-    let fetcher = crate::import::github::LiveGithub::new(&owner, &name, req.token.clone())
-        .map_err(LificError::Internal)?;
+    let fetcher = crate::import::github::LiveGithub::new(&owner, &name, req.token.clone())?;
     let slug = format!("{owner}/{name}");
     import_github_with(db, project_id, owner_id, &fetcher, &slug, state, req)
 }
@@ -457,8 +456,9 @@ pub(super) fn import_github_with(
         open: req.map_open.parse().map_err(LificError::BadRequest)?,
         closed: req.map_closed.parse().map_err(LificError::BadRequest)?,
     };
-    let fetched = crate::import::github::collect(fetcher, slug, state, &status_map)
-        .map_err(LificError::Internal)?;
+    // A resource-ceiling refusal surfaces as 413 (see the `GithubImportError`
+    // conversion in `crate::error`); GitHub being unreachable stays a 500.
+    let fetched = crate::import::github::collect(fetcher, slug, state, &status_map)?;
 
     // A dry run never mints a bot or writes; a real run resolves/creates the
     // import bot owned by the requester.
@@ -1307,7 +1307,7 @@ mod tests {
 
     use crate::db::DbPool;
     use crate::import::github::{
-        GithubComment, GithubFetcher, GithubIssue, GithubUser, StateFilter,
+        GithubComment, GithubFetcher, GithubImportError, GithubIssue, GithubUser, StateFilter,
     };
 
     fn import_pool() -> (DbPool, i64, i64) {
@@ -1343,7 +1343,7 @@ mod tests {
             &self,
             page: u32,
             _state: StateFilter,
-        ) -> Result<(Vec<GithubIssue>, bool), String> {
+        ) -> Result<(Vec<GithubIssue>, bool), GithubImportError> {
             if page > 1 {
                 return Ok((vec![], false));
             }
@@ -1357,7 +1357,7 @@ mod tests {
             .unwrap();
             Ok((issues, false))
         }
-        fn fetch_comments(&self, _n: i64) -> Result<Vec<GithubComment>, String> {
+        fn fetch_comments(&self, _n: i64) -> Result<Vec<GithubComment>, GithubImportError> {
             Ok(vec![GithubComment {
                 user: Some(GithubUser {
                     login: "octocat".into(),
@@ -1365,6 +1365,30 @@ mod tests {
                 body: Some("nice".into()),
                 created_at: Some("2024-01-01T00:00:00Z".into()),
             }])
+        }
+    }
+
+    /// Returns one real issue, then fails `fetch_comments` with whatever the
+    /// test wants — the cheapest way to drive a specific import error through
+    /// the same `collect → LificError` path the endpoint uses.
+    struct FailingGithub(GithubImportError);
+    impl GithubFetcher for FailingGithub {
+        fn fetch_issues_page(
+            &self,
+            page: u32,
+            _state: StateFilter,
+        ) -> Result<(Vec<GithubIssue>, bool), GithubImportError> {
+            if page > 1 {
+                return Ok((vec![], false));
+            }
+            let issues: Vec<GithubIssue> = serde_json::from_str(
+                r#"[{"number":1,"title":"Open one","body":"b","state":"open","labels":[],"assignees":[]}]"#,
+            )
+            .unwrap();
+            Ok((issues, false))
+        }
+        fn fetch_comments(&self, _n: i64) -> Result<Vec<GithubComment>, GithubImportError> {
+            Err(self.0.clone())
         }
     }
 
@@ -1455,5 +1479,91 @@ mod tests {
             )
             .unwrap();
         assert_eq!(closed_status, "done");
+    }
+
+    // ── import resource limits are the caller's problem, not a 500 ────────
+
+    use crate::error::LificError;
+    use crate::import::github::GithubLimit;
+    use axum::response::IntoResponse;
+
+    fn import_error(failure: GithubImportError) -> LificError {
+        let (db, pid, owner) = import_pool();
+        import_github_with(
+            &db,
+            pid,
+            Some(owner),
+            &FailingGithub(failure),
+            "octocat/hello",
+            StateFilter::All,
+            &req(true),
+        )
+        .expect_err("the fetcher was rigged to fail")
+    }
+
+    async fn status_and_message(error: LificError) -> (StatusCode, String) {
+        let response = error.into_response();
+        let status = response.status();
+        let bytes = BodyExt::collect(response.into_body())
+            .await
+            .unwrap()
+            .to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        (status, body["error"].as_str().unwrap().to_string())
+    }
+
+    /// Every deliberate ceiling reaches the client as 413 with the limit
+    /// named. It used to be a bare 500 "internal server error", which reads
+    /// as a Lific bug and tells the operator nothing about their repository.
+    #[tokio::test]
+    async fn import_resource_limits_answer_413_naming_the_limit() {
+        let cases = [
+            GithubLimit::Issues { max: 10_000 },
+            GithubLimit::CommentsPerIssue {
+                issue_number: 7,
+                max: 1_000,
+            },
+            GithubLimit::NormalizedBytes { max: 4096 },
+            GithubLimit::ResponseBytes {
+                label: "issues",
+                max: 4096,
+            },
+        ];
+        for limit in cases {
+            let error = import_error(GithubImportError::Limit(limit));
+            assert!(
+                matches!(error, LificError::PayloadTooLarge(_)),
+                "{limit} must map to PayloadTooLarge, got {error:?}"
+            );
+            let (status, message) = status_and_message(error).await;
+            assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+            assert_eq!(
+                message,
+                limit.to_string(),
+                "the response must name the limit that was hit"
+            );
+        }
+    }
+
+    /// GitHub being unreachable is a server-side fault and keeps the generic
+    /// 500 it has always returned, with the detail staying in the logs.
+    #[tokio::test]
+    async fn import_upstream_failures_stay_internal() {
+        for failure in [
+            GithubImportError::Upstream("request failed: connection reset".into()),
+            GithubImportError::Internal("GitHub import content size overflow".into()),
+        ] {
+            let error = import_error(failure);
+            assert!(
+                matches!(error, LificError::Internal(_)),
+                "upstream/internal failures must not become a client error: {error:?}"
+            );
+            let (status, message) = status_and_message(error).await;
+            assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+            assert_eq!(
+                message, "internal server error",
+                "server-side detail must not leak to the client"
+            );
+        }
     }
 }
