@@ -252,13 +252,6 @@ fn build_app_with_store(
 
     let manager_ext = Arc::new(manager.clone());
 
-    let auth_state = auth::AuthState {
-        db: pool.clone(),
-        manager,
-        public_url: issuer.clone(),
-        required: cfg.auth.required,
-    };
-
     // MCP StreamableHTTP service
     let db_for_mcp = pool.clone();
     let realtime_for_mcp = realtime.clone();
@@ -273,6 +266,15 @@ fn build_app_with_store(
                 let host: String = authority.host().to_string();
                 mcp_allowed_hosts.push(host);
             }
+
+    let auth_state = auth::AuthState {
+        db: pool.clone(),
+        manager,
+        public_url: issuer.clone(),
+        issuer_is_explicit: cfg.server.public_url.is_some(),
+        mcp_allowed_hosts: mcp_allowed_hosts.clone(),
+        required: cfg.auth.required,
+    };
 
     let mcp_config = mcp::streamable_http_config(mcp_allowed_hosts.clone());
 
