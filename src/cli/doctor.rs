@@ -28,9 +28,10 @@
 //!    (0.0.0.0 → 127.0.0.1). Not running = warn (doctor must work offline).
 //! 5. **oauth_discovery** — `GET {base}/.well-known/oauth-protected-resource/mcp`
 //!    → 200 + JSON containing `resource`. Skipped when the server is unreachable.
-//! 6. **mcp** — `POST {base}/mcp` JSON-RPC `initialize`. No key → expect 401 with
-//!    a `WWW-Authenticate` header (auth enforced, discovery advertised) = pass.
-//!    With a key → expect 200 + a `serverInfo` result = pass; wrong key = fail.
+//! 6. **mcp** — `POST {base}/mcp` JSON-RPC `server/discover` with July metadata
+//!    and routing headers. No key → expect 401 with a `WWW-Authenticate` header
+//!    (auth enforced, discovery advertised) = pass. With a key → expect 200 plus
+//!    supported versions, capabilities, server identity, and result metadata.
 //!    Skipped when the server is unreachable.
 //! 7. **public_url** — only when `server.public_url` is set. `GET
 //!    {public_url}/.well-known/oauth-protected-resource/mcp` reachable = pass;
@@ -616,17 +617,22 @@ pub async fn check_oauth_discovery(client: &reqwest::Client, base: &str) -> Chec
 
 // ── Check 6: MCP round-trip ──────────────────────────────────────────────
 
-/// The JSON-RPC `initialize` request body. Pin this probe to the current
+/// The JSON-RPC `server/discover` request body. Pin this probe to the current
 /// Streamable HTTP contract so it exercises stateless 2026 behavior.
-fn initialize_body() -> serde_json::Value {
+fn discovery_body() -> serde_json::Value {
     serde_json::json!({
         "jsonrpc": "2.0",
         "id": 1,
-        "method": "initialize",
+        "method": "server/discover",
         "params": {
-            "protocolVersion": "2026-07-28",
-            "capabilities": {},
-            "clientInfo": { "name": "lific-doctor", "version": env!("CARGO_PKG_VERSION") }
+            "_meta": {
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientInfo": {
+                    "name": "lific-doctor",
+                    "version": env!("CARGO_PKG_VERSION")
+                },
+                "io.modelcontextprotocol/clientCapabilities": {}
+            }
         }
     })
 }
@@ -659,16 +665,18 @@ fn parse_mcp_response_body(body: &str) -> Result<serde_json::Value, String> {
     Err("response was neither JSON nor an SSE JSON event".to_string())
 }
 
-/// `POST {base}/mcp` an `initialize`. Without a key we expect a 401 carrying a
-/// `WWW-Authenticate` header (auth enforced, discovery advertised). With a key
-/// we expect a 200 whose JSON-RPC result contains `serverInfo`.
+/// `POST {base}/mcp` a modern `server/discover`. Without a key we expect a 401
+/// carrying a `WWW-Authenticate` header (auth enforced, discovery advertised).
+/// With a key we validate the July response shape and server identity.
 pub async fn check_mcp(client: &reqwest::Client, base: &str, key: Option<&str>) -> Check {
     let url = format!("{}/mcp", base.trim_end_matches('/'));
     let mut req = client
         .post(&url)
         .header("Accept", "application/json, text/event-stream")
         .header("Content-Type", "application/json")
-        .json(&initialize_body());
+        .header("MCP-Protocol-Version", "2026-07-28")
+        .header("Mcp-Method", "server/discover")
+        .json(&discovery_body());
     if let Some(k) = key {
         req = req.bearer_auth(k);
     }
@@ -722,7 +730,7 @@ pub async fn check_mcp(client: &reqwest::Client, base: &str, key: Option<&str>) 
                 return Check::new(
                     "mcp",
                     Status::Fail,
-                    format!("initialize returned HTTP {}", status.as_u16()),
+                    format!("server/discover returned HTTP {}", status.as_u16()),
                 );
             }
             if resp.headers().contains_key("mcp-session-id") {
@@ -735,37 +743,52 @@ pub async fn check_mcp(client: &reqwest::Client, base: &str, key: Option<&str>) 
             // json_response mode: the body is a plain JSON-RPC envelope.
             match resp.json::<serde_json::Value>().await {
                 Ok(body) => {
-                    if body
-                        .get("result")
-                        .and_then(|r| r.get("serverInfo"))
-                        .is_some()
+                    let result = body.get("result");
+                    let supported_july = result
+                        .and_then(|r| r.get("supportedVersions"))
+                        .and_then(|versions| versions.as_array())
+                        .is_some_and(|versions| versions.iter().any(|v| v == "2026-07-28"));
+                    let server_info = result
+                        .and_then(|r| r.get("_meta"))
+                        .and_then(|meta| {
+                            meta.get("io.modelcontextprotocol/serverInfo")
+                        });
+                    if result
+                        .and_then(|r| r.get("resultType"))
+                        .is_some_and(|kind| kind == "complete")
+                        && supported_july
+                        && server_info.is_some()
                     {
                         let name = body
-                            .pointer("/result/serverInfo/name")
+                            .pointer("/result/_meta/io.modelcontextprotocol~1serverInfo/name")
                             .and_then(|v| v.as_str())
                             .unwrap_or("lific");
                         Check::new(
                             "mcp",
                             Status::Pass,
-                            format!("authorized initialize succeeded (serverInfo: {name})"),
+                            format!("server/discover succeeded (serverInfo: {name})"),
                         )
                     } else if body.get("error").is_some() {
                         Check::new(
                             "mcp",
                             Status::Fail,
-                            format!("initialize returned a JSON-RPC error: {}", body["error"]),
+                            format!(
+                                "server/discover returned a JSON-RPC error: {}",
+                                body["error"]
+                            ),
                         )
                     } else {
                         Check::new(
                             "mcp",
                             Status::Fail,
-                            "200 but result had no serverInfo",
+                            "200 but server/discover result was missing July metadata",
                         )
                     }
+                }
                 Err(e) => Check::new(
                     "mcp",
                     Status::Fail,
-                    format!("200 but body was not JSON: {e}"),
+                    format!("200 but server/discover body was not JSON: {e}"),
                 ),
             }
         }
@@ -1357,7 +1380,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mcp_with_real_key_completes_initialize() {
+    async fn mcp_with_real_key_completes_modern_discovery() {
         let pool = crate::db::open_memory().unwrap();
         let manager = crate::auth::create_key_manager().unwrap();
         let key = crate::auth::create_api_key(&pool, &manager, "doctor-test", None).unwrap();
@@ -1367,11 +1390,10 @@ mod tests {
         let c = check_mcp(&test_client(), &base, Some(&key)).await;
         assert_eq!(c.status, Status::Pass, "detail: {}", c.detail);
         assert!(
-            c.detail.contains("legacy lifecycle"),
+            c.detail.contains("server/discover") && c.detail.contains("serverInfo"),
             "detail: {}",
             c.detail
         );
-        assert!(c.detail.contains("tools/list"), "detail: {}", c.detail);
     }
 
     #[tokio::test]
