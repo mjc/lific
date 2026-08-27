@@ -670,6 +670,47 @@ impl ServerHandler for LificMcp {
         ))
     }
 
+    // rmcp's default implementations return empty successful lists for these
+    // methods. Lific advertises a tools-only capability set, so a successful
+    // response here would contradict discovery and make clients believe the
+    // server implements features it does not provide.
+    fn list_prompts(
+        &self,
+        _request: Option<rmcp::model::PaginatedRequestParams>,
+        _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
+    ) -> impl std::future::Future<Output = Result<rmcp::model::ListPromptsResult, rmcp::ErrorData>>
+    + rmcp::service::MaybeSendFuture
+    + '_ {
+        std::future::ready(Err(rmcp::ErrorData::method_not_found::<
+            rmcp::model::ListPromptsRequestMethod,
+        >()))
+    }
+
+    fn list_resources(
+        &self,
+        _request: Option<rmcp::model::PaginatedRequestParams>,
+        _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
+    ) -> impl std::future::Future<Output = Result<rmcp::model::ListResourcesResult, rmcp::ErrorData>>
+    + rmcp::service::MaybeSendFuture
+    + '_ {
+        std::future::ready(Err(rmcp::ErrorData::method_not_found::<
+            rmcp::model::ListResourcesRequestMethod,
+        >()))
+    }
+
+    fn list_resource_templates(
+        &self,
+        _request: Option<rmcp::model::PaginatedRequestParams>,
+        _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
+    ) -> impl std::future::Future<
+        Output = Result<rmcp::model::ListResourceTemplatesResult, rmcp::ErrorData>,
+    > + rmcp::service::MaybeSendFuture
+      + '_ {
+        std::future::ready(Err(rmcp::ErrorData::method_not_found::<
+            rmcp::model::ListResourceTemplatesRequestMethod,
+        >()))
+    }
+
     /// The one place every MCP tool call passes through, whatever the
     /// transport. The stdio credential check lives here rather than in each
     /// tool for exactly that reason.

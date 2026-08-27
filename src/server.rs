@@ -1450,4 +1450,51 @@ mod authless_mcp_tests {
 
         assert_eq!(response.status(), StatusCode::OK);
     }
+
+    #[tokio::test]
+    async fn undeclared_server_capabilities_are_not_empty_successes() {
+        let pool = db::open_memory().unwrap();
+        let router = build_authless_mcp_router(
+            pool,
+            "capability-token",
+            None,
+            vec!["localhost".into()],
+            crate::mcp::default_allowed_origins(),
+            None,
+            realtime::RealtimeHub::new(),
+        );
+
+        for method in ["prompts/list", "resources/list", "resources/templates/list"] {
+            let body = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": method,
+                "method": method,
+                "params": {
+                    "_meta": {
+                        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                        "io.modelcontextprotocol/clientCapabilities": {}
+                    }
+                }
+            });
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(Method::POST)
+                        .uri("/mcp/capability-token")
+                        .header("host", "localhost")
+                        .header("content-type", "application/json")
+                        .header("accept", "application/json, text/event-stream")
+                        .header("mcp-protocol-version", "2026-07-28")
+                        .header("mcp-method", method)
+                        .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(value["error"]["code"], -32601, "method: {method}");
+        }
+    }
 }
