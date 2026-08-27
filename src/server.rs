@@ -1298,6 +1298,17 @@ mod authless_mcp_tests {
         (status, headers, body.to_vec())
     }
 
+    fn jsonrpc_body(body: &[u8]) -> serde_json::Value {
+        if let Ok(value) = serde_json::from_slice(body) {
+            return value;
+        }
+        let text = std::str::from_utf8(body).expect("MCP body must be UTF-8");
+        text.lines()
+            .filter_map(|line| line.strip_prefix("data: "))
+            .find_map(|data| serde_json::from_str(data).ok())
+            .unwrap_or_else(|| panic!("MCP body contained no JSON-RPC message: {text}"))
+    }
+
     fn contract_app() -> (Router, String) {
         let pool = db::open_memory().unwrap();
         let manager = auth::create_key_manager().unwrap();
@@ -1323,8 +1334,7 @@ mod authless_mcp_tests {
         expected_code: i64,
     ) {
         assert_eq!(status, StatusCode::BAD_REQUEST, "{label}: {body:?}");
-        let value: serde_json::Value = serde_json::from_slice(body)
-            .unwrap_or_else(|error| panic!("{label}: non-JSON error body: {error}: {body:?}"));
+        let value = jsonrpc_body(body);
         assert_eq!(value["error"]["code"], expected_code, "{label}: {value}");
     }
 
@@ -1467,6 +1477,52 @@ mod authless_mcp_tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = response.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(jsonrpc_body(&body)["result"]["protocolVersion"], "2025-03-26");
+    }
+
+    #[tokio::test]
+    async fn legacy_tools_list_omits_july_result_metadata() {
+        let (app, key) = contract_app();
+        let initialize = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "capabilities": {},
+                "clientInfo": {"name": "legacy-wire-test", "version": "1"}
+            }
+        });
+        let (status, headers, body) =
+            post_mcp(app.clone(), "/mcp", Some(&key), &initialize, &[]).await;
+        assert_eq!(status, StatusCode::OK, "initialize: {body:?}");
+        let session_id = headers
+            .get("mcp-session-id")
+            .and_then(|value| value.to_str().ok())
+            .expect("legacy initialize must establish a session");
+
+        let list = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/list",
+            "params": {}
+        });
+        let (status, _, body) = post_mcp(
+            app,
+            "/mcp",
+            Some(&key),
+            &list,
+            &[("mcp-session-id", session_id)],
+        )
+        .await;
+        let value = jsonrpc_body(&body);
+        assert_eq!(status, StatusCode::OK, "tools/list: {value}");
+        let result = value["result"].as_object().expect("tools/list result");
+        for july_field in ["resultType", "ttlMs", "cacheScope"] {
+            assert!(
+                !result.contains_key(july_field),
+                "legacy tools/list leaked July field {july_field}: {value}"
+            );
+        }
     }
 
     /// A wrong path token does not match the route at all (no secret leak,

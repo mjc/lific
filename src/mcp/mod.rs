@@ -174,6 +174,12 @@ pub(crate) fn default_allowed_origins() -> Vec<String> {
         .collect()
 }
 
+fn uses_july_result_contract(protocol_version: Option<&ProtocolVersion>) -> bool {
+    protocol_version.is_some_and(|version| {
+        version.as_str() >= ProtocolVersion::V_2026_07_28.as_str()
+    })
+}
+
 /// Start a stdio server without consuming the first request as an
 /// initialize-only handshake. The direct service loop handles modern
 /// `server/discover` requests and still accepts legacy `initialize` requests
@@ -694,15 +700,17 @@ impl ServerHandler for LificMcp {
     fn list_tools(
         &self,
         _request: Option<rmcp::model::PaginatedRequestParams>,
-        _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
+        context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
     ) -> impl std::future::Future<Output = Result<rmcp::model::ListToolsResult, rmcp::ErrorData>>
     + rmcp::service::MaybeSendFuture
     + '_ {
-        std::future::ready(Ok(
-            rmcp::model::ListToolsResult::with_all_items(self.tool_router.list_all())
+        let mut result = rmcp::model::ListToolsResult::with_all_items(self.tool_router.list_all());
+        if uses_july_result_contract(context.protocol_version().as_ref()) {
+            result = result
                 .with_ttl_ms(3_600_000)
-                .with_cache_scope(rmcp::model::CacheScope::Public),
-        ))
+                .with_cache_scope(rmcp::model::CacheScope::Public);
+        }
+        std::future::ready(Ok(result))
     }
 
     fn complete(
