@@ -9,6 +9,27 @@ A hotfix for a crash that made v2.7.0 unusable. Upgrade immediately if you are o
 - **Opening any issue in the web UI crashed the page.** The issue view showed "Something went wrong" instead of the issue, on every issue, on every instance. Loading an issue clears the comments on screen and then reads how many are loaded, to decide whether a later background refresh should reconcile the whole thread or just fetch the newest page. Those two steps landed in the same reactive effect during the 2.7.0 comment-windowing work, so the effect depended on state it had just written, re-ran itself, and hit Svelte's update-depth limit before anything rendered. The count is now sampled without subscribing to it. Page detail was never affected, and no data was involved: nothing was written, lost, or corrupted.
 - **A failed route no longer disappears without a trace.** The error boundary shows the reader a deliberately generic message and, until now, discarded the underlying exception entirely, so a route that failed on every load left no record in the console or anywhere else. It is still never shown in the UI; it is now logged for whoever is diagnosing it.
 
+### MCP protocol
+
+- **MCP uses the July 2026 lifecycle.** Streamable HTTP and stdio accept
+  stateless `server/discover`, `tools/list`, and `tools/call` requests with
+  per-request metadata, while the explicitly retained `2025-03-26` initialize
+  path remains available for legacy clients. Lific advertises tools only and
+  does not claim protocol resources, prompts, Tasks, Roots, Sampling, Logging,
+  or legacy HTTP+SSE.
+- **OAuth registration follows the July policy.** Client ID Metadata Documents
+  are preferred over deprecated DCR fallback; remote redirects require HTTPS,
+  with HTTP limited to localhost/loopback native callbacks. Resource indicators
+  and issuer signaling remain bound to the protected MCP resource.
+- **Branch-added MCP tests cover the behavior they exercise.** Lifecycle tests
+  prove modern stdio discovery and tools-only HTTP behavior; transport tests
+  cover metadata/header validation, stateless routing, and undeclared methods;
+  OAuth tests cover resource/audience binding, issuer signaling, DCR metadata,
+  and CIMD validation; doctor tests cover modern and explicit legacy probes.
+  `scripts/mcp-conformance.sh` runs the applicable official July server
+  scenarios against a live Lific binary and baselines only diagnostic checks
+  that require fixture-only tools.
+
 ## v2.7.0 (2026-08-22)
 
 Two things Lific only sketched are finished in this release. Attachments stop being download chips: you can annotate a screenshot before it uploads, read a text file or a diff or a zip or a database without leaving the issue, and see every file a project holds in one place. And a project's blocking structure becomes something you can look at and edit, on a graph canvas where dragging one issue onto another links them. Around those: instance admins can manage members without shell access, the activity feed shows real diffs, the issue list points at what moved while you were away, and the CLI's remote backend reaches parity with the local one.

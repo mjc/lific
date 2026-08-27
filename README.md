@@ -97,6 +97,13 @@ lific connect --dry-run --client vscode          # preview without writing
 
 Each client gets its native schema (`mcpServers` vs `servers` vs `mcp`, Codex TOML with an env-var token, Goose YAML; the quirks are handled). JSON configs are merged non-destructively; a file `connect` can't parse safely is left untouched and you get the exact snippet to paste instead.
 
+Lific speaks MCP `2026-07-28` over Streamable HTTP and stdio. Modern requests
+are stateless: use `server/discover` followed by per-request metadata, without
+an initialize handshake or session id. The retained `2025-03-26` lifecycle is
+explicitly version-gated for legacy clients; `lific doctor --legacy-mcp` probes
+that compatibility path. Lific advertises tools only—protocol resources,
+prompts, Tasks, Roots, Sampling, Logging, and legacy HTTP+SSE are unsupported.
+
 <details>
 <summary>OAuth, if you'd rather auth as yourself</summary>
 

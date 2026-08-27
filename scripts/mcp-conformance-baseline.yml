@@ -1,0 +1,8 @@
+server:
+  # These checks require diagnostic tools that an application server cannot
+  # expose unless it opts into the conformance fixture API. Keep them narrow:
+  # any other failure remains an unexpected conformance failure.
+  - server-stateless:sep-2575-server-rejects-undeclared-capability
+  - server-stateless:sep-2575-missing-capability-http-400
+  - server-stateless:sep-2575-http-server-no-independent-requests-on-stream
+  - server-stateless:sep-2575-server-no-log-without-loglevel
