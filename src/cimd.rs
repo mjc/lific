@@ -43,6 +43,7 @@ pub(crate) trait Fetcher: Send + Sync {
 #[derive(Clone)]
 pub(crate) struct HttpFetcher {
     cache: std::sync::Arc<Mutex<HashMap<String, CachedDocument>>>,
+    inflight: std::sync::Arc<tokio::sync::Semaphore>,
 }
 
 #[derive(Clone)]
@@ -57,6 +58,7 @@ impl HttpFetcher {
     pub(crate) fn new() -> Self {
         Self {
             cache: std::sync::Arc::new(Mutex::new(HashMap::new())),
+            inflight: std::sync::Arc::new(tokio::sync::Semaphore::new(16)),
         }
     }
 
@@ -67,6 +69,27 @@ impl HttpFetcher {
     ) -> Result<ClientMetadata, String> {
         let original_url = validate_client_id_url(client_id)?;
         let cache_key = format!("{issuer}\0{client_id}");
+        let cached = self
+            .cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&cache_key)
+            .cloned();
+        if let Some(entry) = cached
+            .as_ref()
+            .filter(|entry| entry.expires_at > Instant::now())
+        {
+            return Ok(entry.metadata.clone());
+        }
+
+        let _permit = self
+            .inflight
+            .acquire()
+            .await
+            .map_err(|_| "CIMD metadata lookup is unavailable".to_string())?;
+
+        // Another request may have populated the cache while this lookup was
+        // waiting for a network slot. Recheck before opening a connection.
         let cached = self
             .cache
             .lock()

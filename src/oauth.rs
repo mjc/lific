@@ -593,6 +593,7 @@ struct AuthorizeParams {
 
 async fn authorize_page(
     State(oauth): State<OAuthState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Query(params): Query<AuthorizeParams>,
 ) -> Response {
@@ -602,6 +603,9 @@ async fn authorize_page(
             Html(format!("<h1>Invalid redirect URI</h1><p>{reason}</p>")),
         )
             .into_response();
+    }
+    if let Err(response) = reserve_cimd_lookup(&oauth, peer, &headers, &params.client_id) {
+        return response;
     }
     if let Err(reason) = load_cimd_metadata(&oauth, &headers, &params.client_id).await {
         return (
@@ -686,6 +690,40 @@ fn registered_redirect_uris(db: &DbPool, client_id: &str) -> Option<Vec<String>>
         )
         .ok()?;
     serde_json::from_str(&json).ok()
+}
+
+fn reserve_cimd_lookup(
+    oauth: &OAuthState,
+    peer: SocketAddr,
+    headers: &HeaderMap,
+    client_id: &str,
+) -> Result<(), Response> {
+    if !crate::cimd::is_client_id_candidate(client_id) {
+        return Ok(());
+    }
+    let ip = crate::ratelimit::client_ip(peer.ip(), headers, &oauth.trusted_proxies);
+    let key = format!("oauth_cimd:{ip}");
+    if oauth.register_limiter.check(&key) {
+        return Ok(());
+    }
+    let retry = oauth.register_limiter.retry_after(&key);
+    warn!(ip = %ip, "OAuth CIMD lookup rate limited");
+    let mut response = (
+        StatusCode::TOO_MANY_REQUESTS,
+        format!(
+            "too many client metadata lookups{}",
+            if retry == 0 {
+                ". Try again later.".to_string()
+            } else {
+                format!(". Try again in {retry} seconds.")
+            }
+        ),
+    )
+        .into_response();
+    if retry > 0 && let Ok(value) = retry.to_string().parse() {
+        response.headers_mut().insert("retry-after", value);
+    }
+    Err(response)
 }
 
 async fn load_cimd_metadata(
@@ -828,6 +866,7 @@ impl ApprovalRefusal {
 
 async fn authorize_approve(
     State(oauth): State<OAuthState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: axum::http::HeaderMap,
     axum::Form(form): axum::Form<ApproveForm>,
 ) -> Response {
@@ -885,6 +924,9 @@ async fn authorize_approve(
             .into_response();
     }
 
+    if let Err(response) = reserve_cimd_lookup(&oauth, peer, &headers, &form.client_id) {
+        return response;
+    }
     let cimd_metadata = match load_cimd_metadata(&oauth, &headers, &form.client_id).await {
         Ok(metadata) => metadata,
         Err(reason) => {
@@ -2649,6 +2691,48 @@ mod tests {
             .await
             .expect("CIMD revalidation should succeed");
         assert!(fetched.is_some(), "a CIMD row must not bypass document lookup");
+    }
+
+    #[tokio::test]
+    async fn cimd_authorization_lookup_is_rate_limited_per_source() {
+        let client_id = "https://client.example/metadata.json";
+        let redirect_uri = "http://127.0.0.1:4312/callback";
+        let fake = FakeCimdFetcher {
+            metadata: crate::cimd::ClientMetadata {
+                client_id: client_id.into(),
+                client_name: "Fixture Client".into(),
+                redirect_uris: vec![redirect_uri.into()],
+            },
+        };
+        let (app, _) = test_oauth_app_with_fetcher(1, Arc::new(fake));
+        let uri = format!(
+            "/oauth/authorize?client_id={}&redirect_uri={}&response_type=code",
+            urlencoding::encode(client_id),
+            urlencoding::encode(redirect_uri),
+        );
+
+        let first = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(&uri)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+
+        let second = app
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
     }
 
     /// Build a test OAuth router the way `lific start` does when
