@@ -79,13 +79,24 @@ impl std::error::Error for WriteError {}
 /// into whatever currently exists at `path`, without writing anything. Used by
 /// both `--dry-run` and the real write path (which then just writes the result).
 pub fn render(path: &Path, format: Format, entry: &CompiledEntry) -> Result<Rendered, WriteError> {
-    let existing = read_existing(path)?;
+    render_from(read_existing(path)?.as_ref(), format, entry)
+}
+
+/// Merge `entry` into an already-read file. Split out so the write path reads
+/// the existing config exactly once — the same open descriptor supplies both
+/// the contents we merge into and the mode we preserve, leaving no window for
+/// the file to be swapped between the two.
+fn render_from(
+    existing: Option<&Existing>,
+    format: Format,
+    entry: &CompiledEntry,
+) -> Result<Rendered, WriteError> {
     let action = if existing.is_some() {
         Action::Updated
     } else {
         Action::Created
     };
-    let existing_str = existing.as_deref().unwrap_or("");
+    let existing_str = existing.map(|e| e.contents.as_str()).unwrap_or("");
     let contents = match format {
         Format::Json => render_json(existing_str, entry)?,
         Format::Toml => render_toml(existing_str, entry)?,
@@ -97,7 +108,8 @@ pub fn render(path: &Path, format: Format, entry: &CompiledEntry) -> Result<Rend
 /// Merge `entry` into the config at `path` and write it back, creating parent
 /// directories as needed. Returns whether the file was created or updated.
 pub fn write(path: &Path, format: Format, entry: &CompiledEntry) -> Result<Action, WriteError> {
-    let rendered = render(path, format, entry)?;
+    let existing = read_existing(path)?;
+    let rendered = render_from(existing.as_ref(), format, entry)?;
     let parent_existed = path.parent().map(|parent| parent.exists()).unwrap_or(true);
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
@@ -131,13 +143,17 @@ pub fn write(path: &Path, format: Format, entry: &CompiledEntry) -> Result<Actio
     options.write(true).create_new(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+        use std::os::unix::fs::OpenOptionsExt;
+        // The mode comes from the descriptor we already read the file through,
+        // never from a fresh lookup of the pathname: a config swapped for a
+        // symlink between the read and the write cannot dictate the mode of
+        // the regular file we publish in its place.
         let mode = if secret {
             0o600
         } else {
-            std::fs::symlink_metadata(path)
-                .ok()
-                .map(|metadata| metadata.mode() & 0o777)
+            existing
+                .as_ref()
+                .map(|existing| existing.mode)
                 .filter(|mode| *mode != 0)
                 .unwrap_or(0o666)
         };
@@ -155,7 +171,24 @@ pub fn write(path: &Path, format: Format, entry: &CompiledEntry) -> Result<Actio
         .map_err(|e| WriteError::new(format!("failed to sync {}: {e}", path.display())))?;
     std::fs::rename(&tmp, path)
         .map_err(|e| WriteError::new(format!("failed to finalize {}: {e}", path.display())))?;
+    sync_parent_dir(parent)?;
     Ok(rendered.action)
+}
+
+/// Flush the directory entry the rename above created, so a crash right after
+/// `connect` cannot leave the config missing even though the write reported
+/// success. Unix only: Windows exposes no directory handle to sync, and
+/// `fsync` on a directory has no meaning there.
+fn sync_parent_dir(_dir: &Path) -> Result<(), WriteError> {
+    #[cfg(unix)]
+    {
+        std::fs::File::open(_dir)
+            .and_then(|dir| dir.sync_all())
+            .map_err(|e| {
+                WriteError::new(format!("failed to sync {}: {e}", _dir.display()))
+            })?;
+    }
+    Ok(())
 }
 
 fn set_private_file(_file: &std::fs::File) -> Result<(), WriteError> {
@@ -187,11 +220,85 @@ fn set_private_dir(_path: &Path) -> Result<(), WriteError> {
     Ok(())
 }
 
+/// An existing config file, read through one descriptor.
+///
+/// The permission bits travel with the contents on purpose. Publishing works
+/// by writing a fresh file and renaming it over the old one, so the mode has
+/// to be carried forward; taking it from a second lookup of the pathname would
+/// mean the bytes we merged and the mode we applied could come from two
+/// different files.
+struct Existing {
+    contents: String,
+    /// Permission bits of the file the contents came from (unix only).
+    #[cfg(unix)]
+    mode: u32,
+}
+
 /// Read the file if present. `Ok(None)` = doesn't exist. An unreadable file is
 /// an error (permissions, etc.).
-fn read_existing(path: &Path) -> Result<Option<String>, WriteError> {
+///
+/// A symlink at `path` is refused rather than followed. Following one would
+/// read whatever it points at — potentially a file full of secrets that has
+/// nothing to do with MCP — merge Lific's entry into it, and then publish the
+/// result as a brand new regular file at `path` wearing a mode we inferred
+/// from the link. The target's contents would land in a file the target's own
+/// permissions never sanctioned. Refusing is also what a user means by
+/// symlinking a config: edit the target, not the link.
+#[cfg(unix)]
+fn read_existing(path: &Path) -> Result<Option<Existing>, WriteError> {
+    use std::io::Read;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).custom_flags(libc::O_NOFOLLOW);
+    let mut file = match options.open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => {
+            // O_NOFOLLOW turns a symlink into ELOOP; say so plainly rather
+            // than handing back the raw errno.
+            if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+                return Err(WriteError::new(format!(
+                    "{} is a symlink; edit the file it points at instead",
+                    path.display()
+                )));
+            }
+            return Err(WriteError::new(format!(
+                "failed to read {}: {e}",
+                path.display()
+            )));
+        }
+    };
+    let metadata = file
+        .metadata()
+        .map_err(|e| WriteError::new(format!("failed to inspect {}: {e}", path.display())))?;
+    if !metadata.file_type().is_file() {
+        return Err(WriteError::new(format!(
+            "{} is not a regular file",
+            path.display()
+        )));
+    }
+    // A hard link means another name still points at this inode. Renaming over
+    // it silently detaches that other name from the config we just updated.
+    if metadata.nlink() != 1 {
+        return Err(WriteError::new(format!(
+            "{} is hard-linked; resolve the extra link before writing",
+            path.display()
+        )));
+    }
+    let mut contents = String::new();
+    file.read_to_string(&mut contents)
+        .map_err(|e| WriteError::new(format!("failed to read {}: {e}", path.display())))?;
+    Ok(Some(Existing {
+        contents,
+        mode: metadata.mode() & 0o777,
+    }))
+}
+
+#[cfg(not(unix))]
+fn read_existing(path: &Path) -> Result<Option<Existing>, WriteError> {
     match std::fs::read_to_string(path) {
-        Ok(s) => Ok(Some(s)),
+        Ok(contents) => Ok(Some(Existing { contents })),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(WriteError::new(format!(
             "failed to read {}: {e}",
@@ -723,6 +830,124 @@ mod tests {
             v["extensions"]["lific"]["uri"].as_str(),
             Some("http://127.0.0.1:3456/mcp")
         );
+    }
+
+    /// A symlinked config is refused, not followed. The regression this
+    /// guards: following the link would read the target's bytes, merge Lific's
+    /// entry into them, and publish the result as a fresh regular file at the
+    /// link's own path — copying whatever the target held (an agent token, a
+    /// password) into a file the target's permissions never allowed.
+    #[cfg(unix)]
+    #[test]
+    fn update_refuses_to_follow_a_config_symlink() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let guard = tmp();
+        let dir = guard.path().join("proj");
+        private_dir(&dir);
+        let target = dir.join("secrets.json");
+        let original = serde_json::json!({ "password": "hunter2" }).to_string();
+        std::fs::write(&target, &original).unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        let path = dir.join("opencode.json");
+        symlink(&target, &path).unwrap();
+
+        let entry = find_client("opencode").unwrap().compile(&remote());
+        let err = write(&path, Format::Json, &entry).unwrap_err();
+        assert!(err.to_string().contains("symlink"), "{err}");
+
+        // The target is untouched, and the link is still a link — nothing was
+        // published over it.
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), original);
+        assert_eq!(
+            std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(
+            std::fs::symlink_metadata(&path)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        // Nothing Lific-shaped was published anywhere in the directory, so the
+        // target's secret was not copied into a new file either.
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_type().unwrap().is_file() {
+                assert_eq!(entry.path(), target, "unexpected file {:?}", entry.path());
+            }
+        }
+    }
+
+    /// A dangling symlink is refused too: `create_new` would otherwise be
+    /// irrelevant, and following it would create the target out of thin air.
+    #[cfg(unix)]
+    #[test]
+    fn update_refuses_a_dangling_config_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let guard = tmp();
+        let dir = guard.path().join("proj");
+        private_dir(&dir);
+        let path = dir.join("opencode.json");
+        let missing = dir.join("nowhere.json");
+        symlink(&missing, &path).unwrap();
+
+        let entry = find_client("opencode").unwrap().compile(&remote());
+        assert!(write(&path, Format::Json, &entry).is_err());
+        assert!(!missing.exists(), "must not materialize the link's target");
+    }
+
+    /// A second name for the same inode means a rename would silently detach
+    /// it from the config the user just updated.
+    #[cfg(unix)]
+    #[test]
+    fn update_refuses_a_hard_linked_config() {
+        let guard = tmp();
+        let dir = guard.path().join("proj");
+        private_dir(&dir);
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "model = \"gpt-5\"\n").unwrap();
+        std::fs::hard_link(&path, dir.join("config.toml.bak")).unwrap();
+
+        let entry = find_client("codex").unwrap().compile(&remote());
+        let err = write(&path, Format::Toml, &entry).unwrap_err();
+        assert!(err.to_string().contains("hard-linked"), "{err}");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "model = \"gpt-5\"\n"
+        );
+    }
+
+    /// The replacement wears the mode of the file we actually read, taken from
+    /// that same descriptor rather than from a second look at the pathname.
+    #[cfg(unix)]
+    #[test]
+    fn update_preserves_the_mode_of_the_file_it_read() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let entry = find_client("codex").unwrap().compile(&remote());
+        for mode in [0o600, 0o640, 0o644] {
+            let guard = tmp();
+            let dir = guard.path().join("proj");
+            private_dir(&dir);
+            let path = dir.join("config.toml");
+            std::fs::write(&path, "model = \"gpt-5\"\n").unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+
+            write(&path, Format::Toml, &entry).unwrap();
+
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                mode,
+                "reference-only config must keep mode {mode:o}"
+            );
+            let doc: toml_edit::DocumentMut =
+                std::fs::read_to_string(&path).unwrap().parse().unwrap();
+            assert!(doc["mcp_servers"]["lific"].is_table());
+            assert!(doc.to_string().contains("model = \"gpt-5\""));
+        }
     }
 
     #[test]

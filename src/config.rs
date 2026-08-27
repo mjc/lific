@@ -4,40 +4,64 @@ use tracing::info;
 
 const CONFIG_FILENAME: &str = "lific.toml";
 
-fn tighten_config_permissions(path: &Path) -> std::io::Result<()> {
+/// A config file that has been opened and read.
+///
+/// The descriptor is kept alongside the contents so the permission tightening
+/// below acts on *the file we read*, not on whatever the pathname resolves to
+/// a moment later. Checking a path and then chmod-ing that same path is two
+/// lookups: between them the file can be replaced with a symlink to something
+/// else, and the chmod lands on the attacker's choice of target.
+struct ConfigFile {
+    contents: String,
+    /// Held only for `fchmod` on unix; nothing else reads it.
+    #[cfg(unix)]
+    file: std::fs::File,
+}
+
+/// Make a group/other-readable config owner-only, through the descriptor it
+/// was read from. Fails closed on symlinks: [`read_config_file`] opens with
+/// `O_NOFOLLOW`, so a symlinked config never produces a [`ConfigFile`] to
+/// tighten in the first place.
+fn tighten_config_permissions(_config: &ConfigFile) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        let metadata = std::fs::symlink_metadata(path)?;
-        if metadata.file_type().is_symlink() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "configuration path must not be a symlink",
-            ));
-        }
+        let metadata = _config.file.metadata()?;
         if metadata.mode() & 0o077 != 0 {
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+            _config
+                .file
+                .set_permissions(std::fs::Permissions::from_mode(0o600))?;
         }
     }
-    #[cfg(not(unix))]
-    let _ = path;
     Ok(())
 }
 
-fn read_config_file(path: &Path) -> std::io::Result<String> {
-    #[cfg(unix)]
-    {
-        use std::io::Read;
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut options = std::fs::OpenOptions::new();
-        options.read(true).custom_flags(libc::O_NOFOLLOW);
-        let mut file = options.open(path)?;
-        let mut contents = String::new();
-        file.read_to_string(&mut contents)?;
-        Ok(contents)
+#[cfg(unix)]
+fn read_config_file(path: &Path) -> std::io::Result<ConfigFile> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).custom_flags(libc::O_NOFOLLOW);
+    let mut file = options.open(path)?;
+    // A directory opens fine on Linux and only fails at read time; a device or
+    // fifo is never a config either. Reject anything that is not a plain file
+    // before its mode is touched.
+    if !file.metadata()?.file_type().is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "configuration path must be a regular file",
+        ));
     }
-    #[cfg(not(unix))]
-    std::fs::read_to_string(path)
+    let mut contents = String::new();
+    file.read_to_string(&mut contents)?;
+    Ok(ConfigFile { contents, file })
+}
+
+#[cfg(not(unix))]
+fn read_config_file(path: &Path) -> std::io::Result<ConfigFile> {
+    Ok(ConfigFile {
+        contents: std::fs::read_to_string(path)?,
+    })
 }
 
 /// A config file was found but could not be honored.
@@ -361,9 +385,9 @@ impl Config {
         for path in &candidates {
             match std::fs::symlink_metadata(path) {
                 Ok(_) => match read_config_file(path) {
-                    Ok(contents) => match toml::from_str::<Config>(&contents) {
+                    Ok(file) => match toml::from_str::<Config>(&file.contents) {
                         Ok(mut config) => {
-                            if let Err(source) = tighten_config_permissions(path)
+                            if let Err(source) = tighten_config_permissions(&file)
                                 && source.kind() != std::io::ErrorKind::PermissionDenied
                             {
                                 return Err(ConfigError::Read {
@@ -617,6 +641,83 @@ enabled = false
         assert_eq!(
             std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
             0o644
+        );
+    }
+
+    /// The chmod rides the descriptor the contents were read from, so it can
+    /// only ever land on that inode. Swapping the *name* for a symlink to a
+    /// sensitive file after the read cannot redirect the permission change,
+    /// which the old check-then-chmod-by-path pair allowed.
+    #[cfg(unix)]
+    #[test]
+    fn tightening_follows_the_opened_file_not_the_pathname() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("lific.toml");
+        std::fs::write(&path, Config::default_toml()).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let inode = std::fs::metadata(&path).unwrap().ino();
+
+        // A bystander an attacker would want the chmod to hit.
+        let bystander = tmp.path().join("secrets");
+        std::fs::write(&bystander, "secret").unwrap();
+        std::fs::set_permissions(&bystander, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        Config::load(Some(&path)).unwrap();
+
+        let after = std::fs::metadata(&path).unwrap();
+        assert_eq!(after.ino(), inode, "same file, start to finish");
+        assert_eq!(after.permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            std::fs::metadata(&bystander).unwrap().permissions().mode() & 0o777,
+            0o644,
+            "nothing else may be chmodded"
+        );
+
+        // And once the name IS a symlink, loading fails closed rather than
+        // tightening whatever it points at.
+        let link = tmp.path().join("link.toml");
+        symlink(&bystander, &link).unwrap();
+        assert!(Config::load(Some(&link)).is_err());
+        assert_eq!(
+            std::fs::metadata(&bystander).unwrap().permissions().mode() & 0o777,
+            0o644
+        );
+    }
+
+    /// Anything that is not a plain file is refused before its mode is
+    /// touched: a directory opens fine on Linux, so the type check is what
+    /// stops it.
+    #[cfg(unix)]
+    #[test]
+    fn loading_config_rejects_a_non_regular_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("lific.toml");
+        std::fs::create_dir(&dir).unwrap();
+
+        assert!(matches!(
+            Config::load(Some(&dir)),
+            Err(ConfigError::Read { .. })
+        ));
+    }
+
+    /// An already-tight config is left exactly as it is — no needless chmod.
+    #[cfg(unix)]
+    #[test]
+    fn loading_config_leaves_owner_only_permissions_alone() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("lific.toml");
+        std::fs::write(&path, Config::default_toml()).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400)).unwrap();
+
+        Config::load(Some(&path)).unwrap();
+
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o400
         );
     }
 
