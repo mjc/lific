@@ -17,6 +17,13 @@ https://your-server.example/mcp
 
 The endpoint uses Streamable HTTP. The server is configured for JSON responses. It is not a standalone SSE endpoint.
 
+HTTP uses the July 2026 stateless lifecycle: each request carries its protocol
+version and client metadata, and the initial request is `server/discover` rather
+than a connection-opening `initialize` handshake. Lific advertises and tests
+`2026-07-28` plus the retained `2025-03-26` legacy lifecycle. Legacy clients
+that require initialize/session behavior can be checked explicitly with
+`lific doctor --legacy-mcp`.
+
 ## API key authentication
 
 HTTP clients authenticate with a bearer API key in the `Authorization` header. Create a key on the server with `lific key create --name <NAME>`. Lific returns the plaintext key once when it creates the key.
@@ -42,7 +49,12 @@ Lific supports OAuth 2.1 for the MCP endpoint. The protected-resource metadata i
 
 OAuth-capable MCP clients can connect to the endpoint URL and complete the authorization flow without a manually created API key. Lific supports authorization-code flow with S256 PKCE. It also supports device authorization.
 
-Lific implements dynamic client registration at `/oauth/register`. Clients can register a redirect URI before starting authorization. Registered redirect URIs must be absolute HTTP or HTTPS URLs.
+Lific currently uses dynamic client registration at `/oauth/register` as its
+compatibility path; Client ID Metadata Documents are not advertised. Clients
+can register a redirect URI before starting authorization. Registered redirect
+URIs must be absolute HTTP or HTTPS URLs. The July `resource` indicator is
+required in both authorization and token requests, and issued access tokens are
+accepted only for the exact MCP resource they name.
 
 Both grants are approved from a signed-in browser, and only from one: an OAuth access token cannot approve an authorization request or a device code. The browser session must also have signed in within the last 15 minutes, because approving a connection mints a 30-day credential for the tool.
 
