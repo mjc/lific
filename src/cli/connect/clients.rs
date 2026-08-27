@@ -1084,6 +1084,12 @@ mod tests {
     }
 
     #[test]
+    fn zed_stdio_token_writes_into_env_field() {
+        let e = find_client("zed").unwrap().compile(&stdio_token_cfg());
+        assert_eq!(e.value["env"]["LIFIC_TOKEN"], "lific_sk-live-AGENTTOKEN");
+    }
+
+    #[test]
     fn stdio_without_token_writes_no_env_entry() {
         // A plain stdio config (operator, no agent) must not invent an env map.
         for id in ["opencode", "claude-code", "codex"] {
