@@ -916,7 +916,7 @@ pub async fn require_api_key(
                 &mcp_resource,
             )
         } else {
-            crate::oauth::resolve_oauth_credential(&auth.db, &token)
+            crate::oauth::resolve_oauth_credential_for_rest(&auth.db, &token)
         };
         match credential {
             Ok(credential) => {
@@ -2330,6 +2330,13 @@ mod tests {
             .id
         };
         let token = insert_oauth_token(&pool, "resolves", Some(user_id));
+        pool.write()
+            .unwrap()
+            .execute(
+                "UPDATE oauth_tokens SET resource = NULL WHERE access_token = ?1",
+                params![sha256_hex(token.as_bytes())],
+            )
+            .unwrap();
 
         let resp = echo_app(test_auth_state(&pool))
             .oneshot(
@@ -2348,6 +2355,40 @@ mod tests {
             format!("user:{user_id}:tokenuser:false").as_bytes(),
             "OAuth token must resolve to the bound user, not None"
         );
+    }
+
+    #[tokio::test]
+    async fn mcp_audience_bound_oauth_token_is_rejected_on_rest() {
+        let pool = test_db();
+        let user_id = {
+            let conn = pool.write().unwrap();
+            crate::db::queries::users::create_user(
+                &conn,
+                &crate::db::models::CreateUser {
+                    username: "mcp-only-user".into(),
+                    email: "mcp-only-user@test.com".into(),
+                    password: "testpassword1".into(),
+                    display_name: None,
+                    is_admin: false,
+                    is_bot: false,
+                },
+            )
+            .unwrap()
+            .id
+        };
+        let token = insert_oauth_token(&pool, "mcp-only", Some(user_id));
+
+        let response = echo_app(test_auth_state(&pool))
+            .oneshot(
+                Request::builder()
+                    .uri("/echo")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
@@ -2447,6 +2488,13 @@ mod tests {
             .id
         };
         let token = insert_oauth_token(&pool, "bot", Some(bot_id));
+        pool.write()
+            .unwrap()
+            .execute(
+                "UPDATE oauth_tokens SET resource = NULL WHERE access_token = ?1",
+                params![sha256_hex(token.as_bytes())],
+            )
+            .unwrap();
 
         let resp = identity_echo_app(test_auth_state(&pool))
             .oneshot(
@@ -3615,6 +3663,13 @@ mod tests {
         let pool = test_db();
         let uid = seed_user(&pool, "toolowner");
         let token = insert_oauth_token(&pool, "mint", Some(uid));
+        pool.write()
+            .unwrap()
+            .execute(
+                "UPDATE oauth_tokens SET resource = NULL WHERE access_token = ?1",
+                params![sha256_hex(token.as_bytes())],
+            )
+            .unwrap();
 
         let (status, body) = send(
             real_api_app(&pool),
@@ -3647,6 +3702,13 @@ mod tests {
         let pool = test_db();
         let uid = seed_user(&pool, "toolowner2");
         let token = insert_oauth_token(&pool, "surface", Some(uid));
+        pool.write()
+            .unwrap()
+            .execute(
+                "UPDATE oauth_tokens SET resource = NULL WHERE access_token = ?1",
+                params![sha256_hex(token.as_bytes())],
+            )
+            .unwrap();
 
         let cases: [(&str, &str, Option<serde_json::Value>); 9] = [
             ("GET", "/api/auth/keys", None),
@@ -3682,6 +3744,13 @@ mod tests {
         let pool = test_db();
         let uid = seed_user(&pool, "reader");
         let token = insert_oauth_token(&pool, "reads", Some(uid));
+        pool.write()
+            .unwrap()
+            .execute(
+                "UPDATE oauth_tokens SET resource = NULL WHERE access_token = ?1",
+                params![sha256_hex(token.as_bytes())],
+            )
+            .unwrap();
 
         for uri in ["/api/projects", "/api/issues", "/api/users", "/api/auth/me"] {
             let (status, body) = send(real_api_app(&pool), "GET", uri, None, &token).await;
