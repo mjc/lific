@@ -2,13 +2,13 @@ use std::{net::SocketAddr, sync::Arc};
 
 use axum::{
     Router,
-    extract::{ConnectInfo, Json, Query, State},
+    extract::{ConnectInfo, DefaultBodyLimit, Json, Query, State},
     http::{HeaderMap, StatusCode},
     response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
 };
 use hmac::{Hmac, Mac};
-use rusqlite::{OptionalExtension, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -21,6 +21,18 @@ use crate::error::LificError;
 use crate::ratelimit::RateLimiter;
 
 type HmacSha256 = Hmac<Sha256>;
+
+const MAX_OAUTH_BODY_BYTES: usize = 64 * 1024;
+const MAX_CLIENT_NAME_BYTES: usize = 128;
+const MAX_REDIRECT_URIS: usize = 8;
+const MAX_REDIRECT_URI_BYTES: usize = 2048;
+// Leave room for JSON quotes, separators, and escaping around the maximum
+// number and size of redirect URIs.
+const MAX_REDIRECT_METADATA_BYTES: usize = 32 * 1024;
+const DYNAMIC_CLIENT_RETENTION_DAYS: i64 = 7;
+const MAX_DYNAMIC_CLIENT_ROWS: i64 = 1024;
+const MAX_DYNAMIC_CLIENT_STORAGE_BYTES: i64 = 4 * 1024 * 1024;
+const MAX_DEVICE_CODE_ROWS: i64 = 1024;
 
 /// Per-process CSRF secret, generated randomly on startup.
 static CSRF_SECRET: std::sync::LazyLock<[u8; 32]> =
@@ -183,6 +195,12 @@ pub(crate) fn validate_redirect_uri(uri: &str) -> Result<(), &'static str> {
     if trimmed.is_empty() {
         return Err("redirect_uri must not be empty");
     }
+    if trimmed != uri {
+        return Err("redirect_uri must not have surrounding whitespace");
+    }
+    if trimmed.chars().any(char::is_control) {
+        return Err("redirect_uri must not contain control characters");
+    }
     // Lowercase the scheme prefix only; the rest of the URI is case-sensitive.
     let lower_prefix: String = trimmed
         .chars()
@@ -243,6 +261,7 @@ pub fn router(state: OAuthState) -> Router {
         .route("/device", get(device_page).post(device_approve))
         .route("/token", post(token_exchange))
         .route("/revoke", post(revoke_token))
+        .layer(DefaultBodyLimit::max(MAX_OAUTH_BODY_BYTES))
         .with_state(state)
 }
 
@@ -357,6 +376,36 @@ async fn register_client(
             .into_response();
     }
 
+    if req.redirect_uris.len() > MAX_REDIRECT_URIS
+        || req
+            .redirect_uris
+            .iter()
+            .any(|uri| uri.len() > MAX_REDIRECT_URI_BYTES)
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "invalid_redirect_uri",
+                "error_description": "too many or oversized redirect_uris"
+            })),
+        )
+            .into_response();
+    }
+
+    let client_name = req.client_name.unwrap_or_else(|| "MCP Client".into());
+    if client_name.len() > MAX_CLIENT_NAME_BYTES
+        || client_name.chars().any(|c| c.is_control())
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "invalid_client_metadata",
+                "error_description": "client_name is too long or contains control characters"
+            })),
+        )
+            .into_response();
+    }
+
     // ── Validate every submitted redirect_uri ──
     for uri in &req.redirect_uris {
         if let Err(reason) = validate_redirect_uri(uri) {
@@ -372,16 +421,68 @@ async fn register_client(
         }
     }
 
-    let client_id = uuid_v4();
-    let client_name = req.client_name.unwrap_or_else(|| "MCP Client".into());
     let redirect_uris_json =
         serde_json::to_string(&req.redirect_uris).unwrap_or_else(|_| "[]".into());
+    if redirect_uris_json.len() > MAX_REDIRECT_METADATA_BYTES {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "invalid_client_metadata",
+                "error_description": "client metadata is too large"
+            })),
+        )
+            .into_response();
+    }
 
     let db = state.db.clone();
     let conn = match db.write() {
         Ok(c) => c,
         Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "database error").into_response(),
     };
+    // Anonymous registrations are disposable. Reclaim old clients that have
+    // never participated in a code/token flow before inserting a new row.
+    if let Err(error) = conn.execute(
+        "DELETE FROM oauth_clients
+         WHERE created_at < datetime('now', ?1)
+           AND NOT EXISTS (SELECT 1 FROM oauth_codes c WHERE c.client_id = oauth_clients.client_id)
+           AND NOT EXISTS (SELECT 1 FROM oauth_tokens t WHERE t.client_id = oauth_clients.client_id)",
+        [format!("-{DYNAMIC_CLIENT_RETENTION_DAYS} days")],
+    ) {
+        warn!(%error, "failed to clean up stale OAuth clients");
+        return (StatusCode::SERVICE_UNAVAILABLE, "database cleanup error").into_response();
+    }
+    let client_id = uuid_v4();
+    let client_bytes = (client_id.len() + client_name.len() + redirect_uris_json.len()) as i64;
+    let storage = conn.query_row(
+        "SELECT COUNT(*), COALESCE(SUM(
+             length(CAST(client_id AS BLOB))
+             + length(CAST(client_name AS BLOB))
+             + length(CAST(redirect_uris AS BLOB))
+         ), 0)
+         FROM oauth_clients",
+        [],
+        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+    );
+    let (client_count, client_storage_bytes) = match storage {
+        Ok(storage) => storage,
+        Err(error) => {
+            warn!(%error, "failed to inspect OAuth client storage");
+            return (StatusCode::SERVICE_UNAVAILABLE, "database error").into_response();
+        }
+    };
+    if client_count >= MAX_DYNAMIC_CLIENT_ROWS
+        || client_storage_bytes.saturating_add(client_bytes) > MAX_DYNAMIC_CLIENT_STORAGE_BYTES
+    {
+        warn!("OAuth dynamic client storage limit reached");
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(serde_json::json!({
+                "error": "temporarily_unavailable",
+                "error_description": "OAuth registration storage is temporarily full"
+            })),
+        )
+            .into_response();
+    }
     if let Err(e) = conn.execute(
         "INSERT INTO oauth_clients (client_id, client_name, redirect_uris) VALUES (?1, ?2, ?3)",
         params![client_id, client_name, redirect_uris_json],
@@ -1015,20 +1116,14 @@ fn normalize_user_code(input: &str) -> String {
     }
 }
 
-/// Best-effort cleanup of expired device codes. Called opportunistically on new
-/// device_authorization requests so no background task is needed.
-fn cleanup_expired_device_codes(db: &DbPool) {
-    if let Ok(conn) = db.write() {
-        let _ = conn.execute(
-            // `datetime(expires_at)`: device codes are stored as RFC 3339
-            // ('2026-08-20T12:00:00+00:00'), which does NOT compare correctly
-            // against SQLite's own 'YYYY-MM-DD HH:MM:SS' form as raw text. The
-            // 'T' sorts after every digit, so a same-day RFC 3339 timestamp
-            // reads as later than it is and an expired code looks live.
-            "DELETE FROM oauth_device_codes WHERE datetime(expires_at) <= datetime('now')",
-            [],
-        );
-    }
+/// Clean up expired device codes before admitting another device request.
+fn cleanup_expired_device_codes(conn: &Connection) -> rusqlite::Result<usize> {
+    conn.execute(
+        // `datetime(expires_at)` parses the RFC 3339 values stored in this table;
+        // raw text comparison mis-orders them within the same day.
+        "DELETE FROM oauth_device_codes WHERE datetime(expires_at) <= datetime('now')",
+        [],
+    )
 }
 
 #[derive(Deserialize)]
@@ -1091,8 +1186,20 @@ async fn device_authorization(
         })
     };
 
-    // Opportunistic housekeeping.
-    cleanup_expired_device_codes(&state.db);
+    if req
+        .client_name
+        .as_deref()
+        .is_some_and(|name| name.len() > MAX_CLIENT_NAME_BYTES || name.chars().any(|c| c.is_control()))
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "invalid_request",
+                "error_description": "client_name is too long or contains control characters"
+            })),
+        )
+            .into_response();
+    }
 
     // High-entropy device code — return raw once, store only its hash.
     let device_code = format!("{}{}", uuid_v4(), uuid_v4()).replace('-', "");
@@ -1106,6 +1213,32 @@ async fn device_authorization(
         Ok(c) => c,
         Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "database error").into_response(),
     };
+    if let Err(error) = cleanup_expired_device_codes(&conn) {
+        warn!(%error, "failed to clean up expired OAuth device codes");
+        return (StatusCode::SERVICE_UNAVAILABLE, "database cleanup error").into_response();
+    }
+    let device_count: i64 = match conn.query_row(
+        "SELECT COUNT(*) FROM oauth_device_codes",
+        [],
+        |row| row.get(0),
+    ) {
+        Ok(count) => count,
+        Err(error) => {
+            warn!(%error, "failed to inspect OAuth device-code storage");
+            return (StatusCode::SERVICE_UNAVAILABLE, "database error").into_response();
+        }
+    };
+    if device_count >= MAX_DEVICE_CODE_ROWS {
+        warn!("OAuth device-code storage limit reached");
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(serde_json::json!({
+                "error": "temporarily_unavailable",
+                "error_description": "OAuth device authorization storage is temporarily full"
+            })),
+        )
+            .into_response();
+    }
     let mut inserted = false;
     for _ in 0..5 {
         let res = conn.execute(
@@ -2101,7 +2234,6 @@ pub fn resolve_oauth_credential(db: &DbPool, token: &str) -> Result<OAuthCredent
     let Some(bound_user_id) = row.bound_user_id else {
         return Ok(OAuthCredential::LegacyUnbound);
     };
-
     let (Some(user_id), Some(username), Some(display_name), Some(is_admin), Some(is_active), Some(is_bot)) = (
         row.user_id,
         row.username,
@@ -2967,6 +3099,12 @@ mod tests {
     }
 
     #[test]
+    fn validate_redirect_uri_rejects_log_injection_characters() {
+        assert!(validate_redirect_uri(" http://localhost/callback").is_err());
+        assert!(validate_redirect_uri("http://localhost/callback\nforged=entry").is_err());
+    }
+
+    #[test]
     fn validate_redirect_uri_rejects_malformed() {
         assert!(validate_redirect_uri("").is_err());
         assert!(validate_redirect_uri("   ").is_err());
@@ -3020,6 +3158,179 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn register_rejects_oversized_client_metadata() {
+        let (app, _) = test_oauth_app();
+        let body = serde_json::json!({
+            "redirect_uris": ["http://localhost/callback"],
+            "client_name": "x".repeat(MAX_CLIENT_NAME_BYTES + 1)
+        });
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/register")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn register_rejects_too_many_redirect_uris() {
+        let (app, _) = test_oauth_app();
+        let body = serde_json::json!({
+            "redirect_uris": (0..=MAX_REDIRECT_URIS)
+                .map(|_| "http://localhost/callback")
+                .collect::<Vec<_>>()
+        });
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/register")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn register_storage_cap_is_persistent_and_global() {
+        let (app, db) = test_oauth_app();
+        {
+            let conn = db.write().unwrap();
+            for index in 0..MAX_DYNAMIC_CLIENT_ROWS {
+                conn.execute(
+                    "INSERT INTO oauth_clients (client_id, client_name, redirect_uris) VALUES (?1, 'Test', '[\"http://localhost/callback\"]')",
+                    params![format!("cap-client-{index}")],
+                )
+                .unwrap();
+            }
+        }
+
+        let body = serde_json::json!({
+            "redirect_uris": ["http://localhost/callback"],
+            "client_name": "After restart"
+        });
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/register")
+                    .header("content-type", "application/json")
+                    .header("x-forwarded-for", "198.51.100.200")
+                    .body(axum::body::Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
+    async fn register_storage_cap_counts_utf8_bytes() {
+        let (app, db) = test_oauth_app();
+        let multibyte_name = "é".repeat(7_000);
+        {
+            let conn = db.write().unwrap();
+            for index in 0..512 {
+                conn.execute(
+                    "INSERT INTO oauth_clients (client_id, client_name, redirect_uris)
+                     VALUES (?1, ?2, '[\"http://localhost/callback\"]')",
+                    params![format!("utf8-cap-client-{index}"), &multibyte_name],
+                )
+                .unwrap();
+            }
+        }
+
+        let body = serde_json::json!({
+            "redirect_uris": ["http://localhost/callback"],
+            "client_name": "After UTF-8 cap"
+        });
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/register")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
+    async fn device_storage_cap_rejects_new_sources() {
+        let (app, db) = test_oauth_app();
+        let expires_at = (chrono::Utc::now() + chrono::Duration::minutes(5)).to_rfc3339();
+        {
+            let conn = db.write().unwrap();
+            for index in 0..MAX_DEVICE_CODE_ROWS {
+                conn.execute(
+                    "INSERT INTO oauth_device_codes
+                        (device_code_hash, user_code, expires_at, interval_seconds, status)
+                     VALUES (?1, ?2, ?3, 5, 'pending')",
+                    params![
+                        format!("device-hash-{index}"),
+                        format!("ABCD-{index:04}"),
+                        expires_at
+                    ],
+                )
+                .unwrap();
+            }
+        }
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/device_authorization")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .header("x-forwarded-for", "198.51.100.201")
+                    .body(axum::body::Body::from("client_name=New+source"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[test]
+    fn rfc3339_expiry_is_rejected_even_before_utc_midnight() {
+        let (_, db) = test_oauth_app();
+        let token = "lific_at_expired-rfc3339";
+        let token_hash = hex_encode(&Sha256::digest(token.as_bytes()));
+        let expires = (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339();
+        let conn = db.write().unwrap();
+        conn.execute(
+            "INSERT INTO oauth_clients (client_id, client_name, redirect_uris) VALUES ('expiry-client', 'Test', '[\"http://localhost\"]')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO oauth_tokens (access_token, client_id, expires_at, scope) VALUES (?1, 'expiry-client', ?2, 'mcp')",
+            params![token_hash, expires],
+        )
+        .unwrap();
+        drop(conn);
+        assert!(matches!(
+            resolve_oauth_credential(&db, token),
+            Err(OAuthReject::Invalid)
+        ));
     }
 
     #[tokio::test]
@@ -4468,7 +4779,8 @@ mod tests {
             insert_device_code(&db, "dead", "BCDF-GHJL", -1);
             assert_eq!(device_codes(&db), 2);
 
-            cleanup_expired_device_codes(&db);
+            let conn = db.write().unwrap();
+            cleanup_expired_device_codes(&conn).unwrap();
 
             assert_eq!(device_codes(&db), 1, "only the expired grant is swept");
             let survivor: String = db
