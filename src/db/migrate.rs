@@ -211,6 +211,11 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "attachment integrity",
         include_str!("../../migrations/043_attachment_integrity.sql"),
     ),
+    (
+        44,
+        "oauth client indexes",
+        include_str!("../../migrations/044_oauth_client_indexes.sql"),
+    ),
 ];
 
 /// Migrations that rebuild a table other tables reference by foreign key.
@@ -519,6 +524,18 @@ mod tests {
             );",
         )
         .unwrap();
+        // A table-rebuild migration needs the same two connection pragmas the
+        // real runner sets around it (see `FK_REBUILD_MIGRATIONS`); without
+        // them the rebuild fails outright, so a fixture that stops past one
+        // has to reproduce them.
+        let rebuilds = FK_REBUILD_MIGRATIONS.iter().any(|version| *version < stop);
+        if rebuilds {
+            conn.execute_batch(
+                "PRAGMA foreign_keys = OFF;
+                 PRAGMA legacy_alter_table = ON;",
+            )
+            .unwrap();
+        }
         for &(version, name, sql) in MIGRATIONS {
             if version >= stop {
                 break;
@@ -528,6 +545,13 @@ mod tests {
             conn.execute(
                 "INSERT INTO _migrations (version, name) VALUES (?1, ?2)",
                 rusqlite::params![version, name],
+            )
+            .unwrap();
+        }
+        if rebuilds {
+            conn.execute_batch(
+                "PRAGMA foreign_keys = ON;
+                 PRAGMA legacy_alter_table = OFF;",
             )
             .unwrap();
         }
@@ -854,5 +878,130 @@ mod tests {
             .is_err(),
             "the unique index must now be case-insensitive"
         );
+    }
+
+    // ── migration 044: OAuth client_id indexes ────────────────────────────
+
+    fn index_names(conn: &Connection, table: &str) -> Vec<String> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT name FROM sqlite_master
+                 WHERE type = 'index' AND tbl_name = ?1 AND name IS NOT NULL
+                 ORDER BY name",
+            )
+            .unwrap();
+        let rows = stmt
+            .query_map(rusqlite::params![table], |row| row.get(0))
+            .unwrap();
+        rows.collect::<Result<Vec<String>, _>>().unwrap()
+    }
+
+    /// The whole point of the index is that SQLite reaches for it instead of
+    /// scanning, so assert against the query planner rather than merely that
+    /// a name exists in `sqlite_master`.
+    fn query_plan(conn: &Connection, sql: &str) -> String {
+        let mut stmt = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+        let rows = stmt.query_map([], |row| row.get::<_, String>(3)).unwrap();
+        rows.collect::<Result<Vec<String>, _>>().unwrap().join("\n")
+    }
+
+    #[test]
+    fn oauth_code_and_token_tables_are_indexed_by_client() {
+        let conn = fully_migrated();
+
+        assert!(
+            index_names(&conn, "oauth_codes").contains(&"idx_oauth_codes_client".to_string()),
+            "oauth_codes must be indexed by client_id"
+        );
+        assert!(
+            index_names(&conn, "oauth_tokens").contains(&"idx_oauth_tokens_client".to_string()),
+            "oauth_tokens must be indexed by client_id"
+        );
+
+        let codes_plan = query_plan(
+            &conn,
+            "SELECT 1 FROM oauth_codes WHERE client_id = 'some-client'",
+        );
+        assert!(
+            codes_plan.contains("idx_oauth_codes_client"),
+            "client_id lookups on oauth_codes must use the index, got: {codes_plan}"
+        );
+        let tokens_plan = query_plan(
+            &conn,
+            "SELECT 1 FROM oauth_tokens WHERE client_id = 'some-client'",
+        );
+        assert!(
+            tokens_plan.contains("idx_oauth_tokens_client"),
+            "client_id lookups on oauth_tokens must use the index, got: {tokens_plan}"
+        );
+    }
+
+    /// The registration bounds prune abandoned clients with one correlated
+    /// `NOT EXISTS` per table. That is the shape the index exists for, so pin
+    /// it: a plan that scans here is the regression.
+    #[test]
+    fn abandoned_client_cleanup_probes_both_indexes() {
+        let conn = fully_migrated();
+        let plan = query_plan(
+            &conn,
+            "SELECT client_id FROM oauth_clients
+             WHERE NOT EXISTS (SELECT 1 FROM oauth_codes c WHERE c.client_id = oauth_clients.client_id)
+               AND NOT EXISTS (SELECT 1 FROM oauth_tokens t WHERE t.client_id = oauth_clients.client_id)",
+        );
+        assert!(
+            plan.contains("idx_oauth_codes_client") && plan.contains("idx_oauth_tokens_client"),
+            "the cleanup sweep must probe both indexes, got: {plan}"
+        );
+    }
+
+    /// Applying 044 to a live database must be additive: an index is not a
+    /// constraint, and a client legitimately holds many codes and tokens.
+    #[test]
+    fn oauth_client_indexes_apply_to_a_populated_database_without_dropping_rows() {
+        let conn = migrated_up_to(44);
+        assert!(
+            !index_names(&conn, "oauth_codes").contains(&"idx_oauth_codes_client".to_string()),
+            "fixture must start before the index exists"
+        );
+        conn.execute_batch(
+            "INSERT INTO oauth_clients (client_id, client_name, redirect_uris)
+                 VALUES ('client-a', 'A', '[]'), ('client-b', 'B', '[]');
+             INSERT INTO oauth_codes (code, client_id, redirect_uri, code_challenge, expires_at)
+                 VALUES ('c1', 'client-a', 'http://x/cb', 'ch', '2030-01-01T00:00:00Z'),
+                        ('c2', 'client-a', 'http://x/cb', 'ch', '2030-01-01T00:00:00Z'),
+                        ('c3', 'client-b', 'http://x/cb', 'ch', '2030-01-01T00:00:00Z');
+             INSERT INTO oauth_tokens (access_token, client_id, expires_at)
+                 VALUES ('t1', 'client-a', '2030-01-01T00:00:00Z'),
+                        ('t2', 'client-a', '2030-01-01T00:00:00Z');",
+        )
+        .unwrap();
+
+        run(&conn).expect("migration 044 must apply to a populated database");
+
+        let counts: (i64, i64) = conn
+            .query_row(
+                "SELECT (SELECT count(*) FROM oauth_codes),
+                        (SELECT count(*) FROM oauth_tokens)",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(counts, (3, 2), "no rows may be lost or deduplicated");
+        assert!(index_names(&conn, "oauth_codes").contains(&"idx_oauth_codes_client".to_string()));
+        assert!(index_names(&conn, "oauth_tokens").contains(&"idx_oauth_tokens_client".to_string()));
+
+        // Non-unique: another code for a client that already has two.
+        conn.execute(
+            "INSERT INTO oauth_codes (code, client_id, redirect_uri, code_challenge, expires_at)
+             VALUES ('c4', 'client-a', 'http://x/cb', 'ch', '2030-01-01T00:00:00Z')",
+            [],
+        )
+        .expect("a client may hold many codes");
+        conn.execute(
+            "INSERT INTO oauth_tokens (access_token, client_id, expires_at)
+             VALUES ('t3', 'client-a', '2030-01-01T00:00:00Z')",
+            [],
+        )
+        .expect("a client may hold many tokens");
     }
 }
