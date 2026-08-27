@@ -180,6 +180,10 @@ fn effective_issuer(state: &OAuthState, headers: &HeaderMap) -> String {
     }
 }
 
+fn mcp_resource(issuer: &str) -> String {
+    format!("{}/mcp", issuer.trim_end_matches('/'))
+}
+
 /// Validate a redirect URI submitted to dynamic client registration.
 ///
 /// We only accept absolute `http://` or `https://` URLs. This explicitly
@@ -279,7 +283,7 @@ async fn protected_resource_metadata(
     // metadata advertises a different resource (e.g. the bare origin). Returning
     // the bare issuer here is what surfaced as "Authorization with the MCP server
     // failed" on claude.ai web even though the token exchange succeeded.
-    let resource = format!("{}/mcp", issuer.trim_end_matches('/'));
+    let resource = mcp_resource(&issuer);
     Json(serde_json::json!({
         "resource": resource,
         "authorization_servers": [issuer],
@@ -314,7 +318,8 @@ async fn authorization_server_metadata(
         // the metadata at its word and sent a secret would have it silently
         // ignored, which reads as "authenticated" when it isn't.
         "token_endpoint_auth_methods_supported": ["none"],
-        "code_challenge_methods_supported": ["S256"]
+        "code_challenge_methods_supported": ["S256"],
+        "authorization_response_iss_parameter_supported": true
     }))
 }
 
@@ -775,13 +780,15 @@ async fn authorize_approve(
         return invalid_session_page();
     }
 
-    let expected_resource = format!(
-        "{}/mcp",
-        effective_issuer(&oauth, &headers).trim_end_matches('/')
-    );
-    if let Some(resource) = form.resource.as_deref()
-        && resource != expected_resource
-    {
+    let expected_resource = mcp_resource(&effective_issuer(&oauth, &headers));
+    let Some(resource) = form.resource.as_deref().filter(|r| !r.is_empty()) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Html("A resource indicator is required.".to_string()),
+        )
+            .into_response();
+    };
+    if resource != expected_resource {
         return (
             StatusCode::BAD_REQUEST,
             Html("Invalid resource indicator.".to_string()),
@@ -864,8 +871,8 @@ async fn authorize_approve(
     };
 
     if let Err(e) = tx.execute(
-        "INSERT INTO oauth_codes (code, client_id, redirect_uri, code_challenge, code_challenge_method, expires_at, scope, user_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO oauth_codes (code, client_id, redirect_uri, code_challenge, code_challenge_method, expires_at, scope, user_id, resource)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![
             code,
             form.client_id,
@@ -875,6 +882,7 @@ async fn authorize_approve(
             expires.to_rfc3339(),
             scope,
             bot_id,
+            resource,
         ],
     ) {
         tracing::error!(error = %e, "failed to store OAuth authorization code");
@@ -896,7 +904,7 @@ async fn authorize_approve(
         redirect_url.push_str(&format!("&state={encoded}"));
     }
     let issuer = effective_issuer(&oauth, &headers);
-    let encoded_issuer = urlencoding::encode(issuer.trim_end_matches('/'));
+    let encoded_issuer = urlencoding::encode(&issuer);
     redirect_url.push_str(&format!("&iss={encoded_issuer}"));
 
     info!(client_id = %form.client_id, "OAuth authorization approved");
@@ -1156,6 +1164,7 @@ struct DeviceAuthRequest {
     #[serde(default)]
     #[allow(dead_code)]
     scope: Option<String>,
+    resource: Option<String>,
 }
 
 /// `POST /oauth/device_authorization` (RFC 8628 §3.1/§3.2). Accepts form OR
@@ -1198,12 +1207,14 @@ async fn device_authorization(
         serde_json::from_slice(&body).unwrap_or(DeviceAuthRequest {
             client_name: None,
             scope: None,
+            resource: None,
         })
     } else {
         // application/x-www-form-urlencoded (default)
         serde_urlencoded::from_bytes(&body).unwrap_or(DeviceAuthRequest {
             client_name: None,
             scope: None,
+            resource: None,
         })
     };
 
@@ -1221,6 +1232,25 @@ async fn device_authorization(
         )
             .into_response();
     }
+
+    let expected_resource = mcp_resource(&effective_issuer(&state, &headers));
+    let Some(resource) = req.resource.as_deref().filter(|r| !r.is_empty()) else {
+        return device_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            Some("missing resource"),
+        );
+    };
+    if resource != expected_resource {
+        return device_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            Some("resource does not identify this MCP server"),
+        );
+    }
+
+    // Opportunistic housekeeping.
+    cleanup_expired_device_codes(&state.db);
 
     // High-entropy device code — return raw once, store only its hash.
     let device_code = format!("{}{}", uuid_v4(), uuid_v4()).replace('-', "");
@@ -1264,14 +1294,15 @@ async fn device_authorization(
     for _ in 0..5 {
         let res = conn.execute(
             "INSERT INTO oauth_device_codes
-                (device_code_hash, user_code, client_name, expires_at, interval_seconds, status)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'pending')",
+                (device_code_hash, user_code, client_name, expires_at, interval_seconds, status, resource)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6)",
             params![
                 device_code_hash,
                 user_code,
                 req.client_name,
                 expires_at.to_rfc3339(),
                 DEVICE_CODE_INTERVAL,
+                resource,
             ],
         );
         match res {
@@ -1537,6 +1568,9 @@ struct TokenRequest {
     /// RFC 8628 device grant: the opaque device_code returned by
     /// /oauth/device_authorization.
     device_code: Option<String>,
+    /// RFC 8707 resource indicator. MCP grants are audience-bound to this
+    /// exact canonical resource and never fall back to the request Host.
+    resource: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -1552,6 +1586,13 @@ async fn token_exchange(
     axum::Form(req): axum::Form<TokenRequest>,
 ) -> Response {
     if req.grant_type == DEVICE_CODE_GRANT {
+        if req.resource.as_deref().is_none_or(str::is_empty) {
+            return device_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                Some("missing resource"),
+            );
+        }
         return device_token_exchange(&state, &req);
     }
     if req.grant_type != "authorization_code" {
@@ -1561,6 +1602,17 @@ async fn token_exchange(
         )
             .into_response();
     }
+
+    let Some(resource) = req.resource.as_deref().filter(|r| !r.is_empty()) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "invalid_request",
+                "error_description": "missing resource"
+            })),
+        )
+            .into_response();
+    };
 
     let Some(code) = &req.code else {
         return (
@@ -1605,13 +1657,14 @@ async fn token_exchange(
         used: i64,
         scope: String,
         user_id: Option<i64>,
+        resource: Option<String>,
     }
 
     let code_row: Result<AuthCodeRow, _> = conn.query_row(
         // `datetime(expires_at)` for the same reason as the device codes: the
         // column holds RFC 3339, and raw text comparison against
         // `datetime('now')` mis-orders it within the same day.
-        "SELECT client_id, redirect_uri, code_challenge, code_challenge_method, used, scope, user_id \
+        "SELECT client_id, redirect_uri, code_challenge, code_challenge_method, used, scope, user_id, resource \
          FROM oauth_codes WHERE code = ?1 AND datetime(expires_at) > datetime('now')",
         params![code],
         |row| {
@@ -1623,6 +1676,7 @@ async fn token_exchange(
                 used: row.get(4)?,
                 scope: row.get(5)?,
                 user_id: row.get(6)?,
+                resource: row.get(7)?,
             })
         },
     );
@@ -1635,6 +1689,7 @@ async fn token_exchange(
         used,
         scope,
         user_id: code_user_id,
+        resource: stored_resource,
     } = match code_row {
         Ok(row) => row,
         Err(_) => {
@@ -1650,6 +1705,17 @@ async fn token_exchange(
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({"error": "invalid_grant", "error_description": "code already used"})),
+        )
+            .into_response();
+    }
+
+    if stored_resource.as_deref() != Some(resource) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "invalid_grant",
+                "error_description": "resource mismatch"
+            })),
         )
             .into_response();
     }
@@ -1747,8 +1813,8 @@ async fn token_exchange(
     let expires_at = chrono::Utc::now() + chrono::Duration::seconds(expires_in as i64);
 
     if let Err(e) = conn.execute(
-        "INSERT INTO oauth_tokens (access_token, client_id, expires_at, scope, user_id) VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![token_hash, stored_client_id, expires_at.to_rfc3339(), scope, code_user_id],
+        "INSERT INTO oauth_tokens (access_token, client_id, expires_at, scope, user_id, resource) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![token_hash, stored_client_id, expires_at.to_rfc3339(), scope, code_user_id, resource],
     ) {
         tracing::error!(error = %e, "failed to store OAuth token");
         return (StatusCode::INTERNAL_SERVER_ERROR, "database error").into_response();
@@ -1816,10 +1882,11 @@ fn device_token_exchange(state: &OAuthState, req: &TokenRequest) -> Response {
         expires_at: String,
         interval_seconds: i64,
         last_polled_at: Option<String>,
+        resource: Option<String>,
     }
 
     let row: Result<DeviceRow, _> = conn.query_row(
-        "SELECT status, user_id, expires_at, interval_seconds, last_polled_at
+        "SELECT status, user_id, expires_at, interval_seconds, last_polled_at, resource
          FROM oauth_device_codes WHERE device_code_hash = ?1",
         params![device_code_hash],
         |r| {
@@ -1829,6 +1896,7 @@ fn device_token_exchange(state: &OAuthState, req: &TokenRequest) -> Response {
                 expires_at: r.get(2)?,
                 interval_seconds: r.get(3)?,
                 last_polled_at: r.get(4)?,
+                resource: r.get(5)?,
             })
         },
     );
@@ -1838,6 +1906,13 @@ fn device_token_exchange(state: &OAuthState, req: &TokenRequest) -> Response {
         // Unknown device_code → invalid_grant per RFC 8628 §3.5.
         Err(_) => return device_error(StatusCode::BAD_REQUEST, "invalid_grant", None),
     };
+
+    if row.resource.as_deref() != req.resource.as_deref() {
+        finish!(
+            conn,
+            device_error(StatusCode::BAD_REQUEST, "invalid_grant", Some("resource mismatch"))
+        );
+    }
 
     let now = chrono::Utc::now();
 
@@ -1964,14 +2039,15 @@ fn device_token_exchange(state: &OAuthState, req: &TokenRequest) -> Response {
             );
 
             if let Err(e) = tx.execute(
-                "INSERT INTO oauth_tokens (access_token, client_id, expires_at, scope, user_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                "INSERT INTO oauth_tokens (access_token, client_id, expires_at, scope, user_id, resource)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![
                     token_hash,
                     client_id,
                     expires_at.to_rfc3339(),
                     scope,
-                    approved_user_id
+                    approved_user_id,
+                    row.resource,
                 ],
             ) {
                 tracing::error!(error = %e, "failed to store device OAuth token");
@@ -2426,7 +2502,7 @@ mod tests {
     fn authorize_body(client_id: &str, redirect_uri: &str, binding: &str) -> String {
         let csrf = generate_csrf_token(binding);
         format!(
-            "client_id={}&redirect_uri={}&response_type=code&code_challenge=abc&code_challenge_method=S256&scope=mcp&csrf_token={}&tool=claude-code",
+            "client_id={}&redirect_uri={}&response_type=code&code_challenge=abc&code_challenge_method=S256&scope=mcp&resource=https%3A%2F%2Fexample.com%2Fmcp&csrf_token={}&tool=claude-code",
             client_id,
             urlencoding::encode(redirect_uri),
             urlencoding::encode(&csrf),
@@ -2548,11 +2624,11 @@ mod tests {
         let (app, db) = test_oauth_app();
         let session_token = create_test_session(&db);
         let client_id = register_client_helper(&app, "http://localhost/callback").await;
-        let body = format!(
-            "{}&resource={}",
-            authorize_body(&client_id, "http://localhost/callback", &session_token),
-            urlencoding::encode("https://other.example/mcp")
-        );
+        let body = authorize_body(&client_id, "http://localhost/callback", &session_token)
+            .replace(
+                "resource=https%3A%2F%2Fexample.com%2Fmcp",
+                "resource=https%3A%2F%2Fother.example%2Fmcp",
+            );
         let resp = app
             .clone()
             .oneshot(
@@ -3483,7 +3559,7 @@ mod tests {
         // CSRF bound to the session presented on the approval (cookie below).
         let csrf = generate_csrf_token(&session_token);
         let body = format!(
-            "client_id={}&redirect_uri={}&response_type=code&code_challenge={}&code_challenge_method=S256&scope=mcp&csrf_token={}&tool=claude-code",
+            "client_id={}&redirect_uri={}&response_type=code&code_challenge={}&code_challenge_method=S256&scope=mcp&resource=https%3A%2F%2Fexample.com%2Fmcp&csrf_token={}&tool=claude-code",
             client_id,
             urlencoding::encode("http://localhost/callback"),
             urlencoding::encode(&challenge),
@@ -3555,7 +3631,7 @@ mod tests {
 
         // Exchange the code; the issued token must carry the same identity.
         let token_body = format!(
-            "grant_type=authorization_code&code={}&redirect_uri={}&client_id={}&code_verifier={}",
+            "grant_type=authorization_code&code={}&redirect_uri={}&client_id={}&code_verifier={}&resource=https%3A%2F%2Fexample.com%2Fmcp",
             code,
             urlencoding::encode("http://localhost/callback"),
             client_id,
@@ -3588,6 +3664,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn token_exchange_requires_the_mcp_resource_indicator() {
+        let (app, db) = test_oauth_app();
+        let client_id = register_client_helper(&app, "http://localhost/callback").await;
+        let expires = (chrono::Utc::now() + chrono::Duration::minutes(10)).to_rfc3339();
+        db.write()
+            .unwrap()
+            .execute(
+                "INSERT INTO oauth_codes
+                 (code, client_id, redirect_uri, code_challenge, code_challenge_method,
+                  expires_at, scope)
+                 VALUES ('resource-required', ?1, 'http://localhost/callback', 'abc', 'S256', ?2, 'mcp')",
+                params![client_id, expires],
+            )
+            .unwrap();
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/token")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(axum::body::Body::from(format!(
+                        "grant_type=authorization_code&code=resource-required&redirect_uri={}&client_id={}&code_verifier=verifier",
+                        urlencoding::encode("http://localhost/callback"),
+                        urlencoding::encode(&client_id),
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"], "invalid_request");
+        assert_eq!(body["error_description"], "missing resource");
+    }
+
+    #[tokio::test]
     async fn reapproval_reuses_the_same_tool_bot() {
         let (app, db) = test_oauth_app();
         let session_token = create_test_session(&db); // user "oauthtest"
@@ -3595,7 +3709,7 @@ mod tests {
 
         let approve = |app: Router, csrf: &str| {
             let body = format!(
-                "client_id={}&redirect_uri={}&response_type=code&code_challenge=abc&code_challenge_method=S256&scope=mcp&csrf_token={}&tool=opencode",
+                "client_id={}&redirect_uri={}&response_type=code&code_challenge=abc&code_challenge_method=S256&scope=mcp&resource=https%3A%2F%2Fexample.com%2Fmcp&csrf_token={}&tool=opencode",
                 client_id,
                 urlencoding::encode("http://localhost/callback"),
                 urlencoding::encode(csrf),
@@ -3770,7 +3884,7 @@ mod tests {
         let csrf = generate_csrf_token(&session_token);
         // No tool, no tool_custom → must be rejected, not silently attributed.
         let body = format!(
-            "client_id={}&redirect_uri={}&response_type=code&code_challenge=abc&code_challenge_method=S256&scope=mcp&csrf_token={}",
+            "client_id={}&redirect_uri={}&response_type=code&code_challenge=abc&code_challenge_method=S256&scope=mcp&resource=https%3A%2F%2Fexample.com%2Fmcp&csrf_token={}",
             client_id,
             urlencoding::encode("http://localhost/callback"),
             urlencoding::encode(&csrf),
@@ -3798,7 +3912,7 @@ mod tests {
         let client_id = register_client_helper(&app, "http://localhost/callback").await;
         let csrf = generate_csrf_token(&session_token);
         let body = format!(
-            "client_id={}&redirect_uri={}&response_type=code&code_challenge=abc&code_challenge_method=S256&scope=mcp&csrf_token={}&tool=__custom__&tool_custom=admin",
+            "client_id={}&redirect_uri={}&response_type=code&code_challenge=abc&code_challenge_method=S256&scope=mcp&resource=https%3A%2F%2Fexample.com%2Fmcp&csrf_token={}&tool=__custom__&tool_custom=admin",
             client_id,
             urlencoding::encode("http://localhost/callback"),
             urlencoding::encode(&csrf),
@@ -3828,7 +3942,7 @@ mod tests {
         let client_id = register_client_helper(&app, "http://localhost/callback").await;
         let csrf = generate_csrf_token(&session_token);
         let body = format!(
-            "client_id={}&redirect_uri={}&response_type=code&code_challenge=abc&code_challenge_method=S256&scope=mcp&csrf_token={}&tool=__custom__&tool_custom=My Editor",
+            "client_id={}&redirect_uri={}&response_type=code&code_challenge=abc&code_challenge_method=S256&scope=mcp&resource=https%3A%2F%2Fexample.com%2Fmcp&csrf_token={}&tool=__custom__&tool_custom=My Editor",
             client_id,
             urlencoding::encode("http://localhost/callback"),
             urlencoding::encode(&csrf),
@@ -3901,10 +4015,10 @@ mod tests {
 
     /// POST /oauth/device_authorization and return the parsed JSON.
     async fn request_device_code(app: &Router, client_name: Option<&str>) -> serde_json::Value {
-        let body = match client_name {
-            Some(n) => format!("client_name={}", urlencoding::encode(n)),
-            None => String::new(),
-        };
+        let mut body = "resource=https%3A%2F%2Fexample.com%2Fmcp".to_string();
+        if let Some(n) = client_name {
+            body.push_str(&format!("&client_name={}", urlencoding::encode(n)));
+        }
         let resp = app
             .clone()
             .oneshot(
@@ -3928,7 +4042,7 @@ mod tests {
         device_code: &str,
     ) -> (StatusCode, serde_json::Value) {
         let body = format!(
-            "grant_type={}&device_code={}",
+            "grant_type={}&device_code={}&resource=https%3A%2F%2Fexample.com%2Fmcp",
             urlencoding::encode("urn:ietf:params:oauth:grant-type:device_code"),
             urlencoding::encode(device_code),
         );
@@ -4812,8 +4926,8 @@ mod tests {
                 .unwrap()
                 .execute(
                     "INSERT INTO oauth_device_codes
-                        (device_code_hash, user_code, expires_at, status)
-                     VALUES (?1, ?2, ?3, 'pending')",
+                        (device_code_hash, user_code, expires_at, status, resource)
+                     VALUES (?1, ?2, ?3, 'pending', 'https://example.com/mcp')",
                     params![hash, user_code, rfc3339_from_now(minutes)],
                 )
                 .unwrap();
@@ -4903,7 +5017,7 @@ mod tests {
         /// issued code from the redirect.
         async fn approve_code(app: &Router, client_id: &str, session: &str) -> String {
             let body = format!(
-                "client_id={}&redirect_uri={}&response_type=code&code_challenge={}&code_challenge_method=S256&scope=mcp&csrf_token={}&tool=claude-code",
+                "client_id={}&redirect_uri={}&response_type=code&code_challenge={}&code_challenge_method=S256&scope=mcp&resource=https%3A%2F%2Fexample.com%2Fmcp&csrf_token={}&tool=claude-code",
                 client_id,
                 urlencoding::encode("http://localhost/callback"),
                 urlencoding::encode(&challenge()),
@@ -4950,7 +5064,7 @@ mod tests {
             code: &str,
         ) -> (StatusCode, serde_json::Value) {
             let body = format!(
-                "grant_type=authorization_code&code={}&redirect_uri={}&client_id={}&code_verifier={}",
+                "grant_type=authorization_code&code={}&redirect_uri={}&client_id={}&code_verifier={}&resource=https%3A%2F%2Fexample.com%2Fmcp",
                 code,
                 urlencoding::encode("http://localhost/callback"),
                 client_id,
@@ -5143,7 +5257,7 @@ mod tests {
                 .unwrap();
 
             let body = format!(
-                "client_id={}&redirect_uri={}&response_type=code&code_challenge={}&code_challenge_method=S256&scope=mcp&csrf_token={}&tool=claude-code",
+                "client_id={}&redirect_uri={}&response_type=code&code_challenge={}&code_challenge_method=S256&scope=mcp&resource=https%3A%2F%2Fexample.com%2Fmcp&csrf_token={}&tool=claude-code",
                 client_id,
                 urlencoding::encode("http://localhost/callback"),
                 urlencoding::encode(&challenge()),
@@ -5391,7 +5505,7 @@ mod tests {
             let _ = session;
 
             let body = format!(
-                "client_id={}&redirect_uri={}&response_type=code&code_challenge={}&code_challenge_method=S256&scope=mcp&csrf_token={}&tool=claude-code",
+                "client_id={}&redirect_uri={}&response_type=code&code_challenge={}&code_challenge_method=S256&scope=mcp&resource=https%3A%2F%2Fexample.com%2Fmcp&csrf_token={}&tool=claude-code",
                 client_id,
                 urlencoding::encode("http://localhost/callback"),
                 urlencoding::encode(&challenge()),
@@ -5431,7 +5545,7 @@ mod tests {
                 .unwrap();
 
             let body = format!(
-                "client_id={}&redirect_uri={}&response_type=code&code_challenge={}&code_challenge_method=S256&scope=mcp&csrf_token={}&tool=claude-code",
+                "client_id={}&redirect_uri={}&response_type=code&code_challenge={}&code_challenge_method=S256&scope=mcp&resource=https%3A%2F%2Fexample.com%2Fmcp&csrf_token={}&tool=claude-code",
                 client_id,
                 urlencoding::encode("http://localhost/callback"),
                 urlencoding::encode(&challenge()),

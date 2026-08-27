@@ -164,7 +164,8 @@ impl HttpDeviceFlow {
 impl DeviceFlow for HttpDeviceFlow {
     fn request_device_code(&self, label: Option<&str>) -> Result<DeviceAuthResponse, String> {
         let url = format!("{}/oauth/device_authorization", self.base);
-        let mut form: Vec<(&str, &str)> = Vec::new();
+        let resource = format!("{}/mcp", self.base.trim_end_matches('/'));
+        let mut form: Vec<(&str, &str)> = vec![("resource", &resource)];
         if let Some(l) = label {
             form.push(("client_name", l));
         }
@@ -185,9 +186,11 @@ impl DeviceFlow for HttpDeviceFlow {
 
     fn poll_token(&self, device_code: &str) -> Result<PollSignal, String> {
         let url = format!("{}/oauth/token", self.base);
+        let resource = format!("{}/mcp", self.base.trim_end_matches('/'));
         let form = [
             ("grant_type", DEVICE_CODE_GRANT),
             ("device_code", device_code),
+            ("resource", resource.as_str()),
         ];
         let resp = self
             .client
