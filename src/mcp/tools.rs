@@ -4267,15 +4267,15 @@ impl LificMcp {
         // parse one shape everywhere.
         let contents = self
             .get_attachment_inner(input)
-            .unwrap_or_else(|error| vec![rmcp::model::Content::text(error_response(error))]);
+            .unwrap_or_else(|error| vec![rmcp::model::ContentBlock::text(error_response(error))]);
         rmcp::model::CallToolResult::success(contents)
     }
 
     fn get_attachment_inner(
         &self,
         input: GetAttachmentInput,
-    ) -> Result<Vec<rmcp::model::Content>, String> {
-        use rmcp::model::Content;
+    ) -> Result<Vec<rmcp::model::ContentBlock>, String> {
+        use rmcp::model::ContentBlock;
 
         let attachment =
             self.read(|conn| queries::attachments::get_attachment(conn, input.attachment_id))?;
@@ -4293,7 +4293,7 @@ impl LificMcp {
             .map_err(sanitize_error)?;
 
         if attachment.mime.starts_with("text/") {
-            return Ok(vec![Content::text(render_attachment_text(
+            return Ok(vec![ContentBlock::text(render_attachment_text(
                 &attachment,
                 &bytes,
                 input.offset,
@@ -4304,20 +4304,20 @@ impl LificMcp {
             // The raster formats a multimodal agent can actually look at.
             // SVG is deliberately excluded, matching `is_inline_safe_mime`.
             return Ok(vec![
-                Content::text(format!(
+                ContentBlock::text(format!(
                     "attachment {}: {} ({}, {})",
                     attachment.id,
                     attachment.filename,
                     attachment.mime,
                     HumanSize(attachment.size_bytes)
                 )),
-                Content::image(
+                ContentBlock::image(
                     base64::engine::general_purpose::STANDARD.encode(&bytes),
                     attachment.mime.clone(),
                 ),
             ]);
         }
-        Ok(vec![Content::text(format!(
+        Ok(vec![ContentBlock::text(format!(
             "attachment {}: {} ({}, {}, sha {}). Binary, download at /api/attachments/{}",
             attachment.id,
             attachment.filename,

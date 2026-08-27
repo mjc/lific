@@ -10,6 +10,7 @@ use rmcp::{
     ServerHandler,
     handler::server::router::tool::ToolRouter,
     model::{ProtocolVersion, ServerCapabilities, ServerInfo},
+    transport::streamable_http_server::tower::StreamableHttpServerConfig,
 };
 
 use crate::db::DbPool;
@@ -17,6 +18,23 @@ use crate::db::models::AuthUser;
 use crate::links::IssueLinkContext;
 use crate::realtime::{RealtimeEvent, RealtimeHub};
 use crate::storage::AttachmentStore;
+
+/// Keep the pre-July MCP transport contract explicit while rmcp evolves.
+/// Legacy clients still negotiate an initialize session and receive
+/// `Mcp-Session-Id` on the HTTP response.
+#[must_use]
+pub(crate) fn legacy_streamable_http_config<I, S>(
+    allowed_hosts: I,
+) -> StreamableHttpServerConfig
+where
+    I: IntoIterator<Item = S>,
+    S: Into<String>,
+{
+    StreamableHttpServerConfig::default()
+        .with_legacy_session_mode(true)
+        .with_json_response(true)
+        .with_allowed_hosts(allowed_hosts)
+}
 
 /// Serialization lock for MCP request handling.
 /// Ensures only one MCP request processes at a time, preventing the race
@@ -172,7 +190,7 @@ impl StdioAuthFailed {
          restart the MCP server.";
 
     fn into_tool_result(self) -> rmcp::model::CallToolResult {
-        rmcp::model::CallToolResult::error(vec![rmcp::model::Content::text(Self::MESSAGE)])
+        rmcp::model::CallToolResult::error(vec![rmcp::model::ContentBlock::text(Self::MESSAGE)])
     }
 }
 
@@ -328,17 +346,18 @@ impl LificMcp {
     /// surfacing anything to the model. A tool error reaches the agent as text
     /// it can read and act on, which is the whole point of telling it to
     /// reconnect. Either way `f` never runs.
-    async fn dispatch_tool<F, Fut>(
+    async fn dispatch_tool<F, Fut, R>(
         &self,
         f: F,
-    ) -> Result<rmcp::model::CallToolResult, rmcp::ErrorData>
+    ) -> Result<R, rmcp::ErrorData>
     where
         F: FnOnce() -> Fut,
-        Fut: std::future::Future<Output = Result<rmcp::model::CallToolResult, rmcp::ErrorData>>,
+        Fut: std::future::Future<Output = Result<R, rmcp::ErrorData>>,
+        R: From<rmcp::model::CallToolResult>,
     {
         match self.with_stdio_auth(f).await {
             Ok(result) => result,
-            Err(StdioAuthFailed) => Ok(StdioAuthFailed.into_tool_result()),
+            Err(StdioAuthFailed) => Ok(R::from(StdioAuthFailed.into_tool_result())),
         }
     }
 
@@ -488,7 +507,7 @@ impl ServerHandler for LificMcp {
         &self,
         request: rmcp::model::CallToolRequestParams,
         context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
-    ) -> impl std::future::Future<Output = Result<rmcp::model::CallToolResult, rmcp::ErrorData>>
+    ) -> impl std::future::Future<Output = Result<rmcp::model::CallToolResponse, rmcp::ErrorData>>
     + rmcp::service::MaybeSendFuture
     + '_ {
         async move {
@@ -983,7 +1002,7 @@ mod tests {
                 )
                 .unwrap();
                 Ok(rmcp::model::CallToolResult::success(vec![
-                    rmcp::model::Content::text("ran"),
+                    rmcp::model::ContentBlock::text("ran"),
                 ]))
             }) as ToolBody
         };
