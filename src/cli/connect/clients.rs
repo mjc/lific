@@ -668,7 +668,7 @@ pub fn all_clients() -> Vec<ClientSpec> {
                 hint: "Zed runs the OAuth flow automatically when no header is set",
             },
             format: Format::Json,
-            stdio_env_key: None,
+            stdio_env_key: Some("env"),
             global_path: |b| Some(config_dir(b, &["zed", "settings.json"])),
             project_path: |_| None,
             detect_extra: |b, scope| match scope {
@@ -1114,17 +1114,17 @@ mod tests {
 
     #[test]
     fn connect_stdio_env_uses_per_client_env_key() {
-        // opencode=environment, claude-code & codex=env — the three named in
-        // the spec. Others are None.
+        // opencode=environment; Claude Code, Codex, and Zed=env. Others are
+        // None.
         let spec_env = |id: &str| find_client(id).unwrap().stdio_env_key;
         assert_eq!(spec_env("opencode"), Some("environment"));
         assert_eq!(spec_env("claude-code"), Some("env"));
         assert_eq!(spec_env("codex"), Some("env"));
+        assert_eq!(spec_env("zed"), Some("env"));
         for id in [
             "claude-desktop",
             "cursor",
             "vscode",
-            "zed",
             "gemini",
             "windsurf",
             "goose",
