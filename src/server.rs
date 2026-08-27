@@ -442,8 +442,8 @@ fn build_app_with_store(
         //
         // 2. We expose MCP-specific headers (`mcp-session-id`,
         //    `www-authenticate`) and accept the request headers MCP
-        //    clients send (`mcp-protocol-version`, `mcp-session-id`,
-        //    `last-event-id` for SSE resumption).
+        //    clients send (`mcp-protocol-version`, `mcp-method`, and
+        //    `mcp-name`, plus the legacy session/resumption headers).
         //
         // The internal CORS layer inside `api::router()` still runs for
         // /api/* but is effectively shadowed by this outer one.
@@ -640,7 +640,8 @@ fn print_initial_key(key: &str) {
 ///
 /// Methods, request headers, and exposed response headers are all configured
 /// for the union of REST + MCP needs. Notably we accept the MCP transport
-/// headers (`mcp-protocol-version`, `mcp-session-id`, `last-event-id`) and
+/// headers (`mcp-protocol-version`, `mcp-method`, `mcp-name`,
+/// `mcp-session-id`, `last-event-id`) and
 /// expose `mcp-session-id` and `www-authenticate` so MCP clients can read
 /// the session id back and so 401 responses surface the resource metadata.
 fn build_global_cors(cors_origins: &[String]) -> CorsLayer {
@@ -658,6 +659,8 @@ fn build_global_cors(cors_origins: &[String]) -> CorsLayer {
             header::CONTENT_TYPE,
             header::ACCEPT,
             HeaderName::from_static("mcp-protocol-version"),
+            HeaderName::from_static("mcp-method"),
+            HeaderName::from_static("mcp-name"),
             HeaderName::from_static("mcp-session-id"),
             HeaderName::from_static("last-event-id"),
         ])
@@ -913,7 +916,10 @@ mod cors_tests {
             .uri("/mcp")
             .header("origin", "https://claude.ai")
             .header("access-control-request-method", "POST")
-            .header("access-control-request-headers", "authorization,content-type")
+            .header(
+                "access-control-request-headers",
+                "authorization,content-type,mcp-protocol-version,mcp-method,mcp-name",
+            )
             .body(Body::empty())
             .unwrap();
 
@@ -962,6 +968,12 @@ mod cors_tests {
             allow_headers.contains("mcp-session-id"),
             "mcp-session-id must be allowed, got: {allow_headers}"
         );
+        for header in ["mcp-protocol-version", "mcp-method", "mcp-name"] {
+            assert!(
+                allow_headers.contains(header),
+                "{header} must be allowed, got: {allow_headers}"
+            );
+        }
     }
 
     /// Real (post-preflight) requests still go through normal auth — CORS
