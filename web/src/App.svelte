@@ -29,6 +29,7 @@
     realtimeClosed,
     realtimeOpened,
   } from "./lib/sync/readModel.svelte"; // LIF-442
+  import { createSyncClient } from "./lib/sync/leader"; // LIF-443
   import {
     commentTargetFromHash,
     routeForCommentHash,
@@ -123,7 +124,17 @@
   // "bootstrapping" only when there's no session, so the logged-in common case
   // never shows a spinner.
   let bootstrapping = $state(!hasSession());
-  let realtimeSocket: WebSocket | null = null;
+  // LIF-443: the socket itself lives in the sync client, which shares one
+  // connection across every tab of this browser (and falls back to a
+  // per-tab socket where Web Locks are unavailable). Everything around it —
+  // backoff, reauth, the activity counter, the resync signal — stays here.
+  const realtime = createSyncClient({
+    url: socketUrl,
+    onEvent: handleRealtimeMessage,
+    onOpen: handleRealtimeOpen,
+    onClose: handleRealtimeDown,
+    onLeaderDisconnect: handleLeaderDisconnect,
+  });
   let realtimeReconnect: ReturnType<typeof setTimeout> | null = null;
   let realtimeDelayMs = 1000;
   let realtimeNeedsResync = false;
@@ -261,15 +272,14 @@
       realtimeHeartbeat = null;
     }
     resetRealtimeActivity();
-    const socket = realtimeSocket;
-    realtimeSocket = null;
-    if (socket) {
-      socket.close(1000, "teardown");
-    }
+    // Leader: closes the socket and releases the lock, so a surviving tab
+    // takes over; also tells followers the connection is gone. Follower:
+    // just stops listening.
+    realtime.disconnect();
   }
 
   function scheduleRealtimeReconnect() {
-    if (!realtimeDisposed && !realtimeReconnect && hasSession() && !hasLiveRealtimeSocket()) {
+    if (!realtimeDisposed && !realtimeReconnect && hasSession() && !realtime.hasLiveConnection()) {
       realtimeReconnect = window.setTimeout(() => {
         realtimeReconnect = null;
         syncRealtimeSocket();
@@ -278,23 +288,14 @@
     }
   }
 
-  function hasLiveRealtimeSocket() {
-    return (
-      realtimeSocket?.readyState === WebSocket.OPEN ||
-      realtimeSocket?.readyState === WebSocket.CONNECTING
-    );
-  }
-
   function syncRealtimeSocket() {
     const shouldConnect = !realtimeDisposed && hasSession() && !bootstrapping;
-    const shouldOpen = shouldConnect && !hasLiveRealtimeSocket();
-
-    if (!shouldConnect) {
+    if (shouldConnect) {
+      // Idempotent: joins the existing connection, wins the election, or
+      // reopens the leader's socket, whichever applies.
+      realtime.connect();
+    } else {
       closeRealtimeSocket();
-    }
-
-    if (shouldOpen) {
-      openRealtimeSocket();
     }
   }
 
@@ -310,10 +311,9 @@
   }
 
   function requestRealtimeActivityBaseline() {
-    const socket = realtimeSocket;
-    if (socket?.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify({ type: "activity.baseline.request" }));
-    }
+    // Followers ask through the leader: the reply fans back out over the
+    // channel, so every tab seeds its counter from one server round trip.
+    realtime.send({ type: "activity.baseline.request" });
   }
 
   function startRealtimeActivityBaselineRefresh() {
@@ -327,13 +327,11 @@
     );
   }
 
+  // Keepalive for the socket itself, so only the tab that owns one runs it.
   function startRealtimeHeartbeat() {
     if (realtimeHeartbeat) clearInterval(realtimeHeartbeat);
     realtimeHeartbeat = setInterval(() => {
-      const socket = realtimeSocket;
-      if (socket?.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify({ type: "heartbeat" }));
-      }
+      realtime.send({ type: "heartbeat" });
     }, REALTIME_HEARTBEAT_MS);
   }
 
@@ -354,81 +352,76 @@
     scheduleRealtimeReconnect();
   }
 
-  function openRealtimeSocket() {
-    const socket = new WebSocket(socketUrl());
-    realtimeSocket = socket;
-    let opened = false;
-    socket.addEventListener("open", () => {
-      if (realtimeSocket !== socket || realtimeDisposed) return;
-      opened = true;
-      realtimeDelayMs = 1000;
-      if (realtimeNeedsResync) {
-        realtimeNeedsResync = false;
-        resetRealtimeActivity();
-        dispatchRealtimeEvent({ type: "resync.required" });
-      }
+  // LIF-443: the shared connection came up — in this tab because it won the
+  // election, or in the leader tab, which said so over the channel. Either
+  // way this tab now has a live path to the server and treats it as a fresh
+  // connection: resync what it missed, reseed the activity counter, and
+  // resume the active project. A promotion lands here too, which is what
+  // makes every tab (not just the new leader) catch up after a leader dies.
+  function handleRealtimeOpen() {
+    if (realtimeDisposed) return;
+    realtimeDelayMs = 1000;
+    if (realtimeNeedsResync) {
+      realtimeNeedsResync = false;
+      resetRealtimeActivity();
+      dispatchRealtimeEvent({ type: "resync.required" });
+    }
+    startRealtimeActivityBaselineRefresh();
+    if (realtime.ownsSocket()) startRealtimeHeartbeat();
+    // LIF-442: hand the read models a way to send frames, so the active
+    // project can ask the server to replay what it missed while the socket
+    // was down (or be told to backfill over HTTP instead). In a follower
+    // the frame travels to the leader and goes out on the shared socket;
+    // the replay it triggers fans back out to every tab, where duplicates
+    // are dropped by cursor discipline.
+    realtimeOpened((frame) => {
+      realtime.send(frame);
+    });
+  }
+
+  // The shared connection went away, whether this tab owned it or not.
+  function handleRealtimeDown() {
+    realtimeClosed(); // LIF-442
+    if (realtimeHeartbeat) {
+      clearInterval(realtimeHeartbeat);
+      realtimeHeartbeat = null;
+    }
+    resetRealtimeActivity();
+    realtimeNeedsResync = true;
+  }
+
+  // Leader-only: our socket is gone and nothing reopens it on its own.
+  // Backoff and the "is the session still valid" probe live here, not in
+  // the sync client. Followers never reach this: they wait for whichever
+  // tab holds the lock to reconnect, or for the lock to come to them.
+  function handleLeaderDisconnect(opened: boolean) {
+    if (realtimeDisposed) return;
+    if (opened) {
+      scheduleRealtimeReconnect();
+    } else {
+      void reconnectAfterFailedRealtimeAttempt(localStorage.getItem("lific_token"));
+    }
+  }
+
+  function handleRealtimeMessage(event: RealtimeEvent) {
+    if (realtimeDisposed) return;
+    if (event.type === "activity.baseline") {
+      const baseline = parseActivityBaseline(event.day_count);
+      if (!baseline) return;
+      realtimeActivity.seed(baseline, Date.now());
+      realtimeActivityReady = true;
+      scheduleRealtimeActivityRefresh();
+    } else if (event.type === "resync.required") {
+      resetRealtimeActivity();
+      dispatchRealtimeEvent(event);
       startRealtimeActivityBaselineRefresh();
-      startRealtimeHeartbeat();
-      // LIF-442: hand the read models a way to send frames, so the active
-      // project can ask the server to replay what it missed while the socket
-      // was down (or be told to backfill over HTTP instead).
-      realtimeOpened((frame) => {
-        if (realtimeSocket === socket && socket.readyState === WebSocket.OPEN) {
-          socket.send(JSON.stringify(frame));
-        }
-      });
-    });
-    socket.addEventListener("message", (message) => {
-      if (
-        realtimeSocket !== socket ||
-        realtimeDisposed ||
-        typeof message.data !== "string"
-      ) return;
-      try {
-        const event = JSON.parse(message.data) as RealtimeEvent;
-        if (typeof event?.type === "string") {
-          if (event.type === "activity.baseline") {
-            const baseline = parseActivityBaseline(event.day_count);
-            if (!baseline) return;
-            realtimeActivity.seed(baseline, Date.now());
-            realtimeActivityReady = true;
-            scheduleRealtimeActivityRefresh();
-          } else if (event.type === "resync.required") {
-            resetRealtimeActivity();
-            dispatchRealtimeEvent(event);
-            startRealtimeActivityBaselineRefresh();
-          } else {
-            if (realtimeActivityReady && isActivityRealtimeEvent(event.type)) {
-              realtimeActivity.record(Date.now());
-              scheduleRealtimeActivityRefresh();
-            }
-            dispatchRealtimeEvent(event);
-          }
-        }
-      } catch {
-        // HTTP refresh remains source of truth.
+    } else {
+      if (realtimeActivityReady && isActivityRealtimeEvent(event.type)) {
+        realtimeActivity.record(Date.now());
+        scheduleRealtimeActivityRefresh();
       }
-    });
-    socket.addEventListener("close", () => {
-      if (realtimeSocket === socket) {
-        realtimeSocket = null;
-        realtimeClosed(); // LIF-442
-        if (realtimeHeartbeat) {
-          clearInterval(realtimeHeartbeat);
-          realtimeHeartbeat = null;
-        }
-        resetRealtimeActivity();
-        realtimeNeedsResync = true;
-        if (opened) {
-          scheduleRealtimeReconnect();
-        } else {
-          void reconnectAfterFailedRealtimeAttempt(localStorage.getItem("lific_token"));
-        }
-      }
-    });
-    socket.addEventListener("error", () => {
-      socket.close();
-    });
+      dispatchRealtimeEvent(event);
+    }
   }
 
   type ParsedRoute =
