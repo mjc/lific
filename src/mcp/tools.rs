@@ -6907,6 +6907,7 @@ mod tests {
             target_date: None,
             created_at: String::new(),
             updated_at: String::new(),
+            seq: 1,
             source: None,
             labels: vec!["bug".into()],
             blocks: vec!["T-2".into()],

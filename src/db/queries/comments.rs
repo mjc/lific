@@ -146,7 +146,7 @@ pub fn create_comment(
 pub fn get_comment(conn: &Connection, id: i64) -> Result<Comment, LificError> {
     conn.query_row(
         "SELECT c.id, c.issue_id, c.page_id, c.user_id, u.username, u.display_name,
-                c.content, c.created_at, c.updated_at
+                c.content, c.created_at, c.updated_at, c.seq
          FROM comments c
          JOIN users u ON u.id = c.user_id
          WHERE c.id = ?1",
@@ -317,7 +317,7 @@ pub fn list_comments_keyset(
     };
     let mut sql = format!(
         "SELECT c.id, c.issue_id, c.page_id, c.user_id, u.username, u.display_name,
-                c.content, c.created_at, c.updated_at
+                c.content, c.created_at, c.updated_at, c.seq
          FROM comments c
          JOIN users u ON u.id = c.user_id
          WHERE {parent_col} = ?1"
@@ -614,6 +614,7 @@ fn row_to_comment(row: &rusqlite::Row) -> Result<Comment, rusqlite::Error> {
         content: row.get(6)?,
         created_at: row.get(7)?,
         updated_at: row.get(8)?,
+        seq: row.get::<_, Option<i64>>(9)?.unwrap_or(0),
     })
 }
 

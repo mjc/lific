@@ -11,7 +11,7 @@ pub fn get_issue(conn: &Connection, id: i64) -> Result<Issue, LificError> {
         .prepare_cached(
             "SELECT i.id, i.project_id, i.sequence, p.identifier, i.title, i.description,
                     i.status, i.priority, i.module_id, i.sort_order,
-                    i.start_date, i.target_date, i.created_at, i.updated_at, i.source
+                    i.start_date, i.target_date, i.created_at, i.updated_at, i.source, i.seq
              FROM issues i
              JOIN projects p ON p.id = i.project_id
              WHERE i.id = ?1",
@@ -35,6 +35,7 @@ pub fn get_issue(conn: &Connection, id: i64) -> Result<Issue, LificError> {
                 created_at: row.get(12)?,
                 updated_at: row.get(13)?,
                 source: row.get(14)?,
+                seq: row.get::<_, Option<i64>>(15)?.unwrap_or(0),
                 labels: Vec::new(),
                 blocks: Vec::new(),
                 blocked_by: Vec::new(),
@@ -243,7 +244,7 @@ pub fn list_issues_page(
     let mut sql = String::from(
         "SELECT DISTINCT i.id, i.project_id, i.sequence, p.identifier, i.title, i.description,
                 i.status, i.priority, i.module_id, i.sort_order,
-                i.start_date, i.target_date, i.created_at, i.updated_at
+                i.start_date, i.target_date, i.created_at, i.updated_at, i.seq
          FROM issues i
          JOIN projects p ON p.id = i.project_id",
     );
@@ -375,6 +376,7 @@ pub fn list_issues_page(
             target_date: row.get(11)?,
             created_at: row.get(12)?,
             updated_at: row.get(13)?,
+            seq: row.get::<_, Option<i64>>(14)?.unwrap_or(0),
             // `source` is import provenance, not needed for list rendering;
             // fetch it only on the single-issue read path (get_issue) to keep
             // this hot list query's column set stable.

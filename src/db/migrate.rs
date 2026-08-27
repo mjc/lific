@@ -216,6 +216,16 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "oauth client indexes",
         include_str!("../../migrations/044_oauth_client_indexes.sql"),
     ),
+    (
+        45,
+        "sync sequence",
+        include_str!("../../migrations/045_sync_seq.sql"),
+    ),
+    (
+        46,
+        "status transitions",
+        include_str!("../../migrations/046_status_transitions.sql"),
+    ),
 ];
 
 /// Migrations that rebuild a table other tables reference by foreign key.
@@ -1003,5 +1013,512 @@ mod tests {
             [],
         )
         .expect("a client may hold many tokens");
+    }
+
+    // ── migration 045: instance-scoped sync sequence (LIF-436) ────────────
+    //
+    // These are trigger behaviours, so they are exercised through the query
+    // layer against a real pool rather than by poking SQL: the whole point of
+    // pushing the counter into SQL is that REST, MCP, the CLI and the
+    // importers all get it for free, and a test that hand-writes the UPDATE
+    // would prove nothing about that.
+
+    use crate::db::models::{
+        CreateIssue, CreatePage, CreateProject, CreateUser, Status, UpdateIssue,
+    };
+    use crate::db::queries;
+    use crate::db::queries::comments::CommentParent;
+
+    fn seq_of(conn: &Connection, table: &str, id: i64) -> i64 {
+        conn.query_row(
+            &format!("SELECT seq FROM {table} WHERE id = ?1"),
+            rusqlite::params![id],
+            |row| row.get(0),
+        )
+        .unwrap_or_else(|e| panic!("{table} {id} must carry a seq: {e}"))
+    }
+
+    fn counter(conn: &Connection) -> i64 {
+        conn.query_row("SELECT value FROM sync_seq WHERE id = 1", [], |row| {
+            row.get(0)
+        })
+        .unwrap()
+    }
+
+    fn count(conn: &Connection, sql: &str) -> i64 {
+        conn.query_row(sql, [], |row| row.get(0)).unwrap()
+    }
+
+    /// A pool holding one project and one user, which is everything the
+    /// three syncable tables need to accept a write.
+    fn seq_fixture() -> (crate::db::DbPool, i64, i64) {
+        let pool = crate::db::open_memory().expect("test db");
+        let (project_id, user_id) = {
+            let conn = pool.write().unwrap();
+            let project = queries::create_project(
+                &conn,
+                &CreateProject {
+                    name: "Sync".into(),
+                    identifier: "SYN".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let user = queries::users::create_user(
+                &conn,
+                &CreateUser {
+                    username: "ada".into(),
+                    email: "ada@test.com".into(),
+                    password: "testpassword1".into(),
+                    display_name: Some("Ada".into()),
+                    is_admin: true,
+                    is_bot: false,
+                },
+            )
+            .unwrap();
+            (project.id, user.id)
+        };
+        (pool, project_id, user_id)
+    }
+
+    fn new_issue(conn: &Connection, project_id: i64, title: &str, status: Status) -> i64 {
+        queries::create_issue(
+            conn,
+            &CreateIssue {
+                project_id,
+                title: title.into(),
+                status,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .id
+    }
+
+    /// The stamp is an UPDATE on the table being stamped, so migration 045's
+    /// correctness rests on SQLite not re-entering the trigger. Recursion is
+    /// off by default and nothing in the pool setup turns it on; pin that,
+    /// because turning it on elsewhere would make the stamp self-firing.
+    #[test]
+    fn the_pool_leaves_recursive_triggers_off() {
+        let pool = crate::db::open_memory().unwrap();
+        let write = pool.write().unwrap();
+        assert_eq!(
+            count(&write, "PRAGMA recursive_triggers"),
+            0,
+            "the write connection must not enable recursive triggers"
+        );
+        drop(write);
+        let read = pool.read().unwrap();
+        assert_eq!(count(&read, "PRAGMA recursive_triggers"), 0);
+    }
+
+    #[test]
+    fn every_mutation_advances_an_issues_sequence() {
+        let (pool, project_id, _) = seq_fixture();
+        let conn = pool.write().unwrap();
+
+        let id = new_issue(&conn, project_id, "One", Status::Todo);
+        let created = seq_of(&conn, "issues", id);
+        assert!(created > 0, "an insert must stamp a seq, got {created}");
+        assert_eq!(created, counter(&conn), "the row carries the latest tick");
+
+        queries::update_issue(
+            &conn,
+            id,
+            &UpdateIssue {
+                title: Some("Two".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let renamed = seq_of(&conn, "issues", id);
+        assert!(renamed > created, "{renamed} must be past {created}");
+
+        queries::update_issue(
+            &conn,
+            id,
+            &UpdateIssue {
+                status: Some(Status::Done),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(seq_of(&conn, "issues", id) > renamed);
+    }
+
+    /// One counter, three tables: a replica ordering by seq gets a single
+    /// timeline it can resume from, with no per-table cursors.
+    #[test]
+    fn writes_to_different_tables_draw_from_one_increasing_sequence() {
+        let (pool, project_id, user_id) = seq_fixture();
+        let conn = pool.write().unwrap();
+
+        let issue_id = new_issue(&conn, project_id, "Issue", Status::Todo);
+        let issue_seq = seq_of(&conn, "issues", issue_id);
+
+        let page_id = queries::create_page(
+            &conn,
+            &CreatePage {
+                project_id: Some(project_id),
+                title: "Page".into(),
+                content: "Body".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .id;
+        let page_seq = seq_of(&conn, "pages", page_id);
+        assert!(
+            page_seq > issue_seq,
+            "page {page_seq} must land past issue {issue_seq}"
+        );
+
+        let comment_id = queries::comments::create_comment(
+            &conn,
+            CommentParent::Page(page_id),
+            user_id,
+            "A note",
+        )
+        .unwrap()
+        .id;
+        let comment_seq = seq_of(&conn, "comments", comment_id);
+        assert!(
+            comment_seq > page_seq,
+            "comment {comment_seq} must land past page {page_seq}"
+        );
+    }
+
+    /// Migration 017 treats a new comment as activity on the parent issue and
+    /// bumps its updated_at. That UPDATE runs inside a trigger body, where
+    /// the issue's own stamp trigger no longer applies, so 045 has to stamp
+    /// the seq there by hand. Without this the issue would advertise activity
+    /// a seq-based sync could never see.
+    #[test]
+    fn commenting_advances_both_the_comment_and_its_parent_issue() {
+        let (pool, project_id, user_id) = seq_fixture();
+        let conn = pool.write().unwrap();
+
+        let issue_id = new_issue(&conn, project_id, "Issue", Status::Todo);
+        let before = seq_of(&conn, "issues", issue_id);
+
+        let comment_id = queries::comments::create_comment(
+            &conn,
+            CommentParent::Issue(issue_id),
+            user_id,
+            "Looks right to me",
+        )
+        .unwrap()
+        .id;
+
+        let issue_after = seq_of(&conn, "issues", issue_id);
+        let comment_seq = seq_of(&conn, "comments", comment_id);
+        assert!(
+            issue_after > before,
+            "the parent issue must advance ({issue_after} is not past {before})"
+        );
+        assert!(
+            comment_seq > before,
+            "the comment must be stamped ({comment_seq} is not past {before})"
+        );
+        assert_ne!(
+            issue_after, comment_seq,
+            "the counter hands out each value once"
+        );
+
+        // The same holds when a comment is edited or removed.
+        let edited_from = seq_of(&conn, "issues", issue_id);
+        queries::comments::update_comment(&conn, comment_id, "Second thoughts").unwrap();
+        assert!(seq_of(&conn, "issues", issue_id) > edited_from);
+
+        let deleted_from = seq_of(&conn, "issues", issue_id);
+        queries::comments::delete_comment(&conn, comment_id).unwrap();
+        assert!(seq_of(&conn, "issues", issue_id) > deleted_from);
+    }
+
+    /// The 018 audit triggers sit on the same tables and fire on the stamp's
+    /// UPDATE. They are per-field guarded, so a seq-only write matches none
+    /// of them and the log stays exactly as dense as it was before 045.
+    #[test]
+    fn stamping_a_seq_writes_no_extra_audit_rows() {
+        let (pool, project_id, _) = seq_fixture();
+        let conn = pool.write().unwrap();
+
+        let id = new_issue(&conn, project_id, "One", Status::Todo);
+        assert_eq!(
+            count(&conn, "SELECT count(*) FROM audit_log WHERE entity_type = 'issue'"),
+            1,
+            "creating an issue is one audit row; the stamp must add none"
+        );
+
+        queries::update_issue(
+            &conn,
+            id,
+            &UpdateIssue {
+                title: Some("Two".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let rows: Vec<(String, Option<String>)> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT action, field FROM audit_log
+                     WHERE entity_type = 'issue' ORDER BY id",
+                )
+                .unwrap();
+            let rows = stmt
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .unwrap();
+            rows.collect::<Result<Vec<_>, _>>().unwrap()
+        };
+        assert_eq!(
+            rows,
+            vec![
+                ("create".to_string(), None),
+                ("update".to_string(), Some("title".to_string())),
+            ],
+            "a title change is one audit row, not one plus a seq stamp"
+        );
+    }
+
+    /// The stamp's UPDATE fires 001's `issues_au`, which re-indexes the row
+    /// FTS-wise. On an INSERT that ran after `issues_ai` had already indexed
+    /// it, producing two `search_index` rows and doubled search hits. 045
+    /// guards `issues_au` against seq-only writes; this pins it.
+    #[test]
+    fn a_seq_stamp_does_not_duplicate_the_search_index() {
+        let (pool, project_id, user_id) = seq_fixture();
+        let conn = pool.write().unwrap();
+
+        let issue_id = new_issue(&conn, project_id, "Findable", Status::Todo);
+        let page_id = queries::create_page(
+            &conn,
+            &CreatePage {
+                project_id: Some(project_id),
+                title: "Findable page".into(),
+                content: "Body".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .id;
+        let comment_id =
+            queries::comments::create_comment(&conn, CommentParent::Issue(issue_id), user_id, "Hi")
+                .unwrap()
+                .id;
+
+        for (entity, id) in [
+            ("issue", issue_id),
+            ("page", page_id),
+            ("comment", comment_id),
+        ] {
+            let n = count(
+                &conn,
+                &format!(
+                    "SELECT count(*) FROM search_index
+                     WHERE entity_type = '{entity}' AND entity_id = {id}"
+                ),
+            );
+            assert_eq!(n, 1, "{entity} {id} must be indexed exactly once");
+        }
+    }
+
+    /// The backfill is a plain UPDATE, so 001's `issues_updated` /
+    /// `pages_updated` and 017's comment bump would have rewritten every
+    /// `updated_at` to the migration's own wall clock. Losing the activity
+    /// timestamps of an entire tracker to a schema upgrade is not a
+    /// recoverable mistake, so this pins both the ordering and the fact that
+    /// nothing else moved.
+    #[test]
+    fn the_backfill_orders_existing_rows_without_touching_updated_at() {
+        let conn = migrated_up_to(45);
+        // Staging stored state, not replaying history: 017's comment bump
+        // would rewrite the parent issue's updated_at to now as the fixture
+        // is seeded, which is the very column the assertions below are
+        // about. Migration 045 recreates the trigger regardless.
+        conn.execute_batch("DROP TRIGGER IF EXISTS comments_bump_issue_ai;")
+            .unwrap();
+        conn.execute_batch(
+            "INSERT INTO projects (id, name, identifier) VALUES (1, 'Sync', 'SYN');
+             INSERT INTO users (id, username, email, password_hash)
+                 VALUES (1, 'ada', 'ada@test.com', 'x');
+             INSERT INTO issues (id, project_id, sequence, title, updated_at) VALUES
+                 (1, 1, 1, 'older issue', '2026-01-02 00:00:00'),
+                 (2, 1, 2, 'newer issue', '2026-01-03 00:00:00');
+             INSERT INTO pages (id, project_id, sequence, title, content, updated_at)
+                 VALUES (1, 1, 1, 'a page', '', '2026-01-01 00:00:00');
+             INSERT INTO comments (id, issue_id, user_id, content, updated_at)
+                 VALUES (1, 1, 1, 'a comment', '2026-01-04 00:00:00');",
+        )
+        .unwrap();
+
+        run(&conn).expect("migration 045 must apply to a populated database");
+
+        // Issues by updated_at, then pages, then comments.
+        assert_eq!(seq_of(&conn, "issues", 1), 1);
+        assert_eq!(seq_of(&conn, "issues", 2), 2);
+        assert_eq!(seq_of(&conn, "pages", 1), 3);
+        assert_eq!(seq_of(&conn, "comments", 1), 4);
+        assert_eq!(counter(&conn), 4, "the counter resumes past the backfill");
+
+        let stamps: Vec<String> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT 1 AS k, id, updated_at FROM issues
+                     UNION ALL SELECT 2, id, updated_at FROM pages
+                     UNION ALL SELECT 3, id, updated_at FROM comments
+                     ORDER BY k, id",
+                )
+                .unwrap();
+            let rows = stmt.query_map([], |row| row.get(2)).unwrap();
+            rows.collect::<Result<Vec<_>, _>>().unwrap()
+        };
+        assert_eq!(
+            stamps,
+            vec![
+                "2026-01-02 00:00:00",
+                "2026-01-03 00:00:00",
+                "2026-01-01 00:00:00",
+                "2026-01-04 00:00:00",
+            ],
+            "the backfill must not rewrite updated_at"
+        );
+
+        // And the counter picks up cleanly from there on the next write.
+        conn.execute(
+            "INSERT INTO issues (project_id, sequence, title) VALUES (1, 3, 'after')",
+            [],
+        )
+        .unwrap();
+        assert_eq!(counter(&conn), 5);
+    }
+
+    // ── migration 046: status transitions (LIF-437) ───────────────────────
+
+    /// One `status_transitions` row:
+    /// (issue_id, from, to, actor_user_id, transport, seq).
+    type Transition = (i64, String, String, Option<i64>, String, Option<i64>);
+
+    fn transitions(conn: &Connection) -> Vec<Transition> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT issue_id, from_status, to_status, actor_user_id, transport, seq
+                 FROM status_transitions ORDER BY id",
+            )
+            .unwrap();
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            })
+            .unwrap();
+        rows.collect::<Result<Vec<_>, _>>().unwrap()
+    }
+
+    #[test]
+    fn a_status_change_records_one_transition() {
+        let (pool, project_id, _) = seq_fixture();
+        let conn = pool.write().unwrap();
+        let id = new_issue(&conn, project_id, "Ship it", Status::Todo);
+        let before = seq_of(&conn, "issues", id);
+
+        queries::update_issue(
+            &conn,
+            id,
+            &UpdateIssue {
+                status: Some(Status::Active),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let recorded = transitions(&conn);
+        assert_eq!(recorded.len(), 1, "one status change, one row: {recorded:?}");
+        let (issue_id, from, to, actor_user_id, transport, seq) =
+            recorded.into_iter().next().unwrap();
+        assert_eq!(issue_id, id);
+        assert_eq!(from, "todo");
+        assert_eq!(to, "active");
+        // Same source the audit log reads: `_actor_state`, which the pool
+        // stamps on every `write()`. Nothing set a request actor here, so
+        // there is no user and the transport reads as system.
+        assert_eq!(actor_user_id, None);
+        assert_eq!(transport, "system");
+        // The transition sits past the issue's pre-change seq, so a replica
+        // whose cursor is exactly that value still picks it up.
+        assert!(
+            seq.is_some_and(|s| s > before),
+            "a transition must land past the issue's previous seq ({before}), got {seq:?}"
+        );
+
+        queries::update_issue(
+            &conn,
+            id,
+            &UpdateIssue {
+                status: Some(Status::Done),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let recorded = transitions(&conn);
+        assert_eq!(recorded.len(), 2);
+        assert_eq!(
+            (recorded[1].1.as_str(), recorded[1].2.as_str()),
+            ("active", "done")
+        );
+    }
+
+    #[test]
+    fn an_update_that_leaves_status_alone_records_nothing() {
+        let (pool, project_id, _) = seq_fixture();
+        let conn = pool.write().unwrap();
+        let id = new_issue(&conn, project_id, "Ship it", Status::Todo);
+
+        queries::update_issue(
+            &conn,
+            id,
+            &UpdateIssue {
+                title: Some("Ship it soon".into()),
+                description: Some("More detail".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // Re-asserting the status it already has is not a transition either.
+        queries::update_issue(
+            &conn,
+            id,
+            &UpdateIssue {
+                status: Some(Status::Todo),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert!(
+            transitions(&conn).is_empty(),
+            "only a real status change is a transition"
+        );
+    }
+
+    #[test]
+    fn creating_an_issue_records_no_transition() {
+        let (pool, project_id, _) = seq_fixture();
+        let conn = pool.write().unwrap();
+        new_issue(&conn, project_id, "Fresh", Status::Todo);
+        new_issue(&conn, project_id, "Backlogged", Status::Backlog);
+
+        assert!(
+            transitions(&conn).is_empty(),
+            "an issue's initial status is not a transition into it"
+        );
     }
 }

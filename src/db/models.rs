@@ -266,6 +266,11 @@ pub struct Issue {
     pub target_date: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    /// LIF-436: instance-scoped monotonic sequence. Every write to this row
+    /// (including activity on it, like a new comment) advances it past every
+    /// seq handed out so far, across issues, pages and comments alike.
+    #[serde(default)]
+    pub seq: i64,
     /// Import provenance marker (LIF-264/265): stable per-external-issue string
     /// like `github:owner/name#12`. `None` for hand-created issues.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -500,6 +505,10 @@ pub struct Page {
     pub pinned: bool,
     pub created_at: String,
     pub updated_at: String,
+    /// LIF-436: instance-scoped monotonic sequence, shared with issues and
+    /// comments. See [`Issue::seq`].
+    #[serde(default)]
+    pub seq: i64,
     /// Labels attached to this page (populated on read). Empty for
     /// workspace-level pages — labels are project-scoped (LIF-105).
     #[serde(default)]
@@ -811,6 +820,10 @@ pub struct Comment {
     pub content: String,
     pub created_at: String,
     pub updated_at: String,
+    /// LIF-436: instance-scoped monotonic sequence, shared with issues and
+    /// pages. See [`Issue::seq`].
+    #[serde(default)]
+    pub seq: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

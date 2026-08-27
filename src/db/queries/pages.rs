@@ -27,13 +27,14 @@ fn page_from_row(row: &rusqlite::Row) -> rusqlite::Result<Page> {
         created_at: row.get(9)?,
         updated_at: row.get(10)?,
         pinned: row.get(11)?,
+        seq: row.get::<_, Option<i64>>(12)?.unwrap_or(0),
         labels: Vec::new(),
     })
 }
 
 const PAGE_SELECT: &str = "SELECT pg.id, pg.project_id, pg.sequence, p.identifier,
             pg.folder_id, pg.title, pg.content, pg.sort_order, pg.status,
-            pg.created_at, pg.updated_at, pg.pinned
+            pg.created_at, pg.updated_at, pg.pinned, pg.seq
      FROM pages pg
      LEFT JOIN projects p ON p.id = pg.project_id";
 
@@ -130,7 +131,7 @@ pub fn list_pages_page(
     let mut sql = String::from(
         "SELECT DISTINCT pg.id, pg.project_id, pg.sequence, p.identifier,
                 pg.folder_id, pg.title, pg.content, pg.sort_order, pg.status,
-                pg.created_at, pg.updated_at, pg.pinned
+                pg.created_at, pg.updated_at, pg.pinned, pg.seq
          FROM pages pg
          LEFT JOIN projects p ON p.id = pg.project_id",
     );

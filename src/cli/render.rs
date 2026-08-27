@@ -544,6 +544,7 @@ mod tests {
             target_date: None,
             created_at: "2026-01-01T00:00:00Z".into(),
             updated_at: "2026-01-01T00:00:00Z".into(),
+            seq: 1,
             source: None,
             labels: Vec::new(),
             blocks: Vec::new(),
@@ -565,6 +566,7 @@ mod tests {
             content: content.into(),
             created_at: "2026-01-01 00:00:00".into(),
             updated_at: "2026-01-01 00:00:00".into(),
+            seq: 1,
         }
     }
 
