@@ -940,6 +940,8 @@ mod tests {
             db: pool.clone(),
             manager: crate::auth::create_key_manager().unwrap(),
             public_url: "https://example.com".into(),
+            issuer_is_explicit: true,
+            mcp_allowed_hosts: Vec::new(),
             required: true,
         };
 
@@ -1080,6 +1082,8 @@ mod tests {
             db: pool.clone(),
             manager,
             public_url: "https://example.com".into(),
+            issuer_is_explicit: true,
+            mcp_allowed_hosts: Vec::new(),
             required: true,
         };
         let app = Router::new()
