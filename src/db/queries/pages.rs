@@ -455,6 +455,19 @@ pub fn delete_page(conn: &Connection, id: i64) -> Result<(), LificError> {
     Ok(())
 }
 
+/// A page's current `seq`, tombstone or not (LIF-440). The delete-path
+/// counterpart of [`super::issues::issue_seq`]; see that function for why the
+/// caller's pre-delete copy of the row is the wrong seq to publish.
+pub fn page_seq(conn: &Connection, id: i64) -> Result<i64, LificError> {
+    conn.query_row("SELECT seq FROM pages WHERE id = ?1", [id], |row| row.get(0))
+        .map_err(|error| match error {
+            rusqlite::Error::QueryReturnedNoRows => {
+                LificError::NotFound(format!("page {id} not found"))
+            }
+            other => other.into(),
+        })
+}
+
 /// Bring a tombstoned page back, together with the comments that went down
 /// with it (LIF-438).
 pub fn restore_page(conn: &Connection, id: i64) -> Result<Page, LificError> {

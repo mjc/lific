@@ -151,7 +151,7 @@ pub(super) async fn create_page(
         Ok(page)
     })?;
     if let Some(project_id) = page.project_id {
-        realtime.send(RealtimeEvent::ProjectUpdated { project_id });
+        realtime.send_with_seq(RealtimeEvent::ProjectUpdated { project_id }, page.seq);
     }
     Ok(Json(page))
 }
@@ -183,7 +183,7 @@ pub(super) async fn update_page(
         Ok(page)
     })?;
     if let Some(project_id) = page.project_id {
-        realtime.send(RealtimeEvent::ProjectUpdated { project_id });
+        realtime.send_with_seq(RealtimeEvent::ProjectUpdated { project_id }, page.seq);
     }
     Ok(Json(page))
 }
@@ -196,9 +196,14 @@ pub(super) async fn delete_page_handler(
 ) -> Result<Json<serde_json::Value>, LificError> {
     let project_id = with_read(&db, |conn| crate::db::queries::get_page(conn, id))?.project_id;
     require_page_role(&db, &identity, project_id, Role::Maintainer)?;
-    with_write(&db, |conn| crate::db::queries::delete_page(conn, id))?;
+    let seq = with_write(&db, |conn| {
+        crate::db::queries::delete_page(conn, id)?;
+        // The tombstone's seq (LIF-440), so a resuming client's cursor lands
+        // after the deletion rather than before it.
+        crate::db::queries::page_seq(conn, id)
+    })?;
     if let Some(project_id) = project_id {
-        realtime.send(RealtimeEvent::ProjectUpdated { project_id });
+        realtime.send_with_seq(RealtimeEvent::ProjectUpdated { project_id }, seq);
     }
     Ok(Json(serde_json::json!({"deleted": true})))
 }
@@ -219,7 +224,7 @@ pub(super) async fn restore_page_handler(
     require_page_role(&db, &identity, project_id, Role::Maintainer)?;
     let page = with_write(&db, |conn| crate::db::queries::restore_page(conn, id))?;
     if let Some(project_id) = page.project_id {
-        realtime.send(RealtimeEvent::ProjectUpdated { project_id });
+        realtime.send_with_seq(RealtimeEvent::ProjectUpdated { project_id }, page.seq);
     }
     Ok(Json(page))
 }

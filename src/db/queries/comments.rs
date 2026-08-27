@@ -412,6 +412,21 @@ pub fn delete_comment(conn: &Connection, id: i64) -> Result<(), LificError> {
     Ok(())
 }
 
+/// A comment's current `seq`, tombstone or not (LIF-440). See
+/// [`super::issues::issue_seq`] for why deletes have to read this back rather
+/// than reuse the copy of the row they authorized against.
+pub fn comment_seq(conn: &Connection, id: i64) -> Result<i64, LificError> {
+    conn.query_row("SELECT seq FROM comments WHERE id = ?1", [id], |row| {
+        row.get(0)
+    })
+    .map_err(|error| match error {
+        rusqlite::Error::QueryReturnedNoRows => {
+            LificError::NotFound(format!("comment {id} not found"))
+        }
+        other => other.into(),
+    })
+}
+
 // ── @mentions (LIF-263) ──────────────────────────────────────────
 
 /// Extract the set of candidate `@username` tokens from a comment body.

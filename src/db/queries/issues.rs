@@ -719,6 +719,23 @@ pub fn deleted_issue_project_id(conn: &Connection, id: i64) -> Result<i64, Lific
     })
 }
 
+/// An issue's current `seq`, tombstone or not (LIF-440).
+///
+/// [`delete_issue`] tombstones the row and migration 045 stamps a fresh `seq`
+/// on it, but the caller is left holding the issue as it was *before* the
+/// delete. A realtime `issue.deleted` event has to advertise the seq of the
+/// tombstone, not of the last edit, or a resuming client would be handed a
+/// cursor that predates the deletion it just applied. Read after the write.
+pub fn issue_seq(conn: &Connection, id: i64) -> Result<i64, LificError> {
+    conn.query_row("SELECT seq FROM issues WHERE id = ?1", [id], |row| row.get(0))
+        .map_err(|error| match error {
+            rusqlite::Error::QueryReturnedNoRows => {
+                LificError::NotFound(format!("issue {id} not found"))
+            }
+            other => other.into(),
+        })
+}
+
 pub fn link_issues(
     conn: &Connection,
     source_id: i64,

@@ -356,6 +356,13 @@ impl LificMcp {
         self.realtime.send(event);
     }
 
+    /// Emit an event stamped with the seq of the row the tool just wrote
+    /// (LIF-440), so a reconnecting web client can replay it rather than
+    /// discovering the change only on its next full refetch.
+    fn emit_with_seq(&self, event: RealtimeEvent, seq: i64) {
+        self.realtime.send_with_seq(event, seq);
+    }
+
     /// LIF-387: one borrowed read connection for a tool's whole pre-flight
     /// (resolve the project, then its module or folder), instead of a fresh
     /// checkout per resolver. Reads never block each other, so holding it

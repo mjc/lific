@@ -2034,10 +2034,13 @@ impl LificMcp {
             )?;
             Ok(issue)
         })?;
-        self.emit(crate::realtime::RealtimeEvent::IssueCreated {
-            project_id: issue.project_id,
-            issue_id: issue.id,
-        });
+        self.emit_with_seq(
+            crate::realtime::RealtimeEvent::IssueCreated {
+                project_id: issue.project_id,
+                issue_id: issue.id,
+            },
+            issue.seq,
+        );
         let context = current_issue_link_context();
         Ok(render_response(|output| {
             write!(
@@ -2135,10 +2138,13 @@ impl LificMcp {
             };
             Ok((issue, cascade_action, cascaded_steps))
         })?;
-        self.emit(crate::realtime::RealtimeEvent::IssueUpdated {
-            project_id: issue.project_id,
-            issue_id: issue.id,
-        });
+        self.emit_with_seq(
+            crate::realtime::RealtimeEvent::IssueUpdated {
+                project_id: issue.project_id,
+                issue_id: issue.id,
+            },
+            issue.seq,
+        );
         let context = current_issue_link_context();
         Ok(render_response(|output| {
             write!(
@@ -2312,10 +2318,13 @@ impl LificMcp {
             )?;
             Ok(issue)
         })?;
-        self.emit(crate::realtime::RealtimeEvent::IssueUpdated {
-            project_id: issue.project_id,
-            issue_id: issue.id,
-        });
+        self.emit_with_seq(
+            crate::realtime::RealtimeEvent::IssueUpdated {
+                project_id: issue.project_id,
+                issue_id: issue.id,
+            },
+            issue.seq,
+        );
         let context = current_issue_link_context();
         Ok(render_response(|output| {
             write!(
@@ -2833,11 +2842,18 @@ impl LificMcp {
                     queries::get_issue(conn, id)
                 })?;
                 require_role_mcp(&self.db, issue.project_id, models::Role::Maintainer)?;
-                self.write(|conn| queries::delete_issue(conn, issue.id))?;
-                self.emit(crate::realtime::RealtimeEvent::IssueDeleted {
-                    project_id: issue.project_id,
-                    issue_id: issue.id,
-                });
+                let seq = self.write(|conn| {
+                    queries::delete_issue(conn, issue.id)?;
+                    // The tombstone's seq, not the pre-delete one (LIF-440).
+                    queries::issue_seq(conn, issue.id)
+                })?;
+                self.emit_with_seq(
+                    crate::realtime::RealtimeEvent::IssueDeleted {
+                        project_id: issue.project_id,
+                        issue_id: issue.id,
+                    },
+                    seq,
+                );
                 Ok(format!("Deleted issue {}", issue.identifier))
             }
             "plan" => {

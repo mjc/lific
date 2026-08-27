@@ -76,10 +76,13 @@ pub(super) async fn create_issue(
         )?;
         Ok(issue)
     })?;
-    realtime.send(RealtimeEvent::IssueCreated {
-        project_id: issue.project_id,
-        issue_id: issue.id,
-    });
+    realtime.send_with_seq(
+        RealtimeEvent::IssueCreated {
+            project_id: issue.project_id,
+            issue_id: issue.id,
+        },
+        issue.seq,
+    );
     Ok(Json(issue))
 }
 
@@ -109,10 +112,13 @@ pub(super) async fn update_issue(
         )?;
         Ok(issue)
     })?;
-    realtime.send(RealtimeEvent::IssueUpdated {
-        project_id: issue.project_id,
-        issue_id: issue.id,
-    });
+    realtime.send_with_seq(
+        RealtimeEvent::IssueUpdated {
+            project_id: issue.project_id,
+            issue_id: issue.id,
+        },
+        issue.seq,
+    );
     Ok(Json(issue))
 }
 
@@ -124,15 +130,20 @@ pub(super) async fn delete_issue_handler(
 ) -> Result<Json<serde_json::Value>, LificError> {
     let project_id = with_read(&db, |conn| crate::db::queries::get_issue(conn, id))?.project_id;
     authz::require_role(&db, &identity, project_id, Role::Maintainer)?;
-    let issue = with_write(&db, |conn| {
+    let (issue, seq) = with_write(&db, |conn| {
         let issue = crate::db::queries::get_issue(conn, id)?;
         crate::db::queries::delete_issue(conn, id)?;
-        Ok(issue)
+        // The tombstone's seq, not the pre-delete one (LIF-440).
+        let seq = crate::db::queries::issue_seq(conn, id)?;
+        Ok((issue, seq))
     })?;
-    realtime.send(RealtimeEvent::IssueDeleted {
-        project_id: issue.project_id,
-        issue_id: issue.id,
-    });
+    realtime.send_with_seq(
+        RealtimeEvent::IssueDeleted {
+            project_id: issue.project_id,
+            issue_id: issue.id,
+        },
+        seq,
+    );
     Ok(Json(serde_json::json!({"deleted": true})))
 }
 
@@ -154,10 +165,13 @@ pub(super) async fn restore_issue_handler(
     })?;
     authz::require_role(&db, &identity, project_id, Role::Maintainer)?;
     let issue = with_write(&db, |conn| crate::db::queries::restore_issue(conn, id))?;
-    realtime.send(RealtimeEvent::IssueCreated {
-        project_id: issue.project_id,
-        issue_id: issue.id,
-    });
+    realtime.send_with_seq(
+        RealtimeEvent::IssueCreated {
+            project_id: issue.project_id,
+            issue_id: issue.id,
+        },
+        issue.seq,
+    );
     Ok(Json(issue))
 }
 
@@ -333,6 +347,62 @@ mod tests {
         let event: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(event["type"], "issue.created");
         assert_eq!(event["project_id"], project_id);
+    }
+
+    /// LIF-440: the event a mutation publishes carries the seq of the row it
+    /// wrote, which is what makes it replayable to a reconnecting client. If
+    /// this drifted, a resume would hand back a cursor that predates the write
+    /// the client just saw.
+    #[tokio::test]
+    async fn issue_write_events_carry_the_row_seq() {
+        let test = test_app_with_realtime();
+        let (project_id, _) = seed_project(&test.app).await;
+        let mut events = test.realtime.subscribe();
+
+        let created = body_of(
+            json_post(
+                &test.app,
+                "/api/issues",
+                serde_json::json!({"project_id": project_id, "title": "Seq carrier"}),
+            )
+            .await,
+        )
+        .await;
+        let id = created["id"].as_i64().unwrap();
+        assert_eq!(next_event(&mut events).await["seq"], created["seq"]);
+
+        let updated = body_of(
+            json_put(
+                &test.app,
+                &format!("/api/issues/{id}"),
+                serde_json::json!({"title": "Seq carrier, edited"}),
+            )
+            .await,
+        )
+        .await;
+        assert!(updated["seq"].as_i64().unwrap() > created["seq"].as_i64().unwrap());
+        assert_eq!(next_event(&mut events).await["seq"], updated["seq"]);
+
+        // The delete event advertises the tombstone's seq, not the seq the
+        // issue carried before it was deleted.
+        let resp = json_delete(&test.app, &format!("/api/issues/{id}")).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let deleted = next_event(&mut events).await;
+        assert_eq!(deleted["type"], "issue.deleted");
+        assert!(deleted["seq"].as_i64().unwrap() > updated["seq"].as_i64().unwrap());
+    }
+
+    async fn next_event(
+        events: &mut tokio::sync::broadcast::Receiver<crate::realtime::RealtimeMessage>,
+    ) -> serde_json::Value {
+        let message = tokio::time::timeout(std::time::Duration::from_secs(1), events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let axum::extract::ws::Message::Text(text) = message.message else {
+            panic!("expected text realtime event");
+        };
+        serde_json::from_str(&text).unwrap()
     }
 
     // ── LIF-438: delete is a tombstone, restore undoes it ────

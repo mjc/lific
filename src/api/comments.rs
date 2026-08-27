@@ -136,10 +136,13 @@ fn create_for_parent(
         Ok((comment, project_id))
     })?;
     if let Some(project_id) = project_id {
-        realtime.send(match parent {
-            CommentParent::Issue(issue_id) => issue_updated_event(project_id, issue_id),
-            CommentParent::Page(_) => RealtimeEvent::ProjectUpdated { project_id },
-        });
+        realtime.send_with_seq(
+            match parent {
+                CommentParent::Issue(issue_id) => issue_updated_event(project_id, issue_id),
+                CommentParent::Page(_) => RealtimeEvent::ProjectUpdated { project_id },
+            },
+            comment.seq,
+        );
     }
     Ok(Json(comment))
 }
@@ -255,7 +258,7 @@ pub(super) async fn update_comment_handler(
         Ok((comment, context))
     })?;
     if let Some(event) = comment_updated_event(&context) {
-        realtime.send(event);
+        realtime.send_with_seq(event, comment.seq);
     }
     Ok(Json(comment))
 }
@@ -267,7 +270,7 @@ pub(super) async fn delete_comment_handler(
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
 ) -> Result<Json<serde_json::Value>, LificError> {
     let user = require_user(&identity)?;
-    let context = db.transaction(|conn| {
+    let (context, seq) = db.transaction(|conn| {
         let existing = comments::get_comment(conn, id)?;
         let context = CommentContext::resolve(conn, &existing)?;
         authz::require_project_or_workspace_role_conn(
@@ -286,10 +289,12 @@ pub(super) async fn delete_comment_handler(
         }
 
         comments::delete_comment(conn, id)?;
-        Ok(context)
+        // The tombstone's seq, not the pre-delete one (LIF-440).
+        let seq = comments::comment_seq(conn, id)?;
+        Ok((context, seq))
     })?;
     if let Some(event) = comment_updated_event(&context) {
-        realtime.send(event);
+        realtime.send_with_seq(event, seq);
     }
     Ok(Json(serde_json::json!({"deleted": true})))
 }

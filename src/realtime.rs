@@ -1,6 +1,6 @@
 use axum::extract::ws::{Message, WebSocket};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::RecvError;
@@ -50,6 +50,20 @@ const _: () = assert!(
     MAX_SOCKETS_TOTAL >= MAX_SOCKETS_PER_USER
         && MAX_SOCKETS_TOTAL.is_multiple_of(MAX_SOCKETS_PER_USER)
 );
+/// LIF-440: how many recent seq-bearing events one project keeps around for
+/// replay. The broadcast channel is the live path and forgets an event the
+/// moment every live socket has seen it; this ring is what a socket that was
+/// *not* live gets to read on reconnect. 1024 is roughly an hour of a busy
+/// project's writes and costs a few hundred kilobytes per project at the
+/// serialized sizes these envelopes have (ids only, no bodies).
+pub(crate) const RING_CAPACITY: usize = 1024;
+/// LIF-440: how long a buffered event stays replayable. Past this a
+/// reconnecting client is told to `sync_required` and backfill from
+/// `/api/projects/{id}/changes` instead, which is both cheaper and more
+/// correct than keeping an unbounded tail in memory for a laptop that was
+/// asleep all weekend. Enforced lazily on publish and on resume, so no
+/// background task exists to leak.
+pub(crate) const RING_MAX_AGE: Duration = Duration::from_secs(300);
 
 #[derive(Debug, Default)]
 struct SocketCounts {
@@ -57,11 +71,126 @@ struct SocketCounts {
     total: usize,
 }
 
+/// One buffered event, kept only long enough to answer a resume.
+#[derive(Debug, Clone)]
+struct BufferedEvent {
+    seq: i64,
+    published_at: Instant,
+    /// The exact frame the live path sent, so a replayed event and a live one
+    /// are byte-identical and a client cannot tell them apart.
+    message: Message,
+}
+
+/// One project's replay ring (LIF-440).
+///
+/// `latest_seq` and `evicted` are what make a *negative* answer possible: the
+/// events themselves can all be gone, and the ring still knows whether their
+/// absence means "nothing happened" or "something happened and you missed it".
+#[derive(Debug, Default)]
+struct ProjectRing {
+    events: VecDeque<BufferedEvent>,
+    /// Highest seq ever published for this project, retained past eviction.
+    latest_seq: i64,
+    /// Whether anything has ever been dropped from `events`. While this is
+    /// false the ring holds every event the project has ever published, so it
+    /// covers every cursor, including a cursor far below the oldest seq
+    /// present (which is common: seq is instance-wide, so a project's first
+    /// event can carry a large seq).
+    evicted: bool,
+}
+
+impl ProjectRing {
+    /// Drop everything older than [`RING_MAX_AGE`]. Entries are pushed in
+    /// publish order, so the front is always the oldest and this stops at the
+    /// first entry still inside the window.
+    fn expire(&mut self, now: Instant) {
+        while self.events.front().is_some_and(|oldest| {
+            now.saturating_duration_since(oldest.published_at) >= RING_MAX_AGE
+        }) {
+            self.events.pop_front();
+            self.evicted = true;
+        }
+    }
+
+    /// Can this ring account for everything published after `cursor`?
+    fn covers(&self, cursor: i64) -> bool {
+        if !self.evicted {
+            return true;
+        }
+        match self.events.front() {
+            // The oldest surviving event is the first one after the cursor (or
+            // earlier), so nothing in between was lost.
+            Some(oldest) => oldest.seq <= cursor.saturating_add(1),
+            // Everything aged out. The client is only safe if it had already
+            // seen everything this project ever published.
+            None => self.latest_seq <= cursor,
+        }
+    }
+}
+
+/// What a resuming client is owed.
+#[derive(Debug, PartialEq, Eq)]
+enum ResumeOutcome {
+    /// Every buffered event after the client's cursor, in publish order.
+    Replay(Vec<Message>),
+    /// The gap is wider than the buffer; the client must backfill from
+    /// `/api/projects/{id}/changes`.
+    SyncRequired,
+}
+
+/// Per-project rings of recently published seq-bearing events (LIF-440).
+#[derive(Debug, Default)]
+struct ReplayBuffer {
+    projects: HashMap<i64, ProjectRing>,
+}
+
+impl ReplayBuffer {
+    fn record(&mut self, project_id: i64, seq: i64, message: Message, now: Instant) {
+        let ring = self.projects.entry(project_id).or_default();
+        ring.expire(now);
+        ring.latest_seq = ring.latest_seq.max(seq);
+        ring.events.push_back(BufferedEvent {
+            seq,
+            published_at: now,
+            message,
+        });
+        while ring.events.len() > RING_CAPACITY {
+            ring.events.pop_front();
+            ring.evicted = true;
+        }
+    }
+
+    fn resume(&mut self, project_id: i64, cursor: i64, now: Instant) -> ResumeOutcome {
+        let Some(ring) = self.projects.get_mut(&project_id) else {
+            // Nothing seq-bearing has ever been published for this project on
+            // this process, so there is nothing the client can have missed
+            // that the buffer would know about.
+            return ResumeOutcome::Replay(Vec::new());
+        };
+        ring.expire(now);
+        if !ring.covers(cursor) {
+            return ResumeOutcome::SyncRequired;
+        }
+        ResumeOutcome::Replay(
+            ring.events
+                .iter()
+                .filter(|buffered| buffered.seq > cursor)
+                .map(|buffered| buffered.message.clone())
+                .collect(),
+        )
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct RealtimeHub {
     tx: broadcast::Sender<RealtimeMessage>,
     revocations: broadcast::Sender<i64>,
     connections: Arc<Mutex<SocketCounts>>,
+    /// LIF-440. A `std::sync::Mutex` rather than an async one on purpose:
+    /// every critical section is a `VecDeque` push or a bounded scan, the
+    /// publisher side (`send_message`) is a synchronous function called from
+    /// request handlers, and nothing awaits while holding it.
+    replay: Arc<Mutex<ReplayBuffer>>,
 }
 
 impl RealtimeHub {
@@ -76,6 +205,7 @@ impl RealtimeHub {
             tx,
             revocations,
             connections: Arc::new(Mutex::new(SocketCounts::default())),
+            replay: Arc::new(Mutex::new(ReplayBuffer::default())),
         }
     }
 
@@ -105,11 +235,20 @@ impl RealtimeHub {
     }
 
     pub fn send(&self, event: RealtimeEvent) {
-        self.send_message(event, RealtimeAudience::Event);
+        self.send_message(event, None, RealtimeAudience::Event);
+    }
+
+    /// Publish an event stamped with the `seq` of the row the mutation wrote
+    /// (LIF-440). Only these events are replayable: `seq` is what lets a
+    /// reconnecting client say "everything after C" and what lets it discard
+    /// the duplicates a resume can produce. Seq-less events stay advisory —
+    /// a client that sees one refreshes whatever view it names.
+    pub fn send_with_seq(&self, event: RealtimeEvent, seq: i64) {
+        self.send_message(event, Some(seq), RealtimeAudience::Event);
     }
 
     pub fn send_to_users(&self, event: RealtimeEvent, user_ids: Vec<i64>) {
-        self.send_message(event, RealtimeAudience::Users(user_ids));
+        self.send_message(event, None, RealtimeAudience::Users(user_ids));
     }
 
     /// Immediately terminate every live socket for a user after account
@@ -125,24 +264,71 @@ impl RealtimeHub {
         self.revocations.subscribe()
     }
 
-    fn send_message(&self, event: RealtimeEvent, audience: RealtimeAudience) {
+    fn send_message(&self, event: RealtimeEvent, seq: Option<i64>, audience: RealtimeAudience) {
+        // A replayable event is project-scoped, seq-stamped and addressed to
+        // everyone who can see the project. Anything else is advisory and
+        // lives only as long as the live fan-out.
+        let replayable = match (event.project_id(), seq, &audience) {
+            (Some(project_id), Some(seq), RealtimeAudience::Event) => Some((project_id, seq)),
+            _ => None,
+        };
+        if replayable.is_none() && self.tx.receiver_count() == 0 {
+            trace!("dropped realtime event because no receivers are subscribed");
+            return;
+        }
+
+        let Ok(json) = serde_json::to_string(&EventEnvelope {
+            event: &event,
+            seq,
+        }) else {
+            warn!("failed to serialize realtime event");
+            return;
+        };
+        let frame = Message::Text(json.into());
+
+        // Buffer before the live fan-out, and regardless of who is listening:
+        // "no receivers right now" is precisely the case a resume exists to
+        // repair, so bailing out on an empty subscriber list would leave the
+        // ring empty exactly when it matters.
+        if let Some((project_id, seq)) = replayable {
+            self.replay
+                .lock()
+                .expect("replay buffer lock poisoned")
+                .record(project_id, seq, frame.clone(), Instant::now());
+        }
+
         if self.tx.receiver_count() == 0 {
             trace!("dropped realtime event because no receivers are subscribed");
             return;
         }
-        let Ok(json) = serde_json::to_string(&event) else {
-            warn!("failed to serialize realtime event");
-            return;
-        };
         let message = RealtimeMessage {
             event,
-            message: Message::Text(json.into()),
+            message: frame,
             audience,
         };
         if self.tx.send(message).is_err() {
             trace!("dropped realtime event because no receivers are subscribed");
         }
     }
+
+    fn resume(&self, project_id: i64, cursor: i64, now: Instant) -> ResumeOutcome {
+        self.replay
+            .lock()
+            .expect("replay buffer lock poisoned")
+            .resume(project_id, cursor, now)
+    }
+}
+
+/// The wire form of a realtime event: the event's own internally tagged
+/// fields, plus the optional `seq` LIF-440 added. Kept as a separate
+/// serialize-only shape so [`RealtimeEvent`] stays a plain enum and the
+/// dozens of emit sites that have no seq to give need no change.
+#[derive(Serialize)]
+struct EventEnvelope<'a> {
+    #[serde(flatten)]
+    event: &'a RealtimeEvent,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    seq: Option<i64>,
 }
 
 /// RAII guard for one live socket's slot in the per-user and instance-wide
@@ -186,6 +372,10 @@ enum RealtimeRequest {
     ActivityBaselineRequest,
     #[serde(rename = "heartbeat")]
     Heartbeat,
+    /// LIF-440. A reconnecting client's opening move: "I have applied
+    /// everything up to `cursor` in this project, give me the rest."
+    #[serde(rename = "resume")]
+    Resume { project_id: i64, cursor: i64 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -193,6 +383,13 @@ enum RealtimeRequest {
 pub enum RealtimeEvent {
     #[serde(rename = "resync.required")]
     ResyncRequired,
+    /// LIF-440: the answer to a `resume` the replay buffer can no longer
+    /// cover. Unlike `resync.required` this is project-scoped and actionable:
+    /// the client backfills from `/api/projects/{id}/changes` past its cursor
+    /// rather than refetching everything it holds. Only ever sent directly to
+    /// the socket that asked; it is never broadcast.
+    #[serde(rename = "sync_required")]
+    SyncRequired { project_id: i64 },
     #[serde(rename = "project.created")]
     ProjectCreated { project_id: i64 },
     #[serde(rename = "project.updated")]
@@ -293,7 +490,7 @@ pub async fn serve_socket(
                 .await
             }
             SocketInput::Message(message) => {
-                handle_client_message(&mut socket, &db, &auth_user, &mut client, message).await
+                handle_client_message(&mut socket, &hub, &db, &auth_user, &mut client, message).await
             }
             SocketInput::ProgressDeadline => close_socket(&mut socket).await,
         };
@@ -469,6 +666,8 @@ impl ClientState {
 enum ClientAction {
     Send(Message),
     ActivityBaseline,
+    /// LIF-440: replay this project's buffered events past `cursor`.
+    Resume { project_id: i64, cursor: i64 },
     Heartbeat,
     /// A reply to one of the server's own pings. Every conforming WebSocket
     /// client sends these without any application-level cooperation, which is
@@ -483,6 +682,9 @@ fn client_action(message: Message) -> ClientAction {
         Message::Pong(_) => ClientAction::Pong,
         Message::Text(text) => match serde_json::from_str::<RealtimeRequest>(&text) {
             Ok(RealtimeRequest::ActivityBaselineRequest) => ClientAction::ActivityBaseline,
+            Ok(RealtimeRequest::Resume { project_id, cursor }) => {
+                ClientAction::Resume { project_id, cursor }
+            }
             Ok(RealtimeRequest::Heartbeat) => ClientAction::Heartbeat,
             Err(_) => ClientAction::Close,
         },
@@ -620,6 +822,7 @@ async fn forward_event(
 
 async fn handle_client_message(
     socket: &mut WebSocket,
+    hub: &RealtimeHub,
     db: &crate::db::DbPool,
     auth_user: &crate::db::models::AuthUser,
     client: &mut ClientState,
@@ -639,6 +842,10 @@ async fn handle_client_message(
                     client.record_progress(now);
                     send_activity_baseline(socket, db, auth_user, client).await
                 }
+                ClientAction::Resume { project_id, cursor } => {
+                    client.record_progress(now);
+                    replay_for_client(socket, hub, db, auth_user, project_id, cursor).await
+                }
                 ClientAction::Heartbeat | ClientAction::Pong => {
                     client.record_progress(now);
                     SocketFlow::Open
@@ -647,6 +854,74 @@ async fn handle_client_message(
             }
         }
     }
+}
+
+/// Answer a client's `resume` frame (LIF-440).
+///
+/// Two outcomes, and only two: either every seq-bearing event this project
+/// published after `cursor` goes out in publish order, or the client is told
+/// `sync_required` and backfills from `/api/projects/{id}/changes`. There is
+/// no third "here is some of it" outcome, because a partial replay is exactly
+/// the silent gap the whole mechanism exists to prevent.
+///
+/// **Duplicates are fine, gaps are not.** The socket subscribed to the live
+/// broadcast before it ever read this frame, so an event published between
+/// those two moments is delivered twice: once from the ring, once live. That
+/// is deliberate. The alternative — hold live events back until the replay is
+/// flushed — buys nothing, because the client's cursor discipline ("ignore
+/// anything at or below the cursor I have already applied") makes a duplicate
+/// a no-op, while any scheme that risks dropping an event is unrecoverable.
+///
+/// The visibility gate is the same `can_view_project` the live path applies
+/// per event, hoisted to one check: every buffered event is project-scoped
+/// and `Event`-audience by construction, so one answer covers the batch. A
+/// client that cannot see the project gets `sync_required`, which tells it
+/// nothing it could not learn by calling `/changes` and being refused.
+async fn replay_for_client(
+    socket: &mut WebSocket,
+    hub: &RealtimeHub,
+    db: &crate::db::DbPool,
+    auth_user: &crate::db::models::AuthUser,
+    project_id: i64,
+    cursor: i64,
+) -> SocketFlow {
+    if !project_visible(db, auth_user, project_id).await {
+        return send_event(socket, &RealtimeEvent::SyncRequired { project_id }).await;
+    }
+    match hub.resume(project_id, cursor, Instant::now()) {
+        ResumeOutcome::SyncRequired => {
+            send_event(socket, &RealtimeEvent::SyncRequired { project_id }).await
+        }
+        ResumeOutcome::Replay(messages) => {
+            for message in messages {
+                if send_bounded(socket, message).await == SocketFlow::Close {
+                    return SocketFlow::Close;
+                }
+            }
+            SocketFlow::Open
+        }
+    }
+}
+
+async fn project_visible(
+    db: &crate::db::DbPool,
+    auth_user: &crate::db::models::AuthUser,
+    project_id: i64,
+) -> bool {
+    let db = db.clone();
+    let auth_user = auth_user.clone();
+    tokio::task::spawn_blocking(move || {
+        let identity = crate::resolve_caller::ResolvedIdentity {
+            user: auth_user,
+            transport: crate::actor::Transport::Web,
+        };
+        crate::authz::can_view_project(&db, &identity, project_id).unwrap_or(false)
+    })
+    .await
+    .unwrap_or_else(|error| {
+        warn!(error = %error, "websocket replay visibility task failed");
+        false
+    })
 }
 
 async fn send_activity_baseline(
@@ -836,7 +1111,8 @@ impl RealtimeEvent {
             | Self::IssueUpdated { project_id, .. }
             | Self::IssueDeleted { project_id, .. }
             | Self::IssueLinked { project_id, .. }
-            | Self::IssueUnlinked { project_id, .. } => Some(*project_id),
+            | Self::IssueUnlinked { project_id, .. }
+            | Self::SyncRequired { project_id } => Some(*project_id),
             Self::ResyncRequired
             | Self::ProjectsReordered
             | Self::ProjectGroupsChanged
@@ -924,6 +1200,250 @@ mod tests {
             event_json(rx.recv().await.unwrap().message)["project_id"],
             2
         );
+    }
+
+    // ── LIF-440: replay ring, resume, sync_required ──────────────
+
+    /// Publish with a seq, exactly as a mutation handler does. The hub has no
+    /// subscribers in these tests on purpose: the ring must fill anyway, since
+    /// "nobody was listening" is the case a resume exists to repair.
+    fn publish(hub: &RealtimeHub, project_id: i64, issue_id: i64, seq: i64) {
+        hub.send_with_seq(
+            RealtimeEvent::IssueUpdated {
+                project_id,
+                issue_id,
+            },
+            seq,
+        );
+    }
+
+    fn replayed_seqs(outcome: ResumeOutcome) -> Vec<i64> {
+        match outcome {
+            ResumeOutcome::Replay(messages) => messages
+                .into_iter()
+                .map(|message| event_json(message)["seq"].as_i64().unwrap())
+                .collect(),
+            ResumeOutcome::SyncRequired => panic!("expected a replay, got sync_required"),
+        }
+    }
+
+    #[test]
+    fn published_events_carry_the_seq_of_the_row_they_describe() {
+        let hub = RealtimeHub::new();
+        let mut rx = hub.subscribe();
+
+        publish(&hub, 1, 42, 17);
+
+        let json = event_json(rx.try_recv().unwrap().message);
+        assert_eq!(json["type"], "issue.updated");
+        assert_eq!(json["project_id"], 1);
+        assert_eq!(json["issue_id"], 42);
+        assert_eq!(json["seq"], 17);
+    }
+
+    /// A seq-less event is advisory: it goes out on the wire without a `seq`
+    /// key at all, and it never enters the replay ring.
+    #[test]
+    fn seq_less_events_omit_seq_and_are_not_buffered() {
+        let hub = RealtimeHub::new();
+        let mut rx = hub.subscribe();
+
+        hub.send(RealtimeEvent::ProjectUpdated { project_id: 1 });
+
+        let json = event_json(rx.try_recv().unwrap().message);
+        assert_eq!(json["type"], "project.updated");
+        assert!(json.get("seq").is_none(), "advisory events carry no seq");
+        assert_eq!(
+            replayed_seqs(hub.resume(1, 0, Instant::now())),
+            Vec::<i64>::new()
+        );
+    }
+
+    /// Events addressed to specific users are never replayed: the ring answers
+    /// a project resume, and a per-user audience is not a project fact.
+    #[test]
+    fn user_addressed_events_are_not_buffered() {
+        let hub = RealtimeHub::new();
+        hub.send_to_users(RealtimeEvent::ProjectUpdated { project_id: 1 }, vec![7]);
+        assert_eq!(
+            replayed_seqs(hub.resume(1, 0, Instant::now())),
+            Vec::<i64>::new()
+        );
+    }
+
+    #[test]
+    fn resume_replays_exactly_the_tail_after_the_cursor_in_order() {
+        let hub = RealtimeHub::new();
+        for seq in 1..=6 {
+            publish(&hub, 1, seq, seq);
+        }
+
+        assert_eq!(replayed_seqs(hub.resume(1, 3, Instant::now())), vec![4, 5, 6]);
+    }
+
+    /// The cursor is inclusive of what the client already applied, so resuming
+    /// at the newest seq replays nothing, and resuming from scratch replays
+    /// everything the ring still holds.
+    #[test]
+    fn resume_boundaries_replay_nothing_and_everything() {
+        let hub = RealtimeHub::new();
+        for seq in 1..=3 {
+            publish(&hub, 1, seq, seq);
+        }
+
+        assert_eq!(
+            replayed_seqs(hub.resume(1, 3, Instant::now())),
+            Vec::<i64>::new()
+        );
+        assert_eq!(replayed_seqs(hub.resume(1, 0, Instant::now())), vec![1, 2, 3]);
+    }
+
+    /// A project this process has published nothing for cannot have a gap, so
+    /// the client is told to carry on rather than to resync.
+    #[test]
+    fn resume_for_a_silent_project_replays_nothing() {
+        let hub = RealtimeHub::new();
+        assert_eq!(
+            replayed_seqs(hub.resume(404, 99, Instant::now())),
+            Vec::<i64>::new()
+        );
+    }
+
+    /// Instance-wide seq means a project's first event can carry a large seq
+    /// while the ring has still never dropped anything. That ring covers every
+    /// cursor, including zero, and must not force a needless full sync.
+    #[test]
+    fn an_unevicted_ring_covers_a_cursor_below_its_oldest_seq() {
+        let hub = RealtimeHub::new();
+        publish(&hub, 1, 1, 5_000);
+        publish(&hub, 1, 2, 5_001);
+
+        assert_eq!(
+            replayed_seqs(hub.resume(1, 0, Instant::now())),
+            vec![5_000, 5_001]
+        );
+    }
+
+    #[test]
+    fn a_cursor_evicted_by_ring_capacity_requires_a_full_sync() {
+        let hub = RealtimeHub::new();
+        let published = RING_CAPACITY as i64 + 10;
+        for seq in 1..=published {
+            publish(&hub, 1, seq, seq);
+        }
+
+        // The oldest event still buffered is well past seq 1, so the events
+        // between are unrecoverable from memory.
+        assert_eq!(hub.resume(1, 1, Instant::now()), ResumeOutcome::SyncRequired);
+        // A cursor inside the surviving window is still served.
+        assert_eq!(
+            replayed_seqs(hub.resume(1, published - 2, Instant::now())),
+            vec![published - 1, published]
+        );
+    }
+
+    /// Age eviction, driven by an injected timestamp rather than a sleep.
+    #[test]
+    fn events_older_than_the_max_age_are_dropped_and_force_a_sync() {
+        let hub = RealtimeHub::new();
+        let published_at = Instant::now();
+        for seq in 1..=3 {
+            publish(&hub, 1, seq, seq);
+        }
+
+        // Still inside the window: everything replays.
+        assert_eq!(
+            replayed_seqs(hub.resume(1, 0, published_at + RING_MAX_AGE - Duration::from_secs(1))),
+            vec![1, 2, 3]
+        );
+
+        // Past it: the entries are gone, and a cursor that predates them can
+        // no longer be served from memory.
+        let expired = published_at + RING_MAX_AGE + Duration::from_secs(1);
+        assert_eq!(hub.resume(1, 0, expired), ResumeOutcome::SyncRequired);
+        // A client that had already applied everything needs nothing, so the
+        // same emptied ring answers it without a resync.
+        assert_eq!(replayed_seqs(hub.resume(1, 3, expired)), Vec::<i64>::new());
+    }
+
+    /// Age eviction also runs on publish, so a long-quiet project does not
+    /// carry a stale tail into its next burst of activity.
+    #[test]
+    fn publishing_expires_the_entries_that_aged_out_while_the_project_was_quiet() {
+        let hub = RealtimeHub::new();
+        publish(&hub, 1, 1, 1);
+
+        // Nothing is published for longer than the max age, then one event is.
+        // Asserted on the ring itself rather than through `resume`, because
+        // `resume` expires too and would pass either way.
+        let mut buffer = hub.replay.lock().unwrap();
+        let now = Instant::now() + RING_MAX_AGE + Duration::from_secs(1);
+        buffer.record(1, 2, Message::Text(r#"{"seq":2}"#.into()), now);
+
+        let ring = &buffer.projects[&1];
+        assert_eq!(
+            ring.events.iter().map(|event| event.seq).collect::<Vec<_>>(),
+            vec![2],
+            "the aged-out entry must not survive the next publish"
+        );
+        assert!(ring.evicted, "dropping it is recorded as a coverage gap");
+    }
+
+    #[test]
+    fn replay_rings_are_scoped_to_one_project() {
+        let hub = RealtimeHub::new();
+        publish(&hub, 1, 10, 1);
+        publish(&hub, 2, 20, 2);
+        publish(&hub, 1, 11, 3);
+
+        assert_eq!(replayed_seqs(hub.resume(1, 0, Instant::now())), vec![1, 3]);
+        assert_eq!(replayed_seqs(hub.resume(2, 0, Instant::now())), vec![2]);
+        // Project 2's ring saturating does nothing to project 1's coverage.
+        for seq in 100..=(RING_CAPACITY as i64 + 200) {
+            publish(&hub, 2, seq, seq);
+        }
+        assert_eq!(replayed_seqs(hub.resume(1, 0, Instant::now())), vec![1, 3]);
+    }
+
+    /// A replayed frame is byte-identical to the live one, so a client cannot
+    /// tell them apart and duplicates at the resume boundary are inert.
+    #[test]
+    fn replayed_frames_are_the_frames_the_live_path_sent() {
+        let hub = RealtimeHub::new();
+        let mut rx = hub.subscribe();
+        publish(&hub, 1, 42, 9);
+
+        let live = rx.try_recv().unwrap().message;
+        let ResumeOutcome::Replay(replayed) = hub.resume(1, 8, Instant::now()) else {
+            panic!("expected a replay");
+        };
+        assert_eq!(replayed, vec![live]);
+    }
+
+    #[test]
+    fn resume_frames_parse_into_a_replay_action() {
+        assert_eq!(
+            client_action(Message::Text(
+                r#"{"type":"resume","project_id":7,"cursor":42}"#.into()
+            )),
+            ClientAction::Resume {
+                project_id: 7,
+                cursor: 42
+            }
+        );
+        // A malformed resume is still a protocol violation, same as any other
+        // unrecognized frame.
+        assert_eq!(
+            client_action(Message::Text(r#"{"type":"resume"}"#.into())),
+            ClientAction::Close
+        );
+    }
+
+    #[test]
+    fn sync_required_serializes_with_its_project() {
+        let json = serde_json::to_value(RealtimeEvent::SyncRequired { project_id: 7 }).unwrap();
+        assert_eq!(json["type"], "sync_required");
+        assert_eq!(json["project_id"], 7);
     }
 
     fn event_json(message: Message) -> serde_json::Value {

@@ -2750,6 +2750,171 @@ mod authz_gating_tests {
         server.abort();
     }
 
+    // ── LIF-440: WebSocket event replay ──────────────────────────
+
+    /// Seed a project the websocket user can see, and return its id.
+    fn websocket_project(db: &crate::db::DbPool, identifier: &str) -> i64 {
+        let conn = db.write().unwrap();
+        crate::db::queries::create_project(
+            &conn,
+            &crate::db::models::CreateProject {
+                name: format!("Replay {identifier}"),
+                identifier: identifier.into(),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .id
+    }
+
+    /// Ask for the activity baseline and require it to be the very next
+    /// application frame. A replay that leaked an event the socket was not
+    /// owed would arrive ahead of it and fail here.
+    async fn assert_nothing_queued_ahead_of_the_baseline(socket: &mut TestWebSocket) {
+        socket
+            .send(Message::Text(ACTIVITY_BASELINE_REQUEST.into()))
+            .await
+            .unwrap();
+        assert_eq!(
+            next_realtime_event(socket).await["type"],
+            "activity.baseline"
+        );
+    }
+
+    fn resume_frame(project_id: i64, cursor: i64) -> Message {
+        Message::Text(
+            serde_json::json!({"type": "resume", "project_id": project_id, "cursor": cursor})
+                .to_string()
+                .into(),
+        )
+    }
+
+    /// The whole point of the ring: events published while nobody was
+    /// connected are still delivered to the socket that reconnects afterwards.
+    #[tokio::test]
+    async fn websocket_resume_replays_the_events_published_while_it_was_away() {
+        let (db, token) = websocket_session();
+        let realtime = crate::realtime::RealtimeHub::new();
+        let project_id = websocket_project(&db, "RPL");
+        for seq in 1..=4 {
+            realtime.send_with_seq(
+                crate::realtime::RealtimeEvent::IssueUpdated {
+                    project_id,
+                    issue_id: seq,
+                },
+                seq,
+            );
+        }
+
+        let (url, server) = websocket_test_server(db, realtime).await;
+        let (mut socket, _) = tokio_tungstenite::connect_async(websocket_request(&url, &token))
+            .await
+            .unwrap();
+        socket.send(resume_frame(project_id, 2)).await.unwrap();
+
+        for seq in [3, 4] {
+            let event = next_realtime_event(&mut socket).await;
+            assert_eq!(event["type"], "issue.updated");
+            assert_eq!(event["project_id"], project_id);
+            assert_eq!(event["seq"], seq);
+        }
+        // Nothing else is owed, and the socket stays live.
+        assert_nothing_queued_ahead_of_the_baseline(&mut socket).await;
+        server.abort();
+    }
+
+    /// One project's replay never leaks into another's resume.
+    #[tokio::test]
+    async fn websocket_resume_is_scoped_to_the_project_it_names() {
+        let (db, token) = websocket_session();
+        let realtime = crate::realtime::RealtimeHub::new();
+        let noisy = websocket_project(&db, "NOIS");
+        let quiet = websocket_project(&db, "QUIT");
+        realtime.send_with_seq(
+            crate::realtime::RealtimeEvent::IssueUpdated {
+                project_id: noisy,
+                issue_id: 1,
+            },
+            1,
+        );
+
+        let (url, server) = websocket_test_server(db, realtime).await;
+        let (mut socket, _) = tokio_tungstenite::connect_async(websocket_request(&url, &token))
+            .await
+            .unwrap();
+        socket.send(resume_frame(quiet, 0)).await.unwrap();
+
+        // The next thing off the wire is the baseline answer, not the other
+        // project's buffered event.
+        assert_nothing_queued_ahead_of_the_baseline(&mut socket).await;
+        server.abort();
+    }
+
+    /// Past the ring's coverage the server refuses to guess: the client is
+    /// told to backfill from `/api/projects/{id}/changes` instead.
+    #[tokio::test]
+    async fn websocket_resume_past_the_ring_asks_the_client_to_sync() {
+        let (db, token) = websocket_session();
+        let realtime = crate::realtime::RealtimeHub::new();
+        let project_id = websocket_project(&db, "EVIC");
+        for seq in 1..=(crate::realtime::RING_CAPACITY as i64 + 10) {
+            realtime.send_with_seq(
+                crate::realtime::RealtimeEvent::IssueUpdated {
+                    project_id,
+                    issue_id: seq,
+                },
+                seq,
+            );
+        }
+
+        let (url, server) = websocket_test_server(db, realtime).await;
+        let (mut socket, _) = tokio_tungstenite::connect_async(websocket_request(&url, &token))
+            .await
+            .unwrap();
+        socket.send(resume_frame(project_id, 1)).await.unwrap();
+
+        let event = next_realtime_event(&mut socket).await;
+        assert_eq!(event["type"], "sync_required");
+        assert_eq!(event["project_id"], project_id);
+        server.abort();
+    }
+
+    /// A client that cannot see the project learns nothing from the ring.
+    #[tokio::test]
+    async fn websocket_resume_on_an_invisible_project_replays_nothing() {
+        let (db, token) = websocket_session();
+        let realtime = crate::realtime::RealtimeHub::new();
+        let project_id = websocket_project(&db, "HIDE");
+        {
+            let conn = db.write().unwrap();
+            crate::db::queries::settings::update(
+                &conn,
+                crate::db::queries::settings::InstanceSettingsPatch {
+                    authz_enforced: Some(true),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        realtime.send_with_seq(
+            crate::realtime::RealtimeEvent::IssueUpdated {
+                project_id,
+                issue_id: 1,
+            },
+            1,
+        );
+
+        let (url, server) = websocket_test_server(db, realtime).await;
+        let (mut socket, _) = tokio_tungstenite::connect_async(websocket_request(&url, &token))
+            .await
+            .unwrap();
+        socket.send(resume_frame(project_id, 0)).await.unwrap();
+
+        let event = next_realtime_event(&mut socket).await;
+        assert_eq!(event["type"], "sync_required");
+        server.abort();
+    }
+
     #[tokio::test]
     async fn websocket_accepts_baseline_and_closes_on_invalid_payloads() {
         let (db, token) = websocket_session();
