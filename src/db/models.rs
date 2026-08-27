@@ -990,6 +990,154 @@ pub struct InsightsPayload {
     pub top_actors: Vec<ActorStat>,
 }
 
+// ── Delta sync (LIF-439) ─────────────────────────────────────
+//
+// The wire types for `GET /api/projects/{id}/changes` and
+// `GET /api/projects/{id}/index`. Every row here is *skinny*: identity,
+// position in the sync stream, and the fields a list or board view renders.
+// Descriptions, page content and comment bodies are deliberately absent, so
+// a client's cold start costs one round trip proportional to the row count
+// rather than to every word ever written in the project. See
+// `db::queries::changes`.
+
+/// Which table a change came from. Serializes to the `kind` discriminator
+/// every change row carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ChangeKind {
+    Issue,
+    Page,
+    Comment,
+}
+
+/// A live issue in the sync stream. `identifier` is the same `PRO-42` form
+/// [`Issue`] serializes, so a client never has to reassemble it from the
+/// project identifier and the per-project sequence.
+#[derive(Debug, Clone, Serialize)]
+pub struct IssueChange {
+    pub kind: ChangeKind,
+    pub seq: i64,
+    /// Always `false` — a deleted issue arrives as a [`Tombstone`] instead.
+    /// Emitted anyway so a client can branch on one field across all four
+    /// shapes rather than special-casing the absence of one.
+    pub deleted: bool,
+    pub id: i64,
+    pub identifier: String,
+    pub title: String,
+    pub status: Status,
+    pub priority: Priority,
+    pub module_id: Option<i64>,
+    pub sort_order: f64,
+    pub start_date: Option<String>,
+    pub target_date: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    /// Label names, resolved in one grouped query per page rather than one
+    /// query per row.
+    pub labels: Vec<String>,
+}
+
+/// A live page in the sync stream. `identifier` is the `PRO-DOC-7` form
+/// [`Page`] serializes.
+#[derive(Debug, Clone, Serialize)]
+pub struct PageChange {
+    pub kind: ChangeKind,
+    pub seq: i64,
+    /// Always `false`. See [`IssueChange::deleted`].
+    pub deleted: bool,
+    pub id: i64,
+    pub identifier: String,
+    pub title: String,
+    pub status: String,
+    pub folder_id: Option<i64>,
+    pub pinned: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// A live comment in the sync stream. The body is omitted on purpose:
+/// comments are only rendered on a detail view, which fetches them from
+/// `/api/issues/{id}/comments` anyway. What sync needs is that the comment
+/// exists, who wrote it, and when it last changed.
+#[derive(Debug, Clone, Serialize)]
+pub struct CommentChange {
+    pub kind: ChangeKind,
+    pub seq: i64,
+    /// Always `false`. See [`IssueChange::deleted`].
+    pub deleted: bool,
+    pub id: i64,
+    /// Set when the comment belongs to an issue; mutually exclusive with
+    /// `page_id`, matching [`Comment`].
+    pub issue_id: Option<i64>,
+    pub page_id: Option<i64>,
+    pub user_id: i64,
+    pub username: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// A deleted row (migration 047). Carries identity, its place in the stream,
+/// and nothing else — every other field of a deleted row is meaningless to a
+/// replica, whose only correct response is to drop its copy.
+#[derive(Debug, Clone, Serialize)]
+pub struct Tombstone {
+    pub kind: ChangeKind,
+    pub seq: i64,
+    /// Always `true`.
+    pub deleted: bool,
+    pub id: i64,
+}
+
+/// One entry in the delta stream.
+///
+/// `untagged` because the `kind` discriminator lives on each variant's own
+/// struct: a tombstone must still report `kind: "issue"`, which an
+/// internally-tagged enum could only express by giving two variants the same
+/// tag. Each variant serializes as its inner object, so the wire shape is
+/// exactly `{"kind": ..., "seq": ..., "deleted": ..., ...}`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
+pub enum Change {
+    Issue(IssueChange),
+    Page(PageChange),
+    Comment(CommentChange),
+    Tombstone(Tombstone),
+}
+
+impl Change {
+    /// Position in the sync stream, whatever the variant. Used to derive a
+    /// page's cursor and to assert ordering.
+    pub fn seq(&self) -> i64 {
+        match self {
+            Change::Issue(row) => row.seq,
+            Change::Page(row) => row.seq,
+            Change::Comment(row) => row.seq,
+            Change::Tombstone(row) => row.seq,
+        }
+    }
+}
+
+/// `GET /api/projects/{id}/changes` response.
+#[derive(Debug, Serialize)]
+pub struct ChangesPage {
+    pub changes: Vec<Change>,
+    /// The highest seq in `changes`, or the `since` the caller supplied when
+    /// the page is empty — a cursor never moves backwards.
+    pub cursor: i64,
+    pub has_more: bool,
+}
+
+/// `GET /api/projects/{id}/index` response: the cold-start snapshot.
+#[derive(Debug, Serialize)]
+pub struct IndexSnapshot {
+    /// Resume `/changes` from here. Read *before* the lists below, so a write
+    /// racing the bootstrap is re-delivered rather than skipped — see
+    /// `db::queries::changes::get_index`.
+    pub cursor: i64,
+    pub issues: Vec<IssueChange>,
+    pub pages: Vec<PageChange>,
+}
+
 // ── Plans (LIF-165/166) ──────────────────────────────────────
 //
 // A plan is a project-level tree of steps that survives across sessions.

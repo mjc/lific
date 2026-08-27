@@ -153,6 +153,61 @@ Lists users who can be mentioned in comments for a project. Path parameter: `id`
 
 Response: an array of objects with `user_id` (integer), `username` (string), and `display_name` (string).
 
+## Delta sync
+
+Issues, pages, and comments each carry `seq`, a monotonic counter shared across all three and across every project on the instance. A client bootstraps once with `/index`, remembers the cursor it returns, and then asks `/changes` what happened above it.
+
+Rows on both endpoints are *skinny*: no issue `description`, no page `content`, no comment body. Fetch those from the entity's own endpoint when a detail view needs them.
+
+### GET `/api/projects/{id}/index`
+
+Returns every live issue and page in a project, plus the cursor to resume `/changes` from. Path parameter: `id` (integer project ID). It has no query parameters or request body.
+
+Response: an object with `cursor` (integer), `issues` (array), and `pages` (array). Deleted rows are excluded, and comments are not included at all.
+
+The cursor is read before the lists, so a write that lands during the request is delivered twice rather than skipped: it may appear in the snapshot and will also come back from the next `/changes` call, since its `seq` is above the cursor. Apply changes as upserts keyed by `id` and duplicates cost nothing.
+
+### GET `/api/projects/{id}/changes`
+
+Returns everything in the project that changed above a cursor, oldest first. Path parameter: `id` (integer project ID). Query parameters are `since` (integer, optional, defaults to `0`) and `limit` (integer, optional). `limit` defaults to `5000` and is clamped to `1..=50000`. `since=0` returns everything, which works but is what `/index` is for.
+
+It has no request body. Response: an object with `changes` (array), `cursor` (integer), and `has_more` (boolean). `cursor` is the highest `seq` in `changes`, or the `since` you supplied when the page is empty, so it never moves backwards. When `has_more` is true, repeat the call with `since` set to the returned cursor.
+
+Comments are scoped through whichever parent they hang off, so an issue comment arrives with the issue's project and a page comment with the page's.
+
+Every change carries `kind` (`issue`, `page`, or `comment`), `seq` (integer), `deleted` (boolean), and `id` (integer). A change with `deleted: true` is a tombstone and carries nothing else: delete your copy. Live changes add the fields for their kind.
+
+- `issue`: `identifier`, `title`, `status`, `priority`, `module_id`, `sort_order`, `start_date`, `target_date`, `created_at`, `updated_at`, and `labels` (array of label names).
+- `page`: `identifier`, `title`, `status`, `folder_id`, `pinned`, `created_at`, `updated_at`.
+- `comment`: `issue_id`, `page_id`, `user_id`, `username`, `created_at`, `updated_at`.
+
+```json
+{
+  "changes": [
+    {
+      "kind": "issue",
+      "seq": 41,
+      "deleted": false,
+      "id": 7,
+      "identifier": "LIF-3",
+      "title": "Ship delta sync",
+      "status": "active",
+      "priority": "high",
+      "module_id": 2,
+      "sort_order": 1000.0,
+      "start_date": null,
+      "target_date": null,
+      "created_at": "2026-08-20 09:14:02",
+      "updated_at": "2026-08-27 11:02:55",
+      "labels": ["sync"]
+    },
+    { "kind": "page", "seq": 42, "deleted": true, "id": 4 }
+  ],
+  "cursor": 42,
+  "has_more": false
+}
+```
+
 ## Membership
 
 ### GET `/api/projects/{id}/members`

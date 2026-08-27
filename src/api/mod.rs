@@ -14,6 +14,7 @@ mod plans;
 mod project_groups;
 mod projects;
 mod resources;
+mod sync;
 mod views;
 
 use axum::{
@@ -168,6 +169,12 @@ pub fn router(db: DbPool, cors_origins: &[String]) -> Router {
             "/api/projects/{id}/insights",
             get(insights::project_insights),
         )
+        // Delta sync (LIF-439) — Viewer-gated. `/index` is the cold-start
+        // snapshot, `/changes` the incremental backfill above a cursor;
+        // together they let a local-first client rebuild without refetching
+        // the project. See src/api/sync.rs.
+        .route("/api/projects/{id}/changes", get(sync::project_changes))
+        .route("/api/projects/{id}/index", get(sync::project_index))
         .route("/api/export/issues/{identifier}", get(export::export_issue))
         .route("/api/export/pages/{identifier}", get(export::export_page))
         .route(
