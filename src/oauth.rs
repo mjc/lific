@@ -116,6 +116,7 @@ fn session_credential(headers: &HeaderMap) -> String {
 pub struct OAuthState {
     pub db: DbPool,
     pub issuer: String, // e.g. https://lific.example.com/lific
+    pub cimd_fetcher: Arc<dyn crate::cimd::Fetcher>,
     /// True when the issuer comes from an explicit `server.public_url`.
     /// An explicit issuer is advertised as-is; request-derived fallback
     /// (LIF-287) only applies when this is false.
@@ -341,6 +342,7 @@ async fn authorization_server_metadata(
         "registration_endpoint": format!("{issuer}/oauth/register"),
         "revocation_endpoint": format!("{issuer}/oauth/revoke"),
         "device_authorization_endpoint": format!("{issuer}/oauth/device_authorization"),
+        "client_id_metadata_document_supported": true,
         "scopes_supported": ["mcp"],
         "response_types_supported": ["code"],
         "response_modes_supported": ["query"],
@@ -603,7 +605,15 @@ async fn authorize_page(
     State(oauth): State<OAuthState>,
     headers: HeaderMap,
     Query(params): Query<AuthorizeParams>,
-) -> Html<String> {
+) -> Response {
+    if let Err(reason) = load_cimd_metadata(&oauth, &headers, &params.client_id).await {
+        return (
+            StatusCode::BAD_REQUEST,
+            Html(format!("<h1>Invalid client metadata</h1><p>{reason}</p>")),
+        )
+            .into_response();
+    }
+
     // Bind the CSRF token to the session the browser presents when loading this
     // page (sent on the top-level GET navigation under SameSite=Lax). The POST
     // approval must carry the same session for the token to validate.
@@ -665,6 +675,36 @@ async fn authorize_page(
         csrf_token = html_escape(&csrf_token),
         tool_pick_list = tool_pick_list,
     ))
+    .into_response()
+}
+
+fn registered_redirect_uris(db: &DbPool, client_id: &str) -> Option<Vec<String>> {
+    let conn = db.read().ok()?;
+    let json: String = conn
+        .query_row(
+            "SELECT redirect_uris FROM oauth_clients WHERE client_id = ?1",
+            params![client_id],
+            |row| row.get(0),
+        )
+        .ok()?;
+    serde_json::from_str(&json).ok()
+}
+
+async fn load_cimd_metadata(
+    oauth: &OAuthState,
+    headers: &HeaderMap,
+    client_id: &str,
+) -> Result<Option<crate::cimd::ClientMetadata>, String> {
+    // Pre-registered clients win over document lookup. This also lets an
+    // operator pin a known client ID and avoid fetching an untrusted URL.
+    if registered_redirect_uris(&oauth.db, client_id).is_some() {
+        return Ok(None);
+    }
+    if !crate::cimd::is_client_id_candidate(client_id) {
+        return Ok(None);
+    }
+    let issuer = effective_issuer(oauth, headers);
+    oauth.cimd_fetcher.fetch(&issuer, client_id).await.map(Some)
 }
 
 #[derive(Deserialize)]
@@ -847,22 +887,23 @@ async fn authorize_approve(
             .into_response();
     }
 
-    // Validate the redirect_uri against the client's registered URIs
-    let redirect_ok = if let Ok(conn) = oauth.db.read() {
-        let registered: Result<String, _> = conn.query_row(
-            "SELECT redirect_uris FROM oauth_clients WHERE client_id = ?1",
-            params![form.client_id],
-            |row| row.get(0),
-        );
-        match registered {
-            Ok(uris_json) => {
-                let uris: Vec<String> = serde_json::from_str(&uris_json).unwrap_or_default();
-                uris.iter().any(|u| u == &form.redirect_uri)
-            }
-            Err(_) => false,
+    let cimd_metadata = match load_cimd_metadata(&oauth, &headers, &form.client_id).await {
+        Ok(metadata) => metadata,
+        Err(reason) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Html(format!("<h1>Invalid client metadata</h1><p>{reason}</p>")),
+            )
+                .into_response();
         }
+    };
+
+    // Validate the redirect_uri against the client's registered URIs
+    let redirect_ok = if let Some(metadata) = cimd_metadata.as_ref() {
+        metadata.redirect_uris.iter().any(|uri| uri == &form.redirect_uri)
     } else {
-        false
+        registered_redirect_uris(&oauth.db, &form.client_id)
+            .is_some_and(|uris| uris.iter().any(|uri| uri == &form.redirect_uri))
     };
 
     if !redirect_ok {
@@ -904,6 +945,21 @@ async fn authorize_approve(
         Ok(user) => user,
         Err(refusal) => return refusal.into_response(),
     };
+
+    if let Some(metadata) = cimd_metadata.as_ref()
+        && let Err(e) = tx.execute(
+            "INSERT INTO oauth_clients (client_id, client_name, redirect_uris) VALUES (?1, ?2, ?3)
+             ON CONFLICT(client_id) DO UPDATE SET client_name = excluded.client_name, redirect_uris = excluded.redirect_uris",
+            params![
+                metadata.client_id,
+                metadata.client_name,
+                serde_json::to_string(&metadata.redirect_uris).unwrap_or_else(|_| "[]".into()),
+            ],
+        )
+    {
+        tracing::error!(error = %e, "failed to store CIMD client metadata");
+        return (StatusCode::INTERNAL_SERVER_ERROR, "database error").into_response();
+    }
 
     // LIFIC-13: pick which tool is connecting, then ensure (or reuse) its bot
     // so the issued credential attributes to the tool, not the approving human.
@@ -2474,10 +2530,18 @@ mod tests {
     /// Most tests need a generous cap so unrelated registrations don't
     /// trip the limiter; the rate-limit tests pass a small cap.
     fn test_oauth_app_with_register_limit(cap: usize) -> (Router, DbPool) {
+        test_oauth_app_with_fetcher(cap, Arc::new(crate::cimd::HttpFetcher::new()))
+    }
+
+    fn test_oauth_app_with_fetcher(
+        cap: usize,
+        cimd_fetcher: Arc<dyn crate::cimd::Fetcher>,
+    ) -> (Router, DbPool) {
         let db = crate::db::open_memory().expect("test db");
         let state = OAuthState {
             db: db.clone(),
             issuer: "https://example.com".into(),
+            cimd_fetcher,
             issuer_is_explicit: true,
             allowed_hosts: test_allowed_hosts(),
             register_limiter: Arc::new(RateLimiter::new(cap, std::time::Duration::from_secs(3600))),
@@ -2487,6 +2551,25 @@ mod tests {
             router(state).layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 4242)))),
             db,
         )
+    }
+
+    #[derive(Clone)]
+    struct FakeCimdFetcher {
+        metadata: crate::cimd::ClientMetadata,
+    }
+
+    impl crate::cimd::Fetcher for FakeCimdFetcher {
+        fn fetch(&self, _issuer: &str, client_id: &str) -> crate::cimd::FetchFuture {
+            let metadata = self.metadata.clone();
+            let client_id = client_id.to_owned();
+            Box::pin(async move {
+                if metadata.client_id == client_id {
+                    Ok(metadata)
+                } else {
+                    Err("fake CIMD document mismatch".into())
+                }
+            })
+        }
     }
 
     fn test_allowed_hosts() -> Arc<[String]> {
@@ -2513,6 +2596,7 @@ mod tests {
         let state = OAuthState {
             db,
             issuer: "http://127.0.0.1:3456".into(),
+            cimd_fetcher: Arc::new(crate::cimd::HttpFetcher::new()),
             issuer_is_explicit: false,
             allowed_hosts: test_allowed_hosts(),
             register_limiter: Arc::new(RateLimiter::new(
@@ -2953,6 +3037,120 @@ mod tests {
             true,
             "advertising iss requires the authorization-server metadata flag"
         );
+        assert_eq!(
+            val["client_id_metadata_document_supported"],
+            true,
+            "CIMD is the preferred public-client registration path"
+        );
+    }
+
+    #[tokio::test]
+    async fn cimd_client_can_complete_pkce_authorization_without_dcr() {
+        let client_id = "https://client.example/metadata.json";
+        let redirect_uri = "http://127.0.0.1:4312/callback";
+        let fake = FakeCimdFetcher {
+            metadata: crate::cimd::ClientMetadata {
+                client_id: client_id.into(),
+                client_name: "Fixture Client".into(),
+                redirect_uris: vec![redirect_uri.into()],
+            },
+        };
+        let (app, db) = test_oauth_app_with_fetcher(1000, Arc::new(fake));
+        let session_token = create_test_session(&db);
+        let verifier = "cimd_verifier_abcdefghijklmnopqrstuvwxyz_0123456789";
+        let challenge = base64_url_encode(&Sha256::digest(verifier.as_bytes()));
+        let csrf = generate_csrf_token(&session_token);
+        let body = format!(
+            "client_id={}&redirect_uri={}&response_type=code&code_challenge={}&code_challenge_method=S256&scope=mcp&resource=https%3A%2F%2Fexample.com%2Fmcp&csrf_token={}&tool=claude-code",
+            urlencoding::encode(client_id),
+            urlencoding::encode(redirect_uri),
+            urlencoding::encode(&challenge),
+            urlencoding::encode(&csrf),
+        );
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/authorize")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .header("cookie", format!("lific_token={session_token}"))
+                    .body(axum::body::Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(response.status().is_redirection());
+
+        let location = response
+            .headers()
+            .get("location")
+            .and_then(|value| value.to_str().ok())
+            .expect("CIMD approval must return an authorization code")
+            .to_owned();
+        let code = location
+            .split("code=")
+            .nth(1)
+            .and_then(|value| value.split('&').next())
+            .expect("authorization response must contain code")
+            .to_owned();
+        let token_response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/token")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(axum::body::Body::from(format!(
+                        "grant_type=authorization_code&code={code}&redirect_uri={}&client_id={}&code_verifier={verifier}&resource=https%3A%2F%2Fexample.com%2Fmcp",
+                        urlencoding::encode(redirect_uri),
+                        urlencoding::encode(client_id),
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(token_response.status(), StatusCode::OK);
+
+        let conn = db.read().unwrap();
+        let (name, redirects): (String, String) = conn
+            .query_row(
+                "SELECT client_name, redirect_uris FROM oauth_clients WHERE client_id = ?1",
+                params![client_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(name, "Fixture Client");
+        assert_eq!(redirects, serde_json::to_string(&[redirect_uri]).unwrap());
+    }
+
+    #[tokio::test]
+    async fn cimd_authorization_rejects_a_redirect_not_in_the_document() {
+        let client_id = "https://client.example/metadata.json";
+        let fake = FakeCimdFetcher {
+            metadata: crate::cimd::ClientMetadata {
+                client_id: client_id.into(),
+                client_name: "Fixture Client".into(),
+                redirect_uris: vec!["http://127.0.0.1:4312/callback".into()],
+            },
+        };
+        let (app, db) = test_oauth_app_with_fetcher(1000, Arc::new(fake));
+        let session_token = create_test_session(&db);
+        let body = authorize_body(client_id, "http://127.0.0.1:4313/attacker", &session_token);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/authorize")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .header("cookie", format!("lific_token={session_token}"))
+                    .body(axum::body::Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

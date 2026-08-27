@@ -6,6 +6,7 @@ mod authz;
 mod authz_coverage_tests;
 mod backup;
 mod cli;
+mod cimd;
 mod config;
 mod db;
 mod dump;
