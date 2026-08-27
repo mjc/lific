@@ -82,6 +82,95 @@ describe("renderMermaidBlock", () => {
     expect(target.dataset.rendered).toBeUndefined();
   });
 
+  test("a pass cancelled before it starts charges nothing and leaves the node alone", async () => {
+    // The block belongs to a superseded render, so it may already be detached.
+    // Even the reject paths (this source is deliberately too complex) must not
+    // write to it, and nothing may be billed to a budget the next render owns.
+    const budget = createMermaidBudget();
+    const target = block(encodeURIComponent(`graph TD\nA${"-->A".repeat(128)}`));
+    let renders = 0;
+
+    await renderMermaidBlock(target, async () => {
+      renders += 1;
+      return { svg: "<svg></svg>" };
+    }, budget, () => true);
+
+    expect(renders).toBe(0);
+    expect(target.textContent).toBe("");
+    expect(target.innerHTML).toBe("");
+    expect(target.dataset.rendered).toBeUndefined();
+    expect(budget).toEqual({ blocks: 0, sourceBytes: 0 });
+  });
+
+  test("a rerender gets a fresh budget, so a cancelled pass costs the next one nothing", async () => {
+    // A pass cancelled *mid-render* has already claimed, and cannot un-claim:
+    // the guarantee is that the abandoned budget dies with the render.
+    const abandoned = createMermaidBudget();
+    const pending = deferred<{ svg: string }>();
+    const stale = block(encodeURIComponent("graph TD\nA-->B"));
+    let cancelled = false;
+    const rendering = renderMermaidBlock(
+      stale,
+      async () => pending.promise,
+      abandoned,
+      () => cancelled,
+    );
+    cancelled = true;
+    pending.resolve({ svg: "<svg></svg>" });
+    await rendering;
+    expect(abandoned.blocks).toBe(1);
+    expect(stale.dataset.rendered).toBeUndefined();
+
+    // Content changed, so the next pass renders against a new budget and the
+    // document is not permanently one diagram poorer.
+    const fresh = createMermaidBudget();
+    const blocks = ["A-->B", "C-->D"].map((edge) =>
+      block(encodeURIComponent(`graph TD\n${edge}`)),
+    );
+    let renders = 0;
+    for (const target of blocks) {
+      await renderMermaidBlock(target, async () => {
+        renders += 1;
+        return { svg: "<svg></svg>" };
+      }, fresh, () => false);
+    }
+
+    expect(renders).toBe(2);
+    expect(blocks.map((b) => b.dataset.rendered)).toEqual(["true", "true"]);
+  });
+
+  test("a refreshed thread budget still counts the bodies already on screen", async () => {
+    const render = async () => ({ svg: "<svg></svg>" });
+    const bodies = (count: number) =>
+      Array.from({ length: count }, (_, i) =>
+        block(encodeURIComponent(`graph TD\nA${i}-->B${i}`)),
+      );
+
+    // Two comments, one diagram each, one shared budget: both draw.
+    const first = bodies(2);
+    const firstBudget = createMermaidBudget();
+    for (const target of first) {
+      await renderMermaidBlock(target, render, firstBudget, () => false);
+    }
+    expect(first.map((b) => b.dataset.rendered)).toEqual(["true", "true"]);
+
+    // A third comment arrives. Every body is remounted against ONE fresh
+    // budget, so the two diagrams already on screen are charged again and the
+    // newcomer cannot slip past MAX_BLOCKS with an allowance of its own.
+    const refreshed = bodies(3);
+    const refreshedBudget = createMermaidBudget();
+    for (const target of refreshed) {
+      await renderMermaidBlock(target, render, refreshedBudget, () => false);
+    }
+
+    expect(refreshed.map((b) => b.dataset.rendered)).toEqual([
+      "true",
+      "true",
+      "error",
+    ]);
+    expect(refreshed[2].textContent).toContain("too many diagrams");
+  });
+
   test("reports success and failure while active", async () => {
     const success = block(encodeURIComponent("graph TD\nA-->B"));
     const failure = block(encodeURIComponent("graph TD\nA-->B"));

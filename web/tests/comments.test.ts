@@ -33,6 +33,7 @@ const {
   anchorNeedsOlderPage,
   canManageComment,
   commentKeyboardAction,
+  commentThreadRevision,
   commentWasEdited,
   loadCommentWindow,
   nextAnchorAttempt,
@@ -126,6 +127,60 @@ test("renders unsafe stored label colors through the component fallback", () => 
   expect(html).toContain("background: #6B7280");
   expect(html).not.toContain(value);
   expect(html).not.toContain("background-image");
+});
+
+// ── One diagram budget per rendered thread ──────────────────
+//
+// Comments keys its shared Mermaid budget on this revision string, and
+// remounts every body when it changes. Anything that alters what is on screen
+// therefore has to change it, or the diagrams already drawn go uncharged and
+// the newly added comment renders with the whole MAX_BLOCKS allowance to
+// itself — which is the cap being bypassed rather than enforced.
+
+test("the thread revision changes for every way the rendered thread can change", () => {
+  const first = comment({ id: 1, content: "one" });
+  const second = comment({ id: 2, content: "two", created_at: "2026-08-13 10:00:01" });
+  const thread = [first, second];
+  const base = commentThreadRevision(thread);
+
+  // Same thread, rebuilt objects: same key, so an unrelated rerender does not
+  // churn every body on screen.
+  expect(commentThreadRevision([comment({ id: 1, content: "one" }), { ...second }])).toBe(base);
+
+  // Posted.
+  const posted = upsertComment(thread, comment({ id: 3, created_at: "2026-08-13 10:00:02" }));
+  expect(commentThreadRevision(posted)).not.toBe(base);
+
+  // Paginated: an older page prepended.
+  const older = prependOlderComments(thread, [
+    comment({ id: 0, created_at: "2026-08-13 09:00:00" }),
+  ]);
+  expect(commentThreadRevision(older)).not.toBe(base);
+
+  // Edited, including an edit that lands in the same second as its create, so
+  // updated_at alone would not have moved.
+  const edited = upsertComment(thread, comment({ id: 1, content: "one, revised" }));
+  expect(commentThreadRevision(edited)).not.toBe(base);
+
+  // Deleted.
+  expect(commentThreadRevision(removeComment(thread, 2))).not.toBe(base);
+});
+
+test("every comment body renders its diagrams inside the thread", () => {
+  const diagram = (edge: string) => "```mermaid\ngraph TD\n" + edge + "\n```";
+  const html = renderComponent(Comments, {
+    props: {
+      comments: [
+        comment({ id: 1, content: diagram("A-->B") }),
+        comment({ id: 2, content: diagram("C-->D"), created_at: "2026-08-13 10:00:01" }),
+      ],
+      onSubmit: async () => null,
+    },
+  }).body;
+
+  // Both bodies emit a placeholder for the post-render pass to claim against
+  // the one shared budget; neither is dropped by the keyed wrapper.
+  expect(html.match(/data-mermaid=/g)?.length).toBe(2);
 });
 
 test("marks comments edited only when the update timestamp changes", () => {

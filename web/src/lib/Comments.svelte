@@ -36,6 +36,7 @@
   import {
     canManageComment,
     commentKeyboardAction,
+    commentThreadRevision,
     commentWasEdited,
     nextAnchorAttempt,
     type AnchorPageAttempt,
@@ -99,8 +100,15 @@
   let updatingId = $state<number | null>(null);
   let deletingId = $state<number | null>(null);
   let menuId = $state<number | null>(null);
+  // One aggregate diagram budget for the whole thread on screen, rebuilt
+  // whenever that thread changes (post, older page, edit, delete). The
+  // `{#key}` around each body remounts every Markdown instance against the
+  // fresh object, so previously drawn diagrams are charged again instead of
+  // riding for free and letting each new comment arrive with the full
+  // MAX_BLOCKS / MAX_TOTAL_SOURCE_BYTES allowance.
+  let threadRevision = $derived(commentThreadRevision(comments));
   let mermaidBudget = $derived.by(() => {
-    comments;
+    threadRevision;
     return createMermaidBudget();
   });
   let confirmDeleteId = $state<number | null>(null);
@@ -590,7 +598,9 @@
               </div>
             {:else}
               <div class="cmt__md">
-                <Markdown content={comment.content} mentions={candidates} class="text-sm" {mermaidBudget} />
+                {#key mermaidBudget}
+                  <Markdown content={comment.content} mentions={candidates} class="text-sm" {mermaidBudget} />
+                {/key}
               </div>
             {/if}
           </div>

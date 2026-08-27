@@ -24,12 +24,16 @@
     // that resolve against this set render as chips showing the display
     // name; unknown tokens stay literal text.
     mentions = [],
-    mermaidBudget = createMermaidBudget(),
+    // A diagram budget is a property of one *render pass*, not of this
+    // component. Left unset, each content revision gets its own (see
+    // `activeBudget` below). Callers that render several bodies which must
+    // share one aggregate cap (Comments) pass one in and own its lifetime.
+    mermaidBudget = undefined,
   }: {
     content: string;
     class?: string;
     mentions?: MentionUser[];
-    mermaidBudget?: MermaidBudget;
+    mermaidBudget?: MermaidBudget | undefined;
   } = $props();
 
   // Lowercased username → display name, for chip rendering.
@@ -232,6 +236,17 @@
     })
   );
 
+  // Standalone use: every content revision renders against a fresh budget.
+  // A single budget created once at mount would still hold the totals charged
+  // by earlier renders — including passes that were cancelled mid-flight and
+  // drew nothing — so an edited document would slide into "too many diagrams"
+  // for diagrams it is not actually showing, and never recover.
+  let ownBudget = $derived.by(() => {
+    html;
+    return createMermaidBudget();
+  });
+  let activeBudget = $derived(mermaidBudget ?? ownBudget);
+
   let containerEl = $state<HTMLDivElement | null>(null);
 
   // LIF-239: hover card for auto-linked issue identifiers. Timing is
@@ -372,6 +387,10 @@
     );
     if (blocks.length === 0) return;
 
+    // Read once: the whole async pass below charges the budget this run
+    // started with, never one that replaced it while mermaid was loading.
+    const budget = activeBudget;
+
     let cancelled = false;
     (async () => {
       const mermaid = (await import("mermaid")).default;
@@ -387,7 +406,7 @@
         await renderMermaidBlock(
           block,
           (id, source) => mermaid.render(id, source),
-          mermaidBudget,
+          budget,
           () => cancelled,
         );
       }

@@ -83,6 +83,26 @@ export function removeComment(comments: Comment[], id: number): Comment[] {
   return comments.filter((comment) => comment.id !== id);
 }
 
+/** Identity of the thread exactly as it is currently rendered.
+ *
+ *  Changes when a comment is posted, an older page is prepended, a body is
+ *  edited, or a comment is deleted; stable across everything else. Comments
+ *  keys its shared Mermaid budget on this: an aggregate cap over a thread is
+ *  only honest if every body on screen is charged against the *same* budget,
+ *  which means rebuilding it and re-rendering all of them whenever the set of
+ *  bodies changes. Otherwise the diagrams already drawn cost nothing and each
+ *  new comment shows up with the full allowance to itself.
+ *
+ *  The body text is part of the key rather than `updated_at` alone, because
+ *  that column has one-second resolution: an edit landing in the same second
+ *  as its create would otherwise read as no change at all. The length prefix
+ *  keeps a body that contains the separator from forging another entry. */
+export function commentThreadRevision(comments: Comment[]): string {
+  return comments
+    .map((c) => `${c.id}:${c.updated_at}:${c.content.length}:${c.content}`)
+    .join("\n\u0000\n");
+}
+
 // ── Bounded, stable comment paging ──────────────────────────
 //
 // The thread on screen is always a contiguous run ending at the newest

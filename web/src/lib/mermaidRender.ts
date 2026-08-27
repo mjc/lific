@@ -18,6 +18,12 @@ export async function renderMermaidBlock(
   budget: MermaidBudget,
   cancelled: () => boolean,
 ): Promise<void> {
+  // A superseded pass must neither charge the budget nor write to the block.
+  // Its node may already be detached (the content changed, or the whole body
+  // was remounted), and every byte it claimed would be charged to a render
+  // whose output nobody will ever see — permanently starving the next one.
+  if (cancelled()) return;
+
   let source: string;
   try {
     source = decodeURIComponent(block.dataset.mermaid ?? "");
