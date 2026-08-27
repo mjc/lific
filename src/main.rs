@@ -43,7 +43,6 @@ fn is_crud_command(cmd: &Command) -> bool {
             | Command::Folder { .. }
     )
 }
-
 fn write_private_config(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
     let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
     let staging = tempfile::Builder::new()
@@ -103,7 +102,6 @@ fn create_private_config(path: &std::path::Path, contents: &str) -> std::io::Res
     sync_parent_dir(parent)
 }
 
-use rmcp::ServiceExt;
 use tracing::info;
 
 #[tokio::main]
@@ -531,7 +529,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let transport = rmcp::transport::io::stdio();
 
             info!("lific MCP server started (stdio)");
-            let handle = server.serve(transport).await?;
+            let handle = mcp::serve_stdio(server, transport);
             if let Some(u) = &token_user {
                 info!(user = %u.username, "stdio session bound to agent");
             }
