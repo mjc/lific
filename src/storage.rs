@@ -37,6 +37,20 @@ use crate::error::LificError;
 /// nothing that enumerates blobs can mistake it for one.
 pub(crate) const STORE_LOCK_FILE: &str = ".lific-attachments.lock";
 
+fn lock_is_busy(error: &std::io::Error) -> bool {
+    if error.kind() == std::io::ErrorKind::WouldBlock {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        // LockFileEx reports ERROR_LOCK_VIOLATION rather than mapping it to
+        // WouldBlock in std::io on Windows.
+        return error.raw_os_error() == Some(33);
+    }
+    #[cfg(not(windows))]
+    false
+}
+
 /// Handle to the on-disk attachments directory. Cheap to clone (just a
 /// `PathBuf`); threaded through the API layer as an axum `Extension` the same
 /// way `AuthConfig` is.
@@ -370,7 +384,7 @@ impl AttachmentStore {
             .map_err(|e| LificError::Internal(format!("lock attachment store: {e}")))?;
         match file.try_lock_exclusive() {
             Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return Ok(None),
+            Err(error) if lock_is_busy(&error) => return Ok(None),
             Err(error) => {
                 return Err(LificError::Internal(format!(
                     "lock attachment store: {error}"
@@ -401,7 +415,7 @@ impl AttachmentStore {
             .map_err(|error| format!("lock attachment store: {error}"))?;
         match file.try_lock_exclusive() {
             Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return Ok(None),
+            Err(error) if lock_is_busy(&error) => return Ok(None),
             Err(error) => return Err(format!("lock attachment store: {error}")),
         }
         let result = operation(self);
@@ -1405,6 +1419,12 @@ mod tests {
             })
             .unwrap();
         assert!(store.try_with_lock(|_| Ok(())).unwrap().is_some());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_lock_violation_is_a_busy_store() {
+        assert!(lock_is_busy(&std::io::Error::from_raw_os_error(33)));
     }
 
     #[cfg(unix)]
