@@ -4189,33 +4189,46 @@ impl LificMcp {
 
         let size = bytes.len() as i64;
         let sha = crate::storage::AttachmentStore::hash_bytes(&bytes);
-        let (attachment, event) = self.store.with_string_lock(|store| self.transaction(|conn| {
-            let uploader = resolve_attachment_uploader_conn(conn)?;
-            let attachment = queries::attachments::create_attachment(
-                conn,
-                &sha,
-                &filename,
-                &mime,
-                size,
-                Some(uploader),
-            )?;
-            store.write_unlocked(&bytes)?;
-            let event = match link {
-                Some((entity, entity_id)) => {
-                    // The gate above ran on a read connection before the blob
-                    // was stored. Re-run it here, on the connection that
-                    // inserts the link and inside this transaction, so the
-                    // decision and the row it authorizes commit together.
-                    crate::api::attachments::authorize_link_conn(
-                        conn, &identity, entity, entity_id,
+        let (attachment, event) = self
+            .store
+            .try_with_string_lock(|store| {
+                self.transaction(|conn| {
+                    let uploader = resolve_attachment_uploader_conn(conn)?;
+                    let attachment = queries::attachments::create_attachment(
+                        conn,
+                        &sha,
+                        &filename,
+                        &mime,
+                        size,
+                        Some(uploader),
                     )?;
-                    queries::attachments::link_attachment(conn, attachment.id, entity, entity_id)?;
-                    crate::api::attachments::linked_entity_event(conn, entity, entity_id)?
-                }
-                None => None,
-            };
-            Ok((attachment, event))
-        }))?;
+                    store.write_unlocked(&bytes)?;
+                    let event = match link {
+                        Some((entity, entity_id)) => {
+                            // The gate above ran on a read connection before the blob
+                            // was stored. Re-run it here, on the connection that
+                            // inserts the link and inside this transaction, so the
+                            // decision and the row it authorizes commit together.
+                            crate::api::attachments::authorize_link_conn(
+                                conn, &identity, entity, entity_id,
+                            )?;
+                            queries::attachments::link_attachment(
+                                conn,
+                                attachment.id,
+                                entity,
+                                entity_id,
+                            )?;
+                            crate::api::attachments::linked_entity_event(conn, entity, entity_id)?
+                        }
+                        None => None,
+                    };
+                    Ok((attachment, event))
+                })
+            })?
+            .ok_or_else(|| {
+                "attachment storage is busy (a backup or restore is running); retry shortly"
+                    .to_string()
+            })?;
         event.into_iter().for_each(|event| self.emit(event));
 
         let snippet = attachment_markdown(&attachment.filename, &attachment.mime, attachment.id);

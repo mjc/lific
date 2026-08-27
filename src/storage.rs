@@ -384,6 +384,31 @@ impl AttachmentStore {
         result.map(Some)
     }
 
+    /// String-error counterpart to [`Self::try_with_lock`] for MCP tools.
+    pub(crate) fn try_with_string_lock<T>(
+        &self,
+        operation: impl FnOnce(&Self) -> Result<T, String>,
+    ) -> Result<Option<T>, String> {
+        let _guard = match self.operation_lock.try_lock() {
+            Ok(guard) => guard,
+            Err(std::sync::TryLockError::WouldBlock) => return Ok(None),
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                return Err("attachment store lock poisoned".to_string());
+            }
+        };
+        let file = self
+            .open_lock_file()
+            .map_err(|error| format!("lock attachment store: {error}"))?;
+        match file.try_lock_exclusive() {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return Ok(None),
+            Err(error) => return Err(format!("lock attachment store: {error}")),
+        }
+        let result = operation(self);
+        let _ = FileExt::unlock(&file);
+        result.map(Some)
+    }
+
     /// The error a request handler returns when [`Self::try_with_lock`] finds
     /// the store busy. Retryable by construction: the caller did nothing
     /// wrong and the same request will work once the dump or restore holding
@@ -392,23 +417,6 @@ impl AttachmentStore {
         LificError::Unavailable(
             "attachment storage is busy (a backup or restore is running); retry shortly".into(),
         )
-    }
-
-    /// MCP's tool boundary uses sanitized strings instead of `LificError`.
-    /// Keep it on the same two locks as [`Self::with_lock`] so both transports
-    /// (and every other process) coordinate blob writes and orphan collection.
-    pub(crate) fn with_string_lock<T>(
-        &self,
-        operation: impl FnOnce(&Self) -> Result<T, String>,
-    ) -> Result<T, String> {
-        let _guard = self
-            .operation_lock
-            .lock()
-            .map_err(|_| "attachment store lock poisoned".to_string())?;
-        let _file_lock = self
-            .acquire_file_lock()
-            .map_err(|e| format!("lock attachment store: {e}"))?;
-        operation(self)
     }
 
     /// Write `bytes` to `<dir>/<sha256>`, creating the directory if needed.
@@ -1359,6 +1367,13 @@ mod tests {
 
         let busy = requester.try_with_lock(|_| Ok(())).unwrap();
         assert!(busy.is_none(), "a busy store must not block the caller");
+        assert!(
+            requester
+                .try_with_string_lock(|_| Ok(()))
+                .unwrap()
+                .is_none(),
+            "the MCP string-error path must not block either"
+        );
         assert!(matches!(
             AttachmentStore::busy_error(),
             LificError::Unavailable(_)
@@ -1370,6 +1385,10 @@ mod tests {
             requester.try_with_lock(|_| Ok(7)).unwrap(),
             Some(7),
             "and must proceed once the store is free"
+        );
+        assert_eq!(
+            requester.try_with_string_lock(|_| Ok(8)).unwrap(),
+            Some(8)
         );
     }
 
