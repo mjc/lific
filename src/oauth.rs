@@ -605,7 +605,7 @@ async fn authorize_page(
             .into_response();
     }
     if let Err(response) = reserve_cimd_lookup(&oauth, peer, &headers, &params.client_id) {
-        return response;
+        return *response;
     }
     if let Err(reason) = load_cimd_metadata(&oauth, &headers, &params.client_id).await {
         return (
@@ -697,7 +697,7 @@ fn reserve_cimd_lookup(
     peer: SocketAddr,
     headers: &HeaderMap,
     client_id: &str,
-) -> Result<(), Response> {
+) -> Result<(), Box<Response>> {
     if !crate::cimd::is_client_id_candidate(client_id) {
         return Ok(());
     }
@@ -723,7 +723,7 @@ fn reserve_cimd_lookup(
     if retry > 0 && let Ok(value) = retry.to_string().parse() {
         response.headers_mut().insert("retry-after", value);
     }
-    Err(response)
+    Err(Box::new(response))
 }
 
 async fn load_cimd_metadata(
@@ -925,7 +925,7 @@ async fn authorize_approve(
     }
 
     if let Err(response) = reserve_cimd_lookup(&oauth, peer, &headers, &form.client_id) {
-        return response;
+        return *response;
     }
     let cimd_metadata = match load_cimd_metadata(&oauth, &headers, &form.client_id).await {
         Ok(metadata) => metadata,

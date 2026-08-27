@@ -3888,7 +3888,7 @@ mod tests {
                     test_auth_state(&pool),
                     require_api_key,
                 ));
-            let (status, body) = send(app, "POST", uri, None, &token).await;
+            let (status, body) = send(app, "POST", uri, None, token).await;
             assert_eq!(status, StatusCode::OK);
             assert_eq!(
                 body, expected,
