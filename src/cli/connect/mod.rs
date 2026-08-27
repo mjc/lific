@@ -764,6 +764,24 @@ fn write_all_clients(
             continue;
         };
 
+        // An agent-bound stdio connection must preserve its identity. Reject
+        // unsupported client schemas before minting a bot or key so a skipped
+        // config leaves no credential side effects behind.
+        if args.stdio
+            && key_source.is_some()
+            && let Err(error) = spec.stdio_identity_env_key()
+        {
+            outcomes.push(ClientOutcome {
+                id: id.clone(),
+                display: spec.display.to_string(),
+                format: spec.format.as_str().to_string(),
+                path: Some(path),
+                error: Some(format!("{error}; skipped")),
+                ..Default::default()
+            });
+            continue;
+        }
+
         // Mint this client's own key (per-tool). Only when a real remote write
         // with minting is happening; stdio/oauth/dry-run supply their own.
         let this_key = match (key_source, manager) {
@@ -790,7 +808,20 @@ fn write_all_clients(
         };
 
         let server = build_server_config(args, cfg, this_key.as_deref().unwrap_or(""));
-        let entry = spec.compile(&server);
+        let entry = match spec.compile(&server) {
+            Ok(entry) => entry,
+            Err(error) => {
+                outcomes.push(ClientOutcome {
+                    id: id.clone(),
+                    display: spec.display.to_string(),
+                    format: spec.format.as_str().to_string(),
+                    path: Some(path),
+                    error: Some(error),
+                    ..Default::default()
+                });
+                continue;
+            }
+        };
 
         // The per-client key we surface: none for stdio/oauth (no header key).
         let out_key = if args.stdio || args.oauth {
