@@ -226,6 +226,11 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "CIMD client source",
         include_str!("../../migrations/046_cimd_client_source.sql"),
     ),
+    (
+        47,
+        "OAuth device client binding",
+        include_str!("../../migrations/047_oauth_device_client.sql"),
+    ),
 ];
 
 /// Migrations that rebuild a table other tables reference by foreign key.
@@ -1039,6 +1044,36 @@ mod tests {
             "INSERT INTO oauth_clients
                  (client_id, client_name, redirect_uris, registration_source)
              VALUES ('cimd-client', 'CIMD', '[]', 'cimd')",
+            [],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn device_client_binding_migration_preserves_existing_grants() {
+        let conn = migrated_up_to(46);
+        conn.execute(
+            "INSERT INTO oauth_device_codes
+                 (device_code_hash, user_code, expires_at)
+             VALUES ('old-device', 'BCDF-GHJK', '2030-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+
+        run(&conn).expect("migration 047 must apply to an existing database");
+
+        let old_client: Option<String> = conn
+            .query_row(
+                "SELECT client_id FROM oauth_device_codes WHERE device_code_hash = 'old-device'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(old_client, None, "legacy grants stay explicitly unbound");
+        conn.execute(
+            "INSERT INTO oauth_device_codes
+                 (device_code_hash, user_code, expires_at, client_id)
+             VALUES ('new-device', 'BCDF-GHJL', '2030-01-01T00:00:00Z', 'lific-cli')",
             [],
         )
         .unwrap();
