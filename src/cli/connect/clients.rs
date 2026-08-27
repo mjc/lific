@@ -670,7 +670,7 @@ pub fn all_clients() -> Vec<ClientSpec> {
                 hint: "Zed runs the OAuth flow automatically when no header is set",
             },
             format: Format::Json,
-            stdio_env_key: None,
+            stdio_env_key: Some("env"),
             global_path: |b| Some(config_dir(b, &["zed", "settings.json"])),
             project_path: |_| None,
             detect_extra: |b, scope| match scope {
@@ -1090,6 +1090,12 @@ mod tests {
     }
 
     #[test]
+    fn zed_stdio_token_writes_into_env_field() {
+        let e = find_client("zed").unwrap().compile(&stdio_token_cfg());
+        assert_eq!(e.value["env"]["LIFIC_TOKEN"], "lific_sk-live-AGENTTOKEN");
+    }
+
+    #[test]
     fn stdio_without_token_writes_no_env_entry() {
         // A plain stdio config (operator, no agent) must not invent an env map.
         for id in ["opencode", "claude-code", "codex"] {
@@ -1114,17 +1120,17 @@ mod tests {
 
     #[test]
     fn connect_stdio_env_uses_per_client_env_key() {
-        // opencode=environment, claude-code & codex=env — the three named in
-        // the spec. Others are None.
+        // opencode=environment; Claude Code, Codex, and Zed=env. Others are
+        // None.
         let spec_env = |id: &str| find_client(id).unwrap().stdio_env_key;
         assert_eq!(spec_env("opencode"), Some("environment"));
         assert_eq!(spec_env("claude-code"), Some("env"));
         assert_eq!(spec_env("codex"), Some("env"));
+        assert_eq!(spec_env("zed"), Some("env"));
         for id in [
             "claude-desktop",
             "cursor",
             "vscode",
-            "zed",
             "gemini",
             "windsurf",
             "goose",
