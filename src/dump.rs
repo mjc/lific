@@ -16,6 +16,7 @@
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -87,6 +88,21 @@ fn attachments_dir_for(db_path: &Path) -> PathBuf {
         Some(parent) if !parent.as_os_str().is_empty() => parent.join("attachments"),
         _ => PathBuf::from("attachments"),
     }
+}
+
+/// Return whether another process currently owns a dump staging lock.
+pub(crate) fn staging_is_locked(path: &Path) -> bool {
+    let lock = path.join("lock");
+    let Ok(file) = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(lock)
+    else {
+        return true;
+    };
+    file.try_lock_exclusive().is_err()
 }
 
 /// Take a consistent snapshot of the live DB into `dest` using `VACUUM INTO`.

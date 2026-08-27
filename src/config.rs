@@ -4,6 +4,42 @@ use tracing::info;
 
 const CONFIG_FILENAME: &str = "lific.toml";
 
+fn tighten_config_permissions(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let metadata = std::fs::symlink_metadata(path)?;
+        if metadata.file_type().is_symlink() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "configuration path must not be a symlink",
+            ));
+        }
+        if metadata.mode() & 0o077 != 0 {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+
+fn read_config_file(path: &Path) -> std::io::Result<String> {
+    #[cfg(unix)]
+    {
+        use std::io::Read;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true).custom_flags(libc::O_NOFOLLOW);
+        let mut file = options.open(path)?;
+        let mut contents = String::new();
+        file.read_to_string(&mut contents)?;
+        Ok(contents)
+    }
+    #[cfg(not(unix))]
+    std::fs::read_to_string(path)
+}
+
 /// A config file was found but could not be honored.
 ///
 /// This is always fatal. Booting on defaults because a file failed to parse
@@ -323,10 +359,18 @@ impl Config {
         let candidates = Self::candidate_paths(explicit_path);
 
         for path in &candidates {
-            if path.exists() {
-                match std::fs::read_to_string(path) {
+            match std::fs::symlink_metadata(path) {
+                Ok(_) => match read_config_file(path) {
                     Ok(contents) => match toml::from_str::<Config>(&contents) {
                         Ok(mut config) => {
+                            if let Err(source) = tighten_config_permissions(path)
+                                && source.kind() != std::io::ErrorKind::PermissionDenied
+                            {
+                                return Err(ConfigError::Read {
+                                    path: path.clone(),
+                                    source,
+                                });
+                            }
                             info!(path = %path.display(), "loaded config");
                             // Anchor a relative database path to the config
                             // file's own directory, not the process cwd —
@@ -355,6 +399,13 @@ impl Config {
                             source,
                         });
                     }
+                },
+                Err(source) if source.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(source) => {
+                    return Err(ConfigError::Read {
+                        path: path.clone(),
+                        source,
+                    });
                 }
             }
         }
@@ -533,6 +584,55 @@ enabled = false
         assert_eq!(config.server.host, "127.0.0.1");
         assert_eq!(config.database.path, PathBuf::from(ABSOLUTE_DB_PATH));
         assert!(!config.backup.enabled);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn loading_config_tightens_existing_file_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("lific.toml");
+        std::fs::write(&path, Config::default_toml()).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        Config::load(Some(&path)).unwrap();
+
+        assert_eq!(std::fs::metadata(path).unwrap().permissions().mode() & 0o777, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn loading_config_rejects_symlink_without_chmodding_target() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("target.toml");
+        let link = tmp.path().join("lific.toml");
+        std::fs::write(&target, Config::default_toml()).unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).unwrap();
+        symlink(&target, &link).unwrap();
+
+        assert!(Config::load(Some(&link)).is_err());
+        assert_eq!(
+            std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            0o644
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn loading_config_rejects_dangling_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let link = tmp.path().join("lific.toml");
+        symlink(tmp.path().join("missing.toml"), &link).unwrap();
+
+        assert!(matches!(
+            Config::load(Some(&link)),
+            Err(ConfigError::Read { .. })
+        ));
     }
 
     #[test]

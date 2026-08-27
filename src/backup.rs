@@ -209,12 +209,9 @@ const STALE_TMP_AGE: Duration = Duration::from_secs(60 * 60);
 
 /// Delete stale dump staging files leaked by a crash mid-backup (LIF-329).
 ///
-/// `write_dump` stages `{stem}_<ts>.tar.dbsnapshot.tmp` and
-/// `{stem}_<ts>.tar.archive.tmp` beside the output archive and cleans them
-/// itself on success or error — but a hard crash between staging and cleanup
-/// strands them, and `rotate_backups` only matches `.tar.gz`/`.db`, so they
-/// would otherwise accumulate forever. Age-gated so an in-flight dump's
-/// staging files are never swept.
+/// `write_dump` stages a private `.lific-dump-*` directory beside the output
+/// archive and cleans it itself on success or error. Age-gated so an
+/// in-flight dump's staging directory is never swept.
 fn sweep_stale_tmps(backup_dir: &Path, db_stem: &str) {
     let prefix = format!("{db_stem}_");
     let entries = match std::fs::read_dir(backup_dir) {
@@ -229,23 +226,48 @@ fn sweep_stale_tmps(backup_dir: &Path, db_stem: &str) {
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
-        if !name.starts_with(&prefix)
-            || !(name.ends_with(".dbsnapshot.tmp") || name.ends_with(".archive.tmp"))
-        {
+        let is_new_staging_dir = name.starts_with(".lific-dump-");
+        let is_legacy_tmp = name.starts_with(&prefix)
+            && (name.ends_with(".dbsnapshot.tmp") || name.ends_with(".archive.tmp"));
+        if !is_new_staging_dir && !is_legacy_tmp {
             continue;
         }
-        let stale = entry
-            .metadata()
+        let age_path = if is_new_staging_dir {
+            path.join("activity")
+        } else {
+            path.clone()
+        };
+        let stale = std::fs::symlink_metadata(&age_path)
             .and_then(|m| m.modified())
             .ok()
             .and_then(|modified| modified.elapsed().ok())
             .is_some_and(|age| age > STALE_TMP_AGE);
-        if stale {
-            match std::fs::remove_file(&path) {
-                Ok(()) => info!(path = %path.display(), "removed stale backup staging file"),
-                Err(e) => {
-                    warn!(path = %path.display(), error = %e, "failed to remove stale staging file")
-                }
+        if !stale {
+            continue;
+        }
+        if is_new_staging_dir {
+            if dump::staging_is_locked(&path) {
+                continue;
+            }
+            let activity = path.join("activity");
+            let active = std::fs::symlink_metadata(&activity)
+                .and_then(|metadata| metadata.modified())
+                .ok()
+                .and_then(|modified| modified.elapsed().ok())
+                .is_some_and(|age| age <= STALE_TMP_AGE);
+            if active {
+                continue;
+            }
+        }
+        let result = if is_new_staging_dir {
+            std::fs::remove_dir_all(&path)
+        } else {
+            std::fs::remove_file(&path)
+        };
+        match result {
+            Ok(()) => info!(path = %path.display(), "removed stale backup staging file"),
+            Err(e) => {
+                warn!(path = %path.display(), error = %e, "failed to remove stale staging file")
             }
         }
     }
@@ -321,6 +343,17 @@ mod tests {
     /// panicking test cannot leave stale state behind for a later run.
     fn make_temp_dir() -> TempDir {
         tempfile::tempdir().unwrap()
+    }
+
+    fn make_backup_dir(parent: &Path) -> PathBuf {
+        let backup_dir = parent.join("backups");
+        fs::create_dir_all(&backup_dir).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&backup_dir, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        backup_dir
     }
 
     #[test]
@@ -404,7 +437,11 @@ mod tests {
 
     /// Backdate a file's mtime so the sweep sees it as stale.
     fn backdate(path: &Path, by: Duration) {
-        let f = fs::File::options().write(true).open(path).unwrap();
+        let f = if cfg!(unix) && path.is_dir() {
+            fs::File::open(path).unwrap()
+        } else {
+            fs::File::options().write(true).open(path).unwrap()
+        };
         f.set_modified(std::time::SystemTime::now() - by).unwrap();
     }
 
@@ -422,13 +459,20 @@ mod tests {
         let fresh_arch = dir.join("lific_20260714_120000.tar.archive.tmp");
         let other_stem = dir.join("other_20260101_120000.tar.archive.tmp");
         let real_backup = dir.join("lific_20260101_120000.tar.gz");
+        let stale_dir = dir.join(".lific-dump-stale");
         for p in [&stale_snap, &stale_arch, &fresh_arch, &other_stem, &real_backup] {
             fs::write(p, "x").unwrap();
         }
+        fs::create_dir(&stale_dir).unwrap();
+        fs::write(stale_dir.join("activity"), "stale").unwrap();
         backdate(&stale_snap, old);
         backdate(&stale_arch, old);
         backdate(&other_stem, old);
         backdate(&real_backup, old);
+        backdate(
+            &stale_dir.join("activity"),
+            old,
+        );
 
         sweep_stale_tmps(dir, "lific");
 
@@ -437,6 +481,35 @@ mod tests {
         assert!(fresh_arch.exists(), "fresh staging tmp must survive");
         assert!(other_stem.exists(), "other stems are not ours to sweep");
         assert!(real_backup.exists(), "real archives are rotation's job, not the sweep's");
+        assert!(!stale_dir.exists(), "stale dump staging directory must be swept");
+    }
+
+    #[test]
+    fn sweep_keeps_stale_directory_while_dump_lock_is_held() {
+        use fs2::FileExt;
+
+        let tmp = make_temp_dir();
+        let dir = tmp.path();
+        let staging = dir.join(".lific-dump-active");
+        fs::create_dir(&staging).unwrap();
+        fs::write(staging.join("activity"), "active").unwrap();
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(staging.join("lock"))
+            .unwrap();
+        lock.try_lock_exclusive().unwrap();
+        backdate(
+            &staging.join("activity"),
+            STALE_TMP_AGE + Duration::from_secs(60),
+        );
+
+        sweep_stale_tmps(dir, "lific");
+
+        assert!(staging.exists(), "a locked dump must not be swept");
+        drop(lock);
     }
 
     #[test]
@@ -446,8 +519,7 @@ mod tests {
         let tmp = make_temp_dir();
         let dir = tmp.path();
         let db_path = dir.join("lific.db");
-        let backup_dir = dir.join("backups");
-        fs::create_dir_all(&backup_dir).unwrap();
+        let backup_dir = make_backup_dir(dir);
         let pool = crate::db::open(&db_path).expect("open test db");
 
         let stale = backup_dir.join("lific_20260101_120000.tar.archive.tmp");
@@ -467,8 +539,7 @@ mod tests {
         let tmp = make_temp_dir();
         let dir = tmp.path();
         let db_path = dir.join("lific.db");
-        let backup_dir = dir.join("backups");
-        fs::create_dir_all(&backup_dir).unwrap();
+        let backup_dir = make_backup_dir(dir);
 
         // Seed the DB and an attachments sidecar dir next to it.
         let pool = crate::db::open(&db_path).expect("open test db");
@@ -488,7 +559,8 @@ mod tests {
         }
         let att_dir = dir.join("attachments");
         fs::create_dir_all(&att_dir).unwrap();
-        fs::write(att_dir.join("deadbeefsha"), b"blob contents").unwrap();
+        let blob_name = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+        fs::write(att_dir.join(blob_name), b"blob contents").unwrap();
         fs::write(att_dir.join("deadbeefsha.tmp"), b"partial").unwrap();
 
         run_backup(&pool, &db_path, &backup_dir, 5, None);
@@ -514,7 +586,7 @@ mod tests {
             .collect();
         assert!(names.iter().any(|n| n == crate::dump::ARCHIVE_DB_NAME));
         assert!(names.iter().any(|n| n == crate::dump::ARCHIVE_MANIFEST_NAME));
-        assert!(names.iter().any(|n| n == "attachments/deadbeefsha"));
+        assert!(names.iter().any(|n| n == &format!("attachments/{blob_name}")));
         assert!(
             !names.iter().any(|n| n.ends_with(".tmp")),
             "in-progress .tmp writes must not be archived: {names:?}"
@@ -637,8 +709,7 @@ mod tests {
         let tmp = make_temp_dir();
         let dir = tmp.path();
         let db_path = dir.join("lific.db");
-        let backup_dir = dir.join("backups");
-        fs::create_dir_all(&backup_dir).unwrap();
+        let backup_dir = make_backup_dir(dir);
         let pool = crate::db::open(&db_path).expect("open test db");
         seed_audit_row(&pool, "ancient", 400);
         seed_audit_row(&pool, "today", 0);

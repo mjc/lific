@@ -55,9 +55,7 @@ impl DbPool {
         self.export_slots
             .clone()
             .try_acquire_owned()
-            .map_err(|_| {
-                LificError::TooManyRequests("too many exports are already running".into())
-            })
+            .map_err(|_| LificError::TooManyRequests("too many exports are already running".into()))
     }
 
     /// The database file this pool was opened from. Callers that need to
@@ -238,10 +236,15 @@ pub fn open_memory() -> Result<DbPool, LificError> {
 /// Open (or create) the SQLite database, run migrations, and return a pool.
 pub fn open(path: &Path) -> Result<DbPool, LificError> {
     disable_sqlite_memstatus();
+    secure_parent(path)?;
+    ensure_private_file(path)?;
     // Writer connection — runs migrations
     let writer = Connection::open(path)?;
+    secure_file(path)?;
     apply_pragmas(&writer)?;
+    secure_sidecars(path)?;
     migrate::run(&writer)?;
+    secure_sidecars(path)?;
 
     // LIF-155: clear any actor left over from a previous process (the
     // `_actor_state` row persists). Writes before the first request stamp
@@ -269,6 +272,97 @@ pub fn open(path: &Path) -> Result<DbPool, LificError> {
     })
 }
 
+fn ensure_private_file(path: &Path) -> Result<(), LificError> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW).mode(0o600);
+    }
+    match options.open(path) {
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let metadata = std::fs::symlink_metadata(path).map_err(|error| {
+                LificError::Internal(format!("inspect database file: {error}"))
+            })?;
+            if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+                return Err(LificError::Internal(
+                    "database path must be a regular file, not a link".into(),
+                ));
+            }
+            #[cfg(unix)]
+            if std::os::unix::fs::MetadataExt::nlink(&metadata) != 1 {
+                return Err(LificError::Internal(
+                    "database path must not have multiple hard links".into(),
+                ));
+            }
+            Ok(())
+        }
+        Err(error) => Err(LificError::Internal(format!(
+            "create database file: {error}"
+        ))),
+    }
+}
+
+fn secure_parent(path: &Path) -> Result<(), LificError> {
+    let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) else {
+        return Ok(());
+    };
+    #[cfg(unix)]
+    let existed = parent.exists();
+    std::fs::create_dir_all(parent)
+        .map_err(|error| LificError::Internal(format!("create database directory: {error}")))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let metadata = parent
+            .symlink_metadata()
+            .map_err(|error| LificError::Internal(format!("inspect database directory: {error}")))?
+            ;
+        if metadata.file_type().is_symlink() {
+            return Err(LificError::Internal(
+                "database directory must not be a symlink".into(),
+            ));
+        }
+        let mode = metadata.mode() & 0o777;
+        if existed && mode & 0o022 != 0 {
+            return Err(LificError::Internal(format!(
+                "database directory {} is writable by group/others; remove group/other write permissions or choose a private data directory",
+                parent.display()
+            )));
+        }
+        if !existed {
+            std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700)).map_err(
+                |error| LificError::Internal(format!("secure database directory: {error}")),
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn secure_file(_path: &Path) -> Result<(), LificError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(_path, std::fs::Permissions::from_mode(0o600))
+            .map_err(|error| LificError::Internal(format!("secure database file: {error}")))?;
+    }
+    Ok(())
+}
+
+fn secure_sidecars(path: &Path) -> Result<(), LificError> {
+    for suffix in ["-wal", "-shm"] {
+        let mut sidecar = path.as_os_str().to_os_string();
+        sidecar.push(suffix);
+        let sidecar = PathBuf::from(sidecar);
+        if sidecar.exists() {
+            secure_file(&sidecar)?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -293,5 +387,52 @@ mod tests {
         assert!(matches!(result, Err(LificError::BadRequest(_))));
         let conn = db.read().unwrap();
         assert!(queries::list_projects(&conn).unwrap().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn secure_parent_allows_traversal_but_rejects_shared_writes() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("lific.db");
+
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        secure_parent(&db_path).unwrap();
+
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o775)).unwrap();
+        assert!(secure_parent(&db_path).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn secure_parent_rejects_symlinked_data_directory() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        let link = dir.path().join("link");
+        std::fs::create_dir(&real).unwrap();
+        symlink(&real, &link).unwrap();
+
+        assert!(secure_parent(&link.join("lific.db")).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_private_file_rejects_symlinks_and_hard_links() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let original = dir.path().join("original.db");
+        ensure_private_file(&original).unwrap();
+
+        let symlinked = dir.path().join("symlinked.db");
+        symlink(&original, &symlinked).unwrap();
+        assert!(ensure_private_file(&symlinked).is_err());
+
+        let linked = dir.path().join("linked.db");
+        std::fs::hard_link(&original, &linked).unwrap();
+        assert!(ensure_private_file(&linked).is_err());
     }
 }

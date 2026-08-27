@@ -211,12 +211,31 @@ fn is_private_ip(ip: std::net::IpAddr) -> bool {
 /// Side-effect free apart from a DB read to resolve the authless MCP identity:
 /// background tasks (backups, attachment GC) are [`run`]'s business, so tests
 /// and diagnostics can build the app without spawning anything.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn build_app(
     cfg: &Config,
     pool: db::DbPool,
     manager: ApiKeyManagerV0,
     realtime: realtime::RealtimeHub,
     trusted_proxies: Arc<[ratelimit::IpNetwork]>,
+) -> Router {
+    build_app_with_store(
+        cfg,
+        pool,
+        manager,
+        realtime,
+        trusted_proxies,
+        storage::AttachmentStore::from_db_path(&cfg.database.path),
+    )
+}
+
+fn build_app_with_store(
+    cfg: &Config,
+    pool: db::DbPool,
+    manager: ApiKeyManagerV0,
+    realtime: realtime::RealtimeHub,
+    trusted_proxies: Arc<[ratelimit::IpNetwork]>,
+    attachment_store: storage::AttachmentStore,
 ) -> Router {
     // Auth state for middleware. When no public_url is configured the
     // issuer is derived from the bind address — but 0.0.0.0/:: are
@@ -280,7 +299,6 @@ pub fn build_app(
     // LIF-262: attachment storage + upload guards. Bytes live in a
     // sidecar dir next to the database (content-addressed); the upload
     // route is rate-limited per user (30 uploads / 10 min).
-    let attachment_store = storage::AttachmentStore::from_db_path(&cfg.database.path);
     let attachment_config = api::AttachmentConfig::default();
     let attachment_upload_limiter = Arc::new(api::AttachmentUploadLimiter(
         ratelimit::RateLimiter::new(30, std::time::Duration::from_secs(10 * 60)),
@@ -572,18 +590,22 @@ pub async fn run(cfg: &Config) -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    // Sweep abandoned (unlinked) attachments hourly.
+    // Sweep abandoned (unlinked) attachments hourly. Share the store with the
+    // request router so its operation lock covers both upload and GC paths.
+    let attachment_store = storage::AttachmentStore::from_db_path(&cfg.database.path);
+    let gc_attachment_store = attachment_store.clone();
     storage::start_gc_task(
         pool.clone(),
-        storage::AttachmentStore::from_db_path(&cfg.database.path),
+        gc_attachment_store,
     );
 
-    let app = build_app(
+    let app = build_app_with_store(
         cfg,
         pool.clone(),
         manager,
         realtime::RealtimeHub::new(),
         trusted_proxies,
+        attachment_store,
     );
 
     let addr = format!("{}:{}", cfg.server.host, cfg.server.port);
