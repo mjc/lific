@@ -1597,7 +1597,17 @@ pub fn run_restore_with(
         .unwrap_or("restore")
         .to_string();
 
-    let moved_existing_to = install_restore(staging_path, db_path, &restore_id)?;
+    // The install phase swaps the live database and the whole attachments
+    // directory. A dump, upload, delete or GC sweep crossing that swap would
+    // be reading one half of the old data set and one half of the new one, so
+    // it runs under the attachment store's lock like every other operation
+    // that moves blobs. The lock file is a sibling of `attachments/`, not
+    // inside it, so it is the same lock before and after the directory is
+    // replaced. Store lock first, then the database work inside: the ordering
+    // every other caller uses.
+    let store = crate::storage::AttachmentStore::from_db_path(db_path);
+    let moved_existing_to =
+        store.with_lock(|_| install_restore(staging_path, db_path, &restore_id))?;
 
     Ok(RestoreResult {
         manifest,
@@ -2208,6 +2218,85 @@ mod tests {
             .expect("the dump proceeds once the store lock is free");
         dumper.join().unwrap().expect("dump succeeds");
         assert!(out.exists());
+    }
+
+    #[test]
+    fn restore_install_waits_for_the_attachment_store_lock() {
+        // The install phase swaps the attachments directory out from under the
+        // whole instance. Anything holding the store (a dump, an upload, a GC
+        // sweep) must finish first, or it reads half of each data set.
+        use std::sync::mpsc::sync_channel;
+        use std::time::Duration;
+
+        let (src_tmp, src_db) = seed_data_dir("restore_store_lock_src");
+        let archive = src_tmp.path().join("backup.tar.gz");
+        write_dump(&crate::db::open(&src_db).unwrap(), &src_db, &archive).unwrap();
+
+        let dst = temp_dir("restore_store_lock_dst");
+        let dst_db = dst.path().join(ARCHIVE_DB_NAME);
+        let holder_store = crate::storage::AttachmentStore::from_db_path(&dst_db);
+        let observer = crate::storage::AttachmentStore::from_db_path(&dst_db);
+
+        let (entered_tx, entered_rx) = sync_channel::<()>(1);
+        let (release_tx, release_rx) = sync_channel::<()>(1);
+        let holder = std::thread::spawn(move || {
+            holder_store.with_lock(|_| {
+                entered_tx.send(()).unwrap();
+                let _ = release_rx.recv_timeout(Duration::from_secs(10));
+                Ok(())
+            })
+        });
+        entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+
+        let (done_tx, done_rx) = sync_channel::<()>(1);
+        let restorer = std::thread::spawn({
+            let archive = archive.clone();
+            let dst_db = dst_db.clone();
+            move || {
+                let result = run_restore(&archive, &dst_db, false);
+                done_tx.send(()).unwrap();
+                result
+            }
+        });
+
+        assert!(
+            done_rx.recv_timeout(Duration::from_millis(250)).is_err(),
+            "the install must wait for the store lock rather than swap under it"
+        );
+        assert!(
+            !dst_db.exists(),
+            "nothing is installed while the store is held"
+        );
+
+        release_tx.send(()).unwrap();
+        holder.join().unwrap().unwrap();
+        done_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the restore proceeds once the store lock is free");
+        let result = restorer.join().unwrap().expect("restore succeeds");
+        assert_eq!(result.attachment_count, 2);
+
+        // The lock is a sibling of `attachments/`, so replacing that directory
+        // did not replace the lock: it still coordinates afterwards.
+        assert!(observer.lock_path().is_file());
+        assert!(!observer.lock_is_held());
+        let after = crate::storage::AttachmentStore::from_db_path(&dst_db);
+        let (held_tx, held_rx) = sync_channel::<()>(1);
+        let (drop_tx, drop_rx) = sync_channel::<()>(1);
+        let second = std::thread::spawn(move || {
+            after.with_lock(|_| {
+                held_tx.send(()).unwrap();
+                let _ = drop_rx.recv_timeout(Duration::from_secs(10));
+                Ok(())
+            })
+        });
+        held_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(
+            observer.lock_is_held(),
+            "the same lock still serializes work after the attachments swap"
+        );
+        drop_tx.send(()).unwrap();
+        second.join().unwrap().unwrap();
     }
 
     #[test]

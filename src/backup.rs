@@ -44,16 +44,52 @@ pub fn start_backup_task(
 
         // Run initial backup after a short delay (let the server finish starting)
         tokio::time::sleep(Duration::from_secs(5)).await;
-        run_backup(&pool, &db_path, &backup_dir, retain, audit_retention_days);
+        run_backup_blocking(&pool, &db_path, &backup_dir, retain, audit_retention_days).await;
 
         // Then run on interval
         let mut interval_timer = tokio::time::interval(interval);
         interval_timer.tick().await; // skip first immediate tick
         loop {
             interval_timer.tick().await;
-            run_backup(&pool, &db_path, &backup_dir, retain, audit_retention_days);
+            // Awaited, so this task never has more than one backup in flight.
+            // `tokio::time::interval` catches up by firing immediately after a
+            // long tick rather than queueing them, so a backup that outruns
+            // its interval delays the next one instead of stacking blocking
+            // jobs on the pool.
+            run_backup_blocking(&pool, &db_path, &backup_dir, retain, audit_retention_days).await;
         }
     })
+}
+
+/// Run one backup on the blocking pool and wait for it.
+///
+/// `run_backup` is synchronous, file-heavy work that takes the attachment
+/// store lock, and under that lock it can wait on whatever else holds the
+/// store. Calling it directly from the async task would park a Tokio worker
+/// thread for that whole time, and workers are the threads serving every HTTP
+/// request. `spawn_blocking` puts it on the pool meant for exactly this.
+///
+/// The `.await` is what bounds the work: one backup task drives one blocking
+/// job at a time, so a slow backup can never accumulate a queue of them.
+async fn run_backup_blocking(
+    pool: &Arc<DbPool>,
+    db_path: &Path,
+    backup_dir: &Path,
+    retain: usize,
+    audit_retention_days: Option<u32>,
+) {
+    let pool = Arc::clone(pool);
+    let db_path = db_path.to_path_buf();
+    let backup_dir = backup_dir.to_path_buf();
+    let result = tokio::task::spawn_blocking(move || {
+        run_backup(&pool, &db_path, &backup_dir, retain, audit_retention_days);
+    })
+    .await;
+    if let Err(e) = result {
+        // A panic inside the backup must not kill the scheduling loop: the
+        // next interval should still try.
+        error!(error = %e, "backup job failed to run to completion");
+    }
 }
 
 /// The configured backup interval, or the default when the config says `0`
@@ -436,6 +472,63 @@ mod tests {
     }
 
     /// Backdate a file's mtime so the sweep sees it as stale.
+    #[tokio::test]
+    async fn a_scheduled_backup_does_not_park_the_async_runtime() {
+        // A `#[tokio::test]` runs on a single-threaded runtime, so this is a
+        // real discriminator: if the backup ran inline on the async task, the
+        // counter task below could not tick at all while it worked. It has to
+        // be on the blocking pool for both to make progress.
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicUsize;
+
+        let tmp = make_temp_dir();
+        let dir = tmp.path();
+        let db_path = dir.join("lific.db");
+        let backup_dir = make_backup_dir(dir);
+        let pool = Arc::new(crate::db::open(&db_path).expect("open test db"));
+
+        // Hold the attachment store lock briefly, so the backup has something
+        // real to wait on inside its blocking job.
+        let store = crate::storage::AttachmentStore::from_db_path(&db_path);
+        let (holding_tx, holding_rx) = std::sync::mpsc::sync_channel::<()>(1);
+        let holder = std::thread::spawn(move || {
+            store
+                .with_lock(|_| {
+                    holding_tx.send(()).unwrap();
+                    std::thread::sleep(Duration::from_millis(200));
+                    Ok(())
+                })
+                .unwrap();
+        });
+        holding_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+
+        let ticks = Arc::new(AtomicUsize::new(0));
+        let counter = tokio::spawn({
+            let ticks = Arc::clone(&ticks);
+            async move {
+                loop {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                    ticks.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        });
+
+        run_backup_blocking(&pool, &db_path, &backup_dir, 5, None).await;
+        counter.abort();
+        holder.join().unwrap();
+
+        assert!(
+            ticks.load(Ordering::Relaxed) > 0,
+            "async work must keep running while a backup is in flight"
+        );
+        let archives = fs::read_dir(&backup_dir)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tar.gz"))
+            .count();
+        assert_eq!(archives, 1, "and the backup still produced its archive");
+    }
+
     fn backdate(path: &Path, by: Duration) {
         let f = if cfg!(unix) && path.is_dir() {
             fs::File::open(path).unwrap()

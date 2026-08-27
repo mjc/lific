@@ -23,13 +23,18 @@ use sha2::{Digest, Sha256};
 
 use crate::error::LificError;
 
-/// Cross-process advisory lock file for the store, kept inside the store
-/// directory so it moves, backs up and gets replaced with it.
+/// Cross-process advisory lock file for the store.
 ///
-/// The leading dot keeps it out of the content-addressed namespace: every
-/// consumer that enumerates the store (`dump::write_dump`, restore validation)
-/// only accepts bare lowercase sha256 filenames, so this file is skipped
-/// rather than mistaken for a blob.
+/// It lives *beside* `attachments/`, in the stable data directory, not inside
+/// it. The attachments directory is not stable: a restore renames the whole
+/// thing aside and moves a new one into place, and a lock file inside it would
+/// go with it. Two processes locking "the store" would then be holding
+/// descriptors on two different inodes across that swap, which is no lock at
+/// all at exactly the moment one is needed. The data directory outlives every
+/// such swap, so the lock identity does too.
+///
+/// The leading dot also keeps it out of the content-addressed namespace, so
+/// nothing that enumerates blobs can mistake it for one.
 pub(crate) const STORE_LOCK_FILE: &str = ".lific-attachments.lock";
 
 /// Handle to the on-disk attachments directory. Cheap to clone (just a
@@ -38,6 +43,9 @@ pub(crate) const STORE_LOCK_FILE: &str = ".lific-attachments.lock";
 #[derive(Debug, Clone)]
 pub struct AttachmentStore {
     dir: PathBuf,
+    /// Where the cross-process lock lives. Held separately from `dir` because
+    /// it must survive `dir` being replaced wholesale by a restore.
+    lock_path: PathBuf,
     operation_lock: Arc<Mutex<()>>,
 }
 
@@ -98,12 +106,15 @@ impl AttachmentStore {
     /// the whole data set (db + backups + attachments) sits together and the
     /// backup task can include it.
     pub fn from_db_path(db_path: &Path) -> Self {
-        let dir = match db_path.parent() {
-            Some(parent) if !parent.as_os_str().is_empty() => parent.join("attachments"),
-            _ => PathBuf::from("attachments"),
+        let data_dir = match db_path.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
+            _ => PathBuf::from("."),
         };
+        // The lock is a sibling of the attachments directory, in the data dir,
+        // which a restore never replaces. See [`STORE_LOCK_FILE`].
         Self {
-            dir,
+            dir: data_dir.join("attachments"),
+            lock_path: data_dir.join(STORE_LOCK_FILE),
             operation_lock: Arc::new(Mutex::new(())),
         }
     }
@@ -111,9 +122,17 @@ impl AttachmentStore {
     /// Construct a store at an explicit directory. Production always resolves
     /// the directory from the database path via [`Self::from_db_path`]; only
     /// tests point a store at a tempdir, hence the test-scoped allow.
+    ///
+    /// The lock goes *inside* `dir` here, deterministically, so two stores
+    /// built this way from the same path still coordinate, and so a test's
+    /// tempdir owns the file and removes it with everything else. Tests point
+    /// this at a scratch directory rather than a real data dir, so there is no
+    /// restore to survive; production gets the stable sibling path via
+    /// [`Self::from_db_path`].
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn new(dir: PathBuf) -> Self {
         Self {
+            lock_path: dir.join(STORE_LOCK_FILE),
             dir,
             operation_lock: Arc::new(Mutex::new(())),
         }
@@ -234,21 +253,20 @@ impl AttachmentStore {
     }
 
     /// Path of the store's cross-process lock file.
-    pub(crate) fn lock_path(&self) -> PathBuf {
-        self.dir.join(STORE_LOCK_FILE)
+    pub(crate) fn lock_path(&self) -> &Path {
+        &self.lock_path
     }
 
-    /// Open the lock file, creating the store directory if needed.
+    /// Open the lock file, creating its parent directory if needed.
     ///
     /// `O_NOFOLLOW` and mode 0600: the lock file is opened for writing, so a
     /// symlink planted at that name would otherwise let another user pick the
     /// file this process opens.
     fn open_lock_file(&self) -> std::io::Result<File> {
-        std::fs::create_dir_all(&self.dir)?;
-        #[cfg(unix)]
+        if let Some(parent) = self.lock_path.parent()
+            && !parent.as_os_str().is_empty()
         {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&self.dir, std::fs::Permissions::from_mode(0o700))?;
+            std::fs::create_dir_all(parent)?;
         }
         let mut options = std::fs::OpenOptions::new();
         options.read(true).write(true).create(true).truncate(false);
@@ -317,6 +335,63 @@ impl AttachmentStore {
             .acquire_file_lock()
             .map_err(|e| LificError::Internal(format!("lock attachment store: {e}")))?;
         operation(self)
+    }
+
+    /// [`Self::with_lock`] that gives up instead of waiting.
+    ///
+    /// The lock can be held for as long as an operation takes, and the longest
+    /// one is a dump of the whole data set. A REST handler runs on a Tokio
+    /// worker thread, so blocking it for the length of a multi-gigabyte dump
+    /// does not just delay that upload: it takes a worker out of the pool and
+    /// stalls unrelated requests behind it. HTTP has a better answer than a
+    /// stalled connection, so the request handlers use this and return
+    /// `503 Service Unavailable` with a `Retry-After`, which a client can act
+    /// on.
+    ///
+    /// `Ok(None)` means the store is busy. Errors are real failures.
+    /// Everything not on a request path (CLI, MCP, background sweeps) uses the
+    /// blocking [`Self::with_lock`], because there is nothing to be gained by
+    /// failing those and something to lose.
+    pub(crate) fn try_with_lock<T>(
+        &self,
+        operation: impl FnOnce(&Self) -> Result<T, LificError>,
+    ) -> Result<Option<T>, LificError> {
+        let _guard = match self.operation_lock.try_lock() {
+            Ok(guard) => guard,
+            Err(std::sync::TryLockError::WouldBlock) => return Ok(None),
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                return Err(LificError::Internal(
+                    "attachment store lock poisoned".into(),
+                ));
+            }
+        };
+        let file = self
+            .open_lock_file()
+            .map_err(|e| LificError::Internal(format!("lock attachment store: {e}")))?;
+        match file.try_lock_exclusive() {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return Ok(None),
+            Err(error) => {
+                return Err(LificError::Internal(format!(
+                    "lock attachment store: {error}"
+                )));
+            }
+        }
+        // `file` owns the lock for the rest of this scope; dropping it, even
+        // while a panic unwinds, releases it.
+        let result = operation(self);
+        let _ = FileExt::unlock(&file);
+        result.map(Some)
+    }
+
+    /// The error a request handler returns when [`Self::try_with_lock`] finds
+    /// the store busy. Retryable by construction: the caller did nothing
+    /// wrong and the same request will work once the dump or restore holding
+    /// the store finishes.
+    pub(crate) fn busy_error() -> LificError {
+        LificError::Unavailable(
+            "attachment storage is busy (a backup or restore is running); retry shortly".into(),
+        )
     }
 
     /// MCP's tool boundary uses sanitized strings instead of `LificError`.
@@ -526,24 +601,54 @@ pub fn start_gc_task(
     store: AttachmentStore,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        match backfill_attachment_text(&pool, &store) {
-            Ok(n) if n > 0 => tracing::info!(indexed = n, "attachment text backfill indexed files"),
-            Ok(_) => {}
-            Err(e) => tracing::warn!(error = %e, "attachment text backfill failed"),
-        }
+        // Both jobs below are synchronous file + SQLite work, and the sweep
+        // takes the attachment store lock, where it can wait behind a dump of
+        // the whole data set. Running either directly here would park a Tokio
+        // worker thread — one of the threads serving HTTP — for that whole
+        // time, so both go to the blocking pool and are awaited. Awaiting is
+        // what keeps this to one blocking job at a time: a sweep that outruns
+        // its hour delays the next tick instead of queueing another job.
+        run_blocking("attachment text backfill", {
+            let pool = pool.clone();
+            let store = store.clone();
+            move || match backfill_attachment_text(&pool, &store) {
+                Ok(n) if n > 0 => {
+                    tracing::info!(indexed = n, "attachment text backfill indexed files")
+                }
+                Ok(_) => {}
+                Err(e) => tracing::warn!(error = %e, "attachment text backfill failed"),
+            }
+        })
+        .await;
+
         // Let the server settle before the first sweep.
         tokio::time::sleep(std::time::Duration::from_secs(60)).await;
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(60 * 60));
         interval.tick().await; // skip the immediate tick
         loop {
             interval.tick().await;
-            match sweep_orphans(&pool, &store, ORPHAN_GRACE_SECONDS) {
-                Ok(n) if n > 0 => tracing::info!(collected = n, "attachment GC swept orphans"),
-                Ok(_) => {}
-                Err(e) => tracing::warn!(error = %e, "attachment GC sweep failed"),
-            }
+            run_blocking("attachment GC sweep", {
+                let pool = pool.clone();
+                let store = store.clone();
+                move || match sweep_orphans(&pool, &store, ORPHAN_GRACE_SECONDS) {
+                    Ok(n) if n > 0 => {
+                        tracing::info!(collected = n, "attachment GC swept orphans")
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!(error = %e, "attachment GC sweep failed"),
+                }
+            })
+            .await;
         }
     })
+}
+
+/// Run one synchronous chore on the blocking pool and wait for it, logging a
+/// panic rather than letting it take the scheduling loop down with it.
+async fn run_blocking(label: &'static str, job: impl FnOnce() + Send + 'static) {
+    if let Err(e) = tokio::task::spawn_blocking(job).await {
+        tracing::error!(job = label, error = %e, "background job failed to run to completion");
+    }
 }
 
 // ── MIME sniffing + allowlist ────────────────────────────────
@@ -1150,6 +1255,139 @@ mod tests {
         assert_eq!(sha, AttachmentStore::hash_bytes(b"second store bytes"));
     }
 
+    #[test]
+    fn a_production_store_locks_beside_the_attachments_dir_not_inside_it() {
+        // A restore replaces `attachments/` wholesale. A lock file inside it
+        // would be replaced too, leaving two processes holding descriptors on
+        // two different inodes: no lock, at the one moment it matters.
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("lific.db");
+        let store = AttachmentStore::from_db_path(&db_path);
+
+        assert_eq!(store.lock_path(), tmp.path().join(STORE_LOCK_FILE));
+        assert!(
+            !store.lock_path().starts_with(store.dir()),
+            "the lock must not live inside the replaceable attachments dir"
+        );
+
+        store.with_lock(|_| Ok(())).unwrap();
+        assert!(store.lock_path().is_file());
+    }
+
+    #[test]
+    fn the_store_lock_survives_the_attachments_directory_being_replaced() {
+        // Exactly what a restore does to the store: move the live directory
+        // aside and rename a new one into its place. The lock must still be
+        // the same lock, and must still coordinate two independent stores.
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("lific.db");
+        let live = AttachmentStore::from_db_path(&db_path);
+        let observer = AttachmentStore::from_db_path(&db_path);
+        live.write(b"before the restore").unwrap();
+
+        let replacement = tmp.path().join("staged-attachments");
+        std::fs::create_dir_all(&replacement).unwrap();
+        std::fs::remove_dir_all(live.dir()).unwrap();
+        std::fs::rename(&replacement, live.dir()).unwrap();
+
+        assert!(
+            live.lock_path().is_file(),
+            "the lock file is not collateral damage of the swap"
+        );
+
+        let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel::<()>(1);
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel::<()>(1);
+        let worker = std::thread::spawn(move || {
+            live.with_lock(|_| {
+                entered_tx.send(()).unwrap();
+                let _ = release_rx.recv_timeout(LOCK_WAIT);
+                Ok(())
+            })
+        });
+        entered_rx.recv_timeout(LOCK_WAIT).unwrap();
+        assert!(
+            observer.lock_is_held(),
+            "the same lock still coordinates after the directory was replaced"
+        );
+        release_tx.send(()).unwrap();
+        worker.join().unwrap().unwrap();
+        assert!(!observer.lock_is_held());
+    }
+
+    #[test]
+    fn a_test_store_keeps_its_lock_inside_the_directory_it_owns() {
+        // `new` is the test constructor: its lock goes inside the directory
+        // under test so the tempdir that owns that directory removes it, and
+        // nothing is left beside the tempdir for a later run to trip over.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("attachments");
+        let store = AttachmentStore::new(dir.clone());
+        assert_eq!(store.lock_path(), dir.join(STORE_LOCK_FILE));
+
+        store.with_lock(|_| Ok(())).unwrap();
+
+        let siblings: Vec<String> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(
+            siblings,
+            vec!["attachments".to_string()],
+            "a test store must not leak files beside its directory"
+        );
+    }
+
+    #[test]
+    fn try_with_lock_reports_a_busy_store_instead_of_waiting() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("attachments");
+        let holder = AttachmentStore::new(dir.clone());
+        // Independently constructed, so only the file lock connects them —
+        // the same situation a request handler is in while a dump runs.
+        let requester = AttachmentStore::new(dir);
+
+        let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel::<()>(1);
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel::<()>(1);
+        let worker = std::thread::spawn(move || {
+            holder.with_lock(|_| {
+                entered_tx.send(()).unwrap();
+                let _ = release_rx.recv_timeout(LOCK_WAIT);
+                Ok(())
+            })
+        });
+        entered_rx.recv_timeout(LOCK_WAIT).unwrap();
+
+        let busy = requester.try_with_lock(|_| Ok(())).unwrap();
+        assert!(busy.is_none(), "a busy store must not block the caller");
+        assert!(matches!(
+            AttachmentStore::busy_error(),
+            LificError::Unavailable(_)
+        ));
+
+        release_tx.send(()).unwrap();
+        worker.join().unwrap().unwrap();
+        assert_eq!(
+            requester.try_with_lock(|_| Ok(7)).unwrap(),
+            Some(7),
+            "and must proceed once the store is free"
+        );
+    }
+
+    #[test]
+    fn try_with_lock_also_declines_when_the_in_process_mutex_is_held() {
+        let (store, _tmp) = tmp_store();
+        let clone = store.clone();
+        store
+            .with_lock(|_| {
+                // Same store, so the in-process mutex is the first thing in
+                // the way; it must decline rather than deadlock.
+                assert!(clone.try_with_lock(|_| Ok(())).unwrap().is_none());
+                Ok(())
+            })
+            .unwrap();
+        assert!(store.try_with_lock(|_| Ok(())).unwrap().is_some());
+    }
+
     #[cfg(unix)]
     #[test]
     fn the_store_lock_file_is_owner_only_and_not_a_blob() {
@@ -1160,7 +1398,7 @@ mod tests {
 
         let lock = store.lock_path();
         assert!(lock.is_file());
-        let mode = std::fs::metadata(&lock).unwrap().permissions().mode() & 0o777;
+        let mode = std::fs::metadata(lock).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "the lock file must be owner-only");
         let name = lock.file_name().unwrap().to_string_lossy().to_string();
         assert!(

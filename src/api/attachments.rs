@@ -204,7 +204,9 @@ pub(super) async fn upload_attachment(
     // Serialize the blob write with metadata insertion and orphan cleanup.
     // Otherwise GC can delete a newly written blob in the gap before its row
     // is inserted.
-    let (attachment, event) = store.with_lock(|store| {
+    // Non-blocking: a REST handler must not park a Tokio worker for the
+    // length of a dump. Busy means "retry", not "failed".
+    let (attachment, event) = store.try_with_lock(|store| {
         // Same definition of "already there" the writer uses, so a path that
         // is present but not a usable regular file fails here rather than
         // being read as "this upload created it" during cleanup.
@@ -251,7 +253,8 @@ pub(super) async fn upload_attachment(
             );
         }
         result
-    })?;
+    })?
+    .ok_or_else(AttachmentStore::busy_error)?;
     if let Some(event) = event {
         realtime.send(event);
     }
@@ -758,7 +761,7 @@ pub(super) async fn delete_attachment(
 
     authorize_delete(&db, &identity, &user, &attachment)?;
 
-    let events = store.with_lock(|store| {
+    let events = store.try_with_lock(|store| {
         let events = with_write(&db, |conn| {
             let events = linked_attachment_events(conn, id)?;
             q::delete_attachment(conn, id)?;
@@ -771,7 +774,8 @@ pub(super) async fn delete_attachment(
             store.delete_unlocked(&attachment.sha256)?;
         }
         Ok(events)
-    })?;
+    })?
+    .ok_or_else(AttachmentStore::busy_error)?;
     for event in events {
         realtime.send(event);
     }
@@ -1248,6 +1252,52 @@ mod tests {
         let (store, tmp) = crate::api::test_helpers::test_attachment_store();
         let pool = crate::db::open_memory().expect("in-memory test db");
         (pool, store, tmp)
+    }
+
+    /// The exact expression both handlers use to enter the store, so this
+    /// tests the contract they depend on rather than a paraphrase of it.
+    fn handler_entry(store: &AttachmentStore) -> Result<i32, LificError> {
+        store
+            .try_with_lock(|_| Ok(1))?
+            .ok_or_else(AttachmentStore::busy_error)
+    }
+
+    #[test]
+    fn upload_and_delete_answer_503_while_the_store_is_busy() {
+        use axum::response::IntoResponse;
+        use std::sync::mpsc::sync_channel;
+        use std::time::Duration;
+
+        let (store, tmp) = crate::api::test_helpers::test_attachment_store();
+        // A second, independently constructed store standing in for the other
+        // process (or the backup task) holding the store during a dump.
+        let holder = AttachmentStore::new(tmp.path().to_path_buf());
+
+        let (entered_tx, entered_rx) = sync_channel::<()>(1);
+        let (release_tx, release_rx) = sync_channel::<()>(1);
+        let worker = std::thread::spawn(move || {
+            holder.with_lock(|_| {
+                entered_tx.send(()).unwrap();
+                let _ = release_rx.recv_timeout(Duration::from_secs(10));
+                Ok(())
+            })
+        });
+        entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+
+        // The handler returns rather than parking its Tokio worker thread.
+        let error = handler_entry(&store).unwrap_err();
+        assert!(matches!(error, LificError::Unavailable(_)), "got {error:?}");
+        let response = error.into_response();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(response.headers().contains_key(axum::http::header::RETRY_AFTER));
+
+        release_tx.send(()).unwrap();
+        worker.join().unwrap().unwrap();
+        assert_eq!(
+            handler_entry(&store).unwrap(),
+            1,
+            "and serves normally once the store is free"
+        );
     }
 
     #[test]

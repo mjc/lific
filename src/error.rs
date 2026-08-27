@@ -30,6 +30,14 @@ pub enum LificError {
     #[error("Payload too large: {0}")]
     PayloadTooLarge(String),
 
+    /// A resource the request needs is held by something else right now, and
+    /// the same request will succeed once it lets go. Distinct from
+    /// [`LificError::Conflict`], which means the request cannot succeed as
+    /// written, and from [`LificError::Internal`], which means something
+    /// broke: this one is a scheduling answer and carries `Retry-After`.
+    #[error("Service unavailable: {0}")]
+    Unavailable(String),
+
     #[error("Internal error: {0}")]
     Internal(String),
 }
@@ -64,6 +72,7 @@ impl IntoResponse for LificError {
             LificError::Conflict(msg) => (StatusCode::CONFLICT, msg.clone()),
             LificError::TooManyRequests(msg) => (StatusCode::TOO_MANY_REQUESTS, msg.clone()),
             LificError::PayloadTooLarge(msg) => (StatusCode::PAYLOAD_TOO_LARGE, msg.clone()),
+            LificError::Unavailable(msg) => (StatusCode::SERVICE_UNAVAILABLE, msg.clone()),
             LificError::Internal(msg) => {
                 error!(error = %msg, "internal error");
                 (
@@ -75,6 +84,15 @@ impl IntoResponse for LificError {
 
         let body = json!({ "error": message });
         let mut response = (status, axum::Json(body)).into_response();
+        if matches!(self, LificError::Unavailable(_)) {
+            // Whatever holds the store (a backup, a restore) is measured in
+            // seconds to minutes, not hours. Two seconds is long enough not to
+            // hammer and short enough that a retry lands promptly.
+            response.headers_mut().insert(
+                axum::http::header::RETRY_AFTER,
+                axum::http::HeaderValue::from_static("2"),
+            );
+        }
         if matches!(self, LificError::TooManyRequests(_)) {
             // Export slots are typically freed in seconds, but a stalled
             // stream holds one until the 30-second idle timeout reaps it.
@@ -85,5 +103,26 @@ impl IntoResponse for LificError {
             );
         }
         response
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_busy_resource_answers_503_with_a_retry_after() {
+        // The attachment store returns this when a dump or restore holds it.
+        // The status and the header are the whole point: a client that reads
+        // them retries, where a 500 would look like a bug in the upload.
+        let response = LificError::Unavailable("attachment storage is busy".into()).into_response();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::RETRY_AFTER)
+                .and_then(|value| value.to_str().ok()),
+            Some("2")
+        );
     }
 }
