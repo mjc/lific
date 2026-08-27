@@ -338,6 +338,7 @@ async fn authorization_server_metadata(
 struct RegisterRequest {
     redirect_uris: Vec<String>,
     client_name: Option<String>,
+    application_type: Option<String>,
     // LIF-415: a submitted `token_endpoint_auth_method` is deliberately not
     // captured. Unknown fields are ignored by serde, and the registration
     // response always reports `none` because that is the only method this
@@ -435,6 +436,18 @@ async fn register_client(
         }
     }
 
+    let application_type = req.application_type.unwrap_or_else(|| "web".into());
+    if !matches!(application_type.as_str(), "native" | "web") {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "invalid_client_metadata",
+                "error_description": "application_type must be native or web"
+            })),
+        )
+            .into_response();
+    }
+
     let redirect_uris_json =
         serde_json::to_string(&req.redirect_uris).unwrap_or_else(|_| "[]".into());
     if redirect_uris_json.len() > MAX_REDIRECT_METADATA_BYTES {
@@ -518,6 +531,7 @@ async fn register_client(
             // here is public: no secret is issued, so echoing back a requested
             // `client_secret_post` would claim a registration we did not make.
             "token_endpoint_auth_method": "none",
+            "application_type": application_type,
             "grant_types": req.grant_types.unwrap_or_else(|| vec!["authorization_code".into()]),
             "response_types": req.response_types.unwrap_or_else(|| vec!["code".into()])
         })),
@@ -2919,6 +2933,7 @@ mod tests {
         let body = serde_json::json!({
             "redirect_uris": ["http://localhost/callback"],
             "client_name": "Test",
+            "application_type": "native",
             "token_endpoint_auth_method": "client_secret_post"
         });
         let resp = app
@@ -2944,6 +2959,10 @@ mod tests {
         assert!(
             val.get("client_secret").is_none(),
             "no client secret is ever issued"
+        );
+        assert_eq!(
+            val["application_type"], "native",
+            "DCR must preserve the requested application type"
         );
     }
 
