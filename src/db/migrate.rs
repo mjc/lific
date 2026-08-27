@@ -221,6 +221,11 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "oauth resource indicators",
         include_str!("../../migrations/045_oauth_resource.sql"),
     ),
+    (
+        46,
+        "CIMD client source",
+        include_str!("../../migrations/046_cimd_client_source.sql"),
+    ),
 ];
 
 /// Migrations that rebuild a table other tables reference by foreign key.
@@ -1008,5 +1013,34 @@ mod tests {
             [],
         )
         .expect("a client may hold many tokens");
+    }
+
+    #[test]
+    fn cimd_source_migration_preserves_existing_clients() {
+        let conn = migrated_up_to(45);
+        conn.execute(
+            "INSERT INTO oauth_clients (client_id, client_name, redirect_uris)
+             VALUES ('legacy-client', 'Legacy', '[]')",
+            [],
+        )
+        .unwrap();
+
+        run(&conn).expect("migration 046 must apply to an existing database");
+
+        let source: String = conn
+            .query_row(
+                "SELECT registration_source FROM oauth_clients WHERE client_id = 'legacy-client'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(source, "dcr");
+        conn.execute(
+            "INSERT INTO oauth_clients
+                 (client_id, client_name, redirect_uris, registration_source)
+             VALUES ('cimd-client', 'CIMD', '[]', 'cimd')",
+            [],
+        )
+        .unwrap();
     }
 }
