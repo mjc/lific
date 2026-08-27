@@ -901,7 +901,13 @@ pub async fn require_api_key(
         // first two answered "valid" and then "unbound", and an unbound OAuth
         // token takes the operator fallback, so revoking a tool's credential
         // could promote it. The typed outcome makes that state unrepresentable.
-        match crate::oauth::resolve_oauth_credential(&auth.db, &token) {
+        let credential = if is_mcp_request {
+            let resource = crate::oauth::mcp_resource(&auth.public_url);
+            crate::oauth::resolve_oauth_credential_for_resource(&auth.db, &token, &resource)
+        } else {
+            crate::oauth::resolve_oauth_credential(&auth.db, &token)
+        };
+        match credential {
             Ok(credential) => {
                 if is_mcp_request {
                     info!("/mcp authorized: OAuth token accepted");
@@ -2258,6 +2264,15 @@ mod tests {
             .layer(middleware::from_fn_with_state(auth_state, require_api_key))
     }
 
+    fn mcp_echo_app(auth_state: AuthState) -> Router {
+        async fn echo() -> &'static str {
+            "ok"
+        }
+        Router::new()
+            .route("/mcp", get(echo))
+            .layer(middleware::from_fn_with_state(auth_state, require_api_key))
+    }
+
     /// Insert an `oauth_tokens` row directly, bound to `user_id` (or
     /// unbound if `None`), bypassing the full authorize/token-exchange dance
     /// (already covered end-to-end in oauth.rs). Returns the raw bearer token.
@@ -2273,7 +2288,9 @@ mod tests {
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO oauth_tokens (access_token, client_id, expires_at, scope, user_id) VALUES (?1, ?2, ?3, 'mcp', ?4)",
+            "INSERT INTO oauth_tokens
+             (access_token, client_id, expires_at, scope, user_id, resource)
+             VALUES (?1, ?2, ?3, 'mcp', ?4, 'https://example.com/mcp')",
             params![hash, client_id, expires, user_id],
         )
         .unwrap();
@@ -2318,6 +2335,48 @@ mod tests {
             format!("user:{user_id}:tokenuser:false").as_bytes(),
             "OAuth token must resolve to the bound user, not None"
         );
+    }
+
+    #[tokio::test]
+    async fn oauth_token_for_another_mcp_resource_is_rejected() {
+        let pool = test_db();
+        let user_id = {
+            let conn = pool.write().unwrap();
+            crate::db::queries::users::create_user(
+                &conn,
+                &crate::db::models::CreateUser {
+                    username: "audienceuser".into(),
+                    email: "audienceuser@test.com".into(),
+                    password: "testpassword1".into(),
+                    display_name: None,
+                    is_admin: false,
+                    is_bot: false,
+                },
+            )
+            .unwrap()
+            .id
+        };
+        let token = insert_oauth_token(&pool, "audience", Some(user_id));
+        let hash = sha256_hex(token.as_bytes());
+        pool.write()
+            .unwrap()
+            .execute(
+                "UPDATE oauth_tokens SET resource = 'https://other.example/mcp' WHERE access_token = ?1",
+                params![hash],
+            )
+            .unwrap();
+
+        let response = mcp_echo_app(test_auth_state(&pool))
+            .oneshot(
+                Request::builder()
+                    .uri("/mcp")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
