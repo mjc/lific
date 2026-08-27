@@ -333,29 +333,66 @@ fn addresses_are_public(addresses: &[SocketAddr]) -> bool {
 
 fn is_public_address(ip: IpAddr) -> bool {
     match ip {
-        IpAddr::V4(ip) => {
-            !ip.is_private()
-                && !ip.is_loopback()
-                && !ip.is_link_local()
-                && !ip.is_unspecified()
-                && !ip.is_multicast()
-                && !ip.is_broadcast()
-        }
-        IpAddr::V6(ip) => {
-            if ip.is_loopback()
-                || ip.is_unique_local()
-                || ip.is_unicast_link_local()
-                || ip.is_unspecified()
-                || ip.is_multicast()
-            {
-                return false;
-            }
-            if let Some(v4) = ip.to_ipv4() {
-                return is_public_address(IpAddr::V4(v4));
-            }
-            true
-        }
+        IpAddr::V4(ip) => is_public_ipv4(ip),
+        IpAddr::V6(ip) => is_public_ipv6(ip),
     }
+}
+
+fn is_public_ipv4(ip: std::net::Ipv4Addr) -> bool {
+    let value = u32::from(ip);
+    ![
+        (0x0000_0000, 0xff00_0000), // 0.0.0.0/8
+        (0x0a00_0000, 0xff00_0000), // 10.0.0.0/8
+        (0x6440_0000, 0xffc0_0000), // 100.64.0.0/10, shared address space
+        (0x7f00_0000, 0xff00_0000), // 127.0.0.0/8
+        (0xa9fe_0000, 0xffff_0000), // 169.254.0.0/16
+        (0xac10_0000, 0xfff0_0000), // 172.16.0.0/12
+        (0xc000_0000, 0xffffff00), // 192.0.0.0/24
+        (0xc000_0200, 0xffffff00), // 192.0.2.0/24
+        (0xc058_6300, 0xffffff00), // 192.88.99.0/24
+        (0xc0a8_0000, 0xffff_0000), // 192.168.0.0/16
+        (0xc612_0000, 0xfffe_0000), // 198.18.0.0/15
+        (0xc633_6400, 0xffffff00), // 198.51.100.0/24
+        (0xcb00_7100, 0xffffff00), // 203.0.113.0/24
+        (0xe000_0000, 0xf000_0000), // 224.0.0.0/4, multicast
+        (0xf000_0000, 0xf000_0000), // 240.0.0.0/4, reserved
+    ]
+    .into_iter()
+    .any(|(network, mask)| value & mask == network)
+}
+
+fn is_public_ipv6(ip: std::net::Ipv6Addr) -> bool {
+    if let Some(v4) = ip.to_ipv4() {
+        return is_public_ipv4(v4);
+    }
+    if ip.is_unique_local()
+        || ip.is_unicast_link_local()
+        || ip.is_unspecified()
+        || ip.is_multicast()
+    {
+        return false;
+    }
+    [
+        (std::net::Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0), 128),
+        (std::net::Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1), 128),
+        (std::net::Ipv6Addr::new(0x2001, 2, 0, 0, 0, 0, 0, 0), 48),
+        (std::net::Ipv6Addr::new(0x2001, 0x10, 0, 0, 0, 0, 0, 0), 28),
+        (std::net::Ipv6Addr::new(0x2001, 0x20, 0, 0, 0, 0, 0, 0), 28),
+        (std::net::Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0), 32),
+        (std::net::Ipv6Addr::new(0x3fff, 0, 0, 0, 0, 0, 0, 0), 20),
+        (std::net::Ipv6Addr::new(0x5f00, 0, 0, 0, 0, 0, 0, 0), 16),
+    ]
+    .into_iter()
+    .all(|(network, prefix)| !ipv6_in_prefix(ip, network, prefix))
+}
+
+fn ipv6_in_prefix(ip: std::net::Ipv6Addr, network: std::net::Ipv6Addr, prefix: u8) -> bool {
+    let mask = if prefix == 0 {
+        0
+    } else {
+        u128::MAX << (128 - prefix)
+    };
+    u128::from(ip) & mask == u128::from(network) & mask
 }
 
 #[cfg(test)]
@@ -459,6 +496,22 @@ mod tests {
             );
         }
         assert!(is_public_address("8.8.8.8".parse().unwrap()));
+    }
+
+    #[test]
+    fn non_global_special_addresses_are_not_public() {
+        for ip in [
+            "0.0.0.1",
+            "100.64.0.1",
+            "192.0.0.1",
+            "192.0.2.1",
+            "198.18.0.1",
+            "198.51.100.1",
+            "203.0.113.1",
+            "2001:db8::1",
+        ] {
+            assert!(!is_public_address(ip.parse().unwrap()), "{ip} must be rejected");
+        }
     }
 
     #[test]

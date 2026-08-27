@@ -638,6 +638,32 @@ impl LificMcp {
 }
 
 impl ServerHandler for LificMcp {
+    fn initialize(
+        &self,
+        request: rmcp::model::InitializeRequestParams,
+        context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
+    ) -> impl std::future::Future<
+        Output = Result<rmcp::model::InitializeResult, rmcp::ErrorData>,
+    > + rmcp::service::MaybeSendFuture
+    + '_ {
+        if request.protocol_version == ProtocolVersion::V_2026_07_28 {
+            return std::future::ready(Err(rmcp::ErrorData::method_not_found::<
+                rmcp::model::InitializeResultMethod,
+            >()));
+        }
+        if request.protocol_version != ProtocolVersion::V_2025_03_26 {
+            let supported = self.supported_protocol_versions();
+            return std::future::ready(Err(rmcp::ErrorData::unsupported_protocol_version(
+                request.protocol_version,
+                &supported,
+            )));
+        }
+        context.peer.set_peer_info(request);
+        let mut info = self.get_info();
+        info.protocol_version = ProtocolVersion::V_2025_03_26;
+        std::future::ready(Ok(info))
+    }
+
     fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
         Cow::Borrowed(SUPPORTED_PROTOCOL_VERSIONS)
     }
@@ -668,6 +694,18 @@ impl ServerHandler for LificMcp {
                 .with_ttl_ms(3_600_000)
                 .with_cache_scope(rmcp::model::CacheScope::Public),
         ))
+    }
+
+    fn complete(
+        &self,
+        _request: rmcp::model::CompleteRequestParams,
+        _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
+    ) -> impl std::future::Future<Output = Result<rmcp::model::CompleteResult, rmcp::ErrorData>>
+    + rmcp::service::MaybeSendFuture
+    + '_ {
+        std::future::ready(Err(rmcp::ErrorData::method_not_found::<
+            rmcp::model::CompleteRequestMethod,
+        >()))
     }
 
     // rmcp's default implementations return empty successful lists for these
@@ -864,6 +902,57 @@ mod tests {
         assert_eq!(body["result"]["resultType"], "complete");
         assert_eq!(body["result"]["supportedVersions"][0], "2025-03-26");
         assert_eq!(body["result"]["supportedVersions"][1], "2026-07-28");
+        server.waiting().await.expect("stdio service exits");
+    }
+
+    #[tokio::test]
+    async fn stdio_rejects_modern_initialize() {
+        let request: rmcp::model::ClientJsonRpcMessage = serde_json::from_value(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2026-07-28",
+                "capabilities": {},
+                "clientInfo": {"name": "lific-test", "version": "0.1.0"}
+            }
+        }))
+        .expect("valid modern initialize request");
+        let (transport, mut responses) = rmcp::transport::OneshotTransport::new(request);
+        let server = serve_stdio(LificMcp::new(crate::db::open_memory().unwrap()), transport);
+
+        let response = responses.recv().await.expect("initialize response");
+        let body = serde_json::to_value(response).expect("serializable response");
+        assert_eq!(body["error"]["code"], -32601);
+        server.waiting().await.expect("stdio service exits");
+    }
+
+    #[tokio::test]
+    async fn stdio_rejects_undeclared_completion() {
+        let request: rmcp::model::ClientJsonRpcMessage = serde_json::from_value(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "completion/complete",
+            "params": {
+                "_meta": {
+                    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                    "io.modelcontextprotocol/clientInfo": {
+                        "name": "lific-test",
+                        "version": "0.1.0"
+                    },
+                    "io.modelcontextprotocol/clientCapabilities": {}
+                },
+                "ref": {"type": "ref/resource", "uri": "file://example"},
+                "argument": {"name": "path", "value": "src/"}
+            }
+        }))
+        .expect("valid completion request");
+        let (transport, mut responses) = rmcp::transport::OneshotTransport::new(request);
+        let server = serve_stdio(LificMcp::new(crate::db::open_memory().unwrap()), transport);
+
+        let response = responses.recv().await.expect("completion response");
+        let body = serde_json::to_value(response).expect("serializable response");
+        assert_eq!(body["error"]["code"], -32601);
         server.waiting().await.expect("stdio service exits");
     }
 
