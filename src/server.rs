@@ -1131,12 +1131,63 @@ mod authless_mcp_tests {
             "id": 1,
             "method": "initialize",
             "params": {
-                "protocolVersion": "2025-06-18",
+                "protocolVersion": "2025-03-26",
                 "capabilities": {},
                 "clientInfo": {"name": "test", "version": "1"}
             }
         });
         Body::from(serde_json::to_vec(&body).unwrap())
+    }
+
+    fn jsonrpc_body(body: &[u8]) -> serde_json::Value {
+        if let Ok(value) = serde_json::from_slice(body) {
+            return value;
+        }
+        let text = String::from_utf8_lossy(body);
+        text.lines()
+            .find_map(|line| {
+                line.strip_prefix("data:")
+                    .map(str::trim)
+                    .filter(|data| !data.is_empty())
+            })
+            .and_then(|data| serde_json::from_str(data).ok())
+            .unwrap_or_else(|| panic!("MCP body contained no JSON-RPC message: {text}"))
+    }
+
+    fn assert_object_keys(value: &serde_json::Value, expected: &[&str]) {
+        let mut actual: Vec<_> = value
+            .as_object()
+            .expect("expected JSON object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        actual.sort_unstable();
+        let mut expected = expected.to_vec();
+        expected.sort_unstable();
+        assert_eq!(actual, expected);
+    }
+
+    async fn post_session(
+        router: Router,
+        token: &str,
+        session_id: &str,
+        body: serde_json::Value,
+    ) -> axum::response::Response {
+        router
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(format!("/mcp/{token}"))
+                    .header("host", "localhost")
+                    .header("content-type", "application/json")
+                    .header("accept", "application/json, text/event-stream")
+                    .header("mcp-protocol-version", "2025-03-26")
+                    .header("mcp-session-id", session_id)
+                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
     }
 
     /// The whole point: a request to /mcp/<token> with NO Authorization header
@@ -1165,30 +1216,73 @@ mod authless_mcp_tests {
             .body(initialize_body())
             .unwrap();
 
-        let res = router.oneshot(req).await.unwrap();
+        let res = router.clone().oneshot(req).await.unwrap();
         assert_eq!(
             res.status(),
             StatusCode::OK,
             "authless MCP initialize must succeed without any auth header"
         );
-        assert!(
-            res.headers().get("mcp-session-id").is_some(),
-            "legacy initialize must establish an MCP session"
-        );
+        let session_id = res
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|value| value.to_str().ok())
+            .expect("legacy initialize must establish an MCP session")
+            .to_owned();
         let bytes = res.into_body().collect().await.unwrap().to_bytes();
-        let body = String::from_utf8(bytes.to_vec()).unwrap();
-        let data = body
-            .lines()
-            .find_map(|line| {
-                line.strip_prefix("data: ")
-                    .filter(|data| !data.is_empty())
-            })
-            .expect("legacy initialize must contain an SSE data event");
-        let val: serde_json::Value = serde_json::from_str(data).unwrap();
-        assert!(
-            val["result"]["serverInfo"].is_object(),
-            "expected an initialize result, got: {val}"
+        let initialized = jsonrpc_body(&bytes);
+        assert_object_keys(&initialized, &["jsonrpc", "id", "result"]);
+        assert_object_keys(
+            &initialized["result"],
+            &["protocolVersion", "capabilities", "serverInfo", "instructions"],
         );
+        assert_eq!(initialized["result"]["protocolVersion"], "2025-03-26");
+
+        let notification = post_session(
+            router.clone(),
+            token,
+            &session_id,
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized",
+                "params": {}
+            }),
+        )
+        .await;
+        assert!(notification.status().is_success());
+
+        let list = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/list",
+            "params": {}
+        });
+        let first = post_session(router.clone(), token, &session_id, list.clone()).await;
+        let second = post_session(router.clone(), token, &session_id, list).await;
+        assert_eq!(first.status(), StatusCode::OK);
+        let first = jsonrpc_body(&first.into_body().collect().await.unwrap().to_bytes());
+        let second = jsonrpc_body(&second.into_body().collect().await.unwrap().to_bytes());
+        assert_eq!(first, second, "legacy tools/list must be stable");
+        assert_object_keys(&first["result"], &["tools"]);
+
+        let call = post_session(
+            router,
+            token,
+            &session_id,
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {
+                    "name": "search",
+                    "arguments": {"query": "lific-legacy-contract-no-match"}
+                }
+            }),
+        )
+        .await;
+        assert_eq!(call.status(), StatusCode::OK);
+        let call = jsonrpc_body(&call.into_body().collect().await.unwrap().to_bytes());
+        assert_object_keys(&call["result"], &["content", "isError"]);
+        assert_eq!(call["result"]["isError"], false);
     }
 
     /// A wrong path token does not match the route at all (no secret leak,
