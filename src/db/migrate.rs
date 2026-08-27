@@ -226,6 +226,11 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "status transitions",
         include_str!("../../migrations/046_status_transitions.sql"),
     ),
+    (
+        47,
+        "soft delete tombstones",
+        include_str!("../../migrations/047_soft_delete.sql"),
+    ),
 ];
 
 /// Migrations that rebuild a table other tables reference by foreign key.
@@ -1520,5 +1525,105 @@ mod tests {
             transitions(&conn).is_empty(),
             "an issue's initial status is not a transition into it"
         );
+    }
+
+    // ── migration 047: soft delete + tombstones (LIF-438) ─────────────────
+    //
+    // Trigger behaviour again, so these run against a real pool through the
+    // query layer, for the same reason 045's do.
+
+    /// A database with content, upgraded across 047. The columns are added to
+    /// populated tables and every existing row has to come out live: an
+    /// upgrade that tombstoned anything would be a silent data loss.
+    #[test]
+    fn the_migration_leaves_every_existing_row_live() {
+        let conn = migrated_up_to(47);
+        conn.execute_batch(
+            "INSERT INTO projects (id, name, identifier) VALUES (1, 'Sync', 'SYN');
+             INSERT INTO users (id, username, email, password_hash)
+                 VALUES (1, 'ada', 'ada@test.com', 'x');
+             INSERT INTO issues (id, project_id, sequence, title) VALUES (1, 1, 1, 'an issue');
+             INSERT INTO pages (id, project_id, sequence, title, content)
+                 VALUES (1, 1, 1, 'a page', '');
+             INSERT INTO comments (id, issue_id, user_id, content)
+                 VALUES (1, 1, 1, 'a comment');",
+        )
+        .unwrap();
+
+        run(&conn).expect("migration 047 must apply to a populated database");
+
+        for table in ["issues", "pages", "comments"] {
+            assert_eq!(
+                count(
+                    &conn,
+                    &format!("SELECT count(*) FROM {table} WHERE deleted_at IS NOT NULL")
+                ),
+                0,
+                "the upgrade must not tombstone existing {table}"
+            );
+        }
+        // And the FTS index the pre-047 triggers built is still intact.
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM search_index WHERE entity_type = 'issue' AND entity_id = 1"
+            ),
+            1
+        );
+    }
+
+    /// The whole point of the tombstone: a replica that has seen everything up
+    /// to `before` must still be told the row went away.
+    #[test]
+    fn a_tombstone_lands_past_the_row_it_replaces() {
+        let (pool, project_id, user_id) = seq_fixture();
+        let conn = pool.write().unwrap();
+        let issue_id = new_issue(&conn, project_id, "Doomed", Status::Todo);
+        let comment_id =
+            queries::comments::create_comment(&conn, CommentParent::Issue(issue_id), user_id, "Hi")
+                .unwrap()
+                .id;
+        let before_issue = seq_of(&conn, "issues", issue_id);
+        let before_comment = seq_of(&conn, "comments", comment_id);
+
+        queries::delete_issue(&conn, issue_id).unwrap();
+
+        assert!(seq_of(&conn, "issues", issue_id) > before_issue);
+        assert!(
+            seq_of(&conn, "comments", comment_id) > before_comment,
+            "a cascaded comment is its own event in the stream"
+        );
+    }
+
+    /// The stamp triggers write `seq` and nothing else, which is exactly the
+    /// shape 047's `AFTER UPDATE OF deleted_at` guards must ignore. If they
+    /// did not, every mutation of a tombstoned row would log another delete.
+    #[test]
+    fn a_seq_stamp_is_not_mistaken_for_a_delete_or_a_restore() {
+        let (pool, project_id, _) = seq_fixture();
+        let conn = pool.write().unwrap();
+        let issue_id = new_issue(&conn, project_id, "Noisy", Status::Todo);
+        queries::delete_issue(&conn, issue_id).unwrap();
+
+        let lifecycle = |conn: &Connection| {
+            count(
+                conn,
+                &format!(
+                    "SELECT count(*) FROM audit_log
+                      WHERE entity_type = 'issue' AND entity_id = {issue_id}
+                        AND action IN ('delete', 'restore')"
+                ),
+            )
+        };
+        assert_eq!(lifecycle(&conn), 1);
+
+        // A bare stamp, the same write the trigger layer performs.
+        conn.execute_batch(&format!(
+            "UPDATE sync_seq SET value = value + 1 WHERE id = 1;
+             UPDATE issues SET seq = (SELECT value FROM sync_seq WHERE id = 1)
+              WHERE id = {issue_id};"
+        ))
+        .unwrap();
+        assert_eq!(lifecycle(&conn), 1, "a stamp is not a lifecycle event");
     }
 }

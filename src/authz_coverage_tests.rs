@@ -376,6 +376,9 @@ fn rest_manifest() -> HashMap<(&'static str, &'static str), Classification> {
         (("GET", "/api/issues/{id}"), Gated(Viewer)),
         (("PUT", "/api/issues/{id}"), Gated(Maintainer)),
         (("DELETE", "/api/issues/{id}"), Gated(Maintainer)),
+        // LIF-438: undoing a soft delete is the same authority as performing
+        // one, on the same project (read past the tombstone filter to find it).
+        (("POST", "/api/issues/{id}/restore"), Gated(Maintainer)),
         (("GET", "/api/issues/resolve/{identifier}"), Gated(Viewer)),
         (("POST", "/api/issues/link"), Gated(Maintainer)),
         (("POST", "/api/issues/unlink"), Gated(Maintainer)),
@@ -411,6 +414,8 @@ fn rest_manifest() -> HashMap<(&'static str, &'static str), Classification> {
         (("GET", "/api/pages/{id}"), Gated(Viewer)),
         (("PUT", "/api/pages/{id}"), Gated(Maintainer)),
         (("DELETE", "/api/pages/{id}"), Gated(Maintainer)),
+        // LIF-438: same authority as the delete it undoes.
+        (("POST", "/api/pages/{id}/restore"), Gated(Maintainer)),
         // ── Plans ──
         (("GET", "/api/plans"), Filtered),
         (("POST", "/api/plans"), Gated(Maintainer)),

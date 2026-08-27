@@ -106,7 +106,7 @@ fn created_per_week(
         conn,
         "SELECT date(created_at, 'weekday 0', '-6 days') AS wk, COUNT(*)
          FROM issues
-         WHERE project_id = ?1 AND created_at >= ?2
+         WHERE project_id = ?1 AND created_at >= ?2 AND deleted_at IS NULL
          GROUP BY wk",
         project_id,
         since,
@@ -147,7 +147,8 @@ fn closed_per_week(
 fn priority_counts(conn: &Connection, project_id: i64) -> Result<PriorityCounts, LificError> {
     let mut counts = PriorityCounts::default();
     let mut stmt = conn.prepare_cached(
-        "SELECT priority, COUNT(*) FROM issues WHERE project_id = ?1 GROUP BY priority",
+        "SELECT priority, COUNT(*) FROM issues
+         WHERE project_id = ?1 AND deleted_at IS NULL GROUP BY priority",
     )?;
     let rows = stmt.query_map(params![project_id], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
@@ -174,7 +175,7 @@ fn module_counts(conn: &Connection, project_id: i64) -> Result<Vec<ModuleCount>,
     let mut stmt = conn.prepare_cached(
         "SELECT i.module_id, COALESCE(m.name, 'No module'), COUNT(*)
          FROM issues i LEFT JOIN modules m ON m.id = i.module_id
-         WHERE i.project_id = ?1
+         WHERE i.project_id = ?1 AND i.deleted_at IS NULL
          GROUP BY i.module_id
          ORDER BY COUNT(*) DESC, name ASC",
     )?;

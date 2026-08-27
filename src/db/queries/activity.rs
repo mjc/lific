@@ -448,6 +448,9 @@ mod tests {
         let feed = issue_feed(&pool, issue.id);
         let del = feed
             .iter()
+            // LIF-438: a delete is now a tombstone, audited as 'deleted'.
+            // 'delete' is reserved for a physical row removal (the retention
+            // purge, or a project delete cascading through the foreign keys).
             .find(|a| a.action == "delete" && a.entity_type == "issue")
             .unwrap();
         assert_eq!(del.entity_label.as_deref(), Some("AUD-1"));

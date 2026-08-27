@@ -11,6 +11,7 @@ mod projects;
 mod resources;
 mod search;
 pub(crate) mod settings;
+pub(crate) mod trash;
 pub(crate) mod users;
 pub(crate) mod views;
 
@@ -27,6 +28,21 @@ pub(crate) fn unescape_text(s: &str) -> String {
     }
     s.replace("\\n", "\n").replace("\\t", "\t")
 }
+
+/// The SQL expression that stamps a tombstone's `deleted_at` (LIF-438).
+///
+/// Millisecond resolution, unlike every other timestamp in the schema, and the
+/// precision is load-bearing rather than decorative. A parent's delete copies
+/// its exact `deleted_at` onto its comments, and the restore revives exactly
+/// the children carrying that value — so two deletes that land on the same
+/// timestamp become one indistinguishable event, and restoring an issue would
+/// resurrect a comment the user had retracted seconds earlier. `datetime('now')`
+/// ticks once a second, which is an eternity next to two consecutive
+/// statements; `%f` makes an accidental collision require the same millisecond.
+///
+/// Still string-comparable against a `datetime('now', '-N days')` cutoff: the
+/// fractional part only ever extends a prefix the cutoff already shares.
+pub(crate) const TOMBSTONE_NOW: &str = "strftime('%Y-%m-%d %H:%M:%f', 'now')";
 
 /// Default page size when a caller does not ask for one.
 pub const DEFAULT_PAGE_LIMIT: i64 = 50;

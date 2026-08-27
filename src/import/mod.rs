@@ -184,10 +184,17 @@ pub fn resolve_owner(pool: &DbPool, requested: Option<&str>) -> Result<Option<i6
     }
 }
 
-/// True if an issue with this `source` marker already exists (idempotency).
+/// True if a *live* issue with this `source` marker already exists
+/// (idempotency).
+///
+/// LIF-438: soft-deleted issues are deliberately invisible here. Someone who
+/// deletes an imported issue and re-runs the import is asking for it back, and
+/// a tombstone answering "already imported" would leave them with nothing and
+/// no way to say otherwise. The re-import creates a fresh issue; the tombstone
+/// stays where it is until the retention purge collects it.
 pub fn source_exists(conn: &rusqlite::Connection, source: &str) -> Result<bool, LificError> {
     let exists: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM issues WHERE source = ?1)",
+        "SELECT EXISTS(SELECT 1 FROM issues WHERE source = ?1 AND deleted_at IS NULL)",
         rusqlite::params![source],
         |row| row.get(0),
     )?;
@@ -603,5 +610,53 @@ mod tests {
         let s2 = run_import(&pool, pid, None, &fetched, false).unwrap();
         assert_eq!(s2.issues_created, 0);
         assert_eq!(s2.issues_skipped_existing, 2);
+    }
+
+    /// LIF-438: the source-marker dedupe sees live rows only. Deleting an
+    /// imported issue and re-running the import is a request to have it back,
+    /// so the tombstone must not answer "already imported" and leave the user
+    /// with nothing.
+    #[test]
+    fn re_import_recreates_an_issue_that_was_deleted() {
+        let pool = db::open_memory().unwrap();
+        let pid = seed_project(&pool, "APP");
+        let fetched = FetchedIssues {
+            issues: vec![norm("github:o/n#1", "A")],
+            ..Default::default()
+        };
+        run_import(&pool, pid, None, &fetched, false).unwrap();
+
+        let deleted_id = {
+            let conn = pool.write().unwrap();
+            let id: i64 = conn
+                .query_row("SELECT id FROM issues WHERE source = 'github:o/n#1'", [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            crate::db::queries::delete_issue(&conn, id).unwrap();
+            id
+        };
+
+        let again = run_import(&pool, pid, None, &fetched, false).unwrap();
+        assert_eq!(again.issues_created, 1);
+        assert_eq!(again.issues_skipped_existing, 0);
+
+        let conn = pool.read().unwrap();
+        let live: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM issues WHERE source = 'github:o/n#1' AND deleted_at IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(live, 1, "one live issue, plus the untouched tombstone");
+        let tombstoned: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM issues WHERE id = ?1 AND deleted_at IS NOT NULL",
+                [deleted_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tombstoned, 1);
     }
 }

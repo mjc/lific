@@ -146,6 +146,12 @@ pub fn router(db: DbPool, cors_origins: &[String]) -> Router {
             "/api/issues/resolve/{identifier}",
             get(issues::resolve_issue),
         )
+        // Undo a soft delete (LIF-438). Gated exactly like DELETE: whoever
+        // could tombstone the issue can bring it back.
+        .route(
+            "/api/issues/{id}/restore",
+            post(issues::restore_issue_handler),
+        )
         // Activity (audit log read surface — LIF-156)
         .route("/api/issues/{id}/activity", get(activity::issue_activity))
         .route("/api/pages/{id}/activity", get(activity::page_activity))
@@ -217,6 +223,8 @@ pub fn router(db: DbPool, cors_origins: &[String]) -> Router {
                 .put(pages::update_page)
                 .delete(pages::delete_page_handler),
         )
+        // Undo a soft delete (LIF-438), gated exactly like DELETE.
+        .route("/api/pages/{id}/restore", post(pages::restore_page_handler))
         // Plans (LIF-172)
         .route(
             "/api/plans",

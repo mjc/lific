@@ -3,7 +3,7 @@ use rusqlite::{params, Connection};
 use crate::db::models::*;
 use crate::error::LificError;
 
-use super::unescape_text;
+use super::{TOMBSTONE_NOW, unescape_text};
 
 /// Read a single issue with its computed identifier, labels, and relations.
 pub fn get_issue(conn: &Connection, id: i64) -> Result<Issue, LificError> {
@@ -14,7 +14,7 @@ pub fn get_issue(conn: &Connection, id: i64) -> Result<Issue, LificError> {
                     i.start_date, i.target_date, i.created_at, i.updated_at, i.source, i.seq
              FROM issues i
              JOIN projects p ON p.id = i.project_id
-             WHERE i.id = ?1",
+             WHERE i.id = ?1 AND i.deleted_at IS NULL",
         )?
         .query_row(params![id], |row| {
             let project_ident: String = row.get(3)?;
@@ -62,7 +62,7 @@ pub fn get_issue(conn: &Connection, id: i64) -> Result<Issue, LificError> {
 
     let mut blocks_stmt = conn.prepare_cached(
         "SELECT p.identifier, i.sequence FROM issue_relations ir
-         JOIN issues i ON i.id = ir.target_id
+         JOIN issues i ON i.id = ir.target_id AND i.deleted_at IS NULL
          JOIN projects p ON p.id = i.project_id
          WHERE ir.source_id = ?1 AND ir.relation_type = 'blocks'",
     )?;
@@ -76,7 +76,7 @@ pub fn get_issue(conn: &Connection, id: i64) -> Result<Issue, LificError> {
 
     let mut blocked_stmt = conn.prepare_cached(
         "SELECT p.identifier, i.sequence FROM issue_relations ir
-         JOIN issues i ON i.id = ir.source_id
+         JOIN issues i ON i.id = ir.source_id AND i.deleted_at IS NULL
          JOIN projects p ON p.id = i.project_id
          WHERE ir.target_id = ?1 AND ir.relation_type = 'blocks'",
     )?;
@@ -96,7 +96,8 @@ pub fn get_issue(conn: &Connection, id: i64) -> Result<Issue, LificError> {
          END
          JOIN projects p ON p.id = i.project_id
          WHERE (ir.source_id = ?1 OR ir.target_id = ?1)
-           AND ir.relation_type = 'relates_to'",
+           AND ir.relation_type = 'relates_to'
+           AND i.deleted_at IS NULL",
     )?;
     issue.relates_to = relates_stmt
         .query_map(params![id], |row| {
@@ -112,7 +113,7 @@ pub fn get_issue(conn: &Connection, id: i64) -> Result<Issue, LificError> {
     // captured in `duplicated_by`.
     let mut duplicates_stmt = conn.prepare_cached(
         "SELECT p.identifier, i.sequence FROM issue_relations ir
-         JOIN issues i ON i.id = ir.target_id
+         JOIN issues i ON i.id = ir.target_id AND i.deleted_at IS NULL
          JOIN projects p ON p.id = i.project_id
          WHERE ir.source_id = ?1 AND ir.relation_type = 'duplicate'",
     )?;
@@ -126,7 +127,7 @@ pub fn get_issue(conn: &Connection, id: i64) -> Result<Issue, LificError> {
 
     let mut duplicated_by_stmt = conn.prepare_cached(
         "SELECT p.identifier, i.sequence FROM issue_relations ir
-         JOIN issues i ON i.id = ir.source_id
+         JOIN issues i ON i.id = ir.source_id AND i.deleted_at IS NULL
          JOIN projects p ON p.id = i.project_id
          WHERE ir.target_id = ?1 AND ir.relation_type = 'duplicate'",
     )?;
@@ -142,9 +143,11 @@ pub fn get_issue(conn: &Connection, id: i64) -> Result<Issue, LificError> {
 }
 
 pub fn issue_project_id(conn: &Connection, id: i64) -> Result<i64, LificError> {
-    conn.query_row("SELECT project_id FROM issues WHERE id = ?1", [id], |row| {
-        row.get(0)
-    })
+    conn.query_row(
+        "SELECT project_id FROM issues WHERE id = ?1 AND deleted_at IS NULL",
+        [id],
+        |row| row.get(0),
+    )
     .map_err(|error| match error {
         rusqlite::Error::QueryReturnedNoRows => {
             LificError::NotFound(format!("issue {id} not found"))
@@ -156,7 +159,7 @@ pub fn issue_project_id(conn: &Connection, id: i64) -> Result<i64, LificError> {
 /// Look up just an issue's current status by id — a lightweight read used to
 /// annotate relation lines (LIF-303) without materializing the whole Issue.
 pub fn issue_status(conn: &Connection, id: i64) -> Result<String, LificError> {
-    conn.prepare_cached("SELECT status FROM issues WHERE id = ?1")?
+    conn.prepare_cached("SELECT status FROM issues WHERE id = ?1 AND deleted_at IS NULL")?
         .query_row(params![id], |row| row.get(0))
         .map_err(|e| match e {
             rusqlite::Error::QueryReturnedNoRows => {
@@ -185,7 +188,8 @@ pub fn list_project_relations(
          JOIN projects sp ON sp.id = s.project_id
          JOIN issues t ON t.id = ir.target_id
          JOIN projects tp ON tp.id = t.project_id
-         WHERE s.project_id = ?1 AND t.project_id = ?1",
+         WHERE s.project_id = ?1 AND t.project_id = ?1
+           AND s.deleted_at IS NULL AND t.deleted_at IS NULL",
     )?;
     let rows = stmt
         .query_map(params![project_id], |row| {
@@ -217,7 +221,7 @@ pub fn resolve_identifier(conn: &Connection, identifier: &str) -> Result<i64, Li
     conn.prepare_cached(
         "SELECT i.id FROM issues i
          JOIN projects p ON p.id = i.project_id
-         WHERE p.identifier = ?1 AND i.sequence = ?2",
+         WHERE p.identifier = ?1 AND i.sequence = ?2 AND i.deleted_at IS NULL",
     )?
     .query_row(params![project_ident, sequence], |row| row.get(0))
     .map_err(|e| match e {
@@ -248,7 +252,9 @@ pub fn list_issues_page(
          FROM issues i
          JOIN projects p ON p.id = i.project_id",
     );
-    let mut conditions: Vec<String> = Vec::new();
+    // LIF-438: tombstones keep their row so delta sync can advertise the
+    // deletion, but every ordinary read is live-only.
+    let mut conditions: Vec<String> = vec!["i.deleted_at IS NULL".to_string()];
     let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
     if let Some(pid) = q.project_id {
@@ -296,6 +302,7 @@ pub fn list_issues_page(
                 WHERE ir.target_id = i.id
                   AND ir.relation_type = 'blocks'
                   AND blocker.status != 'done'
+                  AND blocker.deleted_at IS NULL
             )"
             .to_string(),
         );
@@ -309,6 +316,7 @@ pub fn list_issues_page(
                 WHERE ir.target_id = i.id
                   AND ir.relation_type = 'blocks'
                   AND b.status != 'done'
+                  AND b.deleted_at IS NULL
             )"
             .to_string(),
         );
@@ -444,7 +452,8 @@ pub fn list_issues_page(
                  JOIN projects p ON p.id = b.project_id
                  WHERE ir.target_id IN ({placeholders})
                    AND ir.relation_type = 'blocks'
-                   AND b.status != 'done'"
+                   AND b.status != 'done'
+                   AND b.deleted_at IS NULL"
             );
             let mut stmt = conn.prepare(&sql)?;
             let blocker_rows = stmt.query_map(params_refs.as_slice(), |row| {
@@ -477,7 +486,8 @@ pub fn count_issues_by_status(
 ) -> Result<IssueStatusCounts, LificError> {
     let mut counts = IssueStatusCounts::default();
     let mut stmt = conn.prepare_cached(
-        "SELECT status, COUNT(*) FROM issues WHERE project_id = ?1 GROUP BY status",
+        "SELECT status, COUNT(*) FROM issues
+         WHERE project_id = ?1 AND deleted_at IS NULL GROUP BY status",
     )?;
     let rows = stmt.query_map(params![project_id], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
@@ -527,6 +537,9 @@ pub fn create_issue(conn: &Connection, input: &CreateIssue) -> Result<Issue, Lif
         validate_module_project(conn, input.project_id, module_id)?;
     }
 
+    // Deliberately counts tombstones too (LIF-438): sequence numbers are the
+    // user-visible identifier, and reusing one that a soft-deleted issue still
+    // holds would collide the moment that issue is restored.
     let next_seq: i64 = conn
         .query_row(
             "SELECT COALESCE(MAX(sequence), 0) + 1 FROM issues WHERE project_id = ?1",
@@ -645,12 +658,65 @@ pub fn update_issue(conn: &Connection, id: i64, input: &UpdateIssue) -> Result<I
     get_issue(conn, id)
 }
 
+/// Tombstone an issue (LIF-438).
+///
+/// The row survives with `deleted_at` set, which is what lets a delta sync
+/// advertise the deletion at a `seq` a replica can see; every read path filters
+/// it out, so from the outside this is indistinguishable from the hard delete
+/// it replaced. Migration 047's cascade trigger tombstones the issue's live
+/// comments in the same statement, stamping each with the issue's exact
+/// `deleted_at` so [`restore_issue`] can tell them apart from comments that
+/// were deleted on their own beforehand.
 pub fn delete_issue(conn: &Connection, id: i64) -> Result<(), LificError> {
-    let changed = conn.execute("DELETE FROM issues WHERE id = ?1", params![id])?;
+    let changed = conn.execute(
+        &format!(
+            "UPDATE issues SET deleted_at = {TOMBSTONE_NOW} \
+             WHERE id = ?1 AND deleted_at IS NULL"
+        ),
+        params![id],
+    )?;
     if changed == 0 {
         return Err(LificError::NotFound(format!("issue {id} not found")));
     }
     Ok(())
+}
+
+/// Bring a tombstoned issue back, along with the comments that went down with
+/// it (LIF-438).
+///
+/// Clearing `deleted_at` re-stamps `seq`, re-indexes the issue for search and
+/// fires migration 047's restore cascade, all in one statement.
+pub fn restore_issue(conn: &Connection, id: i64) -> Result<Issue, LificError> {
+    let changed = conn.execute(
+        "UPDATE issues SET deleted_at = NULL
+          WHERE id = ?1 AND deleted_at IS NOT NULL",
+        params![id],
+    )?;
+    if changed == 0 {
+        return Err(LificError::NotFound(format!(
+            "deleted issue {id} not found"
+        )));
+    }
+    get_issue(conn, id)
+}
+
+/// The project a tombstoned issue belongs to.
+///
+/// Restore has to authorize against the issue's project before it exists as far
+/// as [`get_issue`] is concerned, so this is the one read that deliberately
+/// looks past the tombstone filter.
+pub fn deleted_issue_project_id(conn: &Connection, id: i64) -> Result<i64, LificError> {
+    conn.query_row(
+        "SELECT project_id FROM issues WHERE id = ?1 AND deleted_at IS NOT NULL",
+        [id],
+        |row| row.get(0),
+    )
+    .map_err(|error| match error {
+        rusqlite::Error::QueryReturnedNoRows => {
+            LificError::NotFound(format!("deleted issue {id} not found"))
+        }
+        other => other.into(),
+    })
 }
 
 pub fn link_issues(
@@ -1551,6 +1617,226 @@ mod tests {
         link_issues(&conn, i1.id, i2.id, "blocks").unwrap();
         delete_issue(&conn, i1.id).unwrap();
         assert!(get_issue(&conn, i2.id).unwrap().blocked_by.is_empty());
+    }
+
+    // ── LIF-438: soft delete, tombstones and restore ─────────
+
+    /// Read a tombstoned issue's raw row, past the filters every shipped read
+    /// applies. Tests only: nothing in the product looks at a deleted row this
+    /// way yet, and the point of most of these assertions is that the row is
+    /// still there to look at.
+    fn raw_row(conn: &rusqlite::Connection, id: i64) -> (Option<String>, i64) {
+        conn.query_row(
+            "SELECT deleted_at, seq FROM issues WHERE id = ?1",
+            params![id],
+            |row| Ok((row.get(0)?, row.get::<_, Option<i64>>(1)?.unwrap_or(0))),
+        )
+        .unwrap()
+    }
+
+    fn audit_actions(conn: &rusqlite::Connection, id: i64) -> Vec<String> {
+        conn.prepare(
+            "SELECT action FROM audit_log
+              WHERE entity_type = 'issue' AND entity_id = ?1 ORDER BY id",
+        )
+        .unwrap()
+        .query_map(params![id], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<Vec<String>, _>>()
+        .unwrap()
+    }
+
+    #[test]
+    fn delete_keeps_the_row_and_advances_its_seq() {
+        let pool = test_db();
+        let conn = pool.write().unwrap();
+        let pid = seed_project(&conn, "TST");
+        let issue = quick_issue(&conn, pid, "Doomed", Status::Todo, Priority::None);
+        let (before_deleted, before_seq) = raw_row(&conn, issue.id);
+        assert_eq!(before_deleted, None);
+
+        delete_issue(&conn, issue.id).unwrap();
+
+        let (deleted_at, seq) = raw_row(&conn, issue.id);
+        assert!(deleted_at.is_some(), "the row survives as a tombstone");
+        assert!(
+            seq > before_seq,
+            "the tombstone gets its own place in the sync stream: {seq} vs {before_seq}"
+        );
+    }
+
+    #[test]
+    fn a_deleted_issue_is_invisible_to_every_read() {
+        let pool = test_db();
+        let conn = pool.write().unwrap();
+        let pid = seed_project(&conn, "TST");
+        let issue = quick_issue(&conn, pid, "Gone", Status::Todo, Priority::None);
+        let survivor = quick_issue(&conn, pid, "Here", Status::Todo, Priority::None);
+        delete_issue(&conn, issue.id).unwrap();
+
+        assert!(matches!(
+            get_issue(&conn, issue.id),
+            Err(LificError::NotFound(_))
+        ));
+        assert!(matches!(
+            resolve_identifier(&conn, &issue.identifier),
+            Err(LificError::NotFound(_))
+        ));
+        assert!(matches!(
+            issue_project_id(&conn, issue.id),
+            Err(LificError::NotFound(_))
+        ));
+        assert!(matches!(
+            issue_status(&conn, issue.id),
+            Err(LificError::NotFound(_))
+        ));
+
+        let listed = list_issues(
+            &conn,
+            &ListIssuesQuery {
+                project_id: Some(pid),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, survivor.id);
+
+        // The board's per-status counts are the same read in aggregate form.
+        assert_eq!(count_issues_by_status(&conn, pid).unwrap().total, 1);
+    }
+
+    #[test]
+    fn a_deleted_issue_drops_out_of_relation_lists_and_the_graph() {
+        let pool = test_db();
+        let conn = pool.write().unwrap();
+        let pid = seed_project(&conn, "TST");
+        let blocker = quick_issue(&conn, pid, "Blocker", Status::Todo, Priority::None);
+        let blocked = quick_issue(&conn, pid, "Blocked", Status::Todo, Priority::None);
+        link_issues(&conn, blocker.id, blocked.id, "blocks").unwrap();
+        delete_issue(&conn, blocker.id).unwrap();
+
+        assert!(get_issue(&conn, blocked.id).unwrap().blocked_by.is_empty());
+        assert!(list_project_relations(&conn, pid).unwrap().is_empty());
+
+        // ...and the blocked issue is workable again, since nothing live blocks it.
+        let workable = list_issues(
+            &conn,
+            &ListIssuesQuery {
+                project_id: Some(pid),
+                workable: Some(true),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(workable.len(), 1);
+        assert_eq!(workable[0].id, blocked.id);
+    }
+
+    #[test]
+    fn deleting_twice_reports_not_found() {
+        let pool = test_db();
+        let conn = pool.write().unwrap();
+        let pid = seed_project(&conn, "TST");
+        let issue = quick_issue(&conn, pid, "Doomed", Status::Todo, Priority::None);
+        delete_issue(&conn, issue.id).unwrap();
+        assert!(matches!(
+            delete_issue(&conn, issue.id),
+            Err(LificError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn restore_brings_the_issue_back_with_a_new_seq() {
+        let pool = test_db();
+        let conn = pool.write().unwrap();
+        let pid = seed_project(&conn, "TST");
+        let issue = quick_issue(&conn, pid, "Back", Status::Todo, Priority::None);
+        delete_issue(&conn, issue.id).unwrap();
+        let (_, tombstone_seq) = raw_row(&conn, issue.id);
+
+        let restored = restore_issue(&conn, issue.id).unwrap();
+        assert_eq!(restored.title, "Back");
+        assert_eq!(restored.identifier, issue.identifier);
+        let (deleted_at, seq) = raw_row(&conn, issue.id);
+        assert_eq!(deleted_at, None);
+        assert!(seq > tombstone_seq, "a restore is a change like any other");
+        assert!(get_issue(&conn, issue.id).is_ok());
+    }
+
+    #[test]
+    fn restoring_something_that_was_never_deleted_is_not_found() {
+        let pool = test_db();
+        let conn = pool.write().unwrap();
+        let pid = seed_project(&conn, "TST");
+        let issue = quick_issue(&conn, pid, "Live", Status::Todo, Priority::None);
+        assert!(matches!(
+            restore_issue(&conn, issue.id),
+            Err(LificError::NotFound(_))
+        ));
+        assert!(matches!(
+            deleted_issue_project_id(&conn, issue.id),
+            Err(LificError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn deleted_issue_project_id_reads_past_the_tombstone_filter() {
+        let pool = test_db();
+        let conn = pool.write().unwrap();
+        let pid = seed_project(&conn, "TST");
+        let issue = quick_issue(&conn, pid, "Doomed", Status::Todo, Priority::None);
+        delete_issue(&conn, issue.id).unwrap();
+        assert_eq!(deleted_issue_project_id(&conn, issue.id).unwrap(), pid);
+    }
+
+    /// A restored issue must not collide with one created while it was in the
+    /// trash, which is why sequence allocation deliberately counts tombstones.
+    #[test]
+    fn a_tombstone_keeps_its_sequence_reserved() {
+        let pool = test_db();
+        let conn = pool.write().unwrap();
+        let pid = seed_project(&conn, "TST");
+        let first = quick_issue(&conn, pid, "First", Status::Todo, Priority::None);
+        delete_issue(&conn, first.id).unwrap();
+
+        let second = quick_issue(&conn, pid, "Second", Status::Todo, Priority::None);
+        assert_eq!(second.identifier, "TST-2");
+
+        restore_issue(&conn, first.id).unwrap();
+        assert_eq!(resolve_identifier(&conn, "TST-1").unwrap(), first.id);
+        assert_eq!(resolve_identifier(&conn, "TST-2").unwrap(), second.id);
+    }
+
+    #[test]
+    fn delete_and_restore_each_write_exactly_one_audit_row() {
+        let pool = test_db();
+        let conn = pool.write().unwrap();
+        let pid = seed_project(&conn, "TST");
+        let issue = quick_issue(&conn, pid, "Audited", Status::Todo, Priority::None);
+        assert_eq!(audit_actions(&conn, issue.id), vec!["create"]);
+
+        delete_issue(&conn, issue.id).unwrap();
+        assert_eq!(audit_actions(&conn, issue.id), vec!["create", "delete"]);
+
+        restore_issue(&conn, issue.id).unwrap();
+        assert_eq!(
+            audit_actions(&conn, issue.id),
+            vec!["create", "delete", "restore"]
+        );
+
+        // The tombstone row carries the same snapshot the old hard-delete row
+        // did, so a feed can still render an issue nobody can fetch.
+        let (label, old_value): (String, String) = conn
+            .query_row(
+                "SELECT entity_label, old_value FROM audit_log
+                  WHERE entity_type = 'issue' AND entity_id = ?1 AND action = 'delete'",
+                params![issue.id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(label, "TST-1");
+        assert_eq!(old_value, "Audited");
     }
 
     // LIF-135: self-links are rejected — a self-"blocks" would make the

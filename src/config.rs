@@ -100,6 +100,7 @@ pub struct Config {
     pub backup: BackupConfig,
     pub log: LogConfig,
     pub auth: AuthConfig,
+    pub retention: RetentionConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -311,6 +312,26 @@ pub struct LogConfig {
     pub level: String,
 }
 
+/// How long tombstoned issues, pages and comments stay recoverable (LIF-438).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RetentionConfig {
+    /// Days a soft-deleted row is kept before it is physically removed.
+    ///
+    /// A delete is a tombstone now: the row survives with `deleted_at` set so
+    /// a replica syncing later can learn the deletion happened, and so a
+    /// mistaken delete can be undone. Neither reason lasts forever, and a
+    /// database that only ever grows is its own problem, so a background
+    /// sweep collects tombstones past this window and runs the real DELETE
+    /// (which is what finally fires the foreign-key cascades).
+    ///
+    /// `0` disables the sweep entirely: tombstones accumulate until an
+    /// operator removes them by hand. That is a deliberate opt-out for anyone
+    /// who wants deletion to be reversible indefinitely, not the default,
+    /// because most instances want their trash emptied.
+    pub trash_days: u32,
+}
+
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
@@ -358,6 +379,12 @@ impl Default for LogConfig {
         Self {
             level: "info".to_string(),
         }
+    }
+}
+
+impl Default for RetentionConfig {
+    fn default() -> Self {
+        Self { trash_days: 30 }
     }
 }
 
@@ -901,6 +928,22 @@ enabled = false
         let parsed: Config = toml::from_str(&toml_str).expect("default toml should parse");
         assert_eq!(parsed.server.port, 3456);
         assert!(parsed.server.trusted_proxies.is_empty());
+    }
+
+    // LIF-438: soft-delete retention. 30 days by default, 0 means never purge.
+    #[test]
+    fn retention_defaults_to_thirty_days_and_parses_from_toml() {
+        assert_eq!(Config::default().retention.trash_days, 30);
+        let cfg: Config = toml::from_str("[retention]\ntrash_days = 7\n").unwrap();
+        assert_eq!(cfg.retention.trash_days, 7);
+        let cfg: Config = toml::from_str("[retention]\ntrash_days = 0\n").unwrap();
+        assert_eq!(cfg.retention.trash_days, 0);
+        // Absent section keeps the default rather than disabling the sweep.
+        let cfg: Config = toml::from_str("[server]\nport = 1234\n").unwrap();
+        assert_eq!(cfg.retention.trash_days, 30);
+        // And it survives the default-config round trip `lific init` writes.
+        let written: Config = toml::from_str(&Config::default_toml()).unwrap();
+        assert_eq!(written.retention.trash_days, 30);
     }
 
     #[test]

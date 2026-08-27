@@ -715,6 +715,52 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
     }
 
+    /// LIF-438: a deleted comment is a tombstone, and every REST surface has
+    /// to treat it as absent — including the two that take it by id, which
+    /// would otherwise let a caller edit or re-delete a row nobody can read.
+    #[tokio::test]
+    async fn a_deleted_comment_is_absent_from_every_rest_surface() {
+        let (app, issue_id, _) = setup_comment_test();
+        let created = parse_json(
+            json_post(
+                &app,
+                &format!("/api/issues/{issue_id}/comments"),
+                serde_json::json!({"content": "Retracted"}),
+            )
+            .await,
+        )
+        .await;
+        let comment_id = created["id"].as_i64().unwrap();
+
+        assert_eq!(
+            json_delete(&app, &format!("/api/comments/{comment_id}"))
+                .await
+                .status(),
+            StatusCode::OK
+        );
+
+        let listing =
+            parse_json(json_get(&app, &format!("/api/issues/{issue_id}/comments")).await).await;
+        assert!(listing.as_array().unwrap().is_empty());
+
+        assert_eq!(
+            json_put(
+                &app,
+                &format!("/api/comments/{comment_id}"),
+                serde_json::json!({"content": "tampered"}),
+            )
+            .await
+            .status(),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            json_delete(&app, &format!("/api/comments/{comment_id}"))
+                .await
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+    }
+
     #[tokio::test]
     async fn revoked_member_cannot_mutate_comments() {
         let (db, _admin, lead, _maintainer, viewer, _non_member, project_id) =

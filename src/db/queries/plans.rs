@@ -51,7 +51,7 @@ fn read_plan_row(conn: &Connection, id: i64) -> Result<Plan, LificError> {
                 pl.status, pl.created_at, pl.updated_at,
                 (SELECT ap.identifier || '-' || ai.sequence
                    FROM issues ai JOIN projects ap ON ap.id = ai.project_id
-                  WHERE ai.id = pl.issue_id),
+                  WHERE ai.id = pl.issue_id AND ai.deleted_at IS NULL),
                 (SELECT COUNT(*) FROM plan_steps s WHERE s.plan_id = pl.id),
                 (SELECT COUNT(*) FROM plan_steps s WHERE s.plan_id = pl.id AND s.done = 1)
          FROM plans pl
@@ -99,7 +99,7 @@ pub fn get_plan(conn: &Connection, id: i64) -> Result<Plan, LificError> {
                 i.status,
                 s.done, s.reopened_via_issue_at, s.created_at, s.edited_at
          FROM plan_steps s
-         LEFT JOIN issues i ON i.id = s.issue_id
+         LEFT JOIN issues i ON i.id = s.issue_id AND i.deleted_at IS NULL
          LEFT JOIN projects ip ON ip.id = i.project_id
          WHERE s.plan_id = ?1
          ORDER BY s.position ASC, s.id ASC",
@@ -216,7 +216,7 @@ pub fn list_plans(conn: &Connection, q: &ListPlansQuery) -> Result<Vec<Plan>, Li
                 pl.status, pl.created_at, pl.updated_at,
                 (SELECT ap.identifier || '-' || ai.sequence
                    FROM issues ai JOIN projects ap ON ap.id = ai.project_id
-                  WHERE ai.id = pl.issue_id),
+                  WHERE ai.id = pl.issue_id AND ai.deleted_at IS NULL),
                 COUNT(s.id),
                 COALESCE(SUM(s.done), 0)
          FROM ({inner}) pl
@@ -535,13 +535,26 @@ pub fn set_step_done(
             )?;
         }
 
-        if let Some(iid) = issue_id {
-            let (ident, status): (String, String) = conn.query_row(
-                "SELECT p.identifier || '-' || i.sequence, i.status
-                 FROM issues i JOIN projects p ON p.id = i.project_id WHERE i.id = ?1",
-                params![iid],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )?;
+        // LIF-438: a step can point at an issue that has since been deleted.
+        // The link is left intact (a restore has to bring the provenance back),
+        // but checking the step off must not reach through the tombstone and
+        // write a status onto a row nothing else can see. `optional` turns the
+        // dead link into "no issue to propagate to" rather than an error the
+        // user cannot act on.
+        if let Some((iid, ident, status)) = issue_id
+            .map(|iid| {
+                conn.query_row(
+                    "SELECT p.identifier || '-' || i.sequence, i.status
+                     FROM issues i JOIN projects p ON p.id = i.project_id
+                     WHERE i.id = ?1 AND i.deleted_at IS NULL",
+                    params![iid],
+                    |row| Ok((iid, row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )
+                .optional()
+            })
+            .transpose()?
+            .flatten()
+        {
             effect.issue_identifier = Some(ident);
 
             // Only the done direction propagates to the issue (issue-authoritative

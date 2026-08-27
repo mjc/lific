@@ -136,6 +136,31 @@ pub(super) async fn delete_issue_handler(
     Ok(Json(serde_json::json!({"deleted": true})))
 }
 
+/// Undo a soft delete (LIF-438).
+///
+/// The issue is invisible to `get_issue` while tombstoned, so the project the
+/// authorization gate needs comes from `deleted_issue_project_id`, the one read
+/// that deliberately looks past the tombstone filter. Restoring revives the
+/// comments that went down with the issue and re-indexes it for search, all
+/// inside the single UPDATE below (migration 047's cascade triggers).
+pub(super) async fn restore_issue_handler(
+    State(db): State<DbPool>,
+    Extension(realtime): Extension<RealtimeHub>,
+    Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
+    Path(id): Path<i64>,
+) -> Result<Json<Issue>, LificError> {
+    let project_id = with_read(&db, |conn| {
+        crate::db::queries::deleted_issue_project_id(conn, id)
+    })?;
+    authz::require_role(&db, &identity, project_id, Role::Maintainer)?;
+    let issue = with_write(&db, |conn| crate::db::queries::restore_issue(conn, id))?;
+    realtime.send(RealtimeEvent::IssueCreated {
+        project_id: issue.project_id,
+        issue_id: issue.id,
+    });
+    Ok(Json(issue))
+}
+
 /// LIF-363: every relation edge inside one project, in one round trip. Feeds
 /// the dependency-graph view; the client filters to `blocks` edges itself so
 /// a future view mode (e.g. relates_to clusters) needs no new endpoint.
@@ -308,6 +333,140 @@ mod tests {
         let event: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(event["type"], "issue.created");
         assert_eq!(event["project_id"], project_id);
+    }
+
+    // ── LIF-438: delete is a tombstone, restore undoes it ────
+
+    async fn body_of(resp: axum::response::Response) -> serde_json::Value {
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn deleted_issue_is_gone_from_every_read_surface() {
+        let app = test_app();
+        let (project_id, _) = seed_project(&app).await;
+        let created = body_of(
+            json_post(
+                &app,
+                "/api/issues",
+                serde_json::json!({"project_id": project_id, "title": "Tombstoned widget"}),
+            )
+            .await,
+        )
+        .await;
+        let id = created["id"].as_i64().unwrap();
+
+        assert_eq!(
+            json_delete(&app, &format!("/api/issues/{id}")).await.status(),
+            StatusCode::OK
+        );
+
+        assert_eq!(
+            json_get(&app, &format!("/api/issues/{id}")).await.status(),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            json_get(&app, "/api/issues/resolve/TST-1").await.status(),
+            StatusCode::NOT_FOUND
+        );
+        let list: Vec<serde_json::Value> = serde_json::from_value(
+            body_of(json_get(&app, &format!("/api/issues?project_id={project_id}")).await).await,
+        )
+        .unwrap();
+        assert!(list.is_empty(), "the list drops it too");
+
+        let board = body_of(json_get(&app, &format!("/api/projects/{project_id}/board")).await).await;
+        assert_eq!(
+            board.as_object().map(|columns| columns.len()),
+            Some(0),
+            "the board has no column to put a tombstone in: {board}"
+        );
+
+        let hits: Vec<serde_json::Value> =
+            serde_json::from_value(body_of(json_get(&app, "/api/search?query=widget").await).await)
+                .unwrap();
+        assert!(hits.is_empty(), "search drops it too");
+
+        let export = json_get(&app, "/api/export/issues/TST-1").await;
+        assert_eq!(export.status(), StatusCode::NOT_FOUND);
+
+        // Deleting it again is a 404, not a second tombstone.
+        assert_eq!(
+            json_delete(&app, &format!("/api/issues/{id}")).await.status(),
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    #[tokio::test]
+    async fn restoring_an_issue_makes_it_readable_again() {
+        let app = test_app();
+        let (project_id, _) = seed_project(&app).await;
+        let created = body_of(
+            json_post(
+                &app,
+                "/api/issues",
+                serde_json::json!({"project_id": project_id, "title": "Comes back"}),
+            )
+            .await,
+        )
+        .await;
+        let id = created["id"].as_i64().unwrap();
+        json_delete(&app, &format!("/api/issues/{id}")).await;
+
+        let resp = json_post(
+            &app,
+            &format!("/api/issues/{id}/restore"),
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let restored = body_of(resp).await;
+        assert_eq!(restored["identifier"], "TST-1");
+        assert_eq!(restored["title"], "Comes back");
+
+        assert_eq!(
+            json_get(&app, &format!("/api/issues/{id}")).await.status(),
+            StatusCode::OK
+        );
+        let list: Vec<serde_json::Value> = serde_json::from_value(
+            body_of(json_get(&app, &format!("/api/issues?project_id={project_id}")).await).await,
+        )
+        .unwrap();
+        assert_eq!(list.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn restoring_something_that_is_not_in_the_trash_is_a_404() {
+        let app = test_app();
+        let (project_id, _) = seed_project(&app).await;
+        let created = body_of(
+            json_post(
+                &app,
+                "/api/issues",
+                serde_json::json!({"project_id": project_id, "title": "Alive"}),
+            )
+            .await,
+        )
+        .await;
+        let id = created["id"].as_i64().unwrap();
+
+        assert_eq!(
+            json_post(
+                &app,
+                &format!("/api/issues/{id}/restore"),
+                serde_json::json!({})
+            )
+            .await
+            .status(),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            json_post(&app, "/api/issues/999999/restore", serde_json::json!({}))
+                .await
+                .status(),
+            StatusCode::NOT_FOUND
+        );
     }
 
     #[tokio::test]

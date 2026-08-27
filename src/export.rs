@@ -58,9 +58,9 @@ fn ensure_comment_sizes(conn: &Connection, issue_id: i64) -> Result<(), LificErr
     // SQLite's length(TEXT) reports characters, not UTF-8 bytes.  Use the
     // BLOB form for the limit that protects the rendered file allocation.
     let (too_large, total_bytes): (i64, i64) = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM comments WHERE issue_id = ?1 AND length(CAST(content AS BLOB)) > ?2),
+        "SELECT EXISTS(SELECT 1 FROM comments WHERE issue_id = ?1 AND deleted_at IS NULL AND length(CAST(content AS BLOB)) > ?2),
                 COALESCE(SUM(length(CAST(content AS BLOB))), 0)
-           FROM comments WHERE issue_id = ?1",
+           FROM comments WHERE issue_id = ?1 AND deleted_at IS NULL",
         rusqlite::params![issue_id, MAX_EXPORT_FILE_BYTES],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
@@ -98,18 +98,18 @@ fn ensure_issue_preflight(
             COALESCE(length(CAST(m.name AS BLOB)), 0) +
             (SELECT COALESCE(SUM(length(CAST(c.content AS BLOB)) +
                                  length(CAST(COALESCE(u.display_name, u.username) AS BLOB))), 0)
-               FROM comments c JOIN users u ON u.id = c.user_id WHERE c.issue_id = ?1) +
+               FROM comments c JOIN users u ON u.id = c.user_id WHERE c.issue_id = ?1 AND c.deleted_at IS NULL) +
             (SELECT COALESCE(SUM(length(CAST(l.name AS BLOB))), 0)
                FROM issue_labels il JOIN labels l ON l.id = il.label_id WHERE il.issue_id = ?1) +
             (SELECT COALESCE(SUM(length(CAST(other_project.identifier AS BLOB)) + 20), 0)
                FROM issue_relations ir
                JOIN issues other ON other.id = CASE WHEN ir.source_id = ?1 THEN ir.target_id ELSE ir.source_id END
                JOIN projects other_project ON other_project.id = other.project_id
-              WHERE ir.source_id = ?1 OR ir.target_id = ?1)
+              WHERE (ir.source_id = ?1 OR ir.target_id = ?1) AND other.deleted_at IS NULL)
          FROM issues i
          JOIN projects p ON p.id = i.project_id
          LEFT JOIN modules m ON m.id = i.module_id
-         WHERE i.id = ?1",
+         WHERE i.id = ?1 AND i.deleted_at IS NULL",
         [issue_id],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
@@ -144,7 +144,7 @@ fn ensure_page_preflight(
                FROM folders WHERE project_id = page.project_id)
          FROM pages page
          LEFT JOIN projects project ON project.id = page.project_id
-         WHERE page.id = ?1",
+         WHERE page.id = ?1 AND page.deleted_at IS NULL",
         [page_id],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
@@ -325,7 +325,7 @@ pub fn export_issue(conn: &Connection, identifier: &str) -> Result<ExportBundle,
 fn export_issue_snapshot(conn: &Connection, identifier: &str) -> Result<ExportBundle, LificError> {
     let issue_id = queries::resolve_identifier(conn, identifier)?;
     let oversized: i64 = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM issues WHERE id = ?1 AND (
+        "SELECT EXISTS(SELECT 1 FROM issues WHERE id = ?1 AND deleted_at IS NULL AND (
              length(CAST(title AS BLOB)) > ?2 OR
              length(CAST(description AS BLOB)) > ?2 OR
              length(CAST(COALESCE(source, '') AS BLOB)) > ?2
@@ -368,7 +368,7 @@ pub fn export_page(conn: &Connection, identifier: &str) -> Result<ExportBundle, 
 fn export_page_snapshot(conn: &Connection, identifier: &str) -> Result<ExportBundle, LificError> {
     let page_id = queries::resolve_page_identifier(conn, identifier)?;
     let oversized: i64 = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM pages WHERE id = ?1 AND (length(CAST(title AS BLOB)) > ?2 OR length(CAST(content AS BLOB)) > ?2))",
+        "SELECT EXISTS(SELECT 1 FROM pages WHERE id = ?1 AND deleted_at IS NULL AND (length(CAST(title AS BLOB)) > ?2 OR length(CAST(content AS BLOB)) > ?2))",
         rusqlite::params![page_id, MAX_EXPORT_FILE_BYTES],
         |row| row.get(0),
     )?;
@@ -424,32 +424,33 @@ fn ensure_project_preflight(
         project_bytes,
     ): (i64, i64, i64, i64, i64, i64, i64, i64, i64) = conn.query_row(
         "SELECT
-            (SELECT COUNT(*) FROM issues WHERE project_id = ?1),
-            (SELECT COUNT(*) FROM pages WHERE project_id = ?1),
-            (SELECT COUNT(*) FROM comments c JOIN issues i ON i.id = c.issue_id WHERE i.project_id = ?1),
-            (SELECT COALESCE(SUM(length(CAST(title AS BLOB)) + length(CAST(description AS BLOB)) + length(CAST(COALESCE(source, '') AS BLOB))), 0) FROM issues WHERE project_id = ?1),
-            (SELECT COALESCE(SUM(length(CAST(title AS BLOB)) + length(CAST(content AS BLOB))), 0) FROM pages WHERE project_id = ?1),
-            (SELECT COALESCE(SUM(length(CAST(c.content AS BLOB))), 0) FROM comments c JOIN issues i ON i.id = c.issue_id WHERE i.project_id = ?1),
-            (SELECT COUNT(*) FROM issue_labels il JOIN issues i ON i.id = il.issue_id WHERE i.project_id = ?1) +
-            (SELECT COUNT(*) FROM page_labels pl JOIN pages p ON p.id = pl.page_id WHERE p.project_id = ?1) +
+            (SELECT COUNT(*) FROM issues WHERE project_id = ?1 AND deleted_at IS NULL),
+            (SELECT COUNT(*) FROM pages WHERE project_id = ?1 AND deleted_at IS NULL),
+            (SELECT COUNT(*) FROM comments c JOIN issues i ON i.id = c.issue_id WHERE i.project_id = ?1 AND c.deleted_at IS NULL AND i.deleted_at IS NULL),
+            (SELECT COALESCE(SUM(length(CAST(title AS BLOB)) + length(CAST(description AS BLOB)) + length(CAST(COALESCE(source, '') AS BLOB))), 0) FROM issues WHERE project_id = ?1 AND deleted_at IS NULL),
+            (SELECT COALESCE(SUM(length(CAST(title AS BLOB)) + length(CAST(content AS BLOB))), 0) FROM pages WHERE project_id = ?1 AND deleted_at IS NULL),
+            (SELECT COALESCE(SUM(length(CAST(c.content AS BLOB))), 0) FROM comments c JOIN issues i ON i.id = c.issue_id WHERE i.project_id = ?1 AND c.deleted_at IS NULL AND i.deleted_at IS NULL),
+            (SELECT COUNT(*) FROM issue_labels il JOIN issues i ON i.id = il.issue_id WHERE i.project_id = ?1 AND i.deleted_at IS NULL) +
+            (SELECT COUNT(*) FROM page_labels pl JOIN pages p ON p.id = pl.page_id WHERE p.project_id = ?1 AND p.deleted_at IS NULL) +
             (SELECT COUNT(*) FROM folders WHERE project_id = ?1) +
             2 * (SELECT COUNT(*) FROM issue_relations ir
                    JOIN issues source ON source.id = ir.source_id
                    JOIN issues target ON target.id = ir.target_id
-                  WHERE source.project_id = ?1 OR target.project_id = ?1),
+                  WHERE (source.project_id = ?1 OR target.project_id = ?1)
+                    AND source.deleted_at IS NULL AND target.deleted_at IS NULL),
             (SELECT COALESCE(SUM(length(CAST(l.name AS BLOB))), 0)
                FROM issue_labels il JOIN issues i ON i.id = il.issue_id JOIN labels l ON l.id = il.label_id
-              WHERE i.project_id = ?1) +
+              WHERE i.project_id = ?1 AND i.deleted_at IS NULL) +
             (SELECT COALESCE(SUM(length(CAST(l.name AS BLOB))), 0)
                FROM page_labels pl JOIN pages page ON page.id = pl.page_id JOIN labels l ON l.id = pl.label_id
-              WHERE page.project_id = ?1) +
+              WHERE page.project_id = ?1 AND page.deleted_at IS NULL) +
             (SELECT COALESCE(SUM(length(CAST(m.name AS BLOB))), 0)
-               FROM issues i JOIN modules m ON m.id = i.module_id WHERE i.project_id = ?1) +
+               FROM issues i JOIN modules m ON m.id = i.module_id WHERE i.project_id = ?1 AND i.deleted_at IS NULL) +
             (SELECT COALESCE(SUM(length(CAST(name AS BLOB))), 0)
                FROM folders WHERE project_id = ?1) +
             (SELECT COALESCE(SUM(length(CAST(COALESCE(u.display_name, u.username) AS BLOB))), 0)
                FROM comments c JOIN issues i ON i.id = c.issue_id JOIN users u ON u.id = c.user_id
-              WHERE i.project_id = ?1) +
+              WHERE i.project_id = ?1 AND c.deleted_at IS NULL AND i.deleted_at IS NULL) +
             2 * (SELECT COALESCE(SUM(length(CAST(source_project.identifier AS BLOB)) +
                                      length(CAST(target_project.identifier AS BLOB)) + 40), 0)
                    FROM issue_relations ir
@@ -457,7 +458,8 @@ fn ensure_project_preflight(
                    JOIN projects source_project ON source_project.id = source.project_id
                    JOIN issues target ON target.id = ir.target_id
                    JOIN projects target_project ON target_project.id = target.project_id
-                  WHERE source.project_id = ?1 OR target.project_id = ?1),
+                  WHERE (source.project_id = ?1 OR target.project_id = ?1)
+                    AND source.deleted_at IS NULL AND target.deleted_at IS NULL),
             (SELECT length(CAST(name AS BLOB)) +
                     length(CAST(identifier AS BLOB)) +
                     length(CAST(description AS BLOB)) +
@@ -500,16 +502,17 @@ fn ensure_project_preflight(
     }
     let oversized: i64 = conn.query_row(
         "SELECT EXISTS(
-           SELECT 1 FROM issues WHERE project_id = ?1
+           SELECT 1 FROM issues WHERE project_id = ?1 AND deleted_at IS NULL
              AND (length(CAST(title AS BLOB)) > ?2 OR
                   length(CAST(description AS BLOB)) > ?2 OR
                   length(CAST(COALESCE(source, '') AS BLOB)) > ?2)
            UNION ALL
-           SELECT 1 FROM pages WHERE project_id = ?1
+           SELECT 1 FROM pages WHERE project_id = ?1 AND deleted_at IS NULL
              AND (length(CAST(title AS BLOB)) > ?2 OR length(CAST(content AS BLOB)) > ?2)
            UNION ALL
            SELECT 1 FROM comments c JOIN issues i ON i.id = c.issue_id
-             WHERE i.project_id = ?1 AND length(CAST(c.content AS BLOB)) > ?2
+             WHERE i.project_id = ?1 AND c.deleted_at IS NULL AND i.deleted_at IS NULL
+               AND length(CAST(c.content AS BLOB)) > ?2
            UNION ALL
            SELECT 1 FROM folders WHERE project_id = ?1 AND length(CAST(name AS BLOB)) > ?2
          )",
@@ -537,11 +540,11 @@ fn export_project_snapshot(
     )?;
     let project = bounded_project(conn, project_id)?;
     let issue_ids = conn
-        .prepare_cached("SELECT id FROM issues WHERE project_id = ?1 ORDER BY id")?
+        .prepare_cached("SELECT id FROM issues WHERE project_id = ?1 AND deleted_at IS NULL ORDER BY id")?
         .query_map([project.id], |row| row.get(0))?
         .collect::<Result<Vec<i64>, _>>()?;
     let page_ids = conn
-        .prepare_cached("SELECT id FROM pages WHERE project_id = ?1 ORDER BY id")?
+        .prepare_cached("SELECT id FROM pages WHERE project_id = ?1 AND deleted_at IS NULL ORDER BY id")?
         .query_map([project.id], |row| row.get(0))?
         .collect::<Result<Vec<i64>, _>>()?;
 
@@ -1021,6 +1024,86 @@ mod tests {
         CreateFolder, CreateIssue, CreatePage, CreateProject, Priority, Status,
     };
     use crate::db::{open_memory, queries};
+
+    /// LIF-438: an export is a snapshot of what the project *is*, not of every
+    /// row that has ever been in it. A tombstoned issue, page or comment must
+    /// not appear in the bundle, and must not count against the preflight
+    /// budgets either.
+    #[test]
+    fn project_export_skips_tombstoned_rows() {
+        let db = open_memory().unwrap();
+        let conn = db.write().unwrap();
+        let project = queries::create_project(
+            &conn,
+            &CreateProject {
+                name: "Export Test".into(),
+                identifier: "EXP".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let user = queries::users::create_user(
+            &conn,
+            &crate::db::models::CreateUser {
+                username: "tester".into(),
+                email: "tester@example.com".into(),
+                password: "password123".into(),
+                display_name: Some("Tester".into()),
+                is_admin: true,
+                is_bot: false,
+            },
+        )
+        .unwrap();
+
+        let kept = queries::create_issue(
+            &conn,
+            &CreateIssue {
+                project_id: project.id,
+                title: "Kept".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let doomed = queries::create_issue(
+            &conn,
+            &CreateIssue {
+                project_id: project.id,
+                title: "Doomed".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let doomed_comment = queries::comments::create_comment(
+            &conn,
+            queries::comments::CommentParent::Issue(kept.id),
+            user.id,
+            "retracted remark",
+        )
+        .unwrap();
+        let doomed_page = queries::create_page(
+            &conn,
+            &CreatePage {
+                project_id: Some(project.id),
+                title: "Doomed doc".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        queries::delete_issue(&conn, doomed.id).unwrap();
+        queries::delete_page(&conn, doomed_page.id).unwrap();
+        queries::comments::delete_comment(&conn, doomed_comment.id).unwrap();
+
+        let bundle = export_project(&conn, "EXP").unwrap();
+        assert_eq!(bundle.files.len(), 1, "only the live issue is exported");
+        let file = &bundle.files[0];
+        assert!(file.path.contains("exp-1-kept"), "got: {}", file.path);
+        assert!(!file.content.contains("retracted remark"));
+
+        // The single-entity exports 404 rather than rendering a tombstone.
+        assert!(export_issue(&conn, &doomed.identifier).is_err());
+        assert!(export_page(&conn, &doomed_page.identifier).is_err());
+    }
 
     #[test]
     fn project_export_writes_issue_and_nested_page_paths() {

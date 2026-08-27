@@ -269,11 +269,11 @@ pub fn list_for_project(conn: &Connection, project_id: i64) -> Result<Vec<Attach
         "SELECT DISTINCT {columns}
          FROM attachments a
          JOIN attachment_links l ON l.attachment_id = a.id
-         LEFT JOIN issues i ON l.entity_type = 'issue' AND i.id = l.entity_id
-         LEFT JOIN pages p ON l.entity_type = 'page' AND p.id = l.entity_id
-         LEFT JOIN comments c ON l.entity_type = 'comment' AND c.id = l.entity_id
-         LEFT JOIN issues ci ON ci.id = c.issue_id
-         LEFT JOIN pages cp ON cp.id = c.page_id
+         LEFT JOIN issues i ON l.entity_type = 'issue' AND i.id = l.entity_id AND i.deleted_at IS NULL
+         LEFT JOIN pages p ON l.entity_type = 'page' AND p.id = l.entity_id AND p.deleted_at IS NULL
+         LEFT JOIN comments c ON l.entity_type = 'comment' AND c.id = l.entity_id AND c.deleted_at IS NULL
+         LEFT JOIN issues ci ON ci.id = c.issue_id AND ci.deleted_at IS NULL
+         LEFT JOIN pages cp ON cp.id = c.page_id AND cp.deleted_at IS NULL
          WHERE ?1 IN (i.project_id, p.project_id, ci.project_id, cp.project_id)
          ORDER BY a.id"
     ))?;
@@ -519,11 +519,11 @@ fn project_link_exists(filter_entity_type: bool) -> String {
         "EXISTS (
              SELECT 1
              FROM attachment_links l
-             LEFT JOIN issues   i   ON l.entity_type = 'issue'   AND i.id   = l.entity_id
-             LEFT JOIN pages    pg  ON l.entity_type = 'page'    AND pg.id  = l.entity_id
-             LEFT JOIN comments c   ON l.entity_type = 'comment' AND c.id   = l.entity_id
-             LEFT JOIN issues   ci  ON ci.id  = c.issue_id
-             LEFT JOIN pages    cpg ON cpg.id = c.page_id
+             LEFT JOIN issues   i   ON l.entity_type = 'issue'   AND i.id   = l.entity_id AND i.deleted_at IS NULL
+             LEFT JOIN pages    pg  ON l.entity_type = 'page'    AND pg.id  = l.entity_id AND pg.deleted_at IS NULL
+             LEFT JOIN comments c   ON l.entity_type = 'comment' AND c.id   = l.entity_id AND c.deleted_at IS NULL
+             LEFT JOIN issues   ci  ON ci.id  = c.issue_id AND ci.deleted_at IS NULL
+             LEFT JOIN pages    cpg ON cpg.id = c.page_id AND cpg.deleted_at IS NULL
              WHERE l.attachment_id = a.id
                {entity_clause}
                AND :project_id IN (i.project_id, pg.project_id, ci.project_id, cpg.project_id)
@@ -708,14 +708,14 @@ pub fn linked_entities_in_project(
                 cpp.identifier, cpg.sequence, cpg.title,
                 pg.id, cpg.id
          FROM attachment_links l
-         LEFT JOIN issues   i   ON l.entity_type = 'issue'   AND i.id   = l.entity_id
+         LEFT JOIN issues   i   ON l.entity_type = 'issue'   AND i.id   = l.entity_id AND i.deleted_at IS NULL
          LEFT JOIN projects pi  ON pi.id  = i.project_id
-         LEFT JOIN pages    pg  ON l.entity_type = 'page'    AND pg.id  = l.entity_id
+         LEFT JOIN pages    pg  ON l.entity_type = 'page'    AND pg.id  = l.entity_id AND pg.deleted_at IS NULL
          LEFT JOIN projects pp  ON pp.id  = pg.project_id
-         LEFT JOIN comments c   ON l.entity_type = 'comment' AND c.id   = l.entity_id
-         LEFT JOIN issues   ci  ON ci.id  = c.issue_id
+         LEFT JOIN comments c   ON l.entity_type = 'comment' AND c.id   = l.entity_id AND c.deleted_at IS NULL
+         LEFT JOIN issues   ci  ON ci.id  = c.issue_id AND ci.deleted_at IS NULL
          LEFT JOIN projects cip ON cip.id = ci.project_id
-         LEFT JOIN pages    cpg ON cpg.id = c.page_id
+         LEFT JOIN pages    cpg ON cpg.id = c.page_id AND cpg.deleted_at IS NULL
          LEFT JOIN projects cpp ON cpp.id = cpg.project_id
          WHERE l.attachment_id IN ({id_list})
            AND ?1 IN (i.project_id, pg.project_id, ci.project_id, cpg.project_id)
@@ -1625,7 +1625,22 @@ mod tests {
             1
         );
 
+        // LIF-438: a soft delete leaves the link alone on purpose — the issue
+        // can come back, and an orphan sweep in the meantime would delete the
+        // blob out from under a restore. Only the physical purge fires the
+        // foreign-key cascade below.
         queries::delete_issue(&conn, issue).unwrap();
+        assert_eq!(
+            list_for_entity(&conn, AttachmentEntity::Issue, issue)
+                .unwrap()
+                .len(),
+            1,
+            "a tombstoned issue keeps its attachment links"
+        );
+        assert!(find_orphans(&conn, -1).unwrap().is_empty());
+
+        conn.execute("DELETE FROM issues WHERE id = ?1", params![issue])
+            .unwrap();
         // Trigger drops the link; the attachment row itself survives (GC's job).
         assert!(
             list_for_entity(&conn, AttachmentEntity::Issue, issue)

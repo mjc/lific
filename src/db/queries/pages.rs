@@ -3,7 +3,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use crate::db::models::*;
 use crate::error::LificError;
 
-use super::unescape_text;
+use super::{TOMBSTONE_NOW, unescape_text};
 
 fn page_from_row(row: &rusqlite::Row) -> rusqlite::Result<Page> {
     let project_id: Option<i64> = row.get(1)?;
@@ -135,7 +135,8 @@ pub fn list_pages_page(
          FROM pages pg
          LEFT JOIN projects p ON p.id = pg.project_id",
     );
-    let mut conditions: Vec<String> = Vec::new();
+    // LIF-438: tombstones keep their row for delta sync; reads are live-only.
+    let mut conditions: Vec<String> = vec!["pg.deleted_at IS NULL".to_string()];
     let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
     match (project_id, folder_id) {
@@ -230,7 +231,7 @@ pub fn list_pages_page(
 pub fn get_page(conn: &Connection, id: i64) -> Result<Page, LificError> {
     let mut page = conn
         .query_row(
-            &format!("{PAGE_SELECT} WHERE pg.id = ?1"),
+            &format!("{PAGE_SELECT} WHERE pg.id = ?1 AND pg.deleted_at IS NULL"),
             params![id],
             page_from_row,
         )
@@ -245,9 +246,11 @@ pub fn get_page(conn: &Connection, id: i64) -> Result<Page, LificError> {
 }
 
 pub fn page_project_id(conn: &Connection, id: i64) -> Result<Option<i64>, LificError> {
-    conn.query_row("SELECT project_id FROM pages WHERE id = ?1", [id], |row| {
-        row.get(0)
-    })
+    conn.query_row(
+        "SELECT project_id FROM pages WHERE id = ?1 AND deleted_at IS NULL",
+        [id],
+        |row| row.get(0),
+    )
     .map_err(|error| match error {
         rusqlite::Error::QueryReturnedNoRows => {
             LificError::NotFound(format!("page {id} not found"))
@@ -264,7 +267,7 @@ pub fn resolve_page_identifier(conn: &Connection, identifier: &str) -> Result<i6
                 LificError::BadRequest(format!("invalid page identifier: {identifier}"))
             })?;
             conn.query_row(
-                "SELECT pg.id FROM pages pg JOIN projects p ON p.id = pg.project_id WHERE p.identifier = ?1 AND pg.sequence = ?2",
+                "SELECT pg.id FROM pages pg JOIN projects p ON p.id = pg.project_id WHERE p.identifier = ?1 AND pg.sequence = ?2 AND pg.deleted_at IS NULL",
                 params![project_ident, sequence], |row| row.get(0),
             ).map_err(|e| match e { rusqlite::Error::QueryReturnedNoRows => LificError::NotFound(format!("page {identifier} not found")), _ => e.into() })
         }
@@ -273,7 +276,7 @@ pub fn resolve_page_identifier(conn: &Connection, identifier: &str) -> Result<i6
                 LificError::BadRequest(format!("invalid page identifier: {identifier}"))
             })?;
             conn.query_row(
-                "SELECT id FROM pages WHERE project_id IS NULL AND sequence = ?1",
+                "SELECT id FROM pages WHERE project_id IS NULL AND sequence = ?1 AND deleted_at IS NULL",
                 params![sequence],
                 |row| row.get(0),
             )
@@ -321,6 +324,8 @@ fn validate_page_folder(
 
 pub fn create_page(conn: &Connection, input: &CreatePage) -> Result<Page, LificError> {
     validate_page_folder(conn, input.project_id, input.folder_id)?;
+    // Counts tombstones on purpose (LIF-438): a soft-deleted page still owns
+    // its `PROJ-DOC-n` identifier and would collide on restore if reissued.
     let next_seq: i64 = if let Some(pid) = input.project_id {
         conn.query_row(
             "SELECT COALESCE(MAX(sequence), 0) + 1 FROM pages WHERE project_id = ?1",
@@ -433,12 +438,53 @@ pub fn update_page(conn: &Connection, id: i64, input: &UpdatePage) -> Result<Pag
     get_page(conn, id)
 }
 
+/// Tombstone a page (LIF-438). See [`super::delete_issue`] for the rationale;
+/// migration 047's cascade tombstones the page's live comments in the same
+/// statement, carrying the page's exact `deleted_at`.
 pub fn delete_page(conn: &Connection, id: i64) -> Result<(), LificError> {
-    let changed = conn.execute("DELETE FROM pages WHERE id = ?1", params![id])?;
+    let changed = conn.execute(
+        &format!(
+            "UPDATE pages SET deleted_at = {TOMBSTONE_NOW} \
+             WHERE id = ?1 AND deleted_at IS NULL"
+        ),
+        params![id],
+    )?;
     if changed == 0 {
         return Err(LificError::NotFound(format!("page {id} not found")));
     }
     Ok(())
+}
+
+/// Bring a tombstoned page back, together with the comments that went down
+/// with it (LIF-438).
+pub fn restore_page(conn: &Connection, id: i64) -> Result<Page, LificError> {
+    let changed = conn.execute(
+        "UPDATE pages SET deleted_at = NULL
+          WHERE id = ?1 AND deleted_at IS NOT NULL",
+        params![id],
+    )?;
+    if changed == 0 {
+        return Err(LificError::NotFound(format!("deleted page {id} not found")));
+    }
+    get_page(conn, id)
+}
+
+/// The project a tombstoned page belongs to (`None` for a workspace page).
+///
+/// Restore authorizes against this before the page is visible to
+/// [`get_page`], so it deliberately looks past the tombstone filter.
+pub fn deleted_page_project_id(conn: &Connection, id: i64) -> Result<Option<i64>, LificError> {
+    conn.query_row(
+        "SELECT project_id FROM pages WHERE id = ?1 AND deleted_at IS NOT NULL",
+        [id],
+        |row| row.get(0),
+    )
+    .map_err(|error| match error {
+        rusqlite::Error::QueryReturnedNoRows => {
+            LificError::NotFound(format!("deleted page {id} not found"))
+        }
+        other => other.into(),
+    })
 }
 
 #[cfg(test)]
@@ -1042,15 +1088,24 @@ mod tests {
         )
         .unwrap();
 
-        delete_page(&conn, page.id).unwrap();
-        let count: i64 = conn
-            .query_row(
+        let label_rows = |conn: &rusqlite::Connection| -> i64 {
+            conn.query_row(
                 "SELECT COUNT(*) FROM page_labels WHERE page_id = ?1",
                 params![page.id],
                 |row| row.get(0),
             )
+            .unwrap()
+        };
+
+        // LIF-438: a soft delete keeps the join rows, so a restore brings the
+        // page back with its labels intact. The FK cascade below is what the
+        // retention purge eventually fires.
+        delete_page(&conn, page.id).unwrap();
+        assert_eq!(label_rows(&conn), 1);
+
+        conn.execute("DELETE FROM pages WHERE id = ?1", params![page.id])
             .unwrap();
-        assert_eq!(count, 0);
+        assert_eq!(label_rows(&conn), 0);
     }
 
     // ── LIF-112: page status (lifecycle) ─────────────────────

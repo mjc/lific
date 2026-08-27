@@ -3,7 +3,7 @@ use rusqlite::{Connection, params};
 use crate::db::models::{AttachmentEntity, Comment, CommentActor};
 use crate::error::LificError;
 
-use super::unescape_text;
+use super::{TOMBSTONE_NOW, unescape_text};
 
 /// Comment bodies are intentionally much smaller than the transport-wide JSON
 /// ceiling. This bounds persistent attacker-controlled history and the largest
@@ -119,7 +119,7 @@ pub fn create_comment(
     };
     let exists: bool = conn
         .query_row(
-            &format!("SELECT COUNT(*) > 0 FROM {table} WHERE id = ?1"),
+            &format!("SELECT COUNT(*) > 0 FROM {table} WHERE id = ?1 AND deleted_at IS NULL"),
             params![id],
             |row| row.get(0),
         )
@@ -149,7 +149,7 @@ pub fn get_comment(conn: &Connection, id: i64) -> Result<Comment, LificError> {
                 c.content, c.created_at, c.updated_at, c.seq
          FROM comments c
          JOIN users u ON u.id = c.user_id
-         WHERE c.id = ?1",
+         WHERE c.id = ?1 AND c.deleted_at IS NULL",
         params![id],
         row_to_comment,
     )
@@ -195,7 +195,8 @@ pub fn count_comments(
             &format!(
                 "SELECT COUNT(*) FROM comments c
                  JOIN users u ON u.id = c.user_id
-                 WHERE {parent_col} = ?1 AND u.username = ?2 COLLATE NOCASE"
+                 WHERE {parent_col} = ?1 AND c.deleted_at IS NULL
+                   AND u.username = ?2 COLLATE NOCASE"
             ),
             params![id, username],
             |row| row.get(0),
@@ -203,7 +204,10 @@ pub fn count_comments(
         .map_err(Into::into)
     } else {
         conn.query_row(
-            &format!("SELECT COUNT(*) FROM comments c WHERE {parent_col} = ?1"),
+            &format!(
+                "SELECT COUNT(*) FROM comments c
+                 WHERE {parent_col} = ?1 AND c.deleted_at IS NULL"
+            ),
             params![id],
             |row| row.get(0),
         )
@@ -320,7 +324,7 @@ pub fn list_comments_keyset(
                 c.content, c.created_at, c.updated_at, c.seq
          FROM comments c
          JOIN users u ON u.id = c.user_id
-         WHERE {parent_col} = ?1"
+         WHERE {parent_col} = ?1 AND c.deleted_at IS NULL"
     );
     let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(id)];
     if let Some(username) = author {
@@ -375,7 +379,8 @@ pub fn update_comment(conn: &Connection, id: i64, content: &str) -> Result<Comme
     validate_comment_content(&content)?;
 
     let changed = conn.execute(
-        "UPDATE comments SET content = ?1, updated_at = datetime('now') WHERE id = ?2",
+        "UPDATE comments SET content = ?1, updated_at = datetime('now')
+          WHERE id = ?2 AND deleted_at IS NULL",
         params![content, id],
     )?;
 
@@ -386,9 +391,21 @@ pub fn update_comment(conn: &Connection, id: i64, content: &str) -> Result<Comme
     get_comment(conn, id)
 }
 
-/// Delete a comment. Parent-agnostic.
+/// Tombstone a comment (LIF-438). Parent-agnostic.
+///
+/// The row stays, carrying `deleted_at` and a fresh `seq`, so a replica can
+/// learn the comment went away. A comment deleted this way keeps its own
+/// timestamp, which is what makes it survive a later restore of its parent:
+/// the restore cascade only revives children whose `deleted_at` matches the
+/// parent's.
 pub fn delete_comment(conn: &Connection, id: i64) -> Result<(), LificError> {
-    let changed = conn.execute("DELETE FROM comments WHERE id = ?1", params![id])?;
+    let changed = conn.execute(
+        &format!(
+            "UPDATE comments SET deleted_at = {TOMBSTONE_NOW} \
+             WHERE id = ?1 AND deleted_at IS NULL"
+        ),
+        params![id],
+    )?;
     if changed == 0 {
         return Err(LificError::NotFound(format!("comment {id} not found")));
     }
@@ -1258,6 +1275,164 @@ mod tests {
         queries::delete_page(&conn, page_id).unwrap();
 
         assert!(get_comment(&conn, c.id).is_err());
+    }
+
+    // ── LIF-438: comment tombstones and the parent cascade ───
+
+    fn raw_comment(conn: &Connection, id: i64) -> (Option<String>, i64) {
+        conn.query_row(
+            "SELECT deleted_at, seq FROM comments WHERE id = ?1",
+            params![id],
+            |row| Ok((row.get(0)?, row.get::<_, Option<i64>>(1)?.unwrap_or(0))),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn deleting_a_comment_leaves_a_tombstone_with_a_fresh_seq() {
+        let (pool, issue_id, _, user_id) = setup();
+        let conn = pool.write().unwrap();
+        let c = create_comment(&conn, CommentParent::Issue(issue_id), user_id, "Bye").unwrap();
+        let (_, before) = raw_comment(&conn, c.id);
+
+        delete_comment(&conn, c.id).unwrap();
+
+        let (deleted_at, seq) = raw_comment(&conn, c.id);
+        assert!(deleted_at.is_some());
+        assert!(seq > before);
+        assert_eq!(count_comments(&conn, CommentParent::Issue(issue_id), None).unwrap(), 0);
+        assert!(
+            list_comments(&conn, CommentParent::Issue(issue_id), None, None)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(update_comment(&conn, c.id, "resurrect me").is_err());
+    }
+
+    #[test]
+    fn deleting_an_issue_tombstones_its_comments_with_their_own_seqs() {
+        let (pool, issue_id, _, user_id) = setup();
+        let conn = pool.write().unwrap();
+        let first =
+            create_comment(&conn, CommentParent::Issue(issue_id), user_id, "One").unwrap();
+        let second =
+            create_comment(&conn, CommentParent::Issue(issue_id), user_id, "Two").unwrap();
+        let (_, first_seq) = raw_comment(&conn, first.id);
+        let (_, second_seq) = raw_comment(&conn, second.id);
+
+        queries::delete_issue(&conn, issue_id).unwrap();
+
+        let (first_deleted, first_after) = raw_comment(&conn, first.id);
+        let (second_deleted, second_after) = raw_comment(&conn, second.id);
+        assert!(first_deleted.is_some() && second_deleted.is_some());
+        assert!(first_after > first_seq);
+        assert!(second_after > second_seq);
+        // The cascade copies the parent's exact timestamp; that shared value is
+        // what makes the restore below selective.
+        assert_eq!(first_deleted, second_deleted);
+        let issue_deleted: Option<String> = conn
+            .query_row(
+                "SELECT deleted_at FROM issues WHERE id = ?1",
+                params![issue_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(first_deleted, issue_deleted);
+    }
+
+    #[test]
+    fn restoring_an_issue_revives_only_the_comments_that_went_with_it() {
+        let (pool, issue_id, _, user_id) = setup();
+        let conn = pool.write().unwrap();
+        let earlier =
+            create_comment(&conn, CommentParent::Issue(issue_id), user_id, "Retracted").unwrap();
+        let cascaded =
+            create_comment(&conn, CommentParent::Issue(issue_id), user_id, "Innocent").unwrap();
+
+        // Deleted on its own first, so it carries a different `deleted_at`.
+        // Backdated a day so the test asserts the cascade's *matching rule*
+        // rather than how many milliseconds apart two statements happen to run.
+        delete_comment(&conn, earlier.id).unwrap();
+        conn.execute(
+            "UPDATE comments SET deleted_at = datetime(deleted_at, '-1 day') WHERE id = ?1",
+            params![earlier.id],
+        )
+        .unwrap();
+        queries::delete_issue(&conn, issue_id).unwrap();
+        queries::restore_issue(&conn, issue_id).unwrap();
+
+        assert!(
+            get_comment(&conn, cascaded.id).is_ok(),
+            "a comment that went down with the issue comes back with it"
+        );
+        assert!(
+            get_comment(&conn, earlier.id).is_err(),
+            "a comment deleted beforehand stays deleted"
+        );
+        let live = list_comments(&conn, CommentParent::Issue(issue_id), None, None).unwrap();
+        assert_eq!(live.len(), 1);
+        assert_eq!(live[0].content, "Innocent");
+    }
+
+    #[test]
+    fn restoring_a_page_revives_its_cascaded_comments() {
+        let (pool, _, page_id, user_id) = setup();
+        let conn = pool.write().unwrap();
+        let c = create_comment(&conn, CommentParent::Page(page_id), user_id, "Doc note").unwrap();
+        queries::delete_page(&conn, page_id).unwrap();
+        assert!(get_comment(&conn, c.id).is_err());
+
+        queries::restore_page(&conn, page_id).unwrap();
+        assert!(get_comment(&conn, c.id).is_ok());
+    }
+
+    #[test]
+    fn a_deleted_issue_accepts_no_new_comments() {
+        let (pool, issue_id, page_id, user_id) = setup();
+        let conn = pool.write().unwrap();
+        queries::delete_issue(&conn, issue_id).unwrap();
+        queries::delete_page(&conn, page_id).unwrap();
+
+        let issue_err = create_comment(&conn, CommentParent::Issue(issue_id), user_id, "Late")
+            .unwrap_err()
+            .to_string();
+        assert!(issue_err.contains("not found"), "{issue_err}");
+        let page_err = create_comment(&conn, CommentParent::Page(page_id), user_id, "Late")
+            .unwrap_err()
+            .to_string();
+        assert!(page_err.contains("not found"), "{page_err}");
+    }
+
+    #[test]
+    fn comment_delete_and_restore_are_audited_once_each() {
+        let (pool, issue_id, _, user_id) = setup();
+        let conn = pool.write().unwrap();
+        let c = create_comment(&conn, CommentParent::Issue(issue_id), user_id, "Logged").unwrap();
+
+        delete_comment(&conn, c.id).unwrap();
+        conn.execute(
+            "UPDATE comments SET deleted_at = datetime(deleted_at, '-1 day') WHERE id = ?1",
+            params![c.id],
+        )
+        .unwrap();
+        queries::delete_issue(&conn, issue_id).unwrap();
+        queries::restore_issue(&conn, issue_id).unwrap();
+
+        let actions: Vec<String> = conn
+            .prepare(
+                "SELECT action FROM audit_log
+                  WHERE entity_type = 'comment' AND entity_id = ?1 ORDER BY id",
+            )
+            .unwrap()
+            .query_map(params![c.id], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            actions,
+            vec!["create", "delete"],
+            "the parent's restore must not log a 'restored' for a comment it did not revive"
+        );
     }
 
     #[test]

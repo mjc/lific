@@ -52,12 +52,14 @@ pub fn project_agent_stats(
              SELECT i.project_id, COUNT(*) AS count
              FROM issues i
              WHERE i.status NOT IN ('done', 'cancelled')
+               AND i.deleted_at IS NULL
                AND NOT EXISTS (
                    SELECT 1 FROM issue_relations ir
                    JOIN issues blocker ON blocker.id = ir.source_id
                    WHERE ir.target_id = i.id
                      AND ir.relation_type = 'blocks'
                      AND blocker.status != 'done'
+                     AND blocker.deleted_at IS NULL
                )
              GROUP BY i.project_id
          ),
@@ -68,9 +70,10 @@ pub fn project_agent_stats(
              GROUP BY project_id
          ),
          activity AS (
-             SELECT project_id, updated_at FROM issues
+             SELECT project_id, updated_at FROM issues WHERE deleted_at IS NULL
              UNION ALL
-             SELECT project_id, updated_at FROM pages WHERE project_id IS NOT NULL
+             SELECT project_id, updated_at FROM pages
+              WHERE project_id IS NOT NULL AND deleted_at IS NULL
              UNION ALL
              SELECT project_id, updated_at FROM plans
          ),

@@ -523,6 +523,7 @@ fn search_literal_issues(
          JOIN projects p ON p.id = i.project_id
          WHERE (instr(lower(i.title), lower(?1)) > 0
             OR instr(lower(i.description), lower(?1)) > 0)
+           AND i.deleted_at IS NULL
            AND (?2 IS NULL OR i.project_id = ?2)
            AND {visibility}",
     ))?;
@@ -567,6 +568,7 @@ fn search_literal_pages(
          LEFT JOIN projects p ON p.id = pg.project_id
          WHERE (instr(lower(pg.title), lower(?1)) > 0
             OR instr(lower(pg.content), lower(?1)) > 0)
+           AND pg.deleted_at IS NULL
            AND (?2 IS NULL OR pg.project_id = ?2)
            AND {visibility}",
     ))?;
@@ -617,6 +619,7 @@ fn search_literal_comments(
          LEFT JOIN projects cip ON cip.id = ci.project_id
          LEFT JOIN projects cpp ON cpp.id = cpg.project_id
          WHERE instr(lower(c.content), lower(?1)) > 0
+           AND c.deleted_at IS NULL
            AND (?2 IS NULL OR COALESCE(ci.project_id, cpg.project_id) = ?2)
            AND {visibility}",
     ))?;
@@ -1193,6 +1196,131 @@ mod tests {
         .unwrap();
         assert_eq!(pages_only.len(), 1);
         assert_eq!(pages_only[0].result_type, "page");
+    }
+
+    // ── LIF-438: tombstones leave the index, restores rejoin it ──
+
+    /// Both search paths in one place. The FTS path and the `literal_*` scans
+    /// answer the same question through completely different SQL, and a
+    /// tombstone has to disappear from both: the first because migration 047's
+    /// update triggers stop re-indexing a deleted row, the second because the
+    /// scans filter `deleted_at IS NULL` themselves.
+    fn both_paths(conn: &rusqlite::Connection, needle: &str) -> (usize, usize) {
+        let fts = search(
+            conn,
+            &SearchQuery {
+                query: needle.into(),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .len();
+        let literal = search(
+            conn,
+            &SearchQuery {
+                query: needle.into(),
+                mode: Some("literal".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .len();
+        (fts, literal)
+    }
+
+    #[test]
+    fn deleting_an_issue_removes_it_from_search_and_restoring_returns_it() {
+        let pool = test_db();
+        let conn = pool.write().unwrap();
+        let pid = seed_project(&conn, "TST");
+        let id = seed_issue(&conn, pid, "quenelle deployment plan");
+        assert_eq!(both_paths(&conn, "quenelle"), (1, 1));
+
+        issues::delete_issue(&conn, id).unwrap();
+        assert_eq!(both_paths(&conn, "quenelle"), (0, 0));
+        let indexed: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM search_index WHERE entity_type = 'issue' AND entity_id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(indexed, 0, "the tombstone left the index too");
+
+        issues::restore_issue(&conn, id).unwrap();
+        assert_eq!(both_paths(&conn, "quenelle"), (1, 1));
+    }
+
+    #[test]
+    fn deleting_a_page_removes_it_from_search_and_restoring_returns_it() {
+        let pool = test_db();
+        let conn = pool.write().unwrap();
+        let pid = seed_project(&conn, "TST");
+        let page = pages::create_page(
+            &conn,
+            &CreatePage {
+                project_id: Some(pid),
+                title: "quenelle design notes".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(both_paths(&conn, "quenelle"), (1, 1));
+
+        pages::delete_page(&conn, page.id).unwrap();
+        assert_eq!(both_paths(&conn, "quenelle"), (0, 0));
+
+        pages::restore_page(&conn, page.id).unwrap();
+        assert_eq!(both_paths(&conn, "quenelle"), (1, 1));
+    }
+
+    /// A comment tombstoned by its parent's cascade has to leave the index in
+    /// the same transaction, and come back when the parent does.
+    #[test]
+    fn a_cascaded_comment_leaves_and_rejoins_the_index_with_its_issue() {
+        let pool = test_db();
+        let conn = pool.write().unwrap();
+        let pid = seed_project(&conn, "TST");
+        let user = seed_user(&conn, "ada");
+        let issue = seed_issue(&conn, pid, "Host issue");
+        comments::create_comment(
+            &conn,
+            CommentParent::Issue(issue),
+            user,
+            "the quenelle discussion",
+        )
+        .unwrap();
+        assert_eq!(both_paths(&conn, "quenelle"), (1, 1));
+
+        issues::delete_issue(&conn, issue).unwrap();
+        assert_eq!(both_paths(&conn, "quenelle"), (0, 0));
+
+        issues::restore_issue(&conn, issue).unwrap();
+        assert_eq!(both_paths(&conn, "quenelle"), (1, 1));
+    }
+
+    /// Editing a tombstoned row must not put it back in the index. The FTS
+    /// update trigger re-indexes on every update, so the guard has to be on the
+    /// row's state, not on the operation.
+    #[test]
+    fn editing_a_tombstoned_comment_does_not_resurrect_its_index_row() {
+        let pool = test_db();
+        let conn = pool.write().unwrap();
+        let pid = seed_project(&conn, "TST");
+        let user = seed_user(&conn, "ada");
+        let issue = seed_issue(&conn, pid, "Host issue");
+        let comment =
+            comments::create_comment(&conn, CommentParent::Issue(issue), user, "quenelle").unwrap();
+        comments::delete_comment(&conn, comment.id).unwrap();
+
+        // Straight to SQL: the query layer refuses to edit a tombstone, and the
+        // point here is that the trigger holds even if something else does.
+        conn.execute(
+            "UPDATE comments SET content = 'quenelle again' WHERE id = ?1",
+            params![comment.id],
+        )
+        .unwrap();
+        assert_eq!(both_paths(&conn, "quenelle"), (0, 0));
     }
 
     #[test]

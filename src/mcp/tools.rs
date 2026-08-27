@@ -5603,6 +5603,60 @@ mod tests {
         assert!(get.starts_with("Error"), "got: {get}");
     }
 
+    /// LIF-438: an MCP delete is a soft delete now, and the agent-facing
+    /// surface must not leak the tombstone. Every read an agent has stays
+    /// live-only; the row underneath keeps its `deleted_at` for sync.
+    #[test]
+    fn mcp_delete_hides_the_issue_from_every_agent_read() {
+        let (m, _guard) = mcp();
+        let _ag = first_admin_guard();
+        seed_project(&m, "Test", "SFT");
+        seed_issue(&m, "SFT", "Quenelle handling");
+
+        m.delete(Parameters(DeleteInput {
+            resource_type: "issue".into(),
+            identifier: "SFT-1".into(),
+            project: None,
+        }));
+
+        let get = m.get_issue(Parameters(GetIssueInput {
+            identifier: "SFT-1".into(),
+            ..Default::default()
+        }));
+        assert!(get.contains("not found"), "got: {get}");
+
+        let listed = m.list_issues(Parameters(ListIssuesInput {
+            project: "SFT".into(),
+            ..Default::default()
+        }));
+        assert!(
+            !listed.contains("SFT-1"),
+            "a tombstone must not appear in list_issues: {listed}"
+        );
+
+        let found = m.search(Parameters(SearchInput {
+            query: "Quenelle".into(),
+            ..Default::default()
+        }));
+        assert!(
+            !found.contains("SFT-1"),
+            "a tombstone must not appear in search: {found}"
+        );
+
+        // But the row is still there, tombstoned, with a seq of its own.
+        let (deleted_at, seq): (Option<String>, Option<i64>) = m
+            .read(|conn| {
+                Ok(conn.query_row(
+                    "SELECT deleted_at, seq FROM issues WHERE sequence = 1",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?)
+            })
+            .unwrap();
+        assert!(deleted_at.is_some(), "the row survives for delta sync");
+        assert!(seq.unwrap_or(0) > 0);
+    }
+
     #[tokio::test]
     async fn issue_delete_keeps_the_deleted_resource_reference_plain() {
         let (m, _guard) = mcp();
@@ -6191,6 +6245,48 @@ mod tests {
     }
 
     // ── pages ──
+
+    /// LIF-438: the page half of `mcp_delete_hides_the_issue_from_every_agent_read`.
+    #[test]
+    fn mcp_delete_hides_the_page_from_every_agent_read() {
+        let (m, _guard) = mcp();
+        let _ag = first_admin_guard();
+        seed_project(&m, "Test", "SFP");
+        m.create_page(Parameters(CreatePageInput {
+            project: Some("SFP".into()),
+            title: "Quenelle architecture".into(),
+            content: Some("body".into()),
+            folder: None,
+            status: None,
+            labels: None,
+        }));
+
+        m.delete(Parameters(DeleteInput {
+            resource_type: "page".into(),
+            identifier: "SFP-DOC-1".into(),
+            project: None,
+        }));
+
+        let get = m.get_page(Parameters(GetPageInput {
+            identifier: "SFP-DOC-1".into(),
+        }));
+        assert!(get.contains("not found"), "got: {get}");
+
+        let found = m.search(Parameters(SearchInput {
+            query: "Quenelle".into(),
+            ..Default::default()
+        }));
+        assert!(!found.contains("SFP-DOC-1"), "got: {found}");
+
+        let deleted_at: Option<String> = m
+            .read(|conn| {
+                Ok(conn.query_row("SELECT deleted_at FROM pages WHERE sequence = 1", [], |row| {
+                    row.get(0)
+                })?)
+            })
+            .unwrap();
+        assert!(deleted_at.is_some(), "the row survives for delta sync");
+    }
 
     #[test]
     fn page_create_get_update() {

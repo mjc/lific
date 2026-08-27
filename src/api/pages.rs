@@ -203,6 +203,27 @@ pub(super) async fn delete_page_handler(
     Ok(Json(serde_json::json!({"deleted": true})))
 }
 
+/// Undo a soft delete (LIF-438), gated exactly like [`delete_page_handler`].
+///
+/// The page is invisible to `get_page` while tombstoned, so the project the
+/// gate needs comes from `deleted_page_project_id`.
+pub(super) async fn restore_page_handler(
+    State(db): State<DbPool>,
+    Extension(realtime): Extension<RealtimeHub>,
+    Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
+    Path(id): Path<i64>,
+) -> Result<Json<Page>, LificError> {
+    let project_id = with_read(&db, |conn| {
+        crate::db::queries::deleted_page_project_id(conn, id)
+    })?;
+    require_page_role(&db, &identity, project_id, Role::Maintainer)?;
+    let page = with_write(&db, |conn| crate::db::queries::restore_page(conn, id))?;
+    if let Some(project_id) = page.project_id {
+        realtime.send(RealtimeEvent::ProjectUpdated { project_id });
+    }
+    Ok(Json(page))
+}
+
 #[cfg(test)]
 mod tests {
     use crate::api::test_helpers::*;
@@ -226,6 +247,81 @@ mod tests {
             .await;
         }
         project_id
+    }
+
+    // ── LIF-438: delete is a tombstone, restore undoes it ────
+
+    #[tokio::test]
+    async fn deleted_page_is_gone_until_it_is_restored() {
+        let app = test_app();
+        let pid = seed_project_with_labels(&app).await;
+        let created = parse_json(
+            json_post(
+                &app,
+                "/api/pages",
+                serde_json::json!({
+                    "project_id": pid,
+                    "title": "Architecture",
+                    "content": "quenelle notes",
+                    "labels": ["design"],
+                }),
+            )
+            .await,
+        )
+        .await;
+        let id = created["id"].as_i64().unwrap();
+
+        assert_eq!(
+            json_delete(&app, &format!("/api/pages/{id}")).await.status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            json_get(&app, &format!("/api/pages/{id}")).await.status(),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            json_get(&app, "/api/pages/resolve/TST-DOC-1").await.status(),
+            StatusCode::NOT_FOUND
+        );
+        let listed: Vec<serde_json::Value> = serde_json::from_value(
+            parse_json(json_get(&app, &format!("/api/pages?project_id={pid}")).await).await,
+        )
+        .unwrap();
+        assert!(listed.is_empty());
+
+        let resp = json_post(&app, &format!("/api/pages/{id}/restore"), serde_json::json!({})).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let restored = parse_json(resp).await;
+        assert_eq!(restored["identifier"], "TST-DOC-1");
+        // Labels survive a soft delete, so a restore is a real undo rather than
+        // a stripped-down copy of what was deleted.
+        assert_eq!(restored["labels"], serde_json::json!(["design"]));
+        assert_eq!(
+            json_get(&app, &format!("/api/pages/{id}")).await.status(),
+            StatusCode::OK
+        );
+    }
+
+    #[tokio::test]
+    async fn restoring_a_live_page_is_a_404() {
+        let app = test_app();
+        let pid = seed_project_with_labels(&app).await;
+        let created = parse_json(
+            json_post(
+                &app,
+                "/api/pages",
+                serde_json::json!({"project_id": pid, "title": "Alive"}),
+            )
+            .await,
+        )
+        .await;
+        let id = created["id"].as_i64().unwrap();
+        assert_eq!(
+            json_post(&app, &format!("/api/pages/{id}/restore"), serde_json::json!({}))
+                .await
+                .status(),
+            StatusCode::NOT_FOUND
+        );
     }
 
     #[tokio::test]

@@ -590,6 +590,10 @@ pub async fn run(cfg: &Config) -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
+    // Empty the trash on a schedule (LIF-438). A delete is a tombstone now, so
+    // something has to collect them once they are past the recovery window.
+    crate::retention::start_trash_purge_task(pool.clone(), cfg.retention.trash_days);
+
     // Sweep abandoned (unlinked) attachments hourly. Share the store with the
     // request router so its operation lock covers both upload and GC paths.
     let attachment_store = storage::AttachmentStore::from_db_path(&cfg.database.path);
