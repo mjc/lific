@@ -795,7 +795,7 @@ mod tests {
         .unwrap();
         let attachment = queries::attachments::create_attachment(
             &conn,
-            "foreign",
+            &crate::storage::AttachmentStore::hash_bytes(b"foreign"),
             "foreign.txt",
             "text/plain",
             7,

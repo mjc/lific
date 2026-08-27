@@ -6414,8 +6414,9 @@ mod tests {
         let attachment_id = m
             .write(|conn| {
                 use crate::db::queries::attachments as att;
+                let sha = crate::storage::AttachmentStore::hash_bytes(b"sha");
                 let attachment =
-                    att::create_attachment(conn, "sha", "server.log", "text/plain", 64, None)?;
+                    att::create_attachment(conn, &sha, "server.log", "text/plain", 64, None)?;
                 att::link_attachment(
                     conn,
                     attachment.id,
@@ -7080,9 +7081,10 @@ mod tests {
     /// concern; all the link table needs is a real attachment id to point at.
     fn seed_attachment(m: &LificMcp, name: &str) -> i64 {
         let conn = m.db.write().unwrap();
+        let sha = crate::storage::AttachmentStore::hash_bytes(name.as_bytes());
         let attachment = crate::db::queries::attachments::create_attachment(
             &conn,
-            &format!("sha-{name}"),
+            &sha,
             name,
             "image/png",
             3,

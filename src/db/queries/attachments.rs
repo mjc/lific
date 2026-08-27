@@ -1160,6 +1160,10 @@ mod tests {
     use crate::db::models::CreateProject;
     use crate::db::{self, queries};
 
+    fn test_sha(label: &str) -> String {
+        crate::storage::AttachmentStore::hash_bytes(label.as_bytes())
+    }
+
     fn test_db() -> db::DbPool {
         db::open_memory().expect("test db")
     }
@@ -1208,13 +1212,20 @@ mod tests {
         let pool = test_db();
         let conn = pool.write().unwrap();
         let uploader = seed_user(&conn, "up");
-        let att = create_attachment(&conn, "abc123", "shot.png", "image/png", 42, Some(uploader))
-            .unwrap();
+        let att = create_attachment(
+            &conn,
+            &test_sha("abc123"),
+            "shot.png",
+            "image/png",
+            42,
+            Some(uploader),
+        )
+        .unwrap();
         assert_eq!(att.filename, "shot.png");
         assert_eq!(att.size_bytes, 42);
 
         let fetched = get_attachment(&conn, att.id).unwrap();
-        assert_eq!(fetched.sha256, "abc123");
+        assert_eq!(fetched.sha256, test_sha("abc123"));
 
         assert!(delete_attachment(&conn, att.id).unwrap());
         assert!(get_attachment(&conn, att.id).is_err());
@@ -1227,7 +1238,7 @@ mod tests {
         let uploader_id = seed_user(&conn, "uploader");
         let attachment = create_attachment(
             &conn,
-            "owned",
+            &test_sha("owned"),
             "owned.txt",
             "text/plain",
             1,
@@ -1259,7 +1270,8 @@ mod tests {
         let pool = test_db();
         let conn = pool.write().unwrap();
         let issue = seed_issue(&conn);
-        let att = create_attachment(&conn, "h1", "a.pdf", "application/pdf", 10, None).unwrap();
+        let att = create_attachment(&conn, &test_sha("h1"), "a.pdf", "application/pdf", 10, None)
+            .unwrap();
 
         assert!(
             list_for_entity(&conn, AttachmentEntity::Issue, issue)
@@ -1291,9 +1303,9 @@ mod tests {
     fn dedup_count_rows_for_sha() {
         let pool = test_db();
         let conn = pool.write().unwrap();
-        create_attachment(&conn, "same", "a.png", "image/png", 1, None).unwrap();
-        create_attachment(&conn, "same", "b.png", "image/png", 1, None).unwrap();
-        assert_eq!(count_rows_for_sha(&conn, "same").unwrap(), 2);
+        create_attachment(&conn, &test_sha("same"), "a.png", "image/png", 1, None).unwrap();
+        create_attachment(&conn, &test_sha("same"), "b.png", "image/png", 1, None).unwrap();
+        assert_eq!(count_rows_for_sha(&conn, &test_sha("same")).unwrap(), 2);
     }
 
     #[test]
@@ -1301,13 +1313,21 @@ mod tests {
         let pool = test_db();
         let conn = pool.write().unwrap();
         let issue = seed_issue(&conn);
-        let a = create_attachment(&conn, "a", "a.png", "image/png", 1, None).unwrap();
-        let b = create_attachment(&conn, "b", "b.png", "image/png", 1, None).unwrap();
-        let c = create_attachment(&conn, "c", "c.png", "image/png", 1, None).unwrap();
+        let a = create_attachment(&conn, &test_sha("a"), "a.png", "image/png", 1, None).unwrap();
+        let b = create_attachment(&conn, &test_sha("b"), "b.png", "image/png", 1, None).unwrap();
+        let c = create_attachment(&conn, &test_sha("c"), "c.png", "image/png", 1, None).unwrap();
 
         // Start linking a + b.
-        sync_entity_links(&conn, AttachmentEntity::Issue, issue, &[a.id, b.id], 0, true, Some(1))
-            .unwrap();
+        sync_entity_links(
+            &conn,
+            AttachmentEntity::Issue,
+            issue,
+            &[a.id, b.id],
+            0,
+            true,
+            Some(1),
+        )
+        .unwrap();
         let ids: Vec<i64> = list_for_entity(&conn, AttachmentEntity::Issue, issue)
             .unwrap()
             .into_iter()
@@ -1316,8 +1336,16 @@ mod tests {
         assert_eq!(ids, vec![a.id, b.id]);
 
         // Re-sync to b + c: a is unlinked, c is added.
-        sync_entity_links(&conn, AttachmentEntity::Issue, issue, &[b.id, c.id], 0, true, Some(1))
-            .unwrap();
+        sync_entity_links(
+            &conn,
+            AttachmentEntity::Issue,
+            issue,
+            &[b.id, c.id],
+            0,
+            true,
+            Some(1),
+        )
+        .unwrap();
         let mut ids: Vec<i64> = list_for_entity(&conn, AttachmentEntity::Issue, issue)
             .unwrap()
             .into_iter()
@@ -1335,12 +1363,39 @@ mod tests {
         let conn = pool.write().unwrap();
         let issue = seed_issue(&conn);
         // 99999 doesn't exist — must not create a dangling link.
-        sync_entity_links(&conn, AttachmentEntity::Issue, issue, &[99999], 0, true, Some(1))
-            .unwrap();
+        sync_entity_links(
+            &conn,
+            AttachmentEntity::Issue,
+            issue,
+            &[99999],
+            0,
+            true,
+            Some(1),
+        )
+        .unwrap();
         assert!(
             list_for_entity(&conn, AttachmentEntity::Issue, issue)
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn attachment_metadata_rejects_invalid_hash_and_mime() {
+        let pool = test_db();
+        let conn = pool.write().unwrap();
+
+        assert!(create_attachment(&conn, "../outside", "file.png", "image/png", 1, None,).is_err());
+        assert!(
+            create_attachment(
+                &conn,
+                &test_sha("valid"),
+                "file.bin",
+                "application/octet-stream",
+                1,
+                None,
+            )
+            .is_err()
         );
     }
 
@@ -1351,8 +1406,15 @@ mod tests {
         let owner = seed_user(&conn, "owner");
         let editor = seed_user(&conn, "editor");
         let issue = seed_issue(&conn);
-        let att = create_attachment(&conn, "foreign", "f.png", "image/png", 1, Some(owner))
-            .unwrap();
+        let att = create_attachment(
+            &conn,
+            &test_sha("foreign"),
+            "f.png",
+            "image/png",
+            1,
+            Some(owner),
+        )
+        .unwrap();
 
         sync_entity_links(
             &conn,
@@ -1364,9 +1426,11 @@ mod tests {
             Some(1),
         )
         .unwrap();
-        assert!(list_for_entity(&conn, AttachmentEntity::Issue, issue)
-            .unwrap()
-            .is_empty());
+        assert!(
+            list_for_entity(&conn, AttachmentEntity::Issue, issue)
+                .unwrap()
+                .is_empty()
+        );
 
         // Once the owner has placed the attachment in the same project, a
         // maintainer editing another entity in that project may reference it.
@@ -1422,10 +1486,24 @@ mod tests {
             let editor = seed_user(&conn, "editor");
             let issue = seed_issue(&conn);
             let project_id = queries::get_issue(&conn, issue).unwrap().project_id;
-            let mine =
-                create_attachment(&conn, "mine", "m.png", "image/png", 1, Some(editor)).unwrap();
-            let theirs =
-                create_attachment(&conn, "theirs", "t.png", "image/png", 1, Some(owner)).unwrap();
+            let mine = create_attachment(
+                &conn,
+                &test_sha("mine"),
+                "m.png",
+                "image/png",
+                1,
+                Some(editor),
+            )
+            .unwrap();
+            let theirs = create_attachment(
+                &conn,
+                &test_sha("theirs"),
+                "t.png",
+                "image/png",
+                1,
+                Some(owner),
+            )
+            .unwrap();
             (issue, project_id, editor, mine.id, theirs.id)
         };
 
@@ -1486,9 +1564,11 @@ mod tests {
         let pool = test_db();
         let conn = pool.write().unwrap();
         let issue = seed_issue(&conn);
-        let linked = create_attachment(&conn, "l", "l.png", "image/png", 1, None).unwrap();
+        let linked =
+            create_attachment(&conn, &test_sha("l"), "l.png", "image/png", 1, None).unwrap();
         link_attachment(&conn, linked.id, AttachmentEntity::Issue, issue).unwrap();
-        let orphan = create_attachment(&conn, "o", "o.png", "image/png", 1, None).unwrap();
+        let orphan =
+            create_attachment(&conn, &test_sha("o"), "o.png", "image/png", 1, None).unwrap();
 
         // Grace of 1 hour: the just-created orphan is too new to collect.
         assert!(find_orphans(&conn, 3600).unwrap().is_empty());
@@ -1505,7 +1585,7 @@ mod tests {
         let pool = test_db();
         let conn = pool.write().unwrap();
         let issue = seed_issue(&conn);
-        let att = create_attachment(&conn, "h", "a.png", "image/png", 1, None).unwrap();
+        let att = create_attachment(&conn, &test_sha("h"), "a.png", "image/png", 1, None).unwrap();
         link_attachment(&conn, att.id, AttachmentEntity::Issue, issue).unwrap();
         assert_eq!(
             list_for_entity(&conn, AttachmentEntity::Issue, issue)
@@ -1568,7 +1648,8 @@ mod tests {
         size: i64,
         uploader: Option<i64>,
     ) -> i64 {
-        let att = create_attachment(conn, sha, filename, mime, size, uploader).unwrap();
+        let sha = test_sha(sha);
+        let att = create_attachment(conn, &sha, filename, mime, size, uploader).unwrap();
         link_attachment(conn, att.id, AttachmentEntity::Issue, issue_id).unwrap();
         att.id
     }
@@ -1580,10 +1661,34 @@ mod tests {
         let project = seed_named_project(&conn, "FIL");
         let issue = seed_issue_in(&conn, project, "Bug with a screenshot");
         let uploader = seed_user(&conn, "uploader");
-        attach_to_issue(&conn, issue, "s1", "shot.png", "image/png", 100, Some(uploader));
-        attach_to_issue(&conn, issue, "s2", "trace.log", "text/plain", 250, Some(uploader));
+        attach_to_issue(
+            &conn,
+            issue,
+            "s1",
+            "shot.png",
+            "image/png",
+            100,
+            Some(uploader),
+        );
+        attach_to_issue(
+            &conn,
+            issue,
+            "s2",
+            "trace.log",
+            "text/plain",
+            250,
+            Some(uploader),
+        );
         // An unlinked upload is NOT part of the project listing.
-        create_attachment(&conn, "s3", "stray.png", "image/png", 999, Some(uploader)).unwrap();
+        create_attachment(
+            &conn,
+            &test_sha("s3"),
+            "stray.png",
+            "image/png",
+            999,
+            Some(uploader),
+        )
+        .unwrap();
 
         let page =
             list_project_attachments(&conn, project, &ProjectAttachmentQuery::default()).unwrap();
@@ -1646,8 +1751,15 @@ mod tests {
             },
         )
         .unwrap();
-        let on_page = create_attachment(&conn, "c", "c.zip", "application/zip", 30, Some(alice))
-            .unwrap();
+        let on_page = create_attachment(
+            &conn,
+            &test_sha("c"),
+            "c.zip",
+            "application/zip",
+            30,
+            Some(alice),
+        )
+        .unwrap();
         link_attachment(&conn, on_page.id, AttachmentEntity::Page, page_row.id).unwrap();
 
         let by_class = list_project_attachments(
@@ -1704,7 +1816,15 @@ mod tests {
         let conn = pool.write().unwrap();
         let project = seed_named_project(&conn, "SRT");
         let issue = seed_issue_in(&conn, project, "target");
-        attach_to_issue(&conn, issue, "a", "big.bin", "application/octet-stream", 900, None);
+        attach_to_issue(
+            &conn,
+            issue,
+            "a",
+            "big.bin",
+            "application/vnd.sqlite3",
+            900,
+            None,
+        );
         attach_to_issue(&conn, issue, "b", "mid.png", "image/png", 500, None);
         attach_to_issue(&conn, issue, "c", "small.txt", "text/plain", 10, None);
 
@@ -1810,7 +1930,15 @@ mod tests {
             "see the log",
         )
         .unwrap();
-        let att = create_attachment(&conn, "z", "log.txt", "text/plain", 5, Some(author)).unwrap();
+        let att = create_attachment(
+            &conn,
+            &test_sha("z"),
+            "log.txt",
+            "text/plain",
+            5,
+            Some(author),
+        )
+        .unwrap();
         link_attachment(&conn, att.id, AttachmentEntity::Comment, comment.id).unwrap();
 
         let page =
@@ -1841,7 +1969,8 @@ mod tests {
         let second = seed_named_project(&conn, "TWO");
         let first_issue = seed_issue_in(&conn, first, "one");
         let second_issue = seed_issue_in(&conn, second, "two");
-        let att = create_attachment(&conn, "s", "shared.png", "image/png", 1, None).unwrap();
+        let att =
+            create_attachment(&conn, &test_sha("s"), "shared.png", "image/png", 1, None).unwrap();
         link_attachment(&conn, att.id, AttachmentEntity::Issue, first_issue).unwrap();
         link_attachment(&conn, att.id, AttachmentEntity::Issue, second_issue).unwrap();
 
@@ -1854,7 +1983,8 @@ mod tests {
             Some("TWO-1")
         );
         // No link at all: nothing to point at.
-        let unlinked = create_attachment(&conn, "u", "u.png", "image/png", 1, None).unwrap();
+        let unlinked =
+            create_attachment(&conn, &test_sha("u"), "u.png", "image/png", 1, None).unwrap();
         assert!(primary_link(&conn, unlinked.id, None).unwrap().is_none());
     }
 
@@ -1877,10 +2007,25 @@ mod tests {
         // Linked: never an orphan.
         attach_to_issue(&conn, issue, "a", "used.png", "image/png", 10, Some(member));
         // Unlinked, by a member: the row this endpoint exists for.
-        let pending =
-            create_attachment(&conn, "b", "draft.png", "image/png", 20, Some(member)).unwrap();
+        let pending = create_attachment(
+            &conn,
+            &test_sha("b"),
+            "draft.png",
+            "image/png",
+            20,
+            Some(member),
+        )
+        .unwrap();
         // Unlinked, by a non-member: not this project's business.
-        create_attachment(&conn, "c", "other.png", "image/png", 30, Some(stranger)).unwrap();
+        create_attachment(
+            &conn,
+            &test_sha("c"),
+            "other.png",
+            "image/png",
+            30,
+            Some(stranger),
+        )
+        .unwrap();
 
         let orphans = list_project_orphans(&conn, project, 24 * 60 * 60).unwrap();
         assert_eq!(orphans.len(), 1);
@@ -1914,13 +2059,14 @@ mod tests {
     fn extracted_text_is_indexed_once_and_not_reoffered() {
         let pool = test_db();
         let conn = pool.write().unwrap();
-        let text = create_attachment(&conn, "t1", "notes.txt", "text/plain", 12, None).unwrap();
-        create_attachment(&conn, "i1", "shot.png", "image/png", 12, None).unwrap();
+        let text =
+            create_attachment(&conn, &test_sha("t1"), "notes.txt", "text/plain", 12, None).unwrap();
+        create_attachment(&conn, &test_sha("i1"), "shot.png", "image/png", 12, None).unwrap();
 
         // The insert trigger indexed the filename but no contents yet, so the
         // text row is the only backfill candidate.
         let pending = unindexed_text_attachments(&conn).unwrap();
-        assert_eq!(pending, vec![(text.id, "t1".to_string())]);
+        assert_eq!(pending, vec![(text.id, test_sha("t1"))]);
 
         set_extracted_text(&conn, text.id, "the quokka migration notes").unwrap();
         assert!(
@@ -1945,7 +2091,8 @@ mod tests {
     fn dimensions_drive_the_derived_thumbnail_flag() {
         let pool = test_db();
         let conn = pool.write().unwrap();
-        let att = create_attachment(&conn, "dim", "big.png", "image/png", 1, None).unwrap();
+        let att =
+            create_attachment(&conn, &test_sha("dim"), "big.png", "image/png", 1, None).unwrap();
         assert_eq!(att.width, None);
         assert!(
             !att.has_thumbnail,
@@ -1958,12 +2105,14 @@ mod tests {
         assert!(att.has_thumbnail);
 
         // A raster that already fits the thumbnail box needs none.
-        let small = create_attachment(&conn, "small", "s.png", "image/png", 1, None).unwrap();
+        let small =
+            create_attachment(&conn, &test_sha("small"), "s.png", "image/png", 1, None).unwrap();
         set_dimensions(&conn, small.id, 100, 100).unwrap();
         assert!(!get_attachment(&conn, small.id).unwrap().has_thumbnail);
 
         // Nor does a non-raster, whatever dimensions someone recorded.
-        let pdf = create_attachment(&conn, "pdf", "a.pdf", "application/pdf", 1, None).unwrap();
+        let pdf = create_attachment(&conn, &test_sha("pdf"), "a.pdf", "application/pdf", 1, None)
+            .unwrap();
         set_dimensions(&conn, pdf.id, 2000, 2000).unwrap();
         assert!(!get_attachment(&conn, pdf.id).unwrap().has_thumbnail);
     }
@@ -1972,7 +2121,8 @@ mod tests {
     fn alt_text_round_trips_and_clears() {
         let pool = test_db();
         let conn = pool.write().unwrap();
-        let att = create_attachment(&conn, "alt", "a.png", "image/png", 1, None).unwrap();
+        let att =
+            create_attachment(&conn, &test_sha("alt"), "a.png", "image/png", 1, None).unwrap();
         assert_eq!(att.alt_text, None);
 
         let updated = update_alt_text(&conn, att.id, Some("a red square")).unwrap();
@@ -1988,15 +2138,22 @@ mod tests {
     fn duplicates_are_the_other_rows_over_the_same_bytes() {
         let pool = test_db();
         let conn = pool.write().unwrap();
-        let a = create_attachment(&conn, "shared", "a.png", "image/png", 1, None).unwrap();
-        let b = create_attachment(&conn, "shared", "b.png", "image/png", 1, None).unwrap();
-        let other = create_attachment(&conn, "alone", "c.png", "image/png", 1, None).unwrap();
+        let a =
+            create_attachment(&conn, &test_sha("shared"), "a.png", "image/png", 1, None).unwrap();
+        let b =
+            create_attachment(&conn, &test_sha("shared"), "b.png", "image/png", 1, None).unwrap();
+        let other =
+            create_attachment(&conn, &test_sha("alone"), "c.png", "image/png", 1, None).unwrap();
 
-        let dupes = duplicates_of(&conn, a.id, "shared").unwrap();
+        let dupes = duplicates_of(&conn, a.id, &test_sha("shared")).unwrap();
         assert_eq!(dupes.len(), 1);
         assert_eq!(dupes[0].id, b.id);
         assert_eq!(dupes[0].filename, "b.png");
-        assert!(duplicates_of(&conn, other.id, "alone").unwrap().is_empty());
+        assert!(
+            duplicates_of(&conn, other.id, &test_sha("alone"))
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -2004,7 +2161,7 @@ mod tests {
         let pool = test_db();
         let conn = pool.write().unwrap();
         let issue = seed_issue(&conn);
-        let att = create_attachment(&conn, "l", "a.png", "image/png", 1, None).unwrap();
+        let att = create_attachment(&conn, &test_sha("l"), "a.png", "image/png", 1, None).unwrap();
         assert!(links_for_attachment(&conn, att.id).unwrap().is_empty());
 
         link_attachment(&conn, att.id, AttachmentEntity::Issue, issue).unwrap();

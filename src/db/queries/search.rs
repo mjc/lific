@@ -1591,8 +1591,8 @@ mod tests {
         text: Option<&str>,
     ) -> i64 {
         use crate::db::queries::attachments as att;
-        let attachment =
-            att::create_attachment(conn, filename, filename, mime, 42, None).unwrap();
+        let sha = crate::storage::AttachmentStore::hash_bytes(filename.as_bytes());
+        let attachment = att::create_attachment(conn, &sha, filename, mime, 42, None).unwrap();
         if let Some(issue_id) = issue_id {
             att::link_attachment(conn, attachment.id, AttachmentEntity::Issue, issue_id).unwrap();
         }
@@ -1827,8 +1827,9 @@ mod tests {
         assert!(hidden_issue < visible_issue);
 
         use crate::db::queries::attachments as att;
+        let sha = crate::storage::AttachmentStore::hash_bytes(b"sha");
         let attachment =
-            att::create_attachment(&conn, "sha", "gribblenaut.log", "text/plain", 9, None).unwrap();
+            att::create_attachment(&conn, &sha, "gribblenaut.log", "text/plain", 9, None).unwrap();
         att::link_attachment(&conn, attachment.id, AttachmentEntity::Issue, hidden_issue).unwrap();
         att::link_attachment(&conn, attachment.id, AttachmentEntity::Issue, visible_issue).unwrap();
 
