@@ -148,7 +148,7 @@ pub struct OAuthState {
 /// URLs (issuer spoofing).
 fn effective_issuer(state: &OAuthState, headers: &HeaderMap) -> String {
     if state.issuer_is_explicit {
-        return state.issuer.clone();
+        return canonical_issuer(&state.issuer);
     }
     let Some(host_header) = headers
         .get(axum::http::header::HOST)
@@ -156,7 +156,7 @@ fn effective_issuer(state: &OAuthState, headers: &HeaderMap) -> String {
         .map(str::trim)
         .filter(|h| !h.is_empty())
     else {
-        return state.issuer.clone();
+        return canonical_issuer(&state.issuer);
     };
     match crate::links::parse_http_authority(host_header) {
         Some(authority)
@@ -165,7 +165,7 @@ fn effective_issuer(state: &OAuthState, headers: &HeaderMap) -> String {
             // Allowlisted hosts are loopback names (a proxy host only enters
             // the allowlist via public_url, which makes the issuer explicit),
             // so plain http matches what the client dialed.
-            format!("http://{authority}")
+            canonical_issuer(&format!("http://{authority}"))
         }
         Some(_) => {
             warn!(
@@ -174,14 +174,23 @@ fn effective_issuer(state: &OAuthState, headers: &HeaderMap) -> String {
                 "request Host does not match the advertised OAuth issuer; \
                  set server.public_url for proxied deployments"
             );
-            state.issuer.clone()
+            canonical_issuer(&state.issuer)
         }
-        None => state.issuer.clone(),
+        None => canonical_issuer(&state.issuer),
+    }
+}
+
+fn canonical_issuer(issuer: &str) -> String {
+    let trimmed = issuer.trim_end_matches('/');
+    if trimmed.is_empty() {
+        issuer.to_string()
+    } else {
+        trimmed.to_string()
     }
 }
 
 pub(crate) fn mcp_resource(issuer: &str) -> String {
-    format!("{}/mcp", issuer.trim_end_matches('/'))
+    format!("{}/mcp", canonical_issuer(issuer))
 }
 
 /// Validate a redirect URI submitted to dynamic client registration.
@@ -2897,6 +2906,11 @@ mod tests {
             &vec![serde_json::Value::from("none")],
             "only `none` is implemented, so only `none` may be advertised"
         );
+        assert_eq!(
+            val["authorization_response_iss_parameter_supported"],
+            true,
+            "advertising iss requires the authorization-server metadata flag"
+        );
     }
 
     #[tokio::test]
@@ -2964,6 +2978,15 @@ mod tests {
                 "path {path}"
             );
         }
+    }
+
+    #[test]
+    fn configured_issuer_is_canonicalized_once() {
+        assert_eq!(
+            canonical_issuer("https://example.com/lific///"),
+            "https://example.com/lific"
+        );
+        assert_eq!(canonical_issuer("https://example.com"), "https://example.com");
     }
 
     // ── LIF-287: Host-derived issuer fallback ────────────────
