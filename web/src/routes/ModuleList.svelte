@@ -12,13 +12,21 @@
 
   import {
     listModules,
-    listIssues,
     listProjects,
     createModule,
     type Module,
-    type Issue,
     type Project,
   } from "../lib/api";
+  // LIF-442: the per-module issue tallies come from the project's delta read
+  // model rather than a bounded `listIssues` fetch, so they stay live and a
+  // revisit renders them with no round trip.
+  import {
+    cacheProjects,
+    cachedProject,
+    ensureProjectModel,
+    setActiveProject,
+    type ProjectReadModel,
+  } from "../lib/sync/readModel.svelte";
   import { Layers, Plus, ChevronRight, CircleDot, Pause, CircleCheck, CircleX, CircleDashed, Circle } from "lucide-svelte";
   import ProjectIcon from "../lib/ProjectIcon.svelte";
   import IconPicker from "../lib/IconPicker.svelte";
@@ -54,8 +62,13 @@
 
   let project = $state<Project | null>(null);
   let modules = $state<Module[]>([]);
-  let issues = $state<Issue[]>([]);
-  let loading = $state(true);
+  let model = $state<ProjectReadModel | null>(null);
+  /** Skinny issue rows. Only `module_id` and `status` are read here, both of
+   *  which the sync wire shape carries, so no adaptation is needed. */
+  let issues = $derived(model?.issueList ?? []);
+  let projectLoading = $state(true);
+  /** Cold start only — a warm project shows its counts immediately. */
+  let loading = $derived(model === null ? projectLoading : model.coldStart);
   let error = $state("");
 
   // Inline create. Live alongside the existing modules in the list —
@@ -104,24 +117,43 @@
   });
 
   async function loadData(ident: string, applyTabFallback = false) {
-    loading = true;
+    projectLoading = true;
     error = "";
     creating = false;
 
-    const projRes = await listProjects();
-    if (!projRes.ok) { error = projRes.error; loading = false; return; }
-    const found = projRes.data.find((p) => p.identifier === ident);
-    if (!found) { error = `Project ${ident} not found`; loading = false; return; }
-    project = found;
-    loadProjectRole(found.id); // LIF-234
+    // LIF-442: attach to the read model synchronously on a revisit so the
+    // counts paint on the first frame instead of waiting for listProjects.
+    const cached = cachedProject(ident);
+    if (cached) {
+      project = cached;
+      model = ensureProjectModel(cached.id);
+      setActiveProject(cached.id);
+    } else {
+      project = null;
+      model = null;
+    }
 
-    // Pull modules + issues in parallel. Issues feed the per-module
-    // counts; we deliberately fetch them all rather than calling per
-    // module so a project with 30 modules doesn't cost 30 round trips.
-    const [modRes, issueRes] = await Promise.all([
-      listModules(found.id),
-      listIssues({ project_id: found.id, limit: 1000 }),
-    ]);
+    const projRes = await listProjects();
+    if (!projRes.ok) {
+      if (!cached) { error = projRes.error; projectLoading = false; return; }
+    } else {
+      cacheProjects(projRes.data);
+      const found = projRes.data.find((p) => p.identifier === ident);
+      if (!found) { error = `Project ${ident} not found`; projectLoading = false; return; }
+      if (ident !== projectIdentifier) return;
+      project = found;
+      model = ensureProjectModel(found.id);
+      setActiveProject(found.id);
+    }
+
+    const resolved = project;
+    if (!resolved) { projectLoading = false; return; }
+    loadProjectRole(resolved.id); // LIF-234
+
+    // Modules are project structure, not part of the sync stream, so they
+    // stay an ordinary per-navigation fetch. The issue rows behind the
+    // per-module counts come from the read model.
+    const modRes = await listModules(resolved.id);
     if (modRes.ok) {
       modules = modRes.data;
       if (
@@ -132,9 +164,8 @@
         activeTab = "all";
       }
     }
-    if (issueRes.ok) issues = issueRes.data;
 
-    loading = false;
+    projectLoading = false;
   }
 
   function selectTab(id: string) {

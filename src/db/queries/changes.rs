@@ -20,6 +20,13 @@
 //! bootstrap proportional to the total prose in the project rather than to
 //! the number of rows. Clients fetch bodies from the existing detail
 //! endpoints on demand.
+//!
+//! The one concession is `preview`: the first non-empty line of an issue's
+//! description or a page's content, capped at [`PREVIEW_CHARS`]. List rows
+//! render one, and making a client fetch every body to draw a single line
+//! would cost far more than the bounded string does. The body column is
+//! read, reduced to that line, and dropped before serialization — it never
+//! reaches the wire.
 
 use std::collections::HashMap;
 
@@ -36,6 +43,23 @@ pub const DEFAULT_CHANGES_LIMIT: i64 = 5_000;
 
 /// Hard cap on a single delta page.
 pub const MAX_CHANGES_LIMIT: i64 = 50_000;
+
+/// Cap on a row's `preview`, in Unicode scalar values (not bytes — slicing
+/// bytes would panic mid-codepoint on any non-ASCII body). Long enough for
+/// a list row's one-line summary at any density, short enough that 5,000 of
+/// them stay a rounding error next to the bodies they stand in for.
+pub const PREVIEW_CHARS: usize = 200;
+
+/// The first non-empty line of `text`, trimmed and truncated to
+/// [`PREVIEW_CHARS`] characters. Empty when `text` has no non-blank line,
+/// which covers both an empty body and one that is only whitespace.
+fn preview_of(text: &str) -> String {
+    text.lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(|line| line.chars().take(PREVIEW_CHARS).collect())
+        .unwrap_or_default()
+}
 
 /// Clamp a caller-supplied `limit` into `1..=MAX_CHANGES_LIMIT`, defaulting
 /// to [`DEFAULT_CHANGES_LIMIT`] when absent. Floors at 1 for the same reason
@@ -80,6 +104,9 @@ const USER_ID: usize = 17;
 const USERNAME: usize = 18;
 const CREATED_AT: usize = 19;
 const UPDATED_AT: usize = 20;
+/// The body column — `issues.description` or `pages.content`. Read only to
+/// derive [`preview_of`]; never stored on a change row.
+const BODY: usize = 21;
 
 const ISSUE_COLUMNS: &str = "'issue' AS kind, i.seq AS seq, (i.deleted_at IS NOT NULL) AS deleted,
             i.id AS id, p.identifier AS project_identifier, i.sequence AS sequence,
@@ -88,7 +115,8 @@ const ISSUE_COLUMNS: &str = "'issue' AS kind, i.seq AS seq, (i.deleted_at IS NOT
             i.start_date AS start_date, i.target_date AS target_date,
             NULL AS folder_id, NULL AS pinned,
             NULL AS issue_id, NULL AS page_id, NULL AS user_id, NULL AS username,
-            i.created_at AS created_at, i.updated_at AS updated_at";
+            i.created_at AS created_at, i.updated_at AS updated_at,
+            i.description AS body";
 
 const ISSUE_FROM: &str = "FROM issues i JOIN projects p ON p.id = i.project_id";
 
@@ -99,7 +127,8 @@ const PAGE_COLUMNS: &str = "'page', pg.seq, (pg.deleted_at IS NOT NULL),
             NULL, NULL,
             pg.folder_id, pg.pinned,
             NULL, NULL, NULL, NULL,
-            pg.created_at, pg.updated_at";
+            pg.created_at, pg.updated_at,
+            pg.content";
 
 const PAGE_FROM: &str = "FROM pages pg JOIN projects p ON p.id = pg.project_id";
 
@@ -110,7 +139,8 @@ const COMMENT_COLUMNS: &str = "'comment', c.seq, (c.deleted_at IS NOT NULL),
             NULL, NULL,
             NULL, NULL,
             c.issue_id, c.page_id, c.user_id, u.username,
-            c.created_at, c.updated_at";
+            c.created_at, c.updated_at,
+            NULL";
 
 const COMMENT_FROM: &str = "FROM comments c JOIN users u ON u.id = c.user_id";
 
@@ -142,6 +172,7 @@ fn issue_change(row: &Row) -> rusqlite::Result<IssueChange> {
         target_date: row.get(TARGET_DATE)?,
         created_at: row.get(CREATED_AT)?,
         updated_at: row.get(UPDATED_AT)?,
+        preview: preview_of(&row.get::<_, Option<String>>(BODY)?.unwrap_or_default()),
         labels: Vec::new(),
     })
 }
@@ -161,6 +192,8 @@ fn page_change(row: &Row) -> rusqlite::Result<PageChange> {
         pinned: row.get(PINNED)?,
         created_at: row.get(CREATED_AT)?,
         updated_at: row.get(UPDATED_AT)?,
+        preview: preview_of(&row.get::<_, Option<String>>(BODY)?.unwrap_or_default()),
+        labels: Vec::new(),
     })
 }
 
@@ -206,22 +239,28 @@ fn change_from_row(row: &Row) -> rusqlite::Result<Change> {
     })
 }
 
-/// Label names per issue for the given ids, in one round trip. Mirrors
-/// `list_issues`'s grouped lookup rather than issuing a query per row —
-/// a 5,000-row delta page would otherwise be 5,000 extra statements.
-fn labels_by_issue(
+/// Label names per owner id, in one round trip. Mirrors `list_issues`'s and
+/// `list_pages`'s grouped lookups rather than issuing a query per row — a
+/// 5,000-row delta page would otherwise be 5,000 extra statements.
+///
+/// `join_table` and `owner_column` are the only difference between the
+/// issue and page variants, and both are compile-time constants from the
+/// two call sites below, never caller input.
+fn labels_by_owner(
     conn: &Connection,
     ids: &[i64],
+    join_table: &str,
+    owner_column: &str,
 ) -> Result<HashMap<i64, Vec<String>>, LificError> {
-    let mut by_issue: HashMap<i64, Vec<String>> = HashMap::new();
+    let mut by_owner: HashMap<i64, Vec<String>> = HashMap::new();
     if ids.is_empty() {
-        return Ok(by_issue);
+        return Ok(by_owner);
     }
     let placeholders: String = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
     let sql = format!(
-        "SELECT il.issue_id, l.name FROM issue_labels il
-         JOIN labels l ON l.id = il.label_id
-         WHERE il.issue_id IN ({placeholders})
+        "SELECT j.{owner_column}, l.name FROM {join_table} j
+         JOIN labels l ON l.id = j.label_id
+         WHERE j.{owner_column} IN ({placeholders})
          ORDER BY l.name"
     );
     let boxed: Vec<Box<dyn rusqlite::types::ToSql>> = ids
@@ -234,10 +273,21 @@ fn labels_by_issue(
         Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
     })?;
     for row in rows {
-        let (issue_id, name) = row?;
-        by_issue.entry(issue_id).or_default().push(name);
+        let (owner_id, name) = row?;
+        by_owner.entry(owner_id).or_default().push(name);
     }
-    Ok(by_issue)
+    Ok(by_owner)
+}
+
+fn labels_by_issue(
+    conn: &Connection,
+    ids: &[i64],
+) -> Result<HashMap<i64, Vec<String>>, LificError> {
+    labels_by_owner(conn, ids, "issue_labels", "issue_id")
+}
+
+fn labels_by_page(conn: &Connection, ids: &[i64]) -> Result<HashMap<i64, Vec<String>>, LificError> {
+    labels_by_owner(conn, ids, "page_labels", "page_id")
 }
 
 /// Everything in `project_id` that changed above `since`, oldest first.
@@ -288,7 +338,8 @@ pub fn list_changes(
         has_more,
     } = super::Page::from_over_fetch(rows.collect::<Result<Vec<_>, _>>()?, limit);
 
-    // Only live issues need labels; a tombstone carries no fields at all.
+    // Only live rows need labels; a tombstone carries no fields at all.
+    // One grouped query per kind, not one per row.
     let issue_ids: Vec<i64> = changes
         .iter()
         .filter_map(|change| match change {
@@ -296,10 +347,24 @@ pub fn list_changes(
             _ => None,
         })
         .collect();
-    let mut labels = labels_by_issue(conn, &issue_ids)?;
+    let page_ids: Vec<i64> = changes
+        .iter()
+        .filter_map(|change| match change {
+            Change::Page(page) => Some(page.id),
+            _ => None,
+        })
+        .collect();
+    let mut issue_labels = labels_by_issue(conn, &issue_ids)?;
+    let mut page_labels = labels_by_page(conn, &page_ids)?;
     for change in &mut changes {
-        if let Change::Issue(issue) = change {
-            issue.labels = labels.remove(&issue.id).unwrap_or_default();
+        match change {
+            Change::Issue(issue) => {
+                issue.labels = issue_labels.remove(&issue.id).unwrap_or_default();
+            }
+            Change::Page(page) => {
+                page.labels = page_labels.remove(&page.id).unwrap_or_default();
+            }
+            _ => {}
         }
     }
 
@@ -349,14 +414,20 @@ pub fn index_rows(
           ORDER BY pg.seq ASC"
     );
     let mut stmt = conn.prepare_cached(&page_sql)?;
-    let pages = stmt
+    let mut pages = stmt
         .query_map(params![project_id], page_change)?
         .collect::<Result<Vec<_>, _>>()?;
 
-    let ids: Vec<i64> = issues.iter().map(|issue| issue.id).collect();
-    let mut labels = labels_by_issue(conn, &ids)?;
+    let issue_ids: Vec<i64> = issues.iter().map(|issue| issue.id).collect();
+    let mut issue_labels = labels_by_issue(conn, &issue_ids)?;
     for issue in &mut issues {
-        issue.labels = labels.remove(&issue.id).unwrap_or_default();
+        issue.labels = issue_labels.remove(&issue.id).unwrap_or_default();
+    }
+
+    let page_ids: Vec<i64> = pages.iter().map(|page| page.id).collect();
+    let mut page_labels = labels_by_page(conn, &page_ids)?;
+    for page in &mut pages {
+        page.labels = page_labels.remove(&page.id).unwrap_or_default();
     }
 
     Ok((issues, pages))
@@ -726,6 +797,176 @@ mod tests {
         let json = serde_json::to_value(row).unwrap();
         assert!(json.get("content").is_none(), "skinny rows omit bodies");
         assert_eq!(json["kind"], "page");
+    }
+
+    // ── preview derivation ───────────────────────────────
+
+    #[test]
+    fn preview_takes_the_first_line_of_a_multi_line_body() {
+        assert_eq!(
+            preview_of("the summary line\nand then the rest\nand more"),
+            "the summary line"
+        );
+    }
+
+    #[test]
+    fn preview_skips_leading_blank_lines() {
+        assert_eq!(preview_of("\n\n   \n\treal content\nafter"), "real content");
+    }
+
+    #[test]
+    fn preview_of_an_empty_or_blank_body_is_empty() {
+        assert_eq!(preview_of(""), "");
+        assert_eq!(preview_of("\n\n"), "");
+        assert_eq!(preview_of("   \n\t\n  "), "");
+    }
+
+    /// The cap counts characters, not bytes. A byte slice at 200 would panic
+    /// mid-codepoint on any of these lines.
+    #[test]
+    fn preview_truncates_at_200_characters_without_splitting_a_codepoint() {
+        for body in ["é", "字", "🦎"] {
+            let line = body.repeat(500);
+            let preview = preview_of(&line);
+            assert_eq!(preview.chars().count(), PREVIEW_CHARS);
+            assert_eq!(preview, body.repeat(PREVIEW_CHARS));
+        }
+        // ASCII shorter than the cap is returned whole.
+        let short = "x".repeat(199);
+        assert_eq!(preview_of(&short), short);
+    }
+
+    #[test]
+    fn issue_and_page_rows_carry_a_preview_but_never_the_body() {
+        let (db, project, _) = seed();
+        let (issue, page_row) = {
+            let conn = db.write().unwrap();
+            let issue = crate::db::queries::create_issue(
+                &conn,
+                &CreateIssue {
+                    project_id: project,
+                    title: "previewed".into(),
+                    description: "\n\n# heading\nsecond line".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let page = crate::db::queries::create_page(
+                &conn,
+                &CreatePage {
+                    project_id: Some(project),
+                    title: "Design".into(),
+                    content: "  \nintro paragraph\nmore prose".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            (issue, page)
+        };
+
+        let conn = db.read().unwrap();
+        let snapshot = get_index(&conn, project).unwrap();
+        let indexed_issue = snapshot
+            .issues
+            .iter()
+            .find(|row| row.id == issue.id)
+            .expect("issue in the index");
+        let indexed_page = snapshot
+            .pages
+            .iter()
+            .find(|row| row.id == page_row.id)
+            .expect("page in the index");
+        assert_eq!(indexed_issue.preview, "# heading");
+        assert_eq!(indexed_page.preview, "intro paragraph");
+
+        let json = serde_json::to_value(indexed_page).unwrap();
+        assert!(json.get("content").is_none(), "skinny rows omit bodies");
+        assert_eq!(json["preview"], "intro paragraph");
+
+        let delta = list_changes(&conn, project, 0, 100).unwrap();
+        for change in &delta.changes {
+            match change {
+                Change::Issue(row) => assert_eq!(row.preview, "# heading"),
+                Change::Page(row) => assert_eq!(row.preview, "intro paragraph"),
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn a_body_less_issue_previews_as_an_empty_string() {
+        let (db, project, _) = seed();
+        let issue = new_issue(&db, project, "no body");
+
+        let conn = db.read().unwrap();
+        let snapshot = get_index(&conn, project).unwrap();
+        let row = snapshot
+            .issues
+            .iter()
+            .find(|row| row.id == issue.id)
+            .unwrap();
+        assert_eq!(row.preview, "");
+    }
+
+    // ── page labels ──────────────────────────────────────
+
+    #[test]
+    fn page_rows_carry_their_labels_in_both_the_index_and_the_delta() {
+        let (db, project, _) = seed();
+        let (labelled, bare) = {
+            let conn = db.write().unwrap();
+            for name in ["design", "spec"] {
+                conn.execute(
+                    "INSERT INTO labels (project_id, name, color) VALUES (?1, ?2, '#00ff00')",
+                    params![project, name],
+                )
+                .unwrap();
+            }
+            let labelled = crate::db::queries::create_page(
+                &conn,
+                &CreatePage {
+                    project_id: Some(project),
+                    title: "Labelled".into(),
+                    labels: vec!["spec".into(), "design".into()],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let bare = crate::db::queries::create_page(
+                &conn,
+                &CreatePage {
+                    project_id: Some(project),
+                    title: "Bare".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            (labelled, bare)
+        };
+
+        let conn = db.read().unwrap();
+        let snapshot = get_index(&conn, project).unwrap();
+        let indexed = |id: i64| {
+            snapshot
+                .pages
+                .iter()
+                .find(|row| row.id == id)
+                .expect("page in the index")
+                .labels
+                .clone()
+        };
+        // Sorted by name in the grouped lookup, not by insertion order.
+        assert_eq!(indexed(labelled.id), vec!["design", "spec"]);
+        assert!(indexed(bare.id).is_empty());
+
+        let delta = list_changes(&conn, project, 0, 100).unwrap();
+        let Some(Change::Page(row)) = delta.changes.iter().find(|change| match change {
+            Change::Page(candidate) => candidate.id == labelled.id,
+            _ => false,
+        }) else {
+            panic!("expected the page in the delta");
+        };
+        assert_eq!(row.labels, vec!["design".to_string(), "spec".to_string()]);
     }
 
     #[test]

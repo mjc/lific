@@ -159,6 +159,8 @@ Issues, pages, and comments each carry `seq`, a monotonic counter shared across 
 
 Rows on both endpoints are *skinny*: no issue `description`, no page `content`, no comment body. Fetch those from the entity's own endpoint when a detail view needs them.
 
+Issue and page rows do carry `preview`, the first non-empty line of the body trimmed and truncated to 200 characters (Unicode scalar values, not bytes), or `""` when there is no body. It is enough to render a list row's summary line without fetching anything.
+
 ### GET `/api/projects/{id}/index`
 
 Returns every live issue and page in a project, plus the cursor to resume `/changes` from. Path parameter: `id` (integer project ID). It has no query parameters or request body.
@@ -177,8 +179,8 @@ Comments are scoped through whichever parent they hang off, so an issue comment 
 
 Every change carries `kind` (`issue`, `page`, or `comment`), `seq` (integer), `deleted` (boolean), and `id` (integer). A change with `deleted: true` is a tombstone and carries nothing else: delete your copy. Live changes add the fields for their kind.
 
-- `issue`: `identifier`, `title`, `status`, `priority`, `module_id`, `sort_order`, `start_date`, `target_date`, `created_at`, `updated_at`, and `labels` (array of label names).
-- `page`: `identifier`, `title`, `status`, `folder_id`, `pinned`, `created_at`, `updated_at`.
+- `issue`: `identifier`, `title`, `status`, `priority`, `module_id`, `sort_order`, `start_date`, `target_date`, `created_at`, `updated_at`, `preview`, and `labels` (array of label names).
+- `page`: `identifier`, `title`, `status`, `folder_id`, `pinned`, `created_at`, `updated_at`, `preview`, and `labels` (array of label names).
 - `comment`: `issue_id`, `page_id`, `user_id`, `username`, `created_at`, `updated_at`.
 
 ```json
@@ -199,6 +201,7 @@ Every change carries `kind` (`issue`, `page`, or `comment`), `seq` (integer), `d
       "target_date": null,
       "created_at": "2026-08-20 09:14:02",
       "updated_at": "2026-08-27 11:02:55",
+      "preview": "Bootstrap once, then pull deltas by cursor.",
       "labels": ["sync"]
     },
     { "kind": "page", "seq": 42, "deleted": true, "id": 4 }

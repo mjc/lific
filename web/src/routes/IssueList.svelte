@@ -1,12 +1,10 @@
 <script lang="ts">
   import {
-    listIssues,
     listProjects,
     listModules,
     listLabels,
     updateIssue,
     createIssue,
-    getIssueCounts,
     type IssueStatusCounts,
     type Issue,
     type Project,
@@ -26,7 +24,17 @@
   import { slide } from "svelte/transition";
   import { motionReduced } from "../lib/theme";
   import { getContext } from "svelte";
-  import { startAutoRefresh } from "../lib/autoRefresh.svelte";
+  // LIF-442: rows come from the per-project delta read model, not from a
+  // per-route fetch + poll. No autoRefresh, no lific:realtime listener here.
+  import {
+    cacheProjects,
+    cachedProject,
+    ensureProjectModel,
+    refreshProjectModel,
+    setActiveProject,
+    type ProjectReadModel,
+  } from "../lib/sync/readModel.svelte";
+  import { toIssue } from "../lib/sync/adapt";
   import { compareIssues as compareIssuesPure } from "../lib/issues/sort";
   import { computeSearchResult, RESULT_CAP } from "../lib/issues/search";
   import {
@@ -42,6 +50,7 @@
     withSeen,
     pruneSeen,
     type SeenMap,
+    type SeenIssue,
   } from "../lib/seenStore"; // LIF-153
   import IssueCard from "../lib/issues/IssueCard.svelte";
   import BulkActionBar, {
@@ -50,17 +59,15 @@
   import RightSidebar from "../lib/issues/RightSidebar.svelte";
   import IssueRow from "../lib/issues/IssueRow.svelte";
   import Topbar from "../lib/issues/Topbar.svelte";
-  import { peekState, openPeek, registerPeekSync } from "../lib/issues/peek.svelte"; // LIF-244 / LIF-248
+  import { openPeek, registerPeekSync } from "../lib/issues/peek.svelte"; // LIF-244 / LIF-248
   import {
     IssueListState,
     updateIssueWithUndo,
     bulkUpdateIssuesWithUndo,
     prevPatchFor,
   } from "../lib/issues/state.svelte"; // LIF-243: undo layer
-  import { scheduleDelete, hasPendingDeletes } from "../lib/issues/deferredDelete.svelte"; // LIF-283
+  import { scheduleDelete } from "../lib/issues/deferredDelete.svelte"; // LIF-283
   import { shortcutsSuppressed } from "../lib/shortcuts"; // LIF-245
-  import { shortcutHelpState } from "../lib/shortcutHelpState.svelte"; // LIF-245
-  import { commandPaletteState } from "../lib/commandPaletteState.svelte"; // LIF-245
   import { projectRole, loadProjectRole } from "../lib/projectRole.svelte"; // LIF-234
 
   const topbarCtx = getContext<{
@@ -87,23 +94,80 @@
   } = $props();
 
   let project = $state<Project | null>(null);
-  // `issues` is the FULL, unfiltered project set (capped at 1000). Status /
-  // priority / label / module filters are applied client-side downstream
-  // (LIF-222 perf), so this array always reflects the whole project — which
-  // is exactly what the right sidebar's project-wide breakdowns (LIF-186)
-  // need, no separate unfiltered fetch required.
+  /** LIF-442: this project's read model. Warm from the first frame on a
+   *  revisit; bootstrapped from `/index` on a genuine cold start. */
+  let model = $state<ProjectReadModel | null>(null);
+  // `issues` is the FULL, unfiltered project set. Status / priority / label
+  // / module filters are applied client-side downstream (LIF-222 perf), so
+  // this array always reflects the whole project — which is exactly what the
+  // right sidebar's project-wide breakdowns (LIF-186) need.
+  //
+  // It stays a local `$state` array rather than a `$derived` of the model
+  // because every mutation path in this component stamps its result onto it
+  // optimistically (board drops, bulk actions, the row pickers, the peek
+  // panel). The sync effect below re-seeds it from the model whenever the
+  // model changes and no local write is in flight, so server truth always
+  // wins in the end without the optimistic paths having to be rewritten.
   let issues = $state<Issue[]>([]);
-  /** LIF-161: the row fetch is bounded (see loadIssues). Named rather than
-   *  inline because the LIF-153 seen-snapshot prune has to know whether the
-   *  array it is holding is the whole project or just a window onto it. */
-  const ISSUE_FETCH_LIMIT = 1000;
-  // LIF-161: true per-status tallies from the server. The fetched `issues`
-  // array is limit-capped, so its length is NOT a reliable count — this is.
-  let issueCounts = $state<IssueStatusCounts | null>(null);
+  // LIF-442: `/index` ships every live row, so these are true project-wide
+  // tallies derived from the replica rather than a separate counts fetch.
   let modules = $state<Module[]>([]);
   let labels = $state<Label[]>([]);
-  let loading = $state(true);
+  /** True while the project itself (and its modules/labels) is resolving.
+   *  Distinct from the read model's own cold start — see `loading`. */
+  let projectLoading = $state(true);
   let error = $state("");
+
+  // LIF-283: ids removed optimistically by a deferred delete. The model
+  // still has these rows until the real DELETE lands, so the sync effect
+  // has to keep filtering them out or the row would visibly resurrect
+  // during the undo window.
+  let locallyRemoved = $state<Set<number>>(new Set());
+
+  // LIF-442: the model → local array sync. `dragActive` / `mutationsInFlight`
+  // are read here on purpose: while either is set the effect bails without
+  // writing, and because both are `$state` it re-runs (and applies the
+  // latest rows) the moment they settle. That is the same "don't land server
+  // data on top of an unacknowledged optimistic change" guarantee the old
+  // auto-refresh `isBusy` veto provided, minus the polling.
+  $effect(() => {
+    const m = model;
+    if (!m) return;
+    const rows = m.issueList;
+    const removed = locallyRemoved;
+    if (dragActive || mutationsInFlight > 0) return;
+    issues = rows
+      .filter((row) => !removed.has(row.id))
+      .map((row) => toIssue(row, m.projectId));
+  });
+
+  /** Cold start = nothing to show and nothing shown before. A warm project
+   *  never sets this, so switching between the list and the board (or
+   *  returning from an issue) renders instantly instead of flashing a
+   *  skeleton over rows we already have. */
+  let loading = $derived(model === null ? projectLoading : model.coldStart);
+
+  // LIF-161 / LIF-442: per-status tallies. Derived from the replica, which
+  // holds every live issue in the project, so they stay authoritative
+  // without the extra `/projects/{id}/issue-counts` round trip.
+  let issueCounts = $derived.by((): IssueStatusCounts | null => {
+    if (!model || model.coldStart) return null;
+    const counts: IssueStatusCounts = {
+      backlog: 0,
+      todo: 0,
+      active: 0,
+      done: 0,
+      cancelled: 0,
+      total: 0,
+    };
+    for (const issue of issues) {
+      if (issue.status in counts) {
+        counts[issue.status as keyof IssueStatusCounts]++;
+      }
+      counts.total++;
+    }
+    return counts;
+  });
 
   // ── LIF-153: "what changed since you last looked" ────
   // `seenMap` is the baseline every row is diffed against: issue id →
@@ -204,11 +268,12 @@
     const id = projectIdentifier;
     return () => {
       if (seenProject !== id) return;
-      // Only prune against a COMPLETE view of the project. At the fetch cap
-      // `issues` is a window, and pruning against it would forget rows the
-      // user has seen, which would light them up again on the next visit.
+      // Only prune against a COMPLETE view of the project. LIF-442: the read
+      // model holds every live row (`/index` is not limit-capped the way the
+      // old bounded list fetch was), so once it is ready the array in hand
+      // IS the whole project and pruning is always safe.
       const next =
-        issues.length >= ISSUE_FETCH_LIMIT ? seenMap : pruneSeen(seenMap, issues);
+        model?.status === "ready" ? pruneSeen(seenMap, model.issueList) : seenMap;
       saveSeen(id, next);
     };
   });
@@ -241,14 +306,12 @@
 
   // NOTE: filters no longer trigger a fetch. They're applied client-side in
   // `controlFilteredIssues` (LIF-222 perf), so changing a filter is a pure
-  // in-memory recompute — instant, no round-trip. The full set is (re)loaded
-  // on mount/navigation and by the 15s auto-refresh poll.
+  // in-memory recompute — instant, no round-trip. LIF-442: the full set now
+  // comes from the project's read model, which reconciles by delta.
 
   async function loadProject(identifier: string) {
-    loading = true;
+    projectLoading = true;
     error = "";
-    // Don't let the previous project's tallies linger while we fetch.
-    issueCounts = null;
     // LIF-245: a stale keyboard focus/lastFocusedId from the previous
     // project could otherwise "resurrect" onto a same-numbered issue id in
     // the new project once its issues load (see the flatIssues-relocate
@@ -256,44 +319,84 @@
     // in practice, but free to rule out entirely on a project switch.
     view.focusedIndex = -1;
     lastFocusedId = null;
+    locallyRemoved = new Set();
     // LIF-153: drop the previous project's baseline before its successor's
     // rows can be diffed against it. Synchronous (before the first await),
     // so no frame can render the wrong project's dots.
     seenProject = null;
     seenMap = {};
+
+    // LIF-442: attach to the read model synchronously when this project has
+    // been resolved before, so a revisit paints its rows on the first frame
+    // instead of waiting a round trip for `listProjects` just to learn an id
+    // we already knew.
+    const cached = cachedProject(identifier);
+    if (cached) {
+      project = cached;
+      attachModel(cached);
+    } else {
+      project = null;
+      model = null;
+      issues = [];
+    }
+
     const projRes = await listProjects();
     if (!projRes.ok) {
-      error = projRes.error;
-      loading = false;
-      return;
+      if (!cached) {
+        error = projRes.error;
+        projectLoading = false;
+        return;
+      }
+    } else {
+      cacheProjects(projRes.data);
+      const found = projRes.data.find(
+        (p: Project) => p.identifier.toLowerCase() === identifier.toLowerCase()
+      );
+      if (!found) {
+        error = `Project ${identifier} not found`;
+        projectLoading = false;
+        return;
+      }
+      // A slow response for a project the user has already navigated away
+      // from must not re-point this component at it.
+      if (identifier !== projectIdentifier) return;
+      project = found;
+      attachModel(found);
     }
 
-    const found = projRes.data.find(
-      (p: Project) => p.identifier.toLowerCase() === identifier.toLowerCase()
-    );
-    if (!found) {
-      error = `Project ${identifier} not found`;
-      loading = false;
+    const resolved = project;
+    if (!resolved) {
+      projectLoading = false;
       return;
     }
-    project = found;
-    loadProjectRole(found.id); // LIF-234: prime role gating for this project
-    view.hydrateIssueSubTab(String(found.id));
+    loadProjectRole(resolved.id); // LIF-234: prime role gating for this project
+    view.hydrateIssueSubTab(String(resolved.id));
 
-    // Load modules, labels, and issues in parallel
+    // Modules and labels feed the filter/group dropdowns and are not part of
+    // the sync stream, so they stay ordinary fetches — one per navigation,
+    // no poll.
     const [modRes, lblRes] = await Promise.all([
-      listModules(found.id),
-      listLabels(found.id),
+      listModules(resolved.id),
+      listLabels(resolved.id),
     ]);
 
     if (modRes.ok) modules = modRes.data;
     if (lblRes.ok) labels = lblRes.data;
 
-    // LIF-153: only establish the seen baseline if the rows actually landed.
-    // A failed fetch leaves `issues` holding the PREVIOUS project's rows, and
-    // seeding a first visit from those would persist a wrong snapshot.
-    if (await loadIssues()) initSeen(identifier, issues);
-    loading = false;
+    projectLoading = false;
+
+    // LIF-153: only establish the seen baseline once the replica is
+    // populated. A failed bootstrap leaves the model empty, and seeding a
+    // first visit from nothing would persist a wrong snapshot.
+    await model?.bootstrap();
+    if (model?.status === "ready") initSeen(identifier, model.issueList);
+  }
+
+  /** Point this component at a project's read model: bootstrap or catch up,
+   *  and make it the project the websocket resumes for. */
+  function attachModel(found: Project) {
+    model = ensureProjectModel(found.id);
+    setActiveProject(found.id);
   }
 
   /** LIF-153: establish this project's baseline once its issues have landed.
@@ -302,7 +405,7 @@
    *  device. Seed it silently from the rows we just loaded, so a first visit
    *  shows no dots at all instead of lighting up every row in the project.
    *  "Everything is new" is the one thing this indicator must never say. */
-  function initSeen(identifier: string, loaded: Issue[]) {
+  function initSeen(identifier: string, loaded: readonly SeenIssue[]) {
     // A slow response for a project the user has already navigated away from
     // must not write that project's baseline over the current one.
     if (identifier !== projectIdentifier) return;
@@ -330,44 +433,16 @@
     saveSeen(projectIdentifier, next);
   }
 
-  /** Returns whether the rows themselves loaded. The counts are advisory:
-   *  the topbar just omits the tallies for a tick when they fail. */
-  async function loadIssues(): Promise<boolean> {
-    if (!project) return false;
-
-    // LIF-222 perf: always fetch the FULL, unfiltered issue set. Status /
-    // priority / label / module filtering is applied client-side in the
-    // derived pipeline (see `controlFilteredIssues`), exactly like search —
-    // so toggling a filter is instant with zero network. The server fetch
-    // only runs on mount and the 15s poll.
-    //
-    // LIF-161: bounded at 1000 so a huge project can't pull megabytes of
-    // descriptions per poll; the topbar tallies come from the counts
-    // endpoint, not from this fetch. Counts ride along so the topbar
-    // converges with the rows.
-    const [res, countsRes] = await Promise.all([
-      listIssues({ project_id: project.id, limit: ISSUE_FETCH_LIMIT }),
-      getIssueCounts(project.id),
-    ]);
-    if (res.ok) {
-      issues = res.data;
-    }
-    if (countsRes.ok) {
-      issueCounts = countsRes.data;
-    }
-    return res.ok;
-  }
-
-  // ── LIF-129: auto-refresh ────────────────────────────
-  // Background poll (15s) + revalidate on tab focus so the list/board
-  // converges on server state after out-of-band changes (MCP agent, API,
-  // another tab). Both modes share this one loop — it's the same dataset.
+  // ── LIF-442: mutation gating ─────────────────────────
   //
-  // `mutationsInFlight` pauses refresh while a write is pending so a poll
-  // can't land stale server data on top of an optimistic change that the
-  // PUT hasn't acknowledged yet (the card-snaps-back race). `dragActive`
-  // covers the drag itself. Open popovers / inline create / a focused
-  // search box also veto a tick so we never yank UI out from under input.
+  // The 15s poll and the `lific:realtime` listener are gone: rows arrive as
+  // deltas from the read model. What survives from the auto-refresh era is
+  // the reason it needed an `isBusy` veto — a server row must not land on
+  // top of an optimistic change the PUT has not acknowledged yet (the
+  // card-snaps-back race). `mutationsInFlight` and `dragActive` are read by
+  // the model→`issues` sync effect above, which re-applies the moment they
+  // settle, so the veto costs a few frames of staleness instead of a whole
+  // refresh cycle.
   let mutationsInFlight = $state(0);
   let dragActive = $state(false);
 
@@ -380,61 +455,11 @@
     }
   }
 
-  function autoRefreshBusy(): boolean {
-    return (
-      // A mount/navigation load is already in flight — don't stack another
-      // full fetch on top of it (matters a lot on a high-latency link).
-      loading ||
-      dragActive ||
-      mutationsInFlight > 0 ||
-      view.sortOpen ||
-      view.displayOpen ||
-      view.newMenuOpen ||
-      view.filterOpen ||
-      view.lanesOpen ||
-      view.overflowOpen ||
-      peekState.open ||
-      // LIF-245: a poll landing under the command palette or the shortcut
-      // help overlay wouldn't corrupt anything visible (both are opaque
-      // modals over the list), but it would still burn a network round
-      // trip and reset keyboard focus/selection pointlessly the moment
-      // either closes — same reasoning as the peek-open veto above.
-      commandPaletteState.open ||
-      shortcutHelpState.open ||
-      inlineCreateActive ||
-      view.statusDropdownId !== null ||
-      view.priorityDropdownId !== null ||
-      view.moduleDropdownId !== null ||
-      // LIF-149: a poll mustn't shuffle rows mid-selection or land stale
-      // data on top of an in-flight bulk write.
-      view.selectedIds.size > 0 ||
-      bulkBusy ||
-      // LIF-283: a deferred delete has optimistically removed rows the server
-      // still has; a poll would resurrect them until the commit fires.
-      hasPendingDeletes() ||
-      // Don't refetch while the user is typing in the search box.
-      (view.searchExpanded && document.activeElement === searchInputEl)
-    );
+  /** Reconcile against the server now. Used on the failure paths where a
+   *  local optimistic change may not match what actually landed. */
+  function reconcile() {
+    refreshProjectModel(project?.id);
   }
-
-  // Refresh just the issue rows. Modules/labels feed the filter dropdowns
-  // and change rarely; a full project reload on every tick would be
-  // wasteful and could flash the loading spinner, so we only re-pull
-  // issues here. New modules/labels reconcile on the next mount/navigation.
-  async function refreshIssues() {
-    if (!project) return;
-    await loadIssues();
-  }
-
-  $effect(() =>
-    startAutoRefresh({
-      refresh: refreshIssues,
-      isBusy: autoRefreshBusy,
-      shouldRefresh: (event) =>
-        event.type === "resync.required" ||
-        (typeof event.project_id === "number" && event.project_id === project?.id),
-    }),
-  );
 
   // LIF-222 perf: status / priority / label / module filtering applied
   // client-side over the full in-memory set. This used to be a server fetch
@@ -707,7 +732,7 @@
       // covers the two-field case: a partial server failure still leaves
       // the client fully consistent because the reload replaces both
       // fields from server truth, not just the one that failed.
-      await loadIssues();
+      reconcile();
     }
   }
 
@@ -807,7 +832,7 @@
     );
     bulkBusy = false;
     if (failedIds.size > 0) {
-      await loadIssues();
+      reconcile();
     }
   }
 
@@ -828,7 +853,7 @@
     );
     bulkBusy = false;
     if (results.some((r) => !r.ok)) {
-      await loadIssues();
+      reconcile();
     } else {
       const targetIds = new Set(targets.map((t) => t.id));
       issues = issues.map((i) =>
@@ -850,9 +875,19 @@
       .filter(({ issue }) => ids.has(issue.id));
     if (removed.length === 0) return;
 
-    // Optimistic local removal + clear selection.
+    // Optimistic local removal + clear selection. LIF-442: the read model
+    // still holds these rows until the real DELETE lands, so record the ids
+    // as locally removed — the model→`issues` sync effect filters them out,
+    // and a delta arriving mid-undo-window can't resurrect them.
+    locallyRemoved = new Set([...locallyRemoved, ...ids]);
     issues = issues.filter((i) => !ids.has(i.id));
     clearSelection();
+
+    const forget = () => {
+      const next = new Set(locallyRemoved);
+      for (const id of ids) next.delete(id);
+      locallyRemoved = next;
+    };
 
     scheduleDelete(
       removed.map((r) => r.issue),
@@ -867,10 +902,14 @@
             else next.push(issue);
           }
           issues = next;
+          forget();
         },
         onCommit: () => {
-          // Reconcile server-side counts after the real delete lands.
-          void loadIssues();
+          // The server has the deletes now; the model's tombstones make the
+          // local suppression redundant. Reconcile so the replica converges
+          // even if the websocket event was missed.
+          forget();
+          reconcile();
         },
       },
     );

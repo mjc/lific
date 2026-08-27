@@ -1006,10 +1006,15 @@ pub struct InsightsPayload {
 // The wire types for `GET /api/projects/{id}/changes` and
 // `GET /api/projects/{id}/index`. Every row here is *skinny*: identity,
 // position in the sync stream, and the fields a list or board view renders.
-// Descriptions, page content and comment bodies are deliberately absent, so
-// a client's cold start costs one round trip proportional to the row count
-// rather than to every word ever written in the project. See
+// Full descriptions, page content and comment bodies are deliberately
+// absent, so a client's cold start costs one round trip proportional to the
+// row count rather than to every word ever written in the project. See
 // `db::queries::changes`.
+//
+// Issues and pages do carry a bounded `preview` — the first non-empty line
+// of the body, capped at 200 characters — because a list row renders one
+// and re-fetching every body just to draw it would defeat the point of a
+// skinny row. See [`PREVIEW_CHARS`].
 
 /// Which table a change came from. Serializes to the `kind` discriminator
 /// every change row carries.
@@ -1043,6 +1048,10 @@ pub struct IssueChange {
     pub target_date: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    /// First non-empty line of the description, capped at [`PREVIEW_CHARS`]
+    /// characters. Empty when the issue has no description. The full body
+    /// is never on this wire.
+    pub preview: String,
     /// Label names, resolved in one grouped query per page rather than one
     /// query per row.
     pub labels: Vec<String>,
@@ -1064,6 +1073,12 @@ pub struct PageChange {
     pub pinned: bool,
     pub created_at: String,
     pub updated_at: String,
+    /// First non-empty line of the content, capped at [`PREVIEW_CHARS`]
+    /// characters. Empty when the page has no content.
+    pub preview: String,
+    /// Label names (LIF-105, project-scoped), resolved in one grouped query
+    /// per response page.
+    pub labels: Vec<String>,
 }
 
 /// A live comment in the sync stream. The body is omitted on purpose:

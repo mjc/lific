@@ -1,3 +1,5 @@
+import type { ChangesPage, IndexSnapshot } from "./sync/types";
+
 const BASE = "/api";
 
 export interface AuthUser {
@@ -2162,4 +2164,28 @@ export async function deleteSavedView(projectId: number, viewId: number) {
   return request<{ deleted: boolean }>(`/projects/${projectId}/views/${viewId}`, {
     method: "DELETE",
   });
+}
+
+// ── Delta sync (LIF-439 server, LIF-442 client) ─────────────
+//
+// The two endpoints the per-project read model is built on. Row shapes live
+// in lib/sync/types.ts rather than here, because they are the sync
+// protocol's vocabulary, not the REST resources the rest of this file wraps.
+
+/** Cold-start snapshot: every live issue and page in the project, skinny,
+ *  plus the cursor to resume `/changes` from. */
+export async function getProjectIndex(projectId: number) {
+  return request<IndexSnapshot>(`/projects/${projectId}/index`);
+}
+
+/** Everything that changed above `since`, ascending by seq, tombstones
+ *  included. Loop while `has_more`, feeding back the returned cursor. */
+export async function getProjectChanges(
+  projectId: number,
+  since: number,
+  limit?: number,
+) {
+  const params = new URLSearchParams({ since: String(since) });
+  if (limit !== undefined) params.set("limit", String(limit));
+  return request<ChangesPage>(`/projects/${projectId}/changes?${params}`);
 }

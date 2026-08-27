@@ -25,6 +25,11 @@
   import { hasSession, getInstance, autoLogin, saveSession, clearSession, me } from "./lib/api";
   import { REALTIME_INVALIDATE_EVENT, type RealtimeEvent } from "./lib/autoRefresh.svelte";
   import {
+    handleRealtimeEvent,
+    realtimeClosed,
+    realtimeOpened,
+  } from "./lib/sync/readModel.svelte"; // LIF-442
+  import {
     commentTargetFromHash,
     routeForCommentHash,
     routeWithCommentTarget,
@@ -294,6 +299,11 @@
   }
 
   function dispatchRealtimeEvent(event: RealtimeEvent) {
+    // LIF-442: the delta read models consume events directly — they need the
+    // envelope's `seq`, which the DOM CustomEvent path treats as opaque. The
+    // broadcast below still drives every view that has not been converted to
+    // the read model (detail views, plans, activity, files).
+    handleRealtimeEvent(event);
     window.dispatchEvent(
       new CustomEvent<RealtimeEvent>(REALTIME_INVALIDATE_EVENT, { detail: event }),
     );
@@ -359,6 +369,14 @@
       }
       startRealtimeActivityBaselineRefresh();
       startRealtimeHeartbeat();
+      // LIF-442: hand the read models a way to send frames, so the active
+      // project can ask the server to replay what it missed while the socket
+      // was down (or be told to backfill over HTTP instead).
+      realtimeOpened((frame) => {
+        if (realtimeSocket === socket && socket.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify(frame));
+        }
+      });
     });
     socket.addEventListener("message", (message) => {
       if (
@@ -394,6 +412,7 @@
     socket.addEventListener("close", () => {
       if (realtimeSocket === socket) {
         realtimeSocket = null;
+        realtimeClosed(); // LIF-442
         if (realtimeHeartbeat) {
           clearInterval(realtimeHeartbeat);
           realtimeHeartbeat = null;

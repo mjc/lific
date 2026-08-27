@@ -1,6 +1,5 @@
 <script lang="ts">
   import {
-    listPages,
     listFolders,
     listProjects,
     listLabels,
@@ -8,11 +7,22 @@
     createFolder,
     deleteFolder,
     updatePage,
-    type Page,
     type Folder,
     type Project,
     type Label,
   } from "../lib/api";
+  // LIF-442: page rows come from the project's delta read model, not from a
+  // per-navigation `listPages` fetch plus a poll. The rows are skinny: the
+  // body is a 200-char `preview`, which is all this tree ever rendered.
+  import {
+    cacheProjects,
+    cachedProject,
+    ensureProjectModel,
+    refreshProjectModel,
+    setActiveProject,
+    type ProjectReadModel,
+  } from "../lib/sync/readModel.svelte";
+  import type { PageRow } from "../lib/sync/types";
   import {
     FileText,
     FolderOpen,
@@ -45,7 +55,6 @@
   import ErrorState from "../lib/ErrorState.svelte";
   import Skeleton from "../lib/Skeleton.svelte";
   import { getContext } from "svelte";
-  import { startAutoRefresh } from "../lib/autoRefresh.svelte";
   import { projectRole, loadProjectRole } from "../lib/projectRole.svelte"; // LIF-234
   import { loadSubTab, saveSubTab } from "../lib/subtab";
   import { toast } from "../lib/toast/toast.svelte";
@@ -76,19 +85,24 @@
   //   RESULT_CAP       — hard cap so a generic 1-char query doesn't blow
   //                      up the DOM. Sorted by score desc, so the user
   //                      always sees the strongest matches.
-  //   CONTENT_SCAN_MAX — cap content scanned per page. The scorer is
-  //                      linear in haystack length; this keeps worst-case
-  //                      cost per keystroke bounded even if a project
-  //                      has a few huge pages.
-  //   CONTENT_WEIGHT   — content matches discount relative to title.
-  //                      Content false positives are more common in long
-  //                      bodies, so we want title/identifier hits to win
+  //   CONTENT_WEIGHT   — preview matches discount relative to title.
+  //                      Body false positives are more common than title
+  //                      ones, so we want title/identifier hits to win
   //                      ties.
+  //   LABEL_WEIGHT     — a label match is a real signal but a coarse one
+  //                      (labels are shared by many pages), so it sits
+  //                      below the identifier.
+  //
+  // LIF-442: the old CONTENT_SCAN_MAX is gone with the full body. The
+  // haystack is now the row's 200-char `preview`, which is bounded by
+  // construction, so there is nothing left to cap. The trade is honest and
+  // narrow: a match buried past the first line of a page no longer
+  // surfaces. Full-text search across bodies is the search endpoint's job.
   const SCORE_THRESHOLD = 0.25;
   const RESULT_CAP = 50;
-  const CONTENT_SCAN_MAX = 4000;
   const CONTENT_WEIGHT = 0.6;
   const IDENTIFIER_WEIGHT = 0.9;
+  const LABEL_WEIGHT = 0.55;
 
   let {
     navigate,
@@ -99,12 +113,26 @@
   } = $props();
 
   let project = $state<Project | null>(null);
-  let pages = $state<Page[]>([]);
+  /** LIF-442: this project's read model. Warm from the first frame on a
+   *  revisit, bootstrapped from `/index` on a genuine cold start. */
+  let model = $state<ProjectReadModel | null>(null);
+  // The tree's rows. A local `$state` array rather than a `$derived` of the
+  // model because every mutation path here (pin, move, folder delete) stamps
+  // its result on optimistically. The sync effect below re-seeds it from the
+  // model whenever no local write is in flight, so server truth wins in the
+  // end without rewriting the optimistic paths.
+  let pages = $state<PageRow[]>([]);
   let folders = $state<Folder[]>([]);
   // LIF-105: project labels powering the filter dropdown and chip color
   // lookups in the tree. Empty until the project resolves.
   let labels = $state<Label[]>([]);
-  let loading = $state(true);
+  /** True while the project itself (and its folders/labels) resolves.
+   *  Distinct from the read model's own cold start — see `loading`. */
+  let projectLoading = $state(true);
+  /** Cold start = nothing to show and nothing shown before, so returning
+   *  from a page (or another list surface) never flashes a skeleton over
+   *  rows we already hold. */
+  let loading = $derived(model === null ? projectLoading : model.coldStart);
   let error = $state("");
 
   // LIF-305: the selected Pages slice persists independently per project.
@@ -124,11 +152,28 @@
   // LIF-280: touch-friendly alternative to native HTML drag-and-drop for
   // moving a page between folders. The picker starts at the page's current
   // location, which Select marks with a check.
-  let movePage = $state<Page | null>(null);
+  let movePage = $state<PageRow | null>(null);
   let moveFolderId = $state<number | null>(null);
   let movingPageIds = $state<Set<number>>(new Set());
-  let pageMutationGeneration = $state(0);
   let movingPage = $derived(movePage !== null && movingPageIds.has(movePage.id));
+
+  // LIF-442: what survives from the auto-refresh era's `isBusy` veto. A
+  // delta must not land on top of an optimistic change the PUT has not
+  // acknowledged yet, and a re-seed mid-drag would yank the row out from
+  // under the pointer. Both are `$state`, so the sync effect below re-runs
+  // and applies the latest rows the moment they settle.
+  let mutationsInFlight = $state(0);
+
+  /** Run `write` with the model→`pages` sync paused, so its optimistic
+   *  update survives until the server has answered. */
+  async function withMutation<T>(write: () => Promise<T>): Promise<T> {
+    mutationsInFlight += 1;
+    try {
+      return await write();
+    } finally {
+      mutationsInFlight -= 1;
+    }
+  }
 
   // Inline create. `status` (pages only) lets the "New page as …" menu
   // presets seed the lifecycle status the inline row will commit with.
@@ -256,7 +301,7 @@
   // composite score (for sorting), and an optional snippet pulled from
   // the content body when content was the *reason* the page matched.
   interface SearchHit {
-    page: Page;
+    page: PageRow;
     score: number;
     snippet: string | null;
   }
@@ -269,15 +314,18 @@
     for (const page of searchablePages) {
       const titleHit = fuzzyMatch(q, page.title);
       const idHit = fuzzyMatch(q, page.identifier);
-      // Cap content scan: scorer is O(haystack) and pages can be long.
-      const body = page.content.slice(0, CONTENT_SCAN_MAX);
+      // LIF-442: the body haystack is the row's 200-char preview. Bounded
+      // by construction, so the old scan cap is unnecessary.
+      const body = page.preview;
       const contentHit = fuzzyMatch(q, body);
+      const labelHit = page.labels.length > 0 ? fuzzyMatch(q, page.labels.join(" ")) : null;
 
       const titleScore = titleHit?.score ?? 0;
       const idScore = (idHit?.score ?? 0) * IDENTIFIER_WEIGHT;
       const contentScore = (contentHit?.score ?? 0) * CONTENT_WEIGHT;
+      const labelScore = (labelHit?.score ?? 0) * LABEL_WEIGHT;
 
-      const best = Math.max(titleScore, idScore, contentScore);
+      const best = Math.max(titleScore, idScore, contentScore, labelScore);
       if (best < SCORE_THRESHOLD) continue;
 
       // Snippet only when content was the winning signal — otherwise the
@@ -313,28 +361,65 @@
     ...folders.map((folder) => ({ value: folder.id, label: folder.name })),
   ]);
 
+  // LIF-442: the model → local array sync. `draggedId` / `mutationsInFlight`
+  // are read here on purpose: while either is set the effect bails without
+  // writing, and because both are `$state` it re-runs (and applies the
+  // latest rows) the moment they settle.
+  $effect(() => {
+    const m = model;
+    if (!m) return;
+    const rows = m.pageList;
+    if (draggedId !== null || mutationsInFlight > 0) return;
+    pages = rows;
+  });
+
   $effect(() => {
     const id = projectIdentifier;
     loadData(id);
   });
 
   async function loadData(ident: string) {
-    loading = true;
+    projectLoading = true;
     error = "";
-    const projRes = await listProjects();
-    if (!projRes.ok) { error = projRes.error; loading = false; return; }
-    const found = projRes.data.find((p: Project) => p.identifier === ident);
-    if (!found) { error = `Project ${ident} not found`; loading = false; return; }
-    project = found;
-    loadProjectRole(found.id); // LIF-234
-    activeSubTab = (loadSubTab("pages", String(found.id), PAGE_SUB_TAB_IDS) ?? "browse") as PageSubTab;
 
-    const [pRes, fRes, lRes] = await Promise.all([
-      listPages(found.id),
-      listFolders(found.id),
-      listLabels(found.id),
+    // LIF-442: attach to the read model synchronously on a revisit, so the
+    // tree paints on the first frame instead of waiting a round trip for
+    // `listProjects` just to learn an id we already knew.
+    const cached = cachedProject(ident);
+    if (cached) {
+      project = cached;
+      attachModel(cached);
+    } else {
+      project = null;
+      model = null;
+      pages = [];
+    }
+
+    const projRes = await listProjects();
+    if (!projRes.ok) {
+      if (!cached) { error = projRes.error; projectLoading = false; return; }
+    } else {
+      cacheProjects(projRes.data);
+      const found = projRes.data.find((p: Project) => p.identifier === ident);
+      if (!found) { error = `Project ${ident} not found`; projectLoading = false; return; }
+      // A slow response for a project the user has already navigated away
+      // from must not re-point this component at it.
+      if (ident !== projectIdentifier) return;
+      project = found;
+      attachModel(found);
+    }
+
+    const resolved = project;
+    if (!resolved) { projectLoading = false; return; }
+    loadProjectRole(resolved.id); // LIF-234
+    activeSubTab = (loadSubTab("pages", String(resolved.id), PAGE_SUB_TAB_IDS) ?? "browse") as PageSubTab;
+
+    // Folders and labels are project structure, not part of the sync
+    // stream, so they stay ordinary fetches — one per navigation, no poll.
+    const [fRes, lRes] = await Promise.all([
+      listFolders(resolved.id),
+      listLabels(resolved.id),
     ]);
-    if (pRes.ok) pages = pRes.data;
     if (fRes.ok) {
       const previousFolderIds = new Set(folders.map((folder) => folder.id));
       const nextFolderIds = new Set(fRes.data.map((folder) => folder.id));
@@ -347,34 +432,14 @@
       }
     }
     if (lRes.ok) labels = lRes.data;
-    loading = false;
+    projectLoading = false;
   }
 
-  async function reloadPages() {
-    if (!project) return;
-    const mutationGeneration = pageMutationGeneration;
-    const [pagesRes, foldersRes, labelsRes] = await Promise.all([
-      listPages(project.id),
-      listFolders(project.id),
-      listLabels(project.id),
-    ]);
-    if (
-      pagesRes.ok &&
-      mutationGeneration === pageMutationGeneration &&
-      movingPageIds.size === 0
-    ) pages = pagesRes.data;
-    if (foldersRes.ok) {
-      const previousFolderIds = new Set(folders.map((folder) => folder.id));
-      const nextFolderIds = new Set(foldersRes.data.map((folder) => folder.id));
-      folders = foldersRes.data;
-      expandedFolders = new Set(
-        [...expandedFolders].filter((id) => nextFolderIds.has(id)),
-      );
-      for (const folder of foldersRes.data) {
-        if (!previousFolderIds.has(folder.id)) expandedFolders.add(folder.id);
-      }
-    }
-    if (labelsRes.ok) labels = labelsRes.data;
+  /** Point this component at a project's read model: bootstrap or catch up,
+   *  and make it the project the websocket resumes for. */
+  function attachModel(found: Project) {
+    model = ensureProjectModel(found.id);
+    setActiveProject(found.id);
   }
 
   function selectSubTab(id: string) {
@@ -383,39 +448,12 @@
     if (project) saveSubTab("pages", String(project.id), activeSubTab);
   }
 
-  // ── LIF-129: auto-refresh ────────────────────────────
-  // Revalidate on tab focus and relevant realtime events so the page tree
-  // picks up pages created/edited/deleted out-of-band. Vetoed while dragging a
-  // page/folder, while an inline create input is open, or while the
-  // search box is focused — refreshing under any of those would yank the
-  // user's interaction. The refresh keeps the full project tree in sync.
-  function autoRefreshBusy(): boolean {
-    return (
-      loading ||
-      draggedId !== null ||
-      movePage !== null ||
-      movingPageIds.size > 0 ||
-      createTarget !== null ||
-      (searchExpanded && document.activeElement === searchInputEl)
-    );
-  }
-
-  $effect(() =>
-    startAutoRefresh({
-      refresh: reloadPages,
-      isBusy: autoRefreshBusy,
-      shouldRefresh: (event) =>
-        event.type === "resync.required" ||
-        (typeof event.project_id === "number" && event.project_id === project?.id),
-    }),
-  );
-
   // Tree helpers
   function childFolders(parentId: number | null): Folder[] {
     return folders.filter((f) => f.parent_id === parentId);
   }
 
-  function pagesInFolder(folderId: number | null): Page[] {
+  function pagesInFolder(folderId: number | null): PageRow[] {
     // Newest first so a freshly created page lands at the top of its level
     // instead of the bottom (pages share a default sort_order, so the old
     // id-ASC tiebreak buried new docs under everything else).
@@ -431,9 +469,12 @@
     expandedFolders = next;
   }
 
-  function contentPreview(content: string): string {
-    const lines = content.split("\n").filter((l) => l.trim() && !l.startsWith("#"));
-    return (lines[0] ?? "").replace(/[*_`\[\]]/g, "").slice(0, 140);
+  // LIF-442: `preview` arrives from the server already reduced to the first
+  // non-empty line of the body and capped at 200 characters, so all that is
+  // left here is presentation: drop a leading markdown heading marker and
+  // the inline emphasis characters, then fit the row.
+  function contentPreview(preview: string): string {
+    return preview.replace(/^#+\s*/, "").replace(/[*_`\[\]]/g, "").slice(0, 140);
   }
 
   // LIF-183: pinned pages, surfaced in a section above the folder tree.
@@ -500,14 +541,16 @@
 
   // Optimistic pin toggle. Flip locally so the row reacts instantly, then
   // persist; on failure, revert.
-  async function togglePin(page: Page, e: Event) {
+  async function togglePin(page: PageRow, e: Event) {
     e.stopPropagation();
     const next = !page.pinned;
     pages = pages.map((p) => (p.id === page.id ? { ...p, pinned: next } : p));
-    const res = await updatePage(page.id, { pinned: next });
+    const res = await withMutation(() => updatePage(page.id, { pinned: next }));
     if (!res.ok) {
       pages = pages.map((p) => (p.id === page.id ? { ...p, pinned: !next } : p));
     }
+    // Let the replica converge on what actually landed either way.
+    refreshProjectModel(project?.id);
   }
 
   // ── Drag and drop ────────────────────────────────────
@@ -534,14 +577,14 @@
     if (dropTarget !== target) dropTarget = target;
   }
 
-  async function movePageToFolder(page: Page, targetFolderId: number | null): Promise<boolean> {
+  async function movePageToFolder(page: PageRow, targetFolderId: number | null): Promise<boolean> {
     if (movingPageIds.has(page.id)) return false;
 
     const previousFolderId = page.folder_id ?? null;
     if (previousFolderId === targetFolderId) return true;
 
-    pageMutationGeneration += 1;
     movingPageIds = new Set([...movingPageIds, page.id]);
+    mutationsInFlight += 1;
     pages = pages.map((p) =>
       p.id === page.id ? { ...p, folder_id: targetFolderId } : p
     );
@@ -555,7 +598,8 @@
         return false;
       }
 
-      pages = pages.map((p) => (p.id === page.id ? res.data : p));
+      // The server agreed; the moved row comes back through the delta. No
+      // need to graft the REST response in — it is a different (fat) shape.
       if (targetFolderId && !expandedFolders.has(targetFolderId)) {
         expandedFolders = new Set([...expandedFolders, targetFolderId]);
       }
@@ -564,6 +608,8 @@
       const next = new Set(movingPageIds);
       next.delete(page.id);
       movingPageIds = next;
+      mutationsInFlight -= 1;
+      refreshProjectModel(project?.id);
     }
   }
 
@@ -579,7 +625,7 @@
     await movePageToFolder(page, targetFolderId);
   }
 
-  function openMovePicker(page: Page, e: Event) {
+  function openMovePicker(page: PageRow, e: Event) {
     e.stopPropagation();
     movePage = page;
     moveFolderId = page.folder_id ?? null;
@@ -699,13 +745,16 @@
   async function handleDeleteFolder(id: number, e: Event) {
     e.stopPropagation();
     const name = folders.find((f) => f.id === id)?.name ?? "folder";
-    const res = await deleteFolder(id);
+    const res = await withMutation(() => deleteFolder(id));
     if (!res.ok) {
       toast(`Couldn't delete ${name}: ${res.error}`, { kind: "error" });
       return;
     }
     folders = folders.filter((f) => f.id !== id && f.parent_id !== id);
+    // The FK sets `folder_id` to NULL server-side, which stamps a new seq on
+    // every orphaned page. Reflect it now; the delta confirms it shortly.
     pages = pages.map((p) => p.folder_id === id ? { ...p, folder_id: null } : p);
+    refreshProjectModel(project?.id);
   }
 
   // Count all items (pages + subfolders) in a folder recursively
@@ -1241,7 +1290,7 @@
               {#each pinnedPages as page (page.id)}
                 {@const pMeta = statusMeta(page.status)}
                 {@const fName = folderName(page.folder_id)}
-                {@const prev = contentPreview(page.content)}
+                {@const prev = contentPreview(page.preview)}
                 <button
                   class="group text-left rounded-xl bg-[var(--surface)] p-3
                          shadow-[0_1px_2px_rgba(0,0,0,0.06)]
@@ -1477,7 +1526,7 @@
   </div>
 {/if}
 
-{#snippet flatPageList(pageList: Page[], emptyTitle: string, emptyDescription: string = "")}
+{#snippet flatPageList(pageList: PageRow[], emptyTitle: string, emptyDescription: string = "")}
   {#if pageList.length === 0}
     <div class="flex flex-col items-center py-16 gap-3 px-6 max-w-[460px] mx-auto text-center">
       <Mascot src="/LizzyReading.png" nativeW={487} nativeH={714} scale={0.16} />
@@ -1641,7 +1690,7 @@
   {#each subPages as page (page.id)}
     {@const isDragging = draggedId?.type === "page" && draggedId.id === page.id}
     {@const sMeta = statusMeta(page.status)}
-    {@const preview = contentPreview(page.content)}
+    {@const preview = contentPreview(page.preview)}
     <button
       class="w-full flex items-start gap-2 py-1.5 px-1.5 -mx-1.5 rounded-md
              text-left group transition-colors
