@@ -157,9 +157,16 @@ pub async fn run(
     cfg: &Config,
     explicit_config: Option<&Path>,
     key: Option<String>,
+    legacy_mcp: bool,
     json: bool,
 ) -> Result<(), String> {
-    let report = build_report_with_config_path(cfg, explicit_config, key.as_deref()).await;
+    let report = build_report_with_config_path_mode(
+        cfg,
+        explicit_config,
+        key.as_deref(),
+        legacy_mcp,
+    )
+    .await;
     print_report(&report, json);
     if report.fail_count() > 0 {
         Err(format!(
@@ -176,15 +183,28 @@ pub async fn run(
 /// config search order for provenance (no explicit `--config`).
 #[cfg_attr(not(test), allow(dead_code))]
 pub async fn build_report(cfg: &Config, key: Option<&str>) -> Report {
-    build_report_with_config_path(cfg, None, key).await
+    build_report_with_config_path_mode(cfg, None, key, false).await
 }
 
 /// Like [`build_report`] but honors an explicit `--config` path when reporting
 /// which config file is in use.
+#[allow(dead_code)]
 pub async fn build_report_with_config_path(
     cfg: &Config,
     explicit_config: Option<&Path>,
     key: Option<&str>,
+) -> Report {
+    build_report_with_config_path_mode(cfg, explicit_config, key, false).await
+}
+
+/// Like [`build_report_with_config_path`] but selects the explicit legacy MCP
+/// initialize/session probe when `legacy_mcp` is true.
+#[allow(dead_code)]
+pub async fn build_report_with_config_path_mode(
+    cfg: &Config,
+    explicit_config: Option<&Path>,
+    key: Option<&str>,
+    legacy_mcp: bool,
 ) -> Report {
     let mut checks = Vec::new();
 
@@ -226,7 +246,11 @@ pub async fn build_report_with_config_path(
             checks.push(server_check_result(reachable));
             if reachable.reachable {
                 checks.push(check_oauth_discovery(c, &base).await);
-                let mut mcp_check = check_mcp(c, &base, effective_key.as_deref()).await;
+                let mut mcp_check = if legacy_mcp {
+                    check_mcp_legacy(c, &base, effective_key.as_deref()).await
+                } else {
+                    check_mcp(c, &base, effective_key.as_deref()).await
+                };
                 // Note where the credential came from when it was a stored
                 // login token rather than an explicit --key/LIFIC_API_KEY.
                 if let Some(src) = key_source {
@@ -890,6 +914,147 @@ async fn check_mcp_session(
     Ok("initialized, tools/list, and harmless tools/call succeeded".into())
 }
 
+/// Probe the retained pre-July MCP lifecycle explicitly. This is intentionally
+/// separate from [`check_mcp`]: a successful legacy check must not be mistaken
+/// for modern discovery support.
+pub async fn check_mcp_legacy(
+    client: &reqwest::Client,
+    base: &str,
+    key: Option<&str>,
+) -> Check {
+    let url = format!("{}/mcp", base.trim_end_matches('/'));
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-03-26",
+            "capabilities": {},
+            "clientInfo": {
+                "name": "lific-doctor-legacy",
+                "version": env!("CARGO_PKG_VERSION")
+            }
+        }
+    });
+    let mut req = client
+        .post(&url)
+        .header("Accept", "application/json, text/event-stream")
+        .header("Content-Type", "application/json")
+        .json(&body);
+    if let Some(k) = key {
+        req = req.bearer_auth(k);
+    }
+
+    let mut resp = match req.send().await {
+        Ok(r) => r,
+        Err(e) => return Check::new("mcp", Status::Fail, format!("request failed: {e}")),
+    };
+    let status = resp.status();
+    let has_www_auth = resp.headers().contains_key(reqwest::header::WWW_AUTHENTICATE);
+    let has_session = resp.headers().contains_key("mcp-session-id");
+    let content_type = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("<missing>")
+        .to_string();
+
+    match key {
+        None if status == reqwest::StatusCode::UNAUTHORIZED && has_www_auth => Check::new(
+            "mcp",
+            Status::Pass,
+            "legacy auth enforced (401 + WWW-Authenticate)",
+        ),
+        None if status == reqwest::StatusCode::UNAUTHORIZED => Check::new(
+            "mcp",
+            Status::Warn,
+            "legacy probe got 401 but no WWW-Authenticate header",
+        ),
+        None => Check::new(
+            "mcp",
+            Status::Fail,
+            format!("expected 401 without a key, got HTTP {}", status.as_u16()),
+        ),
+        Some(_) if status == reqwest::StatusCode::UNAUTHORIZED => Check::new(
+            "mcp",
+            Status::Fail,
+            "provided key was rejected by the legacy MCP path",
+        ),
+        Some(_) if !status.is_success() => Check::new(
+            "mcp",
+            Status::Fail,
+            format!("legacy initialize returned HTTP {}", status.as_u16()),
+        ),
+        Some(_) => {
+            let mut text = String::new();
+            let mut stream_error = None;
+            for _ in 0..16 {
+                match resp.chunk().await {
+                    Ok(Some(bytes)) => {
+                        text.push_str(&String::from_utf8_lossy(&bytes));
+                        if text.lines().any(|line| {
+                            line.strip_prefix("data: ")
+                                .is_some_and(|payload| !payload.trim().is_empty())
+                        }) {
+                            break;
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(e) => {
+                        stream_error = Some(e.to_string());
+                        break;
+                    }
+                }
+            }
+            let parsed: Result<serde_json::Value, String> = if let Some(error) = stream_error {
+                Err(error)
+            } else {
+                serde_json::from_str::<serde_json::Value>(&text)
+                    .or_else(|_| {
+                        text.lines()
+                            .find_map(|line| {
+                                line.strip_prefix("data: ")
+                                    .filter(|payload| !payload.trim().is_empty())
+                            })
+                            .ok_or_else(|| {
+                                serde_json::Error::io(std::io::Error::new(
+                                    std::io::ErrorKind::InvalidData,
+                                    "legacy response did not contain JSON",
+                                ))
+                            })
+                            .and_then(serde_json::from_str)
+                    })
+                    .map_err(|e| e.to_string())
+            };
+            match parsed {
+                Ok(body)
+                    if has_session
+                        && body["result"]["protocolVersion"] == "2025-03-26"
+                        && body["result"]["serverInfo"].is_object() =>
+                {
+                    Check::new("mcp", Status::Pass, "legacy initialize succeeded with a session")
+                }
+                Ok(body) => Check::new(
+                    "mcp",
+                    Status::Fail,
+                    format!("legacy initialize response was incomplete: {body}"),
+                ),
+                Err(e) => Check::new(
+                    "mcp",
+                    Status::Fail,
+                    format!(
+                        "legacy initialize body was not JSON: {e} (status {}, content-type {}, session {}, raw {:?})",
+                        status.as_u16(),
+                        content_type,
+                        has_session,
+                        text,
+                    ),
+                ),
+            }
+        }
+    }
+}
+
 // ── Check 7: public_url ──────────────────────────────────────────────────
 
 async fn check_public_url(client: &reqwest::Client, public_url: &str) -> Check {
@@ -1394,6 +1559,19 @@ mod tests {
             "detail: {}",
             c.detail
         );
+    }
+
+    #[tokio::test]
+    async fn mcp_legacy_mode_completes_initialize_with_a_session() {
+        let pool = crate::db::open_memory().unwrap();
+        let manager = crate::auth::create_key_manager().unwrap();
+        let key = crate::auth::create_api_key(&pool, &manager, "doctor-legacy", None).unwrap();
+        let app = build_test_app(pool, "http://127.0.0.1");
+        let base = serve_ephemeral(app).await;
+
+        let c = check_mcp_legacy(&test_client(), &base, Some(&key)).await;
+        assert_eq!(c.status, Status::Pass, "detail: {}", c.detail);
+        assert!(c.detail.contains("legacy initialize"), "detail: {}", c.detail);
     }
 
     #[tokio::test]
