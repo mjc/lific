@@ -1166,6 +1166,38 @@ mod authless_mcp_tests {
     use tower::ServiceExt;
 
     const PATH_TOKEN: &str = "contract-path-token";
+    const EXPECTED_TOOL_NAMES: &[&str] = &[
+        "add_comment",
+        "bulk_update",
+        "create_issue",
+        "create_page",
+        "create_plan",
+        "delete",
+        "delete_comment",
+        "edit_comment",
+        "edit_issue",
+        "edit_page",
+        "edit_plan_step",
+        "export",
+        "get_activity",
+        "get_attachment",
+        "get_board",
+        "get_issue",
+        "get_page",
+        "get_plan",
+        "link_issues",
+        "list_attachments",
+        "list_comments",
+        "list_issues",
+        "list_resources",
+        "manage_resource",
+        "search",
+        "unlink_issues",
+        "update_issue",
+        "update_page",
+        "update_plan_step",
+        "upload_attachment",
+    ];
 
     fn legacy_initialize_body() -> Body {
         let body = serde_json::json!({
@@ -1307,6 +1339,44 @@ mod authless_mcp_tests {
             .filter_map(|line| line.strip_prefix("data: "))
             .find_map(|data| serde_json::from_str(data).ok())
             .unwrap_or_else(|| panic!("MCP body contained no JSON-RPC message: {text}"))
+    }
+
+    fn assert_object_keys(value: &serde_json::Value, expected: &[&str]) {
+        let mut actual: Vec<_> = value
+            .as_object()
+            .expect("expected JSON object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        actual.sort_unstable();
+        let mut expected = expected.to_vec();
+        expected.sort_unstable();
+        assert_eq!(actual, expected);
+    }
+
+    fn assert_server_implementation(value: &serde_json::Value) {
+        assert_eq!(value["name"], "lific");
+        assert_eq!(value["version"], env!("CARGO_PKG_VERSION"));
+    }
+
+    fn assert_tool_catalog(value: &serde_json::Value) {
+        let tools = value.as_array().expect("tools must be an array");
+        let names: Vec<_> = tools
+            .iter()
+            .map(|tool| tool["name"].as_str().expect("tool name"))
+            .collect();
+        assert_eq!(names, EXPECTED_TOOL_NAMES);
+        for tool in tools {
+            assert_object_keys(tool, &["name", "description", "inputSchema"]);
+            let schema = &tool["inputSchema"];
+            assert_eq!(
+                schema["$schema"],
+                "https://json-schema.org/draft/2020-12/schema",
+                "{} schema: {schema}",
+                tool["name"]
+            );
+            assert_eq!(schema["type"], "object", "{} schema: {schema}", tool["name"]);
+        }
     }
 
     fn contract_app() -> (Router, String) {
@@ -1523,6 +1593,136 @@ mod authless_mcp_tests {
                 "legacy tools/list leaked July field {july_field}: {value}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn july_wire_contract_is_golden_and_byte_stable() {
+        let (app, key) = contract_app();
+        let uri = "/mcp";
+        let version = serde_json::json!("2026-07-28");
+
+        let discover = discover_body(version.clone());
+        let discover_headers = [
+            ("mcp-protocol-version", "2026-07-28"),
+            ("mcp-method", "server/discover"),
+        ];
+        let first = post_mcp(
+            app.clone(),
+            uri,
+            Some(&key),
+            &discover,
+            &discover_headers,
+        )
+        .await;
+        let second = post_mcp(
+            app.clone(),
+            uri,
+            Some(&key),
+            &discover,
+            &discover_headers,
+        )
+        .await;
+        assert_eq!(first.0, StatusCode::OK);
+        assert_eq!(first.2, second.2, "server/discover must be byte-stable");
+        let discovery = jsonrpc_body(&first.2);
+        assert_object_keys(&discovery, &["jsonrpc", "id", "result"]);
+        let result = &discovery["result"];
+        assert_object_keys(
+            result,
+            &[
+                "resultType",
+                "supportedVersions",
+                "capabilities",
+                "instructions",
+                "ttlMs",
+                "cacheScope",
+                "_meta",
+            ],
+        );
+        assert_eq!(result["resultType"], "complete");
+        assert_eq!(
+            result["supportedVersions"],
+            serde_json::json!(["2025-03-26", "2026-07-28"])
+        );
+        assert_eq!(result["capabilities"], serde_json::json!({"tools": {}}));
+        assert_eq!(result["ttlMs"], 0);
+        assert_eq!(result["cacheScope"], "private");
+        assert!(result["instructions"].as_str().is_some_and(|text| !text.is_empty()));
+        assert_server_implementation(&result["_meta"]["io.modelcontextprotocol/serverInfo"]);
+
+        let list = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/list",
+            "params": {"_meta": modern_meta(version.clone())}
+        });
+        let list_headers = [
+            ("mcp-protocol-version", "2026-07-28"),
+            ("mcp-method", "tools/list"),
+        ];
+        let first = post_mcp(app.clone(), uri, Some(&key), &list, &list_headers).await;
+        let second = post_mcp(app.clone(), uri, Some(&key), &list, &list_headers).await;
+        assert_eq!(first.0, StatusCode::OK);
+        assert_eq!(first.2, second.2, "tools/list must be byte-stable");
+        let list = jsonrpc_body(&first.2);
+        let result = &list["result"];
+        assert_object_keys(result, &["resultType", "ttlMs", "cacheScope", "tools"]);
+        assert_eq!(result["resultType"], "complete");
+        assert_eq!(result["ttlMs"], 3_600_000);
+        assert_eq!(result["cacheScope"], "public");
+        assert_tool_catalog(&result["tools"]);
+        assert_eq!(
+            result["tools"]
+                .as_array()
+                .and_then(|tools| tools.iter().find(|tool| tool["name"] == "create_plan"))
+                .expect("create_plan tool")["inputSchema"]["$defs"]["PlanStepInput"]
+                ["properties"]["steps"]["items"]["$ref"],
+            "#/$defs/PlanStepInput"
+        );
+
+        let success = tools_call_body();
+        let call_headers = [
+            ("mcp-protocol-version", "2026-07-28"),
+            ("mcp-method", "tools/call"),
+            ("mcp-name", "search"),
+        ];
+        let first = post_mcp(app.clone(), uri, Some(&key), &success, &call_headers).await;
+        let second = post_mcp(app.clone(), uri, Some(&key), &success, &call_headers).await;
+        assert_eq!(first.0, StatusCode::OK);
+        assert_eq!(first.2, second.2, "successful tools/call must be byte-stable");
+        let success = jsonrpc_body(&first.2);
+        let result = &success["result"];
+        assert_object_keys(result, &["resultType", "content", "isError", "_meta"]);
+        assert_eq!(result["resultType"], "complete");
+        assert_eq!(result["isError"], false);
+        assert_eq!(result["content"][0]["type"], "text");
+        assert_server_implementation(&result["_meta"]["io.modelcontextprotocol/serverInfo"]);
+
+        let failure = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "search",
+                "arguments": {},
+                "_meta": modern_meta(version)
+            }
+        });
+        let (status, _, body) =
+            post_mcp(app, uri, Some(&key), &failure, &call_headers).await;
+        assert_eq!(status, StatusCode::OK);
+        let failure = jsonrpc_body(&body);
+        let result = &failure["result"];
+        assert_object_keys(result, &["resultType", "content", "isError", "_meta"]);
+        assert_eq!(result["resultType"], "complete");
+        assert_eq!(result["isError"], true);
+        assert!(
+            result["content"][0]["text"]
+                .as_str()
+                .is_some_and(|text| text.starts_with("failed to deserialize parameters:")),
+            "failure: {failure}"
+        );
+        assert_server_implementation(&result["_meta"]["io.modelcontextprotocol/serverInfo"]);
     }
 
     /// A wrong path token does not match the route at all (no secret leak,
