@@ -45,10 +45,12 @@ fn lock_is_busy(error: &std::io::Error) -> bool {
     {
         // LockFileEx reports ERROR_LOCK_VIOLATION rather than mapping it to
         // WouldBlock in std::io on Windows.
-        return error.raw_os_error() == Some(33);
+        error.raw_os_error() == Some(33)
     }
     #[cfg(not(windows))]
-    false
+    {
+        false
+    }
 }
 
 /// Handle to the on-disk attachments directory. Cheap to clone (just a
