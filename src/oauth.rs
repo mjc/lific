@@ -2396,13 +2396,25 @@ pub fn resolve_oauth_credential_for_resource(
     token: &str,
     expected_resource: &str,
 ) -> Result<OAuthCredential, OAuthReject> {
-    resolve_oauth_credential_inner(db, token, Some(expected_resource))
+    resolve_oauth_credential_inner(db, token, Some(Some(expected_resource)))
+}
+
+/// Resolve an OAuth bearer token for an ordinary REST request.
+///
+/// MCP grants carry an RFC 8707 resource indicator and must not be replayed
+/// against another protected surface. The `None` resource case is retained
+/// only for legacy rows created before audience binding existed.
+pub fn resolve_oauth_credential_for_rest(
+    db: &DbPool,
+    token: &str,
+) -> Result<OAuthCredential, OAuthReject> {
+    resolve_oauth_credential_inner(db, token, Some(None))
 }
 
 fn resolve_oauth_credential_inner(
     db: &DbPool,
     token: &str,
-    expected_resource: Option<&str>,
+    expected_resource: Option<Option<&str>>,
 ) -> Result<OAuthCredential, OAuthReject> {
     if !token.starts_with("lific_at_") {
         return Err(OAuthReject::Invalid);
@@ -2461,7 +2473,7 @@ fn resolve_oauth_credential_inner(
         .ok_or(OAuthReject::Invalid)?;
 
     if let Some(expected_resource) = expected_resource
-        && row.resource.as_deref() != Some(expected_resource)
+        && row.resource.as_deref() != expected_resource
     {
         return Err(OAuthReject::Invalid);
     }
