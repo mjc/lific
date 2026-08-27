@@ -12792,6 +12792,8 @@ mod authz_gating_tests {
             db: (*m.db).clone(),
             manager: crate::auth::create_key_manager().unwrap(),
             public_url: "https://example.com".into(),
+            issuer_is_explicit: true,
+            mcp_allowed_hosts: Vec::new(),
             required: true,
         };
         let app = Router::new()

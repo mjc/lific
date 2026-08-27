@@ -18,6 +18,8 @@ pub struct AuthState {
     pub db: DbPool,
     pub manager: ApiKeyManagerV0,
     pub public_url: String,
+    pub issuer_is_explicit: bool,
+    pub mcp_allowed_hosts: Vec<String>,
     /// LIF-294: mirror of `[auth] required`. When false, a request with no
     /// credential at all passes as operator-equivalent; see `require_api_key`.
     pub required: bool,
@@ -736,9 +738,15 @@ pub async fn require_api_key(
     // canonical protected-resource metadata lives at the path-aware well-known
     // location. Point Claude there so the `resource` it reads matches the URL
     // the user entered.
+    let mcp_resource = crate::oauth::mcp_resource_for_request(
+        &auth.public_url,
+        auth.issuer_is_explicit,
+        &auth.mcp_allowed_hosts,
+        request.headers(),
+    );
     let www_auth = format!(
         "Bearer resource_metadata=\"{}/.well-known/oauth-protected-resource/mcp\"",
-        auth.public_url
+        mcp_resource.trim_end_matches("/mcp")
     );
 
     let Some(token) = token else {
@@ -902,8 +910,11 @@ pub async fn require_api_key(
         // token takes the operator fallback, so revoking a tool's credential
         // could promote it. The typed outcome makes that state unrepresentable.
         let credential = if is_mcp_request {
-            let resource = crate::oauth::mcp_resource(&auth.public_url);
-            crate::oauth::resolve_oauth_credential_for_resource(&auth.db, &token, &resource)
+            crate::oauth::resolve_oauth_credential_for_resource(
+                &auth.db,
+                &token,
+                &mcp_resource,
+            )
         } else {
             crate::oauth::resolve_oauth_credential(&auth.db, &token)
         };
@@ -2243,6 +2254,8 @@ mod tests {
             db: pool.clone(),
             manager: create_key_manager().unwrap(),
             public_url: "https://example.com".into(),
+            issuer_is_explicit: true,
+            mcp_allowed_hosts: Vec::new(),
             required: true,
         }
     }
@@ -2377,6 +2390,38 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn oauth_token_uses_the_allowlisted_request_host_for_mcp_audience() {
+        let pool = test_db();
+        let token = insert_oauth_token(&pool, "request-host", None);
+        let hash = sha256_hex(token.as_bytes());
+        pool.write()
+            .unwrap()
+            .execute(
+                "UPDATE oauth_tokens SET resource = 'http://localhost:3456/mcp' WHERE access_token = ?1",
+                params![hash],
+            )
+            .unwrap();
+
+        let mut auth_state = test_auth_state(&pool);
+        auth_state.public_url = "http://127.0.0.1:3456".into();
+        auth_state.issuer_is_explicit = false;
+        auth_state.mcp_allowed_hosts = vec!["localhost".into(), "127.0.0.1".into()];
+
+        let response = mcp_echo_app(auth_state)
+            .oneshot(
+                Request::builder()
+                    .uri("/mcp")
+                    .header("host", "localhost:3456")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[tokio::test]

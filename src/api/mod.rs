@@ -1215,6 +1215,8 @@ mod tests {
                     db: db.clone(),
                     manager,
                     public_url: "https://example.com".into(),
+                    issuer_is_explicit: true,
+                    mcp_allowed_hosts: Vec::new(),
                     required: true,
                 },
                 crate::auth::require_api_key,
@@ -2122,6 +2124,8 @@ mod authz_gating_tests {
             db: db.clone(),
             manager: crate::auth::create_key_manager().unwrap(),
             public_url: "https://example.com".into(),
+            issuer_is_explicit: true,
+            mcp_allowed_hosts: Vec::new(),
             required: true,
         };
         // The real request path: api::router behind the real require_api_key

@@ -146,9 +146,14 @@ pub struct OAuthState {
 /// are unauthenticated endpoints, and trusting forwarded headers here would
 /// let any direct client control the advertised authorization/token endpoint
 /// URLs (issuer spoofing).
-fn effective_issuer(state: &OAuthState, headers: &HeaderMap) -> String {
-    if state.issuer_is_explicit {
-        return canonical_issuer(&state.issuer);
+pub(crate) fn effective_issuer_for_request(
+    issuer: &str,
+    issuer_is_explicit: bool,
+    allowed_hosts: &[String],
+    headers: &HeaderMap,
+) -> String {
+    if issuer_is_explicit {
+        return canonical_issuer(issuer);
     }
     let Some(host_header) = headers
         .get(axum::http::header::HOST)
@@ -156,11 +161,11 @@ fn effective_issuer(state: &OAuthState, headers: &HeaderMap) -> String {
         .map(str::trim)
         .filter(|h| !h.is_empty())
     else {
-        return canonical_issuer(&state.issuer);
+        return canonical_issuer(issuer);
     };
     match crate::links::parse_http_authority(host_header) {
         Some(authority)
-            if crate::links::authority_is_allowlisted(&authority, &state.allowed_hosts) =>
+            if crate::links::authority_is_allowlisted(&authority, allowed_hosts) =>
         {
             // Allowlisted hosts are loopback names (a proxy host only enters
             // the allowlist via public_url, which makes the issuer explicit),
@@ -170,14 +175,23 @@ fn effective_issuer(state: &OAuthState, headers: &HeaderMap) -> String {
         Some(_) => {
             warn!(
                 host = %host_header,
-                issuer = %state.issuer,
+                issuer,
                 "request Host does not match the advertised OAuth issuer; \
                  set server.public_url for proxied deployments"
             );
-            canonical_issuer(&state.issuer)
+            canonical_issuer(issuer)
         }
-        None => canonical_issuer(&state.issuer),
+        None => canonical_issuer(issuer),
     }
+}
+
+fn effective_issuer(state: &OAuthState, headers: &HeaderMap) -> String {
+    effective_issuer_for_request(
+        &state.issuer,
+        state.issuer_is_explicit,
+        &state.allowed_hosts,
+        headers,
+    )
 }
 
 fn canonical_issuer(issuer: &str) -> String {
@@ -191,6 +205,20 @@ fn canonical_issuer(issuer: &str) -> String {
 
 pub(crate) fn mcp_resource(issuer: &str) -> String {
     format!("{}/mcp", canonical_issuer(issuer))
+}
+
+pub(crate) fn mcp_resource_for_request(
+    issuer: &str,
+    issuer_is_explicit: bool,
+    allowed_hosts: &[String],
+    headers: &HeaderMap,
+) -> String {
+    mcp_resource(&effective_issuer_for_request(
+        issuer,
+        issuer_is_explicit,
+        allowed_hosts,
+        headers,
+    ))
 }
 
 /// Validate a redirect URI submitted to dynamic client registration.
@@ -4852,6 +4880,8 @@ mod tests {
                 db: f.db.clone(),
                 manager: crate::auth::create_key_manager().unwrap(),
                 public_url: "https://example.com".into(),
+                issuer_is_explicit: true,
+                mcp_allowed_hosts: Vec::new(),
                 required: true,
             };
             let app = crate::api::router(f.db.clone(), &[])

@@ -252,13 +252,6 @@ fn build_app_with_store(
 
     let manager_ext = Arc::new(manager.clone());
 
-    let auth_state = auth::AuthState {
-        db: pool.clone(),
-        manager,
-        public_url: issuer.clone(),
-        required: cfg.auth.required,
-    };
-
     // MCP StreamableHTTP service
     let db_for_mcp = pool.clone();
     let realtime_for_mcp = realtime.clone();
@@ -266,6 +259,16 @@ fn build_app_with_store(
         mcp::McpHttpPolicy::from_config(&cfg.server.cors_origins, cfg.server.public_url.as_deref());
     let mcp_allowed_hosts = mcp_policy.allowed_hosts.clone();
     let mcp_allowed_origins = mcp_policy.allowed_origins.clone();
+
+    let auth_state = auth::AuthState {
+        db: pool.clone(),
+        manager,
+        public_url: issuer.clone(),
+        issuer_is_explicit: cfg.server.public_url.is_some(),
+        mcp_allowed_hosts: mcp_allowed_hosts.clone(),
+        required: cfg.auth.required,
+    };
+
     let mcp_config = mcp::streamable_http_config(mcp_allowed_hosts.clone());
 
     let mcp_service = StreamableHttpService::new(

@@ -1523,6 +1523,8 @@ mod tests {
                 db: db.clone(),
                 manager: manager.clone(),
                 public_url: "https://example.com".into(),
+                issuer_is_explicit: true,
+                mcp_allowed_hosts: Vec::new(),
                 required: true,
             };
             // `with_client_ip_test_layers` supplies the peer and trusted-proxy
