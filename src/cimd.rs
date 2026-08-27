@@ -276,7 +276,8 @@ fn parse_metadata(body: &[u8], client_id: &str) -> Result<ClientMetadata, String
 
 fn is_json_content_type(content_type: &str) -> bool {
     let media_type = content_type.split(';').next().unwrap_or_default().trim();
-    media_type.eq_ignore_ascii_case("application/json") || media_type.ends_with("+json")
+    media_type.eq_ignore_ascii_case("application/json")
+        || media_type.to_ascii_lowercase().ends_with("+json")
 }
 
 fn cache_ttl(headers: &reqwest::header::HeaderMap) -> Duration {
@@ -286,14 +287,16 @@ fn cache_ttl(headers: &reqwest::header::HeaderMap) -> Duration {
     else {
         return Duration::ZERO;
     };
-    for directive in cache_control.split(',').map(str::trim) {
-        if directive.eq_ignore_ascii_case("no-store") || directive.eq_ignore_ascii_case("no-cache")
-        {
-            return Duration::ZERO;
-        }
+    let directives: Vec<_> = cache_control.split(',').map(str::trim).collect();
+    if directives.iter().any(|directive| {
+        directive.eq_ignore_ascii_case("no-store") || directive.eq_ignore_ascii_case("no-cache")
+    }) {
+        return Duration::ZERO;
+    }
+    for directive in directives {
         if let Some((name, value)) = directive.split_once('=')
             && name.eq_ignore_ascii_case("max-age")
-            && let Ok(seconds) = value.trim_matches('"').parse::<u64>()
+            && let Ok(seconds) = value.trim().trim_matches('"').parse::<u64>()
         {
             return Duration::from_secs(seconds).min(MAX_CACHE_TTL);
         }
@@ -389,12 +392,51 @@ mod tests {
     }
 
     #[test]
+    fn cimd_redirects_allow_local_http_but_not_remote_http() {
+        let base = serde_json::json!({
+            "client_id": "https://client.example/metadata.json",
+            "client_name": "Example"
+        });
+        for redirect_uri in [
+            "http://localhost/callback",
+            "http://127.0.0.1:4312/callback",
+            "http://[::1]/callback",
+            "https://app.example/callback",
+        ] {
+            let mut document = base.clone();
+            document["redirect_uris"] = serde_json::json!([redirect_uri]);
+            assert!(
+                parse_metadata(
+                    &serde_json::to_vec(&document).unwrap(),
+                    "https://client.example/metadata.json"
+                )
+                .is_ok(),
+                "redirect should be accepted: {redirect_uri}"
+            );
+        }
+        let mut document = base;
+        document["redirect_uris"] = serde_json::json!(["http://app.example/callback"]);
+        assert!(
+            parse_metadata(
+                &serde_json::to_vec(&document).unwrap(),
+                "https://client.example/metadata.json"
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn cache_lifetime_is_bounded_and_fail_closed_without_cache_control() {
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(header::CACHE_CONTROL, "max-age=999999".parse().unwrap());
         assert_eq!(cache_ttl(&headers), MAX_CACHE_TTL);
         headers.insert(header::CACHE_CONTROL, "Max-Age=30".parse().unwrap());
         assert_eq!(cache_ttl(&headers), Duration::from_secs(30));
+        headers.insert(
+            header::CACHE_CONTROL,
+            "max-age=30, no-cache".parse().unwrap(),
+        );
+        assert_eq!(cache_ttl(&headers), Duration::ZERO);
         headers.insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
         assert_eq!(cache_ttl(&headers), Duration::ZERO);
         headers.remove(header::CACHE_CONTROL);

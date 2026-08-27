@@ -224,14 +224,11 @@ pub(crate) fn mcp_resource_for_request(
 
 /// Validate a redirect URI submitted to dynamic client registration.
 ///
-/// We only accept absolute `http://` or `https://` URLs. This explicitly
-/// rejects schemes that have been used in past OAuth attacks (e.g.
-/// `javascript:`, `data:`, `file:`, `vbscript:`, `blob:`, `about:`,
-/// custom app schemes, and bare scheme-less strings).
-///
-/// Note: we deliberately do NOT block private/loopback hosts because
-/// `http://localhost/callback` is the standard pattern for desktop
-/// OAuth clients.
+/// We accept HTTPS URLs, plus HTTP URLs on localhost/loopback for native
+/// clients. This rejects schemes that have been used in past OAuth attacks
+/// (e.g. `javascript:`, `data:`, `file:`, `vbscript:`, `blob:`, `about:`,
+/// custom app schemes, and bare scheme-less strings), as well as remote HTTP
+/// callbacks that the July 2026 MCP authorization security rules forbid.
 pub(crate) fn validate_redirect_uri(uri: &str) -> Result<(), &'static str> {
     let trimmed = uri.trim();
     if trimmed.is_empty() {
@@ -243,30 +240,23 @@ pub(crate) fn validate_redirect_uri(uri: &str) -> Result<(), &'static str> {
     if trimmed.chars().any(char::is_control) {
         return Err("redirect_uri must not contain control characters");
     }
-    // Lowercase the scheme prefix only; the rest of the URI is case-sensitive.
-    let lower_prefix: String = trimmed
-        .chars()
-        .take_while(|c| *c != ':')
-        .flat_map(char::to_lowercase)
-        .collect();
-    match lower_prefix.as_str() {
-        "http" | "https" => {}
-        _ => return Err("redirect_uri must use http or https scheme"),
+    let parsed = reqwest::Url::parse(trimmed)
+        .map_err(|_| "redirect_uri must be an absolute URL (scheme://host/...)")?;
+    if !parsed.username().is_empty() || parsed.password().is_some() || parsed.fragment().is_some() {
+        return Err("redirect_uri must not contain credentials or a fragment");
     }
-    // Require the scheme to be followed by `://` (rejects e.g. `http:evil`).
-    let after_scheme = &trimmed[lower_prefix.len()..];
-    if !after_scheme.starts_with("://") {
-        return Err("redirect_uri must be an absolute URL (scheme://host/...)");
+    let is_https = parsed.scheme().eq_ignore_ascii_case("https");
+    let host = parsed
+        .host_str()
+        .unwrap_or_default()
+        .trim_matches(['[', ']']);
+    let is_local_http = parsed.scheme().eq_ignore_ascii_case("http")
+        && crate::config::is_localhost_host(host);
+    if is_https || is_local_http {
+        Ok(())
+    } else {
+        Err("redirect_uri must use HTTPS, or HTTP on localhost only")
     }
-    // Require some host after `://`.
-    let rest = &after_scheme[3..];
-    let host_end = rest
-        .find(['/', '?', '#'])
-        .unwrap_or(rest.len());
-    if rest[..host_end].is_empty() {
-        return Err("redirect_uri must include a host");
-    }
-    Ok(())
 }
 
 pub fn router(state: OAuthState) -> Router {
@@ -606,6 +596,13 @@ async fn authorize_page(
     headers: HeaderMap,
     Query(params): Query<AuthorizeParams>,
 ) -> Response {
+    if let Err(reason) = validate_redirect_uri(&params.redirect_uri) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Html(format!("<h1>Invalid redirect URI</h1><p>{reason}</p>")),
+        )
+            .into_response();
+    }
     if let Err(reason) = load_cimd_metadata(&oauth, &headers, &params.client_id).await {
         return (
             StatusCode::BAD_REQUEST,
@@ -897,6 +894,14 @@ async fn authorize_approve(
                 .into_response();
         }
     };
+
+    if let Err(reason) = validate_redirect_uri(&form.redirect_uri) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Html(format!("<h1>Invalid redirect URI</h1><p>{reason}</p>")),
+        )
+            .into_response();
+    }
 
     // Validate the redirect_uri against the client's registered URIs
     let redirect_ok = if let Some(metadata) = cimd_metadata.as_ref() {
@@ -3531,6 +3536,24 @@ mod tests {
     fn validate_redirect_uri_rejects_log_injection_characters() {
         assert!(validate_redirect_uri(" http://localhost/callback").is_err());
         assert!(validate_redirect_uri("http://localhost/callback\nforged=entry").is_err());
+    }
+
+    #[test]
+    fn validate_redirect_uri_rejects_remote_http() {
+        assert!(validate_redirect_uri("http://app.example/callback").is_err());
+        assert!(validate_redirect_uri("http://192.0.2.10/callback").is_err());
+    }
+
+    #[test]
+    fn validate_redirect_uri_rejects_credentials_and_fragments() {
+        for uri in [
+            "https://user@app.example/callback",
+            "https://user:password@app.example/callback",
+            "https://app.example/callback#fragment",
+            "http://localhost/callback#fragment",
+        ] {
+            assert!(validate_redirect_uri(uri).is_err(), "should reject: {uri}");
+        }
     }
 
     #[test]
