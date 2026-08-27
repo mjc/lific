@@ -5846,12 +5846,32 @@ mod tests {
             client_id: &str,
             code: &str,
         ) -> (StatusCode, serde_json::Value) {
-            let body = format!(
-                "grant_type=authorization_code&code={}&redirect_uri={}&client_id={}&code_verifier={}&resource=https%3A%2F%2Fexample.com%2Fmcp",
-                code,
-                urlencoding::encode("http://localhost/callback"),
+            exchange_code_with(
+                app,
                 client_id,
+                code,
+                "http://localhost/callback",
                 VERIFIER,
+                "https://example.com/mcp",
+            )
+            .await
+        }
+
+        async fn exchange_code_with(
+            app: &Router,
+            client_id: &str,
+            code: &str,
+            redirect_uri: &str,
+            verifier: &str,
+            resource: &str,
+        ) -> (StatusCode, serde_json::Value) {
+            let body = format!(
+                "grant_type=authorization_code&code={}&redirect_uri={}&client_id={}&code_verifier={}&resource={}",
+                urlencoding::encode(code),
+                urlencoding::encode(redirect_uri),
+                urlencoding::encode(client_id),
+                urlencoding::encode(verifier),
+                urlencoding::encode(resource),
             );
             let resp = app
                 .clone()
@@ -5888,6 +5908,65 @@ mod tests {
                     .unwrap()
                     .starts_with("lific_at_")
             );
+        }
+
+        #[tokio::test]
+        async fn authorization_codes_are_bound_and_single_use() {
+            let (app, db) = test_oauth_app();
+            let session = create_test_session(&db);
+            let client_id = register_client_helper(&app, "http://localhost/callback").await;
+            let code = approve_code(&app, &client_id, &session).await;
+            let cases = [
+                (
+                    "client",
+                    "other-client",
+                    "http://localhost/callback",
+                    VERIFIER,
+                    "https://example.com/mcp",
+                ),
+                (
+                    "redirect",
+                    client_id.as_str(),
+                    "http://localhost/other",
+                    VERIFIER,
+                    "https://example.com/mcp",
+                ),
+                (
+                    "PKCE verifier",
+                    client_id.as_str(),
+                    "http://localhost/callback",
+                    "other_verifier_abcdefghijklmnopqrstuvwxyz_0123456789",
+                    "https://example.com/mcp",
+                ),
+                (
+                    "resource",
+                    client_id.as_str(),
+                    "http://localhost/callback",
+                    VERIFIER,
+                    "https://other.example/mcp",
+                ),
+            ];
+
+            for (binding, attempted_client, redirect_uri, verifier, resource) in cases {
+                let (status, body) = exchange_code_with(
+                    &app,
+                    attempted_client,
+                    &code,
+                    redirect_uri,
+                    verifier,
+                    resource,
+                )
+                .await;
+                assert_eq!(status, StatusCode::BAD_REQUEST, "{binding}: {body}");
+                assert_eq!(body["error"], "invalid_grant", "{binding}: {body}");
+            }
+
+            let (status, body) = exchange_code(&app, &client_id, &code).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+
+            let (status, body) = exchange_code(&app, &client_id, &code).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+            assert_eq!(body["error"], "invalid_grant");
         }
 
         #[tokio::test]
