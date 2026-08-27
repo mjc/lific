@@ -1538,7 +1538,7 @@ mod tests {
     // router `lific start` builds — binds it on an ephemeral loopback port,
     // and runs the doctor HTTP check functions against it. This proves the
     // three paths that matter: 401-with-WWW-Authenticate (no key), discovery
-    // 200, and an authorized `initialize` round-trip with a real key.
+    // 200, and an authorized modern discovery plus tool round-trip with a real key.
 
     use std::net::SocketAddr;
     use std::sync::Arc;
