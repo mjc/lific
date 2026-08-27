@@ -205,12 +205,14 @@ pub(super) async fn upload_attachment(
     // Otherwise GC can delete a newly written blob in the gap before its row
     // is inserted.
     let (attachment, event) = store.with_lock(|store| {
-        let blob_existed = store.path_for(&sha)?.exists();
-        let thumb_existed = thumbnail
-            .as_ref()
-            .map(|_| store.thumb_path_for(&sha).map(|path| path.exists()))
-            .transpose()?
-            .unwrap_or(false);
+        // Same definition of "already there" the writer uses, so a path that
+        // is present but not a usable regular file fails here rather than
+        // being read as "this upload created it" during cleanup.
+        let blob_existed = store.blob_exists(&sha)?;
+        let thumb_existed = match thumbnail.as_ref() {
+            Some(_) => store.thumb_exists(&sha)?,
+            None => false,
+        };
         let result = db.transaction(|conn| {
             let mut att = q::create_attachment(conn, &sha, &filename, &mime, size, Some(user.id))?;
             store.write_unlocked(&bytes)?;
@@ -239,12 +241,14 @@ pub(super) async fn upload_attachment(
             Ok((att, event))
         });
         if result.is_err() {
-            if !blob_existed {
-                let _ = store.delete_unlocked(&sha);
-            }
-            if thumbnail.is_some() && !thumb_existed {
-                let _ = store.delete_thumb(&sha);
-            }
+            discard_failed_upload(
+                &db,
+                store,
+                &sha,
+                blob_existed,
+                thumb_existed,
+                thumbnail.is_some(),
+            );
         }
         result
     })?;
@@ -264,6 +268,49 @@ pub(super) async fn upload_attachment(
         has_thumbnail: attachment.has_thumbnail,
     };
     Ok((StatusCode::OK, axum::Json(resp)).into_response())
+}
+
+/// Undo the on-disk side effects of an upload whose transaction rolled back.
+///
+/// Runs under the store lock, which since the store lock became a file lock
+/// means no other *process* can be mid-upload either. That closes the original
+/// hazard: two Lific processes both probing "blob absent", both writing it,
+/// one failing and deleting the bytes the other had just committed a row for.
+///
+/// The database is still consulted rather than trusting the pre-flight probe,
+/// because the probe cannot see the one case the lock does not rule out. In a
+/// content-addressed store an *already committed* row can reference these
+/// exact bytes while the file is missing (a blob lost to a manual delete, a
+/// half-restored data dir, an interrupted GC). This upload of the same content
+/// heals that file; deleting it again because "we created it" would put the
+/// existing row straight back to dangling. So the delete only happens when the
+/// bytes are both new and unreferenced, and an unreadable database means keep
+/// them: bytes nobody references cost a GC sweep, bytes someone references
+/// cost data.
+fn discard_failed_upload(
+    db: &DbPool,
+    store: &AttachmentStore,
+    sha: &str,
+    blob_existed: bool,
+    thumb_existed: bool,
+    had_thumbnail: bool,
+) {
+    let referenced = match with_read(db, |conn| q::count_rows_for_sha(conn, sha)) {
+        Ok(count) => count > 0,
+        Err(error) => {
+            tracing::warn!(error = %error, "could not confirm attachment references; keeping bytes");
+            true
+        }
+    };
+    if referenced {
+        return;
+    }
+    if !blob_existed {
+        let _ = store.delete_unlocked(sha);
+    }
+    if had_thumbnail && !thumb_existed {
+        let _ = store.delete_thumb(sha);
+    }
 }
 
 /// Query params for `GET /api/attachments?entity_type=&entity_id=` — lists the
@@ -1192,6 +1239,89 @@ fn header_safe(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── Failed-upload cleanup ────────────────────────────────
+
+    /// A pool + store pair for the cleanup tests, with the store rooted in a
+    /// scratch directory the returned guard owns.
+    fn cleanup_fixture() -> (DbPool, AttachmentStore, tempfile::TempDir) {
+        let (store, tmp) = crate::api::test_helpers::test_attachment_store();
+        let pool = crate::db::open_memory().expect("in-memory test db");
+        (pool, store, tmp)
+    }
+
+    #[test]
+    fn failed_upload_removes_the_blob_it_created() {
+        let (pool, store, _tmp) = cleanup_fixture();
+        let bytes = b"bytes only this upload wrote";
+        let sha = store.write(bytes).expect("write blob");
+
+        // `blob_existed = false`: this upload is what put the file there, and
+        // its transaction rolled back, so nothing references the bytes.
+        discard_failed_upload(&pool, &store, &sha, false, false, false);
+
+        assert!(
+            !store.blob_exists(&sha).unwrap(),
+            "an unreferenced blob this upload created must be cleaned up"
+        );
+    }
+
+    #[test]
+    fn failed_upload_keeps_a_blob_that_was_already_there() {
+        let (pool, store, _tmp) = cleanup_fixture();
+        let sha = store.write(b"pre-existing bytes").expect("write blob");
+
+        discard_failed_upload(&pool, &store, &sha, true, false, false);
+
+        assert!(
+            store.blob_exists(&sha).unwrap(),
+            "bytes that predate this upload are not ours to delete"
+        );
+    }
+
+    #[test]
+    fn failed_upload_keeps_bytes_a_committed_row_still_references() {
+        // The case the pre-flight probe cannot see: a committed row already
+        // points at this content while its blob was missing (lost blob, a
+        // half-restored data dir, an interrupted GC). This upload of the same
+        // file healed it, then failed for an unrelated reason. Deleting the
+        // file "because we created it" would put that row straight back to
+        // dangling, which is data loss for the row's owner.
+        let (pool, store, _tmp) = cleanup_fixture();
+        let bytes = b"content two uploads share";
+        let sha = AttachmentStore::hash_bytes(bytes);
+        {
+            let conn = pool.write().unwrap();
+            q::create_attachment(&conn, &sha, "shared.txt", "text/plain", 25, None).unwrap();
+        }
+        store.write(bytes).expect("write blob");
+
+        discard_failed_upload(&pool, &store, &sha, false, false, false);
+
+        assert!(
+            store.blob_exists(&sha).unwrap(),
+            "a referenced blob must survive another upload's rollback"
+        );
+    }
+
+    #[test]
+    fn failed_upload_cleans_up_a_thumbnail_it_cached() {
+        let (pool, store, _tmp) = cleanup_fixture();
+        let bytes = b"thumbnail owner bytes";
+        let sha = store.write(bytes).expect("write blob");
+        store.write_thumb(&sha, b"cached thumbnail").unwrap();
+
+        discard_failed_upload(&pool, &store, &sha, true, false, true);
+
+        assert!(
+            store.blob_exists(&sha).unwrap(),
+            "the pre-existing blob stays"
+        );
+        assert!(
+            !store.thumb_exists(&sha).unwrap(),
+            "the thumbnail this upload cached goes"
+        );
+    }
 
     #[test]
     fn sanitize_strips_paths_and_control_chars() {

@@ -13,12 +13,24 @@
 //! caller has confirmed no `attachments` row still references that hash (the
 //! orphan GC's job — see `db::queries::attachments`).
 
+use std::fs::File;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use fs2::FileExt;
 use sha2::{Digest, Sha256};
 
 use crate::error::LificError;
+
+/// Cross-process advisory lock file for the store, kept inside the store
+/// directory so it moves, backs up and gets replaced with it.
+///
+/// The leading dot keeps it out of the content-addressed namespace: every
+/// consumer that enumerates the store (`dump::write_dump`, restore validation)
+/// only accepts bare lowercase sha256 filenames, so this file is skipped
+/// rather than mistaken for a blob.
+pub(crate) const STORE_LOCK_FILE: &str = ".lific-attachments.lock";
 
 /// Handle to the on-disk attachments directory. Cheap to clone (just a
 /// `PathBuf`); threaded through the API layer as an axum `Extension` the same
@@ -199,14 +211,100 @@ impl AttachmentStore {
         }
     }
 
+    /// Whether a usable blob is already present for this hash.
+    ///
+    /// Uses exactly the definition [`Self::write_unlocked`] uses, so a caller
+    /// probing "is it already there?" and the writer that acts on the answer
+    /// cannot disagree: a path that exists but is a symlink, a directory or a
+    /// hard link is an error here rather than a `false` that would later read
+    /// as "this upload created it".
+    pub(crate) fn blob_exists(&self, sha256: &str) -> Result<bool, LificError> {
+        existing_regular_file(&self.path_for(sha256)?, "attachment")
+    }
+
+    /// [`Self::blob_exists`] for the cached thumbnail.
+    pub(crate) fn thumb_exists(&self, sha256: &str) -> Result<bool, LificError> {
+        existing_regular_file(&self.thumb_path_for(sha256)?, "thumbnail")
+    }
+
     /// Compute the lowercase hex SHA-256 of a byte slice — the content address.
     pub fn hash_bytes(bytes: &[u8]) -> String {
         let digest = Sha256::digest(bytes);
         digest.iter().map(|b| format!("{b:02x}")).collect()
     }
 
-    /// Serialize filesystem operations with metadata changes that callers
-    /// perform under [`Self::with_lock`]. Cloned stores share this lock.
+    /// Path of the store's cross-process lock file.
+    pub(crate) fn lock_path(&self) -> PathBuf {
+        self.dir.join(STORE_LOCK_FILE)
+    }
+
+    /// Open the lock file, creating the store directory if needed.
+    ///
+    /// `O_NOFOLLOW` and mode 0600: the lock file is opened for writing, so a
+    /// symlink planted at that name would otherwise let another user pick the
+    /// file this process opens.
+    fn open_lock_file(&self) -> std::io::Result<File> {
+        std::fs::create_dir_all(&self.dir)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&self.dir, std::fs::Permissions::from_mode(0o700))?;
+        }
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true).write(true).create(true).truncate(false);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+        }
+        options.open(self.lock_path())
+    }
+
+    /// Take the store's advisory exclusive lock, blocking until it is free.
+    ///
+    /// The returned handle owns the lock: dropping it (including while a panic
+    /// unwinds) closes the descriptor, which releases the lock, and a process
+    /// that dies mid-operation releases it too.
+    fn acquire_file_lock(&self) -> std::io::Result<File> {
+        let file = self.open_lock_file()?;
+        FileExt::lock_exclusive(&file)?;
+        Ok(file)
+    }
+
+    /// Whether some other open handle currently holds the store lock.
+    ///
+    /// A probe, not an acquisition: it takes and immediately releases the lock
+    /// when it is free. Used by tests to observe serialization without risking
+    /// a hang, and safe to call from any thread or process.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn lock_is_held(&self) -> bool {
+        let Ok(file) = self.open_lock_file() else {
+            return true;
+        };
+        match file.try_lock_exclusive() {
+            Ok(()) => {
+                let _ = FileExt::unlock(&file);
+                false
+            }
+            Err(_) => true,
+        }
+    }
+
+    /// Serialize filesystem operations with the metadata changes that callers
+    /// perform under [`Self::with_lock`].
+    ///
+    /// Two locks, both needed. The in-process mutex is the cheap one and
+    /// cloned stores share it. The advisory file lock is what makes this
+    /// correct for *independently constructed* stores and for a second Lific
+    /// process (a `lific dump`, a GC sweep, an editor's MCP server) pointed at
+    /// the same data directory: without it, one process's failed-upload
+    /// cleanup could delete a blob another process had just written and
+    /// committed a row for.
+    ///
+    /// Lock ordering is store then database, everywhere. Callers open their DB
+    /// connection or transaction *inside* the closure; taking a write
+    /// connection first and the store lock second would invert the order and
+    /// can deadlock.
     pub(crate) fn with_lock<T>(
         &self,
         operation: impl FnOnce(&Self) -> Result<T, LificError>,
@@ -215,12 +313,15 @@ impl AttachmentStore {
             .operation_lock
             .lock()
             .map_err(|_| LificError::Internal("attachment store lock poisoned".into()))?;
+        let _file_lock = self
+            .acquire_file_lock()
+            .map_err(|e| LificError::Internal(format!("lock attachment store: {e}")))?;
         operation(self)
     }
 
     /// MCP's tool boundary uses sanitized strings instead of `LificError`.
-    /// Keep it on this same mutex so both transports coordinate blob writes
-    /// and orphan collection.
+    /// Keep it on the same two locks as [`Self::with_lock`] so both transports
+    /// (and every other process) coordinate blob writes and orphan collection.
     pub(crate) fn with_string_lock<T>(
         &self,
         operation: impl FnOnce(&Self) -> Result<T, String>,
@@ -229,6 +330,9 @@ impl AttachmentStore {
             .operation_lock
             .lock()
             .map_err(|_| "attachment store lock poisoned".to_string())?;
+        let _file_lock = self
+            .acquire_file_lock()
+            .map_err(|e| format!("lock attachment store: {e}"))?;
         operation(self)
     }
 
@@ -531,52 +635,203 @@ pub fn is_inline_safe_mime(mime: &str) -> bool {
 /// signature (images, pdf, zip) is decided purely by the bytes — a lie in the
 /// header can't smuggle an executable past this.
 pub fn sniff_and_validate(bytes: &[u8], declared: Option<&str>) -> Result<String, LificError> {
+    match classify_prefix(prefix_of(bytes), declared) {
+        PrefixVerdict::Decided(mime) => Ok(mime),
+        PrefixVerdict::Rejected(error) => Err(error),
+        // Text is the only verdict the head cannot settle: serving arbitrary
+        // binary as `text/plain` is the thing to avoid, so every byte has to
+        // be valid UTF-8, not just the ones we sniffed.
+        PrefixVerdict::TextIfUtf8 => {
+            if std::str::from_utf8(bytes).is_ok() {
+                Ok("text/plain".to_string())
+            } else {
+                Err(unrecognized_type())
+            }
+        }
+    }
+}
+
+/// Number of leading bytes every content-type decision is made from.
+///
+/// Each check below reads only the head: magic signatures are at most 16 bytes
+/// in, the executable markers are 4, and the SVG/XML probe looks at 512. 4 KiB
+/// is comfortably past all of them and is the entire buffer
+/// [`sniff_and_validate_stream`] ever holds.
+pub(crate) const SNIFF_PREFIX_BYTES: usize = 4096;
+
+fn prefix_of(bytes: &[u8]) -> &[u8] {
+    &bytes[..bytes.len().min(SNIFF_PREFIX_BYTES)]
+}
+
+fn unrecognized_type() -> LificError {
+    LificError::BadRequest("rejected: unsupported or unrecognized file type".into())
+}
+
+/// What the leading bytes alone can say about a file's type.
+enum PrefixVerdict {
+    /// Settled by signature; the rest of the file cannot change it.
+    Decided(String),
+    Rejected(LificError),
+    /// `text/plain`, but only if the *whole* file is valid UTF-8.
+    TextIfUtf8,
+}
+
+/// The shared content-type decision, made from a bounded prefix.
+///
+/// [`sniff_and_validate`] and [`sniff_and_validate_stream`] both route through
+/// this, so an in-memory upload and a streamed restore cannot drift into
+/// disagreeing about what a file is.
+fn classify_prefix(prefix: &[u8], declared: Option<&str>) -> PrefixVerdict {
     let declared = declared.map(|d| d.split(';').next().unwrap_or(d).trim().to_ascii_lowercase());
 
     // Signature-based detection first (authoritative).
-    if let Some(mime) = sniff_magic(bytes) {
+    if let Some(mime) = sniff_magic(prefix) {
         // One container, two canonical types: a WebM/Matroska file with no
         // video track is `audio/webm`, and telling them apart needs a full
         // track parse. The bytes still decide that this IS a WebM container;
         // the declared type only picks which of the two allowlisted labels we
         // record, and both are inline-safe media, so a lie here buys nothing.
         if mime == "video/webm" && declared.as_deref() == Some("audio/webm") {
-            return Ok("audio/webm".to_string());
+            return PrefixVerdict::Decided("audio/webm".to_string());
         }
-        return Ok(mime.to_string());
+        return PrefixVerdict::Decided(mime.to_string());
     }
 
     // No recognizable binary signature. Reject anything that structurally
     // looks like an executable or script, regardless of the declared type.
-    if looks_executable(bytes) {
-        return Err(LificError::BadRequest(
+    if looks_executable(prefix) {
+        return PrefixVerdict::Rejected(LificError::BadRequest(
             "rejected: file looks like an executable".into(),
         ));
     }
 
     // SVG is XML-based (text signature): accept when it declares an svg/xml
     // type and the content opens like SVG/XML.
-    if let Some(d) = declared.as_deref() {
-        if d == "image/svg+xml" && looks_like_svg(bytes) {
-            return Ok("image/svg+xml".to_string());
-        }
-        // Plain text / logs have no signature — trust the declared type only
-        // when it's the text type on the allowlist and the bytes are valid
-        // UTF-8 (so we never serve arbitrary binary as text/plain).
-        if (d == "text/plain" || d == "text/x-log") && std::str::from_utf8(bytes).is_ok() {
-            return Ok("text/plain".to_string());
-        }
+    if declared.as_deref() == Some("image/svg+xml") && looks_like_svg(prefix) {
+        return PrefixVerdict::Decided("image/svg+xml".to_string());
     }
 
-    // Last resort: valid UTF-8 with no executable markers is treated as plain
-    // text (covers `.txt` / `.log` uploaded with no/incorrect content-type).
-    if std::str::from_utf8(bytes).is_ok() && !bytes.is_empty() {
-        return Ok("text/plain".to_string());
+    // An empty file is not text, it is nothing.
+    if prefix.is_empty() {
+        return PrefixVerdict::Rejected(unrecognized_type());
     }
 
-    Err(LificError::BadRequest(
-        "rejected: unsupported or unrecognized file type".into(),
-    ))
+    // Everything left is text-if-it-parses. That covers both the declared
+    // `text/plain`/`text/x-log` case and the last-resort fallback for a file
+    // uploaded with no or an incorrect content-type; both require valid UTF-8,
+    // so they collapse into one verdict.
+    PrefixVerdict::TextIfUtf8
+}
+
+/// [`sniff_and_validate`] over a reader, holding a bounded buffer instead of
+/// the whole file.
+///
+/// Same allowlist, same signature checks, same "text must be valid UTF-8 end
+/// to end" rule. The difference is only in memory: the type is decided from a
+/// [`SNIFF_PREFIX_BYTES`] prefix, and the UTF-8 requirement is checked by
+/// streaming the rest through an incremental validator. Restoring an archive
+/// with `--allow-large` must not allocate an attachment-sized `Vec` per blob
+/// just to confirm its content type.
+pub fn sniff_and_validate_stream<R: Read>(
+    mut reader: R,
+    declared: Option<&str>,
+) -> Result<String, LificError> {
+    let mut prefix = vec![0u8; SNIFF_PREFIX_BYTES];
+    let filled = read_fully(&mut reader, &mut prefix)
+        .map_err(|e| LificError::BadRequest(format!("read attachment: {e}")))?;
+    prefix.truncate(filled);
+
+    match classify_prefix(&prefix, declared) {
+        PrefixVerdict::Decided(mime) => Ok(mime),
+        PrefixVerdict::Rejected(error) => Err(error),
+        PrefixVerdict::TextIfUtf8 => {
+            let valid = stream_is_utf8(&prefix, reader)
+                .map_err(|e| LificError::BadRequest(format!("read attachment: {e}")))?;
+            if valid {
+                Ok("text/plain".to_string())
+            } else {
+                Err(unrecognized_type())
+            }
+        }
+    }
+}
+
+/// Read until `buf` is full or the reader ends, returning the bytes filled.
+/// A short `read` is not EOF, and a prefix sniffed from one would misjudge a
+/// file whose signature straddles the boundary.
+fn read_fully<R: Read>(reader: &mut R, buf: &mut [u8]) -> std::io::Result<usize> {
+    let mut filled = 0;
+    while filled < buf.len() {
+        match reader.read(&mut buf[filled..]) {
+            Ok(0) => break,
+            Ok(n) => filled += n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(filled)
+}
+
+/// Chunk size for the streaming UTF-8 pass. With the prefix buffer this is the
+/// entire footprint of validating a blob of any size.
+const UTF8_STREAM_CHUNK: usize = 64 * 1024;
+
+/// Whether `prefix` followed by everything left in `reader` is valid UTF-8.
+///
+/// A multi-byte character can straddle a chunk boundary, so the incomplete
+/// tail of each chunk (never more than 3 bytes) carries into the next one. A
+/// carry still pending at EOF means the file ends mid-character, which is not
+/// valid UTF-8.
+fn stream_is_utf8<R: Read>(prefix: &[u8], mut reader: R) -> std::io::Result<bool> {
+    let mut carry: Vec<u8> = Vec::with_capacity(4);
+    if !feed_utf8(&mut carry, prefix) {
+        return Ok(false);
+    }
+    let mut buf = vec![0u8; UTF8_STREAM_CHUNK];
+    loop {
+        let read = match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        if !feed_utf8(&mut carry, &buf[..read]) {
+            return Ok(false);
+        }
+    }
+    Ok(carry.is_empty())
+}
+
+/// Validate one chunk, given the incomplete tail of the previous one. Returns
+/// false on a definitively invalid sequence; otherwise leaves any incomplete
+/// trailing sequence in `carry`.
+fn feed_utf8(carry: &mut Vec<u8>, chunk: &[u8]) -> bool {
+    let joined: Vec<u8>;
+    let bytes: &[u8] = if carry.is_empty() {
+        chunk
+    } else {
+        joined = carry.iter().copied().chain(chunk.iter().copied()).collect();
+        &joined
+    };
+    match std::str::from_utf8(bytes) {
+        Ok(_) => {
+            carry.clear();
+            true
+        }
+        // `error_len() == None` means "ran out of bytes mid-character", the
+        // one error that the next chunk can still resolve.
+        Err(error) if error.error_len().is_none() => {
+            let tail = bytes[error.valid_up_to()..].to_vec();
+            // A truncated UTF-8 sequence is at most 3 bytes; anything longer
+            // is not a boundary artifact.
+            if tail.len() > 3 {
+                return false;
+            }
+            *carry = tail;
+            true
+        }
+        Err(_) => false,
+    }
 }
 
 /// Detect the canonical MIME from leading magic bytes for the binary formats
@@ -803,6 +1058,117 @@ mod tests {
         (store, tmp)
     }
 
+    // ── Cross-process store lock ─────────────────────────────
+
+    /// How long a test waits for something that should happen. Generous: it
+    /// only bounds a failure, it is not a timing assertion.
+    const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+    /// How long a test waits to conclude something is NOT happening.
+    const LOCK_BLOCK_PROBE: std::time::Duration = std::time::Duration::from_millis(250);
+
+    #[test]
+    fn independently_constructed_stores_share_the_on_disk_lock() {
+        // Two stores built separately from the same directory have *different*
+        // in-process mutexes, exactly like two Lific processes. Only the file
+        // lock can make them coordinate, so this is the property that matters.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("attachments");
+        let holder = AttachmentStore::new(dir.clone());
+        let observer = AttachmentStore::new(dir);
+        assert!(
+            !Arc::ptr_eq(&holder.operation_lock, &observer.operation_lock),
+            "the two stores must not be sharing an in-process mutex"
+        );
+
+        assert!(!observer.lock_is_held(), "nothing holds the lock yet");
+
+        let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel::<()>(1);
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel::<()>(1);
+        let worker = std::thread::spawn(move || {
+            holder.with_lock(|_| {
+                entered_tx.send(()).unwrap();
+                // Bounded: a lost release signal fails the test instead of
+                // hanging the suite.
+                let _ = release_rx.recv_timeout(LOCK_WAIT);
+                Ok(())
+            })
+        });
+
+        entered_rx
+            .recv_timeout(LOCK_WAIT)
+            .expect("the worker must acquire the lock");
+        assert!(
+            observer.lock_is_held(),
+            "a separately constructed store must see the held lock"
+        );
+
+        release_tx.send(()).unwrap();
+        worker.join().unwrap().unwrap();
+        assert!(
+            !observer.lock_is_held(),
+            "the lock is released when the operation ends"
+        );
+    }
+
+    #[test]
+    fn a_second_store_waits_for_the_first_to_finish() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("attachments");
+        let first = AttachmentStore::new(dir.clone());
+        let second = AttachmentStore::new(dir);
+
+        let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel::<()>(1);
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel::<()>(1);
+        let holder = std::thread::spawn(move || {
+            first.with_lock(|_| {
+                entered_tx.send(()).unwrap();
+                let _ = release_rx.recv_timeout(LOCK_WAIT);
+                Ok(())
+            })
+        });
+        entered_rx.recv_timeout(LOCK_WAIT).unwrap();
+
+        let (acquired_tx, acquired_rx) = std::sync::mpsc::sync_channel::<()>(1);
+        let waiter = std::thread::spawn(move || {
+            second.with_lock(|store| {
+                acquired_tx.send(()).unwrap();
+                store.write_unlocked(b"second store bytes")
+            })
+        });
+
+        assert!(
+            acquired_rx.recv_timeout(LOCK_BLOCK_PROBE).is_err(),
+            "the second store must not enter the critical section while the first holds it"
+        );
+
+        release_tx.send(()).unwrap();
+        holder.join().unwrap().unwrap();
+        acquired_rx
+            .recv_timeout(LOCK_WAIT)
+            .expect("the second store proceeds once the lock is free");
+        let sha = waiter.join().unwrap().unwrap();
+        assert_eq!(sha, AttachmentStore::hash_bytes(b"second store bytes"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_store_lock_file_is_owner_only_and_not_a_blob() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (store, _tmp) = tmp_store();
+        store.with_lock(|_| Ok(())).unwrap();
+
+        let lock = store.lock_path();
+        assert!(lock.is_file());
+        let mode = std::fs::metadata(&lock).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "the lock file must be owner-only");
+        let name = lock.file_name().unwrap().to_string_lossy().to_string();
+        assert!(
+            !valid_sha256(&name),
+            "the lock file must never look like a content address: {name}"
+        );
+    }
+
     #[test]
     fn write_read_roundtrip_and_dedup() {
         let (store, _tmp) = tmp_store();
@@ -811,9 +1177,14 @@ mod tests {
         let sha2 = store.write(bytes).unwrap();
         assert_eq!(sha1, sha2, "same content hashes to same file");
         assert_eq!(store.read(&sha1).unwrap(), bytes);
-        // Only one file on disk for the duplicate write.
-        let count = std::fs::read_dir(store.dir()).unwrap().count();
-        assert_eq!(count, 1);
+        // Only one blob on disk for the duplicate write. The store also holds
+        // its cross-process lock file, which is not content-addressed data.
+        let blobs: Vec<String> = std::fs::read_dir(store.dir())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().to_string())
+            .filter(|name| valid_sha256(name))
+            .collect();
+        assert_eq!(blobs, vec![sha1.clone()]);
     }
 
     #[cfg(unix)]
@@ -1054,6 +1425,147 @@ mod tests {
             }
         }
         assert!(ALLOWED_MIMES.contains(&"image/svg+xml"));
+    }
+
+    // ── Streamed sniffing (bounded memory) ───────────────────
+
+    /// A reader that manufactures `total` bytes without ever holding them,
+    /// recording the largest buffer the consumer offered. If the consumer
+    /// slurps the whole stream, the buffer it asks for grows with the content;
+    /// if it streams, the request size stays flat.
+    struct SyntheticReader {
+        byte: u8,
+        remaining: u64,
+        largest_request: usize,
+        served: u64,
+    }
+
+    impl SyntheticReader {
+        fn new(byte: u8, total: u64) -> Self {
+            Self {
+                byte,
+                remaining: total,
+                largest_request: 0,
+                served: 0,
+            }
+        }
+    }
+
+    impl Read for SyntheticReader {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            self.largest_request = self.largest_request.max(buf.len());
+            if self.remaining == 0 {
+                return Ok(0);
+            }
+            let take = buf.len().min(self.remaining as usize);
+            buf[..take].fill(self.byte);
+            self.remaining -= take as u64;
+            self.served += take as u64;
+            Ok(take)
+        }
+    }
+
+    #[test]
+    fn streamed_sniffing_agrees_with_the_in_memory_sniffer() {
+        let svg = b"<svg xmlns='http://www.w3.org/2000/svg'></svg>".to_vec();
+        let cases: Vec<(Vec<u8>, Option<&str>)> = vec![
+            (png_image(2, 2), None),
+            (png_image(2, 2), Some("application/x-msdownload")),
+            (mp4_bytes(), None),
+            (webm_bytes(), Some("audio/webm")),
+            (b"%PDF-1.7\n%...".to_vec(), None),
+            (b"just some log lines\n".to_vec(), Some("text/plain")),
+            (b"plain text with no declared type".to_vec(), None),
+            (svg, Some("image/svg+xml")),
+            (b"\x7FELF....".to_vec(), Some("text/plain")),
+            (b"#!/bin/sh\n".to_vec(), None),
+            (vec![0xFF, 0xFE, 0x00], Some("text/plain")),
+            (Vec::new(), None),
+        ];
+        for (bytes, declared) in cases {
+            let in_memory = sniff_and_validate(&bytes, declared);
+            let streamed = sniff_and_validate_stream(bytes.as_slice(), declared);
+            match (&in_memory, &streamed) {
+                (Ok(a), Ok(b)) => assert_eq!(a, b, "disagreement on {declared:?} {bytes:?}"),
+                (Err(_), Err(_)) => {}
+                _ => panic!("streamed and in-memory sniffing disagree: {in_memory:?} vs {streamed:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn streamed_sniffing_reads_a_huge_text_attachment_in_bounded_chunks() {
+        // 512 MiB of text. `std::fs::read` would allocate every byte of it;
+        // this must not, which is what makes `--allow-large` restores safe.
+        const TOTAL: u64 = 512 * 1024 * 1024;
+        let mut reader = SyntheticReader::new(b'a', TOTAL);
+        let mime = sniff_and_validate_stream(&mut reader, Some("text/plain")).unwrap();
+
+        assert_eq!(mime, "text/plain");
+        assert_eq!(reader.served, TOTAL, "every byte must be validated");
+        assert!(
+            reader.largest_request <= UTF8_STREAM_CHUNK.max(SNIFF_PREFIX_BYTES),
+            "the consumer asked for a {}-byte buffer; validation must stay bounded",
+            reader.largest_request
+        );
+    }
+
+    /// Serves `head`, then fails any further read. Proves a decision was made
+    /// from the prefix alone rather than by consuming the whole file.
+    struct ExplodingTail {
+        head: std::io::Cursor<Vec<u8>>,
+    }
+
+    impl Read for ExplodingTail {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            match self.head.read(buf)? {
+                0 => Err(std::io::Error::other("read past the sniff prefix")),
+                n => Ok(n),
+            }
+        }
+    }
+
+    #[test]
+    fn streamed_sniffing_stops_at_the_prefix_once_a_signature_decides_it() {
+        let mut png = png_image(2, 2);
+        png.resize(SNIFF_PREFIX_BYTES, 0);
+        let reader = ExplodingTail {
+            head: std::io::Cursor::new(png),
+        };
+        assert_eq!(
+            sniff_and_validate_stream(reader, None).unwrap(),
+            "image/png",
+            "a signature settles the type without reading the rest of the file"
+        );
+    }
+
+    #[test]
+    fn streamed_utf8_validation_handles_characters_split_across_chunks() {
+        // A 3-byte character straddling the prefix boundary must not read as
+        // invalid UTF-8, and a truncated one at EOF must not read as valid.
+        let mut text = vec![b'a'; SNIFF_PREFIX_BYTES - 1];
+        text.extend_from_slice("€ tail".as_bytes());
+        assert_eq!(
+            sniff_and_validate_stream(text.as_slice(), Some("text/plain")).unwrap(),
+            "text/plain"
+        );
+        assert_eq!(
+            sniff_and_validate(&text, Some("text/plain")).unwrap(),
+            "text/plain"
+        );
+
+        let mut truncated = vec![b'a'; SNIFF_PREFIX_BYTES + 16];
+        truncated.extend_from_slice(&"€".as_bytes()[..2]);
+        assert!(
+            sniff_and_validate_stream(truncated.as_slice(), Some("text/plain")).is_err(),
+            "a file ending mid-character is not valid text"
+        );
+        assert!(sniff_and_validate(&truncated, Some("text/plain")).is_err());
+
+        // Invalid past the prefix: the streaming pass must still catch it.
+        let mut binary = vec![b'a'; SNIFF_PREFIX_BYTES + 8];
+        binary.extend_from_slice(&[0xC3, 0x28]);
+        assert!(sniff_and_validate_stream(binary.as_slice(), Some("text/plain")).is_err());
     }
 
     // ── LIF-418: media types ─────────────────────────────────

@@ -559,8 +559,10 @@ mod tests {
         }
         let att_dir = dir.join("attachments");
         fs::create_dir_all(&att_dir).unwrap();
-        let blob_name = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
-        fs::write(att_dir.join(blob_name), b"blob contents").unwrap();
+        // The name must be the content's real hash: a dump verifies every blob
+        // against its content address while archiving it.
+        let blob_name = crate::storage::AttachmentStore::hash_bytes(b"blob contents");
+        fs::write(att_dir.join(&blob_name), b"blob contents").unwrap();
         fs::write(att_dir.join("deadbeefsha.tmp"), b"partial").unwrap();
 
         run_backup(&pool, &db_path, &backup_dir, 5, None);

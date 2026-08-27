@@ -345,6 +345,22 @@ fn refresh_activity(file: &File) -> std::io::Result<()> {
 ///
 /// Returns the [`Manifest`] that was written, so callers can log/print it.
 pub fn write_dump(pool: &DbPool, db_path: &Path, out_path: &Path) -> Result<Manifest, LificError> {
+    // Hold the attachment store's lock for the whole dump: the DB snapshot,
+    // the blob scan, the hash verification and the publication. An upload,
+    // delete or GC sweep landing between the snapshot and the scan would
+    // otherwise produce an archive whose database references a blob the
+    // archive does not contain, or whose blob bytes no longer match the hash
+    // that was verified. Store lock first, then the DB read connection inside
+    // `snapshot_db`, which is the ordering every other caller uses.
+    let store = crate::storage::AttachmentStore::from_db_path(db_path);
+    store.with_lock(|_| write_dump_locked(pool, db_path, out_path))
+}
+
+fn write_dump_locked(
+    pool: &DbPool,
+    db_path: &Path,
+    out_path: &Path,
+) -> Result<Manifest, LificError> {
     // A bare filename has an empty parent, which is the current directory.
     let parent = match out_path.parent() {
         Some(parent) if !parent.as_os_str().is_empty() => parent,
@@ -597,13 +613,22 @@ fn open_verified_blob(path: &Path) -> Result<Option<VerifiedBlob>, LificError> {
 }
 
 impl VerifiedBlob {
-    /// Stream this blob into the archive from its verified handle, refusing to
-    /// publish an archive whose header size disagrees with the bytes written.
+    /// Stream this blob into the archive from its verified handle, hashing the
+    /// bytes on the way through.
+    ///
+    /// `expected_sha` is the blob's filename, which in a content-addressed
+    /// store *is* its digest. Hashing during the copy is the only way to be
+    /// sure the bytes in the archive are the bytes that were verified: hashing
+    /// a second pass over the file would prove something about a different
+    /// read. A mismatch fails the dump before publication, so a store that has
+    /// been corrupted (bit rot, a hand-edited blob, a name that never matched
+    /// its content) can never be published as a valid-looking backup that a
+    /// restore would then reject.
     fn append_to<W: Write>(
         &mut self,
         tar: &mut tar::Builder<W>,
         entry_name: &str,
-        label: &str,
+        expected_sha: &str,
     ) -> Result<(), LificError> {
         let size = self.identity.size;
         let mut header = tar::Header::new_gnu();
@@ -614,21 +639,61 @@ impl VerifiedBlob {
         header.set_cksum();
         self.file
             .rewind()
-            .map_err(|e| LificError::Internal(format!("rewind attachment {label}: {e}")))?;
-        tar.append_data(&mut header, entry_name, (&self.file).take(size))
-            .map_err(|e| LificError::Internal(format!("append attachment {label}: {e}")))?;
+            .map_err(|e| LificError::Internal(format!("rewind attachment {expected_sha}: {e}")))?;
+        let mut hashing = HashingReader::new((&self.file).take(size));
+        tar.append_data(&mut header, entry_name, &mut hashing)
+            .map_err(|e| LificError::Internal(format!("append attachment {expected_sha}: {e}")))?;
+        let digest = hashing.hex_digest();
         // The header already promised `size` bytes; publishing an archive whose
         // body is shorter would leave every later entry misaligned.
-        let written = self
-            .file
-            .stream_position()
-            .map_err(|e| LificError::Internal(format!("measure attachment {label}: {e}")))?;
+        let written = self.file.stream_position().map_err(|e| {
+            LificError::Internal(format!("measure attachment {expected_sha}: {e}"))
+        })?;
         if written != size {
             return Err(LificError::Internal(format!(
-                "attachment {label} changed size while being archived ({written} of {size} bytes)"
+                "attachment {expected_sha} changed size while being archived \
+                 ({written} of {size} bytes)"
+            )));
+        }
+        if digest != expected_sha {
+            return Err(LificError::Internal(format!(
+                "attachment {expected_sha} does not match its content address (hashed {digest}); \
+                 refusing to publish a corrupt archive"
             )));
         }
         Ok(())
+    }
+}
+
+/// A reader that digests everything it passes through, so a copy and its
+/// verification see exactly the same bytes.
+struct HashingReader<R> {
+    inner: R,
+    hasher: Sha256,
+}
+
+impl<R: Read> HashingReader<R> {
+    fn new(inner: R) -> Self {
+        Self {
+            inner,
+            hasher: Sha256::new(),
+        }
+    }
+
+    fn hex_digest(self) -> String {
+        self.hasher
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
+}
+
+impl<R: Read> Read for HashingReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let read = self.inner.read(buf)?;
+        self.hasher.update(&buf[..read]);
+        Ok(read)
     }
 }
 
@@ -1150,10 +1215,16 @@ fn validate_staged_database(
             let (sha, declared_mime) = row
                 .map_err(|e| LificError::BadRequest(format!("read staged attachment MIME: {e}")))?;
             let path = staging.join("attachments").join(&sha);
-            let bytes = std::fs::read(&path).map_err(|e| {
+            // Streamed, not `std::fs::read`: under `--allow-large` a blob can
+            // be far bigger than the bounded defaults, and confirming its
+            // content type must not cost an attachment-sized allocation.
+            let file = std::fs::File::open(&path).map_err(|e| {
                 LificError::BadRequest(format!("read staged attachment {sha}: {e}"))
             })?;
-            let detected_mime = crate::storage::sniff_and_validate(&bytes, Some(&declared_mime))?;
+            let detected_mime = crate::storage::sniff_and_validate_stream(
+                std::io::BufReader::new(file),
+                Some(&declared_mime),
+            )?;
             if detected_mime != declared_mime {
                 return Err(LificError::BadRequest(format!(
                     "staged attachment {sha} MIME {declared_mime} does not match its content ({detected_mime})"
@@ -2046,6 +2117,97 @@ mod tests {
         let error =
             write_dump(&crate::db::open(&db_path).unwrap(), &db_path, &out).unwrap_err();
         assert!(error.to_string().contains("hard-linked"), "got {error}");
+    }
+
+    #[test]
+    fn dump_refuses_a_blob_whose_bytes_do_not_match_its_name() {
+        // The name of a blob IS its digest. Publishing an archive where that
+        // is untrue would ship a backup every restore refuses, discovered only
+        // on the day someone needs it.
+        let (dir_tmp, db_path) = seed_data_dir("corrupt_blob");
+        let dir = dir_tmp.path();
+        let lying_name = crate::storage::AttachmentStore::hash_bytes(b"the honest bytes");
+        fs::write(dir.join("attachments").join(&lying_name), b"tampered bytes").unwrap();
+
+        let out = dir.join("corrupt.tar.gz");
+        let error = write_dump(&crate::db::open(&db_path).unwrap(), &db_path, &out).unwrap_err();
+
+        assert!(
+            error.to_string().contains("content address"),
+            "the failure must name the mismatch: {error}"
+        );
+        assert!(!out.exists(), "a corrupt store must not publish an archive");
+        assert!(!has_dump_staging(dir));
+    }
+
+    #[test]
+    fn dump_hashes_every_blob_it_archives_and_still_round_trips() {
+        // Positive control for the check above: honest blobs still dump and
+        // restore, bytes intact.
+        let (src_tmp, src_db) = seed_data_dir("hash_round_trip");
+        let archive = src_tmp.path().join("backup.tar.gz");
+        let manifest =
+            write_dump(&crate::db::open(&src_db).unwrap(), &src_db, &archive).unwrap();
+        assert_eq!(manifest.attachment_count, 2);
+
+        let dst = temp_dir("hash_round_trip_dst");
+        let dst_db = dst.path().join(ARCHIVE_DB_NAME);
+        run_restore(&archive, &dst_db, false).unwrap();
+        let sha = crate::storage::AttachmentStore::hash_bytes(b"blob one");
+        assert_eq!(
+            fs::read(dst.path().join("attachments").join(&sha)).unwrap(),
+            b"blob one"
+        );
+    }
+
+    #[test]
+    fn dump_holds_the_attachment_store_lock_for_its_whole_run() {
+        // An upload, delete or GC sweep landing between the database snapshot
+        // and the blob scan would archive a database referencing blobs the
+        // archive does not contain. The dump takes the same store lock those
+        // operations take, so it cannot interleave with them.
+        use std::sync::mpsc::sync_channel;
+        use std::time::Duration;
+
+        let (dir_tmp, db_path) = seed_data_dir("dump_store_lock");
+        let store = crate::storage::AttachmentStore::from_db_path(&db_path);
+        let out = dir_tmp.path().join("locked.tar.gz");
+
+        let (holding_tx, holding_rx) = sync_channel::<()>(1);
+        let (release_tx, release_rx) = sync_channel::<()>(1);
+        let holder = std::thread::spawn(move || {
+            store.with_lock(|_| {
+                holding_tx.send(()).unwrap();
+                let _ = release_rx.recv_timeout(Duration::from_secs(10));
+                Ok(())
+            })
+        });
+        holding_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+
+        let (done_tx, done_rx) = sync_channel::<()>(1);
+        let dumper = std::thread::spawn({
+            let db_path = db_path.clone();
+            let out = out.clone();
+            move || {
+                let result =
+                    write_dump(&crate::db::open(&db_path).unwrap(), &db_path, &out);
+                done_tx.send(()).unwrap();
+                result
+            }
+        });
+
+        assert!(
+            done_rx.recv_timeout(Duration::from_millis(250)).is_err(),
+            "the dump must wait for the store lock instead of racing the store"
+        );
+
+        release_tx.send(()).unwrap();
+        holder.join().unwrap().unwrap();
+        done_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the dump proceeds once the store lock is free");
+        dumper.join().unwrap().expect("dump succeeds");
+        assert!(out.exists());
     }
 
     #[test]
