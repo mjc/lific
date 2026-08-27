@@ -165,6 +165,22 @@ pub(crate) fn streamable_http_config(
         .with_allowed_hosts(allowed_hosts)
 }
 
+/// Start a stdio server without consuming the first request as an
+/// initialize-only handshake. The direct service loop handles modern
+/// `server/discover` requests and still accepts legacy `initialize` requests
+/// as ordinary messages, so one entry point can serve the explicit
+/// compatibility matrix.
+pub(crate) fn serve_stdio<T, E, A>(
+    server: LificMcp,
+    transport: T,
+) -> rmcp::service::RunningService<rmcp::RoleServer, LificMcp>
+where
+    T: rmcp::transport::IntoTransport<rmcp::RoleServer, E, A>,
+    E: std::error::Error + Send + Sync + 'static,
+{
+    rmcp::service::serve_directly::<rmcp::RoleServer, _, _, _, _>(server, transport, None)
+}
+
 /// Serialization lock for MCP request handling.
 /// Ensures only one MCP request processes at a time, preventing the race
 /// condition where concurrent requests could overwrite each other's user identity.
@@ -779,6 +795,35 @@ mod tests {
                 ProtocolVersion::V_2026_07_28,
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn stdio_accepts_modern_discovery_without_initialize() {
+        let request: rmcp::model::ClientJsonRpcMessage = serde_json::from_value(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "server/discover",
+            "params": {
+                "_meta": {
+                    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                    "io.modelcontextprotocol/clientInfo": {
+                        "name": "lific-test",
+                        "version": "0.1.0"
+                    },
+                    "io.modelcontextprotocol/clientCapabilities": {}
+                }
+            }
+        }))
+        .expect("valid modern discovery request");
+        let (transport, mut responses) = rmcp::transport::OneshotTransport::new(request);
+        let server = serve_stdio(LificMcp::new(crate::db::open_memory().unwrap()), transport);
+
+        let response = responses.recv().await.expect("discovery response");
+        let body = serde_json::to_value(response).expect("serializable response");
+        assert_eq!(body["result"]["resultType"], "complete");
+        assert_eq!(body["result"]["supportedVersions"][0], "2025-03-26");
+        assert_eq!(body["result"]["supportedVersions"][1], "2026-07-28");
+        server.waiting().await.expect("stdio service exits");
     }
 
     // ── LIF-204: OAuth-token user_id -> resolved AuthUser (MCP path) ─────
