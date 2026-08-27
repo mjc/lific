@@ -174,10 +174,44 @@ pub(crate) fn default_allowed_origins() -> Vec<String> {
         .collect()
 }
 
+const SUPPORTED_PROTOCOL_VERSIONS: &[ProtocolVersion] = &[
+    ProtocolVersion::V_2025_03_26,
+    ProtocolVersion::V_2026_07_28,
+];
+const TOOL_CATALOG_TTL_MS: u64 = 3_600_000;
+
 fn uses_july_result_contract(protocol_version: Option<&ProtocolVersion>) -> bool {
     protocol_version.is_some_and(|version| {
         version.as_str() >= ProtocolVersion::V_2026_07_28.as_str()
     })
+}
+
+fn server_implementation() -> rmcp::model::Implementation {
+    rmcp::model::Implementation::new("lific", env!("CARGO_PKG_VERSION"))
+}
+
+fn server_info() -> ServerInfo {
+    // Pin legacy initialization to 2025-03-26: rmcp defaults to 2025-06-18,
+    // which many clients (including Zed) skipped. Modern discovery advertises
+    // the complete supported-version set separately.
+    ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+        .with_protocol_version(ProtocolVersion::V_2025_03_26)
+        .with_server_info(server_implementation())
+        .with_instructions(SERVER_INSTRUCTIONS)
+}
+
+fn tool_catalog_result(
+    tools: Vec<rmcp::model::Tool>,
+    protocol_version: Option<&ProtocolVersion>,
+) -> rmcp::model::ListToolsResult {
+    let result = rmcp::model::ListToolsResult::with_all_items(tools);
+    if uses_july_result_contract(protocol_version) {
+        result
+            .with_ttl_ms(TOOL_CATALOG_TTL_MS)
+            .with_cache_scope(rmcp::model::CacheScope::Public)
+    } else {
+        result
+    }
 }
 
 /// Start a stdio server without consuming the first request as an
@@ -684,17 +718,7 @@ impl ServerHandler for LificMcp {
     }
 
     fn get_info(&self) -> ServerInfo {
-        // Pin to 2025-03-26: rmcp defaults to 2025-06-18 which many clients
-        // (including Zed) skipped, going straight from 2025-03-26 to 2025-11-25.
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_protocol_version(ProtocolVersion::V_2025_03_26)
-            // Identify as lific, not rmcp's build-env default — this name is
-            // what connected clients (and `lific doctor`) display.
-            .with_server_info(rmcp::model::Implementation::new(
-                "lific",
-                env!("CARGO_PKG_VERSION"),
-            ))
-            .with_instructions(SERVER_INSTRUCTIONS)
+        server_info()
     }
 
     fn list_tools(
@@ -704,13 +728,10 @@ impl ServerHandler for LificMcp {
     ) -> impl std::future::Future<Output = Result<rmcp::model::ListToolsResult, rmcp::ErrorData>>
     + rmcp::service::MaybeSendFuture
     + '_ {
-        let mut result = rmcp::model::ListToolsResult::with_all_items(self.tool_router.list_all());
-        if uses_july_result_contract(context.protocol_version().as_ref()) {
-            result = result
-                .with_ttl_ms(3_600_000)
-                .with_cache_scope(rmcp::model::CacheScope::Public);
-        }
-        std::future::ready(Ok(result))
+        std::future::ready(Ok(tool_catalog_result(
+            self.tool_router.list_all(),
+            context.protocol_version().as_ref(),
+        )))
     }
 
     fn complete(
@@ -793,10 +814,7 @@ impl ServerHandler for LificMcp {
                         let mut meta = result.meta.unwrap_or_default();
                         meta.insert(
                             "io.modelcontextprotocol/serverInfo".into(),
-                            serde_json::to_value(rmcp::model::Implementation::new(
-                                "lific",
-                                env!("CARGO_PKG_VERSION"),
-                            ))
+                            serde_json::to_value(server_implementation())
                             .expect("MCP server info serialization cannot fail"),
                         );
                         result.meta = Some(meta);
