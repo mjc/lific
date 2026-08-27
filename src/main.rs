@@ -65,7 +65,20 @@ fn write_private_config(path: &std::path::Path, contents: &str) -> std::io::Resu
         file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
     }
     file.sync_all()?;
-    std::fs::rename(temp, path)
+    std::fs::rename(temp, path)?;
+    sync_parent_dir(parent)
+}
+
+/// Flush the directory entry that publishes a config file. The file's own
+/// `sync_all` persists its bytes; the name that reaches them lives in the
+/// parent directory and survives a crash only once that is synced too.
+/// Unix only: Windows exposes no directory handle to sync.
+fn sync_parent_dir(_dir: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        std::fs::File::open(_dir)?.sync_all()?;
+    }
+    Ok(())
 }
 
 fn create_private_config(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
@@ -86,7 +99,8 @@ fn create_private_config(path: &std::path::Path, contents: &str) -> std::io::Res
     file.sync_all()?;
     // A hard link publishes only when the destination does not yet exist.
     // It is atomic and leaves an existing configuration untouched on races.
-    std::fs::hard_link(&temp, path)
+    std::fs::hard_link(&temp, path)?;
+    sync_parent_dir(parent)
 }
 
 use rmcp::ServiceExt;
@@ -223,7 +237,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Ok(());
         }
 
-        Command::Restore { archive, force } => {
+        Command::Restore {
+            archive,
+            force,
+            allow_large,
+        } => {
             let json = cli::term::wants_json(cli.json);
             // Best-effort warning: a hot WAL suggests the server is still up.
             if dump::server_maybe_running(&cfg.database.path) {
@@ -233,7 +251,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     cfg.database.path.display()
                 );
             }
-            let result = dump::run_restore(&archive, &cfg.database.path, force)
+            let options = dump::RestoreOptions::new(force, allow_large);
+            let result = dump::run_restore_with(&archive, &cfg.database.path, &options)
                 .map_err(|e| -> Box<dyn std::error::Error> { e.to_string().into() })?;
             let m = &result.manifest;
             if json {

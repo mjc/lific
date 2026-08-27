@@ -56,6 +56,23 @@ fn existing_regular_file(path: &Path, label: &str) -> Result<bool, LificError> {
     Ok(true)
 }
 
+/// Flush the directory entry a rename just created.
+///
+/// `sync_all` on the file itself only guarantees the *bytes* survive a crash;
+/// the name that makes them findable lives in the parent directory and needs
+/// its own fsync. Without this, a crash right after an upload can leave a
+/// database row pointing at a blob whose directory entry never landed.
+/// Unix only: Windows has no directory handle to sync.
+fn sync_dir(_dir: &Path) -> Result<(), LificError> {
+    #[cfg(unix)]
+    {
+        std::fs::File::open(_dir)
+            .and_then(|dir| dir.sync_all())
+            .map_err(|e| LificError::Internal(format!("sync directory: {e}")))?;
+    }
+    Ok(())
+}
+
 pub(crate) fn valid_sha256(value: &str) -> bool {
     value.len() == 64
         && value
@@ -157,6 +174,7 @@ impl AttachmentStore {
             let _ = std::fs::remove_file(&tmp);
             return Err(LificError::Internal(format!("write thumbnail: {error}")));
         }
+        sync_dir(parent)?;
         Ok(())
     }
 
@@ -267,6 +285,7 @@ impl AttachmentStore {
                 "finalize attachment: {error}"
             )));
         }
+        sync_dir(&self.dir)?;
         Ok(sha)
     }
 

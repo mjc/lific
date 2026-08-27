@@ -237,7 +237,7 @@ pub enum Command {
     /// Produces `lific_YYYYMMDD_HHMMSS.tar.gz` (gitea-dump style) containing a
     /// consistent snapshot of the database, every attachment blob, and a
     /// `manifest.json`. Safe to run while the server is running (the DB is
-    /// snapshotted via `VACUUM INTO`, no writer lock is held). The archive is
+    /// snapshotted via SQLite's online backup, no writer lock is held). The archive is
     /// chmod 0600. Point external harnesses (restic/borg/cron) at the output,
     /// or call this as a pre-backup hook.
     Dump {
@@ -264,6 +264,18 @@ pub enum Command {
         /// Overwrite an existing database (moving the current one aside).
         #[arg(long)]
         force: bool,
+
+        /// Accept an archive larger than the default restore limits (512 MiB
+        /// database, 64 MiB per attachment, 1 GiB total, 10,000 entries).
+        ///
+        /// `lific dump` has no size ceiling, so a big enough instance can take
+        /// an honest backup that the bounded defaults refuse. Pass this only
+        /// for an archive you produced yourself: the limits exist so an
+        /// untrusted `.tar.gz` cannot fill the data volume before validation
+        /// rejects it. Every other check (entry names, tar entry types,
+        /// database integrity, per-blob hashes) still runs.
+        #[arg(long)]
+        allow_large: bool,
     },
 
     /// Write Lific's MCP config into your AI clients (the fastest way to
@@ -1485,9 +1497,14 @@ mod tests {
     fn parse_restore_defaults() {
         let cli = Cli::try_parse_from(["lific", "restore", "/tmp/b.tar.gz"]).unwrap();
         match cli.command {
-            Command::Restore { archive, force } => {
+            Command::Restore {
+                archive,
+                force,
+                allow_large,
+            } => {
                 assert_eq!(archive, PathBuf::from("/tmp/b.tar.gz"));
                 assert!(!force);
+                assert!(!allow_large, "restore stays bounded unless asked otherwise");
             }
             _ => panic!("expected Restore"),
         }
@@ -1498,9 +1515,29 @@ mod tests {
         let cli =
             Cli::try_parse_from(["lific", "restore", "/tmp/b.tar.gz", "--force"]).unwrap();
         match cli.command {
-            Command::Restore { archive, force } => {
+            Command::Restore {
+                archive,
+                force,
+                allow_large,
+            } => {
                 assert_eq!(archive, PathBuf::from("/tmp/b.tar.gz"));
                 assert!(force);
+                assert!(!allow_large);
+            }
+            _ => panic!("expected Restore"),
+        }
+    }
+
+    #[test]
+    fn parse_restore_allow_large() {
+        let cli = Cli::try_parse_from(["lific", "restore", "/tmp/b.tar.gz", "--allow-large"])
+            .unwrap();
+        match cli.command {
+            Command::Restore {
+                force, allow_large, ..
+            } => {
+                assert!(!force);
+                assert!(allow_large, "--allow-large raises the restore size limits");
             }
             _ => panic!("expected Restore"),
         }
