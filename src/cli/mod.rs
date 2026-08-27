@@ -177,6 +177,10 @@ pub enum Command {
         /// verifies that auth is enforced and discovery is advertised.
         #[arg(long, env = "LIFIC_API_KEY")]
         key: Option<String>,
+
+        /// Probe the retained pre-July MCP initialize/session contract.
+        #[arg(long)]
+        legacy_mcp: bool,
     },
 
     /// Set up a ready-to-use Lific instance.
@@ -1550,8 +1554,9 @@ mod tests {
         // env var polluting the assertion.
         let cli = Cli::try_parse_from(["lific", "doctor"]).unwrap();
         match cli.command {
-            Command::Doctor { key } => {
+            Command::Doctor { key, legacy_mcp } => {
                 assert_eq!(key, env_fallback("LIFIC_API_KEY"));
+                assert!(!legacy_mcp);
             }
             _ => panic!("expected Doctor"),
         }
@@ -1653,7 +1658,10 @@ mod tests {
     fn parse_doctor_with_key_flag() {
         let cli = Cli::try_parse_from(["lific", "doctor", "--key", "lific_sk-live-abc"]).unwrap();
         match cli.command {
-            Command::Doctor { key } => assert_eq!(key, Some("lific_sk-live-abc".into())),
+            Command::Doctor { key, legacy_mcp } => {
+                assert_eq!(key, Some("lific_sk-live-abc".into()));
+                assert!(!legacy_mcp);
+            }
             _ => panic!("expected Doctor"),
         }
     }
