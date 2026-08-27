@@ -9,7 +9,7 @@ use std::{
     future::Future,
     net::{IpAddr, SocketAddr},
     pin::Pin,
-    sync::Mutex,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -40,10 +40,33 @@ pub(crate) trait Fetcher: Send + Sync {
     fn fetch(&self, issuer: &str, client_id: &str) -> FetchFuture;
 }
 
+type TransportFuture = Pin<Box<dyn Future<Output = Result<TransportResponse, String>> + Send>>;
+
+trait Transport: Send + Sync {
+    fn get(&self, request: TransportRequest) -> TransportFuture;
+}
+
+#[derive(Clone)]
+struct TransportRequest {
+    url: Url,
+    etag: Option<String>,
+    last_modified: Option<String>,
+}
+
+struct TransportResponse {
+    status: reqwest::StatusCode,
+    headers: reqwest::header::HeaderMap,
+    body: Vec<u8>,
+}
+
+#[derive(Clone, Copy)]
+struct ReqwestTransport;
+
 #[derive(Clone)]
 pub(crate) struct HttpFetcher {
-    cache: std::sync::Arc<Mutex<HashMap<String, CachedDocument>>>,
-    inflight: std::sync::Arc<tokio::sync::Semaphore>,
+    transport: Arc<dyn Transport>,
+    cache: Arc<Mutex<HashMap<String, CachedDocument>>>,
+    inflight: Arc<tokio::sync::Semaphore>,
 }
 
 #[derive(Clone)]
@@ -56,9 +79,14 @@ struct CachedDocument {
 
 impl HttpFetcher {
     pub(crate) fn new() -> Self {
+        Self::with_transport(Arc::new(ReqwestTransport))
+    }
+
+    fn with_transport(transport: Arc<dyn Transport>) -> Self {
         Self {
-            cache: std::sync::Arc::new(Mutex::new(HashMap::new())),
-            inflight: std::sync::Arc::new(tokio::sync::Semaphore::new(16)),
+            transport,
+            cache: Arc::new(Mutex::new(HashMap::new())),
+            inflight: Arc::new(tokio::sync::Semaphore::new(16)),
         }
     }
 
@@ -105,38 +133,55 @@ impl HttpFetcher {
 
         let mut url = original_url;
         for redirect in 0..=MAX_REDIRECTS {
-            let resolved = resolve_public_host(&url).await?;
-            let client = reqwest::Client::builder()
-                .connect_timeout(CONNECT_TIMEOUT)
-                .timeout(REQUEST_TIMEOUT)
-                .redirect(reqwest::redirect::Policy::none())
-                .resolve(url.host_str().ok_or("CIMD URL has no host")?, resolved)
-                .build()
-                .map_err(|_| "CIMD HTTP client could not be configured".to_string())?;
-
-            let mut request = client.get(url.clone());
-            if redirect == 0 {
-                if let Some(etag) = cached.as_ref().and_then(|entry| entry.etag.as_deref()) {
-                    request = request.header(header::IF_NONE_MATCH, etag);
+            let (etag, last_modified) = if redirect == 0 {
+                (
+                    cached.as_ref().and_then(|entry| entry.etag.clone()),
+                    cached
+                        .as_ref()
+                        .and_then(|entry| entry.last_modified.clone()),
+                )
+            } else {
+                (None, None)
+            };
+            let is_conditional = etag.is_some() || last_modified.is_some();
+            let response = self
+                .transport
+                .get(TransportRequest {
+                    url: url.clone(),
+                    etag,
+                    last_modified,
+                })
+                .await?;
+            if response.status == reqwest::StatusCode::NOT_MODIFIED {
+                if redirect != 0 || !is_conditional {
+                    return Err("CIMD returned 304 without a matching conditional request".into());
                 }
-                if let Some(last_modified) = cached
-                    .as_ref()
-                    .and_then(|entry| entry.last_modified.as_deref())
-                {
-                    request = request.header(header::IF_MODIFIED_SINCE, last_modified);
+                let Some(entry) = cached.as_ref() else {
+                    return Err("CIMD returned 304 without a cached document".into());
+                };
+                let ttl = cache_ttl(&response.headers);
+                if ttl.is_zero() {
+                    return Err("CIMD cache revalidation did not provide a usable lifetime".into());
                 }
+                self.store(
+                    cache_key,
+                    CachedDocument {
+                        metadata: entry.metadata.clone(),
+                        expires_at: Instant::now() + ttl,
+                        etag: header_value(&response.headers, header::ETAG)
+                            .or_else(|| entry.etag.clone()),
+                        last_modified: header_value(&response.headers, header::LAST_MODIFIED)
+                            .or_else(|| entry.last_modified.clone()),
+                    },
+                );
+                return Ok(entry.metadata.clone());
             }
-
-            let response = request
-                .send()
-                .await
-                .map_err(|_| "CIMD metadata could not be fetched".to_string())?;
-            if response.status().is_redirection() {
+            if response.status.is_redirection() {
                 if redirect == MAX_REDIRECTS {
                     return Err("CIMD metadata redirected too many times".into());
                 }
                 let location = response
-                    .headers()
+                    .headers
                     .get(header::LOCATION)
                     .and_then(|value| value.to_str().ok())
                     .ok_or("CIMD redirect did not include a valid Location")?;
@@ -147,64 +192,30 @@ impl HttpFetcher {
                 continue;
             }
 
-            if response.status() == reqwest::StatusCode::NOT_MODIFIED {
-                let Some(entry) = cached.as_ref() else {
-                    return Err("CIMD returned 304 without a cached document".into());
-                };
-                let ttl = cache_ttl(response.headers());
-                if ttl.is_zero() {
-                    return Err("CIMD cache revalidation did not provide a usable lifetime".into());
-                }
-                self.store(
-                    cache_key,
-                    CachedDocument {
-                        metadata: entry.metadata.clone(),
-                        expires_at: Instant::now() + ttl,
-                        etag: header_value(response.headers(), header::ETAG)
-                            .or_else(|| entry.etag.clone()),
-                        last_modified: header_value(response.headers(), header::LAST_MODIFIED)
-                            .or_else(|| entry.last_modified.clone()),
-                    },
-                );
-                return Ok(entry.metadata.clone());
-            }
-
-            if response.status() != reqwest::StatusCode::OK {
+            if response.status != reqwest::StatusCode::OK {
                 return Err("CIMD metadata returned an unexpected status".into());
             }
-            let response_headers = response.headers().clone();
-            let content_type = response_headers
+            let content_type = response
+                .headers
                 .get(header::CONTENT_TYPE)
                 .and_then(|value| value.to_str().ok())
                 .unwrap_or_default();
             if !is_json_content_type(content_type) {
                 return Err("CIMD metadata did not have a JSON content type".into());
             }
-            if response
-                .content_length()
-                .is_some_and(|length| length > MAX_DOCUMENT_BYTES as u64)
-            {
+            if response.body.len() > MAX_DOCUMENT_BYTES {
                 return Err("CIMD metadata is too large".into());
             }
-            let mut body = Vec::new();
-            let mut stream = response.bytes_stream();
-            while let Some(chunk) = stream.next().await {
-                let chunk = chunk.map_err(|_| "CIMD metadata could not be read".to_string())?;
-                if body.len().saturating_add(chunk.len()) > MAX_DOCUMENT_BYTES {
-                    return Err("CIMD metadata is too large".into());
-                }
-                body.extend_from_slice(&chunk);
-            }
-            let metadata = parse_metadata(&body, client_id)?;
-            let ttl = cache_ttl(&response_headers);
+            let metadata = parse_metadata(&response.body, client_id)?;
+            let ttl = cache_ttl(&response.headers);
             if !ttl.is_zero() {
                 self.store(
                     cache_key,
                     CachedDocument {
                         metadata: metadata.clone(),
                         expires_at: Instant::now() + ttl,
-                        etag: header_value(&response_headers, header::ETAG),
-                        last_modified: header_value(&response_headers, header::LAST_MODIFIED),
+                        etag: header_value(&response.headers, header::ETAG),
+                        last_modified: header_value(&response.headers, header::LAST_MODIFIED),
                     },
                 );
             }
@@ -225,6 +236,59 @@ impl HttpFetcher {
             cache.remove(&oldest);
         }
         cache.insert(key, value);
+    }
+}
+
+impl Transport for ReqwestTransport {
+    fn get(&self, request: TransportRequest) -> TransportFuture {
+        Box::pin(async move {
+            let resolved = resolve_public_host(&request.url).await?;
+            let client = reqwest::Client::builder()
+                .connect_timeout(CONNECT_TIMEOUT)
+                .timeout(REQUEST_TIMEOUT)
+                .redirect(reqwest::redirect::Policy::none())
+                .resolve(
+                    request.url.host_str().ok_or("CIMD URL has no host")?,
+                    resolved,
+                )
+                .build()
+                .map_err(|_| "CIMD HTTP client could not be configured".to_string())?;
+
+            let mut outgoing = client.get(request.url);
+            if let Some(etag) = request.etag {
+                outgoing = outgoing.header(header::IF_NONE_MATCH, etag);
+            }
+            if let Some(last_modified) = request.last_modified {
+                outgoing = outgoing.header(header::IF_MODIFIED_SINCE, last_modified);
+            }
+
+            let response = outgoing
+                .send()
+                .await
+                .map_err(|_| "CIMD metadata could not be fetched".to_string())?;
+            if response
+                .content_length()
+                .is_some_and(|length| length > MAX_DOCUMENT_BYTES as u64)
+            {
+                return Err("CIMD metadata is too large".into());
+            }
+            let status = response.status();
+            let headers = response.headers().clone();
+            let mut body = Vec::new();
+            let mut stream = response.bytes_stream();
+            while let Some(chunk) = stream.next().await {
+                let chunk = chunk.map_err(|_| "CIMD metadata could not be read".to_string())?;
+                if body.len().saturating_add(chunk.len()) > MAX_DOCUMENT_BYTES {
+                    return Err("CIMD metadata is too large".into());
+                }
+                body.extend_from_slice(&chunk);
+            }
+            Ok(TransportResponse {
+                status,
+                headers,
+                body,
+            })
+        })
     }
 }
 
@@ -370,13 +434,13 @@ fn is_public_ipv4(ip: std::net::Ipv4Addr) -> bool {
         (0x7f00_0000, 0xff00_0000), // 127.0.0.0/8
         (0xa9fe_0000, 0xffff_0000), // 169.254.0.0/16
         (0xac10_0000, 0xfff0_0000), // 172.16.0.0/12
-        (0xc000_0000, 0xffffff00), // 192.0.0.0/24
-        (0xc000_0200, 0xffffff00), // 192.0.2.0/24
-        (0xc058_6300, 0xffffff00), // 192.88.99.0/24
+        (0xc000_0000, 0xffffff00),  // 192.0.0.0/24
+        (0xc000_0200, 0xffffff00),  // 192.0.2.0/24
+        (0xc058_6300, 0xffffff00),  // 192.88.99.0/24
         (0xc0a8_0000, 0xffff_0000), // 192.168.0.0/16
         (0xc612_0000, 0xfffe_0000), // 198.18.0.0/15
-        (0xc633_6400, 0xffffff00), // 198.51.100.0/24
-        (0xcb00_7100, 0xffffff00), // 203.0.113.0/24
+        (0xc633_6400, 0xffffff00),  // 198.51.100.0/24
+        (0xcb00_7100, 0xffffff00),  // 203.0.113.0/24
         (0xe000_0000, 0xf000_0000), // 224.0.0.0/4, multicast
         (0xf000_0000, 0xf000_0000), // 240.0.0.0/4, reserved
     ]
@@ -421,6 +485,82 @@ fn ipv6_in_prefix(ip: std::net::Ipv6Addr, network: std::net::Ipv6Addr, prefix: u
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Clone)]
+    struct ScriptedTransport {
+        responses:
+            std::sync::Arc<Mutex<std::collections::VecDeque<Result<TransportResponse, String>>>>,
+        requests: std::sync::Arc<Mutex<Vec<TransportRequest>>>,
+    }
+
+    impl ScriptedTransport {
+        fn new(responses: impl IntoIterator<Item = TransportResponse>) -> Self {
+            Self::with_results(responses.into_iter().map(Ok))
+        }
+
+        fn with_results(
+            responses: impl IntoIterator<Item = Result<TransportResponse, String>>,
+        ) -> Self {
+            Self {
+                responses: std::sync::Arc::new(Mutex::new(responses.into_iter().collect())),
+                requests: std::sync::Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+    }
+
+    impl Transport for ScriptedTransport {
+        fn get(&self, request: TransportRequest) -> TransportFuture {
+            self.requests.lock().unwrap().push(request);
+            let response = self
+                .responses
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(|| Err("unexpected request".to_string()));
+            Box::pin(async move { response })
+        }
+    }
+
+    fn response(
+        status: reqwest::StatusCode,
+        headers: &[(&'static str, &'static str)],
+        body: &[u8],
+    ) -> TransportResponse {
+        let mut response_headers = reqwest::header::HeaderMap::new();
+        for (name, value) in headers {
+            response_headers.insert(*name, reqwest::header::HeaderValue::from_static(value));
+        }
+        TransportResponse {
+            status,
+            headers: response_headers,
+            body: body.to_vec(),
+        }
+    }
+
+    fn metadata_body(client_id: &str, client_name: &str) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "client_id": client_id,
+            "client_name": client_name,
+            "redirect_uris": ["http://127.0.0.1/callback"]
+        }))
+        .unwrap()
+    }
+
+    fn store_stale(fetcher: &HttpFetcher, issuer: &str, client_id: &str) {
+        fetcher.store(
+            format!("{issuer}\0{client_id}"),
+            CachedDocument {
+                metadata: ClientMetadata {
+                    client_id: client_id.into(),
+                    client_name: "Stale".into(),
+                    redirect_uris: vec!["http://127.0.0.1/callback".into()],
+                },
+                expires_at: Instant::now() - Duration::from_secs(1),
+                etag: Some("stale".into()),
+                last_modified: Some("Wed, 21 Oct 2015 07:28:00 GMT".into()),
+            },
+        );
+    }
 
     #[test]
     fn cimd_urls_require_https_and_a_path() {
@@ -533,7 +673,10 @@ mod tests {
             "203.0.113.1",
             "2001:db8::1",
         ] {
-            assert!(!is_public_address(ip.parse().unwrap()), "{ip} must be rejected");
+            assert!(
+                !is_public_address(ip.parse().unwrap()),
+                "{ip} must be rejected"
+            );
         }
     }
 
@@ -548,5 +691,255 @@ mod tests {
             [8, 8, 8, 8],
             443
         ))]));
+    }
+
+    #[tokio::test]
+    async fn redirected_revalidation_cannot_revive_stale_metadata() {
+        let client_id = "https://client.example/metadata.json";
+        let transport = ScriptedTransport::new([
+            response(
+                reqwest::StatusCode::FOUND,
+                &[("location", "https://redirect.example/metadata.json")],
+                b"",
+            ),
+            response(
+                reqwest::StatusCode::NOT_MODIFIED,
+                &[("cache-control", "max-age=60")],
+                b"",
+            ),
+        ]);
+        let fetcher = HttpFetcher::with_transport(std::sync::Arc::new(transport));
+        store_stale(&fetcher, "https://issuer.example", client_id);
+
+        let error = fetcher
+            .fetch_document("https://issuer.example", client_id)
+            .await
+            .expect_err("a redirect target cannot validate another URL's cached document");
+        assert!(error.contains("304"), "unexpected error: {error}");
+    }
+
+    #[tokio::test]
+    async fn direct_304_revalidates_cached_metadata_and_validators() {
+        let issuer = "https://issuer.example";
+        let client_id = "https://client.example/metadata.json";
+        let transport = ScriptedTransport::new([response(
+            reqwest::StatusCode::NOT_MODIFIED,
+            &[("cache-control", "max-age=60"), ("etag", "fresh")],
+            b"",
+        )]);
+        let requests = transport.requests.clone();
+        let fetcher = HttpFetcher::with_transport(Arc::new(transport));
+        store_stale(&fetcher, issuer, client_id);
+
+        let metadata = fetcher.fetch_document(issuer, client_id).await.unwrap();
+        assert_eq!(metadata.client_name, "Stale");
+        assert_eq!(
+            fetcher
+                .fetch_document(issuer, client_id)
+                .await
+                .unwrap()
+                .client_name,
+            "Stale",
+            "the refreshed cache should avoid another transport request"
+        );
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].etag.as_deref(), Some("stale"));
+        assert_eq!(
+            requests[0].last_modified.as_deref(),
+            Some("Wed, 21 Oct 2015 07:28:00 GMT")
+        );
+    }
+
+    #[tokio::test]
+    async fn unsolicited_304_without_cache_validators_is_rejected() {
+        let issuer = "https://issuer.example";
+        let client_id = "https://client.example/metadata.json";
+        let transport = ScriptedTransport::new([response(
+            reqwest::StatusCode::NOT_MODIFIED,
+            &[("cache-control", "max-age=60")],
+            b"",
+        )]);
+        let fetcher = HttpFetcher::with_transport(Arc::new(transport));
+        store_stale(&fetcher, issuer, client_id);
+        {
+            let mut cache = fetcher.cache.lock().unwrap();
+            let entry = cache.get_mut(&format!("{issuer}\0{client_id}")).unwrap();
+            entry.etag = None;
+            entry.last_modified = None;
+        }
+
+        let error = fetcher
+            .fetch_document(issuer, client_id)
+            .await
+            .expect_err("304 is only valid after a conditional request");
+        assert!(error.contains("304"), "unexpected error: {error}");
+    }
+
+    #[tokio::test]
+    async fn changed_metadata_replaces_an_expired_cached_document() {
+        let issuer = "https://issuer.example";
+        let client_id = "https://client.example/metadata.json";
+        let body = metadata_body(client_id, "Fresh");
+        let transport = ScriptedTransport::new([response(
+            reqwest::StatusCode::OK,
+            &[
+                ("content-type", "application/json"),
+                ("cache-control", "max-age=60"),
+                ("etag", "fresh"),
+            ],
+            &body,
+        )]);
+        let fetcher = HttpFetcher::with_transport(Arc::new(transport));
+        store_stale(&fetcher, issuer, client_id);
+
+        let metadata = fetcher.fetch_document(issuer, client_id).await.unwrap();
+        assert_eq!(metadata.client_name, "Fresh");
+        assert_eq!(
+            fetcher
+                .fetch_document(issuer, client_id)
+                .await
+                .unwrap()
+                .client_name,
+            "Fresh"
+        );
+    }
+
+    #[tokio::test]
+    async fn removed_metadata_fails_closed_instead_of_serving_stale_cache() {
+        let issuer = "https://issuer.example";
+        let client_id = "https://client.example/metadata.json";
+        let transport =
+            ScriptedTransport::new([response(reqwest::StatusCode::NOT_FOUND, &[], b"")]);
+        let fetcher = HttpFetcher::with_transport(Arc::new(transport));
+        store_stale(&fetcher, issuer, client_id);
+
+        let error = fetcher
+            .fetch_document(issuer, client_id)
+            .await
+            .expect_err("removed metadata must not fall back to stale cache");
+        assert!(
+            error.contains("unexpected status"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn transport_failure_during_revalidation_fails_closed() {
+        let issuer = "https://issuer.example";
+        let client_id = "https://client.example/metadata.json";
+        let transport =
+            ScriptedTransport::with_results([
+                Err("CIMD metadata could not be fetched".to_string()),
+            ]);
+        let fetcher = HttpFetcher::with_transport(Arc::new(transport));
+        store_stale(&fetcher, issuer, client_id);
+
+        let error = fetcher
+            .fetch_document(issuer, client_id)
+            .await
+            .expect_err("a timeout must not revive stale metadata");
+        assert_eq!(error, "CIMD metadata could not be fetched");
+    }
+
+    #[tokio::test]
+    async fn oversized_streamed_metadata_is_rejected_without_network_access() {
+        let client_id = "https://client.example/metadata.json";
+        let transport = ScriptedTransport::new([response(
+            reqwest::StatusCode::OK,
+            &[("content-type", "application/json")],
+            &vec![b' '; MAX_DOCUMENT_BYTES + 1],
+        )]);
+        let fetcher = HttpFetcher::with_transport(Arc::new(transport));
+
+        let error = fetcher
+            .fetch_document("https://issuer.example", client_id)
+            .await
+            .expect_err("oversized metadata must be rejected");
+        assert!(error.contains("too large"), "unexpected error: {error}");
+    }
+
+    #[tokio::test]
+    async fn every_redirect_reenters_the_transport_and_drops_original_validators() {
+        let issuer = "https://issuer.example";
+        let client_id = "https://client.example/metadata.json";
+        let transport = ScriptedTransport::new([
+            response(
+                reqwest::StatusCode::FOUND,
+                &[("location", "https://one.example/metadata.json")],
+                b"",
+            ),
+            response(
+                reqwest::StatusCode::FOUND,
+                &[("location", "https://two.example/metadata.json")],
+                b"",
+            ),
+            response(
+                reqwest::StatusCode::FOUND,
+                &[("location", "https://three.example/metadata.json")],
+                b"",
+            ),
+            response(
+                reqwest::StatusCode::FOUND,
+                &[("location", "https://four.example/metadata.json")],
+                b"",
+            ),
+        ]);
+        let requests = transport.requests.clone();
+        let fetcher = HttpFetcher::with_transport(Arc::new(transport));
+        store_stale(&fetcher, issuer, client_id);
+
+        let error = fetcher
+            .fetch_document(issuer, client_id)
+            .await
+            .expect_err("redirect chains are bounded");
+        assert!(
+            error.contains("too many times"),
+            "unexpected error: {error}"
+        );
+        let requests = requests.lock().unwrap();
+        assert_eq!(
+            requests
+                .iter()
+                .map(|request| request.url.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "https://client.example/metadata.json",
+                "https://one.example/metadata.json",
+                "https://two.example/metadata.json",
+                "https://three.example/metadata.json",
+            ]
+        );
+        assert_eq!(requests[0].etag.as_deref(), Some("stale"));
+        assert!(
+            requests[1..]
+                .iter()
+                .all(|request| request.etag.is_none() && request.last_modified.is_none())
+        );
+    }
+
+    #[tokio::test]
+    async fn dns_policy_failure_after_a_redirect_is_propagated() {
+        let client_id = "https://client.example/metadata.json";
+        let transport = ScriptedTransport::with_results([
+            Ok(response(
+                reqwest::StatusCode::FOUND,
+                &[("location", "https://rebound.example/metadata.json")],
+                b"",
+            )),
+            Err("CIMD host did not resolve only to public addresses".to_string()),
+        ]);
+        let requests = transport.requests.clone();
+        let fetcher = HttpFetcher::with_transport(Arc::new(transport));
+
+        let error = fetcher
+            .fetch_document("https://issuer.example", client_id)
+            .await
+            .expect_err("every redirect target must pass the transport's DNS policy");
+        assert!(
+            error.contains("public addresses"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(requests.lock().unwrap().len(), 2);
     }
 }
