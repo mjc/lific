@@ -679,7 +679,8 @@ fn registered_redirect_uris(db: &DbPool, client_id: &str) -> Option<Vec<String>>
     let conn = db.read().ok()?;
     let json: String = conn
         .query_row(
-            "SELECT redirect_uris FROM oauth_clients WHERE client_id = ?1",
+            "SELECT redirect_uris FROM oauth_clients
+             WHERE client_id = ?1 AND registration_source <> 'cimd'",
             params![client_id],
             |row| row.get(0),
         )
@@ -953,8 +954,13 @@ async fn authorize_approve(
 
     if let Some(metadata) = cimd_metadata.as_ref()
         && let Err(e) = tx.execute(
-            "INSERT INTO oauth_clients (client_id, client_name, redirect_uris) VALUES (?1, ?2, ?3)
-             ON CONFLICT(client_id) DO UPDATE SET client_name = excluded.client_name, redirect_uris = excluded.redirect_uris",
+            "INSERT INTO oauth_clients
+                 (client_id, client_name, redirect_uris, registration_source)
+             VALUES (?1, ?2, ?3, 'cimd')
+             ON CONFLICT(client_id) DO UPDATE SET
+                 client_name = excluded.client_name,
+                 redirect_uris = excluded.redirect_uris,
+                 registration_source = 'cimd'",
             params![
                 metadata.client_id,
                 metadata.client_name,
@@ -2600,6 +2606,49 @@ mod tests {
             crate::ratelimit::parse_trusted_proxies(&["127.0.0.0/8".into()])
                 .expect("test trusted proxy range must parse"),
         )
+    }
+
+    #[tokio::test]
+    async fn cimd_rows_are_revalidated_instead_of_being_trusted_as_dcr() {
+        let client_id = "https://client.example/metadata.json";
+        let metadata = crate::cimd::ClientMetadata {
+            client_id: client_id.into(),
+            client_name: "Current Client Name".into(),
+            redirect_uris: vec!["http://127.0.0.1:4312/callback".into()],
+        };
+        let (_app, db) = test_oauth_app_with_fetcher(
+            1000,
+            Arc::new(FakeCimdFetcher {
+                metadata: metadata.clone(),
+            }),
+        );
+        db.write()
+            .unwrap()
+            .execute(
+                "INSERT INTO oauth_clients
+                     (client_id, client_name, redirect_uris, registration_source)
+                 VALUES (?1, 'Stale Client Name', '[\"http://attacker.invalid\"]', 'cimd')",
+                params![client_id],
+            )
+            .unwrap();
+
+        let state = OAuthState {
+            db,
+            issuer: "https://example.com".into(),
+            cimd_fetcher: Arc::new(FakeCimdFetcher { metadata }),
+            issuer_is_explicit: true,
+            allowed_hosts: test_allowed_hosts(),
+            register_limiter: Arc::new(RateLimiter::new(
+                1000,
+                std::time::Duration::from_secs(3600),
+            )),
+            trusted_proxies: default_trusted_proxies(),
+        };
+
+        let fetched = load_cimd_metadata(&state, &HeaderMap::new(), client_id)
+            .await
+            .expect("CIMD revalidation should succeed");
+        assert!(fetched.is_some(), "a CIMD row must not bypass document lookup");
     }
 
     /// Build a test OAuth router the way `lific start` does when
