@@ -1361,9 +1361,6 @@ async fn device_authorization(
         );
     }
 
-    // Opportunistic housekeeping.
-    cleanup_expired_device_codes(&state.db);
-
     // High-entropy device code — return raw once, store only its hash.
     let device_code = format!("{}{}", uuid_v4(), uuid_v4()).replace('-', "");
     let device_code_hash = sha256_hex(device_code.as_bytes());
