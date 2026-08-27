@@ -100,7 +100,7 @@ Each client gets its native schema (`mcpServers` vs `servers` vs `mcp`, Codex TO
 <details>
 <summary>OAuth, if you'd rather auth as yourself</summary>
 
-Lific implements MCP OAuth authorization for the July 2026 lifecycle (RFC 9728 protected-resource metadata, dynamic client registration, PKCE, issuer signaling, and resource-bound tokens), so OAuth-capable clients can connect with **just the URL** and complete auth in the browser. Dynamic client registration is retained as the compatibility path while Client ID Metadata Documents are not advertised:
+Lific implements MCP OAuth authorization for the July 2026 lifecycle (RFC 9728 protected-resource metadata, Client ID Metadata Documents, dynamic client registration, PKCE, issuer signaling, and resource-bound tokens), so OAuth-capable clients can connect with **just the URL** and complete auth in the browser. Client ID Metadata Documents are preferred; dynamic client registration remains the compatibility path:
 
 ```bash
 lific connect --oauth --client opencode   # writes a header-less config, mints nothing
@@ -224,12 +224,12 @@ Everything takes human-readable identifiers (`project="APP"`, not `project_id=7`
 | **Issue tracking** | Status, priority, modules with icons, labels, relations, comments, board view, fuzzy search, sort by recent activity |
 | **Plans** | Persisted, nestable step trees that outlive a session; steps mirror issues with two-way done/close sync |
 | **Documentation** | Markdown pages in recursive folders, with comments, labels, lifecycle status, full-text search, and Mermaid diagrams |
-| **MCP interface** | 30 tools, human-readable identifiers, compact schema, session instructions |
+| **MCP interface** | 30 tools, human-readable identifiers, compact schema, July server instructions |
 | **Onboarding** | One-command setup (`lific init` installs a background service), `lific connect` (11 clients), `lific doctor`, `lific agents-md`, shell completions |
 | **REST API** | Resource endpoints, search, board view, and relationship/planning operations |
 | **Web UI** | Markdown editing with live preview, drag-and-drop board, Mermaid and code-copy, dark/light theme |
 | **User accounts** | Individual auth, per-tool bot identities, project membership and roles |
-| **Auth** | OAuth 2.1 (PKCE, dynamic client registration, RFC 9728 discovery), RFC 8628 device flow, API keys, token revocation |
+| **Auth** | OAuth 2.1 (PKCE, CIMD with DCR fallback, RFC 9728 discovery), RFC 8628 device flow, API keys, token revocation |
 | **Backups** | `lific dump` / `lific restore` single-archive backups, plus automatic interval archives with retention |
 | **CLI** | Scriptable issue/project/page/plan commands, TTY-aware JSON output, works with no server running |
 | **Single binary** | No runtime dependencies, embedded SQLite, ~25 MB |

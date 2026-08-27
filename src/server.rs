@@ -357,6 +357,7 @@ fn build_app_with_store(
     let oauth_state = oauth::OAuthState {
         db: pool.clone(),
         issuer,
+        cimd_fetcher: Arc::new(crate::cimd::HttpFetcher::new()),
         // LIF-287: an explicit public_url is advertised as-is; only a
         // bind-derived issuer may be replaced per-request by an
         // allowlisted Host header.

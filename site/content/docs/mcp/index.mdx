@@ -24,6 +24,18 @@ than a connection-opening `initialize` handshake. Lific advertises and tests
 that require initialize/session behavior can be checked explicitly with
 `lific doctor --legacy-mcp`.
 
+The repository includes `scripts/mcp-conformance.sh` for the official July
+2026 server suite. Start Lific, then run:
+
+```bash
+scripts/mcp-conformance.sh http://127.0.0.1:3456/mcp
+```
+
+The script pins the conformance runner and runs every available server
+scenario for `2026-07-28`, including the stateless, header-validation, DNS
+rebinding, and caching checks. Its output is the conformance evidence; the
+suite's optional scenarios may be reported separately by the runner.
+
 ## API key authentication
 
 HTTP clients authenticate with a bearer API key in the `Authorization` header. Create a key on the server with `lific key create --name <NAME>`. Lific returns the plaintext key once when it creates the key.
@@ -49,12 +61,13 @@ Lific supports OAuth 2.1 for the MCP endpoint. The protected-resource metadata i
 
 OAuth-capable MCP clients can connect to the endpoint URL and complete the authorization flow without a manually created API key. Lific supports authorization-code flow with S256 PKCE. It also supports device authorization.
 
-Lific currently uses dynamic client registration at `/oauth/register` as its
-compatibility path; Client ID Metadata Documents are not advertised. Clients
-can register a redirect URI before starting authorization. Registered redirect
-URIs must be absolute HTTP or HTTPS URLs. The July `resource` indicator is
-required in both authorization and token requests, and issued access tokens are
-accepted only for the exact MCP resource they name.
+Lific prefers Client ID Metadata Documents: a client can use an HTTPS URL with a
+path as its `client_id`, and Lific validates the fetched JSON metadata and exact
+redirect URI before approval. Dynamic client registration at `/oauth/register`
+remains the compatibility path. Registered redirect URIs must be absolute HTTP
+or HTTPS URLs. The July `resource` indicator is required in both authorization
+and token requests, and issued access tokens are accepted only for the exact MCP
+resource they name.
 
 Both grants are approved from a signed-in browser, and only from one: an OAuth access token cannot approve an authorization request or a device code. The browser session must also have signed in within the last 15 minutes, because approving a connection mints a 30-day credential for the tool.
 
