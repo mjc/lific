@@ -1464,7 +1464,7 @@ mod tests {
             .map(|entry| entry.unwrap().file_name().to_string_lossy().to_string())
             .filter(|name| valid_sha256(name))
             .collect();
-        assert_eq!(blobs, vec![sha1.clone()]);
+        assert_eq!(blobs, vec![sha1]);
     }
 
     #[cfg(unix)]

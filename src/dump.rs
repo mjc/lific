@@ -2207,7 +2207,6 @@ mod tests {
 
         let (done_tx, done_rx) = sync_channel::<()>(1);
         let dumper = std::thread::spawn({
-            let db_path = db_path.clone();
             let out = out.clone();
             move || {
                 let result =
@@ -2261,7 +2260,6 @@ mod tests {
 
         let (done_tx, done_rx) = sync_channel::<()>(1);
         let restorer = std::thread::spawn({
-            let archive = archive.clone();
             let dst_db = dst_db.clone();
             move || {
                 let result = run_restore(&archive, &dst_db, false);
