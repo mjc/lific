@@ -125,7 +125,10 @@ pub fn update(
     patch: InstanceSettingsPatch,
 ) -> Result<InstanceSettings, LificError> {
     // Guarantee the single row exists before we UPDATE it (write conn).
-    conn.execute("INSERT OR IGNORE INTO instance_settings (id) VALUES (1)", [])?;
+    conn.execute(
+        "INSERT OR IGNORE INTO instance_settings (id) VALUES (1)",
+        [],
+    )?;
     let cur = get(conn)?;
 
     let allow_signup = patch.allow_signup.unwrap_or(cur.allow_signup);
@@ -238,7 +241,8 @@ fn is_plausible_domain(d: &str) -> bool {
     if d.contains("..") {
         return false;
     }
-    d.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+    d.chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
 }
 
 #[cfg(test)]
@@ -260,8 +264,14 @@ mod tests {
         assert!(s.signup_email_domains.is_empty());
         assert_eq!(s.session_lifetime_days, 30);
         assert!(s.login_message.is_none());
-        assert!(!s.web_auto_login, "single-user auto-login is off by default");
-        assert!(!s.authz_enforced, "authorization enforcement is off by default");
+        assert!(
+            !s.web_auto_login,
+            "single-user auto-login is off by default"
+        );
+        assert!(
+            !s.authz_enforced,
+            "authorization enforcement is off by default"
+        );
     }
 
     #[test]
@@ -278,10 +288,16 @@ mod tests {
         let pool = conn();
         let c = pool.write().unwrap();
         ensure(&c, false).unwrap();
-        assert!(!get(&c).unwrap().allow_signup, "first ensure seeds the value");
+        assert!(
+            !get(&c).unwrap().allow_signup,
+            "first ensure seeds the value"
+        );
         // A later ensure with a different default must NOT overwrite.
         ensure(&c, true).unwrap();
-        assert!(!get(&c).unwrap().allow_signup, "row already existed, left intact");
+        assert!(
+            !get(&c).unwrap().allow_signup,
+            "row already existed, left intact"
+        );
     }
 
     // ── LIF-261: authz_enforced seed default depends on the install ──────
@@ -349,7 +365,10 @@ mod tests {
         // An admin flips it off at runtime…
         let s = update(
             &c,
-            InstanceSettingsPatch { authz_enforced: Some(false), ..Default::default() },
+            InstanceSettingsPatch {
+                authz_enforced: Some(false),
+                ..Default::default()
+            },
         )
         .unwrap();
         assert!(!s.authz_enforced);
@@ -368,14 +387,20 @@ mod tests {
         let c = pool.write().unwrap();
         let s = update(
             &c,
-            InstanceSettingsPatch { instance_name: Some("  Acme Eng  ".into()), ..Default::default() },
+            InstanceSettingsPatch {
+                instance_name: Some("  Acme Eng  ".into()),
+                ..Default::default()
+            },
         )
         .unwrap();
         assert_eq!(s.instance_name.as_deref(), Some("Acme Eng")); // trimmed
         // Empty clears back to NULL.
         let s = update(
             &c,
-            InstanceSettingsPatch { instance_name: Some("   ".into()), ..Default::default() },
+            InstanceSettingsPatch {
+                instance_name: Some("   ".into()),
+                ..Default::default()
+            },
         )
         .unwrap();
         assert!(s.instance_name.is_none());
@@ -404,21 +429,36 @@ mod tests {
     fn update_rejects_bad_domain_and_bad_session() {
         let pool = conn();
         let c = pool.write().unwrap();
-        assert!(update(
-            &c,
-            InstanceSettingsPatch { signup_email_domains: Some(vec!["not a domain".into()]), ..Default::default() },
-        )
-        .is_err());
-        assert!(update(
-            &c,
-            InstanceSettingsPatch { session_lifetime_days: Some(0), ..Default::default() },
-        )
-        .is_err());
-        assert!(update(
-            &c,
-            InstanceSettingsPatch { session_lifetime_days: Some(999), ..Default::default() },
-        )
-        .is_err());
+        assert!(
+            update(
+                &c,
+                InstanceSettingsPatch {
+                    signup_email_domains: Some(vec!["not a domain".into()]),
+                    ..Default::default()
+                },
+            )
+            .is_err()
+        );
+        assert!(
+            update(
+                &c,
+                InstanceSettingsPatch {
+                    session_lifetime_days: Some(0),
+                    ..Default::default()
+                },
+            )
+            .is_err()
+        );
+        assert!(
+            update(
+                &c,
+                InstanceSettingsPatch {
+                    session_lifetime_days: Some(999),
+                    ..Default::default()
+                },
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -447,21 +487,30 @@ mod tests {
 
         let s = update(
             &c,
-            InstanceSettingsPatch { web_auto_login: Some(true), ..Default::default() },
+            InstanceSettingsPatch {
+                web_auto_login: Some(true),
+                ..Default::default()
+            },
         )
         .unwrap();
         assert!(s.web_auto_login);
         // Persisted, and an unrelated patch leaves it intact.
         let s = update(
             &c,
-            InstanceSettingsPatch { instance_name: Some("Solo".into()), ..Default::default() },
+            InstanceSettingsPatch {
+                instance_name: Some("Solo".into()),
+                ..Default::default()
+            },
         )
         .unwrap();
         assert!(s.web_auto_login, "unrelated patch must not clear the flag");
 
         let s = update(
             &c,
-            InstanceSettingsPatch { web_auto_login: Some(false), ..Default::default() },
+            InstanceSettingsPatch {
+                web_auto_login: Some(false),
+                ..Default::default()
+            },
         )
         .unwrap();
         assert!(!s.web_auto_login);
@@ -476,21 +525,30 @@ mod tests {
 
         let s = update(
             &c,
-            InstanceSettingsPatch { authz_enforced: Some(true), ..Default::default() },
+            InstanceSettingsPatch {
+                authz_enforced: Some(true),
+                ..Default::default()
+            },
         )
         .unwrap();
         assert!(s.authz_enforced);
         // Persisted, and an unrelated patch leaves it intact.
         let s = update(
             &c,
-            InstanceSettingsPatch { instance_name: Some("Solo".into()), ..Default::default() },
+            InstanceSettingsPatch {
+                instance_name: Some("Solo".into()),
+                ..Default::default()
+            },
         )
         .unwrap();
         assert!(s.authz_enforced, "unrelated patch must not clear the flag");
 
         let s = update(
             &c,
-            InstanceSettingsPatch { authz_enforced: Some(false), ..Default::default() },
+            InstanceSettingsPatch {
+                authz_enforced: Some(false),
+                ..Default::default()
+            },
         )
         .unwrap();
         assert!(!s.authz_enforced);

@@ -269,15 +269,13 @@ impl DeviceFlow for HttpDeviceFlow {
             if let Some(label) = label {
                 form.push(("client_name", label));
             }
-            return self
-                .device_authorization(&form)
-                .map_err(|e| match e {
-                    DeviceAuthFailure::UnknownClient => "device authorization failed: the server \
+            return self.device_authorization(&form).map_err(|e| match e {
+                DeviceAuthFailure::UnknownClient => "device authorization failed: the server \
                                                          requires a registered client but \
                                                          refused to register one"
-                        .to_string(),
-                    DeviceAuthFailure::Other(e) => e,
-                });
+                    .to_string(),
+                DeviceAuthFailure::Other(e) => e,
+            });
         };
         crate::cli::credentials::store_client_id(&self.base, &client_id);
 
@@ -311,7 +309,9 @@ impl DeviceFlow for HttpDeviceFlow {
                 .get("access_token")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "token response missing access_token".to_string())?;
-            return Ok(PollSignal::Terminal(PollOutcome::Approved(token.to_string())));
+            return Ok(PollSignal::Terminal(PollOutcome::Approved(
+                token.to_string(),
+            )));
         }
         let err = body.get("error").and_then(|v| v.as_str()).unwrap_or("");
         Ok(classify_poll_error(err))
@@ -386,7 +386,10 @@ pub fn run_login_with_flow<F: DeviceFlow>(
     // polling — a second `--complete` call finishes the login.
     if args.non_interactive || !stdin_tty {
         let payload = non_interactive_json(&resp, base);
-        println!("{}", serde_json::to_string_pretty(&payload).unwrap_or_default());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&payload).unwrap_or_default()
+        );
         return Ok(());
     }
 
@@ -513,7 +516,10 @@ mod tests {
 
     #[test]
     fn classify_maps_rfc8628_errors() {
-        assert_eq!(classify_poll_error("authorization_pending"), PollSignal::Pending);
+        assert_eq!(
+            classify_poll_error("authorization_pending"),
+            PollSignal::Pending
+        );
         assert_eq!(classify_poll_error("slow_down"), PollSignal::SlowDown);
         assert_eq!(
             classify_poll_error("access_denied"),
@@ -535,10 +541,7 @@ mod tests {
         let mut cfg = Config::default();
         cfg.server.port = 3999;
         // Explicit --url wins, trailing slash trimmed.
-        assert_eq!(
-            resolve_base_url(Some("http://h:1/"), &cfg),
-            "http://h:1"
-        );
+        assert_eq!(resolve_base_url(Some("http://h:1/"), &cfg), "http://h:1");
         // Else public_url.
         cfg.server.public_url = Some("https://lific.example/".into());
         assert_eq!(resolve_base_url(None, &cfg), "https://lific.example");
@@ -590,7 +593,9 @@ mod tests {
                     device_code: "DEV".into(),
                     user_code: "BCDF-GHJK".into(),
                     verification_uri: "http://h/oauth/device".into(),
-                    verification_uri_complete: Some("http://h/oauth/device?user_code=BCDF-GHJK".into()),
+                    verification_uri_complete: Some(
+                        "http://h/oauth/device?user_code=BCDF-GHJK".into(),
+                    ),
                     expires_in: 900,
                     interval: 5,
                 },
@@ -681,7 +686,11 @@ mod tests {
         };
         // stdin_tty=true but --non-interactive set → still non-interactive.
         run_login_with_flow(&args, "http://h", &flow, true, true).unwrap();
-        assert_eq!(*flow.polls.borrow(), 0, "must not poll in non-interactive mode");
+        assert_eq!(
+            *flow.polls.borrow(),
+            0,
+            "must not poll in non-interactive mode"
+        );
     }
 
     #[test]

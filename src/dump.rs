@@ -252,7 +252,10 @@ fn set_owner_only(path: &Path) -> std::io::Result<()> {
 }
 
 /// Set 0600 on an already-open handle, so no pathname is resolved again.
-#[cfg_attr(not(unix), expect(clippy::unnecessary_wraps, reason = "fallible on Unix"))]
+#[cfg_attr(
+    not(unix),
+    expect(clippy::unnecessary_wraps, reason = "fallible on Unix")
+)]
 fn set_owner_only_file(file: &File) -> std::io::Result<()> {
     #[cfg(unix)]
     {
@@ -267,7 +270,10 @@ fn set_owner_only_file(file: &File) -> std::io::Result<()> {
 }
 
 /// Set 0700 permissions on a directory (owner-only) on Unix. No-op elsewhere.
-#[cfg_attr(not(unix), expect(clippy::unnecessary_wraps, reason = "fallible on Unix"))]
+#[cfg_attr(
+    not(unix),
+    expect(clippy::unnecessary_wraps, reason = "fallible on Unix")
+)]
 fn set_owner_only_dir(path: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
@@ -283,7 +289,10 @@ fn set_owner_only_dir(path: &Path) -> std::io::Result<()> {
 
 /// fsync a directory so a rename into it is durable. Unix only: Windows has no
 /// directory handle to sync, and its rename ordering does not need one.
-#[cfg_attr(not(unix), expect(clippy::unnecessary_wraps, reason = "fallible on Unix"))]
+#[cfg_attr(
+    not(unix),
+    expect(clippy::unnecessary_wraps, reason = "fallible on Unix")
+)]
 fn sync_dir(path: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
@@ -312,9 +321,9 @@ impl TempFile {
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
         }
-        let file = options
-            .open(&path)
-            .map_err(|error| LificError::Internal(format!("create secure staging file: {error}")))?;
+        let file = options.open(&path).map_err(|error| {
+            LificError::Internal(format!("create secure staging file: {error}"))
+        })?;
         Ok(Self { file, path })
     }
 
@@ -673,9 +682,10 @@ impl VerifiedBlob {
         let digest = hashing.hex_digest();
         // The header already promised `size` bytes; publishing an archive whose
         // body is shorter would leave every later entry misaligned.
-        let written = self.file.stream_position().map_err(|e| {
-            LificError::Internal(format!("measure attachment {expected_sha}: {e}"))
-        })?;
+        let written = self
+            .file
+            .stream_position()
+            .map_err(|e| LificError::Internal(format!("measure attachment {expected_sha}: {e}")))?;
         if written != size {
             return Err(LificError::Internal(format!(
                 "attachment {expected_sha} changed size while being archived \
@@ -723,7 +733,10 @@ impl<R: Read> Read for HashingReader<R> {
 /// Refuse to publish a dump onto a destination another user could have
 /// prepared: a symlink or hard link at the target, a symlinked parent, or a
 /// group/world-writable parent without the sticky bit.
-#[cfg_attr(not(unix), expect(clippy::unnecessary_wraps, reason = "fallible on Unix"))]
+#[cfg_attr(
+    not(unix),
+    expect(clippy::unnecessary_wraps, reason = "fallible on Unix")
+)]
 fn validate_dump_destination(out_path: &Path) -> Result<(), LificError> {
     #[cfg(unix)]
     {
@@ -1025,7 +1038,9 @@ fn validate_attachment_schema(conn: &rusqlite::Connection) -> Result<(), LificEr
     let invalid_mime_sha = "b".repeat(64);
     let invalid_size_sha = "c".repeat(64);
     insert(&valid_sha, "text/plain", 0).map_err(|e| {
-        LificError::BadRequest(format!("staged attachment schema rejects valid metadata: {e}"))
+        LificError::BadRequest(format!(
+            "staged attachment schema rejects valid metadata: {e}"
+        ))
     })?;
 
     for (sha256, mime, size_bytes) in [
@@ -1269,8 +1284,8 @@ fn validate_staged_database(
     for entry in std::fs::read_dir(&attachments_dir)
         .map_err(|e| LificError::BadRequest(format!("read staged attachments: {e}")))?
     {
-        let entry = entry
-            .map_err(|e| LificError::BadRequest(format!("read staged attachment: {e}")))?;
+        let entry =
+            entry.map_err(|e| LificError::BadRequest(format!("read staged attachment: {e}")))?;
         let path = entry.path();
         let metadata = std::fs::symlink_metadata(&path).map_err(|e| {
             LificError::BadRequest(format!("inspect staged attachment {}: {e}", path.display()))
@@ -1586,9 +1601,9 @@ pub fn run_restore_with(
                 )?;
                 set_owner_only(&path)
                     .map_err(|e| LificError::Internal(format!("chmod staged attachment: {e}")))?;
-                output.sync_all().map_err(|e| {
-                    LificError::Internal(format!("sync staged attachment: {e}"))
-                })?;
+                output
+                    .sync_all()
+                    .map_err(|e| LificError::Internal(format!("sync staged attachment: {e}")))?;
                 attachment_count += 1;
             } else {
                 return Err(LificError::BadRequest(format!(
@@ -1900,21 +1915,9 @@ mod tests {
         fs::create_dir_all(&att).unwrap();
         let first_sha = crate::storage::AttachmentStore::hash_bytes(b"blob one");
         let second_sha = crate::storage::AttachmentStore::hash_bytes(b"second blob bytes");
-        fs::write(
-            att.join(&first_sha),
-            b"blob one",
-        )
-        .unwrap();
-        fs::write(
-            att.join(&second_sha),
-            b"second blob bytes",
-        )
-        .unwrap();
-        fs::write(
-            att.join(format!("{second_sha}.tmp")),
-            b"partial write",
-        )
-        .unwrap();
+        fs::write(att.join(&first_sha), b"blob one").unwrap();
+        fs::write(att.join(&second_sha), b"second blob bytes").unwrap();
+        fs::write(att.join(format!("{second_sha}.tmp")), b"partial write").unwrap();
         (tmp, db_path)
     }
 
@@ -2025,7 +2028,10 @@ mod tests {
         let out = dir.join("out.tar.gz");
         write_dump(&crate::db::open(&db_path).unwrap(), &db_path, &out).unwrap();
         assert!(out.exists());
-        assert!(!has_dump_staging(dir), "staging is removed on the happy path");
+        assert!(
+            !has_dump_staging(dir),
+            "staging is removed on the happy path"
+        );
     }
 
     #[cfg(unix)]
@@ -2041,12 +2047,14 @@ mod tests {
         fs::hard_link(&outside, dir.join("attachments").join("c".repeat(64))).unwrap();
 
         let out = dir.join("late.tar.gz");
-        let error =
-            write_dump(&crate::db::open(&db_path).unwrap(), &db_path, &out).unwrap_err();
+        let error = write_dump(&crate::db::open(&db_path).unwrap(), &db_path, &out).unwrap_err();
 
         assert!(error.to_string().contains("hard-linked"), "got {error}");
         assert!(!out.exists(), "a failed dump publishes nothing");
-        assert!(!has_dump_staging(dir), "staging must not survive the failure");
+        assert!(
+            !has_dump_staging(dir),
+            "staging must not survive the failure"
+        );
     }
 
     #[cfg(unix)]
@@ -2154,8 +2162,7 @@ mod tests {
         fs::remove_file(&entry).unwrap();
         fs::hard_link(&outside, &entry).unwrap();
         let out = dir.join("hardlink.tar.gz");
-        let error =
-            write_dump(&crate::db::open(&db_path).unwrap(), &db_path, &out).unwrap_err();
+        let error = write_dump(&crate::db::open(&db_path).unwrap(), &db_path, &out).unwrap_err();
         assert!(error.to_string().contains("hard-linked"), "got {error}");
     }
 
@@ -2186,8 +2193,7 @@ mod tests {
         // restore, bytes intact.
         let (src_tmp, src_db) = seed_data_dir("hash_round_trip");
         let archive = src_tmp.path().join("backup.tar.gz");
-        let manifest =
-            write_dump(&crate::db::open(&src_db).unwrap(), &src_db, &archive).unwrap();
+        let manifest = write_dump(&crate::db::open(&src_db).unwrap(), &src_db, &archive).unwrap();
         assert_eq!(manifest.attachment_count, 2);
 
         let dst = temp_dir("hash_round_trip_dst");
@@ -2228,8 +2234,7 @@ mod tests {
         let dumper = std::thread::spawn({
             let out = out.clone();
             move || {
-                let result =
-                    write_dump(&crate::db::open(&db_path).unwrap(), &db_path, &out);
+                let result = write_dump(&crate::db::open(&db_path).unwrap(), &db_path, &out);
                 done_tx.send(()).unwrap();
                 result
             }
@@ -2422,9 +2427,11 @@ mod tests {
 
         // Blob bytes identical.
         assert_eq!(
-            fs::read(dst_dir.join("attachments").join(
-                crate::storage::AttachmentStore::hash_bytes(b"blob one"),
-            ))
+            fs::read(
+                dst_dir
+                    .join("attachments")
+                    .join(crate::storage::AttachmentStore::hash_bytes(b"blob one"),)
+            )
             .unwrap(),
             b"blob one"
         );
@@ -3085,7 +3092,9 @@ mod tests {
 
         assert!(matches!(error, LificError::Conflict(_)), "got {error:?}");
         assert!(
-            error.to_string().contains("attachment backup already exists"),
+            error
+                .to_string()
+                .contains("attachment backup already exists"),
             "the original cause must survive the rollback: {error}"
         );
         assert!(
@@ -3100,9 +3109,14 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(live, 1, "and it must be the user's database, not the dump's");
+        assert_eq!(
+            live, 1,
+            "and it must be the user's database, not the dump's"
+        );
         assert!(
-            !root.join(format!("{}.pre-restore-clash", ARCHIVE_DB_NAME)).exists(),
+            !root
+                .join(format!("{}.pre-restore-clash", ARCHIVE_DB_NAME))
+                .exists(),
             "nothing may be stranded under the pre-restore name"
         );
         assert_eq!(
@@ -3200,15 +3214,17 @@ mod tests {
         // exceeds.
         let (src_dir_tmp, src_db) = seed_data_dir("allow_large_src");
         let archive = src_dir_tmp.path().join("backup.tar.gz");
-        let manifest =
-            write_dump(&crate::db::open(&src_db).unwrap(), &src_db, &archive).unwrap();
+        let manifest = write_dump(&crate::db::open(&src_db).unwrap(), &src_db, &archive).unwrap();
         let tight = RestoreLimits {
             max_db_bytes: manifest.db_size_bytes - 1,
             ..RestoreLimits::default()
         };
 
         let error = inspect_archive(&archive, &tight).unwrap_err();
-        assert!(error.to_string().contains("exceeds restore limit"), "got {error}");
+        assert!(
+            error.to_string().contains("exceeds restore limit"),
+            "got {error}"
+        );
         inspect_archive(&archive, &RestoreLimits::trusted())
             .expect("--allow-large accepts a trusted oversized archive");
 
@@ -3311,7 +3327,8 @@ mod tests {
             attachment_bytes: 4,
         };
 
-        let error = validate_staged_database(&staging, &manifest, &RestoreLimits::default()).unwrap_err();
+        let error =
+            validate_staged_database(&staging, &manifest, &RestoreLimits::default()).unwrap_err();
         assert!(error.to_string().contains("content address"));
     }
 
@@ -3347,7 +3364,8 @@ mod tests {
             attachment_bytes: 4,
         };
 
-        let error = validate_staged_database(&staging, &manifest, &RestoreLimits::default()).unwrap_err();
+        let error =
+            validate_staged_database(&staging, &manifest, &RestoreLimits::default()).unwrap_err();
         assert!(error.to_string().contains("MIME image/png"));
     }
 
@@ -3385,10 +3403,13 @@ mod tests {
             attachment_bytes: 4,
         };
 
-        let error = validate_staged_database(&staging, &manifest, &RestoreLimits::default()).unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("invalid content address, MIME, or size"));
+        let error =
+            validate_staged_database(&staging, &manifest, &RestoreLimits::default()).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("invalid content address, MIME, or size")
+        );
     }
 
     #[test]
@@ -3413,7 +3434,8 @@ mod tests {
             attachment_bytes: 4,
         };
 
-        let error = validate_staged_database(&staging, &manifest, &RestoreLimits::default()).unwrap_err();
+        let error =
+            validate_staged_database(&staging, &manifest, &RestoreLimits::default()).unwrap_err();
         assert!(error.to_string().contains("content address"));
     }
 
@@ -3444,7 +3466,8 @@ mod tests {
             attachment_bytes: 0,
         };
 
-        let error = validate_staged_database(&staging, &manifest, &RestoreLimits::default()).unwrap_err();
+        let error =
+            validate_staged_database(&staging, &manifest, &RestoreLimits::default()).unwrap_err();
         assert!(error.to_string().contains("attachments table"));
     }
 
@@ -3478,7 +3501,8 @@ mod tests {
             attachment_count: 1,
             attachment_bytes: 4,
         };
-        let error = validate_staged_database(&staging, &manifest, &RestoreLimits::default()).unwrap_err();
+        let error =
+            validate_staged_database(&staging, &manifest, &RestoreLimits::default()).unwrap_err();
         assert!(error.to_string().contains("missing attachment"));
     }
 

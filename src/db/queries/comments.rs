@@ -1315,7 +1315,10 @@ mod tests {
         let (deleted_at, seq) = raw_comment(&conn, c.id);
         assert!(deleted_at.is_some());
         assert!(seq > before);
-        assert_eq!(count_comments(&conn, CommentParent::Issue(issue_id), None).unwrap(), 0);
+        assert_eq!(
+            count_comments(&conn, CommentParent::Issue(issue_id), None).unwrap(),
+            0
+        );
         assert!(
             list_comments(&conn, CommentParent::Issue(issue_id), None, None)
                 .unwrap()
@@ -1328,10 +1331,8 @@ mod tests {
     fn deleting_an_issue_tombstones_its_comments_with_their_own_seqs() {
         let (pool, issue_id, _, user_id) = setup();
         let conn = pool.write().unwrap();
-        let first =
-            create_comment(&conn, CommentParent::Issue(issue_id), user_id, "One").unwrap();
-        let second =
-            create_comment(&conn, CommentParent::Issue(issue_id), user_id, "Two").unwrap();
+        let first = create_comment(&conn, CommentParent::Issue(issue_id), user_id, "One").unwrap();
+        let second = create_comment(&conn, CommentParent::Issue(issue_id), user_id, "Two").unwrap();
         let (_, first_seq) = raw_comment(&conn, first.id);
         let (_, second_seq) = raw_comment(&conn, second.id);
 

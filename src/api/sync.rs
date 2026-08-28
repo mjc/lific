@@ -87,7 +87,11 @@ mod tests {
             serde_json::json!({ "project_id": project_id, "title": "Design" }),
         )
         .await;
-        json_delete(&app, &format!("/api/issues/{}", doomed["id"].as_i64().unwrap())).await;
+        json_delete(
+            &app,
+            &format!("/api/issues/{}", doomed["id"].as_i64().unwrap()),
+        )
+        .await;
 
         let resp = json_get(&app, &format!("/api/projects/{project_id}/index")).await;
         assert_eq!(resp.status(), StatusCode::OK);
@@ -137,7 +141,11 @@ mod tests {
             serde_json::json!({ "title": "edited twice" }),
         )
         .await;
-        json_delete(&app, &format!("/api/issues/{}", doomed["id"].as_i64().unwrap())).await;
+        json_delete(
+            &app,
+            &format!("/api/issues/{}", doomed["id"].as_i64().unwrap()),
+        )
+        .await;
 
         let body = parse_json(
             json_get(
@@ -151,10 +159,7 @@ mod tests {
         assert_eq!(changes.len(), 2, "only the two touched rows");
         assert!(!body["has_more"].as_bool().unwrap());
 
-        let seqs: Vec<i64> = changes
-            .iter()
-            .map(|c| c["seq"].as_i64().unwrap())
-            .collect();
+        let seqs: Vec<i64> = changes.iter().map(|c| c["seq"].as_i64().unwrap()).collect();
         let mut sorted = seqs.clone();
         sorted.sort_unstable();
         assert_eq!(seqs, sorted, "ascending by seq");
@@ -194,10 +199,8 @@ mod tests {
         )
         .await;
 
-        let body = parse_json(
-            json_get(&app, &format!("/api/projects/{project_id}/changes")).await,
-        )
-        .await;
+        let body =
+            parse_json(json_get(&app, &format!("/api/projects/{project_id}/changes")).await).await;
         let comments: Vec<&serde_json::Value> = body["changes"]
             .as_array()
             .unwrap()
@@ -292,7 +295,11 @@ mod tests {
 
         // `limit=-1` must floor at 1 rather than becoming SQLite's "no limit".
         let clamped = parse_json(
-            json_get(&app, &format!("/api/projects/{project_id}/changes?limit=-1")).await,
+            json_get(
+                &app,
+                &format!("/api/projects/{project_id}/changes?limit=-1"),
+            )
+            .await,
         )
         .await;
         assert_eq!(clamped["changes"].as_array().unwrap().len(), 1);
@@ -362,10 +369,9 @@ mod authz_gating_tests {
         }
 
         let viewer_app = app_as_user(db, &viewer);
-        let changes = parse_json(
-            json_get(&viewer_app, &format!("/api/projects/{project_id}/changes")).await,
-        )
-        .await;
+        let changes =
+            parse_json(json_get(&viewer_app, &format!("/api/projects/{project_id}/changes")).await)
+                .await;
         assert_eq!(changes["changes"].as_array().unwrap().len(), 1);
 
         let index =

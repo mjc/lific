@@ -76,9 +76,9 @@ impl LificError {
                 ),
                 current: Box::new(current),
             },
-            Err(error) => LificError::Internal(format!(
-                "failed to serialize conflicting {entity}: {error}"
-            )),
+            Err(error) => {
+                LificError::Internal(format!("failed to serialize conflicting {entity}: {error}"))
+            }
         }
     }
 
