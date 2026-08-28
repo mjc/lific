@@ -214,6 +214,13 @@ fn snapshot_db(pool: &DbPool, dest: &TempFile) -> Result<(), LificError> {
 }
 
 /// Set 0600 permissions on a file (owner-only) on Unix. No-op elsewhere.
+#[cfg_attr(
+    not(unix),
+    expect(
+        clippy::unnecessary_wraps,
+        reason = "keep one fallible cross-platform dump API"
+    )
+)]
 fn set_owner_only(path: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
