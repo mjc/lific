@@ -967,6 +967,209 @@ mod tests {
         ServerConfig::oauth_remote("http://127.0.0.1:3456/mcp")
     }
 
+    struct LifecycleFixture {
+        client: &'static str,
+        lifecycle: &'static str,
+        config: ServerConfig,
+        top_key: &'static str,
+        value: serde_json::Value,
+    }
+
+    #[test]
+    fn named_clients_match_declared_lifecycle_fixtures() {
+        let url = "http://127.0.0.1:3456/mcp";
+        let args = || serde_json::json!(["--db", "/abs/lific.db", "mcp"]);
+        let token_env = || serde_json::json!({ "LIFIC_TOKEN": "lific_sk-live-AGENTTOKEN" });
+        let bearer_headers = || serde_json::json!({ "Authorization": "Bearer lific_sk-live-KEY" });
+        let fixtures = vec![
+            LifecycleFixture {
+                client: "codex",
+                lifecycle: "July HTTP bearer",
+                config: remote_cfg(),
+                top_key: "mcp_servers.lific",
+                value: serde_json::json!({
+                    "url": url,
+                    "bearer_token_env_var": "LIFIC_API_KEY",
+                }),
+            },
+            LifecycleFixture {
+                client: "codex",
+                lifecycle: "July HTTP OAuth",
+                config: oauth_cfg(),
+                top_key: "mcp_servers.lific",
+                value: serde_json::json!({ "url": url }),
+            },
+            LifecycleFixture {
+                client: "codex",
+                lifecycle: "retained stdio with agent identity",
+                config: stdio_token_cfg(),
+                top_key: "mcp_servers.lific",
+                value: serde_json::json!({
+                    "command": "lific",
+                    "args": args(),
+                    "env": token_env(),
+                }),
+            },
+            LifecycleFixture {
+                client: "codex",
+                lifecycle: "retained operator stdio",
+                config: stdio_cfg(),
+                top_key: "mcp_servers.lific",
+                value: serde_json::json!({
+                    "command": "lific",
+                    "args": args(),
+                }),
+            },
+            LifecycleFixture {
+                client: "claude-code",
+                lifecycle: "July HTTP bearer",
+                config: remote_cfg(),
+                top_key: "mcpServers",
+                value: serde_json::json!({
+                    "type": "http",
+                    "url": url,
+                    "headers": bearer_headers(),
+                }),
+            },
+            LifecycleFixture {
+                client: "claude-code",
+                lifecycle: "July HTTP OAuth",
+                config: oauth_cfg(),
+                top_key: "mcpServers",
+                value: serde_json::json!({
+                    "type": "http",
+                    "url": url,
+                }),
+            },
+            LifecycleFixture {
+                client: "claude-code",
+                lifecycle: "retained stdio with agent identity",
+                config: stdio_token_cfg(),
+                top_key: "mcpServers",
+                value: serde_json::json!({
+                    "type": "stdio",
+                    "command": "lific",
+                    "args": args(),
+                    "env": token_env(),
+                }),
+            },
+            LifecycleFixture {
+                client: "claude-code",
+                lifecycle: "retained operator stdio",
+                config: stdio_cfg(),
+                top_key: "mcpServers",
+                value: serde_json::json!({
+                    "type": "stdio",
+                    "command": "lific",
+                    "args": args(),
+                }),
+            },
+            LifecycleFixture {
+                client: "claude-desktop",
+                lifecycle: "HTTP bearer through the stdio bridge",
+                config: remote_cfg(),
+                top_key: "mcpServers",
+                value: serde_json::json!({
+                    "command": "npx",
+                    "args": [
+                        "-y",
+                        "mcp-remote",
+                        url,
+                        "--header",
+                        "Authorization: Bearer lific_sk-live-KEY",
+                    ],
+                }),
+            },
+            LifecycleFixture {
+                client: "claude-desktop",
+                lifecycle: "retained stdio with agent identity",
+                config: stdio_token_cfg(),
+                top_key: "mcpServers",
+                value: serde_json::json!({
+                    "command": "lific",
+                    "args": args(),
+                    "env": token_env(),
+                }),
+            },
+            LifecycleFixture {
+                client: "claude-desktop",
+                lifecycle: "retained operator stdio",
+                config: stdio_cfg(),
+                top_key: "mcpServers",
+                value: serde_json::json!({
+                    "command": "lific",
+                    "args": args(),
+                }),
+            },
+            LifecycleFixture {
+                client: "zed",
+                lifecycle: "July HTTP bearer",
+                config: remote_cfg(),
+                top_key: "context_servers",
+                value: serde_json::json!({
+                    "url": url,
+                    "headers": bearer_headers(),
+                }),
+            },
+            LifecycleFixture {
+                client: "zed",
+                lifecycle: "July HTTP OAuth",
+                config: oauth_cfg(),
+                top_key: "context_servers",
+                value: serde_json::json!({ "url": url }),
+            },
+            LifecycleFixture {
+                client: "zed",
+                lifecycle: "retained stdio with agent identity",
+                config: stdio_token_cfg(),
+                top_key: "context_servers",
+                value: serde_json::json!({
+                    "command": "lific",
+                    "args": args(),
+                    "env": token_env(),
+                }),
+            },
+            LifecycleFixture {
+                client: "zed",
+                lifecycle: "retained operator stdio",
+                config: stdio_cfg(),
+                top_key: "context_servers",
+                value: serde_json::json!({
+                    "command": "lific",
+                    "args": args(),
+                }),
+            },
+        ];
+
+        for fixture in fixtures {
+            let entry = find_client(fixture.client)
+                .unwrap()
+                .compile(&fixture.config)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "{} {} fixture failed to compile: {error}",
+                        fixture.client, fixture.lifecycle
+                    )
+                });
+            assert_eq!(entry.name, "lific", "{} name", fixture.lifecycle);
+            assert_eq!(
+                entry.top_key, fixture.top_key,
+                "{} {} top-level key",
+                fixture.client, fixture.lifecycle
+            );
+            assert_eq!(
+                entry.value, fixture.value,
+                "{} {} config",
+                fixture.client, fixture.lifecycle
+            );
+        }
+
+        assert!(matches!(
+            find_client("claude-desktop").unwrap().oauth,
+            OauthSupport::Unsupported { .. }
+        ));
+    }
+
     #[test]
     fn opencode_oauth_has_url_but_no_headers() {
         let e = find_client("opencode")
