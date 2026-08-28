@@ -229,10 +229,10 @@ pub(super) async fn update_step(
         if let Some(issue) = input.issue_id {
             plans::set_step_issue(conn, step_id, issue)?;
         }
-        let mut effect = None;
-        if let Some(done) = input.done {
-            effect = Some(plans::set_step_done(conn, step_id, done)?);
-        }
+        let effect = input
+            .done
+            .map(|done| plans::set_step_done(conn, step_id, done))
+            .transpose()?;
         if input.move_to_root.unwrap_or(false)
             || input.move_parent_step_id.is_some()
             || input.move_position.is_some()

@@ -2376,12 +2376,13 @@ impl LificMcp {
         // there); count how many we drop so a trailing note can report
         // the omission. Status grouping keeps the groups but renders
         // them as count-only stubs (handled below).
-        let mut closed_omitted = 0i64;
-        if !include_closed && group_by != "status" {
+        let closed_omitted = if !include_closed && group_by != "status" {
             let before = issues.len();
             issues.retain(|i| !is_closed(i));
-            closed_omitted = (before - issues.len()) as i64;
-        }
+            (before - issues.len()) as i64
+        } else {
+            0
+        };
         let module_names: std::collections::HashMap<i64, String> = if group_by == "module" {
             if let Ok(conn) = self.db.read() {
                 queries::list_modules(&conn, pid)

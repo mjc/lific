@@ -474,12 +474,7 @@ mod tests {
         queries::users::first_admin(conn)
             .unwrap()
             .map(|admin| ResolvedIdentity {
-                user: AuthUser {
-                    id: admin.id,
-                    username: admin.username,
-                    display_name: admin.display_name,
-                    is_admin: admin.is_admin,
-                },
+                user: admin,
                 transport: Transport::Api,
             })
     }

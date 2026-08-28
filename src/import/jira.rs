@@ -134,11 +134,9 @@ fn render_list(node: &serde_json::Value, out: &mut String, ordered: bool) {
         render_block_children(item, &mut item_body);
         // Prefix the first line with the marker; indent continuation lines.
         let mut lines = item_body.lines();
+        out.push_str(&marker);
         if let Some(first) = lines.next() {
-            out.push_str(&marker);
             out.push_str(first);
-        } else {
-            out.push_str(&marker);
         }
         for line in lines {
             out.push('\n');
