@@ -125,6 +125,10 @@ tempfile = "3"
 tokio = { version = "1", features = ["test-util"] }
 tokio-tungstenite = "0.28"
 
+[[test]]
+name = "mcp_stdio_process"
+path = "testcases/mcp_stdio_process.rs"
+
 # Argon2 password hashing is memory-hard by design; in unoptimized debug
 # builds each hash/verify costs ~0.4s of CPU, and the test suite performs
 # hundreds of them (every API test that creates a user or logs in). Compiling
