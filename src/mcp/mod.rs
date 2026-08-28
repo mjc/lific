@@ -970,16 +970,17 @@ mod tests {
             }
         }))
         .expect("valid modern initialize request");
-        let (transport, mut responses) = rmcp::transport::OneshotTransport::new(request);
-        let server =
-            serve_stdio(LificMcp::new(crate::db::open_memory().unwrap()), transport)
-                .await
-                .expect("start stdio service");
-
-        let response = responses.recv().await.expect("initialize response");
-        let body = serde_json::to_value(response).expect("serializable response");
-        assert_eq!(body["error"]["code"], -32601);
-        server.waiting().await.expect("stdio service exits");
+        let (transport, _responses) = rmcp::transport::OneshotTransport::new(request);
+        let error = match serve_stdio(LificMcp::new(crate::db::open_memory().unwrap()), transport)
+            .await
+        {
+            Ok(_) => panic!("July initialize must not start a legacy stdio service"),
+            Err(error) => error,
+        };
+        assert!(
+            format!("{error:?}").contains("InitializeFailed"),
+            "unexpected stdio initialization error: {error:?}"
+        );
     }
 
     #[tokio::test]
