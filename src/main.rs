@@ -5,8 +5,8 @@ mod authz;
 #[cfg(test)]
 mod authz_coverage_tests;
 mod backup;
-mod cli;
 mod cimd;
+mod cli;
 mod config;
 mod db;
 mod dump;
@@ -530,7 +530,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let transport = rmcp::transport::io::stdio();
 
             info!("lific MCP server started (stdio)");
-            let handle = mcp::serve_stdio(server, transport);
+            let handle = mcp::serve_stdio(server, transport).await?;
             if let Some(u) = &token_user {
                 info!(user = %u.username, "stdio session bound to agent");
             }
