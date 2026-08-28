@@ -160,9 +160,6 @@ impl HttpFetcher {
                     return Err("CIMD returned 304 without a cached document".into());
                 };
                 let ttl = cache_ttl(&response.headers);
-                if ttl.is_zero() {
-                    return Err("CIMD cache revalidation did not provide a usable lifetime".into());
-                }
                 self.store(
                     cache_key,
                     CachedDocument {
@@ -246,6 +243,7 @@ impl Transport for ReqwestTransport {
             let client = reqwest::Client::builder()
                 .connect_timeout(CONNECT_TIMEOUT)
                 .timeout(REQUEST_TIMEOUT)
+                .no_proxy()
                 .redirect(reqwest::redirect::Policy::none())
                 .resolve(
                     request.url.host_str().ok_or("CIMD URL has no host")?,
@@ -320,9 +318,51 @@ pub(crate) fn is_client_id_candidate(client_id: &str) -> bool {
 }
 
 fn validate_client_id_url(client_id: &str) -> Result<Url, String> {
+    if contains_dot_segment(client_id) {
+        return Err("CIMD client_id must not contain dot segments".into());
+    }
     let url = Url::parse(client_id).map_err(|_| "CIMD client_id is not a valid URL".to_string())?;
     validate_metadata_url(&url)?;
     Ok(url)
+}
+
+fn contains_dot_segment(url: &str) -> bool {
+    let Some(scheme_end) = url.find("://") else {
+        return false;
+    };
+    let authority = &url[scheme_end + 3..];
+    let Some(path_offset) = authority.find('/') else {
+        return false;
+    };
+    let path_start = scheme_end + 3 + path_offset;
+    let path = &url[path_start..]
+        [..url[path_start..].find(['?', '#']).unwrap_or(url.len() - path_start)];
+    path.split('/').any(|segment| {
+        let mut decoded = Vec::with_capacity(segment.len());
+        let bytes = segment.as_bytes();
+        let mut index = 0;
+        while index < bytes.len() {
+            if bytes[index] == b'%' && index + 2 < bytes.len()
+                && let (Some(high), Some(low)) = (hex_value(bytes[index + 1]), hex_value(bytes[index + 2]))
+            {
+                decoded.push(high << 4 | low);
+                index += 3;
+            } else {
+                decoded.push(bytes[index]);
+                index += 1;
+            }
+        }
+        decoded == b"." || decoded == b".."
+    })
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 fn validate_metadata_url(url: &Url) -> Result<(), String> {
@@ -573,6 +613,10 @@ mod tests {
         assert!(!is_client_id_url(
             "https://user:pass@client.example/metadata.json"
         ));
+        assert!(!is_client_id_url("https://client.example/./metadata.json"));
+        assert!(!is_client_id_url("https://client.example/a/../metadata.json"));
+        assert!(!is_client_id_url("https://client.example/%2e%2e/metadata.json"));
+        assert!(!is_client_id_url("https://client.example/%2E./metadata.json"));
     }
 
     #[test]
@@ -749,6 +793,30 @@ mod tests {
             requests[0].last_modified.as_deref(),
             Some("Wed, 21 Oct 2015 07:28:00 GMT")
         );
+    }
+
+    #[tokio::test]
+    async fn direct_304_without_lifetime_returns_cached_metadata_once() {
+        let issuer = "https://issuer.example";
+        let client_id = "https://client.example/metadata.json";
+        let transport = ScriptedTransport::new([response(
+            reqwest::StatusCode::NOT_MODIFIED,
+            &[],
+            b"",
+        )]);
+        let fetcher = HttpFetcher::with_transport(Arc::new(transport));
+        store_stale(&fetcher, issuer, client_id);
+
+        let metadata = fetcher.fetch_document(issuer, client_id).await.unwrap();
+        assert_eq!(metadata.client_name, "Stale");
+        let cached = fetcher
+            .cache
+            .lock()
+            .unwrap()
+            .get(&format!("{issuer}\0{client_id}"))
+            .cloned()
+            .unwrap();
+        assert!(cached.expires_at <= Instant::now());
     }
 
     #[tokio::test]
