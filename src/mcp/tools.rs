@@ -2455,8 +2455,11 @@ impl LificMcp {
                     );
                 }
                 writeln!(output, "── {} ({}) ──", group, items.len())?;
-                let shown =
-                    max_per_column.map_or(items.len(), |limit| (limit as usize).min(items.len()));
+                let shown = max_per_column.map_or(items.len(), |limit| {
+                    usize::try_from(limit)
+                        .unwrap_or(usize::MAX)
+                        .min(items.len())
+                });
                 items[..shown].iter().try_for_each(|issue| {
                     writeln!(
                         output,
@@ -4558,14 +4561,17 @@ fn render_attachment_text(
 ) -> String {
     let text = String::from_utf8_lossy(bytes);
     let lines: Vec<&str> = text.lines().collect();
-    let total = lines.len() as i64;
+    let total = lines.len();
     let offset = offset.unwrap_or(0).max(0);
-    let limit = limit
-        .unwrap_or(ATTACHMENT_TEXT_DEFAULT_LINES)
-        .clamp(1, queries::MAX_PAGE_LIMIT);
-    let start = offset.min(total);
-    let end = offset.saturating_add(limit).min(total);
-    let shown = &lines[start as usize..end as usize];
+    let start = usize::try_from(offset).unwrap_or(usize::MAX).min(total);
+    let limit = usize::try_from(
+        limit
+            .unwrap_or(ATTACHMENT_TEXT_DEFAULT_LINES)
+            .clamp(1, queries::MAX_PAGE_LIMIT),
+    )
+    .expect("page limit fits usize");
+    let end = start.saturating_add(limit).min(total);
+    let shown = &lines[start..end];
 
     render_response(|output| {
         if shown.is_empty() {
@@ -6140,6 +6146,25 @@ mod tests {
         // Exactly two issue lines rendered.
         let rendered = result.matches("| todo | ").count();
         assert_eq!(rendered, 2, "got: {result}");
+    }
+
+    #[test]
+    fn board_oversized_max_per_column_shows_every_issue() {
+        let (m, _guard) = mcp();
+        seed_project(&m, "Unbounded Board", "BCU");
+        m.create_issue(Parameters(CreateIssueInput {
+            project: "BCU".into(),
+            title: "still-visible".into(),
+            status: Some("todo".into()),
+            ..Default::default()
+        }));
+        let result = m.get_board(Parameters(GetBoardInput {
+            project: "BCU".into(),
+            max_per_column: Some(i64::MAX),
+            ..Default::default()
+        }));
+        assert!(result.contains("still-visible"), "got: {result}");
+        assert!(!result.contains("more (use list_issues)"), "got: {result}");
     }
 
     #[test]
@@ -7763,7 +7788,7 @@ mod tests {
         seed_issue(&m, "PRJ", "Long thread");
         let _guard = seed_user(&m);
         let total = queries::DEFAULT_PAGE_LIMIT + 5;
-        seed_comment_trail(&m, total as usize);
+        seed_comment_trail(&m, usize::try_from(total).unwrap());
 
         let result = m.list_comments(Parameters(ListCommentsInput {
             identifier: "PRJ-1".into(),
@@ -11233,6 +11258,15 @@ mod tests {
             limit: None,
         })));
         assert!(past.contains("no lines at offset 9000 of 250"), "{past}");
+        let unrepresentable = text_of(&m.get_attachment(Parameters(GetAttachmentInput {
+            attachment_id: id,
+            offset: Some(i64::MAX),
+            limit: None,
+        })));
+        assert!(
+            unrepresentable.contains(&format!("no lines at offset {} of 250", i64::MAX)),
+            "{unrepresentable}"
+        );
     }
 
     #[test]

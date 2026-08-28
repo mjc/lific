@@ -1173,7 +1173,6 @@ fn validate_staged_database(
             if !crate::storage::valid_sha256(&sha)
                 || min_size < 0
                 || min_size != max_size
-                || max_size as u64 > limits.max_attachment_bytes
                 || invalid_mimes != 0
             {
                 return Err(LificError::BadRequest(
@@ -1181,7 +1180,18 @@ fn validate_staged_database(
                         .into(),
                 ));
             }
-            let size = max_size as u64;
+            let size = u64::try_from(max_size).map_err(|_| {
+                LificError::BadRequest(
+                    "staged attachment metadata has an invalid content address, MIME, or size"
+                        .into(),
+                )
+            })?;
+            if size > limits.max_attachment_bytes {
+                return Err(LificError::BadRequest(
+                    "staged attachment metadata has an invalid content address, MIME, or size"
+                        .into(),
+                ));
+            }
             let path = staging.join("attachments").join(&sha);
             let metadata = std::fs::metadata(&path).map_err(|_| {
                 LificError::BadRequest(format!(
