@@ -1822,8 +1822,7 @@ fn device_token_exchange(state: &OAuthState, req: &TokenRequest) -> Response {
 
     // Expiry check first (RFC 8628: expired_token).
     let expired = chrono::DateTime::parse_from_rfc3339(&row.expires_at)
-        .map(|t| now >= t.with_timezone(&chrono::Utc))
-        .unwrap_or(true);
+        .map_or(true, |t| now >= t.with_timezone(&chrono::Utc));
     if expired {
         let _ = conn.execute(
             "DELETE FROM oauth_device_codes WHERE device_code_hash = ?1",

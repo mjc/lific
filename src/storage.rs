@@ -99,6 +99,7 @@ fn existing_regular_file(path: &Path, label: &str) -> Result<bool, LificError> {
 /// its own fsync. Without this, a crash right after an upload can leave a
 /// database row pointing at a blob whose directory entry never landed.
 /// Unix only: Windows has no directory handle to sync.
+#[cfg_attr(not(unix), expect(clippy::unnecessary_wraps, reason = "fallible on Unix"))]
 fn sync_dir(_dir: &Path) -> Result<(), LificError> {
     #[cfg(unix)]
     {
@@ -265,7 +266,7 @@ impl AttachmentStore {
     /// Compute the lowercase hex SHA-256 of a byte slice — the content address.
     pub fn hash_bytes(bytes: &[u8]) -> String {
         let digest = Sha256::digest(bytes);
-        digest.iter().map(|b| format!("{b:02x}")).collect()
+        crate::auth::hex_encode(&digest)
     }
 
     /// Path of the store's cross-process lock file.

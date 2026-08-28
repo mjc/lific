@@ -93,28 +93,29 @@ fn defaults() -> InstanceSettings {
 /// (no server start / `ensure` / `update` has run), returns code defaults so
 /// this is safe on a read-only pool connection.
 pub fn get(conn: &Connection) -> Result<InstanceSettings, LificError> {
-    let found = conn
-        .query_row(
-            "SELECT allow_signup, instance_name, signup_email_domains,
+    match conn.query_row(
+        "SELECT allow_signup, instance_name, signup_email_domains,
                     session_lifetime_days, login_message, web_auto_login,
                     authz_enforced
              FROM instance_settings WHERE id = 1",
-            [],
-            |row| {
-                let domains: String = row.get(2)?;
-                Ok(InstanceSettings {
-                    allow_signup: row.get::<_, i64>(0)? != 0,
-                    instance_name: row.get(1)?,
-                    signup_email_domains: parse_domains(&domains),
-                    session_lifetime_days: row.get(3)?,
-                    login_message: row.get(4)?,
-                    web_auto_login: row.get::<_, i64>(5)? != 0,
-                    authz_enforced: row.get::<_, i64>(6)? != 0,
-                })
-            },
-        )
-        .ok();
-    Ok(found.unwrap_or_else(defaults))
+        [],
+        |row| {
+            let domains: String = row.get(2)?;
+            Ok(InstanceSettings {
+                allow_signup: row.get::<_, i64>(0)? != 0,
+                instance_name: row.get(1)?,
+                signup_email_domains: parse_domains(&domains),
+                session_lifetime_days: row.get(3)?,
+                login_message: row.get(4)?,
+                web_auto_login: row.get::<_, i64>(5)? != 0,
+                authz_enforced: row.get::<_, i64>(6)? != 0,
+            })
+        },
+    ) {
+        Ok(settings) => Ok(settings),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(defaults()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 /// Apply a partial update and return the new settings. Validates lengths,
@@ -261,6 +262,15 @@ mod tests {
         assert!(s.login_message.is_none());
         assert!(!s.web_auto_login, "single-user auto-login is off by default");
         assert!(!s.authz_enforced, "authorization enforcement is off by default");
+    }
+
+    #[test]
+    fn get_propagates_database_errors() {
+        let pool = conn();
+        let c = pool.write().unwrap();
+        c.execute("DROP TABLE instance_settings", []).unwrap();
+
+        assert!(matches!(get(&c), Err(LificError::Database(_))));
     }
 
     #[test]

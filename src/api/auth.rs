@@ -22,11 +22,10 @@ fn session_cookie(token: &str, expires_at: &str, secure: bool) -> String {
     use chrono::DateTime;
     // Parse expiry for Max-Age calculation; fall back to 30 days
     let max_age = DateTime::parse_from_rfc3339(expires_at)
-        .map(|exp| {
+        .map_or(30 * 24 * 3600, |exp| {
             let exp_utc: DateTime<chrono::Utc> = exp.into();
             (exp_utc - chrono::Utc::now()).num_seconds().max(0)
-        })
-        .unwrap_or(30 * 24 * 3600);
+        });
 
     let secure_attr = if secure { "; Secure" } else { "" };
     format!("lific_token={token}; Path=/; Max-Age={max_age}; HttpOnly{secure_attr}; SameSite=Lax")
@@ -295,9 +294,7 @@ pub(super) async fn auth_login(
     let verified_hash = user.password_hash.clone();
     let (user, session) = db.transaction(|tx| {
         let user = crate::db::queries::users::finalize_login(tx, user.id, &verified_hash)?;
-        let lifetime_days = crate::db::queries::settings::get(tx)
-            .map(|s| s.session_lifetime_days)
-            .unwrap_or(30);
+        let lifetime_days = crate::db::queries::settings::get(tx)?.session_lifetime_days;
         let session =
             crate::db::queries::users::create_session(tx, user.id, Some(lifetime_days * 24))?;
         Ok((user, session))

@@ -455,6 +455,10 @@ mod tests {
     /// the gates — only `user` drives membership/admin checks). Mirrors what
     /// [`crate::resolve_caller`] produces in production for a credential that
     /// already names a user.
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "test helper mirrors the optional production identity API"
+    )]
     fn id(user: AuthUser) -> Option<ResolvedIdentity> {
         Some(ResolvedIdentity {
             user,

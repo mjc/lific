@@ -96,7 +96,7 @@ fn render_from(
     } else {
         Action::Created
     };
-    let existing_str = existing.map(|e| e.contents.as_str()).unwrap_or("");
+    let existing_str = existing.map_or("", |e| e.contents.as_str());
     let contents = match format {
         Format::Json => render_json(existing_str, entry)?,
         Format::Toml => render_toml(existing_str, entry)?,
@@ -110,7 +110,7 @@ fn render_from(
 pub fn write(path: &Path, format: Format, entry: &CompiledEntry) -> Result<Action, WriteError> {
     let existing = read_existing(path)?;
     let rendered = render_from(existing.as_ref(), format, entry)?;
-    let parent_existed = path.parent().map(|parent| parent.exists()).unwrap_or(true);
+    let parent_existed = path.parent().is_none_or(|parent| parent.exists());
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
     {
@@ -179,6 +179,7 @@ pub fn write(path: &Path, format: Format, entry: &CompiledEntry) -> Result<Actio
 /// `connect` cannot leave the config missing even though the write reported
 /// success. Unix only: Windows exposes no directory handle to sync, and
 /// `fsync` on a directory has no meaning there.
+#[cfg_attr(not(unix), expect(clippy::unnecessary_wraps, reason = "fallible on Unix"))]
 fn sync_parent_dir(_dir: &Path) -> Result<(), WriteError> {
     #[cfg(unix)]
     {
@@ -191,6 +192,7 @@ fn sync_parent_dir(_dir: &Path) -> Result<(), WriteError> {
     Ok(())
 }
 
+#[cfg_attr(not(unix), expect(clippy::unnecessary_wraps, reason = "fallible on Unix"))]
 fn set_private_file(_file: &std::fs::File) -> Result<(), WriteError> {
     #[cfg(unix)]
     {
@@ -202,6 +204,7 @@ fn set_private_file(_file: &std::fs::File) -> Result<(), WriteError> {
     Ok(())
 }
 
+#[cfg_attr(not(unix), expect(clippy::unnecessary_wraps, reason = "fallible on Unix"))]
 fn set_private_dir(_path: &Path) -> Result<(), WriteError> {
     #[cfg(unix)]
     {

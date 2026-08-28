@@ -28,7 +28,13 @@ pub struct AuthState {
 /// LIF-383: the one hex encoder in the tree. Four copies of this loop used to
 /// live in oauth.rs, mcp/mod.rs, auth.rs and db/queries/users.rs.
 pub(crate) fn hex_encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    use std::fmt::Write as _;
+
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        write!(&mut encoded, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    encoded
 }
 
 /// SHA-256 a byte slice and return the lowercase hex digest. This is how every
@@ -3643,9 +3649,7 @@ mod tests {
             format!(
                 "{}|{}",
                 actor.transport.as_str(),
-                identity
-                    .map(|i| i.transport.as_str().to_string())
-                    .unwrap_or_else(|| "none".into())
+                identity.map_or_else(|| "none".into(), |i| i.transport.as_str().to_string())
             )
         }
 

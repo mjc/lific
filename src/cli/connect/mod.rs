@@ -690,7 +690,7 @@ pub fn run(
         base,
         key_source.as_ref(),
         manager.as_ref(),
-    )?;
+    );
 
     // AGENTS.md (LIF-251).
     let agents_md = maybe_write_agents_md(&args, base, stdin_tty)?;
@@ -715,9 +715,8 @@ pub fn run(
 }
 
 /// Write (or render, under `--dry-run`) every selected client, minting each
-/// client's own key as it goes (LIF-259). Errors only on a key-minting failure;
-/// per-client write failures and skips are recorded as outcomes so the run
-/// continues.
+/// client's own key as it goes (LIF-259). Per-client key-minting/write failures
+/// and skips are recorded as outcomes so the run continues.
 fn write_all_clients(
     selected: &[String],
     args: &ConnectArgs,
@@ -726,7 +725,7 @@ fn write_all_clients(
     base: &PathBase,
     key_source: Option<&KeySource>,
     manager: Option<&api_keys_simplified::ApiKeyManagerV0>,
-) -> Result<Vec<ClientOutcome>, String> {
+) -> Vec<ClientOutcome> {
     let mut outcomes = Vec::new();
     for id in selected {
         let Some(spec) = clients::find_client(id) else {
@@ -858,7 +857,7 @@ fn write_all_clients(
             }
         }
     }
-    Ok(outcomes)
+    outcomes
 }
 
 /// Decide whether and how to touch AGENTS.md for this run.

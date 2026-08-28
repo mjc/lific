@@ -18,6 +18,11 @@ include = [
     "README.md",
 ]
 
+[lints.clippy]
+format_collect = "deny"
+map_unwrap_or = "deny"
+unnecessary_wraps = "deny"
+
 [dependencies]
 # HTTP
 axum = { version = "0.8", features = ["json", "multipart", "ws"] }

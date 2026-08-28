@@ -145,8 +145,7 @@ pub fn map_issue(issue: &LinearIssue, map: &LinearStatusMap) -> NormalizedIssue 
     let status = issue
         .state
         .as_ref()
-        .map(|s| map_state_type(&s.type_, map))
-        .unwrap_or(map.backlog);
+        .map_or(map.backlog, |s| map_state_type(&s.type_, map));
 
     let labels = issue
         .labels
@@ -163,7 +162,10 @@ pub fn map_issue(issue: &LinearIssue, map: &LinearStatusMap) -> NormalizedIssue 
         .nodes
         .iter()
         .map(|c| NormalizedComment {
-            author: c.user.as_ref().map(|u| u.handle()).unwrap_or_else(|| "unknown".into()),
+            author: c
+                .user
+                .as_ref()
+                .map_or_else(|| "unknown".into(), |u| u.handle()),
             created_at: c.created_at.clone(),
             body: c.body.clone().unwrap_or_default(),
         })

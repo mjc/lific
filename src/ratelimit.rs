@@ -157,8 +157,7 @@ pub fn client_ip(peer: IpAddr, headers: &HeaderMap, trusted_proxies: &[IpNetwork
         x_forwarded_for_client_ip(headers, trusted_proxies).unwrap_or(peer)
     } else {
         header_ip(headers, "x-real-ip")
-            .map(normalize_ip)
-            .unwrap_or(peer)
+            .map_or(peer, normalize_ip)
     };
     normalize_ip(client).to_string()
 }

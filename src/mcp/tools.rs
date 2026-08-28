@@ -1966,14 +1966,18 @@ impl LificMcp {
                 .files
                 .into_iter()
                 .next()
-                .map(|file| file.content)
-                .unwrap_or_else(|| "Error: page export produced no files".into())),
+                .map_or_else(
+                    || "Error: page export produced no files".into(),
+                    |file| file.content,
+                )),
             Kind::Issue => Ok(bundle
                 .files
                 .into_iter()
                 .next()
-                .map(|file| file.content)
-                .unwrap_or_else(|| "Error: issue export produced no files".into())),
+                .map_or_else(
+                    || "Error: issue export produced no files".into(),
+                    |file| file.content,
+                )),
             Kind::Project => Ok(render_response(|output| {
                 writeln!(output, "{} exported file(s):", bundle.files.len())?;
                 bundle
@@ -4633,28 +4637,34 @@ impl Display for AttachmentLines<'_> {
 /// project comes back so the caller can drop links it has no role on;
 /// `None` means the linked entity is gone (a dangling link the GC has not
 /// swept yet) and the row simply omits it.
+fn optional_entity<T>(
+    result: Result<T, crate::error::LificError>,
+) -> Result<Option<T>, crate::error::LificError> {
+    match result {
+        Ok(entity) => Ok(Some(entity)),
+        Err(crate::error::LificError::NotFound(_)) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 fn attachment_link_label(
     conn: &rusqlite::Connection,
     entity: models::AttachmentEntity,
     entity_id: i64,
 ) -> Result<Option<(String, Option<i64>)>, crate::error::LificError> {
-    Ok(match entity {
-        models::AttachmentEntity::Issue => queries::get_issue(conn, entity_id)
-            .ok()
+    let label = match entity {
+        models::AttachmentEntity::Issue => optional_entity(queries::get_issue(conn, entity_id))?
             .map(|issue| (issue.identifier, Some(issue.project_id))),
-        models::AttachmentEntity::Page => queries::get_page(conn, entity_id)
-            .ok()
+        models::AttachmentEntity::Page => optional_entity(queries::get_page(conn, entity_id))?
             .map(|page| (page.identifier, page.project_id)),
         models::AttachmentEntity::Comment => {
-            match queries::comments::get_comment(conn, entity_id).ok() {
+            match optional_entity(queries::comments::get_comment(conn, entity_id))? {
                 None => None,
                 Some(comment) => {
                     let parent = match (comment.issue_id, comment.page_id) {
-                        (Some(issue_id), _) => queries::get_issue(conn, issue_id)
-                            .ok()
+                        (Some(issue_id), _) => optional_entity(queries::get_issue(conn, issue_id))?
                             .map(|issue| (issue.identifier, Some(issue.project_id))),
-                        (None, Some(page_id)) => queries::get_page(conn, page_id)
-                            .ok()
+                        (None, Some(page_id)) => optional_entity(queries::get_page(conn, page_id))?
                             .map(|page| (page.identifier, page.project_id)),
                         (None, None) => None,
                     };
@@ -4664,7 +4674,8 @@ fn attachment_link_label(
                 }
             }
         }
-    })
+    };
+    Ok(label)
 }
 
 // LIFIC-11: process-wide serialization lock for MCP tests. `MCP_REQUEST_USER`
@@ -10939,6 +10950,24 @@ mod tests {
             .filter_map(|content| content.as_text().map(|text| text.text.clone()))
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn attachment_link_label_ignores_missing_entities_but_propagates_database_errors() {
+        let db = crate::db::open_memory().expect("test db");
+        let conn = db.write().unwrap();
+
+        assert!(
+            attachment_link_label(&conn, models::AttachmentEntity::Issue, 1)
+                .unwrap()
+                .is_none()
+        );
+
+        conn.execute("DROP TABLE issues", []).unwrap();
+        assert!(matches!(
+            attachment_link_label(&conn, models::AttachmentEntity::Issue, 1),
+            Err(crate::error::LificError::Database(_))
+        ));
     }
 
     #[test]

@@ -167,8 +167,7 @@ fn run_backup(
     match dump::write_dump(pool, db_path, &backup_path) {
         Ok(manifest) => {
             let size = std::fs::metadata(&backup_path)
-                .map(|m| m.len())
-                .unwrap_or(0);
+                .map_or(0, |m| m.len());
             info!(
                 path = %backup_path.display(),
                 size_kb = size / 1024,

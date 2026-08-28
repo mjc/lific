@@ -412,8 +412,7 @@ fn build_app_with_store(
             info!(
                 acting_as = authless_user
                     .as_ref()
-                    .map(|u| u.username.as_str())
-                    .unwrap_or("<anonymous>"),
+                    .map_or("<anonymous>", |u| u.username.as_str()),
                 "authless MCP endpoint enabled at /mcp/<token>"
             );
             build_authless_mcp_router(
@@ -523,9 +522,7 @@ pub async fn run(cfg: &Config) -> Result<(), Box<dyn std::error::Error>> {
         // stale or toggled flag must not turn a reachable instance into
         // passwordless admin. On a genuinely local instance with an https
         // public_url on a private network, keep the loud warning.
-        let auto_login = db::queries::settings::get(&conn)
-            .map(|s| s.web_auto_login)
-            .unwrap_or(false);
+        let auto_login = db::queries::settings::get(&conn)?.web_auto_login;
         if auto_login && let Some(exposure) = reachability.public_exposure() {
             return Err(format!(
                 "refusing to start: single-user web auto-login is enabled while \

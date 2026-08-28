@@ -73,6 +73,7 @@ fn write_private_config(path: &std::path::Path, contents: &str) -> std::io::Resu
 /// `sync_all` persists its bytes; the name that reaches them lives in the
 /// parent directory and survives a crash only once that is synced too.
 /// Unix only: Windows exposes no directory handle to sync.
+#[cfg_attr(not(unix), expect(clippy::unnecessary_wraps, reason = "fallible on Unix"))]
 fn sync_parent_dir(_dir: &std::path::Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
@@ -351,8 +352,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 cli::login::run_logout(url.as_deref(), &cfg_clone, json)
             })
             .await
-            .map_err(|e| -> Box<dyn std::error::Error> { e.to_string().into() })?
-            .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+            .map_err(|e| -> Box<dyn std::error::Error> { e.to_string().into() })?;
             return Ok(());
         }
 
@@ -584,8 +584,7 @@ fn local_url(cfg: &Config) -> String {
 fn http_backend_url(cli_url: Option<&str>, public_url: Option<&str>, cfg: &Config) -> String {
     cli_url
         .or(public_url)
-        .map(str::to_owned)
-        .unwrap_or_else(|| local_url(cfg))
+        .map_or_else(|| local_url(cfg), str::to_owned)
 }
 /// Poll `<base>/api/health` until it answers 200 or the deadline passes.
 async fn wait_healthy(base_url: &str, timeout: std::time::Duration) -> bool {
@@ -883,7 +882,7 @@ async fn cmd_init(
                         // port while our unit crash-loops on AddrInUse), and
                         // silence alone is ambiguous. Cross-check the unit's
                         // own active state to say something precise.
-                        let active = cli::service::status(mgr).map(|s| s.active).unwrap_or(false);
+                        let active = cli::service::status(mgr).is_ok_and(|s| s.active);
                         match (healthy, active) {
                             (true, true) => {}
                             (true, false) => {
@@ -1164,18 +1163,18 @@ mod init_target_tests {
     use crate::db;
     use std::path::{Path, PathBuf};
 
-    fn os_default() -> Option<(PathBuf, PathBuf)> {
-        Some((
+    fn os_default() -> (PathBuf, PathBuf) {
+        (
             PathBuf::from("/home/u/.config/lific/lific.toml"),
             PathBuf::from("/home/u/.local/share/lific/lific.db"),
-        ))
+        )
     }
 
     // LIF-295: bare init targets the OS dirs, with an explicit db path so the
     // generated config can split config dir from data dir.
     #[test]
     fn bare_init_targets_os_dirs() {
-        let (config, db) = resolve_init_target(None, false, false, os_default());
+        let (config, db) = resolve_init_target(None, false, false, Some(os_default()));
         assert_eq!(config, Path::new("/home/u/.config/lific/lific.toml"));
         assert_eq!(
             db.as_deref(),
@@ -1185,7 +1184,7 @@ mod init_target_tests {
 
     #[test]
     fn here_flag_forces_cwd_layout() {
-        let (config, db) = resolve_init_target(None, true, false, os_default());
+        let (config, db) = resolve_init_target(None, true, false, Some(os_default()));
         assert_eq!(config, Path::new("lific.toml"));
         assert_eq!(db, None, "cwd layout keeps the relative default db");
     }
@@ -1194,7 +1193,7 @@ mod init_target_tests {
     // a second instance in the OS dirs.
     #[test]
     fn existing_cwd_config_wins_over_os_dirs() {
-        let (config, db) = resolve_init_target(None, false, true, os_default());
+        let (config, db) = resolve_init_target(None, false, true, Some(os_default()));
         assert_eq!(config, Path::new("lific.toml"));
         assert_eq!(db, None);
     }
@@ -1205,7 +1204,7 @@ mod init_target_tests {
             Some(Path::new("/srv/lific/lific.toml")),
             false,
             true,
-            os_default(),
+            Some(os_default()),
         );
         assert_eq!(config, Path::new("/srv/lific/lific.toml"));
         assert_eq!(db, None);
