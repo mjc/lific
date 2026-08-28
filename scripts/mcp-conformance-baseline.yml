@@ -1,8 +1,55 @@
 server:
-  # These checks require diagnostic tools that an application server cannot
-  # expose unless it opts into the conformance fixture API. Keep them narrow:
-  # any other failure remains an unexpected conformance failure.
+  # Lific is a tools-only application server, not the conformance suite's
+  # everything-server fixture. Baseline only the exact checks that need
+  # fixture-only diagnostic tools or capabilities Lific does not advertise;
+  # every other check in these scenarios remains enforced.
+
+  # Stateless diagnostic tools used to exercise logging, streaming, and
+  # undeclared-capability failures.
   - server-stateless:sep-2575-server-rejects-undeclared-capability
   - server-stateless:sep-2575-missing-capability-http-400
   - server-stateless:sep-2575-http-server-no-independent-requests-on-stream
   - server-stateless:sep-2575-server-no-log-without-loglevel
+
+  # Completion, prompts, and resources are optional capabilities that Lific
+  # deliberately does not advertise.
+  - completion-complete:completion-complete
+  - prompts-list:prompts-list
+  - prompts-get-simple:prompts-get-simple
+  - prompts-get-with-args:prompts-get-with-args
+  - prompts-get-embedded-resource:prompts-get-embedded-resource
+  - prompts-get-with-image:prompts-get-with-image
+  - resources-list:resources-list
+  - resources-read-text:resources-read-text
+  - resources-read-binary:resources-read-binary
+  - resources-templates-read:resources-templates-read
+  - sep-2164-resource-not-found:sep-2164-error-code
+  - sep-2164-resource-not-found:sep-2164-data-uri
+  - caching:sep-2549-prompts-list-caching-hints
+  - caching:sep-2549-resources-list-caching-hints
+  - caching:sep-2549-resources-templates-list-caching-hints
+
+  # The content/progress scenarios call fixture tool names. Lific's real tools
+  # remain covered by tools-list plus its golden-wire and process tests.
+  - tools-call-simple-text:tools-call-simple-text
+  - tools-call-image:tools-call-image
+  - tools-call-audio:tools-call-audio
+  - tools-call-embedded-resource:tools-call-embedded-resource
+  - tools-call-mixed-content:tools-call-mixed-content
+  - tools-call-error:tools-call-error
+  - tools-call-with-progress:tools-call-with-progress
+
+  # Input-required-result scenarios likewise depend on fixture tools (and one
+  # fixture prompt) that drive elicitation, sampling, roots, and MRTR flows.
+  - input-required-result-basic-elicitation:sep-2322-elicitation-incomplete
+  - input-required-result-basic-sampling:sep-2322-sampling-incomplete
+  - input-required-result-basic-list-roots:sep-2322-list-roots-incomplete
+  - input-required-result-request-state:sep-2322-request-state-incomplete
+  - input-required-result-multiple-input-requests:sep-2322-multiple-inputs-incomplete
+  - input-required-result-multi-round:sep-2322-multi-round-r1
+  - input-required-result-non-tool-request:sep-2322-non-tool-incomplete
+  - input-required-result-result-type:sep-2322-result-type-included
+  - input-required-result-tampered-state:sep-2322-reject-tampered-state
+  - input-required-result-capability-check:sep-2322-respect-client-capabilities
+  - input-required-result-missing-input-response:sep-2322-missing-response-rerequests
+  - input-required-result-ignore-extra-params:sep-2322-ignore-unexpected-params
