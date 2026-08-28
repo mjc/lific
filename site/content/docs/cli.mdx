@@ -176,10 +176,10 @@ lific service restart
 
 ### doctor
 
-Checks the configuration, database, backups, local server, OAuth discovery, and MCP initialization. When `server.public_url` is set, it also checks its OAuth discovery endpoint. It exits with a nonzero status when any check fails.
+Checks the configuration, database, backups, local server, OAuth discovery, and the modern MCP discovery/tools round trip. When `server.public_url` is set, it also checks its OAuth discovery endpoint. It exits with a nonzero status when any check fails. Pass `--legacy-mcp` to probe the retained initialize/session lifecycle instead.
 
 ```shell
-lific doctor [--key <API_KEY>]
+lific doctor [--key <API_KEY>] [--legacy-mcp]
 ```
 
 **Arguments**
@@ -189,6 +189,7 @@ lific doctor [--key <API_KEY>]
 **Flags**
 
 - `--key <API_KEY>` performs an authorized MCP check. It falls back to `LIFIC_API_KEY` when the flag is omitted.
+- `--legacy-mcp` probes the retained pre-July initialize/session contract instead of the July stateless lifecycle.
 
 ## Authentication and client connection
 
@@ -248,7 +249,7 @@ lific connect [--client <CLIENT>]... [--scope <SCOPE>] [--stdio] [--oauth] [--ur
 
 - `--client <CLIENT>` selects a client. Repeat the flag to select multiple clients.
 - `--scope <SCOPE>` selects `global` or `project`. The default is `global`.
-- `--stdio` writes a local MCP configuration that runs `lific --db <PATH> mcp`. It mints a per-tool bot and key and writes the key into the entry's environment as `LIFIC_TOKEN`.
+- `--stdio` writes a local MCP configuration that runs `lific --db <PATH> mcp`. It mints a per-tool bot and key and writes the key into the entry's environment as `LIFIC_TOKEN`; clients without a documented environment field are skipped before anything is minted.
 - `--oauth` writes a remote configuration without an authorization header. The client performs its own OAuth flow. It conflicts with `--stdio` and `--key`.
 - `--url <URL>` overrides the remote MCP URL. The default uses `server.public_url` with `/mcp`, or `http://127.0.0.1:<port>/mcp`.
 - `--key <API_KEY>` writes this API key instead of creating connection keys.
