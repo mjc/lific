@@ -143,7 +143,7 @@ impl McpHttpPolicy {
     }
 
     pub(crate) fn transport_config(&self) -> StreamableHttpServerConfig {
-        legacy_streamable_http_config(self.allowed_hosts.clone(), self.allowed_origins.clone())
+        streamable_http_config(self.allowed_hosts.clone(), self.allowed_origins.clone())
     }
 }
 
