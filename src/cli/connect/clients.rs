@@ -572,7 +572,7 @@ pub fn all_clients() -> Vec<ClientSpec> {
                 hint: "VS Code starts the browser OAuth flow on first connect",
             },
             format: Format::Json,
-            stdio_env_key: None,
+            stdio_env_key: Some("env"),
             global_path: |b| {
                 Some(match b.os {
                     Os::Mac => home_dot(
@@ -724,7 +724,7 @@ pub fn all_clients() -> Vec<ClientSpec> {
                 hint: "run /mcp auth lific inside Gemini CLI",
             },
             format: Format::Json,
-            stdio_env_key: None,
+            stdio_env_key: Some("env"),
             global_path: |b| Some(home_dot(b, &[".gemini", "settings.json"])),
             project_path: |b| Some(project_rel(b, &[".gemini", "settings.json"])),
             detect_extra: |b, scope| match scope {
@@ -984,7 +984,7 @@ mod tests {
         let fixtures = vec![
             LifecycleFixture {
                 client: "codex",
-                lifecycle: "July HTTP bearer",
+                lifecycle: "HTTP bearer",
                 config: remote_cfg(),
                 top_key: "mcp_servers.lific",
                 value: serde_json::json!({
@@ -994,7 +994,7 @@ mod tests {
             },
             LifecycleFixture {
                 client: "codex",
-                lifecycle: "July HTTP OAuth",
+                lifecycle: "HTTP OAuth",
                 config: oauth_cfg(),
                 top_key: "mcp_servers.lific",
                 value: serde_json::json!({ "url": url }),
@@ -1022,7 +1022,7 @@ mod tests {
             },
             LifecycleFixture {
                 client: "claude-code",
-                lifecycle: "July HTTP bearer",
+                lifecycle: "HTTP bearer",
                 config: remote_cfg(),
                 top_key: "mcpServers",
                 value: serde_json::json!({
@@ -1033,7 +1033,7 @@ mod tests {
             },
             LifecycleFixture {
                 client: "claude-code",
-                lifecycle: "July HTTP OAuth",
+                lifecycle: "HTTP OAuth",
                 config: oauth_cfg(),
                 top_key: "mcpServers",
                 value: serde_json::json!({
@@ -1103,7 +1103,7 @@ mod tests {
             },
             LifecycleFixture {
                 client: "zed",
-                lifecycle: "July HTTP bearer",
+                lifecycle: "HTTP bearer",
                 config: remote_cfg(),
                 top_key: "context_servers",
                 value: serde_json::json!({
@@ -1113,7 +1113,7 @@ mod tests {
             },
             LifecycleFixture {
                 client: "zed",
-                lifecycle: "July HTTP OAuth",
+                lifecycle: "HTTP OAuth",
                 config: oauth_cfg(),
                 top_key: "context_servers",
                 value: serde_json::json!({ "url": url }),
@@ -1359,16 +1359,30 @@ mod tests {
 
     #[test]
     fn connect_stdio_env_uses_per_client_env_key() {
-        // opencode=environment; Claude, Claude Code, Codex, and Zed=env.
-        // Others are None.
+        // opencode=environment; Claude, Claude Code, VS Code, Codex, Zed, and
+        // Gemini=env. Others are None.
         let spec_env = |id: &str| find_client(id).unwrap().stdio_env_key;
         assert_eq!(spec_env("opencode"), Some("environment"));
         assert_eq!(spec_env("claude-code"), Some("env"));
         assert_eq!(spec_env("claude-desktop"), Some("env"));
+        assert_eq!(spec_env("vscode"), Some("env"));
         assert_eq!(spec_env("codex"), Some("env"));
         assert_eq!(spec_env("zed"), Some("env"));
-        for id in ["cursor", "vscode", "gemini", "windsurf", "goose", "crush"] {
+        assert_eq!(spec_env("gemini"), Some("env"));
+        for id in ["cursor", "windsurf", "goose", "crush"] {
             assert_eq!(spec_env(id), None, "{id} has no documented stdio env field");
+        }
+    }
+
+    #[test]
+    fn vscode_and_gemini_stdio_preserve_agent_identity() {
+        for id in ["vscode", "gemini"] {
+            let entry = find_client(id).unwrap().compile(&stdio_token_cfg()).unwrap();
+            assert_eq!(
+                entry.value["env"]["LIFIC_TOKEN"],
+                "lific_sk-live-AGENTTOKEN",
+                "{id} must carry the connected agent identity"
+            );
         }
     }
 
