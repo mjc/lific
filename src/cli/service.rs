@@ -19,6 +19,9 @@
 //! [`ServicePlan`] so it can be unit-tested without touching systemctl.
 //! Process-spawning lives in thin wrappers that the commands share.
 
+use super::{ServiceAction, term, ui};
+use crate::config::Config;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -51,19 +54,16 @@ pub struct ServicePlan {
     pub exe: PathBuf,
     /// Absolute path to the lific.toml this instance runs from.
     pub config: PathBuf,
-    /// Absolute working directory (relative `database.path`/`backup.dir`
-    /// values in the config resolve against this).
+    /// Absolute working directory for the service process.
     pub workdir: PathBuf,
+    /// Absolute, user-writable path for launchd stdout and stderr.
+    pub launchd_log: PathBuf,
 }
 
 impl ServicePlan {
     /// Build a plan anchored at the config file, using the currently running
-    /// binary as the exec target. The service's working directory is the
-    /// config file's own directory, so a relative `database.path` resolves
-    /// beside the lific.toml the unit points at — no matter where `lific
-    /// init` / `lific service install` ran from (LIF-292: the old
-    /// caller-supplied-workdir form let `--config` be silently ignored and
-    /// baked `./lific.toml` from the invocation cwd into the unit).
+    /// binary as the exec target. Persistent application paths remain owned by
+    /// lific.toml; this plan only records manager-owned paths.
     pub fn for_config_file(config: &Path) -> Result<Self, String> {
         let exe = std::env::current_exe()
             .map_err(|e| format!("cannot resolve the lific binary path: {e}"))?;
@@ -75,12 +75,28 @@ impl ServicePlan {
             .filter(|p| !p.as_os_str().is_empty())
             .ok_or_else(|| format!("config path {} has no parent directory", config.display()))?
             .to_path_buf();
-        reject_control_paths([exe.as_path(), config.as_path(), workdir.as_path()])?;
+        let launchd_log = launchd_log_path()?;
+        reject_control_paths([
+            exe.as_path(),
+            config.as_path(),
+            workdir.as_path(),
+            launchd_log.as_path(),
+        ])?;
         Ok(Self {
             exe,
             config,
             workdir,
+            launchd_log,
         })
+    }
+
+    fn argv(&self) -> [&OsStr; 4] {
+        [
+            self.exe.as_os_str(),
+            OsStr::new("--config"),
+            self.config.as_os_str(),
+            OsStr::new("start"),
+        ]
     }
 }
 
@@ -150,6 +166,7 @@ pub fn definition_path(manager: Manager) -> Result<PathBuf, String> {
 
 /// Render the systemd user unit. Paths are systemd-quoted so spaces survive.
 pub fn systemd_unit(plan: &ServicePlan) -> String {
+    let command = plan.argv().map(|arg| systemd_quote(arg, true)).join(" ");
     format!(
         r#"# Managed by `lific init` / `lific service install`.
 [Unit]
@@ -157,7 +174,7 @@ Description=Lific issue tracker
 After=network.target
 
 [Service]
-ExecStart={exe} start --config {config}
+ExecStart={command}
 WorkingDirectory={workdir}
 UMask=0077
 Restart=on-failure
@@ -166,16 +183,14 @@ RestartSec=2
 [Install]
 WantedBy=default.target
 "#,
-        exe = systemd_quote(&plan.exe, true),
-        config = systemd_quote(&plan.config, true),
-        workdir = systemd_quote(&plan.workdir, false),
+        workdir = systemd_quote(plan.workdir.as_os_str(), false),
     )
 }
 
 /// Quote a path for a systemd ExecStart line (double quotes, escape embedded
 /// quotes/backslashes). systemd's quoting rules accept this for paths.
-fn systemd_quote(p: &Path, escape_dollar: bool) -> String {
-    let s = p.display().to_string();
+fn systemd_quote(value: &OsStr, escape_dollar: bool) -> String {
+    let s = value.to_string_lossy();
     let mut escaped = s
         .replace('\\', "\\\\")
         .replace('"', "\\\"")
@@ -192,7 +207,15 @@ fn systemd_quote(p: &Path, escape_dollar: bool) -> String {
 
 /// Render the launchd LaunchAgent plist.
 pub fn launchd_plist(plan: &ServicePlan) -> String {
-    let log = plan.workdir.join("lific.log");
+    let arguments = plan
+        .argv()
+        .map(|arg| {
+            format!(
+                "        <string>{}</string>",
+                xml_escape(&arg.to_string_lossy())
+            )
+        })
+        .join("\n");
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -202,10 +225,7 @@ pub fn launchd_plist(plan: &ServicePlan) -> String {
     <string>{label}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>{exe}</string>
-        <string>start</string>
-        <string>--config</string>
-        <string>{config}</string>
+{arguments}
     </array>
     <key>WorkingDirectory</key>
     <string>{workdir}</string>
@@ -224,10 +244,8 @@ pub fn launchd_plist(plan: &ServicePlan) -> String {
 </plist>
 "#,
         label = LAUNCHD_LABEL,
-        exe = xml_escape(&plan.exe.display().to_string()),
-        config = xml_escape(&plan.config.display().to_string()),
         workdir = xml_escape(&plan.workdir.display().to_string()),
-        log = xml_escape(&log.display().to_string()),
+        log = xml_escape(&plan.launchd_log.display().to_string()),
     )
 }
 
@@ -235,6 +253,16 @@ fn xml_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
+}
+
+fn launchd_log_path() -> Result<PathBuf, String> {
+    let home = dirs::home_dir()
+        .ok_or_else(|| "cannot determine your home directory for launchd logs".to_string())?;
+    Ok(home
+        .join("Library")
+        .join("Logs")
+        .join("Lific")
+        .join("lific.log"))
 }
 
 /// The launchd domain every `launchctl` invocation below is addressed to:
@@ -327,6 +355,10 @@ pub fn install(manager: Manager, plan: &ServicePlan) -> Result<InstallReport, St
             })
         }
         Manager::Launchd => {
+            if let Some(dir) = plan.launchd_log.parent() {
+                std::fs::create_dir_all(dir)
+                    .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+            }
             std::fs::write(&path, launchd_plist(plan))
                 .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
             launchd_bootstrap(&path)?;
@@ -427,8 +459,130 @@ pub fn restart(manager: Manager) -> Result<(), String> {
 pub fn logs_hint(manager: Manager) -> String {
     match manager {
         Manager::SystemdUser => format!("journalctl --user -u {SYSTEMD_UNIT_NAME} -f"),
-        Manager::Launchd => "tail -f lific.log (in the instance directory)".into(),
+        Manager::Launchd => launchd_log_path().map_or_else(
+            |_| "open ~/Library/Logs/Lific/lific.log".into(),
+            |path| format!("tail -f {}", path.display()),
+        ),
     }
+}
+
+/// Run a `lific service` action without loading ambient application config.
+/// Only installation resolves and validates the explicitly selected instance.
+pub fn run(
+    config_flag: Option<&Path>,
+    db_flag: Option<&Path>,
+    json_flag: bool,
+    action: &ServiceAction,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let json = term::wants_json(json_flag);
+    if matches!(action, ServiceAction::Install) && db_flag.is_some() {
+        return Err(
+            "`lific service install --db` would create a second persistent path authority; set database.path in lific.toml instead"
+                .into(),
+        );
+    }
+    let Some(manager) = detect() else {
+        return Err(
+            "no supported service manager found (needs a systemd user session on Linux, or launchd on macOS)"
+                .into(),
+        );
+    };
+
+    match action {
+        ServiceAction::Install => {
+            let config_path = config_flag.map_or_else(
+                || Config::discover_path().unwrap_or_else(|| PathBuf::from("lific.toml")),
+                Path::to_path_buf,
+            );
+            if !config_path.exists() {
+                return Err(format!(
+                    "config not found at {} — run `lific init` first (or point --config at an existing lific.toml)",
+                    config_path.display()
+                )
+                .into());
+            }
+            Config::load(Some(&config_path))?;
+            let plan = ServicePlan::for_config_file(&config_path)?;
+            let report = install(manager, &plan)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                ui::intro("lific service install");
+                ui::step(format!(
+                    "Service installed and started — {} {}",
+                    report.manager,
+                    ui::dim(&report.definition)
+                ));
+                if report.linger == Some(false) {
+                    ui::warn(
+                        "`loginctl enable-linger` didn't succeed — the service will stop when you log out. Run it manually to fix that.",
+                    );
+                }
+                ui::outro(format!("Logs: {}", ui::command(logs_hint(manager))));
+            }
+        }
+        ServiceAction::Uninstall => {
+            let removed = uninstall(manager)?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({ "uninstalled": true, "definition": removed })
+                );
+            } else {
+                ui::intro("lific service uninstall");
+                ui::step(format!(
+                    "Service stopped and uninstalled {}",
+                    ui::dim(&removed)
+                ));
+                ui::outro(format!(
+                    "Reinstall anytime with {}",
+                    ui::command("lific service install")
+                ));
+            }
+        }
+        ServiceAction::Status => {
+            let status = status(manager)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&status)?);
+            } else if status.active {
+                ui::step(format!("Service is running ({})", status.manager));
+            } else if status.installed {
+                ui::error(format!(
+                    "Service is installed but NOT running ({}). Start it: {}",
+                    status.manager,
+                    ui::command("lific service restart")
+                ));
+            } else {
+                ui::error(format!(
+                    "Service is not installed. Install it: {}",
+                    ui::command("lific service install")
+                ));
+            }
+            if !(status.installed && status.active) {
+                std::process::exit(1);
+            }
+        }
+        ServiceAction::Stop => {
+            stop(manager)?;
+            if json {
+                println!("{}", serde_json::json!({ "stopped": true }));
+            } else {
+                ui::step(format!(
+                    "Service stopped {}",
+                    ui::dim("(still installed; it returns on reboot or `lific service restart`)")
+                ));
+            }
+        }
+        ServiceAction::Restart => {
+            restart(manager)?;
+            if json {
+                println!("{}", serde_json::json!({ "restarted": true }));
+            } else {
+                ui::step("Service restarted");
+            }
+        }
+    }
+    Ok(())
 }
 
 fn run_ok(cmd: &str, args: &[&str]) -> Result<(), String> {
@@ -456,7 +610,34 @@ mod tests {
             exe: PathBuf::from("/home/u/.cargo/bin/lific"),
             config: PathBuf::from("/home/u/tracker/lific.toml"),
             workdir: PathBuf::from("/home/u/tracker"),
+            launchd_log: PathBuf::from("/home/u/Library/Logs/Lific/lific.log"),
         }
+    }
+
+    #[test]
+    fn service_argv_has_one_canonical_global_argument_order() {
+        let args = plan().argv().map(|arg| arg.to_string_lossy().into_owned());
+        assert_eq!(
+            args,
+            [
+                "/home/u/.cargo/bin/lific",
+                "--config",
+                "/home/u/tracker/lific.toml",
+                "start",
+            ]
+        );
+    }
+
+    #[test]
+    fn install_rejects_database_override_before_manager_lookup() {
+        let err = run(
+            None,
+            Some(Path::new("other.db")),
+            true,
+            &ServiceAction::Install,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("set database.path"));
     }
 
     #[test]
@@ -464,7 +645,7 @@ mod tests {
         let unit = systemd_unit(&plan());
         assert!(
             unit.contains(
-                "ExecStart=/home/u/.cargo/bin/lific start --config /home/u/tracker/lific.toml"
+                "ExecStart=/home/u/.cargo/bin/lific --config /home/u/tracker/lific.toml start"
             ),
             "unit was:\n{unit}"
         );
@@ -482,7 +663,7 @@ mod tests {
         let unit = systemd_unit(&p);
         assert!(
             unit.contains(
-                r#"ExecStart="/home/u/my tools/lific" start --config "/home/u/my tracker/lific.toml""#
+                r#"ExecStart="/home/u/my tools/lific" --config "/home/u/my tracker/lific.toml" start"#
             ),
             "unit was:\n{unit}"
         );
@@ -537,6 +718,8 @@ mod tests {
         assert!(plist.contains("<string>/home/u/tracker/lific.toml</string>"));
         assert!(plist.contains("<key>RunAtLoad</key>"));
         assert!(plist.contains("<key>WorkingDirectory</key>"));
+        assert!(plist.contains("/home/u/Library/Logs/Lific/lific.log"));
+        assert!(!plist.contains("/home/u/tracker/lific.log"));
     }
 
     #[test]

@@ -40,6 +40,25 @@ fn tighten_config_permissions(_config: &ConfigFile) -> std::io::Result<()> {
     Ok(())
 }
 
+fn can_ignore_permission_tightening(kind: std::io::ErrorKind) -> bool {
+    matches!(
+        kind,
+        std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ReadOnlyFilesystem
+    )
+}
+
+fn editable_document(existing: &str) -> Result<toml_edit::DocumentMut, String> {
+    if existing.trim().is_empty() {
+        Config::default_toml()
+            .parse()
+            .map_err(|e| format!("default config does not parse: {e}"))
+    } else {
+        existing
+            .parse()
+            .map_err(|e| format!("existing config does not parse: {e}"))
+    }
+}
+
 #[cfg(unix)]
 fn read_config_file(path: &Path) -> std::io::Result<ConfigFile> {
     use std::io::Read;
@@ -418,8 +437,13 @@ impl Config {
                 Ok(_) => match read_config_file(path) {
                     Ok(file) => match toml::from_str::<Config>(&file.contents) {
                         Ok(mut config) => {
+                            // A config on a read-only mount (notably a systemd
+                            // credential) is already immutable to this process.
+                            // Treat EROFS like an unowned file we can read but
+                            // cannot chmod; every other tightening failure is
+                            // still fatal.
                             if let Err(source) = tighten_config_permissions(&file)
-                                && source.kind() != std::io::ErrorKind::PermissionDenied
+                                && !can_ignore_permission_tightening(source.kind())
                             {
                                 return Err(ConfigError::Read {
                                     path: path.clone(),
@@ -548,19 +572,27 @@ impl Config {
         required: bool,
         host: Option<&str>,
     ) -> Result<String, String> {
-        let mut doc: toml_edit::DocumentMut = if existing.trim().is_empty() {
-            Config::default_toml()
-                .parse::<toml_edit::DocumentMut>()
-                .expect("default config parses")
-        } else {
-            existing
-                .parse()
-                .map_err(|e| format!("existing config does not parse: {e}"))?
-        };
+        let mut doc = editable_document(existing)?;
         doc["auth"]["required"] = toml_edit::value(required);
         if let Some(host) = host {
             doc["server"]["host"] = toml_edit::value(host);
         }
+        Ok(doc.to_string())
+    }
+
+    /// Persist a command-line database selection into a config document.
+    /// `lific init --db` uses this before installing a background service so
+    /// the initialized process and the persistent service have one path
+    /// authority rather than two competing overrides.
+    pub fn apply_database_path(existing: &str, path: &Path) -> Result<String, String> {
+        if !path.is_absolute() {
+            return Err("persistent database path must be absolute".to_string());
+        }
+        let path = path.to_str().ok_or_else(|| {
+            "database path is not valid UTF-8 and cannot be stored in TOML".to_string()
+        })?;
+        let mut doc = editable_document(existing)?;
+        doc["database"]["path"] = toml_edit::value(path);
         Ok(doc.to_string())
     }
 
@@ -1078,6 +1110,46 @@ enabled = false
         let existing = "this is = = not valid toml [[[\n";
         let err = Config::apply_auth_mode(existing, false, Some("127.0.0.1")).unwrap_err();
         assert!(err.contains("does not parse"), "error must say why: {err}");
+    }
+
+    #[test]
+    fn apply_database_path_edits_only_the_database_path() {
+        let existing = "# keep me\n[database]\npath = \"old.db\"\n\n[server]\nport = 9000\n";
+        let out = Config::apply_database_path(existing, Path::new(ABSOLUTE_DB_PATH)).unwrap();
+        let doc: toml_edit::DocumentMut = out.parse().unwrap();
+
+        assert!(out.contains("# keep me"));
+        assert_eq!(doc["database"]["path"].as_str(), Some(ABSOLUTE_DB_PATH));
+        assert_eq!(doc["server"]["port"].as_integer(), Some(9000));
+    }
+
+    #[test]
+    fn apply_database_path_creates_a_complete_fresh_config() {
+        let out = Config::apply_database_path("", Path::new(ABSOLUTE_DB_PATH)).unwrap();
+        let config: Config = toml::from_str(&out).unwrap();
+        assert_eq!(config.database.path, Path::new(ABSOLUTE_DB_PATH));
+        assert_eq!(config.server.port, 3456);
+        assert!(config.backup.enabled);
+    }
+
+    #[test]
+    fn apply_database_path_rejects_relative_persistent_path() {
+        let err = Config::apply_database_path("", Path::new("data/lific.db")).unwrap_err();
+        assert!(err.contains("absolute"), "error was: {err}");
+    }
+
+    #[test]
+    fn permission_tightening_ignores_only_immutable_or_unowned_files() {
+        assert!(can_ignore_permission_tightening(
+            std::io::ErrorKind::PermissionDenied
+        ));
+        assert!(can_ignore_permission_tightening(
+            std::io::ErrorKind::ReadOnlyFilesystem
+        ));
+        assert!(!can_ignore_permission_tightening(
+            std::io::ErrorKind::InvalidInput
+        ));
+        assert!(!can_ignore_permission_tightening(std::io::ErrorKind::Other));
     }
 
     // LIFIC-24: the startup guard's bind-host check.
