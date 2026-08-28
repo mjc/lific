@@ -304,7 +304,8 @@ pub enum Command {
         scope: String,
 
         /// Write the local stdio form (`lific --db <db> mcp`) instead of a
-        /// remote HTTP server. No API key is needed.
+        /// remote HTTP server. Mints a per-client agent key and carries it as
+        /// LIFIC_TOKEN; clients without a documented env field are skipped.
         #[arg(long)]
         stdio: bool,
 
