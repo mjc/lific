@@ -154,6 +154,12 @@ fn modern_stdio_process_discovers_lists_and_calls_without_initialize() {
                 "_meta": metadata()
             }
         }),
+        json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/list",
+            "params": {}
+        }),
     ];
     let mut stdin = child.stdin.take().expect("piped stdin");
     for request in requests {
@@ -193,7 +199,7 @@ fn modern_stdio_process_discovers_lists_and_calls_without_initialize() {
         .map(|line| serde_json::from_str(line).expect("stdout line is JSON-RPC"))
         .collect();
 
-    assert_eq!(responses.len(), 3, "one response per modern request");
+    assert_eq!(responses.len(), 4, "one response per modern request");
     let response = |id| {
         responses
             .iter()
@@ -203,6 +209,7 @@ fn modern_stdio_process_discovers_lists_and_calls_without_initialize() {
     let discovery = response(1);
     let tools = response(2);
     let call = response(3);
+    let missing_metadata = response(4);
     assert!(
         discovery["result"]["supportedVersions"]
             .as_array()
@@ -213,4 +220,5 @@ fn modern_stdio_process_discovers_lists_and_calls_without_initialize() {
     assert_eq!(tools["result"]["resultType"], "complete");
     assert!(call["result"]["content"].is_array());
     assert_eq!(call["result"]["resultType"], "complete");
+    assert_eq!(missing_metadata["error"]["code"], -32602);
 }

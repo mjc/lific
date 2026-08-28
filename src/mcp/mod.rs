@@ -219,15 +219,18 @@ fn tool_catalog_result(
 /// `server/discover` requests and still accepts legacy `initialize` requests
 /// as ordinary messages, so one entry point can serve the explicit
 /// compatibility matrix.
-pub(crate) fn serve_stdio<T, E, A>(
+pub(crate) async fn serve_stdio<T, E, A>(
     server: LificMcp,
     transport: T,
-) -> rmcp::service::RunningService<rmcp::RoleServer, LificMcp>
+) -> Result<
+    rmcp::service::RunningService<rmcp::RoleServer, LificMcp>,
+    rmcp::service::ServerInitializeError,
+>
 where
     T: rmcp::transport::IntoTransport<rmcp::RoleServer, E, A>,
     E: std::error::Error + Send + Sync + 'static,
 {
-    rmcp::service::serve_directly::<rmcp::RoleServer, _, _, _, _>(server, transport, None)
+    rmcp::service::serve_server::<_, _, _, _>(server, transport).await
 }
 
 /// Serialization lock for MCP request handling.
@@ -941,7 +944,10 @@ mod tests {
         }))
         .expect("valid modern discovery request");
         let (transport, mut responses) = rmcp::transport::OneshotTransport::new(request);
-        let server = serve_stdio(LificMcp::new(crate::db::open_memory().unwrap()), transport);
+        let server =
+            serve_stdio(LificMcp::new(crate::db::open_memory().unwrap()), transport)
+                .await
+                .expect("start stdio service");
 
         let response = responses.recv().await.expect("discovery response");
         let body = serde_json::to_value(response).expect("serializable response");
@@ -965,7 +971,10 @@ mod tests {
         }))
         .expect("valid modern initialize request");
         let (transport, mut responses) = rmcp::transport::OneshotTransport::new(request);
-        let server = serve_stdio(LificMcp::new(crate::db::open_memory().unwrap()), transport);
+        let server =
+            serve_stdio(LificMcp::new(crate::db::open_memory().unwrap()), transport)
+                .await
+                .expect("start stdio service");
 
         let response = responses.recv().await.expect("initialize response");
         let body = serde_json::to_value(response).expect("serializable response");
@@ -994,7 +1003,10 @@ mod tests {
         }))
         .expect("valid completion request");
         let (transport, mut responses) = rmcp::transport::OneshotTransport::new(request);
-        let server = serve_stdio(LificMcp::new(crate::db::open_memory().unwrap()), transport);
+        let server =
+            serve_stdio(LificMcp::new(crate::db::open_memory().unwrap()), transport)
+                .await
+                .expect("start stdio service");
 
         let response = responses.recv().await.expect("completion response");
         let body = serde_json::to_value(response).expect("serializable response");
