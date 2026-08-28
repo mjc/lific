@@ -671,6 +671,18 @@ async fn authorize_page(
             .into_response();
         }
     };
+    if let Some(metadata) = cimd_metadata.as_ref()
+        && !metadata
+            .redirect_uris
+            .iter()
+            .any(|uri| uri == &params.redirect_uri)
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Html("<h1>Invalid client metadata</h1><p>The redirect URI is not registered for this client.</p>".to_string()),
+        )
+            .into_response();
+    }
 
     let redirect_host = reqwest::Url::parse(&params.redirect_uri)
         .ok()
@@ -2881,6 +2893,44 @@ mod tests {
             .await
             .expect("CIMD lookup should succeed");
         assert_eq!(fetched.unwrap().client_name, "Device Client");
+    }
+
+    #[tokio::test]
+    async fn cimd_consent_shows_the_registered_redirect_host() {
+        let client_id = "https://client.example/metadata.json";
+        let redirect_uri = "http://localhost:4312/callback";
+        let (app, _) = test_oauth_app_with_fetcher(
+            1000,
+            Arc::new(FakeCimdFetcher {
+                metadata: crate::cimd::ClientMetadata {
+                    client_id: client_id.into(),
+                    client_name: "Example Client".into(),
+                    redirect_uris: vec![redirect_uri.into()],
+                },
+            }),
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(authorize_uri(client_id, redirect_uri))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let html = String::from_utf8_lossy(&body);
+        assert!(html.contains("Example Client"), "client name should be visible");
+        assert!(
+            html.contains("redirect to <code>localhost</code>"),
+            "the validated redirect host should be visible"
+        );
+        assert!(
+            html.contains("redirect back to localhost"),
+            "localhost redirects should be warned about"
+        );
     }
 
     #[tokio::test]
