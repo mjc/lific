@@ -21,7 +21,10 @@ include = [
 [lints.clippy]
 format_collect = "deny"
 map_unwrap_or = "deny"
+match_wildcard_for_single_variants = "deny"
+unchecked_time_subtraction = "deny"
 unnecessary_wraps = "deny"
+unused_async = "deny"
 
 [dependencies]
 # HTTP
