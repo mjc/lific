@@ -781,12 +781,12 @@ pub async fn check_mcp(client: &reqwest::Client, base: &str, key: Option<&str>) 
                         .and_then(|r| r.get("resultType"))
                         .is_some_and(|kind| kind == "complete")
                         && supported_july
-                        && server_info.is_some()
+                        && server_info.is_some_and(has_server_info)
                     {
-                        let name = body
-                            .pointer("/result/_meta/io.modelcontextprotocol~1serverInfo/name")
+                        let name = server_info
+                            .and_then(|info| info.get("name"))
                             .and_then(|v| v.as_str())
-                            .unwrap_or("lific");
+                            .unwrap_or("<unknown>");
                         match check_mcp_tools(client, base, key).await {
                             Ok(detail) => Check::new(
                                 "mcp",
@@ -998,6 +998,15 @@ async fn check_mcp_tools(
     Ok("tools/list and harmless tools/call succeeded".into())
 }
 
+fn has_server_info(value: &serde_json::Value) -> bool {
+    ["name", "version"].into_iter().all(|field| {
+        value
+            .get(field)
+            .and_then(|value| value.as_str())
+            .is_some_and(|value| !value.trim().is_empty())
+    })
+}
+
 /// Probe the retained pre-July MCP lifecycle explicitly. This is intentionally
 /// separate from [`check_mcp`]: a successful legacy check must not be mistaken
 /// for modern discovery support.
@@ -1092,7 +1101,7 @@ pub async fn check_mcp_legacy(
             };
             if !has_session
                 || parsed["result"]["protocolVersion"] != "2025-03-26"
-                || !parsed["result"]["serverInfo"].is_object()
+                || !has_server_info(&parsed["result"]["serverInfo"])
             {
                 return Check::new(
                     "mcp",
@@ -1103,6 +1112,41 @@ pub async fn check_mcp_legacy(
             let Some(session_id) = session_id else {
                 return Check::new("mcp", Status::Fail, "legacy initialize omitted its session id");
             };
+            let initialized = serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized",
+                "params": {}
+            });
+            let initialized_response = match client
+                .post(&url)
+                .bearer_auth(key.unwrap())
+                .header("Accept", "application/json, text/event-stream")
+                .header("Content-Type", "application/json")
+                .header("MCP-Protocol-Version", "2025-03-26")
+                .header("MCP-Session-Id", &session_id)
+                .json(&initialized)
+                .send()
+                .await
+            {
+                Ok(response) => response,
+                Err(error) => {
+                    return Check::new(
+                        "mcp",
+                        Status::Fail,
+                        format!("legacy initialized notification failed: {error}"),
+                    );
+                }
+            };
+            if !initialized_response.status().is_success() {
+                return Check::new(
+                    "mcp",
+                    Status::Fail,
+                    format!(
+                        "legacy initialized notification returned HTTP {}",
+                        initialized_response.status().as_u16()
+                    ),
+                );
+            }
             match check_mcp_legacy_tools(client, base, key.unwrap(), &session_id).await {
                 Ok(detail) => Check::new(
                     "mcp",
@@ -1324,6 +1368,21 @@ mod tests {
         ]);
         assert!(r.ok);
         assert_eq!(r.fail_count(), 0);
+    }
+
+    #[test]
+    fn mcp_server_info_requires_nonempty_name_and_version() {
+        assert!(has_server_info(&serde_json::json!({
+            "name": "lific",
+            "version": "2.7.1"
+        })));
+        assert!(!has_server_info(&serde_json::json!({
+            "name": "lific"
+        })));
+        assert!(!has_server_info(&serde_json::json!({
+            "name": " ",
+            "version": "2.7.1"
+        })));
     }
 
     // ── Summary text ─────────────────────────────────────────────────────
