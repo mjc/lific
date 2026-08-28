@@ -194,14 +194,23 @@ fn modern_stdio_process_discovers_lists_and_calls_without_initialize() {
         .collect();
 
     assert_eq!(responses.len(), 3, "one response per modern request");
+    let response = |id| {
+        responses
+            .iter()
+            .find(|response| response["id"] == id)
+            .unwrap_or_else(|| panic!("missing response {id}: {responses:?}"))
+    };
+    let discovery = response(1);
+    let tools = response(2);
+    let call = response(3);
     assert!(
-        responses[0]["result"]["supportedVersions"]
+        discovery["result"]["supportedVersions"]
             .as_array()
             .is_some_and(|versions| versions.iter().any(|version| version == "2026-07-28"))
     );
-    assert_eq!(responses[0]["result"]["resultType"], "complete");
-    assert!(responses[1]["result"]["tools"].is_array());
-    assert_eq!(responses[1]["result"]["resultType"], "complete");
-    assert!(responses[2]["result"]["content"].is_array());
-    assert_eq!(responses[2]["result"]["resultType"], "complete");
+    assert_eq!(discovery["result"]["resultType"], "complete");
+    assert!(tools["result"]["tools"].is_array());
+    assert_eq!(tools["result"]["resultType"], "complete");
+    assert!(call["result"]["content"].is_array());
+    assert_eq!(call["result"]["resultType"], "complete");
 }
