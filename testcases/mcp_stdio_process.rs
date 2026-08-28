@@ -1,5 +1,6 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
@@ -68,9 +69,25 @@ fn modern_stdio_process_discovers_lists_and_calls_without_initialize() {
     }
     drop(stdin);
 
-    let output = child
-        .wait_with_output()
-        .expect("wait for lific MCP process");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let output = loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break child.wait_with_output().expect("collect MCP output"),
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("lific MCP process did not exit within 10 seconds");
+            }
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("could not poll lific MCP process: {error}");
+            }
+        }
+    };
     assert!(
         output.status.success(),
         "process failed: {}",

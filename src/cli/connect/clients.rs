@@ -572,7 +572,7 @@ pub fn all_clients() -> Vec<ClientSpec> {
                 hint: "VS Code starts the browser OAuth flow on first connect",
             },
             format: Format::Json,
-            stdio_env_key: None,
+            stdio_env_key: Some("env"),
             global_path: |b| {
                 Some(match b.os {
                     Os::Mac => home_dot(
@@ -724,7 +724,7 @@ pub fn all_clients() -> Vec<ClientSpec> {
                 hint: "run /mcp auth lific inside Gemini CLI",
             },
             format: Format::Json,
-            stdio_env_key: None,
+            stdio_env_key: Some("env"),
             global_path: |b| Some(home_dot(b, &[".gemini", "settings.json"])),
             project_path: |b| Some(project_rel(b, &[".gemini", "settings.json"])),
             detect_extra: |b, scope| match scope {
@@ -1367,9 +1367,11 @@ mod tests {
         assert_eq!(spec_env("claude-desktop"), Some("env"));
         assert_eq!(spec_env("codex"), Some("env"));
         assert_eq!(spec_env("zed"), Some("env"));
-        for id in ["cursor", "vscode", "gemini", "windsurf", "goose", "crush"] {
+        for id in ["cursor", "windsurf", "goose", "crush"] {
             assert_eq!(spec_env(id), None, "{id} has no documented stdio env field");
         }
+        assert_eq!(spec_env("vscode"), Some("env"));
+        assert_eq!(spec_env("gemini"), Some("env"));
     }
 
     #[test]
