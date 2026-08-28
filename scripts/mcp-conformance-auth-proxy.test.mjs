@@ -2,10 +2,11 @@ import assert from "node:assert/strict";
 import http from "node:http";
 import { once } from "node:events";
 import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
 import { test } from "node:test";
 
-const proxyScript = new URL("./mcp-conformance-auth-proxy.mjs", import.meta.url);
+const proxyScript = fileURLToPath(new URL("./mcp-conformance-auth-proxy.mjs", import.meta.url));
 
 test("auth proxy injects the bearer token without changing the MCP wire", async (t) => {
   let observed;
