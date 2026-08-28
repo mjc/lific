@@ -463,7 +463,7 @@ fn json_to_toml_value(v: &serde_json::Value) -> Result<toml_edit::Item, WriteErr
             }
             Ok(Item::Value(Value::InlineTable(inline)))
         }
-        other => Err(WriteError::new(format!("unsupported TOML value: {other}"))),
+        serde_json::Value::Null => Err(WriteError::new("unsupported TOML value: null")),
     }
 }
 

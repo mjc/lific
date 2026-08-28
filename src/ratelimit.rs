@@ -332,11 +332,10 @@ impl RateLimiter {
             Some(entries) if !entries.is_empty() => {
                 let oldest = entries[0].at;
                 let elapsed = now.saturating_duration_since(oldest);
-                if elapsed < self.window {
-                    (self.window - elapsed).as_secs() + 1
-                } else {
-                    0
-                }
+                self.window
+                    .checked_sub(elapsed)
+                    .filter(|remaining| !remaining.is_zero())
+                    .map_or(0, |remaining| remaining.as_secs() + 1)
             }
             _ => 0,
         }
