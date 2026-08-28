@@ -53,6 +53,7 @@ pub fn run(
                     is_bot: bot,
                 },
             )?;
+            drop(conn);
 
             if json {
                 let out = serde_json::json!({
@@ -138,6 +139,7 @@ pub fn run(
                 db::queries::users::update_password(&conn, user.id, &pw)?;
                 db::queries::users::lock_down_account(&conn, user.id)
             })?;
+            drop(conn);
 
             if json {
                 let out = serde_json::json!({

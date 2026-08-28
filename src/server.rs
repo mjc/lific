@@ -523,6 +523,7 @@ pub async fn run(cfg: &Config) -> Result<(), Box<dyn std::error::Error>> {
         // passwordless admin. On a genuinely local instance with an https
         // public_url on a private network, keep the loud warning.
         let auto_login = db::queries::settings::get(&conn)?.web_auto_login;
+        drop(conn);
         if auto_login && let Some(exposure) = reachability.public_exposure() {
             return Err(format!(
                 "refusing to start: single-user web auto-login is enabled while \

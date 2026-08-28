@@ -69,6 +69,7 @@ pub fn run(
                         Err(e) => return Err(e.into()),
                     }
                 }
+                drop(conn);
                 if json {
                     let out = serde_json::json!({
                         "user": u.username,
@@ -94,6 +95,7 @@ pub fn run(
                 let ident = project.expect("clap: --project required unless --all");
                 let pid = db::queries::resolve_project_identifier(&conn, &ident)?;
                 let member = db::queries::members::add_member(&conn, pid, u.id, &role)?;
+                drop(conn);
                 if json {
                     let out = serde_json::json!({
                         "project": ident,
@@ -119,6 +121,7 @@ pub fn run(
             let u = db::queries::users::get_user_by_username(&conn, &user)?;
             let pid = db::queries::resolve_project_identifier(&conn, &project)?;
             let member = db::queries::members::change_role(&conn, pid, u.id, &role)?;
+            drop(conn);
             if json {
                 let out = serde_json::json!({
                     "project": project,
@@ -138,6 +141,7 @@ pub fn run(
             let u = db::queries::users::get_user_by_username(&conn, &user)?;
             let pid = db::queries::resolve_project_identifier(&conn, &project)?;
             db::queries::members::remove_member_guarded(&conn, pid, u.id)?;
+            drop(conn);
             if json {
                 let out = serde_json::json!({
                     "project": project,

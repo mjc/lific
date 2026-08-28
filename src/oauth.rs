@@ -490,6 +490,7 @@ async fn register_client(
         tracing::error!(error = %e, "failed to register OAuth client");
         return (StatusCode::INTERNAL_SERVER_ERROR, "database error").into_response();
     }
+    drop(conn);
 
     info!(client_id = %client_id, name = %client_name, "OAuth client registered");
 
@@ -867,6 +868,7 @@ async fn authorize_approve(
         tracing::error!(error = %e, "failed to commit OAuth authorization");
         return (StatusCode::INTERNAL_SERVER_ERROR, "database error").into_response();
     }
+    drop(conn);
 
     let mut redirect_url = form.redirect_uri.clone();
     redirect_url.push_str(if redirect_url.contains('?') { "&" } else { "?" });
@@ -1264,6 +1266,7 @@ async fn device_authorization(
             }
         }
     }
+    drop(conn);
     if !inserted {
         return (StatusCode::INTERNAL_SERVER_ERROR, "database error").into_response();
     }
@@ -1482,6 +1485,7 @@ async fn device_approve(
         tracing::error!(error = %e, "failed to commit device approval");
         return (StatusCode::INTERNAL_SERVER_ERROR, "database error").into_response();
     }
+    drop(conn);
 
     info!(user_code = %normalized, decision = %new_status, "OAuth device verification");
 

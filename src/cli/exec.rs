@@ -167,6 +167,7 @@ fn issue(
                     ..Default::default()
                 },
             )?;
+            drop(conn);
 
             if json {
                 print_json(&issue);
@@ -212,6 +213,7 @@ fn issue(
                     ..Default::default()
                 },
             )?;
+            drop(conn);
 
             if json {
                 print_json(&issue);
@@ -269,6 +271,7 @@ fn project(
                     ..Default::default()
                 },
             )?;
+            drop(conn);
 
             if json {
                 print_json(&project);
@@ -293,6 +296,7 @@ fn project(
                     ..Default::default()
                 },
             )?;
+            drop(conn);
 
             if json {
                 print_json(&project);
@@ -388,6 +392,7 @@ fn page(pool: &DbPool, action: &PageAction, json: bool) -> Result<(), Box<dyn st
                     ..Default::default()
                 },
             )?;
+            drop(conn);
 
             if json {
                 print_json(&page);
@@ -425,6 +430,7 @@ fn page(pool: &DbPool, action: &PageAction, json: bool) -> Result<(), Box<dyn st
                     ..Default::default()
                 },
             )?;
+            drop(conn);
 
             if json {
                 print_json(&page);
@@ -558,6 +564,7 @@ fn comment(
                 user_id,
                 content,
             )?;
+            drop(conn);
 
             if json {
                 print_json(&comment);
@@ -607,6 +614,7 @@ fn module(
                     emoji: None,
                 },
             )?;
+            drop(conn);
 
             if json {
                 print_json(&module);
@@ -635,6 +643,7 @@ fn module(
                     ..Default::default()
                 },
             )?;
+            drop(conn);
 
             if json {
                 print_json(&module);
@@ -648,6 +657,7 @@ fn module(
             let project_id = queries::resolve_project_identifier(&conn, project)?;
             let module_id = queries::resolve_module_name(&conn, project_id, name)?;
             queries::delete_module(&conn, module_id)?;
+            drop(conn);
 
             if json {
                 print_json(&render::Deleted::named(name));
@@ -694,6 +704,7 @@ fn label(
                     color: color.clone(),
                 },
             )?;
+            drop(conn);
 
             if json {
                 print_json(&label);
@@ -719,6 +730,7 @@ fn label(
                     color: color.clone(),
                 },
             )?;
+            drop(conn);
 
             if json {
                 print_json(&label);
@@ -732,6 +744,7 @@ fn label(
             let project_id = queries::resolve_project_identifier(&conn, project)?;
             let label_id = queries::resolve_label_name(&conn, project_id, name)?;
             queries::delete_label(&conn, label_id)?;
+            drop(conn);
 
             if json {
                 print_json(&render::Deleted::named(name));
@@ -774,6 +787,7 @@ fn folder(
                     name: name.clone(),
                 },
             )?;
+            drop(conn);
 
             if json {
                 print_json(&folder);
@@ -797,6 +811,7 @@ fn folder(
                     name: Some(new_name.clone()),
                 },
             )?;
+            drop(conn);
 
             if json {
                 print_json(&folder);
@@ -810,6 +825,7 @@ fn folder(
             let project_id = queries::resolve_project_identifier(&conn, project)?;
             let folder_id = queries::resolve_folder_name(&conn, project_id, name)?;
             queries::delete_folder(&conn, folder_id)?;
+            drop(conn);
 
             if json {
                 print_json(&render::Deleted::named(name));

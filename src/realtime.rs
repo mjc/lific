@@ -94,6 +94,7 @@ impl RealtimeHub {
         }
         *count += 1;
         connections.total += 1;
+        drop(connections);
         Some(SocketPermit {
             connections: Arc::clone(&self.connections),
             user_id,

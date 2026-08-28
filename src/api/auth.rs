@@ -380,6 +380,7 @@ pub(super) async fn auth_auto_login(
         admin.id,
         Some(settings.session_lifetime_days * 24),
     )?;
+    drop(conn);
 
     let mut headers = HeaderMap::new();
     headers.insert(
