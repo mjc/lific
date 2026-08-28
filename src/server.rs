@@ -269,8 +269,7 @@ fn build_app_with_store(
         required: cfg.auth.required,
     };
 
-    let mcp_config =
-        mcp::streamable_http_config(mcp_allowed_hosts.clone(), mcp_allowed_origins.clone());
+    let mcp_config = mcp_policy.transport_config();
 
     let mcp_service = StreamableHttpService::new(
         move || {
