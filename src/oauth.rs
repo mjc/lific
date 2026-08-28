@@ -661,13 +661,33 @@ async fn authorize_page(
     if let Err(response) = reserve_cimd_lookup(&oauth, peer, &headers, &params.client_id) {
         return *response;
     }
-    if let Err(reason) = load_cimd_metadata(&oauth, &headers, &params.client_id).await {
+    let cimd_metadata = match load_cimd_metadata(&oauth, &headers, &params.client_id).await {
+        Ok(metadata) => metadata,
+        Err(reason) => {
         return (
             StatusCode::BAD_REQUEST,
             Html(format!("<h1>Invalid client metadata</h1><p>{reason}</p>")),
         )
             .into_response();
-    }
+        }
+    };
+
+    let redirect_host = reqwest::Url::parse(&params.redirect_uri)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned))
+        .unwrap_or_else(|| "unknown".into());
+    let localhost_warning = if matches!(
+        redirect_host.as_str(),
+        "localhost" | "127.0.0.1" | "[::1]" | "::1"
+    ) {
+        "<p><strong>Warning:</strong> this application will redirect back to localhost on this device.</p>"
+    } else {
+        ""
+    };
+    let client_name = cimd_metadata
+        .as_ref()
+        .map(|metadata| metadata.client_name.as_str())
+        .unwrap_or("an application");
 
     // Bind the CSRF token to the session the browser presents when loading this
     // page (sent on the top-level GET navigation under SameSite=Lax). The POST
@@ -702,7 +722,9 @@ async fn authorize_page(
 </head>
 <body>
     <h1>Authorize access to Lific</h1>
-    <p>An application wants to access your Lific issue tracker.</p>
+    <p><span class="client">{client_name}</span> wants to access your Lific issue tracker.</p>
+    <p>After approval, it will redirect to <code>{redirect_host}</code>.</p>
+    {localhost_warning}
     <form method="POST" action="/oauth/authorize">
         <input type="hidden" name="client_id" value="{client_id}">
         <input type="hidden" name="redirect_uri" value="{redirect_uri}">
@@ -719,6 +741,7 @@ async fn authorize_page(
 </body>
 </html>"#,
         client_id = html_escape(&params.client_id),
+        client_name = html_escape(client_name),
         redirect_uri = html_escape(&params.redirect_uri),
         response_type = html_escape(&params.response_type),
         state = html_escape(params.state.as_deref().unwrap_or("")),
@@ -729,6 +752,8 @@ async fn authorize_page(
         resource = html_escape(params.resource.as_deref().unwrap_or("")),
         csrf_token = html_escape(&csrf_token),
         tool_pick_list = tool_pick_list,
+        redirect_host = html_escape(&redirect_host),
+        localhost_warning = localhost_warning,
     ))
     .into_response()
 }
@@ -743,7 +768,8 @@ fn registered_redirect_uris(db: &DbPool, client_id: &str) -> Option<Vec<String>>
             |row| row.get(0),
         )
         .ok()?;
-    serde_json::from_str(&json).ok()
+    let uris = serde_json::from_str::<Vec<String>>(&json).ok()?;
+    (!uris.is_empty()).then_some(uris)
 }
 
 fn reserve_cimd_lookup(
@@ -2815,6 +2841,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_empty_device_client_row_does_not_shadow_cimd_metadata() {
+        let client_id = "https://client.example/metadata.json";
+        let metadata = crate::cimd::ClientMetadata {
+            client_id: client_id.into(),
+            client_name: "Device Client".into(),
+            redirect_uris: vec!["http://127.0.0.1:4312/callback".into()],
+        };
+        let (_app, db) = test_oauth_app_with_fetcher(
+            1000,
+            Arc::new(FakeCimdFetcher {
+                metadata: metadata.clone(),
+            }),
+        );
+        db.write()
+            .unwrap()
+            .execute(
+                "INSERT INTO oauth_clients
+                     (client_id, client_name, redirect_uris, registration_source)
+                 VALUES (?1, 'Device Authorization', '[]', 'dcr')",
+                params![client_id],
+            )
+            .unwrap();
+
+        let state = OAuthState {
+            db,
+            issuer: "https://example.com".into(),
+            cimd_fetcher: Arc::new(FakeCimdFetcher { metadata }),
+            issuer_is_explicit: true,
+            allowed_hosts: test_allowed_hosts(),
+            register_limiter: Arc::new(RateLimiter::new(
+                1000,
+                std::time::Duration::from_secs(3600),
+            )),
+            trusted_proxies: default_trusted_proxies(),
+        };
+
+        let fetched = load_cimd_metadata(&state, &HeaderMap::new(), client_id)
+            .await
+            .expect("CIMD lookup should succeed");
+        assert_eq!(fetched.unwrap().client_name, "Device Client");
+    }
+
+    #[tokio::test]
     async fn cimd_authorization_lookup_is_rate_limited_per_source() {
         let client_id = "https://client.example/metadata.json";
         let redirect_uri = "http://127.0.0.1:4312/callback";
@@ -4511,6 +4580,14 @@ mod tests {
         assert!(
             !html.contains("value=\"\" selected"),
             "placeholder must not also be selected when a tool is remembered, html={html}"
+        );
+        assert!(
+            html.contains("redirect to <code>localhost</code>"),
+            "approval page should identify the validated redirect host, html={html}"
+        );
+        assert!(
+            html.contains("redirect back to localhost"),
+            "localhost redirects should be called out on the approval page, html={html}"
         );
     }
 
