@@ -42,6 +42,31 @@ pub(crate) fn default_allowed_origins() -> Vec<String> {
         .collect()
 }
 
+/// Resolve the origin policy used by both rmcp and the pre-authentication
+/// guard. An explicit CORS list is authoritative; otherwise local origins and
+/// the configured public URL are the only origins accepted by MCP.
+pub(crate) fn allowed_origins(cors_origins: &[String], public_url: Option<&str>) -> Vec<String> {
+    if !cors_origins.is_empty() {
+        return cors_origins.to_vec();
+    }
+
+    let mut origins = default_allowed_origins();
+    if let Some(public_url) = public_url
+        && let Ok(uri) = public_url.parse::<axum::http::Uri>()
+        && let (Some(scheme), Some(authority)) = (uri.scheme_str(), uri.authority())
+    {
+        let origin = format!("{scheme}://{authority}");
+        if !origins.iter().any(|existing| existing == &origin) {
+            origins.push(origin);
+        }
+    }
+    origins
+}
+
+pub(crate) fn origin_is_allowed(origin: &str, allowed_origins: &[String]) -> bool {
+    allowed_origins.iter().any(|allowed| allowed == origin)
+}
+
 const SUPPORTED_PROTOCOL_VERSIONS: &[ProtocolVersion] = &[
     ProtocolVersion::V_2025_03_26,
     ProtocolVersion::V_2026_07_28,
@@ -727,6 +752,13 @@ mod tests {
             .allowed_origins
             .iter()
             .any(|origin| origin == "https://evil.example"));
+    }
+
+    #[test]
+    fn explicit_public_url_is_allowed_when_cors_is_unconfigured() {
+        let origins = allowed_origins(&[], Some("https://lific.example/mcp"));
+        assert!(origins.iter().any(|origin| origin == "https://lific.example"));
+        assert!(!origins.iter().any(|origin| origin == "https://evil.example"));
     }
 
     #[test]

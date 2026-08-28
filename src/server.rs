@@ -267,11 +267,10 @@ fn build_app_with_store(
                 mcp_allowed_hosts.push(host);
             }
 
-    let mcp_allowed_origins = if cfg.server.cors_origins.is_empty() {
-        mcp::default_allowed_origins()
-    } else {
-        cfg.server.cors_origins.clone()
-    };
+    let mcp_allowed_origins = mcp::allowed_origins(
+        &cfg.server.cors_origins,
+        cfg.server.public_url.as_deref(),
+    );
 
     let auth_state = auth::AuthState {
         db: pool.clone(),
@@ -357,6 +356,10 @@ fn build_app_with_store(
         .layer(middleware::from_fn_with_state(
             auth_state,
             auth_middleware_wrapper,
+        ))
+        .layer(middleware::from_fn_with_state(
+            mcp_allowed_origins.clone(),
+            mcp_origin_middleware,
         ));
 
     // OAuth client registration rate limiter: 10 clients per IP per hour.
@@ -770,6 +773,22 @@ fn build_authless_mcp_router(
 }
 
 /// Wrapper that skips auth for /api/health
+async fn mcp_origin_middleware(
+    axum::extract::State(allowed_origins): axum::extract::State<Vec<String>>,
+    request: Request<Body>,
+    next: middleware::Next,
+) -> axum::response::Response {
+    if request.uri().path() == "/mcp"
+        && let Some(origin) = request.headers().get(header::ORIGIN)
+        && let Ok(origin) = origin.to_str()
+        && !crate::mcp::origin_is_allowed(origin, &allowed_origins)
+    {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    next.run(request).await
+}
+
+/// Wrapper that skips auth for /api/health
 async fn auth_middleware_wrapper(
     state: axum::extract::State<auth::AuthState>,
     request: Request<Body>,
@@ -1029,6 +1048,29 @@ mod cors_tests {
 
         let res = app.oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn invalid_mcp_origin_is_rejected_before_authentication() {
+        let app = Router::new()
+            .route(
+                "/mcp",
+                post(|| async { StatusCode::UNAUTHORIZED.into_response() }),
+            )
+            .layer(middleware::from_fn_with_state(
+                vec!["http://localhost".to_string()],
+                mcp_origin_middleware,
+            ));
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/mcp")
+            .header("host", "localhost")
+            .header("origin", "https://evil.example")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
     /// When configured with an explicit origin list, only those origins
