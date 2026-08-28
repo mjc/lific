@@ -45,8 +45,8 @@ pub fn run(
             let user = db::queries::users::create_user(
                 &conn,
                 &db::models::CreateUser {
-                    username: username.clone(),
-                    email: email.clone(),
+                    username,
+                    email,
                     password: pw,
                     display_name: None,
                     is_admin: admin,

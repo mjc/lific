@@ -45,7 +45,7 @@ use crate::error::LificError;
 
 /// A source-agnostic issue ready to be written into Lific. Every importer maps
 /// its native representation to this shape; the shared core does the rest.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NormalizedIssue {
     /// Stable idempotency marker, e.g. `github:owner/name#12`.
     pub source: String,
@@ -63,14 +63,14 @@ pub struct NormalizedIssue {
     pub comments: Vec<NormalizedComment>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NormalizedLabel {
     pub name: String,
     /// Hex color (`#RRGGBB`) if the source provided one.
     pub color: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NormalizedComment {
     /// Original author handle/name (without `@`).
     pub author: String,

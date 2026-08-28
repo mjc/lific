@@ -196,7 +196,7 @@ impl DeviceFlow for HttpDeviceFlow {
             .send()
             .map_err(|e| format!("token poll failed: {e}"))?;
         let status = resp.status();
-        let body: serde_json::Value = resp.json().unwrap_or(serde_json::json!({}));
+        let body: serde_json::Value = resp.json().unwrap_or_else(|_| serde_json::json!({}));
         if status.is_success() {
             let token = body
                 .get("access_token")

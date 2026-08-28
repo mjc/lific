@@ -35,7 +35,7 @@ pub fn run(
                 expires.as_deref(),
                 owner,
             )?;
-            let assigned = user.clone();
+            let assigned = user;
 
             if json {
                 let out = serde_json::json!({

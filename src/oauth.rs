@@ -434,7 +434,7 @@ async fn register_client(
             .into_response();
     }
 
-    let db = state.db.clone();
+    let db = state.db;
     let conn = match db.write() {
         Ok(c) => c,
         Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "database error").into_response(),
@@ -952,7 +952,7 @@ fn resolve_tool(raw: &str) -> Result<(String, String), LificError> {
             "tool id '{slug}' is reserved"
         )));
     }
-    Ok((slug.clone(), trimmed.to_string()))
+    Ok((slug, trimmed.to_string()))
 }
 
 /// HTML `<option>` value that means "this isn't a known tool — let me type it".
@@ -3889,7 +3889,7 @@ mod tests {
             .unwrap();
         let status = resp.status();
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-        let val = serde_json::from_slice(&bytes).unwrap_or(serde_json::json!({}));
+        let val = serde_json::from_slice(&bytes).unwrap_or_else(|_| serde_json::json!({}));
         (status, val)
     }
 
@@ -4915,7 +4915,7 @@ mod tests {
             let bytes = resp.into_body().collect().await.unwrap().to_bytes();
             (
                 status,
-                serde_json::from_slice(&bytes).unwrap_or(serde_json::json!({})),
+                serde_json::from_slice(&bytes).unwrap_or_else(|_| serde_json::json!({})),
             )
         }
 

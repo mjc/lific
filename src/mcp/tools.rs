@@ -1419,7 +1419,7 @@ impl LificMcp {
                         return Ok(self.empty_search_result());
                     }
                     Err(crate::error::LificError::NotFound(error)) => {
-                        return Err(error.to_string());
+                        return Err(error);
                     }
                     Ok(_) => {
                         return Ok(self.empty_search_result());
@@ -1617,11 +1617,10 @@ impl LificMcp {
                 ActivityScopeReference::Project => ReferenceKind::Project(&scope_identifier),
             },
         );
-        let activity_project_identifier = project_identifier.as_deref().or(matches!(
-            scope_reference.kind,
-            ReferenceKind::Project(_)
-        )
-        .then_some(scope_identifier.as_str()));
+        let activity_project_identifier = project_identifier.as_deref().or_else(|| {
+            matches!(scope_reference.kind, ReferenceKind::Project(_))
+                .then_some(scope_identifier.as_str())
+        });
         let rendered = self.read(|conn| {
             let feed = queries::activity::list_activity(conn, scope, Some(limit), Some(offset))?;
             if feed.items.is_empty() {
@@ -1754,7 +1753,9 @@ impl LificMcp {
             let id = queries::resolve_identifier(conn, &input.identifier)?;
             let issue = queries::get_issue(conn, id)?;
             let module_name = match issue.module_id {
-                Some(mid) => queries::get_module_name(conn, mid).unwrap_or("unknown".into()),
+                Some(mid) => {
+                    queries::get_module_name(conn, mid).unwrap_or_else(|_| "unknown".into())
+                }
                 None => "none".into(),
             };
             // LIF-303: annotate each relation identifier with the related
@@ -2271,12 +2272,12 @@ impl LificMcp {
             // a double-escaping client matches stored content.
             let (current, old_norm, new_norm) = match field {
                 "description" => (
-                    issue.description.clone(),
+                    issue.description,
                     queries::unescape_text(&input.old_string),
                     queries::unescape_text(&input.new_string),
                 ),
                 "title" => (
-                    issue.title.clone(),
+                    issue.title,
                     input.old_string.clone(),
                     input.new_string.clone(),
                 ),
@@ -2402,7 +2403,7 @@ impl LificMcp {
                 "module" => issue
                     .module_id
                     .and_then(|m| module_names.get(&m).cloned())
-                    .unwrap_or("unassigned".into()),
+                    .unwrap_or_else(|| "unassigned".into()),
                 _ => issue.status.to_string(),
             };
             groups.entry(key).or_default().push(issue);
@@ -2766,12 +2767,12 @@ impl LificMcp {
             // edit from a double-escaping client matches stored content.
             let (current, old_norm, new_norm) = match field {
                 "content" => (
-                    page.content.clone(),
+                    page.content,
                     queries::unescape_text(&input.old_string),
                     queries::unescape_text(&input.new_string),
                 ),
                 "title" => (
-                    page.title.clone(),
+                    page.title,
                     input.old_string.clone(),
                     input.new_string.clone(),
                 ),
@@ -3322,7 +3323,7 @@ impl LificMcp {
                             project_id: pid,
                             name: name.clone(),
                             description: input.description.clone().unwrap_or_default(),
-                            status: input.status.clone().unwrap_or("active".into()),
+                            status: input.status.clone().unwrap_or_else(|| "active".into()),
                             emoji: emoji_for_create(&input.emoji),
                         },
                     )
@@ -3385,7 +3386,10 @@ impl LificMcp {
                         &models::CreateLabel {
                             project_id: pid,
                             name: name.clone(),
-                            color: input.color.clone().unwrap_or("#6B7280".into()),
+                            color: input
+                                .color
+                                .clone()
+                                .unwrap_or_else(|| "#6B7280".into()),
                         },
                     )
                 })?;
@@ -4320,7 +4324,7 @@ impl LificMcp {
                 )),
                 Content::image(
                     base64::engine::general_purpose::STANDARD.encode(&bytes),
-                    attachment.mime.clone(),
+                    attachment.mime,
                 ),
             ]);
         }
@@ -12874,7 +12878,7 @@ mod authz_gating_tests {
                 auth_state,
                 crate::auth::require_api_key,
             ))
-            .with_state(m.clone());
+            .with_state(m);
 
         async fn call_get(app: Router, uri: String, token: &str) -> String {
             let resp = app
@@ -12954,7 +12958,7 @@ mod authz_gating_tests {
         );
 
         let outsider_write = run(call_create(
-            app.clone(),
+            app,
             serde_json::json!({"project": "MEM", "title": "by token outsider"}),
             &outsider_token,
         ));

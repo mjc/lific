@@ -1283,7 +1283,7 @@ mod tests {
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].title, "Blocked");
         // Its unresolved blocker is surfaced as blocked_by.
-        assert_eq!(result[0].blocked_by, vec![blocker.identifier.clone()]);
+        assert_eq!(result[0].blocked_by, vec![blocker.identifier]);
     }
 
     #[test]

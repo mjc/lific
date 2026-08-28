@@ -2146,7 +2146,7 @@ mod tests {
         let _key2 = create_api_key(&pool, &manager, "key-2", None).unwrap();
 
         // Extract key_id from key1 and look it up
-        let secure_key = SecureString::from(key1.clone());
+        let secure_key = SecureString::from(key1);
         let key_id = manager.extract_key_id(&secure_key);
 
         let conn = pool.read().unwrap();
