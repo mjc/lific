@@ -1745,19 +1745,18 @@ mod tests {
             test_create_user(&conn).id
         };
 
-        let ids: Vec<i64> = std::thread::scope(|scope| {
-            let handles: Vec<_> = (0..4)
-                .map(|_| {
-                    let pool = pool.clone();
-                    scope.spawn(move || {
-                        let conn = pool.write().unwrap();
-                        ensure_bot(&conn, owner_id, "opencode", "OpenCode")
-                            .expect("ensure_bot must not fail on a repeat connect")
-                            .id
-                    })
+        let ids: [i64; 4] = std::thread::scope(|scope| {
+            // Build every handle before joining so the connects actually overlap.
+            let handles: [_; 4] = std::array::from_fn(|_| {
+                let pool = pool.clone();
+                scope.spawn(move || {
+                    let conn = pool.write().unwrap();
+                    ensure_bot(&conn, owner_id, "opencode", "OpenCode")
+                        .expect("ensure_bot must not fail on a repeat connect")
+                        .id
                 })
-                .collect();
-            handles.into_iter().map(|h| h.join().unwrap()).collect()
+            });
+            handles.map(|handle| handle.join().unwrap())
         });
 
         assert!(

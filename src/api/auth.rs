@@ -2676,16 +2676,15 @@ mod tests {
         async fn reservations_bound_how_many_password_changes_are_admitted() {
             let f = fixture_with_limiter(2);
             let limiter = f.limiter.clone().expect("limiter");
-            let held: Vec<_> = (0..2)
-                .map(|i| {
-                    crate::ratelimit::Reservation::acquire(
-                        &limiter,
-                        &format!("password_change_ip:10.0.0.{i}"),
-                        &format!("password_change_user:{}", f.user_id),
-                    )
-                    .expect("within budget")
-                })
-                .collect();
+            // Building the array eagerly reserves both slots before the probe.
+            let held: [_; 2] = std::array::from_fn(|i| {
+                crate::ratelimit::Reservation::acquire(
+                    &limiter,
+                    &format!("password_change_ip:10.0.0.{i}"),
+                    &format!("password_change_user:{}", f.user_id),
+                )
+                .expect("within budget")
+            });
 
             let (status, body) =
                 change_password_attempt(&f, &f.session, PASSWORD, "a whole new password").await;
@@ -3995,19 +3994,17 @@ mod tests {
             3,
             std::time::Duration::from_secs(15 * 60),
         ));
-        // Stand in for three requests that have reached the reservation but
-        // not yet finished verifying: exactly the state peek-then-record
-        // could not represent, because nothing was recorded until afterwards.
-        let held: Vec<_> = (0..3)
-            .map(|i| {
-                crate::ratelimit::Reservation::acquire(
-                    &limiter,
-                    &format!("login_ip:10.0.0.{i}"),
-                    "login_id:victim",
-                )
-                .expect("within budget")
-            })
-            .collect();
+        // Building the array eagerly stands in for three requests that have
+        // reserved slots but not yet finished verifying: exactly the state
+        // peek-then-record could not represent.
+        let held: [_; 3] = std::array::from_fn(|i| {
+            crate::ratelimit::Reservation::acquire(
+                &limiter,
+                &format!("login_ip:10.0.0.{i}"),
+                "login_id:victim",
+            )
+            .expect("within budget")
+        });
 
         let app = login_app_with_limiter_arc(limiter.clone(), test_peer());
         let (status, body) = login_attempt(&app, "victim", "10.0.0.99").await;
