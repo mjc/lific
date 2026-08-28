@@ -67,6 +67,35 @@ pub(crate) fn origin_is_allowed(origin: &str, allowed_origins: &[String]) -> boo
     allowed_origins.iter().any(|allowed| allowed == origin)
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct McpHttpPolicy {
+    pub(crate) allowed_hosts: Vec<String>,
+    pub(crate) allowed_origins: Vec<String>,
+}
+
+impl McpHttpPolicy {
+    pub(crate) fn from_config(cors_origins: &[String], public_url: Option<&str>) -> Self {
+        let mut allowed_hosts = vec!["localhost".into(), "127.0.0.1".into(), "::1".into()];
+        if let Some(public_url) = public_url
+            && let Ok(uri) = public_url.parse::<axum::http::Uri>()
+            && let Some(authority) = uri.authority()
+        {
+            let host = authority.host().to_owned();
+            if !allowed_hosts.iter().any(|allowed| allowed == &host) {
+                allowed_hosts.push(host);
+            }
+        }
+        Self {
+            allowed_hosts,
+            allowed_origins: allowed_origins(cors_origins, public_url),
+        }
+    }
+
+    pub(crate) fn transport_config(&self) -> StreamableHttpServerConfig {
+        streamable_http_config(self.allowed_hosts.clone(), self.allowed_origins.clone())
+    }
+}
+
 const SUPPORTED_PROTOCOL_VERSIONS: &[ProtocolVersion] = &[
     ProtocolVersion::V_2025_03_26,
     ProtocolVersion::V_2026_07_28,
@@ -759,6 +788,18 @@ mod tests {
         let origins = allowed_origins(&[], Some("https://lific.example/mcp"));
         assert!(origins.iter().any(|origin| origin == "https://lific.example"));
         assert!(!origins.iter().any(|origin| origin == "https://evil.example"));
+    }
+
+    #[test]
+    fn http_policy_shares_public_url_host_and_origin() {
+        let policy = McpHttpPolicy::from_config(&[], Some("https://lific.example/mcp"));
+        assert!(policy.allowed_hosts.iter().any(|host| host == "lific.example"));
+        assert!(
+            policy
+                .allowed_origins
+                .iter()
+                .any(|origin| origin == "https://lific.example")
+        );
     }
 
     #[test]

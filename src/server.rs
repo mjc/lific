@@ -255,22 +255,15 @@ fn build_app_with_store(
     // MCP StreamableHTTP service
     let db_for_mcp = pool.clone();
     let realtime_for_mcp = realtime.clone();
-    let mut mcp_allowed_hosts: Vec<String> =
-        vec!["localhost".into(), "127.0.0.1".into(), "::1".into()];
-
-    // If public_url is set, allow its hostname through the DNS rebinding check
-    // so reverse proxies (Tailscale funnel, nginx, etc.) can forward requests.
-    if let Some(ref url) = cfg.server.public_url
-        && let Ok(parsed) = url.parse::<axum::http::Uri>()
-            && let Some(authority) = parsed.authority() {
-                let host: String = authority.host().to_string();
-                mcp_allowed_hosts.push(host);
-            }
-
-    let mcp_allowed_origins = mcp::allowed_origins(
+    // Derive the complete MCP transport policy once. The same host/origin
+    // decision is used by rmcp, the pre-auth Origin guard, OAuth issuer
+    // validation, and the optional path-token route.
+    let mcp_policy = mcp::McpHttpPolicy::from_config(
         &cfg.server.cors_origins,
         cfg.server.public_url.as_deref(),
     );
+    let mcp_allowed_hosts = mcp_policy.allowed_hosts.clone();
+    let mcp_allowed_origins = mcp_policy.allowed_origins.clone();
 
     let auth_state = auth::AuthState {
         db: pool.clone(),
@@ -281,8 +274,7 @@ fn build_app_with_store(
         required: cfg.auth.required,
     };
 
-    let mcp_config =
-        mcp::streamable_http_config(mcp_allowed_hosts.clone(), mcp_allowed_origins.clone());
+    let mcp_config = mcp_policy.transport_config();
 
     let mcp_service = StreamableHttpService::new(
         move || {
