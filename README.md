@@ -104,6 +104,13 @@ explicitly version-gated for legacy clients; `lific doctor --legacy-mcp` probes
 that compatibility path. Lific advertises tools only—protocol resources,
 prompts, Tasks, Roots, Sampling, Logging, and legacy HTTP+SSE are unsupported.
 
+The frozen official July requirements can be run against either HTTP entry
+point with `scripts/mcp-conformance.sh`. For authenticated `/mcp`, export a
+disposable key and set `MCP_CONFORMANCE_BEARER_TOKEN_ENV` to that variable's
+name; for isolated `/mcp/<path-token>`, pass the complete secret URL directly.
+The helper keeps bearer values off the runner command line and checks a narrow,
+per-check baseline for fixture-only scenarios.
+
 <details>
 <summary>OAuth, if you'd rather auth as yourself</summary>
 

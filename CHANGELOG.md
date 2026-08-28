@@ -21,14 +21,21 @@ A hotfix for a crash that made v2.7.0 unusable. Upgrade immediately if you are o
   are preferred over deprecated DCR fallback; remote redirects require HTTPS,
   with HTTP limited to localhost/loopback native callbacks. Resource indicators
   and issuer signaling remain bound to the protected MCP resource.
-- **Branch-added MCP tests cover the behavior they exercise.** Lifecycle tests
-  prove modern stdio discovery and tools-only HTTP behavior; transport tests
-  cover metadata/header validation, stateless routing, and undeclared methods;
-  OAuth tests cover resource/audience binding, issuer signaling, DCR metadata,
-  and CIMD validation; doctor tests cover modern and explicit legacy probes.
-  `scripts/mcp-conformance.sh` runs the applicable official July server
-  scenarios against a live Lific binary and baselines only diagnostic checks
-  that require fixture-only tools.
+- **Branch-added MCP tests pin each supported contract.** Real-process stdio
+  tests prove modern discovery, tool listing/calls, and initialize rejection;
+  golden-wire tests compare modern and legacy discovery, tool success/error,
+  identity, cache metadata, schemas, ordering, and byte stability. HTTP matrix
+  tests assert exact status/error behavior for authenticated and path-token
+  requests with missing, malformed, unsupported, mismatched, and valid routing
+  metadata. Connect fixtures compare complete Codex, Claude Code/Desktop, and
+  Zed bearer, OAuth, agent-stdio, and operator-stdio entries and prove an
+  unsupported identity carrier creates neither config nor bot. OAuth tests pin
+  resource/audience and client binding, issuer signaling, PKCE, expiry,
+  single-use grants, DCR metadata, and CIMD redirect/cache/revalidation bounds;
+  doctor tests cover modern and explicit legacy probes. The conformance proxy
+  process test proves bearer injection preserves methods, query, protocol
+  headers, bodies, and responses, while live authenticated and path-token runs
+  enforce every non-fixture check in the frozen official July requirements.
 
 ## v2.7.0 (2026-08-22)
 

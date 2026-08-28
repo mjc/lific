@@ -24,20 +24,36 @@ than a connection-opening `initialize` handshake. Lific advertises and tests
 that require initialize/session behavior can be checked explicitly with
 `lific doctor --legacy-mcp`.
 
-The repository includes `scripts/mcp-conformance.sh` for the official July
-2026 server suite. Start Lific, then run:
+The repository includes `scripts/mcp-conformance.sh` for the frozen official
+July 2026 requirements set. Start Lific, then run the authenticated endpoint by
+naming an exported variable that contains a disposable API key:
 
 ```bash
-scripts/mcp-conformance.sh http://127.0.0.1:3456/mcp
+export LIFIC_CONFORMANCE_TOKEN='<disposable API key>'
+MCP_CONFORMANCE_BEARER_TOKEN_ENV=LIFIC_CONFORMANCE_TOKEN \
+  scripts/mcp-conformance.sh http://127.0.0.1:3456/mcp
+unset LIFIC_CONFORMANCE_TOKEN
 ```
 
-The script pins the conformance runner and runs the July scenarios applicable
-to Lific's tools-only server surface: stateless requests, tool listing,
-completion, protocol errors, DNS rebinding, and HTTP header validation. The
-four narrowly baselined stateless checks require diagnostic fixture tools that
-Lific does not expose; every other failure remains fatal. Optional MCP
-capabilities such as prompts, resources, elicitation, sampling, and tasks are
-not advertised by Lific and are not included in this server run.
+The token value is read from that variable and injected by a loopback proxy; it
+is not placed in the conformance runner's command line. For an isolated path
+token endpoint, pass its complete secret URL directly and do not set the bearer
+variable:
+
+```bash
+scripts/mcp-conformance.sh \
+  'http://127.0.0.1:3456/mcp/<path-token>'
+```
+
+The pinned requirements set runs 37 scored server scenarios plus Tasks and
+other scenarios that the official runner reports without scoring. Some scored
+scenarios assume the suite's everything-server fixture: they call fixture tool
+names or exercise completion, prompts, resources, elicitation, sampling, and
+roots even though Lific does not advertise those optional capabilities. The
+baseline records only those exact check IDs. Successful checks in the same
+scenario remain enforced, any unlisted failure is fatal, and a stale baseline
+also fails. Run both endpoint forms before release because they have separate
+authentication and routing paths.
 
 ## API key authentication
 
