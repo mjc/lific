@@ -744,7 +744,7 @@ pub async fn check_mcp(client: &reqwest::Client, base: &str, key: Option<&str>) 
                 }
             };
             if body["result"]["protocolVersion"] != "2025-03-26"
-                || !body["result"]["serverInfo"].is_object()
+                || !has_server_info(&body["result"]["serverInfo"])
             {
                 return Check::new(
                     "mcp",
@@ -765,6 +765,15 @@ pub async fn check_mcp(client: &reqwest::Client, base: &str, key: Option<&str>) 
             }
         }
     }
+}
+
+fn has_server_info(value: &serde_json::Value) -> bool {
+    ["name", "version"].into_iter().all(|field| {
+        value
+            .get(field)
+            .and_then(|value| value.as_str())
+            .is_some_and(|value| !value.trim().is_empty())
+    })
 }
 
 async fn response_json(response: reqwest::Response) -> Result<serde_json::Value, String> {
@@ -927,6 +936,19 @@ mod tests {
         assert_eq!(parse_mcp_response_body(json).unwrap()["id"], 1);
         assert_eq!(parse_mcp_response_body(sse).unwrap()["id"], 1);
         assert_eq!(parse_mcp_response_body(split_sse).unwrap()["id"], 1);
+    }
+
+    #[test]
+    fn mcp_server_info_requires_nonempty_name_and_version() {
+        assert!(has_server_info(&serde_json::json!({
+            "name": "lific",
+            "version": "2.7.1"
+        })));
+        assert!(!has_server_info(&serde_json::json!({"name": "lific"})));
+        assert!(!has_server_info(&serde_json::json!({
+            "name": " ",
+            "version": "2.7.1"
+        })));
     }
 
     fn check(name: &str, status: Status) -> Check {
