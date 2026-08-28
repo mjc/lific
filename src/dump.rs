@@ -1643,8 +1643,7 @@ fn install_restore(
     db_path: &Path,
     restore_id: &str,
 ) -> Result<Option<PathBuf>, LificError> {
-    let mut moved_existing_to: Option<PathBuf> = None;
-    if db_path.exists() {
+    let moved_existing_to = if db_path.exists() {
         checkpoint_db_file(db_path)?;
         let dest = PathBuf::from(format!("{}.pre-restore-{restore_id}", db_path.display()));
         if std::fs::symlink_metadata(&dest).is_ok() {
@@ -1666,8 +1665,10 @@ fn install_restore(
                 return Err(rollback_moved_db(&dest, db_path, cause));
             }
         }
-        moved_existing_to = Some(dest);
-    }
+        Some(dest)
+    } else {
+        None
+    };
     let moved = moved_existing_to.clone();
     let fail = move |cause: LificError| fail_after_move(moved.as_deref(), db_path, cause);
 

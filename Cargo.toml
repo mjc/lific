@@ -19,7 +19,9 @@ include = [
 ]
 
 [lints.clippy]
+branches_sharing_code = "deny"
 cast_sign_loss = "deny"
+collection_is_never_read = "deny"
 derive_partial_eq_without_eq = "deny"
 format_collect = "deny"
 future_not_send = "deny"
@@ -30,7 +32,9 @@ needless_collect = "deny"
 or_fun_call = "deny"
 redundant_clone = "deny"
 unchecked_time_subtraction = "deny"
+unnecessary_struct_initialization = "deny"
 unnecessary_wraps = "deny"
+useless_let_if_seq = "deny"
 unused_async = "deny"
 
 [dependencies]
