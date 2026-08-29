@@ -7364,15 +7364,12 @@ mod tests {
         )
         .unwrap();
         drop(conn);
-        *crate::mcp::MCP_REQUEST_USER
-            .lock()
-            .unwrap_or_else(|e: std::sync::PoisonError<_>| e.into_inner()) =
-            Some(models::AuthUser {
-                id: user.id,
-                username: user.username.clone(),
-                display_name: user.display_name,
-                is_admin: user.is_admin,
-            });
+        crate::mcp::set_request_user_for_test(Some(models::AuthUser {
+            id: user.id,
+            username: user.username.clone(),
+            display_name: user.display_name,
+            is_admin: user.is_admin,
+        }));
         guard
     }
 
@@ -7388,9 +7385,7 @@ mod tests {
     /// `seed_user` (they'd re-acquire the non-reentrant lock and deadlock).
     fn first_admin_guard() -> tokio::sync::MutexGuard<'static, ()> {
         let guard = crate::mcp::MCP_HANDLER_LOCK.blocking_lock();
-        *crate::mcp::MCP_REQUEST_USER
-            .lock()
-            .unwrap_or_else(|e: std::sync::PoisonError<_>| e.into_inner()) = None;
+        crate::mcp::set_request_user_for_test(None);
         guard
     }
 
@@ -8271,9 +8266,7 @@ mod tests {
         // staying None" window can't be raced by a concurrently-running
         // `with_request_user` caller in another test.
         let _guard = crate::mcp::MCP_HANDLER_LOCK.blocking_lock();
-        *crate::mcp::MCP_REQUEST_USER
-            .lock()
-            .unwrap_or_else(|e: std::sync::PoisonError<_>| e.into_inner()) = None;
+        crate::mcp::set_request_user_for_test(None);
 
         let result = m.add_comment(Parameters(AddCommentInput {
             identifier: "PRJ-1".into(),
@@ -9803,15 +9796,12 @@ mod tests {
     /// `seed_user`. Create a fresh user first, then call this.
     fn act_as(user: &models::User) -> tokio::sync::MutexGuard<'static, ()> {
         let guard = crate::mcp::MCP_HANDLER_LOCK.blocking_lock();
-        *crate::mcp::MCP_REQUEST_USER
-            .lock()
-            .unwrap_or_else(|e: std::sync::PoisonError<_>| e.into_inner()) =
-            Some(models::AuthUser {
-                id: user.id,
-                username: user.username.clone(),
-                display_name: user.display_name.clone(),
-                is_admin: user.is_admin,
-            });
+        crate::mcp::set_request_user_for_test(Some(models::AuthUser {
+            id: user.id,
+            username: user.username.clone(),
+            display_name: user.display_name.clone(),
+            is_admin: user.is_admin,
+        }));
         guard
     }
 
