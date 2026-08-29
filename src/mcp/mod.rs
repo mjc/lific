@@ -536,8 +536,8 @@ impl LificMcp {
     /// LIF-155: re-stamp the audit actor from the MCP request-user global.
     /// The task-local stamped by `DbPool::write()` does NOT survive rmcp's
     /// internal task spawns (verified in production: tool writes attributed
-    /// to 'system'), but `MCP_REQUEST_USER` does — it's a global guarded by
-    /// the serialization lock, so it is exactly this request's identity.
+    /// to 'system'), but the process-wide MCP request context does. The
+    /// serialization lock ensures it belongs to exactly this request.
     fn stamp_request_actor(conn: &rusqlite::Connection) {
         let user = current_auth_user();
         crate::actor::stamp(
@@ -700,10 +700,12 @@ mod tests {
         assert!(config.legacy_session_mode);
         assert!(config.json_response);
         assert!(!config.allowed_origins.is_empty());
-        assert!(!config
-            .allowed_origins
-            .iter()
-            .any(|origin| origin == "https://evil.example"));
+        assert!(
+            !config
+                .allowed_origins
+                .iter()
+                .any(|origin| origin == "https://evil.example")
+        );
     }
 
     #[test]
@@ -722,7 +724,12 @@ mod tests {
     fn http_policy_shares_public_url_host_and_origin() {
         let policy = McpHttpPolicy::from_config(&[], Some("https://LIFIC.example:443/mcp"));
 
-        assert!(policy.allowed_hosts.iter().any(|host| host == "LIFIC.example"));
+        assert!(
+            policy
+                .allowed_hosts
+                .iter()
+                .any(|host| host == "LIFIC.example")
+        );
         assert!(origin_is_allowed(
             "https://lific.example",
             &policy.allowed_origins
