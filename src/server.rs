@@ -307,10 +307,10 @@ fn build_app_with_store(
     let authed_routes = api::router(pool.clone(), &cfg.server.cors_origins)
         .route(
             "/mcp",
-            any(move |request: Request<Body>| async move {
-                // Extract the authenticated user (set by auth middleware)
-                // and store it for MCP tools to read. Serialized to prevent
-                // concurrent requests from overwriting each other's identity.
+            any(move |mut request: Request<Body>| async move {
+                // Attach the authenticated user set by auth middleware. The
+                // MCP tool-dispatch boundary installs and serializes it only
+                // after rmcp has validated the transport request.
                 let auth_user = request
                     .extensions()
                     .get::<Option<db::models::AuthUser>>()
@@ -326,10 +326,10 @@ fn build_app_with_store(
                     &mcp_allowed_hosts_for_links,
                 );
 
-                mcp::with_request_context(auth_user, issue_links, || async {
-                    mcp_service.handle(request).await.into_response()
-                })
-                .await
+                request
+                    .extensions_mut()
+                    .insert(mcp::McpRequestContext::new(auth_user, issue_links));
+                mcp_service.handle(request).await.into_response()
             }),
         )
         .layer(axum::Extension(realtime.clone()))
@@ -711,7 +711,7 @@ fn build_authless_mcp_router(
     );
     Router::new().route(
         &format!("/mcp/{token}"),
-        any(move |request: Request<Body>| async move {
+        any(move |mut request: Request<Body>| async move {
             let issue_links = links::IssueLinkContext::for_http_request(
                 public_url.as_deref(),
                 request
@@ -720,10 +720,10 @@ fn build_authless_mcp_router(
                     .and_then(|value| value.to_str().ok()),
                 &allowed_hosts_for_links,
             );
-            mcp::with_request_context(user, issue_links, || async {
-                service.handle(request).await.into_response()
-            })
-            .await
+            request
+                .extensions_mut()
+                .insert(mcp::McpRequestContext::new(user.clone(), issue_links));
+            service.handle(request).await.into_response()
         }),
     )
 }
@@ -1056,6 +1056,9 @@ mod cors_tests {
 #[cfg(test)]
 mod authless_mcp_tests {
     use super::*;
+    use std::convert::Infallible;
+
+    use axum::body::Bytes;
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
@@ -1149,5 +1152,57 @@ mod authless_mcp_tests {
 
         let res = router.oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn incomplete_request_does_not_block_an_independent_mcp_request() {
+        let pool = db::open_memory().unwrap();
+        let token = "independent-request-token";
+        let router = build_authless_mcp_router(
+            pool,
+            token,
+            None,
+            vec!["localhost".into()],
+            None,
+            realtime::RealtimeHub::new(),
+        );
+
+        let (body_polled_tx, body_polled_rx) = tokio::sync::oneshot::channel();
+        let mut body_polled_tx = Some(body_polled_tx);
+        let stalled_body = futures_util::stream::poll_fn(move |_| {
+            if let Some(sender) = body_polled_tx.take() {
+                let _ = sender.send(());
+            }
+            std::task::Poll::<Option<Result<Bytes, Infallible>>>::Pending
+        });
+        let stalled_request = Request::builder()
+            .method(Method::POST)
+            .uri(format!("/mcp/{token}"))
+            .header("host", "localhost")
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream")
+            .body(Body::from_stream(stalled_body))
+            .unwrap();
+        let stalled = tokio::spawn(router.clone().oneshot(stalled_request));
+        body_polled_rx.await.expect("server polled stalled body");
+
+        let valid_request = Request::builder()
+            .method(Method::POST)
+            .uri(format!("/mcp/{token}"))
+            .header("host", "localhost")
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream")
+            .body(initialize_body())
+            .unwrap();
+        let response = tokio::time::timeout(
+            std::time::Duration::from_millis(250),
+            router.oneshot(valid_request),
+        )
+        .await
+        .expect("an incomplete request must not serialize independent MCP traffic")
+        .unwrap();
+        stalled.abort();
+
+        assert_eq!(response.status(), StatusCode::OK);
     }
 }

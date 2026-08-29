@@ -42,18 +42,15 @@ where
 /// Acceptable throughput cost for a local-first, single-user tool.
 static MCP_HANDLER_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// Per-request user identity storage.
-/// Protected from races by MCP_HANDLER_LOCK ensuring serial access.
-/// Uses unwrap_or_else to recover from poison (e.g. if a handler panics).
-static MCP_REQUEST_USER: Mutex<Option<AuthUser>> = Mutex::new(None);
-
-/// Per-request external origin used for structured resource links.
-/// Protected by [`MCP_HANDLER_LOCK`] for the same reason as the identity state.
-static MCP_REQUEST_ISSUE_LINKS: Mutex<Option<Arc<IssueLinkContext>>> = Mutex::new(None);
+/// The process-wide request context used by MCP tool dispatch.
+///
+/// Identity and link-origin metadata describe the same request, so they are
+/// installed and cleared together under [`MCP_HANDLER_LOCK`].
+static MCP_REQUEST_CONTEXT: Mutex<Option<McpRequestContext>> = Mutex::new(None);
 
 #[cfg(test)]
 tokio::task_local! {
-    static TEST_REQUEST_ISSUE_LINKS: Option<Arc<IssueLinkContext>>;
+    static TEST_REQUEST_CONTEXT: Option<McpRequestContext>;
 }
 
 #[cfg(test)]
@@ -90,27 +87,24 @@ where
     Fut: std::future::Future<Output = R>,
 {
     let _guard = MCP_HANDLER_LOCK.lock().await;
-    let issue_links = issue_links.map(Arc::new);
+    let request_context = McpRequestContext::new(user, issue_links);
     #[cfg(test)]
-    let test_issue_links = issue_links.clone();
+    let test_request_context = request_context.clone();
     let actor = crate::actor::ActorCtx {
-        user_id: user.as_ref().map(|u| u.id),
+        user_id: request_context.user.as_ref().map(|user| user.id),
         transport: crate::actor::Transport::Mcp,
     };
-    *MCP_REQUEST_USER
+    *MCP_REQUEST_CONTEXT
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = user;
-    *MCP_REQUEST_ISSUE_LINKS
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = issue_links;
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(request_context);
     // Panic-safe cleanup: clear the globals on scope exit (including if `f`
     // panics), before `_guard` releases MCP_HANDLER_LOCK (reverse declaration
     // order). Without this, a panicking request would leave a stale user in the
     // process-wide global for the next (concurrent) test to read.
     let _clear = RequestGlobalGuard;
     #[cfg(test)]
-    let result = TEST_REQUEST_ISSUE_LINKS
-        .scope(test_issue_links, crate::actor::scope(actor, f()))
+    let result = TEST_REQUEST_CONTEXT
+        .scope(Some(test_request_context), crate::actor::scope(actor, f()))
         .await;
     #[cfg(not(test))]
     let result = crate::actor::scope(actor, f()).await;
@@ -123,21 +117,56 @@ where
 struct RequestGlobalGuard;
 impl Drop for RequestGlobalGuard {
     fn drop(&mut self) {
-        *MCP_REQUEST_USER
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
-        *MCP_REQUEST_ISSUE_LINKS
+        *MCP_REQUEST_CONTEXT
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
     }
 }
 
+/// Lific-owned state attached to an HTTP request after authentication and
+/// copied by rmcp into the eventual tool-call context.
+#[derive(Clone, Default)]
+pub(crate) struct McpRequestContext {
+    user: Option<AuthUser>,
+    issue_links: Option<Arc<IssueLinkContext>>,
+}
+
+impl McpRequestContext {
+    pub(crate) fn new(user: Option<AuthUser>, issue_links: Option<IssueLinkContext>) -> Self {
+        Self {
+            user,
+            issue_links: issue_links.map(Arc::new),
+        }
+    }
+
+    fn from_transport(context: &rmcp::service::RequestContext<rmcp::service::RoleServer>) -> Self {
+        context
+            .extensions
+            .get::<axum::http::request::Parts>()
+            .and_then(|parts| parts.extensions.get::<Self>())
+            .cloned()
+            .unwrap_or_default()
+    }
+}
+
 /// Get the authenticated user for the current MCP request, if any.
 pub(crate) fn current_auth_user() -> Option<AuthUser> {
-    MCP_REQUEST_USER
+    current_request_context().and_then(|context| context.user)
+}
+
+fn current_request_context() -> Option<McpRequestContext> {
+    MCP_REQUEST_CONTEXT
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clone()
+}
+
+#[cfg(test)]
+pub(crate) fn set_request_user_for_test(user: Option<AuthUser>) {
+    *MCP_REQUEST_CONTEXT
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+        user.map(|user| McpRequestContext::new(Some(user), None));
 }
 
 /// The `LIFIC_TOKEN` a stdio MCP session was launched with, plus what it takes
@@ -147,8 +176,9 @@ pub(crate) fn current_auth_user() -> Option<AuthUser> {
 /// credential the HTTP transport would validate per request. A stdio session
 /// has no per-request credential to validate, which is exactly the problem:
 /// the process can outlive the key by days. Keeping the raw token here lets
-/// [`LificMcp::with_stdio_auth`] re-check it on every tool call, so revoking
-/// the key takes effect at the next call instead of the next restart.
+/// [`LificMcp::dispatch_tool_with_context`] re-checks it on every tool call,
+/// so revoking the key takes effect at the next call instead of the next
+/// restart.
 ///
 /// The token is never logged, never rendered, and never leaves this struct;
 /// there is deliberately no `Debug`, `Display` or accessor for it.
@@ -215,15 +245,16 @@ pub(crate) fn current_issue_link_context() -> Option<Arc<IssueLinkContext>> {
     #[cfg(test)]
     {
         TEST_ISSUE_LINK_CONTEXT_READS.set(TEST_ISSUE_LINK_CONTEXT_READS.get() + 1);
-        TEST_REQUEST_ISSUE_LINKS
-            .try_with(Clone::clone)
+        TEST_REQUEST_CONTEXT
+            .try_with(|context| {
+                context
+                    .as_ref()
+                    .and_then(|context| context.issue_links.clone())
+            })
             .unwrap_or(None)
     }
     #[cfg(not(test))]
-    MCP_REQUEST_ISSUE_LINKS
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .clone()
+    current_request_context().and_then(|context| context.issue_links)
 }
 
 #[cfg(test)]
@@ -260,11 +291,9 @@ pub struct LificMcp {
     /// one content-addressed directory.
     store: AttachmentStore,
     tool_router: ToolRouter<Self>,
-    /// Present only for a stdio session launched with a `LIFIC_TOKEN`. `None`
-    /// covers both the HTTP transport (where per-request middleware already
-    /// owns identity, and where re-entering [`with_request_context`] here would
-    /// deadlock on [`MCP_HANDLER_LOCK`]) and a tokenless local stdio session,
-    /// which keeps its credential-less operator behavior.
+    /// Present only for a stdio session launched with a `LIFIC_TOKEN`. HTTP
+    /// identity arrives in [`McpRequestContext`]; a tokenless local stdio
+    /// session keeps its credential-less operator behavior.
     stdio_auth: Option<Arc<StdioAuth>>,
 }
 
@@ -301,39 +330,20 @@ impl LificMcp {
         }
     }
 
-    /// The stdio revalidation seam. Every tool call goes through here.
-    ///
-    /// With no stdio credential this is a pass-through, which is what the HTTP
-    /// transport needs: `server.rs` already wraps each request in
-    /// [`with_request_context`], and taking [`MCP_HANDLER_LOCK`] a second time
-    /// here would deadlock.
-    ///
-    /// With one, the token is re-resolved against the database *on this call*
-    /// and the tool runs inside [`with_request_user`] with whatever came back,
-    /// so both the authorization gates and the audit actor read the identity as
-    /// it is now rather than as it was at launch. A token that no longer
-    /// authenticates returns [`StdioAuthFailed`] and `f` is never awaited, so a
-    /// revoked agent cannot mutate anything on its next call.
-    ///
-    /// The failure is a typed local error rather than a wire type, so the seam
-    /// stays reusable and the decision about how a client should see it lives
-    /// in one place ([`Self::dispatch_tool`]).
-    async fn with_stdio_auth<F, Fut, R>(&self, f: F) -> Result<R, StdioAuthFailed>
-    where
-        F: FnOnce() -> Fut,
-        Fut: std::future::Future<Output = R>,
-    {
-        let Some(auth) = self.stdio_auth.clone() else {
-            return Ok(f().await);
+    fn resolve_request_user(
+        &self,
+        http_user: Option<AuthUser>,
+    ) -> Result<Option<AuthUser>, StdioAuthFailed> {
+        let Some(auth) = &self.stdio_auth else {
+            return Ok(http_user);
         };
-        let user = auth.resolve(&self.db).map_err(|reason| {
+        auth.resolve(&self.db).map_err(|reason| {
             // The reason names DB state (revoked, expired, deactivated owner,
             // backend fault). It is useful in the operator's log and is not
             // something the agent needs, or should be told.
             tracing::warn!(reason, "stdio LIFIC_TOKEN no longer authenticates");
             StdioAuthFailed
-        })?;
-        Ok(with_request_user(user, f).await)
+        })
     }
 
     /// The central tool-call seam: revalidate, then dispatch.
@@ -346,8 +356,9 @@ impl LificMcp {
     /// surfacing anything to the model. A tool error reaches the agent as text
     /// it can read and act on, which is the whole point of telling it to
     /// reconnect. Either way `f` never runs.
-    async fn dispatch_tool<F, Fut, R>(
+    async fn dispatch_tool_with_context<F, Fut, R>(
         &self,
+        request_context: McpRequestContext,
         f: F,
     ) -> Result<R, rmcp::ErrorData>
     where
@@ -355,10 +366,24 @@ impl LificMcp {
         Fut: std::future::Future<Output = Result<R, rmcp::ErrorData>>,
         R: From<rmcp::model::CallToolResult>,
     {
-        match self.with_stdio_auth(f).await {
-            Ok(result) => result,
-            Err(StdioAuthFailed) => Ok(R::from(StdioAuthFailed.into_tool_result())),
-        }
+        let user = match self.resolve_request_user(request_context.user) {
+            Ok(user) => user,
+            Err(StdioAuthFailed) => {
+                return Ok(R::from(StdioAuthFailed.into_tool_result()));
+            }
+        };
+        with_request_context(user, request_context.issue_links.as_deref().cloned(), f).await
+    }
+
+    #[cfg(test)]
+    async fn dispatch_tool<F, Fut, R>(&self, f: F) -> Result<R, rmcp::ErrorData>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<R, rmcp::ErrorData>>,
+        R: From<rmcp::model::CallToolResult>,
+    {
+        self.dispatch_tool_with_context(McpRequestContext::default(), f)
+            .await
     }
 
     /// Point the attachment tools at an explicit store. An in-memory pool has
@@ -510,10 +535,11 @@ impl ServerHandler for LificMcp {
     ) -> impl std::future::Future<Output = Result<rmcp::model::CallToolResponse, rmcp::ErrorData>>
     + rmcp::service::MaybeSendFuture
     + '_ {
+        let request_context = McpRequestContext::from_transport(&context);
+        let tool_context =
+            rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
         async move {
-            let tool_context =
-                rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
-            self.dispatch_tool(|| self.tool_router.call(tool_context))
+            self.dispatch_tool_with_context(request_context, || self.tool_router.call(tool_context))
                 .await
         }
     }
@@ -687,10 +713,8 @@ mod tests {
                 .expect("request origin should be visible")
                 .issue_markdown("LIF-1")
                 .to_string();
-            let global = MCP_REQUEST_ISSUE_LINKS
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .clone()
+            let global = current_request_context()
+                .and_then(|context| context.issue_links)
                 .expect("production request context should also be populated")
                 .issue_markdown("LIF-1")
                 .to_string();
@@ -705,7 +729,7 @@ mod tests {
         assert_eq!(global_seen, seen);
         assert!(current_issue_link_context().is_none());
         assert!(
-            MCP_REQUEST_ISSUE_LINKS
+            MCP_REQUEST_CONTEXT
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .is_none()
@@ -958,16 +982,13 @@ mod tests {
         LificMcp::for_stdio(pool.clone(), auth)
     }
 
-    /// Run a body through the revalidation seam and report what identity it
-    /// saw. Standing in for a real tool body: `with_stdio_auth` is what every
-    /// tool runs inside, so whatever this observes, a tool observes.
+    /// Resolve the identity used by the central tool-dispatch seam.
     async fn observed_identity(
         server: &LificMcp,
         pool: &crate::db::DbPool,
     ) -> Result<Option<crate::resolve_caller::ResolvedIdentity>, StdioAuthFailed> {
-        server
-            .with_stdio_auth(|| async { current_identity(pool) })
-            .await
+        let user = server.resolve_request_user(None)?;
+        Ok(with_request_user(user, || async { current_identity(pool) }).await)
     }
 
     /// The shape `dispatch_tool` dispatches: a boxed future producing what the
@@ -1172,28 +1193,30 @@ mod tests {
         assert_eq!(identity.transport, crate::actor::Transport::Mcp);
     }
 
-    /// The HTTP transport is already wrapped in `with_request_context` by
-    /// `server.rs`, which holds `MCP_HANDLER_LOCK` for the whole request. If
-    /// the seam took that lock again the request would deadlock, so an
-    /// HTTP-shaped server must pass straight through.
     #[tokio::test]
-    async fn the_http_transport_seam_does_not_retake_the_handler_lock() {
+    async fn http_identity_is_installed_only_at_tool_dispatch() {
         let _sguard = crate::mcp::tools::acquire_test_guard();
         let pool = crate::db::open_memory().expect("test db");
         let server = LificMcp::new(pool.clone());
         let user = seed_user(&pool, "http-caller", true);
+        let seen = Arc::new(Mutex::new(None));
+        let seen_in_tool = seen.clone();
 
-        let seen = with_request_context(Some(user.clone()), None, || async {
-            server
-                .with_stdio_auth(|| async { current_auth_user() })
-                .await
-                .expect("pass-through")
-        })
-        .await;
+        server
+            .dispatch_tool_with_context(
+                McpRequestContext::new(Some(user.clone()), None),
+                || async move {
+                    *seen_in_tool.lock().unwrap() = current_auth_user();
+                    Ok(rmcp::model::CallToolResult::success(Vec::new()))
+                },
+            )
+            .await
+            .expect("dispatches");
         assert_eq!(
-            seen.map(|u| u.id),
+            seen.lock().unwrap().as_ref().map(|user| user.id),
             Some(user.id),
-            "the middleware's identity survives the seam untouched"
+            "the authenticated HTTP identity reaches the tool body"
         );
+        assert!(current_auth_user().is_none(), "dispatch cleans up identity");
     }
 }
