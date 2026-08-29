@@ -1,6 +1,7 @@
 pub(crate) mod schemas;
 pub(crate) mod tools;
 
+use std::borrow::Cow;
 #[cfg(test)]
 use std::cell::Cell;
 use std::sync::Arc;
@@ -18,6 +19,8 @@ use crate::db::models::AuthUser;
 use crate::links::IssueLinkContext;
 use crate::realtime::{RealtimeEvent, RealtimeHub};
 use crate::storage::AttachmentStore;
+
+const LEGACY_PROTOCOL_VERSIONS: &[ProtocolVersion] = &[ProtocolVersion::V_2025_03_26];
 
 /// Keep the pre-July MCP transport contract explicit while rmcp evolves.
 /// Legacy clients still negotiate an initialize session and receive
@@ -603,6 +606,10 @@ impl LificMcp {
 }
 
 impl ServerHandler for LificMcp {
+    fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
+        Cow::Borrowed(LEGACY_PROTOCOL_VERSIONS)
+    }
+
     fn get_info(&self) -> ServerInfo {
         // Pin to 2025-03-26: rmcp defaults to 2025-06-18 which many clients
         // (including Zed) skipped, going straight from 2025-03-26 to 2025-11-25.
