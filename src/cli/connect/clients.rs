@@ -1377,10 +1377,12 @@ mod tests {
     #[test]
     fn vscode_and_gemini_stdio_preserve_agent_identity() {
         for id in ["vscode", "gemini"] {
-            let entry = find_client(id).unwrap().compile(&stdio_token_cfg()).unwrap();
+            let entry = find_client(id)
+                .unwrap()
+                .compile(&stdio_token_cfg())
+                .unwrap();
             assert_eq!(
-                entry.value["env"]["LIFIC_TOKEN"],
-                "lific_sk-live-AGENTTOKEN",
+                entry.value["env"]["LIFIC_TOKEN"], "lific_sk-live-AGENTTOKEN",
                 "{id} must carry the connected agent identity"
             );
         }
