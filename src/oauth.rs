@@ -537,14 +537,32 @@ async fn register_client(
         warn!(%error, "failed to clean up revoked OAuth tokens");
         return (StatusCode::SERVICE_UNAVAILABLE, "database cleanup error").into_response();
     }
+    // Device grants reference a client too, and are otherwise only swept when
+    // someone starts a device flow, so an instance that never uses one keeps
+    // expired rows forever.
+    if let Err(error) = cleanup_expired_device_codes(&conn) {
+        warn!(%error, "failed to clean up expired OAuth device codes");
+        return (StatusCode::SERVICE_UNAVAILABLE, "database cleanup error").into_response();
+    }
 
     // Anonymous registrations are disposable. Reclaim old clients that have
-    // never participated in a code/token flow before inserting a new row.
+    // never participated in a code/token/device flow before inserting a new
+    // row.
+    //
+    // Every referencing table has to be listed here. These are real foreign
+    // keys with no ON DELETE, so a client that is still referenced does not
+    // merely survive the delete: it fails the whole statement, and this
+    // handler answers 503. Missing one turns a leftover row into an outage
+    // for every registration on the instance.
     if let Err(error) = conn.execute(
         "DELETE FROM oauth_clients
          WHERE created_at < datetime('now', ?1)
            AND NOT EXISTS (SELECT 1 FROM oauth_codes c WHERE c.client_id = oauth_clients.client_id)
-           AND NOT EXISTS (SELECT 1 FROM oauth_tokens t WHERE t.client_id = oauth_clients.client_id)",
+           AND NOT EXISTS (SELECT 1 FROM oauth_tokens t WHERE t.client_id = oauth_clients.client_id)
+           AND NOT EXISTS (
+                 SELECT 1 FROM oauth_device_codes d
+                  WHERE d.client_id = oauth_clients.client_id
+           )",
         [format!("-{DYNAMIC_CLIENT_RETENTION_DAYS} days")],
     ) {
         warn!(%error, "failed to clean up stale OAuth clients");
@@ -3596,6 +3614,65 @@ mod tests {
         assert!(
             !client_exists(&db, &client_id),
             "a revoked grant must not pin its client forever"
+        );
+    }
+
+    /// `oauth_device_codes.client_id` is a foreign key with no ON DELETE, so
+    /// an aged client with a leftover device row does not merely survive the
+    /// reclaim: it fails the whole DELETE, and registration answers 503 for
+    /// everyone. Expired device rows are only swept when someone starts a
+    /// device flow, so on an instance that never runs one they last forever.
+    #[tokio::test]
+    async fn a_stale_device_grant_cannot_break_registration() {
+        let (app, db) = test_oauth_app();
+        let client_id = register_client_helper(&app, "http://localhost/callback").await;
+        {
+            let conn = db.write().unwrap();
+            conn.execute(
+                "INSERT INTO oauth_device_codes
+                    (device_code_hash, user_code, client_name, expires_at, interval_seconds,
+                     status, scope, client_id)
+                 VALUES ('stale-hash', 'BCDF-GHJK', 'Stale', ?1, 5, 'pending', 'mcp', ?2)",
+                params![
+                    (chrono::Utc::now() - chrono::Duration::days(8)).to_rfc3339(),
+                    client_id
+                ],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE oauth_clients SET created_at = datetime('now', '-30 days')
+                 WHERE client_id = ?1",
+                params![client_id],
+            )
+            .unwrap();
+        }
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/register")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(
+                        serde_json::json!({
+                            "redirect_uris": ["http://localhost/other"],
+                            "client_name": "Later Client",
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::CREATED,
+            "a leftover device grant must not take registration down"
+        );
+        assert!(
+            !client_exists(&db, &client_id),
+            "the expired device grant should have been swept, freeing its client"
         );
     }
 
