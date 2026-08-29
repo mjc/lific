@@ -166,8 +166,20 @@ impl HttpDeviceFlow {
     }
 }
 
-impl DeviceFlow for HttpDeviceFlow {
-    fn request_device_code(&self, label: Option<&str>) -> Result<DeviceAuthResponse, String> {
+/// Why a device-authorization request failed, when the caller can react to it.
+enum DeviceAuthFailure {
+    /// The server does not know the `client_id` we sent. It was reclaimed, or
+    /// the database was rebuilt; registering again is the right response.
+    UnknownClient,
+    Other(String),
+}
+
+impl HttpDeviceFlow {
+    /// Register a redirect-free device client. `Ok(None)` means the server
+    /// refused the registration itself, which is how a server predating
+    /// registered device clients answers: it requires at least one
+    /// redirect_uri. That is not a failure, it is a signal to fall back.
+    fn register_device_client(&self, label: Option<&str>) -> Result<Option<String>, String> {
         let registration = serde_json::json!({
             "redirect_uris": [],
             "client_name": label.unwrap_or("Lific CLI"),
@@ -180,30 +192,104 @@ impl DeviceFlow for HttpDeviceFlow {
             .json(&registration)
             .send()
             .map_err(|e| format!("client registration failed: {e}"))?;
-        if !response.status().is_success() {
-            let code = response.status().as_u16();
+        let status = response.status();
+        if !status.is_success() {
             let body = response.text().unwrap_or_default();
-            return Err(format!("client registration failed (HTTP {code}): {body}"));
+            // An older server rejects a redirect-free registration with
+            // `invalid_redirect_uri`, because it requires at least one. Match
+            // on that specifically: any other rejection is a real failure and
+            // must not be masked by silently falling back.
+            if status == reqwest::StatusCode::BAD_REQUEST && body.contains("invalid_redirect_uri") {
+                return Ok(None);
+            }
+            return Err(format!(
+                "client registration failed (HTTP {}): {body}",
+                status.as_u16()
+            ));
         }
         let registration: ClientRegistrationResponse = response
             .json()
             .map_err(|e| format!("invalid client registration response: {e}"))?;
+        Ok(Some(registration.client_id))
+    }
 
-        let url = format!("{}/oauth/device_authorization", self.base);
-        let form = [("scope", "mcp"), ("client_id", registration.client_id.as_str())];
+    /// One `POST /oauth/device_authorization` with an already-chosen form.
+    fn device_authorization(
+        &self,
+        form: &[(&str, &str)],
+    ) -> Result<DeviceAuthResponse, DeviceAuthFailure> {
         let resp = self
             .client
-            .post(&url)
-            .form(&form)
+            .post(format!("{}/oauth/device_authorization", self.base))
+            .form(form)
             .send()
-            .map_err(|e| format!("device authorization request failed: {e}"))?;
-        if !resp.status().is_success() {
-            let code = resp.status().as_u16();
+            .map_err(|e| {
+                DeviceAuthFailure::Other(format!("device authorization request failed: {e}"))
+            })?;
+        let status = resp.status();
+        if !status.is_success() {
             let body = resp.text().unwrap_or_default();
-            return Err(format!("device authorization failed (HTTP {code}): {body}"));
+            if status == reqwest::StatusCode::BAD_REQUEST && body.contains("invalid_client") {
+                return Err(DeviceAuthFailure::UnknownClient);
+            }
+            return Err(DeviceAuthFailure::Other(format!(
+                "device authorization failed (HTTP {}): {body}",
+                status.as_u16()
+            )));
         }
-        resp.json::<DeviceAuthResponse>()
-            .map_err(|e| format!("invalid device authorization response: {e}"))
+        resp.json::<DeviceAuthResponse>().map_err(|e| {
+            DeviceAuthFailure::Other(format!("invalid device authorization response: {e}"))
+        })
+    }
+}
+
+impl DeviceFlow for HttpDeviceFlow {
+    fn request_device_code(&self, label: Option<&str>) -> Result<DeviceAuthResponse, String> {
+        // Reuse the client already registered with this server if there is
+        // one. A server can never reclaim a client that has minted a token,
+        // so registering per login would leak one of its dynamic-client slots
+        // every time, and spend one of this IP's ten hourly registrations.
+        if let Some(client_id) = crate::cli::credentials::load_client_id(&self.base) {
+            match self.device_authorization(&[("scope", "mcp"), ("client_id", &client_id)]) {
+                Ok(resp) => return Ok(resp),
+                Err(DeviceAuthFailure::Other(e)) => return Err(e),
+                // Stale id: fall through and register a new one.
+                Err(DeviceAuthFailure::UnknownClient) => {
+                    crate::cli::credentials::forget_client_id(&self.base);
+                }
+            }
+        }
+
+        let Some(client_id) = self.register_device_client(label)? else {
+            // Older server: it has no registered device clients and takes the
+            // client name on the device request itself. Keeping this path
+            // means a freshly installed CLI still logs into an older
+            // instance instead of failing at a registration it cannot make.
+            let mut form: Vec<(&str, &str)> = Vec::new();
+            if let Some(label) = label {
+                form.push(("client_name", label));
+            }
+            return self
+                .device_authorization(&form)
+                .map_err(|e| match e {
+                    DeviceAuthFailure::UnknownClient => "device authorization failed: the server \
+                                                         requires a registered client but \
+                                                         refused to register one"
+                        .to_string(),
+                    DeviceAuthFailure::Other(e) => e,
+                });
+        };
+        crate::cli::credentials::store_client_id(&self.base, &client_id);
+
+        self.device_authorization(&[("scope", "mcp"), ("client_id", &client_id)])
+            .map_err(|e| match e {
+                DeviceAuthFailure::UnknownClient => {
+                    "device authorization failed: the server did not recognize the client it \
+                     had just registered"
+                        .to_string()
+                }
+                DeviceAuthFailure::Other(e) => e,
+            })
     }
 
     fn poll_token(&self, device_code: &str) -> Result<PollSignal, String> {

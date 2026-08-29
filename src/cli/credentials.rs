@@ -144,6 +144,66 @@ fn default_file_path() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("lific").join("credentials.json"))
 }
 
+// ── Registered OAuth client ids ──────────────────────────────────────────
+//
+// The device flow needs a registered `client_id`, and registering a fresh one
+// on every `lific login` is not free on the server: a client that has ever
+// minted a token can never be reclaimed, so each login would permanently
+// consume one of the instance's dynamic-client slots, and each would also
+// spend one of that IP's ten hourly registrations. So the id is remembered
+// per server and reused.
+//
+// A `client_id` is a public identifier, not a credential, so it lives in a
+// plain file next to the credential store rather than in the keyring, and its
+// absence is never an error.
+
+/// Where remembered client ids live: `~/.config/lific/clients.json`, a map of
+/// `base_url → client_id`.
+fn default_client_file_path() -> Option<PathBuf> {
+    dirs::config_dir().map(|d| d.join("lific").join("clients.json"))
+}
+
+fn client_store() -> Option<FileStore> {
+    default_client_file_path().map(FileStore::new)
+}
+
+// The three operations are factored to take the store, like the credential
+// file backend, so the round-trip is testable without touching a real
+// `~/.config`. All three are best-effort: losing this file only costs a
+// re-registration.
+
+fn store_client_id_in(store: &FileStore, base_url: &str, client_id: &str) {
+    let _ = store.store(&normalize_base_url(base_url), client_id);
+}
+
+fn load_client_id_from(store: &FileStore, base_url: &str) -> Option<String> {
+    store.load(&normalize_base_url(base_url))
+}
+
+fn forget_client_id_in(store: &FileStore, base_url: &str) {
+    let _ = store.delete(&normalize_base_url(base_url));
+}
+
+/// Remember the OAuth `client_id` registered with `base_url`.
+pub fn store_client_id(base_url: &str, client_id: &str) {
+    if let Some(store) = client_store() {
+        store_client_id_in(&store, base_url, client_id);
+    }
+}
+
+/// The `client_id` previously registered with `base_url`, if any.
+pub fn load_client_id(base_url: &str) -> Option<String> {
+    load_client_id_from(&client_store()?, base_url)
+}
+
+/// Drop the remembered `client_id` for `base_url`, after the server said it
+/// does not know it (reclaimed, or a rebuilt database).
+pub fn forget_client_id(base_url: &str) {
+    if let Some(store) = client_store() {
+        forget_client_id_in(&store, base_url);
+    }
+}
+
 // ── File backend ─────────────────────────────────────────────────────────
 
 /// The JSON-on-disk fallback store, parameterized on its path so tests can
@@ -338,6 +398,44 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("credentials.json");
         (FileStore::new(path), tmp)
+    }
+
+    /// The remembered client id is what keeps `lific login` from registering
+    /// a fresh OAuth client on every run. Store and load have to agree on the
+    /// key, so two spellings of the same server must hit one entry, and a
+    /// server that has forgotten the client must be forgettable here too.
+    #[test]
+    fn a_client_id_round_trips_per_server_and_can_be_forgotten() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = FileStore::new(tmp.path().join("clients.json"));
+
+        assert_eq!(load_client_id_from(&store, "http://127.0.0.1:3998"), None);
+
+        store_client_id_in(&store, "http://127.0.0.1:3998", "client-abc");
+        // Same server, different spelling → same entry.
+        assert_eq!(
+            load_client_id_from(&store, "http://127.0.0.1:3998/"),
+            Some("client-abc".to_string())
+        );
+
+        // A second server keeps its own id.
+        store_client_id_in(&store, "https://lific.example", "client-xyz");
+        assert_eq!(
+            load_client_id_from(&store, "https://lific.example"),
+            Some("client-xyz".to_string())
+        );
+        assert_eq!(
+            load_client_id_from(&store, "http://127.0.0.1:3998"),
+            Some("client-abc".to_string())
+        );
+
+        forget_client_id_in(&store, "http://127.0.0.1:3998/");
+        assert_eq!(load_client_id_from(&store, "http://127.0.0.1:3998"), None);
+        assert_eq!(
+            load_client_id_from(&store, "https://lific.example"),
+            Some("client-xyz".to_string()),
+            "forgetting one server must not clear another"
+        );
     }
 
     #[test]
