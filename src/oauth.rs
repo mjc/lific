@@ -510,6 +510,34 @@ async fn register_client(
         Ok(c) => c,
         Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "database error").into_response(),
     };
+    // Drop grants that can never authenticate anything again, so the client
+    // reclaim below can actually see the client as unused.
+    //
+    // `oauth_clients` is referenced by `oauth_codes.client_id` and
+    // `oauth_tokens.client_id`, both NOT NULL with no ON DELETE clause, so a
+    // client keeps its row for as long as *any* row points at it -- alive or
+    // dead. Before this, one revoked token pinned its client forever, and
+    // since device grants now carry a real registered client instead of the
+    // old shared `device` row, every CLI login that was later revoked
+    // permanently consumed one of MAX_DYNAMIC_CLIENT_ROWS. Enough of them and
+    // registration fails for everyone, on an instance that looks idle.
+    //
+    // Expired-but-unrevoked tokens are deliberately kept. Connected Tools
+    // treats a bot as connected while it holds any unrevoked token,
+    // independent of OAuth expiry (see `users::list_bots`), so deleting those
+    // rows would silently disconnect tools that are still authorized.
+    if let Err(error) = conn.execute(
+        "DELETE FROM oauth_codes WHERE datetime(expires_at) <= datetime('now')",
+        [],
+    ) {
+        warn!(%error, "failed to clean up expired OAuth codes");
+        return (StatusCode::SERVICE_UNAVAILABLE, "database cleanup error").into_response();
+    }
+    if let Err(error) = conn.execute("DELETE FROM oauth_tokens WHERE revoked = 1", []) {
+        warn!(%error, "failed to clean up revoked OAuth tokens");
+        return (StatusCode::SERVICE_UNAVAILABLE, "database cleanup error").into_response();
+    }
+
     // Anonymous registrations are disposable. Reclaim old clients that have
     // never participated in a code/token flow before inserting a new row.
     if let Err(error) = conn.execute(
@@ -713,10 +741,21 @@ async fn authorize_page(
         scope: params.scope.as_deref(),
     };
     let csrf_token = request.csrf_token(&session);
+    // Consent must name the account that would be granting access, so this
+    // page requires a session where it previously rendered for anyone. That
+    // makes an arriving-signed-out user the normal first case rather than an
+    // edge case, so it has to offer a way forward: a bare 401 here strands
+    // every browser client that sends its user straight to /oauth/authorize.
+    // Both approval POSTs already link to the sign-in page; match them.
     let Some(approving_identity) = authenticated_user_identity(&oauth.db, &headers) else {
         return (
             StatusCode::UNAUTHORIZED,
-            Html("<h1>Authentication required</h1><p>Sign in before reviewing OAuth access.</p>".to_string()),
+            Html(
+                "<h1>Authentication required</h1><p>You must be signed in to review OAuth access. \
+                 <a href=\"/#/login\">Sign in</a>, then start the connection again from the \
+                 application that sent you here.</p>"
+                    .to_string(),
+            ),
         )
             .into_response();
     };
@@ -1436,7 +1475,12 @@ async fn device_authorization(
         })
     };
 
-    if req.scope.as_deref() != Some(OAUTH_SCOPE) {
+    // RFC 8628 §3.1 makes `scope` OPTIONAL, so omitting it must not be an
+    // error: a conforming client that asks for no particular capability gets
+    // the only one Lific has. An explicitly *different* capability is still
+    // refused rather than silently downgraded to `mcp`.
+    let requested_scope = req.scope.as_deref().unwrap_or(OAUTH_SCOPE);
+    if requested_scope != OAUTH_SCOPE {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
@@ -1447,13 +1491,16 @@ async fn device_authorization(
             .into_response();
     }
 
-
+    // `client_id` is REQUIRED for public clients (RFC 8628 §3.1). Older Lific
+    // CLIs sent a `client_name` instead and have no client to name, so the
+    // description says what to do rather than just what is missing.
     let Some(client_id) = req.client_id.as_deref() else {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
                 "error": "invalid_request",
-                "error_description": "missing client_id"
+                "error_description": "missing client_id: register a client at /oauth/register \
+                                      and pass its client_id (older Lific CLIs must be upgraded)"
             })),
         )
             .into_response();
@@ -1640,10 +1687,10 @@ async fn device_page(headers: HeaderMap, Query(q): Query<DevicePageQuery>) -> Ht
         .as_deref()
         .map(normalize_user_code)
         .unwrap_or_default();
-    // LIFIC-13: same Connected Tools pick-list as the authorize screen. The
-    // device flow has no persistent client to key a remembered tool on (device
-    // codes are one-time handshakes), so it always asks.
-    let tool_pick_list = tool_pick_list_html(None);
+    // LIFIC-13's tool pick-list used to live here, on the code-entry form.
+    // Approval is now two steps, and the confirmation page is where the tool
+    // is actually read, so asking here as well posed the same question twice
+    // and threw the first answer away. This step is only "which code?".
     Html(format!(
         r#"<!DOCTYPE html>
 <html>
@@ -1667,14 +1714,13 @@ async fn device_page(headers: HeaderMap, Query(q): Query<DevicePageQuery>) -> Ht
 </head>
 <body>
     <h1>Connect a device to Lific</h1>
-    <p>Enter the code shown on the device or terminal that's signing in, then approve.</p>
+    <p>Enter the code shown on the device or terminal that's signing in. You'll see what it is asking for before anything is approved.</p>
     <form method="POST" action="/oauth/device">
         <label for="user_code">Device code</label>
         <input type="text" id="user_code" name="user_code" value="{user_code}" autocomplete="off" autocapitalize="characters" spellcheck="false" required>
-        {tool_pick_list}
         <input type="hidden" name="csrf_token" value="{csrf_token}">
         <div class="buttons">
-            <button type="submit" name="decision" value="approve" class="approve">Approve</button>
+            <button type="submit" name="decision" value="approve" class="approve">Continue</button>
             <button type="submit" name="decision" value="deny" class="deny">Deny</button>
         </div>
     </form>
@@ -1682,7 +1728,6 @@ async fn device_page(headers: HeaderMap, Query(q): Query<DevicePageQuery>) -> Ht
 </html>"#,
         user_code = html_escape(&prefill),
         csrf_token = html_escape(&csrf_token),
-        tool_pick_list = tool_pick_list,
     ))
 }
 
@@ -2963,6 +3008,38 @@ mod tests {
         assert!(!body.contains("An application wants"));
     }
 
+    /// Consent names the approving account, so the page needs a session where
+    /// it used to render for anyone. That makes arriving signed out the normal
+    /// first case for every browser client that sends its user straight here,
+    /// so the refusal has to offer a way forward instead of dead-ending.
+    #[tokio::test]
+    async fn authorize_consent_signed_out_offers_a_way_to_sign_in() {
+        let (app, _db) = test_oauth_app();
+        let client_id = register_client_helper(&app, "http://localhost/callback").await;
+        let challenge = test_code_challenge();
+        let uri = format!(
+            "/oauth/authorize?client_id={client_id}&redirect_uri={}&response_type=code&scope=mcp&code_challenge={challenge}&code_challenge_method=S256",
+            urlencoding::encode("http://localhost/callback"),
+        );
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let body = String::from_utf8(resp.into_body().collect().await.unwrap().to_bytes().to_vec())
+            .unwrap();
+        assert!(
+            body.contains("/#/login"),
+            "signed-out consent must link to sign-in: {body}"
+        );
+    }
+
     #[tokio::test]
     async fn authorize_consent_rejects_unknown_capability_or_client() {
         let (app, _db) = test_oauth_app();
@@ -3453,6 +3530,95 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(resp.status(), expected, "body={body}");
+        }
+    }
+
+    // ── Dynamic clients are reclaimable once their grants are dead ──
+    //
+    // `oauth_clients` is referenced by `oauth_codes` and `oauth_tokens`, so a
+    // client cannot be deleted while any row points at it. Device grants now
+    // carry a real registered client rather than the old shared `device` row,
+    // so without a way to clear dead grants every CLI login would consume one
+    // of MAX_DYNAMIC_CLIENT_ROWS permanently and registration would
+    // eventually fail for everyone.
+
+    /// Insert a token row against `client_id` and age the client past the
+    /// retention window, so the next registration considers it for reclaim.
+    fn plant_aged_client_token(
+        db: &DbPool,
+        client_id: &str,
+        access_token: &str,
+        revoked: i64,
+        expires_at: chrono::DateTime<chrono::Utc>,
+    ) {
+        let conn = db.write().unwrap();
+        conn.execute(
+            "INSERT INTO oauth_tokens (access_token, client_id, expires_at, scope, revoked)
+             VALUES (?1, ?2, ?3, 'mcp', ?4)",
+            params![access_token, client_id, expires_at.to_rfc3339(), revoked],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE oauth_clients SET created_at = datetime('now', '-30 days')
+             WHERE client_id = ?1",
+            params![client_id],
+        )
+        .unwrap();
+    }
+
+    fn client_exists(db: &DbPool, client_id: &str) -> bool {
+        db.read()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM oauth_clients WHERE client_id = ?1",
+                params![client_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap()
+            > 0
+    }
+
+    #[tokio::test]
+    async fn a_revoked_grant_stops_pinning_its_client() {
+        let (app, db) = test_oauth_app();
+        let client_id = register_client_helper(&app, "http://localhost/callback").await;
+        plant_aged_client_token(
+            &db,
+            &client_id,
+            "revoked-hash",
+            1,
+            chrono::Utc::now() + chrono::Duration::days(30),
+        );
+
+        // Any later registration runs the reclaim.
+        let _ = register_client_helper(&app, "http://localhost/other").await;
+
+        assert!(
+            !client_exists(&db, &client_id),
+            "a revoked grant must not pin its client forever"
+        );
+    }
+
+    /// The reclaim must not become a way to delete clients that are still in
+    /// use. Connected Tools treats a bot as connected while it holds any
+    /// unrevoked token regardless of OAuth expiry, so an expired-but-live
+    /// token has to keep its client too.
+    #[tokio::test]
+    async fn a_live_or_merely_expired_grant_still_pins_its_client() {
+        for (label, expires_at) in [
+            ("live", chrono::Utc::now() + chrono::Duration::days(30)),
+            ("expired", chrono::Utc::now() - chrono::Duration::days(30)),
+        ] {
+            let (app, db) = test_oauth_app();
+            let client_id = register_client_helper(&app, "http://localhost/callback").await;
+            plant_aged_client_token(&db, &client_id, "unrevoked-hash", 0, expires_at);
+
+            let _ = register_client_helper(&app, "http://localhost/other").await;
+
+            assert!(
+                client_exists(&db, &client_id),
+                "an unrevoked ({label}) grant must keep its client"
+            );
         }
     }
 
@@ -4746,27 +4912,72 @@ mod tests {
         assert!(vuc.contains("user_code="));
     }
 
+    /// RFC 8628 §3.1 makes `scope` OPTIONAL. A conforming client that omits it
+    /// is asking for whatever the server offers, and Lific offers exactly one
+    /// capability, so the request must succeed and record `mcp` rather than
+    /// being refused on a technicality.
     #[tokio::test]
-    async fn device_authorization_rejects_missing_or_unsupported_scope() {
+    async fn device_authorization_defaults_an_omitted_scope_to_mcp() {
+        let (app, db) = test_oauth_app();
+        let client_id = register_client_helper(&app, "http://localhost/callback").await;
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/device_authorization")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(axum::body::Body::from(format!(
+                        "client_id={}",
+                        urlencoding::encode(&client_id)
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v: serde_json::Value =
+            serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(v["scope"], OAUTH_SCOPE);
+
+        let stored: String = db
+            .read()
+            .unwrap()
+            .query_row(
+                "SELECT scope FROM oauth_device_codes WHERE user_code = ?1",
+                params![v["user_code"].as_str().unwrap()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, OAUTH_SCOPE);
+    }
+
+    /// Defaulting an omitted scope must not become silently upgrading a
+    /// different one: asking for something Lific does not have is still an
+    /// error, not a quiet downgrade to `mcp`.
+    #[tokio::test]
+    async fn device_authorization_rejects_an_unsupported_scope() {
         let (app, _db) = test_oauth_app();
-        for body in [
-            "client_name=cli",
-            "client_name=cli&scope=admin",
-        ] {
-            let resp = app
-                .clone()
-                .oneshot(
-                    Request::builder()
-                        .method("POST")
-                        .uri("/oauth/device_authorization")
-                        .header("content-type", "application/x-www-form-urlencoded")
-                        .body(axum::body::Body::from(body))
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-            assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "body={body}");
-        }
+        let client_id = register_client_helper(&app, "http://localhost/callback").await;
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/device_authorization")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(axum::body::Body::from(format!(
+                        "client_id={}&scope=admin",
+                        urlencoding::encode(&client_id)
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let v: serde_json::Value =
+            serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(v["error"], "invalid_scope");
     }
 
     #[tokio::test]
@@ -5356,6 +5567,60 @@ mod tests {
         let html = String::from_utf8_lossy(&bytes);
         // Normalized + uppercased + dash-inserted into the input value.
         assert!(html.contains("value=\"BCDF-GHJK\""), "prefill missing: {html}");
+    }
+
+    /// Approval is two steps now, and the confirmation page is the one that
+    /// reads the tool. Asking on the code-entry page as well put the same
+    /// question twice and discarded the first answer.
+    #[tokio::test]
+    async fn device_code_entry_asks_only_for_the_code() {
+        let (app, db) = test_oauth_app();
+        let session = create_test_session(&db);
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/oauth/device")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let entry = String::from_utf8_lossy(&bytes).to_string();
+        assert!(entry.contains("name=\"user_code\""));
+        assert!(
+            !entry.contains("name=\"tool\""),
+            "code entry must not ask which tool is connecting: {entry}"
+        );
+
+        // The confirmation step still asks, because that is where it is read.
+        let v = request_device_code(&app, Some("laptop")).await;
+        let body = format!(
+            "user_code={}&decision=approve&csrf_token={}",
+            urlencoding::encode(v["user_code"].as_str().unwrap()),
+            urlencoding::encode(&generate_csrf_token(&session)),
+        );
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/device")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .header("cookie", format!("lific_token={session}"))
+                    .body(axum::body::Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let confirm = String::from_utf8_lossy(&bytes);
+        assert!(
+            confirm.contains("name=\"tool\""),
+            "confirmation must ask which tool is connecting: {confirm}"
+        );
     }
 
     #[test]
