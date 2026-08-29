@@ -305,7 +305,7 @@ impl DeviceFlow for HttpDeviceFlow {
             .send()
             .map_err(|e| format!("token poll failed: {e}"))?;
         let status = resp.status();
-        let body: serde_json::Value = resp.json().unwrap_or(serde_json::json!({}));
+        let body: serde_json::Value = resp.json().unwrap_or_else(|_| serde_json::json!({}));
         if status.is_success() {
             let token = body
                 .get("access_token")
@@ -469,7 +469,7 @@ fn finish(args: &LoginArgs, base: &str, outcome: PollOutcome, json: bool) -> Res
 }
 
 /// `lific logout`: delete the stored credential and best-effort revoke it.
-pub fn run_logout(url: Option<&str>, cfg: &Config, json: bool) -> Result<(), String> {
+pub fn run_logout(url: Option<&str>, cfg: &Config, json: bool) {
     let base = resolve_base_url(url, cfg);
     // Grab the token first so we can revoke it before deleting.
     let existing = crate::cli::credentials::load(&base);
@@ -494,7 +494,6 @@ pub fn run_logout(url: Option<&str>, cfg: &Config, json: bool) -> Result<(), Str
     } else {
         crate::cli::ui::info(format!("No stored credential for {base}."));
     }
-    Ok(())
 }
 
 #[cfg(test)]

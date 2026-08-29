@@ -45,14 +45,15 @@ pub fn run(
             let user = db::queries::users::create_user(
                 &conn,
                 &db::models::CreateUser {
-                    username: username.clone(),
-                    email: email.clone(),
+                    username,
+                    email,
                     password: pw,
                     display_name: None,
                     is_admin: admin,
                     is_bot: bot,
                 },
             )?;
+            drop(conn);
 
             if json {
                 let out = serde_json::json!({
@@ -138,6 +139,7 @@ pub fn run(
                 db::queries::users::update_password(&conn, user.id, &pw)?;
                 db::queries::users::lock_down_account(&conn, user.id)
             })?;
+            drop(conn);
 
             if json {
                 let out = serde_json::json!({

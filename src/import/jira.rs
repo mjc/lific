@@ -134,11 +134,9 @@ fn render_list(node: &serde_json::Value, out: &mut String, ordered: bool) {
         render_block_children(item, &mut item_body);
         // Prefix the first line with the marker; indent continuation lines.
         let mut lines = item_body.lines();
+        out.push_str(&marker);
         if let Some(first) = lines.next() {
-            out.push_str(&marker);
             out.push_str(first);
-        } else {
-            out.push_str(&marker);
         }
         for line in lines {
             out.push('\n');
@@ -178,8 +176,10 @@ fn render_inline_node(node: &serde_json::Value, out: &mut String) {
                 .get("attrs")
                 .and_then(|a| a.get("text"))
                 .and_then(|t| t.as_str())
-                .map(|s| s.trim_start_matches('@').to_string())
-                .unwrap_or_else(|| "someone".to_string());
+                .map_or_else(
+                    || "someone".to_string(),
+                    |s| s.trim_start_matches('@').to_string(),
+                );
             out.push('@');
             out.push_str(&name);
         }
@@ -373,8 +373,7 @@ pub fn map_issue(
         .status
         .as_ref()
         .and_then(|s| s.status_category.as_ref())
-        .map(|c| map_status(&c.key, map))
-        .unwrap_or(map.new);
+        .map_or(map.new, |c| map_status(&c.key, map));
 
     let priority = issue
         .fields

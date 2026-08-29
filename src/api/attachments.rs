@@ -486,8 +486,7 @@ pub(super) async fn download_attachment(
     let requested = headers
         .get(header::RANGE)
         .and_then(|v| v.to_str().ok())
-        .map(|v| parse_range(v, total))
-        .unwrap_or(RangeRequest::Whole);
+        .map_or(RangeRequest::Whole, |v| parse_range(v, total));
 
     let (status, body, content_range) = match requested {
         RangeRequest::Whole => (StatusCode::OK, bytes, None),

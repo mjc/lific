@@ -229,10 +229,10 @@ pub(super) async fn update_step(
         if let Some(issue) = input.issue_id {
             plans::set_step_issue(conn, step_id, issue)?;
         }
-        let mut effect = None;
-        if let Some(done) = input.done {
-            effect = Some(plans::set_step_done(conn, step_id, done)?);
-        }
+        let effect = input
+            .done
+            .map(|done| plans::set_step_done(conn, step_id, done))
+            .transpose()?;
         if input.move_to_root.unwrap_or(false)
             || input.move_parent_step_id.is_some()
             || input.move_position.is_some()
@@ -399,7 +399,6 @@ mod tests {
         let first = body_json(json_get(&app, &format!("/api/plans?project_id={project_id}&order_by=id&limit=2")).await).await;
         let first = first.as_array().unwrap();
         assert_eq!(first.len(), 2);
-        let first_ids = first.iter().map(|plan| plan["id"].as_i64().unwrap()).collect::<Vec<_>>();
         let cursor_id = first[1]["id"].as_i64().unwrap();
 
         let response = json_get(
@@ -413,7 +412,12 @@ mod tests {
         let second = body_json(response).await;
         let second = second.as_array().unwrap();
         assert_eq!(second.len(), 1);
-        assert!(!first_ids.contains(&second[0]["id"].as_i64().unwrap()));
+        let second_id = second[0]["id"].as_i64().unwrap();
+        assert!(
+            !first
+                .iter()
+                .any(|plan| plan["id"].as_i64().unwrap() == second_id)
+        );
 
         for query in [
             format!("/api/plans?project_id={project_id}&before_id={cursor_id}"),

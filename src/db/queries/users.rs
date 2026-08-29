@@ -474,11 +474,16 @@ fn derive_username(conn: &Connection, display_name: &str) -> Result<String, Lifi
     let base = if slug.is_empty() { "admin".to_string() } else { slug };
     let mut candidate = base.clone();
     let mut n = 1;
-    while get_user_by_username(conn, &candidate).is_ok() {
-        candidate = format!("{base}-{n}");
-        n += 1;
+    loop {
+        match get_user_by_username(conn, &candidate) {
+            Ok(_) => {
+                candidate = format!("{base}-{n}");
+                n += 1;
+            }
+            Err(LificError::NotFound(_)) => return Ok(candidate),
+            Err(error) => return Err(error),
+        }
     }
-    Ok(candidate)
 }
 
 /// Create the first human admin on a fresh install — a passwordless operator.
@@ -873,7 +878,7 @@ pub fn lock_down_account(conn: &Connection, user_id: i64) -> Result<(), LificErr
 /// Generate a session token with the lific_sess_ prefix.
 fn generate_session_token() -> String {
     let bytes: [u8; 32] = rand::random();
-    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    let hex = crate::auth::hex_encode(&bytes);
     format!("lific_sess_{hex}")
 }
 
@@ -915,7 +920,7 @@ pub fn assign_key_to_user(
 /// guaranteeing `authenticate` can never succeed against it.
 fn unusable_password_hash() -> Result<String, LificError> {
     let random_pw: [u8; 32] = rand::random();
-    let random_pw_hex: String = random_pw.iter().map(|b| format!("{b:02x}")).collect();
+    let random_pw_hex = crate::auth::hex_encode(&random_pw);
     hash_password(&random_pw_hex)
 }
 
@@ -1182,16 +1187,14 @@ pub fn find_bot_legacy_by_tool_prefix(
 /// independent of OAuth token expiry (the agent self-heals via re-auth).
 /// Used to refuse re-connecting a tool that's already connected via either door.
 pub fn bot_is_connected(conn: &Connection, bot_id: i64) -> Result<bool, LificError> {
-    let has: bool = conn
-        .query_row(
-            "SELECT
+    conn.query_row(
+        "SELECT
                 EXISTS(SELECT 1 FROM api_keys WHERE user_id = ?1 AND revoked = 0)
                 OR EXISTS(SELECT 1 FROM oauth_tokens WHERE user_id = ?1 AND revoked = 0)",
-            params![bot_id],
-            |row| row.get(0),
-        )
-        .unwrap_or(false);
-    Ok(has)
+        params![bot_id],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
 }
 
 /// Ensure a per-tool bot exists for `owner_id`, reusing an existing one rather
@@ -1517,6 +1520,18 @@ mod tests {
         );
     }
 
+    #[test]
+    fn derive_username_propagates_database_errors() {
+        let pool = test_db();
+        let conn = pool.write().unwrap();
+        conn.execute("DROP TABLE users", []).unwrap();
+
+        assert!(matches!(
+            derive_username(&conn, "Blake"),
+            Err(LificError::Database(_))
+        ));
+    }
+
     // ── ensure_bot (LIFIC-13) ────────────────────────────────
 
     #[test]
@@ -1730,19 +1745,18 @@ mod tests {
             test_create_user(&conn).id
         };
 
-        let ids: Vec<i64> = std::thread::scope(|scope| {
-            let handles: Vec<_> = (0..4)
-                .map(|_| {
-                    let pool = pool.clone();
-                    scope.spawn(move || {
-                        let conn = pool.write().unwrap();
-                        ensure_bot(&conn, owner_id, "opencode", "OpenCode")
-                            .expect("ensure_bot must not fail on a repeat connect")
-                            .id
-                    })
+        let ids: [i64; 4] = std::thread::scope(|scope| {
+            // Build every handle before joining so the connects actually overlap.
+            let handles: [_; 4] = std::array::from_fn(|_| {
+                let pool = pool.clone();
+                scope.spawn(move || {
+                    let conn = pool.write().unwrap();
+                    ensure_bot(&conn, owner_id, "opencode", "OpenCode")
+                        .expect("ensure_bot must not fail on a repeat connect")
+                        .id
                 })
-                .collect();
-            handles.into_iter().map(|h| h.join().unwrap()).collect()
+            });
+            handles.map(|handle| handle.join().unwrap())
         });
 
         assert!(
@@ -2365,6 +2379,18 @@ mod tests {
             "a bot with only revoked credentials must list as disconnected"
         );
         assert!(!bot_is_connected(&conn, bot.id).unwrap());
+    }
+
+    #[test]
+    fn bot_is_connected_propagates_database_errors() {
+        let pool = test_db();
+        let conn = pool.write().unwrap();
+        conn.execute("DROP TABLE oauth_tokens", []).unwrap();
+
+        assert!(matches!(
+            bot_is_connected(&conn, 1),
+            Err(LificError::Database(_))
+        ));
     }
 
     #[test]

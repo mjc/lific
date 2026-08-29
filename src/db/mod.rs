@@ -341,6 +341,7 @@ fn secure_parent(path: &Path) -> Result<(), LificError> {
     Ok(())
 }
 
+#[cfg_attr(not(unix), expect(clippy::unnecessary_wraps, reason = "fallible on Unix"))]
 fn secure_file(_path: &Path) -> Result<(), LificError> {
     #[cfg(unix)]
     {

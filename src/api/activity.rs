@@ -20,7 +20,7 @@ use super::with_read;
 /// `Viewer` gate (LIF-197 scope item 2: single-resource reads resolve
 /// project_id from the target then check). Workspace-level pages
 /// (`project_id = None`) fall back to admin-only.
-async fn require_scope_viewer(
+fn require_scope_viewer(
     db: &DbPool,
     identity: &Option<crate::resolve_caller::ResolvedIdentity>,
     scope: &ActivityScope,
@@ -58,7 +58,7 @@ pub(super) async fn issue_activity(
     Query(q): Query<ActivityQuery>,
 ) -> Result<Json<ActivityFeed>, LificError> {
     let scope = ActivityScope::Issue(id);
-    require_scope_viewer(&db, &identity, &scope).await?;
+    require_scope_viewer(&db, &identity, &scope)?;
     with_read(&db, |conn| list_activity(conn, scope, q.limit, q.offset)).map(Json)
 }
 
@@ -70,7 +70,7 @@ pub(super) async fn page_activity(
     Query(q): Query<ActivityQuery>,
 ) -> Result<Json<ActivityFeed>, LificError> {
     let scope = ActivityScope::Page(id);
-    require_scope_viewer(&db, &identity, &scope).await?;
+    require_scope_viewer(&db, &identity, &scope)?;
     with_read(&db, |conn| list_activity(conn, scope, q.limit, q.offset)).map(Json)
 }
 
@@ -83,7 +83,7 @@ pub(super) async fn plan_activity(
     Query(q): Query<ActivityQuery>,
 ) -> Result<Json<ActivityFeed>, LificError> {
     let scope = ActivityScope::Plan(id);
-    require_scope_viewer(&db, &identity, &scope).await?;
+    require_scope_viewer(&db, &identity, &scope)?;
     with_read(&db, |conn| list_activity(conn, scope, q.limit, q.offset)).map(Json)
 }
 
@@ -96,7 +96,7 @@ pub(super) async fn project_activity(
     Query(q): Query<ActivityQuery>,
 ) -> Result<Json<ActivityFeed>, LificError> {
     let scope = ActivityScope::Project(id);
-    require_scope_viewer(&db, &identity, &scope).await?;
+    require_scope_viewer(&db, &identity, &scope)?;
     with_read(&db, |conn| list_activity(conn, scope, q.limit, q.offset)).map(Json)
 }
 

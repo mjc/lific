@@ -1009,7 +1009,7 @@ impl HttpBackend {
         Ok(response.json().await?)
     }
 
-    async fn send_json<T: Serialize + ?Sized>(
+    async fn send_json<T: Serialize + Sync + ?Sized>(
         &self,
         method: Method,
         path: &str,

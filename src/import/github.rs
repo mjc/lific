@@ -230,8 +230,7 @@ pub fn map_issue(
             author: c
                 .user
                 .as_ref()
-                .map(|u| u.login.clone())
-                .unwrap_or_else(|| "ghost".to_string()),
+                .map_or_else(|| "ghost".to_string(), |u| u.login.clone()),
             created_at: c.created_at.clone(),
             body: c.body.clone().unwrap_or_default(),
         })

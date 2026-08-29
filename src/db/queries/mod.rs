@@ -111,9 +111,10 @@ impl<T> Page<T> {
     /// Split rows fetched with [`over_fetch`] into the page the caller asked
     /// for, plus the `has_more` the extra row implies.
     pub fn from_over_fetch(mut items: Vec<T>, limit: i64) -> Self {
-        let has_more = items.len() as i64 > limit;
+        let limit = usize::try_from(limit.max(0)).unwrap_or(usize::MAX);
+        let has_more = items.len() > limit;
         if has_more {
-            items.truncate(limit.max(0) as usize);
+            items.truncate(limit);
         }
         Self { items, has_more }
     }
@@ -200,7 +201,7 @@ pub use search::*;
 #[cfg(test)]
 mod tests {
     use super::{
-        DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT, NO_LIMIT, page, page_unbounded, page_with,
+        DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT, NO_LIMIT, Page, page, page_unbounded, page_with,
         unescape_text,
     };
 
@@ -263,6 +264,24 @@ mod tests {
         assert_eq!(page_unbounded(Some(-5), None).0, 1);
         assert_eq!(page_unbounded(Some(i64::MAX), None).0, MAX_PAGE_LIMIT);
         assert_eq!(page_unbounded(Some(5), Some(-5)).1, 0);
+    }
+
+    #[test]
+    fn page_from_over_fetch_handles_signed_bounds() {
+        assert_eq!(
+            Page::from_over_fetch(vec![1, 2], -1),
+            Page {
+                items: Vec::new(),
+                has_more: true,
+            }
+        );
+        assert_eq!(
+            Page::from_over_fetch(vec![1, 2], i64::MAX),
+            Page {
+                items: vec![1, 2],
+                has_more: false,
+            }
+        );
     }
 
     #[test]

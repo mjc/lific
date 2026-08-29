@@ -22,6 +22,7 @@ struct ConfigFile {
 /// was read from. Fails closed on symlinks: [`read_config_file`] opens with
 /// `O_NOFOLLOW`, so a symlinked config never produces a [`ConfigFile`] to
 /// tighten in the first place.
+#[cfg_attr(not(unix), expect(clippy::unnecessary_wraps, reason = "fallible on Unix"))]
 fn tighten_config_permissions(_config: &ConfigFile) -> std::io::Result<()> {
     #[cfg(unix)]
     {

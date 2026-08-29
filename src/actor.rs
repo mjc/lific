@@ -73,7 +73,7 @@ pub async fn scope<F: std::future::Future>(ctx: ActorCtx, fut: F) -> F::Output {
 /// The actor for the current execution context.
 /// Task-local (request) → process default (CLI) → system.
 pub fn current() -> ActorCtx {
-    ACTOR.try_with(|a| *a).unwrap_or(ActorCtx {
+    ACTOR.try_with(|a| *a).unwrap_or_else(|_| ActorCtx {
         user_id: None,
         transport: *DEFAULT_TRANSPORT.get().unwrap_or(&Transport::System),
     })

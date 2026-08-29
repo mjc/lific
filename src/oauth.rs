@@ -505,7 +505,7 @@ async fn register_client(
             .into_response();
     }
 
-    let db = state.db.clone();
+    let db = state.db;
     let conn = match db.write() {
         Ok(c) => c,
         Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "database error").into_response(),
@@ -607,6 +607,7 @@ async fn register_client(
         tracing::error!(error = %e, "failed to register OAuth client");
         return (StatusCode::INTERNAL_SERVER_ERROR, "database error").into_response();
     }
+    drop(conn);
 
     info!(client_id = %client_id, name = %client_name, "OAuth client registered");
 
@@ -1176,6 +1177,7 @@ async fn authorize_approve(
         tracing::error!(error = %e, "failed to commit OAuth authorization");
         return (StatusCode::INTERNAL_SERVER_ERROR, "database error").into_response();
     }
+    drop(conn);
 
     let mut redirect_url = form.redirect_uri.clone();
     redirect_url.push_str(if redirect_url.contains('?') { "&" } else { "?" });
@@ -1261,7 +1263,7 @@ fn resolve_tool(raw: &str) -> Result<(String, String), LificError> {
             "tool id '{slug}' is reserved"
         )));
     }
-    Ok((slug.clone(), trimmed.to_string()))
+    Ok((slug, trimmed.to_string()))
 }
 
 /// HTML `<option>` value that means "this isn't a known tool — let me type it".
@@ -1610,6 +1612,7 @@ async fn device_authorization(
             }
         }
     }
+    drop(conn);
     if !inserted {
         return (StatusCode::INTERNAL_SERVER_ERROR, "database error").into_response();
     }
@@ -1981,6 +1984,7 @@ async fn device_approve(
         tracing::error!(error = %e, "failed to commit device approval");
         return (StatusCode::INTERNAL_SERVER_ERROR, "database error").into_response();
     }
+    drop(conn);
 
     info!(user_code = %normalized, decision = %new_status, "OAuth device verification");
 
@@ -2324,8 +2328,7 @@ fn device_token_exchange(state: &OAuthState, req: &TokenRequest) -> Response {
 
     // Expiry check first (RFC 8628: expired_token).
     let expired = chrono::DateTime::parse_from_rfc3339(&row.expires_at)
-        .map(|t| now >= t.with_timezone(&chrono::Utc))
-        .unwrap_or(true);
+        .map_or(true, |t| now >= t.with_timezone(&chrono::Utc));
     if expired {
         let _ = conn.execute(
             "DELETE FROM oauth_device_codes WHERE device_code_hash = ?1",
@@ -4961,7 +4964,7 @@ mod tests {
             .unwrap();
         let status = resp.status();
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-        let val = serde_json::from_slice(&bytes).unwrap_or(serde_json::json!({}));
+        let val = serde_json::from_slice(&bytes).unwrap_or_else(|_| serde_json::json!({}));
         (status, val)
     }
 
@@ -6267,7 +6270,7 @@ mod tests {
             let bytes = resp.into_body().collect().await.unwrap().to_bytes();
             (
                 status,
-                serde_json::from_slice(&bytes).unwrap_or(serde_json::json!({})),
+                serde_json::from_slice(&bytes).unwrap_or_else(|_| serde_json::json!({})),
             )
         }
 

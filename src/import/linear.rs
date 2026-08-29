@@ -129,11 +129,11 @@ pub fn map_state_type(type_: &str, map: &LinearStatusMap) -> Status {
 /// Map Linear's numeric priority (0 none, 1 urgent, 2 high, 3 medium, 4 low) to
 /// a Lific [`Priority`].
 pub fn map_priority(priority: f64) -> Priority {
-    match priority.round() as i64 {
-        1 => Priority::Urgent,
-        2 => Priority::High,
-        3 => Priority::Medium,
-        4 => Priority::Low,
+    match priority.round() {
+        1.0 => Priority::Urgent,
+        2.0 => Priority::High,
+        3.0 => Priority::Medium,
+        4.0 => Priority::Low,
         _ => Priority::None,
     }
 }
@@ -145,8 +145,7 @@ pub fn map_issue(issue: &LinearIssue, map: &LinearStatusMap) -> NormalizedIssue 
     let status = issue
         .state
         .as_ref()
-        .map(|s| map_state_type(&s.type_, map))
-        .unwrap_or(map.backlog);
+        .map_or(map.backlog, |s| map_state_type(&s.type_, map));
 
     let labels = issue
         .labels
@@ -163,7 +162,10 @@ pub fn map_issue(issue: &LinearIssue, map: &LinearStatusMap) -> NormalizedIssue 
         .nodes
         .iter()
         .map(|c| NormalizedComment {
-            author: c.user.as_ref().map(|u| u.handle()).unwrap_or_else(|| "unknown".into()),
+            author: c
+                .user
+                .as_ref()
+                .map_or_else(|| "unknown".into(), |u| u.handle()),
             created_at: c.created_at.clone(),
             body: c.body.clone().unwrap_or_default(),
         })
@@ -382,6 +384,8 @@ mod tests {
         assert_eq!(map_priority(2.0), Priority::High);
         assert_eq!(map_priority(3.0), Priority::Medium);
         assert_eq!(map_priority(4.0), Priority::Low);
+        assert_eq!(map_priority(f64::NAN), Priority::None);
+        assert_eq!(map_priority(f64::INFINITY), Priority::None);
     }
 
     #[test]

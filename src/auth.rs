@@ -28,7 +28,13 @@ pub struct AuthState {
 /// LIF-383: the one hex encoder in the tree. Four copies of this loop used to
 /// live in oauth.rs, mcp/mod.rs, auth.rs and db/queries/users.rs.
 pub(crate) fn hex_encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    use std::fmt::Write as _;
+
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        write!(&mut encoded, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    encoded
 }
 
 /// SHA-256 a byte slice and return the lowercase hex digest. This is how every
@@ -372,6 +378,7 @@ pub fn revoke_api_key(db: &DbPool, name: &str) -> Result<(), crate::error::Lific
         "UPDATE api_keys SET revoked = 1 WHERE name = ?1 AND revoked = 0",
         params![name],
     )?;
+    drop(conn);
     if changed == 0 {
         return Err(crate::error::LificError::NotFound(format!(
             "no active key named '{name}'"
@@ -2140,7 +2147,7 @@ mod tests {
         let _key2 = create_api_key(&pool, &manager, "key-2", None).unwrap();
 
         // Extract key_id from key1 and look it up
-        let secure_key = SecureString::from(key1.clone());
+        let secure_key = SecureString::from(key1);
         let key_id = manager.extract_key_id(&secure_key);
 
         let conn = pool.read().unwrap();
@@ -3643,9 +3650,7 @@ mod tests {
             format!(
                 "{}|{}",
                 actor.transport.as_str(),
-                identity
-                    .map(|i| i.transport.as_str().to_string())
-                    .unwrap_or_else(|| "none".into())
+                identity.map_or_else(|| "none".into(), |i| i.transport.as_str().to_string())
             )
         }
 

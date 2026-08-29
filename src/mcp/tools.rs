@@ -1419,7 +1419,7 @@ impl LificMcp {
                         return Ok(self.empty_search_result());
                     }
                     Err(crate::error::LificError::NotFound(error)) => {
-                        return Err(error.to_string());
+                        return Err(error);
                     }
                     Ok(_) => {
                         return Ok(self.empty_search_result());
@@ -1617,11 +1617,10 @@ impl LificMcp {
                 ActivityScopeReference::Project => ReferenceKind::Project(&scope_identifier),
             },
         );
-        let activity_project_identifier = project_identifier.as_deref().or(matches!(
-            scope_reference.kind,
-            ReferenceKind::Project(_)
-        )
-        .then_some(scope_identifier.as_str()));
+        let activity_project_identifier = project_identifier.as_deref().or_else(|| {
+            matches!(scope_reference.kind, ReferenceKind::Project(_))
+                .then_some(scope_identifier.as_str())
+        });
         let rendered = self.read(|conn| {
             let feed = queries::activity::list_activity(conn, scope, Some(limit), Some(offset))?;
             if feed.items.is_empty() {
@@ -1754,7 +1753,9 @@ impl LificMcp {
             let id = queries::resolve_identifier(conn, &input.identifier)?;
             let issue = queries::get_issue(conn, id)?;
             let module_name = match issue.module_id {
-                Some(mid) => queries::get_module_name(conn, mid).unwrap_or("unknown".into()),
+                Some(mid) => {
+                    queries::get_module_name(conn, mid).unwrap_or_else(|_| "unknown".into())
+                }
                 None => "none".into(),
             };
             // LIF-303: annotate each relation identifier with the related
@@ -1966,14 +1967,18 @@ impl LificMcp {
                 .files
                 .into_iter()
                 .next()
-                .map(|file| file.content)
-                .unwrap_or_else(|| "Error: page export produced no files".into())),
+                .map_or_else(
+                    || "Error: page export produced no files".into(),
+                    |file| file.content,
+                )),
             Kind::Issue => Ok(bundle
                 .files
                 .into_iter()
                 .next()
-                .map(|file| file.content)
-                .unwrap_or_else(|| "Error: issue export produced no files".into())),
+                .map_or_else(
+                    || "Error: issue export produced no files".into(),
+                    |file| file.content,
+                )),
             Kind::Project => Ok(render_response(|output| {
                 writeln!(output, "{} exported file(s):", bundle.files.len())?;
                 bundle
@@ -2275,12 +2280,12 @@ impl LificMcp {
             // a double-escaping client matches stored content.
             let (current, old_norm, new_norm) = match field {
                 "description" => (
-                    issue.description.clone(),
+                    issue.description,
                     queries::unescape_text(&input.old_string),
                     queries::unescape_text(&input.new_string),
                 ),
                 "title" => (
-                    issue.title.clone(),
+                    issue.title,
                     input.old_string.clone(),
                     input.new_string.clone(),
                 ),
@@ -2382,12 +2387,13 @@ impl LificMcp {
         // there); count how many we drop so a trailing note can report
         // the omission. Status grouping keeps the groups but renders
         // them as count-only stubs (handled below).
-        let mut closed_omitted = 0i64;
-        if !include_closed && group_by != "status" {
+        let closed_omitted = if !include_closed && group_by != "status" {
             let before = issues.len();
             issues.retain(|i| !is_closed(i));
-            closed_omitted = (before - issues.len()) as i64;
-        }
+            (before - issues.len()) as i64
+        } else {
+            0
+        };
         let module_names: std::collections::HashMap<i64, String> = if group_by == "module" {
             if let Ok(conn) = self.db.read() {
                 queries::list_modules(&conn, pid)
@@ -2409,7 +2415,7 @@ impl LificMcp {
                 "module" => issue
                     .module_id
                     .and_then(|m| module_names.get(&m).cloned())
-                    .unwrap_or("unassigned".into()),
+                    .unwrap_or_else(|| "unassigned".into()),
                 _ => issue.status.to_string(),
             };
             groups.entry(key).or_default().push(issue);
@@ -2462,8 +2468,11 @@ impl LificMcp {
                     );
                 }
                 writeln!(output, "── {} ({}) ──", group, items.len())?;
-                let shown =
-                    max_per_column.map_or(items.len(), |limit| (limit as usize).min(items.len()));
+                let shown = max_per_column.map_or(items.len(), |limit| {
+                    usize::try_from(limit)
+                        .unwrap_or(usize::MAX)
+                        .min(items.len())
+                });
                 items[..shown].iter().try_for_each(|issue| {
                     writeln!(
                         output,
@@ -2772,12 +2781,12 @@ impl LificMcp {
             // edit from a double-escaping client matches stored content.
             let (current, old_norm, new_norm) = match field {
                 "content" => (
-                    page.content.clone(),
+                    page.content,
                     queries::unescape_text(&input.old_string),
                     queries::unescape_text(&input.new_string),
                 ),
                 "title" => (
-                    page.title.clone(),
+                    page.title,
                     input.old_string.clone(),
                     input.new_string.clone(),
                 ),
@@ -3335,7 +3344,7 @@ impl LificMcp {
                             project_id: pid,
                             name: name.clone(),
                             description: input.description.clone().unwrap_or_default(),
-                            status: input.status.clone().unwrap_or("active".into()),
+                            status: input.status.clone().unwrap_or_else(|| "active".into()),
                             emoji: emoji_for_create(&input.emoji),
                         },
                     )
@@ -3398,7 +3407,10 @@ impl LificMcp {
                         &models::CreateLabel {
                             project_id: pid,
                             name: name.clone(),
-                            color: input.color.clone().unwrap_or("#6B7280".into()),
+                            color: input
+                                .color
+                                .clone()
+                                .unwrap_or_else(|| "#6B7280".into()),
                         },
                     )
                 })?;
@@ -4333,7 +4345,7 @@ impl LificMcp {
                 )),
                 Content::image(
                     base64::engine::general_purpose::STANDARD.encode(&bytes),
-                    attachment.mime.clone(),
+                    attachment.mime,
                 ),
             ]);
         }
@@ -4574,14 +4586,17 @@ fn render_attachment_text(
 ) -> String {
     let text = String::from_utf8_lossy(bytes);
     let lines: Vec<&str> = text.lines().collect();
-    let total = lines.len() as i64;
+    let total = lines.len();
     let offset = offset.unwrap_or(0).max(0);
-    let limit = limit
-        .unwrap_or(ATTACHMENT_TEXT_DEFAULT_LINES)
-        .clamp(1, queries::MAX_PAGE_LIMIT);
-    let start = offset.min(total);
-    let end = offset.saturating_add(limit).min(total);
-    let shown = &lines[start as usize..end as usize];
+    let start = usize::try_from(offset).unwrap_or(usize::MAX).min(total);
+    let limit = usize::try_from(
+        limit
+            .unwrap_or(ATTACHMENT_TEXT_DEFAULT_LINES)
+            .clamp(1, queries::MAX_PAGE_LIMIT),
+    )
+    .expect("page limit fits usize");
+    let end = start.saturating_add(limit).min(total);
+    let shown = &lines[start..end];
 
     render_response(|output| {
         if shown.is_empty() {
@@ -4653,28 +4668,34 @@ impl Display for AttachmentLines<'_> {
 /// project comes back so the caller can drop links it has no role on;
 /// `None` means the linked entity is gone (a dangling link the GC has not
 /// swept yet) and the row simply omits it.
+fn optional_entity<T>(
+    result: Result<T, crate::error::LificError>,
+) -> Result<Option<T>, crate::error::LificError> {
+    match result {
+        Ok(entity) => Ok(Some(entity)),
+        Err(crate::error::LificError::NotFound(_)) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 fn attachment_link_label(
     conn: &rusqlite::Connection,
     entity: models::AttachmentEntity,
     entity_id: i64,
 ) -> Result<Option<(String, Option<i64>)>, crate::error::LificError> {
-    Ok(match entity {
-        models::AttachmentEntity::Issue => queries::get_issue(conn, entity_id)
-            .ok()
+    let label = match entity {
+        models::AttachmentEntity::Issue => optional_entity(queries::get_issue(conn, entity_id))?
             .map(|issue| (issue.identifier, Some(issue.project_id))),
-        models::AttachmentEntity::Page => queries::get_page(conn, entity_id)
-            .ok()
+        models::AttachmentEntity::Page => optional_entity(queries::get_page(conn, entity_id))?
             .map(|page| (page.identifier, page.project_id)),
         models::AttachmentEntity::Comment => {
-            match queries::comments::get_comment(conn, entity_id).ok() {
+            match optional_entity(queries::comments::get_comment(conn, entity_id))? {
                 None => None,
                 Some(comment) => {
                     let parent = match (comment.issue_id, comment.page_id) {
-                        (Some(issue_id), _) => queries::get_issue(conn, issue_id)
-                            .ok()
+                        (Some(issue_id), _) => optional_entity(queries::get_issue(conn, issue_id))?
                             .map(|issue| (issue.identifier, Some(issue.project_id))),
-                        (None, Some(page_id)) => queries::get_page(conn, page_id)
-                            .ok()
+                        (None, Some(page_id)) => optional_entity(queries::get_page(conn, page_id))?
                             .map(|page| (page.identifier, page.project_id)),
                         (None, None) => None,
                     };
@@ -4684,7 +4705,8 @@ fn attachment_link_label(
                 }
             }
         }
-    })
+    };
+    Ok(label)
 }
 
 // LIFIC-11: process-wide serialization lock for MCP tests. `MCP_REQUEST_USER`
@@ -6387,6 +6409,25 @@ mod tests {
     }
 
     #[test]
+    fn board_oversized_max_per_column_shows_every_issue() {
+        let (m, _guard) = mcp();
+        seed_project(&m, "Unbounded Board", "BCU");
+        m.create_issue(Parameters(CreateIssueInput {
+            project: "BCU".into(),
+            title: "still-visible".into(),
+            status: Some("todo".into()),
+            ..Default::default()
+        }));
+        let result = m.get_board(Parameters(GetBoardInput {
+            project: "BCU".into(),
+            max_per_column: Some(i64::MAX),
+            ..Default::default()
+        }));
+        assert!(result.contains("still-visible"), "got: {result}");
+        assert!(!result.contains("more (use list_issues)"), "got: {result}");
+    }
+
+    #[test]
     fn board_empty_done_group_produces_no_stub() {
         let (m, _guard) = mcp();
         seed_project(&m, "No Done", "BCE");
@@ -8051,7 +8092,7 @@ mod tests {
         seed_issue(&m, "PRJ", "Long thread");
         let _guard = seed_user(&m);
         let total = queries::DEFAULT_PAGE_LIMIT + 5;
-        seed_comment_trail(&m, total as usize);
+        seed_comment_trail(&m, usize::try_from(total).unwrap());
 
         let result = m.list_comments(Parameters(ListCommentsInput {
             identifier: "PRJ-1".into(),
@@ -11244,6 +11285,24 @@ mod tests {
     }
 
     #[test]
+    fn attachment_link_label_ignores_missing_entities_but_propagates_database_errors() {
+        let db = crate::db::open_memory().expect("test db");
+        let conn = db.write().unwrap();
+
+        assert!(
+            attachment_link_label(&conn, models::AttachmentEntity::Issue, 1)
+                .unwrap()
+                .is_none()
+        );
+
+        conn.execute("DROP TABLE issues", []).unwrap();
+        assert!(matches!(
+            attachment_link_label(&conn, models::AttachmentEntity::Issue, 1),
+            Err(crate::error::LificError::Database(_))
+        ));
+    }
+
+    #[test]
     fn upload_attachment_stores_bytes_and_returns_an_embeddable_snippet() {
         let (m, _tmp, _guard, _identity) = mcp_with_attachments();
         seed_project(&m, "Attach", "ATT");
@@ -11506,6 +11565,15 @@ mod tests {
             limit: None,
         })));
         assert!(past.contains("no lines at offset 9000 of 250"), "{past}");
+        let unrepresentable = text_of(&m.get_attachment(Parameters(GetAttachmentInput {
+            attachment_id: id,
+            offset: Some(i64::MAX),
+            limit: None,
+        })));
+        assert!(
+            unrepresentable.contains(&format!("no lines at offset {} of 250", i64::MAX)),
+            "{unrepresentable}"
+        );
     }
 
     #[test]
@@ -13113,7 +13181,7 @@ mod authz_gating_tests {
                 auth_state,
                 crate::auth::require_api_key,
             ))
-            .with_state(m.clone());
+            .with_state(m);
 
         async fn call_get(app: Router, uri: String, token: &str) -> String {
             let resp = app
@@ -13193,7 +13261,7 @@ mod authz_gating_tests {
         );
 
         let outsider_write = run(call_create(
-            app.clone(),
+            app,
             serde_json::json!({"project": "MEM", "title": "by token outsider"}),
             &outsider_token,
         ));

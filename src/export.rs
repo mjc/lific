@@ -1326,7 +1326,7 @@ mod tests {
 
             let output = scratch_dir("bundle-escape");
             let error = unpack_zip_to_directory(&archive, output.path())
-                .expect_err("'{escape}' should be rejected");
+                .expect_err(&format!("'{escape}' should be rejected"));
             assert!(
                 error.to_string().contains("outside the output directory"),
                 "unexpected error for '{escape}': {error}"
@@ -1355,7 +1355,7 @@ mod tests {
                 },
                 &output,
             )
-            .expect_err("'{escape}' should be rejected");
+            .expect_err(&format!("'{escape}' should be rejected"));
             assert!(
                 error.to_string().contains("outside the output directory"),
                 "unexpected error for '{escape}': {error}"

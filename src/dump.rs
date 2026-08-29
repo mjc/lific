@@ -231,6 +231,13 @@ fn snapshot_db(db_path: &Path, dest: &TempFile) -> Result<(), LificError> {
 }
 
 /// Set 0600 permissions on a file (owner-only) on Unix. No-op elsewhere.
+#[cfg_attr(
+    not(unix),
+    expect(
+        clippy::unnecessary_wraps,
+        reason = "keep one fallible cross-platform dump API"
+    )
+)]
 fn set_owner_only(path: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
@@ -245,6 +252,7 @@ fn set_owner_only(path: &Path) -> std::io::Result<()> {
 }
 
 /// Set 0600 on an already-open handle, so no pathname is resolved again.
+#[cfg_attr(not(unix), expect(clippy::unnecessary_wraps, reason = "fallible on Unix"))]
 fn set_owner_only_file(file: &File) -> std::io::Result<()> {
     #[cfg(unix)]
     {
@@ -259,6 +267,7 @@ fn set_owner_only_file(file: &File) -> std::io::Result<()> {
 }
 
 /// Set 0700 permissions on a directory (owner-only) on Unix. No-op elsewhere.
+#[cfg_attr(not(unix), expect(clippy::unnecessary_wraps, reason = "fallible on Unix"))]
 fn set_owner_only_dir(path: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
@@ -274,6 +283,7 @@ fn set_owner_only_dir(path: &Path) -> std::io::Result<()> {
 
 /// fsync a directory so a rename into it is durable. Unix only: Windows has no
 /// directory handle to sync, and its rename ordering does not need one.
+#[cfg_attr(not(unix), expect(clippy::unnecessary_wraps, reason = "fallible on Unix"))]
 fn sync_dir(path: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
@@ -606,8 +616,7 @@ fn open_verified_blob(path: &Path) -> Result<Option<VerifiedBlob>, LificError> {
         .modified()
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_secs());
 
     #[cfg(unix)]
     let identity = {
@@ -699,11 +708,7 @@ impl<R: Read> HashingReader<R> {
     }
 
     fn hex_digest(self) -> String {
-        self.hasher
-            .finalize()
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect()
+        crate::auth::hex_encode(&self.hasher.finalize())
     }
 }
 
@@ -718,6 +723,7 @@ impl<R: Read> Read for HashingReader<R> {
 /// Refuse to publish a dump onto a destination another user could have
 /// prepared: a symlink or hard link at the target, a symlinked parent, or a
 /// group/world-writable parent without the sticky bit.
+#[cfg_attr(not(unix), expect(clippy::unnecessary_wraps, reason = "fallible on Unix"))]
 fn validate_dump_destination(out_path: &Path) -> Result<(), LificError> {
     #[cfg(unix)]
     {
@@ -766,8 +772,7 @@ fn append_bytes<W: std::io::Write>(
     header.set_mtime(
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0),
+            .map_or(0, |d| d.as_secs()),
     );
     header.set_cksum();
     tar.append_data(&mut header, name, bytes)
@@ -989,8 +994,7 @@ fn hash_file(path: &Path) -> Result<String, LificError> {
         }
         digest.update(&buffer[..read]);
     }
-    let digest = digest.finalize();
-    Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
+    Ok(crate::auth::hex_encode(&digest.finalize()))
 }
 
 fn validate_attachment_schema(conn: &rusqlite::Connection) -> Result<(), LificError> {
@@ -1194,7 +1198,6 @@ fn validate_staged_database(
             if !crate::storage::valid_sha256(&sha)
                 || min_size < 0
                 || min_size != max_size
-                || max_size as u64 > limits.max_attachment_bytes
                 || invalid_mimes != 0
             {
                 return Err(LificError::BadRequest(
@@ -1202,7 +1205,18 @@ fn validate_staged_database(
                         .into(),
                 ));
             }
-            let size = max_size as u64;
+            let size = u64::try_from(max_size).map_err(|_| {
+                LificError::BadRequest(
+                    "staged attachment metadata has an invalid content address, MIME, or size"
+                        .into(),
+                )
+            })?;
+            if size > limits.max_attachment_bytes {
+                return Err(LificError::BadRequest(
+                    "staged attachment metadata has an invalid content address, MIME, or size"
+                        .into(),
+                ));
+            }
             let path = staging.join("attachments").join(&sha);
             let metadata = std::fs::metadata(&path).map_err(|_| {
                 LificError::BadRequest(format!(
@@ -1444,9 +1458,7 @@ fn read_manifest(archive: &Path, limits: &RestoreLimits) -> Result<Manifest, Lif
 /// may still be running (best-effort — see command help).
 fn wal_is_hot(db_path: &Path) -> bool {
     let wal = PathBuf::from(format!("{}-wal", db_path.display()));
-    std::fs::metadata(&wal)
-        .map(|m| m.len() > 0)
-        .unwrap_or(false)
+    std::fs::metadata(&wal).is_ok_and(|m| m.len() > 0)
 }
 
 /// Run `lific restore`: validate the archive, then stage-extract it into the
@@ -1489,8 +1501,7 @@ pub fn run_restore_with(
     let data_dir = db_path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("."));
+        .map_or_else(|| PathBuf::from("."), |p| p.to_path_buf());
     std::fs::create_dir_all(&data_dir)
         .map_err(|e| LificError::Internal(format!("create data dir: {e}")))?;
 
@@ -1650,8 +1661,7 @@ fn install_restore(
     db_path: &Path,
     restore_id: &str,
 ) -> Result<Option<PathBuf>, LificError> {
-    let mut moved_existing_to: Option<PathBuf> = None;
-    if db_path.exists() {
+    let moved_existing_to = if db_path.exists() {
         checkpoint_db_file(db_path)?;
         let dest = PathBuf::from(format!("{}.pre-restore-{restore_id}", db_path.display()));
         if std::fs::symlink_metadata(&dest).is_ok() {
@@ -1673,8 +1683,10 @@ fn install_restore(
                 return Err(rollback_moved_db(&dest, db_path, cause));
             }
         }
-        moved_existing_to = Some(dest);
-    }
+        Some(dest)
+    } else {
+        None
+    };
     let moved = moved_existing_to.clone();
     let fail = move |cause: LificError| fail_after_move(moved.as_deref(), db_path, cause);
 
@@ -2214,7 +2226,6 @@ mod tests {
 
         let (done_tx, done_rx) = sync_channel::<()>(1);
         let dumper = std::thread::spawn({
-            let db_path = db_path.clone();
             let out = out.clone();
             move || {
                 let result =
@@ -2268,7 +2279,6 @@ mod tests {
 
         let (done_tx, done_rx) = sync_channel::<()>(1);
         let restorer = std::thread::spawn({
-            let archive = archive.clone();
             let dst_db = dst_db.clone();
             move || {
                 let result = run_restore(&archive, &dst_db, false);

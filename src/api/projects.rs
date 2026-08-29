@@ -277,7 +277,7 @@ pub(super) async fn get_board(
             "module" => issue
                 .module_id
                 .and_then(|m| module_names.get(&m).cloned())
-                .unwrap_or("unassigned".into()),
+                .unwrap_or_else(|| "unassigned".into()),
             _ => issue.status.to_string(),
         };
         board.entry(key).or_default().push(issue);

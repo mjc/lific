@@ -455,6 +455,10 @@ mod tests {
     /// the gates — only `user` drives membership/admin checks). Mirrors what
     /// [`crate::resolve_caller`] produces in production for a credential that
     /// already names a user.
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "test helper mirrors the optional production identity API"
+    )]
     fn id(user: AuthUser) -> Option<ResolvedIdentity> {
         Some(ResolvedIdentity {
             user,
@@ -470,12 +474,7 @@ mod tests {
         queries::users::first_admin(conn)
             .unwrap()
             .map(|admin| ResolvedIdentity {
-                user: AuthUser {
-                    id: admin.id,
-                    username: admin.username,
-                    display_name: admin.display_name,
-                    is_admin: admin.is_admin,
-                },
+                user: admin,
                 transport: Transport::Api,
             })
     }
@@ -591,7 +590,7 @@ mod tests {
 
         assert!(require_role_conn(&conn, &id(viewer.clone()), project, Role::Viewer).is_ok());
         assert!(require_role_conn(&conn, &id(viewer.clone()), project, Role::Maintainer).is_err());
-        assert!(require_role_conn(&conn, &id(viewer.clone()), project, Role::Lead).is_err());
+        assert!(require_role_conn(&conn, &id(viewer), project, Role::Lead).is_err());
     }
 
     #[test]
@@ -607,7 +606,7 @@ mod tests {
         assert!(
             require_role_conn(&conn, &id(maintainer.clone()), project, Role::Maintainer).is_ok()
         );
-        assert!(require_role_conn(&conn, &id(maintainer.clone()), project, Role::Lead).is_err());
+        assert!(require_role_conn(&conn, &id(maintainer), project, Role::Lead).is_err());
     }
 
     #[test]
@@ -709,7 +708,7 @@ mod tests {
         let project = seed_project(&conn, "LGO"); // unowned
 
         let identity = first_admin_identity(&conn).expect("first admin resolves");
-        assert!(require_role_conn(&conn, &Some(identity.clone()), project, Role::Lead).is_ok());
+        assert!(require_role_conn(&conn, &Some(identity), project, Role::Lead).is_ok());
         assert!(require_role_conn(&conn, &None, project, Role::Lead).is_err());
     }
 
@@ -754,9 +753,9 @@ mod tests {
         .unwrap()
         .id;
 
-        assert!(require_role_conn(&conn, &id(lead.clone()), project, Role::Lead).is_ok());
-        assert!(require_role_conn(&conn, &id(admin.clone()), project, Role::Lead).is_ok());
-        assert!(require_role_conn(&conn, &id(regular.clone()), project, Role::Lead).is_err());
+        assert!(require_role_conn(&conn, &id(lead), project, Role::Lead).is_ok());
+        assert!(require_role_conn(&conn, &id(admin), project, Role::Lead).is_ok());
+        assert!(require_role_conn(&conn, &id(regular), project, Role::Lead).is_err());
         assert!(require_role_conn(&conn, &None, project, Role::Lead).is_err());
 
         // Additive: a co-lead granted purely via project_members (no
@@ -926,7 +925,7 @@ mod tests {
         );
         // The resolved-first-admin identity an unbound key produces is unrestricted.
         assert_eq!(
-            visible_project_ids(&pool, &Some(identity.clone())).unwrap(),
+            visible_project_ids(&pool, &Some(identity)).unwrap(),
             None,
             "resolved-first-admin (unbound key) sees all projects"
         );

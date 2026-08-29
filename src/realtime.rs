@@ -224,6 +224,7 @@ impl RealtimeHub {
         }
         *count += 1;
         connections.total += 1;
+        drop(connections);
         Some(SocketPermit {
             connections: Arc::clone(&self.connections),
             user_id,
@@ -1466,7 +1467,7 @@ mod tests {
         assert!(hub.try_acquire_socket(7).is_none());
 
         // Dropping one slot frees exactly one.
-        slots.pop();
+        drop(slots.pop());
         assert!(hub.try_acquire_socket(7).is_some());
     }
 

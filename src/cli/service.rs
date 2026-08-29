@@ -118,8 +118,7 @@ pub fn detect() -> Option<Manager> {
         let ok = Command::new("systemctl")
             .args(["--user", "show", "--property=Version"])
             .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
+            .is_ok_and(|o| o.status.success());
         if ok {
             return Some(Manager::SystemdUser);
         }
@@ -252,6 +251,10 @@ fn xml_escape(s: &str) -> String {
 /// public enum: a caller can construct `Launchd` on any platform, and a
 /// wrong-platform request deserves a message, not a panic.
 #[cfg(unix)]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "the non-unix implementation can fail and callers are platform-neutral"
+)]
 fn launchd_domain() -> Result<String, String> {
     // POSIX guarantees getuid() always succeeds and sets no errno.
     Ok(format!("gui/{}", unsafe { libc::getuid() }))
@@ -315,8 +318,7 @@ pub fn install(manager: Manager, plan: &ServicePlan) -> Result<InstallReport, St
             let linger = Command::new("loginctl")
                 .arg("enable-linger")
                 .status()
-                .map(|s| s.success())
-                .unwrap_or(false);
+                .is_ok_and(|s| s.success());
             Ok(InstallReport {
                 manager: manager.label().into(),
                 definition: path.display().to_string(),
@@ -385,13 +387,11 @@ pub fn status(manager: Manager) -> Result<StatusReport, String> {
         Manager::SystemdUser => Command::new("systemctl")
             .args(["--user", "is-active", "--quiet", SYSTEMD_UNIT_NAME])
             .status()
-            .map(|s| s.success())
-            .unwrap_or(false),
+            .is_ok_and(|s| s.success()),
         Manager::Launchd => Command::new("launchctl")
             .args(["print", &format!("{}/{LAUNCHD_LABEL}", launchd_domain()?)])
             .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false),
+            .is_ok_and(|o| o.status.success()),
     };
     Ok(StatusReport {
         manager: manager.label().into(),
