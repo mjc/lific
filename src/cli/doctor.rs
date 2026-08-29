@@ -631,6 +631,17 @@ fn initialize_body() -> serde_json::Value {
     })
 }
 
+fn parse_mcp_response_body(body: &str) -> Result<serde_json::Value, String> {
+    if let Ok(value) = serde_json::from_str(body) {
+        return Ok(value);
+    }
+
+    body.lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .find_map(|data| serde_json::from_str(data).ok())
+        .ok_or_else(|| "response was neither JSON nor an SSE JSON event".to_string())
+}
+
 /// `POST {base}/mcp` an `initialize`. Without a key we expect a 401 carrying a
 /// `WWW-Authenticate` header (auth enforced, discovery advertised). With a key
 /// we expect a 200 whose JSON-RPC result contains `serverInfo`.
@@ -697,41 +708,47 @@ pub async fn check_mcp(client: &reqwest::Client, base: &str, key: Option<&str>) 
                     format!("initialize returned HTTP {}", status.as_u16()),
                 );
             }
-            // json_response mode: the body is a plain JSON-RPC envelope.
-            match resp.json::<serde_json::Value>().await {
-                Ok(body) => {
-                    if body
-                        .get("result")
-                        .and_then(|r| r.get("serverInfo"))
-                        .is_some()
-                    {
-                        let name = body
-                            .pointer("/result/serverInfo/name")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("lific");
-                        Check::new(
-                            "mcp",
-                            Status::Pass,
-                            format!("authorized initialize succeeded (serverInfo: {name})"),
-                        )
-                    } else if body.get("error").is_some() {
-                        Check::new(
-                            "mcp",
-                            Status::Fail,
-                            format!("initialize returned a JSON-RPC error: {}", body["error"]),
-                        )
-                    } else {
-                        Check::new(
-                            "mcp",
-                            Status::Fail,
-                            "200 but result had no serverInfo",
-                        )
+            match resp.text().await {
+                Ok(body) => match parse_mcp_response_body(&body) {
+                    Ok(body) => {
+                        if body
+                            .get("result")
+                            .and_then(|r| r.get("serverInfo"))
+                            .is_some()
+                        {
+                            let name = body
+                                .pointer("/result/serverInfo/name")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("lific");
+                            Check::new(
+                                "mcp",
+                                Status::Pass,
+                                format!("authorized initialize succeeded (serverInfo: {name})"),
+                            )
+                        } else if body.get("error").is_some() {
+                            Check::new(
+                                "mcp",
+                                Status::Fail,
+                                format!("initialize returned a JSON-RPC error: {}", body["error"]),
+                            )
+                        } else {
+                            Check::new(
+                                "mcp",
+                                Status::Fail,
+                                "200 but result had no serverInfo",
+                            )
+                        }
                     }
-                }
+                    Err(e) => Check::new(
+                        "mcp",
+                        Status::Fail,
+                        format!("200 but body was not JSON: {e}"),
+                    ),
+                },
                 Err(e) => Check::new(
                     "mcp",
                     Status::Fail,
-                    format!("200 but body was not JSON: {e}"),
+                    format!("could not read initialize response: {e}"),
                 ),
             }
         }
