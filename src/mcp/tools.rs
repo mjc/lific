@@ -3230,7 +3230,7 @@ impl LificMcp {
                 };
                 // LIF-102: default the project lead to the MCP caller so the
                 // project isn't left unowned. Validate the user actually exists
-                // in this DB before assigning — MCP_REQUEST_USER is a process-
+                // in this DB before assigning — the MCP request context is a process-
                 // global static and can hold stale state from prior sessions.
                 let lead_user_id = super::current_auth_user().and_then(|u| {
                     self.read(|conn| {
@@ -4671,8 +4671,9 @@ fn attachment_link_label(
     })
 }
 
-// LIFIC-11: process-wide serialization lock for MCP tests. `MCP_REQUEST_USER`
-// is a static shared across every concurrently-running test; before `mcp_gate`'s
+// LIFIC-11: process-wide serialization lock for MCP tests. The MCP request
+// context is a static shared across every concurrently-running test; before
+// `mcp_gate`'s
 // legacy short-circuit was removed, gated mutations never read it, so the
 // sharing was harmless. Now they do (gates resolve the caller via
 // `resolve_caller`), so a direct-call test reading `None` can race a concurrent
@@ -6943,7 +6944,7 @@ mod tests {
     /// Set the authenticated user context so `add_comment` works in tests
     /// that call MCP tool methods directly (no request/response cycle).
     ///
-    /// `MCP_REQUEST_USER` is a process-wide static (see `mcp::mod`'s doc
+    /// The MCP request context is process-wide (see `mcp::mod`'s doc
     /// comment), so mutating it here races against every OTHER test in the
     /// binary that reads it — including via `LificMcp::write()`'s actor
     /// stamping, which EVERY write-tool test triggers, not just comment
@@ -6970,15 +6971,12 @@ mod tests {
         )
         .unwrap();
         drop(conn);
-        *crate::mcp::MCP_REQUEST_USER
-            .lock()
-            .unwrap_or_else(|e: std::sync::PoisonError<_>| e.into_inner()) =
-            Some(models::AuthUser {
-                id: user.id,
-                username: user.username.clone(),
-                display_name: user.display_name,
-                is_admin: user.is_admin,
-            });
+        crate::mcp::set_request_user_for_test(Some(models::AuthUser {
+            id: user.id,
+            username: user.username.clone(),
+            display_name: user.display_name,
+            is_admin: user.is_admin,
+        }));
         guard
     }
 
@@ -6994,9 +6992,7 @@ mod tests {
     /// `seed_user` (they'd re-acquire the non-reentrant lock and deadlock).
     fn first_admin_guard() -> tokio::sync::MutexGuard<'static, ()> {
         let guard = crate::mcp::MCP_HANDLER_LOCK.blocking_lock();
-        *crate::mcp::MCP_REQUEST_USER
-            .lock()
-            .unwrap_or_else(|e: std::sync::PoisonError<_>| e.into_inner()) = None;
+        crate::mcp::set_request_user_for_test(None);
         guard
     }
 
@@ -7127,7 +7123,7 @@ mod tests {
     fn create_issue_links_attachments_referenced_in_description() {
         let (m, _guard) = mcp();
         // Pin the caller to the operator (first admin) and serialize against
-        // every other writer of the process-wide MCP_REQUEST_USER: which
+        // every other writer of the process-wide MCP request context: which
         // attachment references may be linked now depends on who the caller
         // is, so a stale identity from a concurrent `act_as`/`seed_user` test
         // silently filters the link this test is asserting. Same reasoning as
@@ -7152,7 +7148,7 @@ mod tests {
     fn update_issue_reconciles_attachment_links() {
         let (m, _guard) = mcp();
         // Pin the caller to the operator (first admin) and serialize against
-        // every other writer of the process-wide MCP_REQUEST_USER: which
+        // every other writer of the process-wide MCP request context: which
         // attachment references may be linked now depends on who the caller
         // is, so a stale identity from a concurrent `act_as`/`seed_user` test
         // silently filters the link this test is asserting. Same reasoning as
@@ -7186,7 +7182,7 @@ mod tests {
     fn edit_issue_links_attachments_added_by_the_edit() {
         let (m, _guard) = mcp();
         // Pin the caller to the operator (first admin) and serialize against
-        // every other writer of the process-wide MCP_REQUEST_USER: which
+        // every other writer of the process-wide MCP request context: which
         // attachment references may be linked now depends on who the caller
         // is, so a stale identity from a concurrent `act_as`/`seed_user` test
         // silently filters the link this test is asserting. Same reasoning as
@@ -7223,7 +7219,7 @@ mod tests {
     fn create_page_links_attachments_referenced_in_content() {
         let (m, _guard) = mcp();
         // Pin the caller to the operator (first admin) and serialize against
-        // every other writer of the process-wide MCP_REQUEST_USER: which
+        // every other writer of the process-wide MCP request context: which
         // attachment references may be linked now depends on who the caller
         // is, so a stale identity from a concurrent `act_as`/`seed_user` test
         // silently filters the link this test is asserting. Same reasoning as
@@ -7248,7 +7244,7 @@ mod tests {
     fn update_page_reconciles_attachment_links() {
         let (m, _guard) = mcp();
         // Pin the caller to the operator (first admin) and serialize against
-        // every other writer of the process-wide MCP_REQUEST_USER: which
+        // every other writer of the process-wide MCP request context: which
         // attachment references may be linked now depends on who the caller
         // is, so a stale identity from a concurrent `act_as`/`seed_user` test
         // silently filters the link this test is asserting. Same reasoning as
@@ -7282,7 +7278,7 @@ mod tests {
     fn edit_page_links_attachments_added_by_the_edit() {
         let (m, _guard) = mcp();
         // Pin the caller to the operator (first admin) and serialize against
-        // every other writer of the process-wide MCP_REQUEST_USER: which
+        // every other writer of the process-wide MCP request context: which
         // attachment references may be linked now depends on who the caller
         // is, so a stale identity from a concurrent `act_as`/`seed_user` test
         // silently filters the link this test is asserting. Same reasoning as
@@ -7866,15 +7862,13 @@ mod tests {
         seed_issue(&m, "PRJ", "Test issue");
 
         // mcp() already seeded the first admin; here we deliberately do NOT set
-        // MCP_REQUEST_USER — simulating a stdio/local-auth session with no
+        // a request user — simulating a stdio/local-auth session with no
         // bound user. Clear any leftover auth context. Holds MCP_HANDLER_LOCK
         // (see `seed_user`'s doc comment) so this "clear, then rely on it
         // staying None" window can't be raced by a concurrently-running
         // `with_request_user` caller in another test.
         let _guard = crate::mcp::MCP_HANDLER_LOCK.blocking_lock();
-        *crate::mcp::MCP_REQUEST_USER
-            .lock()
-            .unwrap_or_else(|e: std::sync::PoisonError<_>| e.into_inner()) = None;
+        crate::mcp::set_request_user_for_test(None);
 
         let result = m.add_comment(Parameters(AddCommentInput {
             identifier: "PRJ-1".into(),
@@ -9395,21 +9389,18 @@ mod tests {
 
     // ── LIF-143: edit_comment / delete_comment ─────────────────────────────
 
-    /// Set `MCP_REQUEST_USER` to `user` (identity for the acting-user
+    /// Set the request identity to `user` (identity for the acting-user
     /// resolution in edit/delete_comment) and hand the handler lock back so
     /// the caller holds it for its whole body — same discipline as
     /// `seed_user`. Create a fresh user first, then call this.
     fn act_as(user: &models::User) -> tokio::sync::MutexGuard<'static, ()> {
         let guard = crate::mcp::MCP_HANDLER_LOCK.blocking_lock();
-        *crate::mcp::MCP_REQUEST_USER
-            .lock()
-            .unwrap_or_else(|e: std::sync::PoisonError<_>| e.into_inner()) =
-            Some(models::AuthUser {
-                id: user.id,
-                username: user.username.clone(),
-                display_name: user.display_name.clone(),
-                is_admin: user.is_admin,
-            });
+        crate::mcp::set_request_user_for_test(Some(models::AuthUser {
+            id: user.id,
+            username: user.username.clone(),
+            display_name: user.display_name.clone(),
+            is_admin: user.is_admin,
+        }));
         guard
     }
 
@@ -10164,7 +10155,7 @@ mod tests {
     /// Regression (LIF-155): rmcp executes tools on internally-spawned
     /// tasks, where tokio task-locals set around `service.handle()` are
     /// invisible. Attribution must therefore come from the serialized
-    /// MCP_REQUEST_USER global via LificMcp::write()'s explicit re-stamp.
+    /// request context via LificMcp::write()'s explicit re-stamp.
     /// This test reproduces the boundary with a literal tokio::spawn.
     #[tokio::test]
     async fn mcp_attribution_survives_task_spawn() {
@@ -10900,7 +10891,7 @@ mod tests {
     ///
     /// The trailing `first_admin_guard` is load-bearing: the attachment tools
     /// resolve the caller (uploader attribution, read gates), so a stale
-    /// `MCP_REQUEST_USER` left by another test would attribute the upload to a
+    /// request context left by another test would attribute the upload to a
     /// user id that does not exist in this test's database and trip the
     /// `attachments.uploader_id` foreign key.
     #[allow(clippy::type_complexity)]

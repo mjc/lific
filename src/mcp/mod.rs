@@ -161,18 +161,16 @@ where
 /// Acceptable throughput cost for a local-first, single-user tool.
 static MCP_HANDLER_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// Per-request user identity storage.
-/// Protected from races by MCP_HANDLER_LOCK ensuring serial access.
-/// Uses unwrap_or_else to recover from poison (e.g. if a handler panics).
-static MCP_REQUEST_USER: Mutex<Option<AuthUser>> = Mutex::new(None);
-
-/// Per-request external origin used for structured resource links.
-/// Protected by [`MCP_HANDLER_LOCK`] for the same reason as the identity state.
-static MCP_REQUEST_ISSUE_LINKS: Mutex<Option<Arc<IssueLinkContext>>> = Mutex::new(None);
+/// The process-wide request context used by MCP tool dispatch.
+///
+/// Identity and link-origin metadata must be installed and cleared together:
+/// both describe the same request, and [`MCP_HANDLER_LOCK`] serializes access
+/// to the context for the lifetime of that request.
+static MCP_REQUEST_CONTEXT: Mutex<Option<McpRequestContext>> = Mutex::new(None);
 
 #[cfg(test)]
 tokio::task_local! {
-    static TEST_REQUEST_ISSUE_LINKS: Option<Arc<IssueLinkContext>>;
+    static TEST_REQUEST_CONTEXT: Option<McpRequestContext>;
 }
 
 #[cfg(test)]
@@ -209,27 +207,24 @@ where
     Fut: std::future::Future<Output = R>,
 {
     let _guard = MCP_HANDLER_LOCK.lock().await;
-    let issue_links = issue_links.map(Arc::new);
+    let request_context = McpRequestContext::new(user, issue_links);
     #[cfg(test)]
-    let test_issue_links = issue_links.clone();
+    let test_request_context = request_context.clone();
     let actor = crate::actor::ActorCtx {
-        user_id: user.as_ref().map(|u| u.id),
+        user_id: request_context.user.as_ref().map(|u| u.id),
         transport: crate::actor::Transport::Mcp,
     };
-    *MCP_REQUEST_USER
+    *MCP_REQUEST_CONTEXT
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = user;
-    *MCP_REQUEST_ISSUE_LINKS
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = issue_links;
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(request_context);
     // Panic-safe cleanup: clear the globals on scope exit (including if `f`
     // panics), before `_guard` releases MCP_HANDLER_LOCK (reverse declaration
     // order). Without this, a panicking request would leave a stale user in the
     // process-wide global for the next (concurrent) test to read.
     let _clear = RequestGlobalGuard;
     #[cfg(test)]
-    let result = TEST_REQUEST_ISSUE_LINKS
-        .scope(test_issue_links, crate::actor::scope(actor, f()))
+    let result = TEST_REQUEST_CONTEXT
+        .scope(Some(test_request_context), crate::actor::scope(actor, f()))
         .await;
     #[cfg(not(test))]
     let result = crate::actor::scope(actor, f()).await;
@@ -242,10 +237,7 @@ where
 struct RequestGlobalGuard;
 impl Drop for RequestGlobalGuard {
     fn drop(&mut self) {
-        *MCP_REQUEST_USER
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
-        *MCP_REQUEST_ISSUE_LINKS
+        *MCP_REQUEST_CONTEXT
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
     }
@@ -258,12 +250,15 @@ impl Drop for RequestGlobalGuard {
 #[derive(Clone, Default)]
 pub(crate) struct McpRequestContext {
     user: Option<AuthUser>,
-    issue_links: Option<IssueLinkContext>,
+    issue_links: Option<Arc<IssueLinkContext>>,
 }
 
 impl McpRequestContext {
     pub(crate) fn new(user: Option<AuthUser>, issue_links: Option<IssueLinkContext>) -> Self {
-        Self { user, issue_links }
+        Self {
+            user,
+            issue_links: issue_links.map(Arc::new),
+        }
     }
 
     fn from_transport(context: &rmcp::service::RequestContext<rmcp::service::RoleServer>) -> Self {
@@ -278,10 +273,27 @@ impl McpRequestContext {
 
 /// Get the authenticated user for the current MCP request, if any.
 pub(crate) fn current_auth_user() -> Option<AuthUser> {
-    MCP_REQUEST_USER
+    current_request_context().and_then(|context| context.user)
+}
+
+/// Get the complete process-wide context for the current MCP request.
+///
+/// Returning one cloneable value keeps identity and link-origin metadata
+/// coupled at every read site, instead of making callers coordinate two
+/// independent globals.
+fn current_request_context() -> Option<McpRequestContext> {
+    MCP_REQUEST_CONTEXT
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clone()
+}
+
+#[cfg(test)]
+pub(crate) fn set_request_user_for_test(user: Option<AuthUser>) {
+    *MCP_REQUEST_CONTEXT
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+        user.map(|user| McpRequestContext::new(Some(user), None));
 }
 
 /// The `LIFIC_TOKEN` a stdio MCP session was launched with, plus what it takes
@@ -360,15 +372,12 @@ pub(crate) fn current_issue_link_context() -> Option<Arc<IssueLinkContext>> {
     #[cfg(test)]
     {
         TEST_ISSUE_LINK_CONTEXT_READS.set(TEST_ISSUE_LINK_CONTEXT_READS.get() + 1);
-        TEST_REQUEST_ISSUE_LINKS
-            .try_with(Clone::clone)
+        TEST_REQUEST_CONTEXT
+            .try_with(|context| context.as_ref().and_then(|context| context.issue_links.clone()))
             .unwrap_or(None)
     }
     #[cfg(not(test))]
-    MCP_REQUEST_ISSUE_LINKS
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .clone()
+    current_request_context().and_then(|context| context.issue_links)
 }
 
 #[cfg(test)]
@@ -486,7 +495,12 @@ impl LificMcp {
                 return Ok(R::from(StdioAuthFailed.into_tool_result()));
             }
         };
-        with_request_context(user, request_context.issue_links, f).await
+        with_request_context(
+            user,
+            request_context.issue_links.as_deref().cloned(),
+            f,
+        )
+        .await
     }
 
     #[cfg(test)]
@@ -533,7 +547,8 @@ impl LificMcp {
     /// LIF-155: re-stamp the audit actor from the MCP request-user global.
     /// The task-local stamped by `DbPool::write()` does NOT survive rmcp's
     /// internal task spawns (verified in production: tool writes attributed
-    /// to 'system'), but `MCP_REQUEST_USER` does — it's a global guarded by
+    /// to 'system'), but the process-wide MCP request context does — it is
+    /// guarded by
     /// the serialization lock, so it is exactly this request's identity.
     fn stamp_request_actor(conn: &rusqlite::Connection) {
         let user = current_auth_user();
@@ -1057,10 +1072,11 @@ mod tests {
                 .expect("request origin should be visible")
                 .issue_markdown("LIF-1")
                 .to_string();
-            let global = MCP_REQUEST_ISSUE_LINKS
+            let global = MCP_REQUEST_CONTEXT
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .clone()
+                .as_ref()
+                .and_then(|context| context.issue_links.clone())
                 .expect("production request context should also be populated")
                 .issue_markdown("LIF-1")
                 .to_string();
@@ -1075,11 +1091,36 @@ mod tests {
         assert_eq!(global_seen, seen);
         assert!(current_issue_link_context().is_none());
         assert!(
-            MCP_REQUEST_ISSUE_LINKS
+            MCP_REQUEST_CONTEXT
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn request_context_exposes_identity_and_links_as_one_snapshot() {
+        let user = AuthUser {
+            id: 7,
+            username: "snapshot-user".into(),
+            display_name: "Snapshot User".into(),
+            is_admin: false,
+        };
+        let expected_links = IssueLinkContext::parse("https://tracker.example/base");
+
+        let seen = with_request_context(Some(user.clone()), expected_links, || async {
+            current_request_context().expect("active MCP request context")
+        })
+        .await;
+
+        assert_eq!(seen.user, Some(user));
+        assert_eq!(
+            seen.issue_links
+                .as_ref()
+                .map(|links| links.issue_markdown("LIF-1").to_string()),
+            Some("[LIF-1](https://tracker.example/base/LIF/issues/LIF-1)".into())
+        );
+        assert!(current_request_context().is_none());
     }
 
     // End-to-end: a credential-less MCP request resolves to the first admin
