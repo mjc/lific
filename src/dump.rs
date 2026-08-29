@@ -194,12 +194,29 @@ pub(crate) fn staging_is_locked(path: &Path) -> bool {
 /// Take a consistent snapshot of the live DB into the already-reserved staging
 /// file `dest`.
 ///
-/// The SQLite online backup API runs on a read connection, holds no long
-/// writer lock, and copies into a file this process created with
-/// `O_CREAT|O_EXCL|O_NOFOLLOW` — so, unlike `VACUUM INTO`, nothing resolves a
-/// pathname a second time between reserving the destination and writing it.
-fn snapshot_db(pool: &DbPool, dest: &TempFile) -> Result<(), LificError> {
-    let conn = pool.read()?;
+/// The SQLite online backup API holds no long writer lock and copies into a
+/// file this process created with `O_CREAT|O_EXCL|O_NOFOLLOW` — so, unlike
+/// `VACUUM INTO`, nothing resolves a pathname a second time between reserving
+/// the destination and writing it.
+///
+/// The source is a dedicated read-only connection opened here and dropped when
+/// the snapshot finishes, not a pooled reader. Pooled connections carry
+/// `mmap_size = 64MB` and never close, and the backup API reads the entire
+/// database — so routing snapshots through the pool faulted each reader's full
+/// mmap window into RSS permanently. On the production instance that cost
+/// ~430MB of resident double-counted page-cache mappings (one 64MB window per
+/// reader the 30-minute backup task had ever touched). A short-lived source
+/// connection with SQLite's default `mmap_size = 0` reads through plain I/O
+/// and gives every page back when it closes; the pooled readers only ever map
+/// what their own queries touch.
+fn snapshot_db(db_path: &Path, dest: &TempFile) -> Result<(), LificError> {
+    let conn = rusqlite::Connection::open_with_flags(
+        db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
+    )
+    .map_err(|e| LificError::Internal(format!("open snapshot source connection: {e}")))?;
+    conn.busy_timeout(std::time::Duration::from_millis(5000))
+        .map_err(|e| LificError::Internal(format!("set snapshot busy timeout: {e}")))?;
     let mut destination = rusqlite::Connection::open_with_flags(
         dest.path(),
         rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
@@ -350,8 +367,9 @@ pub fn write_dump(pool: &DbPool, db_path: &Path, out_path: &Path) -> Result<Mani
     // delete or GC sweep landing between the snapshot and the scan would
     // otherwise produce an archive whose database references a blob the
     // archive does not contain, or whose blob bytes no longer match the hash
-    // that was verified. Store lock first, then the DB read connection inside
-    // `snapshot_db`, which is the ordering every other caller uses.
+    // that was verified. Store lock first, then the dedicated snapshot
+    // connection inside `snapshot_db`; the pool is only used for metadata
+    // queries after the snapshot exists.
     let store = crate::storage::AttachmentStore::from_db_path(db_path);
     store.with_lock(|_| write_dump_locked(pool, db_path, out_path))
 }
@@ -385,7 +403,7 @@ fn write_dump_locked(
         .map_err(|e| LificError::Internal(format!("mark dump staging active: {e}")))?;
 
     let tmp_db = TempFile::create(staging.path().join("dbsnapshot"))?;
-    snapshot_db(pool, &tmp_db)?;
+    snapshot_db(db_path, &tmp_db)?;
     refresh_activity(&activity.file)
         .map_err(|e| LificError::Internal(format!("refresh dump staging activity: {e}")))?;
 

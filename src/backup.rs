@@ -200,6 +200,35 @@ fn run_backup(
     // the dump failure path above returns early, so history is never dropped
     // by a cycle that failed to preserve it first.
     prune_audit_log(pool, audit_retention_days);
+
+    trim_retained_heap();
+}
+
+/// Hand freed heap back to the OS after each backup cycle (glibc only).
+///
+/// glibc's malloc never returns freed sub-128KB chunks to the kernel on its
+/// own: each request burst (a project export, a sync-index bootstrap, an
+/// attachment round-trip) ratchets some arena's high-water mark up, and the
+/// freed memory then sits in that arena's free lists forever. Profiling the
+/// production instance after six days of agent traffic found 448MB of
+/// freed-but-retained heap across 22 arenas against 27MB of live objects.
+///
+/// `malloc_trim(0)` walks every arena and releases its free chunks back to
+/// the kernel (`MADV_DONTNEED`), which is exactly the memory described above.
+/// The backup task is a convenient heartbeat for it: every cycle, off the
+/// request path, on a blocking thread. The call is process-wide, costs
+/// milliseconds at this heap size, and is a no-op for whatever is actually
+/// live.
+///
+/// Gated to `linux + gnu`: musl, macOS, and Windows allocators don't have the
+/// arena-retention behavior (or the function).
+fn trim_retained_heap() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    // SAFETY: malloc_trim has no preconditions; it takes the arena locks
+    // itself and is safe to call from any thread at any time.
+    unsafe {
+        libc::malloc_trim(0);
+    }
 }
 
 /// Delete `audit_log` rows older than the configured retention window
