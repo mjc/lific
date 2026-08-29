@@ -1329,30 +1329,6 @@ mod authless_mcp_tests {
         (status, headers, body.to_vec())
     }
 
-    fn jsonrpc_body(body: &[u8]) -> serde_json::Value {
-        if let Ok(value) = serde_json::from_slice(body) {
-            return value;
-        }
-        let text = std::str::from_utf8(body).expect("MCP body must be UTF-8");
-        text.lines()
-            .filter_map(|line| line.strip_prefix("data: "))
-            .find_map(|data| serde_json::from_str(data).ok())
-            .unwrap_or_else(|| panic!("MCP body contained no JSON-RPC message: {text}"))
-    }
-
-    fn assert_object_keys(value: &serde_json::Value, expected: &[&str]) {
-        let mut actual: Vec<_> = value
-            .as_object()
-            .expect("expected JSON object")
-            .keys()
-            .map(String::as_str)
-            .collect();
-        actual.sort_unstable();
-        let mut expected = expected.to_vec();
-        expected.sort_unstable();
-        assert_eq!(actual, expected);
-    }
-
     fn assert_server_implementation(value: &serde_json::Value) {
         assert_eq!(value["name"], "lific");
         assert_eq!(value["version"], env!("CARGO_PKG_VERSION"));
@@ -1665,10 +1641,14 @@ mod authless_mcp_tests {
         assert_eq!(first.2, second.2, "tools/list must be byte-stable");
         let list = jsonrpc_body(&first.2);
         let result = &list["result"];
-        assert_object_keys(result, &["resultType", "ttlMs", "cacheScope", "tools"]);
+        assert_object_keys(
+            result,
+            &["resultType", "ttlMs", "cacheScope", "tools", "_meta"],
+        );
         assert_eq!(result["resultType"], "complete");
         assert_eq!(result["ttlMs"], 3_600_000);
         assert_eq!(result["cacheScope"], "public");
+        assert_server_implementation(&result["_meta"]["io.modelcontextprotocol/serverInfo"]);
         assert_tool_catalog(&result["tools"]);
         assert_eq!(
             result["tools"]
@@ -1750,87 +1730,6 @@ mod authless_mcp_tests {
 
         let res = router.oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
-    }
-
-    #[tokio::test]
-    async fn authless_path_rejects_disallowed_origin() {
-        let pool = db::open_memory().unwrap();
-        let token = "origin-token-abcdef";
-        let router = build_authless_mcp_router(
-            pool,
-            token,
-            None,
-            vec!["localhost".into()],
-            crate::mcp::default_allowed_origins(),
-            None,
-            realtime::RealtimeHub::new(),
-        );
-
-        let req = Request::builder()
-            .method(Method::POST)
-            .uri(format!("/mcp/{token}"))
-            .header("host", "localhost")
-            .header("origin", "https://evil.example")
-            .header("content-type", "application/json")
-            .header("accept", "application/json, text/event-stream")
-            .body(initialize_body())
-            .unwrap();
-
-        let res = router.oneshot(req).await.unwrap();
-        assert_eq!(res.status(), StatusCode::FORBIDDEN);
-    }
-
-    #[tokio::test]
-    async fn incomplete_request_does_not_block_an_independent_mcp_request() {
-        let pool = db::open_memory().unwrap();
-        let token = "independent-request-token";
-        let router = build_authless_mcp_router(
-            pool,
-            token,
-            None,
-            vec!["localhost".into()],
-            crate::mcp::default_allowed_origins(),
-            None,
-            realtime::RealtimeHub::new(),
-        );
-
-        let (body_polled_tx, body_polled_rx) = tokio::sync::oneshot::channel();
-        let mut body_polled_tx = Some(body_polled_tx);
-        let stalled_body = futures_util::stream::poll_fn(move |_| {
-            if let Some(sender) = body_polled_tx.take() {
-                let _ = sender.send(());
-            }
-            std::task::Poll::<Option<Result<Bytes, Infallible>>>::Pending
-        });
-        let stalled_request = Request::builder()
-            .method(Method::POST)
-            .uri(format!("/mcp/{token}"))
-            .header("host", "localhost")
-            .header("content-type", "application/json")
-            .header("accept", "application/json, text/event-stream")
-            .body(Body::from_stream(stalled_body))
-            .unwrap();
-        let stalled = tokio::spawn(router.clone().oneshot(stalled_request));
-        body_polled_rx.await.expect("server polled stalled body");
-
-        let valid_request = Request::builder()
-            .method(Method::POST)
-            .uri(format!("/mcp/{token}"))
-            .header("host", "localhost")
-            .header("content-type", "application/json")
-            .header("accept", "application/json, text/event-stream")
-            .body(initialize_body())
-            .unwrap();
-        let response = tokio::time::timeout(
-            std::time::Duration::from_millis(250),
-            router.oneshot(valid_request),
-        )
-        .await
-        .expect("an incomplete request must not serialize independent MCP traffic")
-        .unwrap();
-        stalled.abort();
-
-        assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[tokio::test]

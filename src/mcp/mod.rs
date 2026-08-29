@@ -29,6 +29,7 @@ const SUPPORTED_PROTOCOL_VERSIONS: &[ProtocolVersion] = &[
 /// Legacy clients still negotiate an initialize session and receive
 /// `Mcp-Session-Id` on the HTTP response.
 #[must_use]
+#[allow(dead_code)] // Retained for the pre-July foundation transport.
 pub(crate) fn legacy_streamable_http_config<I, S, J, T>(
     allowed_hosts: I,
     allowed_origins: J,
@@ -167,17 +168,6 @@ pub(crate) fn streamable_http_config(
         .with_allowed_origins(allowed_origins)
 }
 
-pub(crate) fn default_allowed_origins() -> Vec<String> {
-    ["http://localhost", "http://127.0.0.1", "http://[::1]"]
-        .into_iter()
-        .map(str::to_owned)
-        .collect()
-}
-
-const SUPPORTED_PROTOCOL_VERSIONS: &[ProtocolVersion] = &[
-    ProtocolVersion::V_2025_03_26,
-    ProtocolVersion::V_2026_07_28,
-];
 const TOOL_CATALOG_TTL_MS: u64 = 3_600_000;
 
 fn uses_july_result_contract(protocol_version: Option<&ProtocolVersion>) -> bool {
@@ -204,8 +194,15 @@ fn tool_catalog_result(
     tools: Vec<rmcp::model::Tool>,
     protocol_version: Option<&ProtocolVersion>,
 ) -> rmcp::model::ListToolsResult {
-    let result = rmcp::model::ListToolsResult::with_all_items(tools);
+    let mut result = rmcp::model::ListToolsResult::with_all_items(tools);
     if uses_july_result_contract(protocol_version) {
+        let mut meta = result.meta.take().unwrap_or_default();
+        meta.insert(
+            "io.modelcontextprotocol/serverInfo".into(),
+            serde_json::to_value(server_implementation())
+                .expect("MCP server info serialization cannot fail"),
+        );
+        result.meta = Some(meta);
         result
             .with_ttl_ms(TOOL_CATALOG_TTL_MS)
             .with_cache_scope(rmcp::model::CacheScope::Public)
@@ -703,13 +700,6 @@ impl ServerHandler for LificMcp {
                 rmcp::model::InitializeResultMethod,
             >()));
         }
-        if request.protocol_version != ProtocolVersion::V_2025_03_26 {
-            let supported = self.supported_protocol_versions();
-            return std::future::ready(Err(rmcp::ErrorData::unsupported_protocol_version(
-                request.protocol_version,
-                &supported,
-            )));
-        }
         context.peer.set_peer_info(request);
         let mut info = self.get_info();
         info.protocol_version = ProtocolVersion::V_2025_03_26;
@@ -805,15 +795,15 @@ impl ServerHandler for LificMcp {
     ) -> impl std::future::Future<Output = Result<rmcp::model::CallToolResponse, rmcp::ErrorData>>
     + rmcp::service::MaybeSendFuture
     + '_ {
+        let july_result = uses_july_result_contract(context.protocol_version().as_ref());
         let request_context = McpRequestContext::from_transport(&context);
         let tool_context =
             rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
         async move {
             self.dispatch_tool_with_context(request_context, || self.tool_router.call(tool_context))
                 .await
-                .map(|response| {
-                match response {
-                    rmcp::model::CallToolResponse::Complete(mut result) => {
+                .map(|response| match response {
+                    rmcp::model::CallToolResponse::Complete(mut result) if july_result => {
                         let mut meta = result.meta.unwrap_or_default();
                         meta.insert(
                             "io.modelcontextprotocol/serverInfo".into(),
@@ -824,7 +814,6 @@ impl ServerHandler for LificMcp {
                         rmcp::model::CallToolResponse::Complete(result)
                     }
                     response => response,
-                }
                 })
         }
     }
