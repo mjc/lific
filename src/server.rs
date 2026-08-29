@@ -32,9 +32,7 @@ use tracing::{info, warn};
 use api_keys_simplified::ApiKeyManagerV0;
 
 use crate::config::{self, Config};
-use crate::{
-    actor, api, auth, backup, db, links, mcp, oauth, ratelimit, realtime, resolve_caller, storage,
-};
+use crate::{actor, api, auth, backup, db, links, mcp, oauth, ratelimit, realtime, resolve_caller, storage};
 
 /// Embedded frontend assets compiled from web/dist/.
 /// Falls back gracefully if dist/ doesn't exist (e.g. dev builds without frontend).
@@ -264,20 +262,13 @@ fn build_app_with_store(
     // MCP StreamableHTTP service
     let db_for_mcp = pool.clone();
     let realtime_for_mcp = realtime.clone();
-    let mut mcp_allowed_hosts: Vec<String> =
-        vec!["localhost".into(), "127.0.0.1".into(), "::1".into()];
-
-    // If public_url is set, allow its hostname through the DNS rebinding check
-    // so reverse proxies (Tailscale funnel, nginx, etc.) can forward requests.
-    if let Some(ref url) = cfg.server.public_url
-        && let Ok(parsed) = url.parse::<axum::http::Uri>()
-        && let Some(authority) = parsed.authority()
-    {
-        let host: String = authority.host().to_string();
-        mcp_allowed_hosts.push(host);
-    }
-
-    let mcp_config = mcp::legacy_streamable_http_config(mcp_allowed_hosts.clone());
+    let mcp_policy = mcp::McpHttpPolicy::from_config(
+        &cfg.server.cors_origins,
+        cfg.server.public_url.as_deref(),
+    );
+    let mcp_allowed_hosts = mcp_policy.allowed_hosts.clone();
+    let mcp_allowed_origins = mcp_policy.allowed_origins.clone();
+    let mcp_config = mcp_policy.transport_config();
 
     let mcp_service = StreamableHttpService::new(
         move || {
@@ -397,12 +388,14 @@ fn build_app_with_store(
                             }),
                         // LIFIC-8: the "no credential → first admin"
                         // fallback is consolidated in `resolve_caller`.
-                        None => {
-                            resolve_caller::resolve_caller_conn(&conn, None, actor::Transport::Mcp)
-                                .ok()
-                                .flatten()
-                                .map(|i| i.user)
-                        }
+                        None => resolve_caller::resolve_caller_conn(
+                            &conn,
+                            None,
+                            actor::Transport::Mcp,
+                        )
+                        .ok()
+                        .flatten()
+                        .map(|i| i.user),
                     },
                     Err(_) => None,
                 }
@@ -418,6 +411,7 @@ fn build_app_with_store(
                 &token,
                 authless_user,
                 mcp_allowed_hosts.clone(),
+                mcp_allowed_origins.clone(),
                 cfg.server.public_url.clone(),
                 realtime.clone(),
             )
@@ -448,6 +442,10 @@ fn build_app_with_store(
         // The internal CORS layer inside `api::router()` still runs for
         // /api/* but is effectively shadowed by this outer one.
         .layer(build_global_cors(&cfg.server.cors_origins))
+        .layer(middleware::from_fn_with_state(
+            mcp_allowed_origins,
+            mcp_origin_middleware,
+        ))
         .layer(axum::extract::DefaultBodyLimit::max(2 * 1024 * 1024)) // 2 MB
         // Gzip/brotli compression for text responses. The embedded
         // frontend ships a ~1 MB JS bundle that was previously served
@@ -565,9 +563,7 @@ pub async fn run(cfg: &Config) -> Result<(), Box<dyn std::error::Error>> {
         // A human operator exists (should_mint was false for lack of
         // keys alone) but no key has been created yet: keys are minted
         // on demand via `lific key create`.
-        info!(
-            "human operator present — passwordless mode; mint keys on demand with `lific key create`"
-        );
+        info!("human operator present — passwordless mode; mint keys on demand with `lific key create`");
     } else {
         let count = auth::list_api_keys(&pool)?
             .iter()
@@ -596,7 +592,10 @@ pub async fn run(cfg: &Config) -> Result<(), Box<dyn std::error::Error>> {
     // request router so its operation lock covers both upload and GC paths.
     let attachment_store = storage::AttachmentStore::from_db_path(&cfg.database.path);
     let gc_attachment_store = attachment_store.clone();
-    storage::start_gc_task(pool.clone(), gc_attachment_store);
+    storage::start_gc_task(
+        pool.clone(),
+        gc_attachment_store,
+    );
 
     let app = build_app_with_store(
         cfg,
@@ -672,8 +671,10 @@ fn build_global_cors(cors_origins: &[String]) -> CorsLayer {
     if cors_origins.is_empty() {
         layer.allow_origin(Any)
     } else {
-        let origins: Vec<HeaderValue> =
-            cors_origins.iter().filter_map(|o| o.parse().ok()).collect();
+        let origins: Vec<HeaderValue> = cors_origins
+            .iter()
+            .filter_map(|o| o.parse().ok())
+            .collect();
         layer.allow_origin(origins)
     }
 }
@@ -694,13 +695,19 @@ fn build_authless_mcp_router(
     token: &str,
     user: Option<db::models::AuthUser>,
     allowed_hosts: Vec<String>,
+    allowed_origins: Vec<String>,
     public_url: Option<String>,
     realtime: realtime::RealtimeHub,
 ) -> Router {
     let allowed_hosts_for_links = allowed_hosts.clone();
-    let config = mcp::legacy_streamable_http_config(allowed_hosts);
+    let config = mcp::legacy_streamable_http_config(allowed_hosts, allowed_origins);
     let service = StreamableHttpService::new(
-        move || Ok(mcp::LificMcp::with_realtime(pool.clone(), realtime.clone())),
+        move || {
+            Ok(mcp::LificMcp::with_realtime(
+                pool.clone(),
+                realtime.clone(),
+            ))
+        },
         Arc::new(LocalSessionManager::default()),
         config,
     );
@@ -721,6 +728,24 @@ fn build_authless_mcp_router(
             service.handle(request).await.into_response()
         }),
     )
+}
+
+async fn mcp_origin_middleware(
+    axum::extract::State(allowed_origins): axum::extract::State<Vec<String>>,
+    request: Request<Body>,
+    next: middleware::Next,
+) -> axum::response::Response {
+    if (request.uri().path() == "/mcp" || request.uri().path().starts_with("/mcp/"))
+        && let Some(origin) = request.headers().get(header::ORIGIN)
+    {
+        let allowed = origin
+            .to_str()
+            .is_ok_and(|origin| mcp::origin_is_allowed(origin, &allowed_origins));
+        if !allowed {
+            return StatusCode::FORBIDDEN.into_response();
+        }
+    }
+    next.run(request).await
 }
 
 /// Wrapper that skips auth for /api/health
@@ -895,6 +920,19 @@ mod cors_tests {
         inner.layer(build_global_cors(origins))
     }
 
+    fn app_with_mcp_origin_and_cors(origins: &[String]) -> Router {
+        Router::new()
+            .route(
+                "/mcp",
+                post(|| async { StatusCode::OK.into_response() }),
+            )
+            .layer(build_global_cors(&[]))
+            .layer(middleware::from_fn_with_state(
+                origins.to_vec(),
+                mcp_origin_middleware,
+            ))
+    }
+
     /// A browser MCP client (Claude Web) issues a CORS preflight before the
     /// authenticated POST. That preflight must succeed WITHOUT any
     /// Authorization header — otherwise the browser blocks the real request
@@ -908,10 +946,7 @@ mod cors_tests {
             .uri("/mcp")
             .header("origin", "https://claude.ai")
             .header("access-control-request-method", "POST")
-            .header(
-                "access-control-request-headers",
-                "authorization,content-type",
-            )
+            .header("access-control-request-headers", "authorization,content-type")
             .body(Body::empty())
             .unwrap();
 
@@ -977,6 +1012,38 @@ mod cors_tests {
 
         let res = app.oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn invalid_mcp_origin_is_rejected_before_cors_preflight() {
+        let app = app_with_mcp_origin_and_cors(&crate::mcp::default_allowed_origins());
+        let req = Request::builder()
+            .method(Method::OPTIONS)
+            .uri("/mcp")
+            .header("origin", "https://evil.example")
+            .header("access-control-request-method", "POST")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn malformed_mcp_origin_is_rejected() {
+        let app = app_with_mcp_origin_and_cors(&crate::mcp::default_allowed_origins());
+        let mut req = Request::builder()
+            .method(Method::POST)
+            .uri("/mcp")
+            .body(Body::empty())
+            .unwrap();
+        req.headers_mut().insert(
+            header::ORIGIN,
+            axum::http::HeaderValue::from_bytes(b"http://evil.\x80").unwrap(),
+        );
+
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
     /// When configured with an explicit origin list, only those origins
@@ -1086,6 +1153,7 @@ mod authless_mcp_tests {
             token,
             None,
             vec!["localhost".into()],
+            crate::mcp::default_allowed_origins(),
             None,
             realtime::RealtimeHub::new(),
         );
@@ -1135,6 +1203,7 @@ mod authless_mcp_tests {
             "the-right-token",
             None,
             vec!["localhost".into()],
+            crate::mcp::default_allowed_origins(),
             None,
             realtime::RealtimeHub::new(),
         );
@@ -1153,6 +1222,34 @@ mod authless_mcp_tests {
     }
 
     #[tokio::test]
+    async fn authless_path_rejects_disallowed_origin() {
+        let pool = db::open_memory().unwrap();
+        let token = "origin-token-abcdef";
+        let router = build_authless_mcp_router(
+            pool,
+            token,
+            None,
+            vec!["localhost".into()],
+            crate::mcp::default_allowed_origins(),
+            None,
+            realtime::RealtimeHub::new(),
+        );
+
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri(format!("/mcp/{token}"))
+            .header("host", "localhost")
+            .header("origin", "https://evil.example")
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream")
+            .body(initialize_body())
+            .unwrap();
+
+        let res = router.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
     async fn incomplete_request_does_not_block_an_independent_mcp_request() {
         let pool = db::open_memory().unwrap();
         let token = "independent-request-token";
@@ -1161,6 +1258,7 @@ mod authless_mcp_tests {
             token,
             None,
             vec!["localhost".into()],
+            crate::mcp::default_allowed_origins(),
             None,
             realtime::RealtimeHub::new(),
         );
