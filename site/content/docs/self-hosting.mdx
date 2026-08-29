@@ -10,7 +10,7 @@ Lific runs as one process. The process opens the configured SQLite database and 
 Use `lific start` to run the HTTP server in the foreground.
 
 ```shell
-lific start --config /etc/lific/lific.toml
+lific --config /etc/lific/lific.toml start
 ```
 
 The server provides the REST API, the `/mcp` endpoint, OAuth routes, and the embedded web UI when web assets were included at build time.
@@ -39,7 +39,63 @@ lific service stop
 lific service uninstall
 ```
 
-The built-in service command uses the current Lific binary and the selected configuration file. Its working directory is the directory containing that configuration file.
+The built-in service command uses the current Lific binary and the selected configuration file. Its working directory is the directory containing that configuration file. `lific init --db` persists an absolute database path into the config before installing the service. A later `lific service install --db` is rejected; edit `database.path` instead so the persistent service has one path authority.
+
+## NixOS service
+
+The repository flake exports `nixosModules.default`, which provides a hardened
+system service through `services.lific`.
+
+```nix
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    lific = {
+      url = "github:VoidNullable/lific";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+  };
+
+  outputs = { nixpkgs, lific, ... }: {
+    nixosConfigurations.example = nixpkgs.lib.nixosSystem {
+      system = "x86_64-linux";
+      modules = [
+        lific.nixosModules.default
+        {
+          services.lific = {
+            enable = true;
+            host = "127.0.0.1";
+            settings = {
+              server.public_url = "https://lific.example.com";
+              auth.allow_signup = false;
+            };
+          };
+        }
+      ];
+    };
+  };
+}
+```
+
+The module creates the `lific` system user and group, keeps the database and
+attachments under `/var/lib/lific`, loads the configuration as a read-only
+systemd credential, and starts a hardened systemd unit. It listens on loopback
+by default and does not open the firewall or configure a reverse proxy.
+
+Values under `settings` are evaluated into the Nix store, so they must not
+contain secrets. For a secret-bearing configuration, set
+`services.lific.configFile` to an absolute runtime path such as
+`/run/secrets/lific.toml` and do not set `settings`. In particular, the module
+rejects `server.mcp_path_token` under `settings` so that the bearer credential
+cannot be copied into the store. The source may remain readable only by root;
+systemd presents it read-only to the service at startup.
+
+With generated settings, the application default `backup.dir = "backups"`
+resolves beneath the module's `/var/lib/lific` state directory, which the
+service user owns and the unit manages with `StateDirectory`. No separate
+tmpfiles rule is needed. An external `configFile` remains authoritative for
+`backup.dir`; if it selects an absolute directory outside the state directory,
+create that directory separately and make it writable by the service user.
 
 ## Generic systemd system service
 
@@ -53,10 +109,17 @@ After=network.target
 [Service]
 User=lific
 Group=lific
-ExecStart=/usr/local/bin/lific start --config /etc/lific/lific.toml
+StateDirectory=lific
+LoadCredential=lific.toml:/etc/lific/lific.toml
+ExecStart=/usr/local/bin/lific --config /run/credentials/lific.service/lific.toml --db /var/lib/lific/lific.db start
 WorkingDirectory=/var/lib/lific
+UMask=0077
 Restart=on-failure
 RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
 
 [Install]
 WantedBy=multi-user.target
@@ -64,7 +127,10 @@ WantedBy=multi-user.target
 
 Save the unit as `lific.service` in the systemd system unit directory. Reload systemd after saving it. Enable and start the unit through the system service manager.
 
-The configured database and backup directories must be writable by the `lific` user. The configuration file must be readable by that user.
+The configured backup directory must be writable by the `lific` user. The
+database and attachments stay under the systemd-managed state directory. The
+configuration source may be root-only because systemd loads it as a service
+credential.
 
 ## Authentication
 

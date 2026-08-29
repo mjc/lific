@@ -40,9 +40,9 @@ in {
     };
 
     port = lib.mkOption {
-      type = lib.types.port;
+      type = lib.types.ints.between 1024 65535;
       default = 3456;
-      description = "Port on which Lific listens.";
+      description = "Unprivileged TCP port on which Lific listens.";
     };
 
     settings = lib.mkOption {
@@ -70,6 +70,8 @@ in {
         The service always passes host, port, and database path as CLI flags,
         so those values in the external TOML are overridden. Set this for
         secret-bearing configuration. It is mutually exclusive with settings.
+        Restart lific.service after rotating the source because systemd loads
+        credentials only when starting the service.
       '';
     };
 

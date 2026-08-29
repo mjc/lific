@@ -39,6 +39,7 @@ Identifiers are human-readable everywhere: `APP-42`, never a UUID. They survive 
 
 ```bash
 cargo install lific     # or grab a binary from the releases page
+# Nix (x86_64 or aarch64 Linux, or Apple silicon macOS): nix profile install github:VoidNullable/lific
 
 lific init              # config + database + your API key, printed once -
                         # then installs a background service and starts it.
@@ -318,7 +319,7 @@ Config is discovered in standard locations, first match wins:
 3. User config dir: `~/.config/lific/lific.toml` on Linux (`$XDG_CONFIG_HOME` respected), `~/Library/Application Support/lific/` on macOS, `%APPDATA%\lific\` on Windows
 4. System config dir: `/etc/lific/lific.toml` on Linux/BSD, `/Library/Application Support/Lific/` on macOS, `%ProgramData%\lific\` on Windows
 
-A relative `database.path` always resolves against the config file's own directory, so the same config works no matter where the process starts. `lific init --config /path/to/lific.toml` and `lific service install --config ...` root the whole instance (config, database, service working directory) at that path.
+A relative `database.path` always resolves against the config file's own directory, so the same config works no matter where the process starts. `lific init --config /path/to/lific.toml` and `lific service install --config ...` root the whole instance (config, database, service working directory) at that path. `lific init --db` persists an absolute database path into that config before installing the service; `lific service install --db` is rejected so a persistent service never has two competing path authorities.
 
 </details>
 
@@ -386,6 +387,18 @@ You don't need Docker to run Lific; it's one binary. The `Dockerfile` in the rep
 docker build -t lific .
 docker run -p 3456:3456 -v lific-data:/data lific
 ```
+
+The image runs as UID/GID 65532 and always stores the database, attachments,
+and default backups under `/data`; make a bind mount writable by that identity.
+Because `/data` is the working directory, a mounted `/data/lific.toml` is
+discovered automatically:
+
+```bash
+docker run -p 3456:3456 -v ./data:/data lific
+```
+
+The image's `/data/lific.db` command-line override intentionally wins over
+`database.path` in that file.
 
 ## Community
 
