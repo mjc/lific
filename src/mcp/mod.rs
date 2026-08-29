@@ -23,17 +23,127 @@ use crate::storage::AttachmentStore;
 /// Legacy clients still negotiate an initialize session and receive
 /// `Mcp-Session-Id` on the HTTP response.
 #[must_use]
-pub(crate) fn legacy_streamable_http_config<I, S>(
+pub(crate) fn legacy_streamable_http_config<I, S, J, T>(
     allowed_hosts: I,
+    allowed_origins: J,
 ) -> StreamableHttpServerConfig
 where
     I: IntoIterator<Item = S>,
     S: Into<String>,
+    J: IntoIterator<Item = T>,
+    T: Into<String>,
 {
     StreamableHttpServerConfig::default()
         .with_legacy_session_mode(true)
         .with_json_response(true)
         .with_allowed_hosts(allowed_hosts)
+        .with_allowed_origins(allowed_origins)
+}
+
+pub(crate) fn default_allowed_origins() -> Vec<String> {
+    ["http://localhost", "http://127.0.0.1", "http://[::1]"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+}
+
+fn allowed_origins(cors_origins: &[String], public_url: Option<&str>) -> Vec<String> {
+    if !cors_origins.is_empty() {
+        return cors_origins.to_vec();
+    }
+
+    let mut origins = default_allowed_origins();
+    if let Some(public_url) = public_url
+        && let Ok(uri) = public_url.parse::<axum::http::Uri>()
+        && let (Some(scheme), Some(authority)) = (uri.scheme_str(), uri.authority())
+    {
+        let origin = format!("{scheme}://{authority}");
+        if !origins.iter().any(|existing| existing == &origin) {
+            origins.push(origin);
+        }
+    }
+    origins
+}
+
+pub(crate) fn origin_is_allowed(origin: &str, allowed_origins: &[String]) -> bool {
+    if origin == "null" && allowed_origins.iter().any(|allowed| allowed == origin) {
+        return true;
+    }
+    let Some(actual) = parse_origin(origin) else {
+        return false;
+    };
+    allowed_origins.iter().any(|allowed| {
+        let Some(expected) = parse_origin(allowed) else {
+            return false;
+        };
+        (actual.scheme == expected.scheme
+            && actual.host == expected.host
+            && actual.port == expected.port)
+            || (!expected.explicit_port
+                && actual.explicit_port
+                && expected.scheme == "http"
+                && crate::config::is_localhost_host(&expected.host)
+                && actual.scheme == expected.scheme
+                && actual.host == expected.host)
+    })
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ParsedOrigin {
+    scheme: String,
+    host: String,
+    port: u16,
+    explicit_port: bool,
+}
+
+fn parse_origin(value: &str) -> Option<ParsedOrigin> {
+    let uri = value.parse::<axum::http::Uri>().ok()?;
+    let scheme = uri.scheme_str()?.to_ascii_lowercase();
+    let host = uri.host()?.trim_matches(['[', ']']).to_ascii_lowercase();
+    if !matches!(uri.path(), "" | "/") || uri.query().is_some() {
+        return None;
+    }
+    let explicit_port = uri.port_u16().is_some();
+    let port = uri.port_u16().or(match scheme.as_str() {
+        "http" => Some(80),
+        "https" => Some(443),
+        _ => None,
+    })?;
+    Some(ParsedOrigin {
+        scheme,
+        host,
+        port,
+        explicit_port,
+    })
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct McpHttpPolicy {
+    pub(crate) allowed_hosts: Vec<String>,
+    pub(crate) allowed_origins: Vec<String>,
+}
+
+impl McpHttpPolicy {
+    pub(crate) fn from_config(cors_origins: &[String], public_url: Option<&str>) -> Self {
+        let mut allowed_hosts = vec!["localhost".into(), "127.0.0.1".into(), "::1".into()];
+        if let Some(public_url) = public_url
+            && let Ok(uri) = public_url.parse::<axum::http::Uri>()
+            && let Some(authority) = uri.authority()
+        {
+            let host = authority.host().to_owned();
+            if !allowed_hosts.iter().any(|allowed| allowed == &host) {
+                allowed_hosts.push(host);
+            }
+        }
+        Self {
+            allowed_hosts,
+            allowed_origins: allowed_origins(cors_origins, public_url),
+        }
+    }
+
+    pub(crate) fn transport_config(&self) -> StreamableHttpServerConfig {
+        legacy_streamable_http_config(self.allowed_hosts.clone(), self.allowed_origins.clone())
+    }
 }
 
 /// Serialization lock for MCP request handling.
@@ -562,6 +672,43 @@ mod tests {
     use http_body_util::BodyExt;
     use rusqlite::params;
     use tower::ServiceExt;
+
+    #[test]
+    fn streamable_http_policy_keeps_legacy_sessions_and_validates_origins() {
+        let policy = McpHttpPolicy::from_config(&[], None);
+        let config = policy.transport_config();
+
+        assert!(config.legacy_session_mode);
+        assert!(config.json_response);
+        assert!(!config.allowed_origins.is_empty());
+        assert!(!config
+            .allowed_origins
+            .iter()
+            .any(|origin| origin == "https://evil.example"));
+    }
+
+    #[test]
+    fn local_origins_allow_browser_ports_but_not_other_hosts() {
+        let allowed = default_allowed_origins();
+
+        assert!(origin_is_allowed("http://localhost:3456", &allowed));
+        assert!(origin_is_allowed("http://127.0.0.1:3456", &allowed));
+        assert!(origin_is_allowed("http://[::1]:3456", &allowed));
+        assert!(!origin_is_allowed("https://localhost:3456", &allowed));
+        assert!(!origin_is_allowed("http://localhost:3456/path", &allowed));
+        assert!(!origin_is_allowed("http://evil.example:3456", &allowed));
+    }
+
+    #[test]
+    fn http_policy_shares_public_url_host_and_origin() {
+        let policy = McpHttpPolicy::from_config(&[], Some("https://LIFIC.example:443/mcp"));
+
+        assert!(policy.allowed_hosts.iter().any(|host| host == "LIFIC.example"));
+        assert!(origin_is_allowed(
+            "https://lific.example",
+            &policy.allowed_origins
+        ));
+    }
 
     // ── LIF-204: OAuth-token user_id -> resolved AuthUser (MCP path) ─────
     //
