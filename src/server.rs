@@ -1287,6 +1287,47 @@ mod authless_mcp_tests {
         assert_eq!(call["result"]["isError"], false);
     }
 
+    #[tokio::test]
+    async fn legacy_initialize_unknown_version_uses_supported_fallback() {
+        let pool = db::open_memory().unwrap();
+        let token = "legacy-fallback-token";
+        let router = build_authless_mcp_router(
+            pool,
+            token,
+            None,
+            vec!["localhost".into()],
+            crate::mcp::default_allowed_origins(),
+            None,
+            realtime::RealtimeHub::new(),
+        );
+        let body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "legacy-fallback-test", "version": "1"}
+            }
+        });
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(format!("/mcp/{token}"))
+                    .header("host", "localhost")
+                    .header("content-type", "application/json")
+                    .header("accept", "application/json, text/event-stream")
+                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(jsonrpc_body(&body)["result"]["protocolVersion"], "2025-03-26");
+    }
+
     /// A wrong path token does not match the route at all (no secret leak,
     /// no MCP access) — it falls through to 404 in this isolated router.
     #[tokio::test]
