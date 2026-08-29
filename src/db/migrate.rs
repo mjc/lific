@@ -231,6 +231,11 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "soft delete tombstones",
         include_str!("../../migrations/047_soft_delete.sql"),
     ),
+    (
+        48,
+        "oauth device scope",
+        include_str!("../../migrations/048_oauth_device_scope.sql"),
+    ),
 ];
 
 /// Migrations that rebuild a table other tables reference by foreign key.
