@@ -32,6 +32,9 @@ jobs:
       - name: Test
         run: cargo test --all-targets
 
+      - name: Test MCP conformance proxy
+        run: node --test scripts/mcp-conformance-auth-proxy.test.mjs
+
   windows:
     # Windows ships a release binary, so it gets the same gate as Linux rather
     # than a compile-only smoke check. Nothing verified the platform at all

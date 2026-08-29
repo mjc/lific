@@ -30,8 +30,9 @@
 //!    → 200 + JSON containing `resource`. Skipped when the server is unreachable.
 //! 6. **mcp** — `POST {base}/mcp` JSON-RPC `server/discover` with July metadata
 //!    and routing headers. No key → expect 401 with a `WWW-Authenticate` header
-//!    (auth enforced, discovery advertised) = pass. With a key → expect 200 plus
-//!    supported versions, capabilities, server identity, and result metadata.
+//!    (auth enforced, discovery advertised) = warn because it does not prove MCP
+//!    discovery works. With a key → expect 200 plus supported versions,
+//!    capabilities, server identity, and result metadata.
 //!    Skipped when the server is unreachable.
 //! 7. **public_url** — only when `server.public_url` is set. `GET
 //!    {public_url}/.well-known/oauth-protected-resource/mcp` reachable = pass;
@@ -717,13 +718,13 @@ pub async fn check_mcp(client: &reqwest::Client, base: &str, key: Option<&str>) 
 
     match key {
         None => {
-            // No key: the correct, healthy behavior is a 401 that advertises
-            // where to discover auth.
+            // A 401 proves only that authentication is enforced. Without a
+            // credential, doctor cannot claim that MCP discovery itself works.
             if status == reqwest::StatusCode::UNAUTHORIZED && has_www_auth {
                 Check::new(
                     "mcp",
-                    Status::Pass,
-                    "auth enforced (401 + WWW-Authenticate); discovery advertised",
+                    Status::Warn,
+                    "auth enforced (401 + WWW-Authenticate); MCP discovery not checked",
                 )
             } else if status == reqwest::StatusCode::UNAUTHORIZED {
                 Check::new(
@@ -781,6 +782,11 @@ pub async fn check_mcp(client: &reqwest::Client, base: &str, key: Option<&str>) 
                         .and_then(|r| r.get("resultType"))
                         .is_some_and(|kind| kind == "complete")
                         && supported_july
+                        && result
+                            .and_then(|r| r.get("capabilities"))
+                            .and_then(|capabilities| capabilities.get("tools"))
+                            .is_some_and(|tools| tools.is_object())
+                        && result.is_some_and(has_cache_metadata)
                         && server_info.is_some_and(has_server_info)
                     {
                         let name = server_info
@@ -839,84 +845,6 @@ async fn response_json(response: reqwest::Response) -> Result<serde_json::Value,
     parse_mcp_response_body(&body)
 }
 
-async fn check_mcp_session(
-    client: &reqwest::Client,
-    url: &str,
-    key: &str,
-    session_id: &str,
-) -> Result<String, String> {
-    let request = |body: serde_json::Value| {
-        client
-            .post(url)
-            .bearer_auth(key)
-            .header("Accept", "application/json, text/event-stream")
-            .header("Content-Type", "application/json")
-            .header("MCP-Protocol-Version", "2025-03-26")
-            .header("MCP-Session-Id", session_id)
-            .json(&body)
-    };
-
-    let initialized = request(serde_json::json!({
-        "jsonrpc": "2.0",
-        "method": "notifications/initialized",
-        "params": {}
-    }))
-    .send()
-    .await
-    .map_err(|error| format!("initialized notification failed: {error}"))?;
-    if !initialized.status().is_success() {
-        return Err(format!(
-            "initialized notification returned HTTP {}",
-            initialized.status().as_u16()
-        ));
-    }
-
-    let list = request(serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 2,
-        "method": "tools/list",
-        "params": {}
-    }))
-    .send()
-    .await
-    .map_err(|error| format!("tools/list request failed: {error}"))?;
-    if !list.status().is_success() {
-        return Err(format!(
-            "tools/list returned HTTP {}",
-            list.status().as_u16()
-        ));
-    }
-    let list = response_json(list).await?;
-    if list["id"] != 2 || !list["result"]["tools"].is_array() {
-        return Err(format!("tools/list response was incomplete: {list}"));
-    }
-
-    let call = request(serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 3,
-        "method": "tools/call",
-        "params": {
-            "name": "search",
-            "arguments": {"query": "lific-doctor-no-such-result"}
-        }
-    }))
-    .send()
-    .await
-    .map_err(|error| format!("tools/call request failed: {error}"))?;
-    if !call.status().is_success() {
-        return Err(format!(
-            "tools/call returned HTTP {}",
-            call.status().as_u16()
-        ));
-    }
-    let call = response_json(call).await?;
-    if call["id"] != 3 || !call["result"]["content"].is_array() {
-        return Err(format!("tools/call response was incomplete: {call}"));
-    }
-
-    Ok("initialized, tools/list, and harmless tools/call succeeded".into())
-}
-
 async fn check_mcp_tools(
     client: &reqwest::Client,
     base: &str,
@@ -957,6 +885,7 @@ async fn check_mcp_tools(
         .map_err(|e| format!("tools/list response was not JSON: {e}"))?;
     if list_body["result"]["resultType"] != "complete"
         || !list_body["result"]["tools"].is_array()
+        || !has_cache_metadata(&list_body["result"])
     {
         return Err(format!("tools/list response was incomplete: {list_body}"));
     }
@@ -992,19 +921,21 @@ async fn check_mcp_tools(
         .map_err(|e| format!("tools/call response was not JSON: {e}"))?;
     if call_body["result"]["resultType"] != "complete"
         || !call_body["result"]["content"].is_array()
+        || call_body["result"]
+            .get("isError")
+            .is_some_and(|is_error| is_error.as_bool() != Some(false))
     {
         return Err(format!("tools/call response was incomplete: {call_body}"));
     }
     Ok("tools/list and harmless tools/call succeeded".into())
 }
 
-fn has_server_info(value: &serde_json::Value) -> bool {
-    ["name", "version"].into_iter().all(|field| {
-        value
-            .get(field)
-            .and_then(|value| value.as_str())
-            .is_some_and(|value| !value.trim().is_empty())
-    })
+fn has_cache_metadata(value: &serde_json::Value) -> bool {
+    value.get("ttlMs").and_then(|ttl| ttl.as_u64()).is_some()
+        && value
+            .get("cacheScope")
+            .and_then(|scope| scope.as_str())
+            .is_some_and(|scope| matches!(scope, "public" | "private"))
 }
 
 /// Probe the retained pre-July MCP lifecycle explicitly. This is intentionally
@@ -1157,29 +1088,6 @@ pub async fn check_mcp_legacy(
             }
         }
     }
-}
-
-async fn response_json(response: reqwest::Response) -> Result<serde_json::Value, String> {
-    let text = response
-        .text()
-        .await
-        .map_err(|e| format!("response body could not be read: {e}"))?;
-    serde_json::from_str::<serde_json::Value>(&text)
-        .or_else(|_| {
-            text.lines()
-                .find_map(|line| {
-                    line.strip_prefix("data: ")
-                        .filter(|payload| !payload.trim().is_empty())
-                })
-                .ok_or_else(|| {
-                    serde_json::Error::io(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        "response did not contain JSON",
-                    ))
-                })
-                .and_then(serde_json::from_str)
-        })
-        .map_err(|e| e.to_string())
 }
 
 async fn check_mcp_legacy_tools(
@@ -1335,6 +1243,25 @@ mod tests {
         })));
     }
 
+    #[test]
+    fn mcp_cache_metadata_requires_july_fields_and_values() {
+        assert!(has_cache_metadata(&serde_json::json!({
+            "ttlMs": 0,
+            "cacheScope": "private"
+        })));
+        assert!(has_cache_metadata(&serde_json::json!({
+            "ttlMs": 3_600_000,
+            "cacheScope": "public"
+        })));
+        assert!(!has_cache_metadata(&serde_json::json!({
+            "cacheScope": "public"
+        })));
+        assert!(!has_cache_metadata(&serde_json::json!({
+            "ttlMs": 1,
+            "cacheScope": "shared"
+        })));
+    }
+
     fn check(name: &str, status: Status) -> Check {
         Check::new(name, status, "")
     }
@@ -1368,21 +1295,6 @@ mod tests {
         ]);
         assert!(r.ok);
         assert_eq!(r.fail_count(), 0);
-    }
-
-    #[test]
-    fn mcp_server_info_requires_nonempty_name_and_version() {
-        assert!(has_server_info(&serde_json::json!({
-            "name": "lific",
-            "version": "2.7.1"
-        })));
-        assert!(!has_server_info(&serde_json::json!({
-            "name": "lific"
-        })));
-        assert!(!has_server_info(&serde_json::json!({
-            "name": " ",
-            "version": "2.7.1"
-        })));
     }
 
     // ── Summary text ─────────────────────────────────────────────────────
@@ -1736,9 +1648,9 @@ mod tests {
         let base = serve_ephemeral(app).await;
 
         let c = check_mcp(&test_client(), &base, None).await;
-        assert_eq!(c.status, Status::Pass, "detail: {}", c.detail);
+        assert_eq!(c.status, Status::Warn, "detail: {}", c.detail);
         assert!(
-            c.detail.contains("auth enforced"),
+            c.detail.contains("MCP discovery not checked"),
             "detail: {}",
             c.detail
         );
