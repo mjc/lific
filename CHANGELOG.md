@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+### OAuth consent
+
+Approving an OAuth client used to happen on a screen that could not tell you what you were approving. It said "An application wants to access your Lific issue tracker" no matter who was asking, and the device flow showed whatever name the requesting program had typed into its request. Both paths now resolve a registered client first and say who it is, and neither grants anything without an explicit yes. Most of this was contributed by [@mjc](https://github.com/mjc) in PR #41.
+
+- **The authorization screen names what it is about.** It shows the registered client's name, the exact address you will be redirected to, the capability being granted, how long the resulting token lives, and which account is about to grant it. A request whose client or redirect URI is not registered is refused before the page renders, so a crafted link cannot produce a plausible screen for a client that does not exist.
+- **Approve and Deny are both explicit.** A submission carrying neither is rejected instead of being read as consent. Denial redirects with `access_denied` and never creates an authorization code.
+- **The consent form is bound to the request it displayed.** Its CSRF token now covers every field on the page rather than just the browser session, so altering the client, redirect, scope, or PKCE challenge between the screen you read and the form you submit invalidates the submission.
+- **Connecting a device takes two steps.** Entering a code no longer approves anything: it looks the code up and shows a second page naming the registered client that is asking, the capability, the token lifetime, and the approving account. Only that second submission approves, and it requires a token bound to both the browser session and the device code. Denying still takes one step, because refusing access should never be the slower path.
+- **Device grants record the client that asked for them.** A device login used to attribute its token to one shared internal client. The grant now stores the registered client and validated capability at authorization time, and the issued token carries that identity, so a device credential is attributable like any other.
+- **PKCE is checked against the full RFC 7636 syntax.** Verifiers shorter than 43 characters, longer than 128, or containing anything outside the unreserved set are rejected, where only empty ones were before. Authorization requests must carry a well-formed S256 challenge before consent renders.
+- **Redirect URIs containing a fragment are refused at registration.** OAuth forbids them, and appending parameters to one would have placed the code or error after the fragment, where the client never sees it.
+- **A signed-out visitor gets a way in.** The authorization screen requires a session now, since it names the approving account, and an unauthenticated visit links to sign-in instead of dead-ending on a bare error.
+- **Disconnecting a tool returns its client registration.** Dynamic registrations are capped per instance, and a client could not be reclaimed while any grant still referenced it, including revoked ones. Revoked grants are now cleared, so a revoked token releases its slot instead of holding it forever. Tokens that are only expired are left alone, matching how Connected Tools reports them.
+
+### Upgrading
+
+- **`POST /oauth/device_authorization` now requires a registered `client_id`.** RFC 8628 has always required one for public clients; Lific used to accept free-text `client_name` instead and display it on the approval screen. Register at `/oauth/register` and send the returned `client_id`. `scope` remains optional and defaults to `mcp`, but an explicitly different scope is refused rather than quietly downgraded.
+- **`lific login` from a CLI older than this release will not work against a server running it.** Older CLIs send only `client_name` and get `invalid_request` back. Upgrade the CLI. The reverse direction still works: a current CLI registers a client when the server supports it and falls back to the old request shape when it does not, so upgrading the CLI first is safe.
+- **`lific login` remembers the client it registered.** It is stored in `~/.config/lific/clients.json`, keyed by server URL, and reused on later logins so each login does not consume one of the instance's registration slots. The file holds no secrets and deleting it is harmless; the next login simply registers again.
+- **Device logins left half-finished across the upgrade must be restarted.** A device code issued before the upgrade carries no registered client, so exchanging it afterwards returns `invalid_grant`. Device codes expire after 15 minutes, so this resolves itself.
+
 ## v2.7.1 (2026-08-23)
 
 A hotfix for a crash that made v2.7.0 unusable. Upgrade immediately if you are on 2.7.0.
