@@ -262,10 +262,8 @@ fn build_app_with_store(
     // MCP StreamableHTTP service
     let db_for_mcp = pool.clone();
     let realtime_for_mcp = realtime.clone();
-    let mcp_policy = mcp::McpHttpPolicy::from_config(
-        &cfg.server.cors_origins,
-        cfg.server.public_url.as_deref(),
-    );
+    let mcp_policy =
+        mcp::McpHttpPolicy::from_config(&cfg.server.cors_origins, cfg.server.public_url.as_deref());
     let mcp_allowed_hosts = mcp_policy.allowed_hosts.clone();
     let mcp_allowed_origins = mcp_policy.allowed_origins.clone();
     let mcp_config = mcp_policy.transport_config();
@@ -922,10 +920,7 @@ mod cors_tests {
 
     fn app_with_mcp_origin_and_cors(origins: &[String]) -> Router {
         Router::new()
-            .route(
-                "/mcp",
-                post(|| async { StatusCode::OK.into_response() }),
-            )
+            .route("/mcp", post(|| async { StatusCode::OK.into_response() }))
             .layer(build_global_cors(&[]))
             .layer(middleware::from_fn_with_state(
                 origins.to_vec(),
@@ -1235,7 +1230,12 @@ mod authless_mcp_tests {
         assert_object_keys(&initialized, &["jsonrpc", "id", "result"]);
         assert_object_keys(
             &initialized["result"],
-            &["protocolVersion", "capabilities", "serverInfo", "instructions"],
+            &[
+                "protocolVersion",
+                "capabilities",
+                "serverInfo",
+                "instructions",
+            ],
         );
         assert_eq!(initialized["result"]["protocolVersion"], "2025-03-26");
 
