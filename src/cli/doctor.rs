@@ -826,7 +826,10 @@ async fn check_mcp_session(
     .await
     .map_err(|error| format!("tools/list request failed: {error}"))?;
     if !list.status().is_success() {
-        return Err(format!("tools/list returned HTTP {}", list.status().as_u16()));
+        return Err(format!(
+            "tools/list returned HTTP {}",
+            list.status().as_u16()
+        ));
     }
     let list = response_json(list).await?;
     if list["id"] != 2 || !list["result"]["tools"].is_array() {
@@ -846,7 +849,10 @@ async fn check_mcp_session(
     .await
     .map_err(|error| format!("tools/call request failed: {error}"))?;
     if !call.status().is_success() {
-        return Err(format!("tools/call returned HTTP {}", call.status().as_u16()));
+        return Err(format!(
+            "tools/call returned HTTP {}",
+            call.status().as_u16()
+        ));
     }
     let call = response_json(call).await?;
     if call["id"] != 3 || !call["result"]["content"].is_array() {
@@ -1355,7 +1361,11 @@ mod tests {
 
         let c = check_mcp(&test_client(), &base, Some(&key)).await;
         assert_eq!(c.status, Status::Pass, "detail: {}", c.detail);
-        assert!(c.detail.contains("legacy lifecycle"), "detail: {}", c.detail);
+        assert!(
+            c.detail.contains("legacy lifecycle"),
+            "detail: {}",
+            c.detail
+        );
         assert!(c.detail.contains("tools/list"), "detail: {}", c.detail);
     }
 
