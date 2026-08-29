@@ -46,6 +46,8 @@ pub struct Rendered {
 #[derive(Debug)]
 pub struct WriteError {
     pub message: String,
+    /// Whether the target was atomically replaced before the error occurred.
+    pub published: bool,
     /// A snippet the user can paste to merge manually, when we refused to touch
     /// an unparseable file.
     pub manual_snippet: Option<String>,
@@ -55,6 +57,7 @@ impl WriteError {
     fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
+            published: false,
             manual_snippet: None,
         }
     }
@@ -62,6 +65,7 @@ impl WriteError {
     fn with_snippet(message: impl Into<String>, snippet: impl Into<String>) -> Self {
         Self {
             message: message.into(),
+            published: false,
             manual_snippet: Some(snippet.into()),
         }
     }
@@ -171,7 +175,10 @@ pub fn write(path: &Path, format: Format, entry: &CompiledEntry) -> Result<Actio
         .map_err(|e| WriteError::new(format!("failed to sync {}: {e}", path.display())))?;
     std::fs::rename(&tmp, path)
         .map_err(|e| WriteError::new(format!("failed to finalize {}: {e}", path.display())))?;
-    sync_parent_dir(parent)?;
+    if let Err(mut error) = sync_parent_dir(parent) {
+        error.published = true;
+        return Err(error);
+    }
     Ok(rendered.action)
 }
 

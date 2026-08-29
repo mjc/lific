@@ -442,6 +442,12 @@ enum KeySource {
     FreshInstall,
 }
 
+struct MintedKey {
+    value: String,
+    provisional_name: Option<String>,
+    final_name: Option<String>,
+}
+
 impl KeySource {
     fn origin(&self) -> KeyOrigin {
         match self {
@@ -480,9 +486,14 @@ fn mint_for_tool(
     spec: &ClientSpec,
     pool: &DbPool,
     manager: &api_keys_simplified::ApiKeyManagerV0,
-) -> Result<String, String> {
+    provisional: bool,
+) -> Result<MintedKey, String> {
     match source {
-        KeySource::Provided(k) => Ok(k.clone()),
+        KeySource::Provided(k) => Ok(MintedKey {
+            value: k.clone(),
+            provisional_name: None,
+            final_name: None,
+        }),
         KeySource::Bot { owner_id } => {
             // Bot username = `{tool}-{owner.username}`, matching the web UI's
             // Connected Tools (src/api/auth.rs create_bot) so a CLI-connected
@@ -502,14 +513,47 @@ fn mint_for_tool(
             };
             // LIF-391: the key is bound to the bot as it is minted, never
             // created unbound and patched afterwards.
-            mint_or_rotate(pool, manager, &bot_username, Some(bot_id))
+            if provisional {
+                let provisional_name =
+                    format!("{bot_username}-pending-{:016x}", rand::random::<u64>());
+                let value =
+                    crate::auth::create_api_key(pool, manager, &provisional_name, Some(bot_id))
+                        .map_err(|e| e.to_string())?;
+                Ok(MintedKey {
+                    value,
+                    provisional_name: Some(provisional_name),
+                    final_name: Some(bot_username),
+                })
+            } else {
+                Ok(MintedKey {
+                    value: mint_or_rotate(pool, manager, &bot_username, Some(bot_id))?,
+                    provisional_name: None,
+                    final_name: None,
+                })
+            }
         }
         KeySource::FreshInstall => {
             // Zero human users: enforcement can't be on (needs an admin to
             // enable), so a plain unassigned key behaves like `lific start`'s
             // first-run default key. Named just `{tool}` — per-tool attribution
             // in the key name even without a human owner.
-            mint_or_rotate(pool, manager, spec.id, None)
+            if provisional {
+                let provisional_name =
+                    format!("{}-pending-{:016x}", spec.id, rand::random::<u64>());
+                let value = crate::auth::create_api_key(pool, manager, &provisional_name, None)
+                    .map_err(|e| e.to_string())?;
+                Ok(MintedKey {
+                    value,
+                    provisional_name: Some(provisional_name),
+                    final_name: Some(spec.id.to_string()),
+                })
+            } else {
+                Ok(MintedKey {
+                    value: mint_or_rotate(pool, manager, spec.id, None)?,
+                    provisional_name: None,
+                    final_name: None,
+                })
+            }
         }
     }
 }
@@ -783,10 +827,12 @@ fn write_all_clients(
             continue;
         }
 
-        // Mint this client's own key (per-tool). Only when a real remote write
-        // with minting is happening; stdio/oauth/dry-run supply their own.
+        // Mint this client's own key (per-tool) for every generated config
+        // credential; the provisional name is promoted after the durable write.
         let this_key = match (key_source, manager) {
-            (Some(source), Some(mgr)) => match mint_for_tool(source, &spec, pool, mgr) {
+            // Any generated credential embedded in a config needs the same
+            // publish-then-promote lifecycle, regardless of transport.
+            (Some(source), Some(mgr)) => match mint_for_tool(source, &spec, pool, mgr, true) {
                 Ok(k) => Some(k),
                 Err(e) => {
                     // Minting failed for this tool — record and keep going.
@@ -803,15 +849,31 @@ fn write_all_clients(
             },
             // Dry-run placeholder (Provided) with no manager, or provided --key.
             _ => match key_source {
-                Some(KeySource::Provided(k)) => Some(k.clone()),
+                Some(KeySource::Provided(k)) => Some(MintedKey {
+                    value: k.clone(),
+                    provisional_name: None,
+                    final_name: None,
+                }),
                 _ => None,
             },
         };
 
-        let server = build_server_config(args, cfg, this_key.as_deref().unwrap_or(""));
+        let server = build_server_config(
+            args,
+            cfg,
+            this_key
+                .as_ref()
+                .map(|key| key.value.as_str())
+                .unwrap_or(""),
+        );
         let entry = match spec.compile(&server) {
             Ok(entry) => entry,
             Err(error) => {
+                if let Some(key) = this_key.as_ref()
+                    && let Some(name) = key.provisional_name.as_deref()
+                {
+                    let _ = crate::auth::revoke_api_key(pool, name);
+                }
                 outcomes.push(ClientOutcome {
                     id: id.clone(),
                     display: spec.display.to_string(),
@@ -828,7 +890,7 @@ fn write_all_clients(
         let out_key = if args.stdio || args.oauth {
             None
         } else {
-            this_key.clone()
+            this_key.as_ref().map(|key| key.value.clone())
         };
         let auth_hint = if args.oauth {
             match spec.oauth {
@@ -866,27 +928,57 @@ fn write_all_clients(
             }
         } else {
             match writer::write(&path, spec.format, &entry) {
-                Ok(action) => outcomes.push(ClientOutcome {
-                    id: id.clone(),
-                    display: spec.display.to_string(),
-                    format: spec.format.as_str().to_string(),
-                    path: Some(path),
-                    action: Some(action.as_str().to_string()),
-                    notes: entry.notes.clone(),
-                    key: out_key,
-                    auth_hint,
-                    ..Default::default()
-                }),
-                Err(e) => outcomes.push(ClientOutcome {
-                    id: id.clone(),
-                    display: spec.display.to_string(),
-                    format: spec.format.as_str().to_string(),
-                    path: Some(path),
-                    notes: entry.notes.clone(),
-                    error: Some(e.message.clone()),
-                    manual_snippet: e.manual_snippet,
-                    ..Default::default()
-                }),
+                Ok(action) => {
+                    let promotion = this_key.as_ref().and_then(|key| {
+                        Some((key.provisional_name.as_deref()?, key.final_name.as_deref()?))
+                    });
+                    if let Some((provisional, final_name)) = promotion
+                        && let Err(error) =
+                            crate::auth::promote_api_key(pool, provisional, final_name)
+                    {
+                        outcomes.push(ClientOutcome {
+                            id: id.clone(),
+                            display: spec.display.to_string(),
+                            format: spec.format.as_str().to_string(),
+                            path: Some(path),
+                            notes: entry.notes.clone(),
+                            error: Some(format!(
+                                "config was written, but credential promotion failed: {error}"
+                            )),
+                            ..Default::default()
+                        });
+                    } else {
+                        outcomes.push(ClientOutcome {
+                            id: id.clone(),
+                            display: spec.display.to_string(),
+                            format: spec.format.as_str().to_string(),
+                            path: Some(path),
+                            action: Some(action.as_str().to_string()),
+                            notes: entry.notes.clone(),
+                            key: out_key,
+                            auth_hint,
+                            ..Default::default()
+                        });
+                    }
+                }
+                Err(e) => {
+                    if let Some(key) = this_key.as_ref()
+                        && let Some(provisional) = key.provisional_name.as_deref()
+                        && !e.published
+                    {
+                        let _ = crate::auth::revoke_api_key(pool, provisional);
+                    }
+                    outcomes.push(ClientOutcome {
+                        id: id.clone(),
+                        display: spec.display.to_string(),
+                        format: spec.format.as_str().to_string(),
+                        path: Some(path),
+                        notes: entry.notes.clone(),
+                        error: Some(e.message.clone()),
+                        manual_snippet: e.manual_snippet,
+                        ..Default::default()
+                    });
+                }
             }
         }
     }
@@ -1457,6 +1549,57 @@ mod tests {
             .unwrap();
         assert!(is_bot, "opencode-solo must be a bot");
         assert_eq!(owner, Some(owner_id), "bot must be owned by the operator");
+    }
+
+    fn assert_write_failure_keeps_existing_key_and_cleans_provisional(stdio: bool) {
+        let guard = tmp();
+        let dir = guard.path();
+        let b = base(dir);
+        let pool = db::open_memory().unwrap();
+        let owner_id = seed_user(&pool, "solo", true);
+        let bot_id = {
+            let conn = pool.write().unwrap();
+            crate::db::queries::users::ensure_bot(&conn, owner_id, "opencode", "OpenCode")
+                .unwrap()
+                .id
+        };
+        let manager = crate::auth::create_key_manager().unwrap();
+        let old_key =
+            crate::auth::create_api_key(&pool, &manager, "opencode-solo", Some(bot_id)).unwrap();
+        std::fs::create_dir_all(&b.project).unwrap();
+        std::fs::write(b.project.join("opencode.json"), "not json").unwrap();
+
+        let mut cfg = Config::default();
+        cfg.database.path = dir.join("mydb.db");
+        let mut a = args(&["opencode"], Scope::Project);
+        a.stdio = stdio;
+        a.key = None;
+
+        let result = run(&a, &cfg, &pool, &b).unwrap();
+        assert!(result.outcomes[0].error.is_some());
+        assert!(
+            crate::auth::resolve_api_key_user(&pool, &manager, &old_key).is_ok(),
+            "a failed config write must not revoke the previously published key"
+        );
+        let conn = pool.read().unwrap();
+        let provisional_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM api_keys WHERE name LIKE 'opencode-solo-pending-%' AND revoked = 0",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(provisional_count, 0);
+    }
+
+    #[test]
+    fn run_stdio_write_failure_keeps_existing_key_and_cleans_provisional() {
+        assert_write_failure_keeps_existing_key_and_cleans_provisional(true);
+    }
+
+    #[test]
+    fn run_remote_write_failure_keeps_existing_key_and_cleans_provisional() {
+        assert_write_failure_keeps_existing_key_and_cleans_provisional(false);
     }
 
     #[test]
