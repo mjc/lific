@@ -3095,13 +3095,13 @@ mod tests {
         );
 
         for suffix in [
-            "&code_challenge={challenge}&code_challenge_method=S256",
+            "&code_challenge=__CHALLENGE__&code_challenge_method=S256",
             "&scope=mcp&code_challenge_method=S256",
-            "&scope=mcp&code_challenge={challenge}",
+            "&scope=mcp&code_challenge=__CHALLENGE__",
             "&scope=mcp&code_challenge=&code_challenge_method=S256",
-            "&scope=mcp&code_challenge={challenge}&code_challenge_method=plain",
+            "&scope=mcp&code_challenge=__CHALLENGE__&code_challenge_method=plain",
         ] {
-            let suffix = suffix.replace("{challenge}", &challenge);
+            let suffix = suffix.replace("__CHALLENGE__", &challenge);
             let resp = app
                 .clone()
                 .oneshot(
