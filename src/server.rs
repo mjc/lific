@@ -22,7 +22,7 @@ use axum::{
 };
 use rmcp::transport::streamable_http_server::{
     session::local::LocalSessionManager,
-    tower::{StreamableHttpServerConfig, StreamableHttpService},
+    tower::StreamableHttpService,
 };
 use rust_embed::Embed;
 use tower_http::compression::CompressionLayer;
@@ -277,10 +277,7 @@ fn build_app_with_store(
         mcp_allowed_hosts.push(host);
     }
 
-    let mcp_config = StreamableHttpServerConfig::default()
-        .with_stateful_mode(false)
-        .with_json_response(true)
-        .with_allowed_hosts(mcp_allowed_hosts.clone());
+    let mcp_config = mcp::legacy_streamable_http_config(mcp_allowed_hosts.clone());
 
     let mcp_service = StreamableHttpService::new(
         move || {
@@ -701,10 +698,7 @@ fn build_authless_mcp_router(
     realtime: realtime::RealtimeHub,
 ) -> Router {
     let allowed_hosts_for_links = allowed_hosts.clone();
-    let config = StreamableHttpServerConfig::default()
-        .with_stateful_mode(false)
-        .with_json_response(true)
-        .with_allowed_hosts(allowed_hosts);
+    let config = mcp::legacy_streamable_http_config(allowed_hosts);
     let service = StreamableHttpService::new(
         move || Ok(mcp::LificMcp::with_realtime(pool.clone(), realtime.clone())),
         Arc::new(LocalSessionManager::default()),
@@ -1108,8 +1102,20 @@ mod authless_mcp_tests {
             StatusCode::OK,
             "authless MCP initialize must succeed without any auth header"
         );
+        assert!(
+            res.headers().get("mcp-session-id").is_some(),
+            "legacy initialize must establish an MCP session"
+        );
         let bytes = res.into_body().collect().await.unwrap().to_bytes();
-        let val: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+        let data = body
+            .lines()
+            .find_map(|line| {
+                line.strip_prefix("data: ")
+                    .filter(|data| !data.is_empty())
+            })
+            .expect("legacy initialize must contain an SSE data event");
+        let val: serde_json::Value = serde_json::from_str(data).unwrap();
         assert!(
             val["result"]["serverInfo"].is_object(),
             "expected an initialize result, got: {val}"

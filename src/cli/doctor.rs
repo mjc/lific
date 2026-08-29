@@ -161,7 +161,10 @@ pub async fn run(
     let report = build_report_with_config_path(cfg, explicit_config, key.as_deref()).await;
     print_report(&report, json);
     if report.fail_count() > 0 {
-        Err(format!("doctor: {} check(s) failed", report.fail_count()))
+        Err(format!(
+            "doctor: {} check(s) failed",
+            report.fail_count()
+        ))
     } else {
         Ok(())
     }
@@ -198,24 +201,14 @@ pub async fn build_report_with_config_path(
     // credential store keyed by the server's public_url when set, else the
     // loopback base, since that's how `lific login` would have keyed it.
     let cred_base = cfg.server.public_url.as_deref().unwrap_or(&base);
-    let (effective_key, key_source): (
-        Option<String>,
-        Option<crate::cli::credentials::TokenSource>,
-    ) = match key {
-        Some(k) => (Some(k.to_string()), None),
-        None => match crate::cli::credentials::load_with_source(cred_base) {
-            Ok(Some((tok, src))) => (Some(tok), Some(src)),
-            Ok(None) => (None, None),
-            Err(error) => {
-                checks.push(Check::new(
-                    "credentials",
-                    Status::Fail,
-                    format!("failed to read stored credentials: {error}"),
-                ));
-                (None, None)
-            }
-        },
-    };
+    let (effective_key, key_source): (Option<String>, Option<crate::cli::credentials::TokenSource>) =
+        match key {
+            Some(k) => (Some(k.to_string()), None),
+            None => match crate::cli::credentials::load_with_source(cred_base) {
+                Some((tok, src)) => (Some(tok), Some(src)),
+                None => (None, None),
+            },
+        };
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(3))
@@ -389,7 +382,10 @@ fn check_database(cfg: &Config) -> Check {
             Some(v) => Check::new(
                 "database",
                 Status::Pass,
-                format!("{} opens; migrations applied (schema v{v})", path.display()),
+                format!(
+                    "{} opens; migrations applied (schema v{v})",
+                    path.display()
+                ),
             ),
             None => Check::new(
                 "database",
@@ -635,6 +631,34 @@ fn initialize_body() -> serde_json::Value {
     })
 }
 
+fn parse_mcp_response_body(body: &str) -> Result<serde_json::Value, String> {
+    if let Ok(value) = serde_json::from_str(body.trim()) {
+        return Ok(value);
+    }
+
+    let mut event_data = String::new();
+    for line in body.lines().chain(std::iter::once("")) {
+        if line.is_empty() {
+            if !event_data.is_empty() {
+                if let Ok(value) = serde_json::from_str(&event_data) {
+                    return Ok(value);
+                }
+                event_data.clear();
+            }
+            continue;
+        }
+
+        if let Some(data) = line.strip_prefix("data:") {
+            if !event_data.is_empty() {
+                event_data.push('\n');
+            }
+            event_data.push_str(data.strip_prefix(' ').unwrap_or(data));
+        }
+    }
+
+    Err("response was neither JSON nor an SSE JSON event".to_string())
+}
+
 /// `POST {base}/mcp` an `initialize`. Without a key we expect a 401 carrying a
 /// `WWW-Authenticate` header (auth enforced, discovery advertised). With a key
 /// we expect a 200 whose JSON-RPC result contains `serverInfo`.
@@ -657,9 +681,7 @@ pub async fn check_mcp(client: &reqwest::Client, base: &str, key: Option<&str>) 
     };
 
     let status = resp.status();
-    let has_www_auth = resp
-        .headers()
-        .contains_key(reqwest::header::WWW_AUTHENTICATE);
+    let has_www_auth = resp.headers().contains_key(reqwest::header::WWW_AUTHENTICATE);
 
     match key {
         None => {
@@ -703,37 +725,47 @@ pub async fn check_mcp(client: &reqwest::Client, base: &str, key: Option<&str>) 
                     format!("initialize returned HTTP {}", status.as_u16()),
                 );
             }
-            // json_response mode: the body is a plain JSON-RPC envelope.
-            match resp.json::<serde_json::Value>().await {
-                Ok(body) => {
-                    if body
-                        .get("result")
-                        .and_then(|r| r.get("serverInfo"))
-                        .is_some()
-                    {
-                        let name = body
-                            .pointer("/result/serverInfo/name")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("lific");
-                        Check::new(
-                            "mcp",
-                            Status::Pass,
-                            format!("authorized initialize succeeded (serverInfo: {name})"),
-                        )
-                    } else if body.get("error").is_some() {
-                        Check::new(
-                            "mcp",
-                            Status::Fail,
-                            format!("initialize returned a JSON-RPC error: {}", body["error"]),
-                        )
-                    } else {
-                        Check::new("mcp", Status::Fail, "200 but result had no serverInfo")
+            match resp.text().await {
+                Ok(body) => match parse_mcp_response_body(&body) {
+                    Ok(body) => {
+                        if body
+                            .get("result")
+                            .and_then(|r| r.get("serverInfo"))
+                            .is_some()
+                        {
+                            let name = body
+                                .pointer("/result/serverInfo/name")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("lific");
+                            Check::new(
+                                "mcp",
+                                Status::Pass,
+                                format!("authorized initialize succeeded (serverInfo: {name})"),
+                            )
+                        } else if body.get("error").is_some() {
+                            Check::new(
+                                "mcp",
+                                Status::Fail,
+                                format!("initialize returned a JSON-RPC error: {}", body["error"]),
+                            )
+                        } else {
+                            Check::new(
+                                "mcp",
+                                Status::Fail,
+                                "200 but result had no serverInfo",
+                            )
+                        }
                     }
-                }
+                    Err(e) => Check::new(
+                        "mcp",
+                        Status::Fail,
+                        format!("200 but body was not JSON: {e}"),
+                    ),
+                },
                 Err(e) => Check::new(
                     "mcp",
                     Status::Fail,
-                    format!("200 but body was not JSON: {e}"),
+                    format!("could not read initialize response: {e}"),
                 ),
             }
         }
@@ -809,6 +841,18 @@ fn print_report(report: &Report, json: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_mcp_response_body_accepts_json_and_legacy_sse() {
+        let json = r#"{"jsonrpc":"2.0","id":1,"result":{}}"#;
+        let sse = "data: \n\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n";
+        let split_sse =
+            "data:{\"jsonrpc\":\"2.0\",\"id\":\ndata:1,\"result\":{}}\n\n";
+
+        assert_eq!(parse_mcp_response_body(json).unwrap()["id"], 1);
+        assert_eq!(parse_mcp_response_body(sse).unwrap()["id"], 1);
+        assert_eq!(parse_mcp_response_body(split_sse).unwrap()["id"], 1);
+    }
 
     fn check(name: &str, status: Status) -> Check {
         Check::new(name, status, "")
@@ -976,7 +1020,8 @@ mod tests {
     fn database_check_fails_when_parent_unwritable() {
         let mut cfg = Config::default();
         // A path under a directory that does not exist → parent not writable.
-        cfg.database.path = std::path::PathBuf::from("/nonexistent-lific-doctor-xyz/deep/lific.db");
+        cfg.database.path =
+            std::path::PathBuf::from("/nonexistent-lific-doctor-xyz/deep/lific.db");
         let c = check_database(&cfg);
         assert_eq!(c.status, Status::Fail, "detail: {}", c.detail);
     }
@@ -1168,7 +1213,9 @@ mod tests {
         let app = build_test_app(pool, "http://127.0.0.1");
         let base = serve_ephemeral(app).await;
 
-        let probe = http_server_reachable(&test_client(), &base).await.unwrap();
+        let probe = http_server_reachable(&test_client(), &base)
+            .await
+            .unwrap();
         assert!(probe.reachable);
         assert_eq!(probe.status, Some(200));
     }
@@ -1194,7 +1241,11 @@ mod tests {
 
         let c = check_mcp(&test_client(), &base, None).await;
         assert_eq!(c.status, Status::Pass, "detail: {}", c.detail);
-        assert!(c.detail.contains("auth enforced"), "detail: {}", c.detail);
+        assert!(
+            c.detail.contains("auth enforced"),
+            "detail: {}",
+            c.detail
+        );
     }
 
     #[tokio::test]
@@ -1246,7 +1297,13 @@ mod tests {
         assert!(report.ok);
 
         // server = warn, oauth_discovery + mcp = skipped
-        let by = |n: &str| report.checks.iter().find(|c| c.name == n).map(|c| c.status);
+        let by = |n: &str| {
+            report
+                .checks
+                .iter()
+                .find(|c| c.name == n)
+                .map(|c| c.status)
+        };
         assert_eq!(by("server"), Some(Status::Warn));
         assert_eq!(by("oauth_discovery"), Some(Status::Skipped));
         assert_eq!(by("mcp"), Some(Status::Skipped));
