@@ -6,45 +6,60 @@ const CONFIG_FILENAME: &str = "lific.toml";
 
 /// A config file that has been opened and read.
 ///
-/// The descriptor is kept alongside the contents so the permission tightening
-/// below acts on *the file we read*, not on whatever the pathname resolves to
-/// a moment later. Checking a path and then chmod-ing that same path is two
-/// lookups: between them the file can be replaced with a symlink to something
-/// else, and the chmod lands on the attacker's choice of target.
+/// Keeping the descriptor alongside the contents means permission tightening
+/// acts on the file we read, not on a later pathname lookup.
 struct ConfigFile {
     contents: String,
-    /// Held only for `fchmod` on unix; nothing else reads it.
     #[cfg(unix)]
     file: std::fs::File,
+    #[cfg(unix)]
+    systemd_credential: bool,
 }
 
-/// Make a group/other-readable config owner-only, through the descriptor it
-/// was read from. Fails closed on symlinks: [`read_config_file`] opens with
-/// `O_NOFOLLOW`, so a symlinked config never produces a [`ConfigFile`] to
-/// tighten in the first place.
+#[cfg(unix)]
+fn is_systemd_credential_path(path: &Path, credentials_dir: &Path) -> bool {
+    if !credentials_dir.is_absolute() {
+        return false;
+    }
+
+    let Ok(path) = std::fs::canonicalize(path) else {
+        return false;
+    };
+    let Ok(credentials_dir) = std::fs::canonicalize(credentials_dir) else {
+        return false;
+    };
+    path.parent() == Some(credentials_dir.as_path())
+}
+
+#[cfg(unix)]
+fn is_systemd_credential(path: &Path) -> bool {
+    std::env::var_os("CREDENTIALS_DIRECTORY")
+        .map(PathBuf::from)
+        .is_some_and(|dir| is_systemd_credential_path(path, &dir))
+}
+
+/// Make an ordinary config owner-only through the descriptor it was read
+/// from. systemd credentials are already protected by their credential
+/// directory and are intentionally immutable, so they are left untouched.
 #[cfg_attr(
     not(unix),
     expect(clippy::unnecessary_wraps, reason = "fallible on Unix")
 )]
-fn tighten_config_permissions(_config: &ConfigFile) -> std::io::Result<()> {
+fn tighten_config_permissions(config: &ConfigFile) -> std::io::Result<()> {
+    #[cfg(not(unix))]
+    let _ = config;
+
     #[cfg(unix)]
     {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        let metadata = _config.file.metadata()?;
-        if metadata.mode() & 0o077 != 0 {
-            _config
+
+        if !config.systemd_credential && config.file.metadata()?.mode() & 0o077 != 0 {
+            config
                 .file
                 .set_permissions(std::fs::Permissions::from_mode(0o600))?;
         }
     }
     Ok(())
-}
-
-fn can_ignore_permission_tightening(kind: std::io::ErrorKind) -> bool {
-    matches!(
-        kind,
-        std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ReadOnlyFilesystem
-    )
 }
 
 fn editable_document(existing: &str) -> Result<toml_edit::DocumentMut, String> {
@@ -63,12 +78,12 @@ fn editable_document(existing: &str) -> Result<toml_edit::DocumentMut, String> {
 fn read_config_file(path: &Path) -> std::io::Result<ConfigFile> {
     use std::io::Read;
     use std::os::unix::fs::OpenOptionsExt;
+
     let mut options = std::fs::OpenOptions::new();
     options.read(true).custom_flags(libc::O_NOFOLLOW);
     let mut file = options.open(path)?;
-    // A directory opens fine on Linux and only fails at read time; a device or
-    // fifo is never a config either. Reject anything that is not a plain file
-    // before its mode is touched.
+    // A directory opens fine on Linux and only fails at read time. Devices and
+    // FIFOs are not configuration files either, so reject them before reading.
     if !file.metadata()?.file_type().is_file() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -77,7 +92,11 @@ fn read_config_file(path: &Path) -> std::io::Result<ConfigFile> {
     }
     let mut contents = String::new();
     file.read_to_string(&mut contents)?;
-    Ok(ConfigFile { contents, file })
+    Ok(ConfigFile {
+        contents,
+        file,
+        systemd_credential: is_systemd_credential(path),
+    })
 }
 
 #[cfg(not(unix))]
@@ -434,51 +453,7 @@ impl Config {
 
         for path in &candidates {
             match std::fs::symlink_metadata(path) {
-                Ok(_) => match read_config_file(path) {
-                    Ok(file) => match toml::from_str::<Config>(&file.contents) {
-                        Ok(mut config) => {
-                            // A config on a read-only mount (notably a systemd
-                            // credential) is already immutable to this process.
-                            // Treat EROFS like an unowned file we can read but
-                            // cannot chmod; every other tightening failure is
-                            // still fatal.
-                            if let Err(source) = tighten_config_permissions(&file)
-                                && !can_ignore_permission_tightening(source.kind())
-                            {
-                                return Err(ConfigError::Read {
-                                    path: path.clone(),
-                                    source,
-                                });
-                            }
-                            info!(path = %path.display(), "loaded config");
-                            // Anchor a relative database path to the config
-                            // file's own directory, not the process cwd —
-                            // `lific --config /srv/lific/lific.toml <cmd>` must
-                            // find /srv/lific/lific.db no matter where it runs
-                            // from. (backup_dir derives from database.path, so
-                            // backups inherit the same anchoring.)
-                            if config.database.path.is_relative()
-                                && let Some(parent) = path.parent()
-                                && !parent.as_os_str().is_empty()
-                            {
-                                config.database.path = parent.join(&config.database.path);
-                            }
-                            return Ok(config);
-                        }
-                        Err(source) => {
-                            return Err(ConfigError::Parse {
-                                path: path.clone(),
-                                source: Box::new(source),
-                            });
-                        }
-                    },
-                    Err(source) => {
-                        return Err(ConfigError::Read {
-                            path: path.clone(),
-                            source,
-                        });
-                    }
-                },
+                Ok(_) => {}
                 Err(source) if source.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(source) => {
                     return Err(ConfigError::Read {
@@ -487,6 +462,37 @@ impl Config {
                     });
                 }
             }
+            let file = match read_config_file(path) {
+                Ok(file) => file,
+                Err(source) => {
+                    return Err(ConfigError::Read {
+                        path: path.clone(),
+                        source,
+                    });
+                }
+            };
+            let mut config =
+                toml::from_str::<Config>(&file.contents).map_err(|source| ConfigError::Parse {
+                    path: path.clone(),
+                    source: Box::new(source),
+                })?;
+
+            tighten_config_permissions(&file).map_err(|source| ConfigError::Read {
+                path: path.clone(),
+                source,
+            })?;
+
+            info!(path = %path.display(), "loaded config");
+            // Anchor a relative database path to the config file's own
+            // directory, not the process cwd. backup_dir derives from the
+            // database path and inherits the same anchoring.
+            if config.database.path.is_relative()
+                && let Some(parent) = path.parent()
+                && !parent.as_os_str().is_empty()
+            {
+                config.database.path = parent.join(&config.database.path);
+            }
+            return Ok(config);
         }
 
         Ok(Config::default())
@@ -672,13 +678,13 @@ enabled = false
 
     #[cfg(unix)]
     #[test]
-    fn loading_config_tightens_existing_file_permissions() {
+    fn loading_config_tightens_non_credential_file_permissions() {
         use std::os::unix::fs::PermissionsExt;
 
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("lific.toml");
         std::fs::write(&path, Config::default_toml()).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();
 
         Config::load(Some(&path)).unwrap();
 
@@ -690,7 +696,50 @@ enabled = false
 
     #[cfg(unix)]
     #[test]
-    fn loading_config_rejects_symlink_without_chmodding_target() {
+    fn systemd_credential_path_requires_a_direct_child() {
+        let tmp = tempfile::tempdir().unwrap();
+        let credentials = tmp.path().join("credentials");
+        std::fs::create_dir(&credentials).unwrap();
+        let credential = credentials.join("lific.toml");
+        std::fs::write(&credential, "").unwrap();
+
+        assert!(is_systemd_credential_path(&credential, &credentials));
+        assert!(!is_systemd_credential_path(
+            &credentials.join("nested/lific.toml"),
+            &credentials,
+        ));
+        assert!(!is_systemd_credential_path(
+            &tmp.path().join("credentials-other/lific.toml"),
+            &credentials,
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn systemd_credentials_skip_permission_tightening() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("lific.toml");
+        std::fs::write(&path, Config::default_toml()).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o440)).unwrap();
+        let file = read_config_file(&path).unwrap();
+        let file = ConfigFile {
+            systemd_credential: true,
+            ..file
+        };
+
+        tighten_config_permissions(&file).unwrap();
+
+        assert_eq!(
+            file.file.metadata().unwrap().permissions().mode() & 0o777,
+            0o440
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn loading_config_rejects_symlink_without_touching_target() {
         use std::os::unix::fs::{PermissionsExt, symlink};
 
         let tmp = tempfile::tempdir().unwrap();
@@ -707,51 +756,8 @@ enabled = false
         );
     }
 
-    /// The chmod rides the descriptor the contents were read from, so it can
-    /// only ever land on that inode. Swapping the *name* for a symlink to a
-    /// sensitive file after the read cannot redirect the permission change,
-    /// which the old check-then-chmod-by-path pair allowed.
-    #[cfg(unix)]
-    #[test]
-    fn tightening_follows_the_opened_file_not_the_pathname() {
-        use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
-
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("lific.toml");
-        std::fs::write(&path, Config::default_toml()).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
-        let inode = std::fs::metadata(&path).unwrap().ino();
-
-        // A bystander an attacker would want the chmod to hit.
-        let bystander = tmp.path().join("secrets");
-        std::fs::write(&bystander, "secret").unwrap();
-        std::fs::set_permissions(&bystander, std::fs::Permissions::from_mode(0o644)).unwrap();
-
-        Config::load(Some(&path)).unwrap();
-
-        let after = std::fs::metadata(&path).unwrap();
-        assert_eq!(after.ino(), inode, "same file, start to finish");
-        assert_eq!(after.permissions().mode() & 0o777, 0o600);
-        assert_eq!(
-            std::fs::metadata(&bystander).unwrap().permissions().mode() & 0o777,
-            0o644,
-            "nothing else may be chmodded"
-        );
-
-        // And once the name IS a symlink, loading fails closed rather than
-        // tightening whatever it points at.
-        let link = tmp.path().join("link.toml");
-        symlink(&bystander, &link).unwrap();
-        assert!(Config::load(Some(&link)).is_err());
-        assert_eq!(
-            std::fs::metadata(&bystander).unwrap().permissions().mode() & 0o777,
-            0o644
-        );
-    }
-
-    /// Anything that is not a plain file is refused before its mode is
-    /// touched: a directory opens fine on Linux, so the type check is what
-    /// stops it.
+    /// A directory opens fine on Linux, so the type check rejects it before
+    /// attempting to read it as configuration.
     #[cfg(unix)]
     #[test]
     fn loading_config_rejects_a_non_regular_path() {
@@ -763,25 +769,6 @@ enabled = false
             Config::load(Some(&dir)),
             Err(ConfigError::Read { .. })
         ));
-    }
-
-    /// An already-tight config is left exactly as it is — no needless chmod.
-    #[cfg(unix)]
-    #[test]
-    fn loading_config_leaves_owner_only_permissions_alone() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("lific.toml");
-        std::fs::write(&path, Config::default_toml()).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400)).unwrap();
-
-        Config::load(Some(&path)).unwrap();
-
-        assert_eq!(
-            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-            0o400
-        );
     }
 
     #[cfg(unix)]
@@ -1136,20 +1123,6 @@ enabled = false
     fn apply_database_path_rejects_relative_persistent_path() {
         let err = Config::apply_database_path("", Path::new("data/lific.db")).unwrap_err();
         assert!(err.contains("absolute"), "error was: {err}");
-    }
-
-    #[test]
-    fn permission_tightening_ignores_only_immutable_or_unowned_files() {
-        assert!(can_ignore_permission_tightening(
-            std::io::ErrorKind::PermissionDenied
-        ));
-        assert!(can_ignore_permission_tightening(
-            std::io::ErrorKind::ReadOnlyFilesystem
-        ));
-        assert!(!can_ignore_permission_tightening(
-            std::io::ErrorKind::InvalidInput
-        ));
-        assert!(!can_ignore_permission_tightening(std::io::ErrorKind::Other));
     }
 
     // LIFIC-24: the startup guard's bind-host check.

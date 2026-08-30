@@ -56,8 +56,6 @@ pub struct ServicePlan {
     pub config: PathBuf,
     /// Absolute working directory for the service process.
     pub workdir: PathBuf,
-    /// Absolute, user-writable path for launchd stdout and stderr.
-    pub launchd_log: PathBuf,
 }
 
 impl ServicePlan {
@@ -75,18 +73,11 @@ impl ServicePlan {
             .filter(|p| !p.as_os_str().is_empty())
             .ok_or_else(|| format!("config path {} has no parent directory", config.display()))?
             .to_path_buf();
-        let launchd_log = launchd_log_path()?;
-        reject_control_paths([
-            exe.as_path(),
-            config.as_path(),
-            workdir.as_path(),
-            launchd_log.as_path(),
-        ])?;
+        reject_control_paths([exe.as_path(), config.as_path(), workdir.as_path()])?;
         Ok(Self {
             exe,
             config,
             workdir,
-            launchd_log,
         })
     }
 
@@ -206,7 +197,7 @@ fn systemd_quote(value: &OsStr, escape_dollar: bool) -> String {
 }
 
 /// Render the launchd LaunchAgent plist.
-pub fn launchd_plist(plan: &ServicePlan) -> String {
+pub fn launchd_plist(plan: &ServicePlan, log: &Path) -> String {
     let arguments = plan
         .argv()
         .map(|arg| {
@@ -245,7 +236,7 @@ pub fn launchd_plist(plan: &ServicePlan) -> String {
 "#,
         label = LAUNCHD_LABEL,
         workdir = xml_escape(&plan.workdir.display().to_string()),
-        log = xml_escape(&plan.launchd_log.display().to_string()),
+        log = xml_escape(&log.display().to_string()),
     )
 }
 
@@ -355,11 +346,13 @@ pub fn install(manager: Manager, plan: &ServicePlan) -> Result<InstallReport, St
             })
         }
         Manager::Launchd => {
-            if let Some(dir) = plan.launchd_log.parent() {
+            let log = launchd_log_path()?;
+            reject_control_paths([log.as_path()])?;
+            if let Some(dir) = log.parent() {
                 std::fs::create_dir_all(dir)
                     .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
             }
-            std::fs::write(&path, launchd_plist(plan))
+            std::fs::write(&path, launchd_plist(plan, &log))
                 .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
             launchd_bootstrap(&path)?;
             Ok(InstallReport {
@@ -610,8 +603,11 @@ mod tests {
             exe: PathBuf::from("/home/u/.cargo/bin/lific"),
             config: PathBuf::from("/home/u/tracker/lific.toml"),
             workdir: PathBuf::from("/home/u/tracker"),
-            launchd_log: PathBuf::from("/home/u/Library/Logs/Lific/lific.log"),
         }
+    }
+
+    fn launchd_log() -> PathBuf {
+        PathBuf::from("/home/u/Library/Logs/Lific/lific.log")
     }
 
     #[test]
@@ -710,7 +706,7 @@ mod tests {
 
     #[test]
     fn launchd_plist_contains_program_arguments_and_label() {
-        let plist = launchd_plist(&plan());
+        let plist = launchd_plist(&plan(), &launchd_log());
         assert!(plist.contains("<string>dev.lific</string>"));
         assert!(plist.contains("<string>/home/u/.cargo/bin/lific</string>"));
         assert!(plist.contains("<string>start</string>"));
@@ -726,7 +722,7 @@ mod tests {
     fn launchd_plist_escapes_xml_special_chars() {
         let mut p = plan();
         p.workdir = PathBuf::from("/home/u/a&b");
-        let plist = launchd_plist(&p);
+        let plist = launchd_plist(&p, &launchd_log());
         assert!(plist.contains("/home/u/a&amp;b"));
         assert!(!plist.contains("<string>/home/u/a&b</string>"));
     }

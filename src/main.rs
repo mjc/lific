@@ -45,7 +45,16 @@ fn is_crud_command(cmd: &Command) -> bool {
     )
 }
 
-fn write_private_config(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
+enum ConfigPublish {
+    Create,
+    Replace,
+}
+
+fn publish_private_config(
+    path: &std::path::Path,
+    contents: &str,
+    publish: ConfigPublish,
+) -> std::io::Result<()> {
     let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
     let staging = tempfile::Builder::new()
         .prefix(".lific-config-")
@@ -66,7 +75,15 @@ fn write_private_config(path: &std::path::Path, contents: &str) -> std::io::Resu
         file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
     }
     file.sync_all()?;
-    std::fs::rename(temp, path)?;
+
+    match publish {
+        ConfigPublish::Create => {
+            // A hard link publishes only when the destination does not yet
+            // exist, leaving an existing configuration untouched on races.
+            std::fs::hard_link(temp, path)?;
+        }
+        ConfigPublish::Replace => std::fs::rename(temp, path)?,
+    }
     sync_parent_dir(parent)
 }
 
@@ -84,28 +101,6 @@ fn sync_parent_dir(_dir: &std::path::Path) -> std::io::Result<()> {
         std::fs::File::open(_dir)?.sync_all()?;
     }
     Ok(())
-}
-
-fn create_private_config(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
-    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-    let staging = tempfile::Builder::new()
-        .prefix(".lific-config-")
-        .tempdir_in(parent)?;
-    let temp = staging.path().join(path.file_name().unwrap_or_default());
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-    }
-    let mut file = options.open(&temp)?;
-    std::io::Write::write_all(&mut file, contents.as_bytes())?;
-    file.sync_all()?;
-    // A hard link publishes only when the destination does not yet exist.
-    // It is atomic and leaves an existing configuration untouched on races.
-    std::fs::hard_link(&temp, path)?;
-    sync_parent_dir(parent)
 }
 
 use rmcp::ServiceExt;
@@ -198,16 +193,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // LIF-292: init/service must honor --config; they take the raw
             // flag (not the pre-loaded cfg) because init may need to CREATE
             // the file at that path and then reload anchored to it.
-            return cmd_init(
-                cli.config.as_deref(),
-                cli.db.as_deref(),
-                cli.json,
+            return cmd_init(InitOptions {
+                config: cli.config.as_deref(),
+                database: cli.db.as_deref(),
+                json: cli.json,
                 no_service,
                 here,
                 name,
                 auth_mode,
                 password,
-            )
+            })
             .await;
         }
 
@@ -739,26 +734,36 @@ fn prompt_password_for_auth_mode() -> Result<String, Box<dyn std::error::Error>>
     }
 }
 
-// clap can't express the --config conflict, and init threads many small flags;
-// the repo tolerates this for command handlers (see cli/import.rs).
-#[allow(clippy::too_many_arguments)]
-async fn cmd_init(
-    config_flag: Option<&std::path::Path>,
-    db_flag: Option<&std::path::Path>,
-    json_flag: bool,
+struct InitOptions<'a> {
+    config: Option<&'a std::path::Path>,
+    database: Option<&'a std::path::Path>,
+    json: bool,
     no_service: bool,
     here: bool,
     name: Option<String>,
-    auth_mode_flag: Option<String>,
-    password_flag: Option<String>,
-) -> Result<(), Box<dyn std::error::Error>> {
+    auth_mode: Option<String>,
+    password: Option<String>,
+}
+
+async fn cmd_init(options: InitOptions<'_>) -> Result<(), Box<dyn std::error::Error>> {
     use cli::ui;
+
+    let InitOptions {
+        config,
+        database,
+        json,
+        no_service,
+        here,
+        name,
+        auth_mode,
+        password,
+    } = options;
     // clap can't express this conflict: --config is a global arg on the
     // top-level Cli, out of the subcommand's conflicts_with reach.
-    if here && config_flag.is_some() {
+    if here && config.is_some() {
         return Err("--here conflicts with --config — pick one location".into());
     }
-    let json = cli::term::wants_json(json_flag);
+    let json = cli::term::wants_json(json);
     if !json {
         ui::intro("lific init");
     }
@@ -766,7 +771,7 @@ async fn cmd_init(
     // an explicit --config, the cwd (--here / existing ./lific.toml), or the
     // OS-standard config+data dirs by default.
     let target = resolve_init_target(
-        config_flag,
+        config,
         here,
         std::path::Path::new("lific.toml").exists(),
         Config::os_default_instance(),
@@ -794,18 +799,18 @@ async fn cmd_init(
             Some(db) => Config::default_toml_with_db(db),
             None => Config::default_toml(),
         };
-        create_private_config(&config_path, &toml)?;
+        publish_private_config(&config_path, &toml, ConfigPublish::Create)?;
         true
     };
 
     // `init` creates a persistent service, so persist an explicit database
     // selection into its sole source of truth. Keeping --db only in this
     // process would initialize one database and then start another.
-    if let Some(db) = db_flag {
+    if let Some(db) = database {
         let db = absolute_cli_path(db, &std::env::current_dir()?);
         let existing = std::fs::read_to_string(&config_path)?;
         let toml = Config::apply_database_path(&existing, &db)?;
-        write_private_config(&config_path, &toml)?;
+        publish_private_config(&config_path, &toml, ConfigPublish::Replace)?;
     }
 
     // (Re)load from the file init actually operates on, so a relative
@@ -837,7 +842,7 @@ async fn cmd_init(
     // and create the first admin in that mode. An existing instance with users
     // skips all of this entirely.
     let created_admin = if !auth::has_human_operator(&pool) {
-        let mode = resolve_auth_mode(&auth_mode_flag)?;
+        let mode = resolve_auth_mode(&auth_mode)?;
 
         // Persist the choice into the config file, editing it in place (the
         // change set `[auth] required` and `[server] host`; every other section
@@ -845,7 +850,7 @@ async fn cmd_init(
         // service plan) reflects required/host.
         let existing = std::fs::read_to_string(&config_path).unwrap_or_default();
         let new_toml = Config::apply_auth_mode(&existing, mode.required(), mode.host())?;
-        write_private_config(&config_path, &new_toml)?;
+        publish_private_config(&config_path, &new_toml, ConfigPublish::Replace)?;
         cfg = Config::load(Some(&config_path))?;
 
         let op_name = match name {
@@ -869,7 +874,7 @@ async fn cmd_init(
         let admin = if mode.passwordless() {
             db::queries::users::create_passwordless_admin(&conn, &op_name)?
         } else {
-            let pw = match &password_flag {
+            let pw = match &password {
                 Some(p) => p.clone(),
                 None => prompt_password_for_auth_mode()?,
             };
@@ -1061,7 +1066,7 @@ async fn cmd_init(
 
 #[cfg(test)]
 mod init_target_tests {
-    use super::{Config, absolute_cli_path, auth, cmd_init, resolve_init_target};
+    use super::{Config, InitOptions, absolute_cli_path, auth, cmd_init, resolve_init_target};
     use crate::db;
     use std::path::{Path, PathBuf};
 
@@ -1136,16 +1141,16 @@ mod init_target_tests {
     // filesystem access, so calling it here is side-effect free.
     #[tokio::test]
     async fn init_rejects_here_with_config() {
-        let err = cmd_init(
-            Some(Path::new("/tmp/nonexistent/lific.toml")),
-            None,
-            true, // json
-            true, // no_service
-            true, // here
-            Some("test".into()),
-            None, // auth_mode
-            None, // password
-        )
+        let err = cmd_init(InitOptions {
+            config: Some(Path::new("/tmp/nonexistent/lific.toml")),
+            database: None,
+            json: true,
+            no_service: true,
+            here: true,
+            name: Some("test".into()),
+            auth_mode: None,
+            password: None,
+        })
         .await
         .unwrap_err();
         assert!(err.to_string().contains("--here conflicts with --config"));
@@ -1170,16 +1175,16 @@ mod init_target_tests {
         password: Option<&str>,
     ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
         let config_path = dir.path().join("lific.toml");
-        cmd_init(
-            Some(&config_path),
-            None,
-            true,  // json
-            true,  // no_service
-            false, // here
-            name.map(str::to_string),
-            auth_mode.map(str::to_string),
-            password.map(str::to_string),
-        )
+        cmd_init(InitOptions {
+            config: Some(&config_path),
+            database: None,
+            json: true,
+            no_service: true,
+            here: false,
+            name: name.map(str::to_string),
+            auth_mode: auth_mode.map(str::to_string),
+            password: password.map(str::to_string),
+        })
         .await?;
         let cfg = Config::load(Some(&config_path))?;
         let pool = db::open(&cfg.database.path)?;
@@ -1202,16 +1207,16 @@ mod init_target_tests {
         let config_path = dir.path().join("config/lific.toml");
         let db_path = dir.path().join("data/main.db");
 
-        cmd_init(
-            Some(&config_path),
-            Some(&db_path),
-            true,
-            true,
-            false,
-            Some("Blake".into()),
-            Some("login-free".into()),
-            None,
-        )
+        cmd_init(InitOptions {
+            config: Some(&config_path),
+            database: Some(&db_path),
+            json: true,
+            no_service: true,
+            here: false,
+            name: Some("Blake".into()),
+            auth_mode: Some("login-free".into()),
+            password: None,
+        })
         .await
         .unwrap();
 
@@ -1308,16 +1313,16 @@ mod init_target_tests {
     async fn init_rejects_invalid_auth_mode() {
         let dir = temp_dir();
         let config_path = dir.path().join("lific.toml");
-        let err = cmd_init(
-            Some(&config_path),
-            None,
-            true, // json
-            true, // no_service
-            false,
-            Some("Blake".to_string()),
-            Some("bogus".to_string()),
-            None,
-        )
+        let err = cmd_init(InitOptions {
+            config: Some(&config_path),
+            database: None,
+            json: true,
+            no_service: true,
+            here: false,
+            name: Some("Blake".to_string()),
+            auth_mode: Some("bogus".to_string()),
+            password: None,
+        })
         .await
         .unwrap_err();
         assert!(err.to_string().contains("invalid --auth-mode"));
