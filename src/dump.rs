@@ -449,15 +449,19 @@ struct BlobIdentity {
     ino: u64,
 }
 
-/// Whether an open failure means "that name is a symlink and O_NOFOLLOW
-/// refused it". Linux reports `ELOOP`, the BSDs `EMLINK`;
-/// `ErrorKind::FilesystemLoop` is still unstable, so match the raw codes.
+/// Whether an open failure means "that name is a link and the hardened opener
+/// refused it". Unix reports `ELOOP` or `EMLINK`; on Windows the filesystem
+/// helper deliberately maps reparse-point rejection to `InvalidInput`.
 fn is_symlink(error: &std::io::Error) -> bool {
     #[cfg(unix)]
     {
         matches!(error.raw_os_error(), Some(code) if code == libc::ELOOP || code == libc::EMLINK)
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        error.kind() == std::io::ErrorKind::InvalidInput
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = error;
         false
@@ -2002,6 +2006,13 @@ mod tests {
         assert!(!archive_entries(&out).contains(&format!("attachments/{name}")));
         assert_eq!(manifest.attachment_count, 2, "only the real blobs count");
 
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_reparse_point_open_failures_are_skipped() {
+        let error = std::io::Error::from(std::io::ErrorKind::InvalidInput);
+        assert!(is_symlink(&error));
     }
 
     #[test]
