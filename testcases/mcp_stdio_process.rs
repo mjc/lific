@@ -52,6 +52,15 @@ fn legacy_stdio_process_negotiates_lists_and_calls() {
                 "arguments": {"query": "lific-process-test-no-match"}
             }
         }),
+        json!({
+            "jsonrpc": "2.0",
+            "id": 89,
+            "method": "tools/call",
+            "params": {
+                "name": "search",
+                "arguments": {"query": 3}
+            }
+        }),
     ];
     let mut stdin = child.stdin.take().expect("piped stdin");
     for request in requests {
@@ -91,7 +100,7 @@ fn legacy_stdio_process_negotiates_lists_and_calls() {
         .map(|line| serde_json::from_str(line).expect("stdout line is JSON-RPC"))
         .collect();
 
-    assert_eq!(responses.len(), 3, "notifications produce no response");
+    assert_eq!(responses.len(), 4, "notifications produce no response");
     let response = |id| {
         responses
             .iter()
@@ -101,4 +110,6 @@ fn legacy_stdio_process_negotiates_lists_and_calls() {
     assert_eq!(response(41)["result"]["protocolVersion"], "2025-03-26");
     assert!(response(17)["result"]["tools"].is_array());
     assert!(response(88)["result"]["content"].is_array());
+    assert_eq!(response(89)["error"]["code"], -32602);
+    assert!(response(89).get("result").is_none());
 }

@@ -21,6 +21,7 @@ use crate::realtime::{RealtimeEvent, RealtimeHub};
 use crate::storage::AttachmentStore;
 
 const LEGACY_PROTOCOL_VERSIONS: &[ProtocolVersion] = &[ProtocolVersion::V_2025_03_26];
+const TOOL_ARGUMENT_DESERIALIZATION_ERROR_PREFIX: &str = "failed to deserialize parameters:";
 
 /// Keep the pre-July MCP transport contract explicit while rmcp evolves.
 /// Legacy clients still negotiate an initialize session and receive
@@ -499,6 +500,33 @@ impl LificMcp {
             .await
     }
 
+    /// rmcp 3 turns the invalid-params error produced while deserializing a
+    /// tool's arguments into an `isError` tool result. Restore the legacy MCP
+    /// JSON-RPC error so malformed arguments remain protocol errors.
+    fn restore_legacy_tool_argument_error(
+        response: rmcp::model::CallToolResponse,
+    ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
+        let rmcp::model::CallToolResponse::Complete(result) = &response else {
+            return Ok(response);
+        };
+        let Some(text) = result
+            .content
+            .first()
+            .and_then(rmcp::model::ContentBlock::as_text)
+        else {
+            return Ok(response);
+        };
+        if result.is_error != Some(true)
+            || !text
+                .text
+                .starts_with(TOOL_ARGUMENT_DESERIALIZATION_ERROR_PREFIX)
+        {
+            return Ok(response);
+        }
+
+        Err(rmcp::ErrorData::invalid_params(text.text.clone(), None))
+    }
+
     /// Point the attachment tools at an explicit store. An in-memory pool has
     /// no real database file to derive a directory from, so tests that upload
     /// bytes hand in a scratch directory instead of writing into the process's
@@ -656,8 +684,11 @@ impl ServerHandler for LificMcp {
         let tool_context =
             rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
         async move {
-            self.dispatch_tool_with_context(request_context, || self.tool_router.call(tool_context))
-                .await
+            self.dispatch_tool_with_context(request_context, || async {
+                let response = self.tool_router.call(tool_context).await?;
+                Self::restore_legacy_tool_argument_error(response)
+            })
+            .await
         }
     }
 

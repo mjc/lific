@@ -1285,7 +1285,7 @@ mod authless_mcp_tests {
         assert_object_keys(&first["result"], &["tools"]);
 
         let call = post_session(
-            router,
+            router.clone(),
             token,
             &session_id,
             serde_json::json!({
@@ -1303,6 +1303,26 @@ mod authless_mcp_tests {
         let call = jsonrpc_body(&call.into_body().collect().await.unwrap().to_bytes());
         assert_object_keys(&call["result"], &["content", "isError"]);
         assert_eq!(call["result"]["isError"], false);
+
+        let malformed = post_session(
+            router,
+            token,
+            &session_id,
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "tools/call",
+                "params": {
+                    "name": "search",
+                    "arguments": {"query": 3}
+                }
+            }),
+        )
+        .await;
+        assert_eq!(malformed.status(), StatusCode::OK);
+        let malformed = jsonrpc_body(&malformed.into_body().collect().await.unwrap().to_bytes());
+        assert_eq!(malformed["error"]["code"], -32602);
+        assert!(malformed.get("result").is_none());
     }
 
     #[tokio::test]
