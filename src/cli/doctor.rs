@@ -39,7 +39,11 @@
 use std::path::Path;
 use std::time::Duration;
 
-use serde::Serialize;
+use rmcp::model::{
+    CallToolResult, InitializeResult, JsonRpcError, JsonRpcResponse, ListToolsResult,
+    NumberOrString, ProtocolVersion,
+};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::config::Config;
 
@@ -713,21 +717,236 @@ pub async fn check_mcp(client: &reqwest::Client, base: &str, key: Option<&str>) 
     }
 }
 
-fn has_server_info(value: &serde_json::Value) -> bool {
-    ["name", "version"].into_iter().all(|field| {
-        value
-            .get(field)
-            .and_then(|value| value.as_str())
-            .is_some_and(|value| !value.trim().is_empty())
-    })
+#[derive(Debug, thiserror::Error)]
+enum McpSessionError {
+    #[error("{operation} request failed: {source}")]
+    Request {
+        operation: &'static str,
+        #[source]
+        source: reqwest::Error,
+    },
+    #[error("{operation} returned HTTP {status}")]
+    Status {
+        operation: &'static str,
+        status: reqwest::StatusCode,
+    },
+    #[error("{operation} response body could not be read: {source}")]
+    ReadBody {
+        operation: &'static str,
+        #[source]
+        source: reqwest::Error,
+    },
+    #[error("{operation} response body was invalid: {detail}")]
+    Body {
+        operation: &'static str,
+        detail: String,
+    },
+    #[error("{operation} response was not valid JSON-RPC: {source}; body: {body}")]
+    JsonRpc {
+        operation: &'static str,
+        #[source]
+        source: serde_json::Error,
+        body: serde_json::Value,
+    },
+    #[error("{operation} response id was {actual}, expected {expected}")]
+    ResponseId {
+        operation: &'static str,
+        actual: NumberOrString,
+        expected: i64,
+    },
+    #[error("{operation} returned JSON-RPC error {code}: {message}")]
+    Remote {
+        operation: &'static str,
+        code: i32,
+        message: String,
+    },
+    #[error("initialize negotiated protocol {actual}, expected 2025-03-26")]
+    ProtocolVersion { actual: ProtocolVersion },
+    #[error("initialize returned incomplete serverInfo")]
+    ServerInfo,
 }
 
-async fn response_json(response: reqwest::Response) -> Result<serde_json::Value, String> {
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum JsonRpcOutcome<T> {
+    Response(JsonRpcResponse<T>),
+    Error(JsonRpcError),
+}
+
+fn jsonrpc_result<T: DeserializeOwned>(
+    body: serde_json::Value,
+    expected_id: i64,
+    operation: &'static str,
+) -> Result<T, McpSessionError> {
+    let response: JsonRpcOutcome<T> =
+        serde_json::from_value(body.clone()).map_err(|source| McpSessionError::JsonRpc {
+            operation,
+            source,
+            body,
+        })?;
+    let response = match response {
+        JsonRpcOutcome::Response(response) => response,
+        JsonRpcOutcome::Error(response) => {
+            return Err(McpSessionError::Remote {
+                operation,
+                code: response.error.code.0,
+                message: response.error.message.into_owned(),
+            });
+        }
+    };
+    if response.id != NumberOrString::Number(expected_id) {
+        return Err(McpSessionError::ResponseId {
+            operation,
+            actual: response.id,
+            expected: expected_id,
+        });
+    }
+    Ok(response.result)
+}
+
+async fn jsonrpc_response<T: DeserializeOwned>(
+    response: reqwest::Response,
+    expected_id: i64,
+    operation: &'static str,
+) -> Result<T, McpSessionError> {
     let body = response
         .text()
         .await
-        .map_err(|error| format!("response body could not be read: {error}"))?;
-    crate::mcp::parse_response_body(body.as_bytes())
+        .map_err(|source| McpSessionError::ReadBody { operation, source })?;
+    let body = crate::mcp::parse_response_body(body.as_bytes())
+        .map_err(|detail| McpSessionError::Body { operation, detail })?;
+    jsonrpc_result(body, expected_id, operation)
+}
+
+fn validate_initialize(initialize: &InitializeResult) -> Result<&str, McpSessionError> {
+    if initialize.protocol_version != ProtocolVersion::V_2025_03_26 {
+        return Err(McpSessionError::ProtocolVersion {
+            actual: initialize.protocol_version.clone(),
+        });
+    }
+    if initialize.server_info.name.trim().is_empty()
+        || initialize.server_info.version.trim().is_empty()
+    {
+        return Err(McpSessionError::ServerInfo);
+    }
+    Ok(&initialize.server_info.name)
+}
+
+struct McpDoctorSession<'a> {
+    client: &'a reqwest::Client,
+    url: &'a str,
+    key: &'a str,
+    session_id: &'a str,
+}
+
+impl McpDoctorSession<'_> {
+    fn request(&self, body: &serde_json::Value) -> reqwest::RequestBuilder {
+        self.client
+            .post(self.url)
+            .bearer_auth(self.key)
+            .header("Accept", "application/json, text/event-stream")
+            .header("Content-Type", "application/json")
+            .header("MCP-Protocol-Version", "2025-03-26")
+            .header("MCP-Session-Id", self.session_id)
+            .json(body)
+    }
+
+    async fn send(
+        &self,
+        operation: &'static str,
+        body: serde_json::Value,
+    ) -> Result<reqwest::Response, McpSessionError> {
+        let response = self
+            .request(&body)
+            .send()
+            .await
+            .map_err(|source| McpSessionError::Request { operation, source })?;
+        if !response.status().is_success() {
+            return Err(McpSessionError::Status {
+                operation,
+                status: response.status(),
+            });
+        }
+        Ok(response)
+    }
+
+    async fn call<T: DeserializeOwned>(
+        &self,
+        operation: &'static str,
+        expected_id: i64,
+        body: serde_json::Value,
+    ) -> Result<T, McpSessionError> {
+        let response = self.send(operation, body).await?;
+        jsonrpc_response(response, expected_id, operation).await
+    }
+
+    async fn check(&self, initialize: reqwest::Response) -> Result<String, McpSessionError> {
+        let initialize: InitializeResult = jsonrpc_response(initialize, 1, "initialize").await?;
+        let server_name = validate_initialize(&initialize)?;
+
+        self.send(
+            "initialized notification",
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized",
+                "params": {}
+            }),
+        )
+        .await?;
+
+        let _: ListToolsResult = self
+            .call(
+                "tools/list",
+                2,
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "tools/list",
+                    "params": {}
+                }),
+            )
+            .await?;
+
+        let _: CallToolResult = self
+            .call(
+                "tools/call",
+                3,
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 3,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "search",
+                        "arguments": {"query": "lific-doctor-no-such-result"}
+                    }
+                }),
+            )
+            .await?;
+
+        Ok(format!(
+            "legacy lifecycle succeeded (serverInfo: {}); initialized, tools/list, and harmless tools/call succeeded",
+            server_name
+        ))
+    }
+
+    async fn close(&self) {
+        match self
+            .client
+            .delete(self.url)
+            .bearer_auth(self.key)
+            .header("MCP-Protocol-Version", "2025-03-26")
+            .header("MCP-Session-Id", self.session_id)
+            .send()
+            .await
+        {
+            Ok(response) if response.status().is_success() => {}
+            Ok(response) => tracing::warn!(
+                status = %response.status(),
+                "MCP doctor session cleanup returned a non-success status"
+            ),
+            Err(error) => tracing::warn!(error = %error, "MCP doctor session cleanup failed"),
+        }
+    }
 }
 
 async fn check_mcp_session(
@@ -737,109 +956,15 @@ async fn check_mcp_session(
     session_id: &str,
     initialize: reqwest::Response,
 ) -> Result<String, String> {
-    let result = async {
-        let body = response_json(initialize).await?;
-        if body["result"]["protocolVersion"] != "2025-03-26"
-            || !has_server_info(&body["result"]["serverInfo"])
-        {
-            return Err(format!("initialize response was incomplete: {body}"));
-        }
-        let name = body["result"]["serverInfo"]["name"]
-            .as_str()
-            .unwrap_or("lific");
-
-        let request = |body: serde_json::Value| {
-            client
-                .post(url)
-                .bearer_auth(key)
-                .header("Accept", "application/json, text/event-stream")
-                .header("Content-Type", "application/json")
-                .header("MCP-Protocol-Version", "2025-03-26")
-                .header("MCP-Session-Id", session_id)
-                .json(&body)
-        };
-
-        let initialized = request(serde_json::json!({
-            "jsonrpc": "2.0",
-            "method": "notifications/initialized",
-            "params": {}
-        }))
-        .send()
-        .await
-        .map_err(|error| format!("initialized notification failed: {error}"))?;
-        if !initialized.status().is_success() {
-            return Err(format!(
-                "initialized notification returned HTTP {}",
-                initialized.status().as_u16()
-            ));
-        }
-
-        let list = request(serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "tools/list",
-            "params": {}
-        }))
-        .send()
-        .await
-        .map_err(|error| format!("tools/list request failed: {error}"))?;
-        if !list.status().is_success() {
-            return Err(format!(
-                "tools/list returned HTTP {}",
-                list.status().as_u16()
-            ));
-        }
-        let list = response_json(list).await?;
-        if list["id"] != 2 || !list["result"]["tools"].is_array() {
-            return Err(format!("tools/list response was incomplete: {list}"));
-        }
-
-        let call = request(serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "tools/call",
-            "params": {
-                "name": "search",
-                "arguments": {"query": "lific-doctor-no-such-result"}
-            }
-        }))
-        .send()
-        .await
-        .map_err(|error| format!("tools/call request failed: {error}"))?;
-        if !call.status().is_success() {
-            return Err(format!(
-                "tools/call returned HTTP {}",
-                call.status().as_u16()
-            ));
-        }
-        let call = response_json(call).await?;
-        if call["id"] != 3 || !call["result"]["content"].is_array() {
-            return Err(format!("tools/call response was incomplete: {call}"));
-        }
-
-        Ok(format!(
-            "legacy lifecycle succeeded (serverInfo: {name}); initialized, tools/list, and harmless tools/call succeeded"
-        ))
-    }
-    .await;
-
-    match client
-        .delete(url)
-        .bearer_auth(key)
-        .header("MCP-Protocol-Version", "2025-03-26")
-        .header("MCP-Session-Id", session_id)
-        .send()
-        .await
-    {
-        Ok(response) if response.status().is_success() => {}
-        Ok(response) => tracing::warn!(
-            status = %response.status(),
-            "MCP doctor session cleanup returned a non-success status"
-        ),
-        Err(error) => tracing::warn!(error = %error, "MCP doctor session cleanup failed"),
-    }
-
-    result
+    let session = McpDoctorSession {
+        client,
+        url,
+        key,
+        session_id,
+    };
+    let result = session.check(initialize).await;
+    session.close().await;
+    result.map_err(|error| error.to_string())
 }
 
 // ── Check 7: public_url ──────────────────────────────────────────────────
@@ -912,6 +1037,18 @@ fn print_report(report: &Report, json: bool) {
 mod tests {
     use super::*;
 
+    fn initialize_response(server_info: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "protocolVersion": "2025-03-26",
+                "capabilities": {},
+                "serverInfo": server_info
+            }
+        })
+    }
+
     #[test]
     fn parse_mcp_response_body_accepts_json_and_legacy_sse() {
         let json = r#"{"jsonrpc":"2.0","id":1,"result":{}}"#;
@@ -928,16 +1065,72 @@ mod tests {
     }
 
     #[test]
-    fn mcp_server_info_requires_nonempty_name_and_version() {
-        assert!(has_server_info(&serde_json::json!({
-            "name": "lific",
-            "version": "2.7.1"
-        })));
-        assert!(!has_server_info(&serde_json::json!({"name": "lific"})));
-        assert!(!has_server_info(&serde_json::json!({
-            "name": " ",
-            "version": "2.7.1"
-        })));
+    fn mcp_initialize_response_is_typed_and_validated() {
+        let initialize: InitializeResult = jsonrpc_result(
+            initialize_response(serde_json::json!({"name": "lific", "version": "2.7.1"})),
+            1,
+            "initialize",
+        )
+        .unwrap();
+        assert_eq!(validate_initialize(&initialize).unwrap(), "lific");
+
+        let blank_name: InitializeResult = jsonrpc_result(
+            initialize_response(serde_json::json!({"name": " ", "version": "2.7.1"})),
+            1,
+            "initialize",
+        )
+        .unwrap();
+        assert!(matches!(
+            validate_initialize(&blank_name),
+            Err(McpSessionError::ServerInfo)
+        ));
+
+        let missing_capabilities = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "protocolVersion": "2025-03-26",
+                "serverInfo": {"name": "lific", "version": "2.7.1"}
+            }
+        });
+        assert!(matches!(
+            jsonrpc_result::<InitializeResult>(missing_capabilities, 1, "initialize"),
+            Err(McpSessionError::JsonRpc { .. })
+        ));
+    }
+
+    #[test]
+    fn mcp_jsonrpc_response_requires_the_expected_id() {
+        let body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "result": {"tools": []}
+        });
+        assert!(matches!(
+            jsonrpc_result::<ListToolsResult>(body, 2, "tools/list"),
+            Err(McpSessionError::ResponseId {
+                expected: 2,
+                actual: NumberOrString::Number(3),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn mcp_jsonrpc_response_surfaces_remote_errors() {
+        let body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "error": {"code": -32601, "message": "missing method"}
+        });
+        assert!(matches!(
+            jsonrpc_result::<ListToolsResult>(body, 2, "tools/list"),
+            Err(McpSessionError::Remote {
+                code: -32601,
+                ref message,
+                ..
+            }) if message == "missing method"
+        ));
     }
 
     fn check(name: &str, status: Status) -> Check {
@@ -1402,14 +1595,9 @@ mod tests {
                 0 => (
                     StatusCode::OK,
                     [("mcp-session-id", "doctor-session")],
-                    axum::Json(serde_json::json!({
-                        "jsonrpc": "2.0",
-                        "id": 1,
-                        "result": {
-                            "protocolVersion": "2025-03-26",
-                            "serverInfo": {"name": "mock", "version": "1"}
-                        }
-                    })),
+                    axum::Json(initialize_response(
+                        serde_json::json!({"name": "mock", "version": "1"}),
+                    )),
                 )
                     .into_response(),
                 1 => StatusCode::ACCEPTED.into_response(),
