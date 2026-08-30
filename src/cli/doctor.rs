@@ -631,34 +631,6 @@ fn initialize_body() -> serde_json::Value {
     })
 }
 
-fn parse_mcp_response_body(body: &str) -> Result<serde_json::Value, String> {
-    if let Ok(value) = serde_json::from_str(body.trim()) {
-        return Ok(value);
-    }
-
-    let mut event_data = String::new();
-    for line in body.lines().chain(std::iter::once("")) {
-        if line.is_empty() {
-            if !event_data.is_empty() {
-                if let Ok(value) = serde_json::from_str(&event_data) {
-                    return Ok(value);
-                }
-                event_data.clear();
-            }
-            continue;
-        }
-
-        if let Some(data) = line.strip_prefix("data:") {
-            if !event_data.is_empty() {
-                event_data.push('\n');
-            }
-            event_data.push_str(data.strip_prefix(' ').unwrap_or(data));
-        }
-    }
-
-    Err("response was neither JSON nor an SSE JSON event".to_string())
-}
-
 /// `POST {base}/mcp` an `initialize`. Without a key we expect a 401 carrying a
 /// `WWW-Authenticate` header (auth enforced, discovery advertised). With a key
 /// we expect a 200 whose JSON-RPC result contains `serverInfo`.
@@ -755,7 +727,7 @@ async fn response_json(response: reqwest::Response) -> Result<serde_json::Value,
         .text()
         .await
         .map_err(|error| format!("response body could not be read: {error}"))?;
-    parse_mcp_response_body(&body)
+    crate::mcp::parse_response_body(body.as_bytes())
 }
 
 async fn check_mcp_session(
@@ -947,9 +919,12 @@ mod tests {
         let split_sse =
             "data:{\"jsonrpc\":\"2.0\",\"id\":\ndata:1,\"result\":{}}\n\n";
 
-        assert_eq!(parse_mcp_response_body(json).unwrap()["id"], 1);
-        assert_eq!(parse_mcp_response_body(sse).unwrap()["id"], 1);
-        assert_eq!(parse_mcp_response_body(split_sse).unwrap()["id"], 1);
+        assert_eq!(crate::mcp::parse_response_body(json.as_bytes()).unwrap()["id"], 1);
+        assert_eq!(crate::mcp::parse_response_body(sse.as_bytes()).unwrap()["id"], 1);
+        assert_eq!(
+            crate::mcp::parse_response_body(split_sse.as_bytes()).unwrap()["id"],
+            1
+        );
     }
 
     #[test]
