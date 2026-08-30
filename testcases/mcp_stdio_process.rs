@@ -29,7 +29,7 @@ fn legacy_stdio_process_negotiates_lists_and_calls() {
             "id": 41,
             "method": "initialize",
             "params": {
-                "protocolVersion": "2025-03-26",
+                "protocolVersion": "2025-11-25",
                 "capabilities": {},
                 "clientInfo": {"name": "lific-process-test", "version": "1"}
             }
@@ -123,9 +123,9 @@ fn legacy_stdio_process_negotiates_lists_and_calls() {
             .find(|response| response["id"] == id)
             .unwrap_or_else(|| panic!("missing response {id}: {responses:?}"))
     };
-    assert_eq!(response(41)["result"]["protocolVersion"], "2025-03-26");
+    assert_eq!(response(41)["result"]["protocolVersion"], "2025-11-25");
     assert!(response(17)["result"]["tools"].is_array());
     assert!(response(88)["result"]["content"].is_array());
-    assert_eq!(response(89)["error"]["code"], -32602);
-    assert!(response(89).get("result").is_none());
+    assert_eq!(response(89)["result"]["isError"], true);
+    assert!(response(89).get("error").is_none());
 }

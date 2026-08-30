@@ -620,15 +620,15 @@ pub async fn check_oauth_discovery(client: &reqwest::Client, base: &str) -> Chec
 
 // ── Check 6: MCP round-trip ──────────────────────────────────────────────
 
-/// The JSON-RPC `initialize` request body. Protocol version pinned to the one
-/// the server supports (`V_2025_03_26`).
+/// The JSON-RPC `initialize` request body. Request the newest protocol version
+/// supported by this legacy-foundation branch.
 fn initialize_body() -> serde_json::Value {
     serde_json::json!({
         "jsonrpc": "2.0",
         "id": 1,
         "method": "initialize",
         "params": {
-            "protocolVersion": "2025-03-26",
+            "protocolVersion": "2025-11-25",
             "capabilities": {},
             "clientInfo": { "name": "lific-doctor", "version": env!("CARGO_PKG_VERSION") }
         }
@@ -760,7 +760,7 @@ enum McpSessionError {
         code: i32,
         message: String,
     },
-    #[error("initialize negotiated protocol {actual}, expected 2025-03-26")]
+    #[error("initialize negotiated unsupported protocol {actual}")]
     ProtocolVersion { actual: ProtocolVersion },
     #[error("initialize returned incomplete serverInfo")]
     ServerInfo,
@@ -819,7 +819,9 @@ async fn jsonrpc_response<T: DeserializeOwned>(
 }
 
 fn validate_initialize(initialize: &InitializeResult) -> Result<&str, McpSessionError> {
-    if initialize.protocol_version != ProtocolVersion::V_2025_03_26 {
+    if initialize.protocol_version != ProtocolVersion::V_2025_06_18
+        && initialize.protocol_version != ProtocolVersion::V_2025_11_25
+    {
         return Err(McpSessionError::ProtocolVersion {
             actual: initialize.protocol_version.clone(),
         });
@@ -837,6 +839,7 @@ struct McpDoctorSession<'a> {
     url: &'a str,
     key: &'a str,
     session_id: &'a str,
+    protocol_version: Option<ProtocolVersion>,
 }
 
 impl McpDoctorSession<'_> {
@@ -846,7 +849,13 @@ impl McpDoctorSession<'_> {
             .bearer_auth(self.key)
             .header("Accept", "application/json, text/event-stream")
             .header("Content-Type", "application/json")
-            .header("MCP-Protocol-Version", "2025-03-26")
+            .header(
+                "MCP-Protocol-Version",
+                self.protocol_version
+                    .as_ref()
+                    .expect("MCP doctor session must negotiate before sending requests")
+                    .to_string(),
+            )
             .header("MCP-Session-Id", self.session_id)
             .json(body)
     }
@@ -880,9 +889,10 @@ impl McpDoctorSession<'_> {
         jsonrpc_response(response, expected_id, operation).await
     }
 
-    async fn check(&self, initialize: reqwest::Response) -> Result<String, McpSessionError> {
+    async fn check(&mut self, initialize: reqwest::Response) -> Result<String, McpSessionError> {
         let initialize: InitializeResult = jsonrpc_response(initialize, 1, "initialize").await?;
         let server_name = validate_initialize(&initialize)?;
+        self.protocol_version = Some(initialize.protocol_version.clone());
 
         self.send(
             "initialized notification",
@@ -934,7 +944,13 @@ impl McpDoctorSession<'_> {
             .client
             .delete(self.url)
             .bearer_auth(self.key)
-            .header("MCP-Protocol-Version", "2025-03-26")
+            .header(
+                "MCP-Protocol-Version",
+                self.protocol_version
+                    .as_ref()
+                    .expect("MCP doctor session must negotiate before closing")
+                    .to_string(),
+            )
             .header("MCP-Session-Id", self.session_id)
             .send()
             .await
@@ -956,11 +972,12 @@ async fn check_mcp_session(
     session_id: &str,
     initialize: reqwest::Response,
 ) -> Result<String, String> {
-    let session = McpDoctorSession {
+    let mut session = McpDoctorSession {
         client,
         url,
         key,
         session_id,
+        protocol_version: None,
     };
     let result = session.check(initialize).await;
     session.close().await;
@@ -1042,7 +1059,7 @@ mod tests {
             "jsonrpc": "2.0",
             "id": 1,
             "result": {
-                "protocolVersion": "2025-03-26",
+                "protocolVersion": "2025-11-25",
                 "capabilities": {},
                 "serverInfo": server_info
             }
@@ -1074,6 +1091,18 @@ mod tests {
         .unwrap();
         assert_eq!(validate_initialize(&initialize).unwrap(), "lific");
 
+        for version in [ProtocolVersion::V_2025_06_18, ProtocolVersion::V_2025_11_25] {
+            let mut body = initialize_response(serde_json::json!({"name": "lific", "version": "2.7.1"}));
+            body["result"]["protocolVersion"] = serde_json::json!(version.to_string());
+            let initialize: InitializeResult = jsonrpc_result(body, 1, "initialize").unwrap();
+            assert_eq!(validate_initialize(&initialize).unwrap(), "lific");
+        }
+
+        let mut unsupported = initialize_response(serde_json::json!({"name": "lific", "version": "2.7.1"}));
+        unsupported["result"]["protocolVersion"] = serde_json::json!("2024-11-05");
+        let unsupported: InitializeResult = jsonrpc_result(unsupported, 1, "initialize").unwrap();
+        assert!(matches!(validate_initialize(&unsupported), Err(McpSessionError::ProtocolVersion { .. })));
+
         let blank_name: InitializeResult = jsonrpc_result(
             initialize_response(serde_json::json!({"name": " ", "version": "2.7.1"})),
             1,
@@ -1089,7 +1118,7 @@ mod tests {
             "jsonrpc": "2.0",
             "id": 1,
             "result": {
-                "protocolVersion": "2025-03-26",
+                "protocolVersion": "2025-11-25",
                 "serverInfo": {"name": "lific", "version": "2.7.1"}
             }
         });
@@ -1586,7 +1615,7 @@ mod tests {
                         .headers()
                         .get("mcp-protocol-version")
                         .and_then(|value| value.to_str().ok()),
-                    Some("2025-03-26")
+                    Some("2025-11-25")
                 );
                 state.deletes.fetch_add(1, Ordering::Relaxed);
                 StatusCode::OK.into_response()
