@@ -20,10 +20,8 @@ use crate::links::IssueLinkContext;
 use crate::realtime::{RealtimeEvent, RealtimeHub};
 use crate::storage::AttachmentStore;
 
-const LEGACY_PROTOCOL_VERSIONS: &[ProtocolVersion] = &[
-    ProtocolVersion::V_2025_06_18,
-    ProtocolVersion::V_2025_11_25,
-];
+const LEGACY_PROTOCOL_VERSIONS: &[ProtocolVersion] =
+    &[ProtocolVersion::V_2025_06_18, ProtocolVersion::V_2025_11_25];
 
 pub(crate) fn parse_response_body(body: &[u8]) -> Result<serde_json::Value, String> {
     if let Ok(value) = serde_json::from_slice(body) {
@@ -1213,9 +1211,8 @@ mod tests {
     /// real `ToolRouter::call` produces.
     type ToolBody = std::pin::Pin<
         Box<
-            dyn std::future::Future<
-                    Output = Result<rmcp::model::CallToolResponse, rmcp::ErrorData>,
-                > + Send,
+            dyn std::future::Future<Output = Result<rmcp::model::CallToolResponse, rmcp::ErrorData>>
+                + Send,
         >,
     >;
 
@@ -1242,9 +1239,9 @@ mod tests {
                 )
                 .unwrap();
                 Ok(rmcp::model::CallToolResponse::Complete(
-                    rmcp::model::CallToolResult::success(vec![
-                        rmcp::model::ContentBlock::text("ran"),
-                    ]),
+                    rmcp::model::CallToolResult::success(vec![rmcp::model::ContentBlock::text(
+                        "ran",
+                    )]),
                 ))
             }) as ToolBody
         };
