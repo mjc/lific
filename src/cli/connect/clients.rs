@@ -951,6 +951,11 @@ mod tests {
         }
     }
 
+    const FIXTURE_URL: &str = "http://127.0.0.1:3456/mcp";
+    const FIXTURE_DB_PATH: &str = "/abs/lific.db";
+    const FIXTURE_API_KEY: &str = "lific_sk-live-KEY";
+    const FIXTURE_AGENT_TOKEN: &str = "lific_sk-live-AGENTTOKEN";
+
     fn remote_cfg() -> ServerConfig {
         ServerConfig::remote(FIXTURE_URL, FIXTURE_API_KEY)
     }
@@ -967,35 +972,6 @@ mod tests {
         ServerConfig::oauth_remote(FIXTURE_URL)
     }
 
-    struct LifecycleFixture {
-        client: &'static str,
-        top_key: &'static str,
-        remote: serde_json::Value,
-        oauth: Option<serde_json::Value>,
-        stdio: serde_json::Value,
-    }
-
-    fn assert_lifecycle_fixture(
-        client: &'static str,
-        lifecycle: &'static str,
-        config: ServerConfig,
-        top_key: &'static str,
-        expected: serde_json::Value,
-    ) {
-        let entry = find_client(client)
-            .unwrap()
-            .compile(&config)
-            .unwrap_or_else(|error| panic!("{client} {lifecycle} failed to compile: {error}"));
-        assert_eq!(entry.name, "lific", "{client} {lifecycle} name");
-        assert_eq!(entry.top_key, top_key, "{client} {lifecycle} top-level key");
-        assert_eq!(entry.value, expected, "{client} {lifecycle} config");
-    }
-
-    const FIXTURE_URL: &str = "http://127.0.0.1:3456/mcp";
-    const FIXTURE_DB_PATH: &str = "/abs/lific.db";
-    const FIXTURE_API_KEY: &str = "lific_sk-live-KEY";
-    const FIXTURE_AGENT_TOKEN: &str = "lific_sk-live-AGENTTOKEN";
-
     fn stdio_args() -> serde_json::Value {
         serde_json::json!(["--db", FIXTURE_DB_PATH, "mcp"])
     }
@@ -1008,20 +984,74 @@ mod tests {
         serde_json::json!({ "Authorization": format!("Bearer {FIXTURE_API_KEY}") })
     }
 
-    fn stdio_value(kind: Option<&str>) -> serde_json::Value {
-        let mut value = serde_json::json!({
-            "command": "lific",
-            "args": stdio_args(),
-        });
-        if let Some(kind) = kind {
-            value["type"] = kind.into();
-        }
-        value
+    #[derive(Clone, Copy)]
+    enum StdioShape {
+        Plain,
+        Typed,
     }
 
-    fn with_token_env(mut stdio: serde_json::Value) -> serde_json::Value {
-        stdio["env"] = token_env();
-        stdio
+    impl StdioShape {
+        fn expected(self, with_token: bool) -> serde_json::Value {
+            let mut value = serde_json::json!({
+                "command": "lific",
+                "args": stdio_args(),
+            });
+            if matches!(self, Self::Typed) {
+                value["type"] = "stdio".into();
+            }
+            if with_token {
+                value["env"] = token_env();
+            }
+            value
+        }
+    }
+
+    struct LifecycleFixture {
+        client: &'static str,
+        top_key: &'static str,
+        remote: serde_json::Value,
+        oauth: Option<serde_json::Value>,
+        stdio: StdioShape,
+    }
+
+    impl LifecycleFixture {
+        fn assert_config(
+            &self,
+            lifecycle: &'static str,
+            config: ServerConfig,
+            expected: serde_json::Value,
+        ) {
+            let entry = find_client(self.client)
+                .unwrap()
+                .compile(&config)
+                .unwrap_or_else(|error| {
+                    panic!("{} {lifecycle} failed to compile: {error}", self.client)
+                });
+            assert_eq!(entry.name, "lific", "{} {lifecycle} name", self.client);
+            assert_eq!(
+                entry.top_key, self.top_key,
+                "{} {lifecycle} top-level key",
+                self.client
+            );
+            assert_eq!(entry.value, expected, "{} {lifecycle} config", self.client);
+        }
+
+        fn assert(&self) {
+            self.assert_config("HTTP bearer", remote_cfg(), self.remote.clone());
+            if let Some(oauth) = &self.oauth {
+                self.assert_config("HTTP OAuth", oauth_cfg(), oauth.clone());
+            }
+            self.assert_config(
+                "retained operator stdio",
+                stdio_cfg(),
+                self.stdio.expected(false),
+            );
+            self.assert_config(
+                "retained stdio with agent identity",
+                stdio_token_cfg(),
+                self.stdio.expected(true),
+            );
+        }
     }
 
     #[test]
@@ -1037,7 +1067,7 @@ mod tests {
                 oauth: Some(serde_json::json!({
                     "url": FIXTURE_URL,
                 })),
-                stdio: stdio_value(None),
+                stdio: StdioShape::Plain,
             },
             LifecycleFixture {
                 client: "claude-code",
@@ -1051,7 +1081,7 @@ mod tests {
                     "type": "http",
                     "url": FIXTURE_URL,
                 })),
-                stdio: stdio_value(Some("stdio")),
+                stdio: StdioShape::Typed,
             },
             LifecycleFixture {
                 client: "claude-desktop",
@@ -1067,7 +1097,7 @@ mod tests {
                     ],
                 }),
                 oauth: None,
-                stdio: stdio_value(None),
+                stdio: StdioShape::Plain,
             },
             LifecycleFixture {
                 client: "zed",
@@ -1079,42 +1109,12 @@ mod tests {
                 oauth: Some(serde_json::json!({
                     "url": FIXTURE_URL,
                 })),
-                stdio: stdio_value(None),
+                stdio: StdioShape::Plain,
             },
         ];
 
         for fixture in fixtures {
-            assert_lifecycle_fixture(
-                fixture.client,
-                "HTTP bearer",
-                remote_cfg(),
-                fixture.top_key,
-                fixture.remote,
-            );
-            if let Some(oauth) = fixture.oauth {
-                assert_lifecycle_fixture(
-                    fixture.client,
-                    "HTTP OAuth",
-                    oauth_cfg(),
-                    fixture.top_key,
-                    oauth,
-                );
-            }
-            let token_stdio = with_token_env(fixture.stdio.clone());
-            assert_lifecycle_fixture(
-                fixture.client,
-                "retained operator stdio",
-                stdio_cfg(),
-                fixture.top_key,
-                fixture.stdio,
-            );
-            assert_lifecycle_fixture(
-                fixture.client,
-                "retained stdio with agent identity",
-                stdio_token_cfg(),
-                fixture.top_key,
-                token_stdio,
-            );
+            fixture.assert();
         }
 
         assert!(matches!(
