@@ -13234,6 +13234,8 @@ mod authz_gating_tests {
             db: (*m.db).clone(),
             manager: crate::auth::create_key_manager().unwrap(),
             public_url: "https://example.com".into(),
+            issuer_is_explicit: true,
+            allowed_hosts: std::sync::Arc::from(Vec::<String>::new()),
             required: true,
         };
         let app = Router::new()

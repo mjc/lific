@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use axum::{
     body::Body,
     extract::State,
@@ -18,6 +20,8 @@ pub struct AuthState {
     pub db: DbPool,
     pub manager: ApiKeyManagerV0,
     pub public_url: String,
+    pub issuer_is_explicit: bool,
+    pub allowed_hosts: Arc<[String]>,
     /// LIF-294: mirror of `[auth] required`. When false, a request with no
     /// credential at all passes as operator-equivalent; see `require_api_key`.
     pub required: bool,
@@ -745,10 +749,14 @@ pub async fn require_api_key(
     // canonical protected-resource metadata lives at the path-aware well-known
     // location. Point Claude there so the `resource` it reads matches the URL
     // the user entered.
-    let www_auth = format!(
-        "Bearer resource_metadata=\"{}/.well-known/oauth-protected-resource/mcp\"",
-        auth.public_url
-    );
+    let resource_metadata =
+        crate::oauth::protected_resource_metadata_url_for_request(
+            &auth.public_url,
+            auth.issuer_is_explicit,
+            &auth.allowed_hosts,
+            request.headers(),
+        );
+    let www_auth = format!("Bearer resource_metadata=\"{resource_metadata}\"");
 
     let Some(token) = token else {
         // LIF-267: session-cookie fallback, scoped to GET /api/attachments/{id}.
@@ -910,7 +918,21 @@ pub async fn require_api_key(
         // first two answered "valid" and then "unbound", and an unbound OAuth
         // token takes the operator fallback, so revoking a tool's credential
         // could promote it. The typed outcome makes that state unrepresentable.
-        match crate::oauth::resolve_oauth_credential(&auth.db, &token) {
+        let credential = if is_mcp_request {
+            crate::oauth::resolve_oauth_credential_for_resource(
+                &auth.db,
+                &token,
+                Some(&crate::oauth::mcp_resource_for_request(
+                    &auth.public_url,
+                    auth.issuer_is_explicit,
+                    &auth.allowed_hosts,
+                    request.headers(),
+                )),
+            )
+        } else {
+            crate::oauth::resolve_oauth_credential(&auth.db, &token)
+        };
+        match credential {
             Ok(credential) => {
                 if is_mcp_request {
                     info!("/mcp authorized: OAuth token accepted");
@@ -2248,6 +2270,8 @@ mod tests {
             db: pool.clone(),
             manager: create_key_manager().unwrap(),
             public_url: "https://example.com".into(),
+            issuer_is_explicit: true,
+            allowed_hosts: Arc::from(Vec::<String>::new()),
             required: true,
         }
     }
@@ -2284,7 +2308,7 @@ mod tests {
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO oauth_tokens (access_token, client_id, expires_at, scope, user_id) VALUES (?1, ?2, ?3, 'mcp', ?4)",
+            "INSERT INTO oauth_tokens (access_token, client_id, expires_at, scope, user_id, resource) VALUES (?1, ?2, ?3, 'mcp', ?4, 'https://example.com/mcp')",
             params![hash, client_id, expires, user_id],
         )
         .unwrap();
