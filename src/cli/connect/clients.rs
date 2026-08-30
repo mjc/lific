@@ -952,215 +952,168 @@ mod tests {
     }
 
     fn remote_cfg() -> ServerConfig {
-        ServerConfig::remote("http://127.0.0.1:3456/mcp", "lific_sk-live-KEY")
+        ServerConfig::remote(FIXTURE_URL, FIXTURE_API_KEY)
     }
 
     fn stdio_cfg() -> ServerConfig {
-        ServerConfig::stdio("/abs/lific.db")
+        ServerConfig::stdio(FIXTURE_DB_PATH)
     }
 
     fn stdio_token_cfg() -> ServerConfig {
-        ServerConfig::stdio_with_token("/abs/lific.db", "lific_sk-live-AGENTTOKEN")
+        ServerConfig::stdio_with_token(FIXTURE_DB_PATH, FIXTURE_AGENT_TOKEN)
     }
 
     fn oauth_cfg() -> ServerConfig {
-        ServerConfig::oauth_remote("http://127.0.0.1:3456/mcp")
+        ServerConfig::oauth_remote(FIXTURE_URL)
     }
 
     struct LifecycleFixture {
         client: &'static str,
+        top_key: &'static str,
+        remote: serde_json::Value,
+        oauth: Option<serde_json::Value>,
+        stdio: serde_json::Value,
+    }
+
+    fn assert_lifecycle_fixture(
+        client: &'static str,
         lifecycle: &'static str,
         config: ServerConfig,
         top_key: &'static str,
-        value: serde_json::Value,
+        expected: serde_json::Value,
+    ) {
+        let entry = find_client(client)
+            .unwrap()
+            .compile(&config)
+            .unwrap_or_else(|error| panic!("{client} {lifecycle} failed to compile: {error}"));
+        assert_eq!(entry.name, "lific", "{client} {lifecycle} name");
+        assert_eq!(entry.top_key, top_key, "{client} {lifecycle} top-level key");
+        assert_eq!(entry.value, expected, "{client} {lifecycle} config");
+    }
+
+    const FIXTURE_URL: &str = "http://127.0.0.1:3456/mcp";
+    const FIXTURE_DB_PATH: &str = "/abs/lific.db";
+    const FIXTURE_API_KEY: &str = "lific_sk-live-KEY";
+    const FIXTURE_AGENT_TOKEN: &str = "lific_sk-live-AGENTTOKEN";
+
+    fn stdio_args() -> serde_json::Value {
+        serde_json::json!(["--db", FIXTURE_DB_PATH, "mcp"])
+    }
+
+    fn token_env() -> serde_json::Value {
+        serde_json::json!({ "LIFIC_TOKEN": FIXTURE_AGENT_TOKEN })
+    }
+
+    fn bearer_headers() -> serde_json::Value {
+        serde_json::json!({ "Authorization": format!("Bearer {FIXTURE_API_KEY}") })
+    }
+
+    fn stdio_value(kind: Option<&str>) -> serde_json::Value {
+        let mut value = serde_json::json!({
+            "command": "lific",
+            "args": stdio_args(),
+        });
+        if let Some(kind) = kind {
+            value["type"] = kind.into();
+        }
+        value
+    }
+
+    fn with_token_env(mut stdio: serde_json::Value) -> serde_json::Value {
+        stdio["env"] = token_env();
+        stdio
     }
 
     #[test]
     fn named_clients_match_declared_lifecycle_fixtures() {
-        let url = "http://127.0.0.1:3456/mcp";
-        let args = || serde_json::json!(["--db", "/abs/lific.db", "mcp"]);
-        let token_env = || serde_json::json!({ "LIFIC_TOKEN": "lific_sk-live-AGENTTOKEN" });
-        let bearer_headers = || serde_json::json!({ "Authorization": "Bearer lific_sk-live-KEY" });
-        let fixtures = vec![
+        let fixtures = [
             LifecycleFixture {
                 client: "codex",
-                lifecycle: "HTTP bearer",
-                config: remote_cfg(),
                 top_key: "mcp_servers.lific",
-                value: serde_json::json!({
-                    "url": url,
+                remote: serde_json::json!({
+                    "url": FIXTURE_URL,
                     "bearer_token_env_var": "LIFIC_API_KEY",
                 }),
-            },
-            LifecycleFixture {
-                client: "codex",
-                lifecycle: "HTTP OAuth",
-                config: oauth_cfg(),
-                top_key: "mcp_servers.lific",
-                value: serde_json::json!({ "url": url }),
-            },
-            LifecycleFixture {
-                client: "codex",
-                lifecycle: "retained stdio with agent identity",
-                config: stdio_token_cfg(),
-                top_key: "mcp_servers.lific",
-                value: serde_json::json!({
-                    "command": "lific",
-                    "args": args(),
-                    "env": token_env(),
-                }),
-            },
-            LifecycleFixture {
-                client: "codex",
-                lifecycle: "retained operator stdio",
-                config: stdio_cfg(),
-                top_key: "mcp_servers.lific",
-                value: serde_json::json!({
-                    "command": "lific",
-                    "args": args(),
-                }),
+                oauth: Some(serde_json::json!({
+                    "url": FIXTURE_URL,
+                })),
+                stdio: stdio_value(None),
             },
             LifecycleFixture {
                 client: "claude-code",
-                lifecycle: "HTTP bearer",
-                config: remote_cfg(),
                 top_key: "mcpServers",
-                value: serde_json::json!({
+                remote: serde_json::json!({
                     "type": "http",
-                    "url": url,
+                    "url": FIXTURE_URL,
                     "headers": bearer_headers(),
                 }),
-            },
-            LifecycleFixture {
-                client: "claude-code",
-                lifecycle: "HTTP OAuth",
-                config: oauth_cfg(),
-                top_key: "mcpServers",
-                value: serde_json::json!({
+                oauth: Some(serde_json::json!({
                     "type": "http",
-                    "url": url,
-                }),
-            },
-            LifecycleFixture {
-                client: "claude-code",
-                lifecycle: "retained stdio with agent identity",
-                config: stdio_token_cfg(),
-                top_key: "mcpServers",
-                value: serde_json::json!({
-                    "type": "stdio",
-                    "command": "lific",
-                    "args": args(),
-                    "env": token_env(),
-                }),
-            },
-            LifecycleFixture {
-                client: "claude-code",
-                lifecycle: "retained operator stdio",
-                config: stdio_cfg(),
-                top_key: "mcpServers",
-                value: serde_json::json!({
-                    "type": "stdio",
-                    "command": "lific",
-                    "args": args(),
-                }),
+                    "url": FIXTURE_URL,
+                })),
+                stdio: stdio_value(Some("stdio")),
             },
             LifecycleFixture {
                 client: "claude-desktop",
-                lifecycle: "HTTP bearer through the stdio bridge",
-                config: remote_cfg(),
                 top_key: "mcpServers",
-                value: serde_json::json!({
+                remote: serde_json::json!({
                     "command": "npx",
                     "args": [
                         "-y",
                         "mcp-remote",
-                        url,
+                        FIXTURE_URL,
                         "--header",
-                        "Authorization: Bearer lific_sk-live-KEY",
+                        format!("Authorization: Bearer {FIXTURE_API_KEY}"),
                     ],
                 }),
-            },
-            LifecycleFixture {
-                client: "claude-desktop",
-                lifecycle: "retained stdio with agent identity",
-                config: stdio_token_cfg(),
-                top_key: "mcpServers",
-                value: serde_json::json!({
-                    "command": "lific",
-                    "args": args(),
-                    "env": token_env(),
-                }),
-            },
-            LifecycleFixture {
-                client: "claude-desktop",
-                lifecycle: "retained operator stdio",
-                config: stdio_cfg(),
-                top_key: "mcpServers",
-                value: serde_json::json!({
-                    "command": "lific",
-                    "args": args(),
-                }),
+                oauth: None,
+                stdio: stdio_value(None),
             },
             LifecycleFixture {
                 client: "zed",
-                lifecycle: "HTTP bearer",
-                config: remote_cfg(),
                 top_key: "context_servers",
-                value: serde_json::json!({
-                    "url": url,
+                remote: serde_json::json!({
+                    "url": FIXTURE_URL,
                     "headers": bearer_headers(),
                 }),
-            },
-            LifecycleFixture {
-                client: "zed",
-                lifecycle: "HTTP OAuth",
-                config: oauth_cfg(),
-                top_key: "context_servers",
-                value: serde_json::json!({ "url": url }),
-            },
-            LifecycleFixture {
-                client: "zed",
-                lifecycle: "retained stdio with agent identity",
-                config: stdio_token_cfg(),
-                top_key: "context_servers",
-                value: serde_json::json!({
-                    "command": "lific",
-                    "args": args(),
-                    "env": token_env(),
-                }),
-            },
-            LifecycleFixture {
-                client: "zed",
-                lifecycle: "retained operator stdio",
-                config: stdio_cfg(),
-                top_key: "context_servers",
-                value: serde_json::json!({
-                    "command": "lific",
-                    "args": args(),
-                }),
+                oauth: Some(serde_json::json!({
+                    "url": FIXTURE_URL,
+                })),
+                stdio: stdio_value(None),
             },
         ];
 
         for fixture in fixtures {
-            let entry = find_client(fixture.client)
-                .unwrap()
-                .compile(&fixture.config)
-                .unwrap_or_else(|error| {
-                    panic!(
-                        "{} {} fixture failed to compile: {error}",
-                        fixture.client, fixture.lifecycle
-                    )
-                });
-            assert_eq!(entry.name, "lific", "{} name", fixture.lifecycle);
-            assert_eq!(
-                entry.top_key, fixture.top_key,
-                "{} {} top-level key",
-                fixture.client, fixture.lifecycle
+            assert_lifecycle_fixture(
+                fixture.client,
+                "HTTP bearer",
+                remote_cfg(),
+                fixture.top_key,
+                fixture.remote,
             );
-            assert_eq!(
-                entry.value, fixture.value,
-                "{} {} config",
-                fixture.client, fixture.lifecycle
+            if let Some(oauth) = fixture.oauth {
+                assert_lifecycle_fixture(
+                    fixture.client,
+                    "HTTP OAuth",
+                    oauth_cfg(),
+                    fixture.top_key,
+                    oauth,
+                );
+            }
+            let token_stdio = with_token_env(fixture.stdio.clone());
+            assert_lifecycle_fixture(
+                fixture.client,
+                "retained operator stdio",
+                stdio_cfg(),
+                fixture.top_key,
+                fixture.stdio,
+            );
+            assert_lifecycle_fixture(
+                fixture.client,
+                "retained stdio with agent identity",
+                stdio_token_cfg(),
+                fixture.top_key,
+                token_stdio,
             );
         }
 
@@ -1182,16 +1135,6 @@ mod tests {
             "oauth opencode entry must have no headers"
         );
         assert_eq!(e.value["type"], "remote");
-    }
-
-    #[test]
-    fn codex_oauth_has_url_and_no_bearer_env_var() {
-        let e = find_client("codex").unwrap().compile(&oauth_cfg()).unwrap();
-        assert_eq!(e.value["url"], "http://127.0.0.1:3456/mcp");
-        assert!(
-            e.value.get("bearer_token_env_var").is_none(),
-            "oauth codex entry must not set bearer_token_env_var"
-        );
     }
 
     #[test]
@@ -1276,6 +1219,7 @@ mod tests {
             e.value["command"],
             serde_json::json!(["lific", "--db", "/abs/lific.db", "mcp"])
         );
+        assert!(e.value.get("environment").is_none());
     }
 
     // ── LIFIC-18: stdio agent token → env field ────────────────────────────
@@ -1297,55 +1241,6 @@ mod tests {
             e.value["environment"]["LIFIC_TOKEN"],
             "lific_sk-live-AGENTTOKEN"
         );
-    }
-
-    #[test]
-    fn claude_code_stdio_token_writes_into_env_field() {
-        let e = find_client("claude-code")
-            .unwrap()
-            .compile(&stdio_token_cfg())
-            .unwrap();
-        assert_eq!(e.value["type"], "stdio");
-        assert_eq!(e.value["env"]["LIFIC_TOKEN"], "lific_sk-live-AGENTTOKEN");
-    }
-
-    #[test]
-    fn claude_desktop_stdio_token_writes_into_env_field() {
-        let e = find_client("claude-desktop")
-            .unwrap()
-            .compile(&stdio_token_cfg())
-            .unwrap();
-        assert_eq!(e.value["env"]["LIFIC_TOKEN"], "lific_sk-live-AGENTTOKEN");
-    }
-
-    #[test]
-    fn codex_stdio_token_writes_into_env_field() {
-        let e = find_client("codex")
-            .unwrap()
-            .compile(&stdio_token_cfg())
-            .unwrap();
-        assert_eq!(e.value["env"]["LIFIC_TOKEN"], "lific_sk-live-AGENTTOKEN");
-    }
-
-    #[test]
-    fn zed_stdio_token_writes_into_env_field() {
-        let e = find_client("zed")
-            .unwrap()
-            .compile(&stdio_token_cfg())
-            .unwrap();
-        assert_eq!(e.value["env"]["LIFIC_TOKEN"], "lific_sk-live-AGENTTOKEN");
-    }
-
-    #[test]
-    fn stdio_without_token_writes_no_env_entry() {
-        // A plain stdio config (operator, no agent) must not invent an env map.
-        for id in ["opencode", "claude-code", "claude-desktop", "codex", "zed"] {
-            let e = find_client(id).unwrap().compile(&stdio_cfg()).unwrap();
-            assert!(
-                e.value.get("environment").is_none() && e.value.get("env").is_none(),
-                "{id} plain stdio must not write an env field"
-            );
-        }
     }
 
     #[test]
@@ -1389,7 +1284,7 @@ mod tests {
     }
 
     #[test]
-    fn claude_code_paths_and_http_type() {
+    fn claude_code_paths() {
         let base = linux_base();
         let c = find_client("claude-code").unwrap();
         assert_eq!(
@@ -1400,24 +1295,14 @@ mod tests {
             c.path_for(&base, Scope::Project).unwrap(),
             PathBuf::from("/proj/.mcp.json")
         );
-        let e = c.compile(&remote_cfg()).unwrap();
-        assert_eq!(e.top_key, "mcpServers");
-        assert_eq!(e.value["type"], "http");
     }
 
     #[test]
-    fn claude_desktop_remote_uses_mcp_remote_shim() {
+    fn claude_desktop_remote_has_shim_note() {
         let e = find_client("claude-desktop")
             .unwrap()
             .compile(&remote_cfg())
             .unwrap();
-        assert_eq!(e.value["command"], "npx");
-        let args = e.value["args"].as_array().unwrap();
-        assert!(args.iter().any(|a| a == "mcp-remote"));
-        assert!(
-            args.iter()
-                .any(|a| a.as_str() == Some("Authorization: Bearer lific_sk-live-KEY"))
-        );
         assert!(!e.notes.is_empty(), "shim note should be present");
     }
 
@@ -1544,26 +1429,12 @@ mod tests {
     }
 
     #[test]
-    fn codex_remote_uses_env_var_and_dotted_key() {
+    fn codex_remote_has_env_setup_note() {
         let e = find_client("codex")
             .unwrap()
             .compile(&remote_cfg())
             .unwrap();
-        assert_eq!(e.top_key, "mcp_servers.lific");
-        assert_eq!(e.value["url"], "http://127.0.0.1:3456/mcp");
-        assert_eq!(e.value["bearer_token_env_var"], "LIFIC_API_KEY");
-        // The key itself is NEVER written inline for Codex.
-        assert!(
-            !e.value.to_string().contains("lific_sk-live-KEY"),
-            "codex must not inline the bearer key"
-        );
         assert!(!e.notes.is_empty());
-    }
-
-    #[test]
-    fn zed_uses_context_servers_key() {
-        let e = find_client("zed").unwrap().compile(&remote_cfg()).unwrap();
-        assert_eq!(e.top_key, "context_servers");
     }
 
     #[test]

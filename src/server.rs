@@ -1137,31 +1137,8 @@ mod authless_mcp_tests {
     }
 
     fn jsonrpc_body(body: &[u8]) -> serde_json::Value {
-        if let Ok(value) = serde_json::from_slice(body) {
-            return value;
-        }
-        let text = String::from_utf8_lossy(body);
-        let mut event_data = String::new();
-        for line in text.lines().chain(std::iter::once("")) {
-            if line.is_empty() {
-                if !event_data.is_empty() {
-                    if let Ok(value) = serde_json::from_str(&event_data) {
-                        return value;
-                    }
-                    event_data.clear();
-                }
-                continue;
-            }
-
-            if let Some(data) = line.strip_prefix("data:") {
-                if !event_data.is_empty() {
-                    event_data.push('\n');
-                }
-                event_data.push_str(data.strip_prefix(' ').unwrap_or(data));
-            }
-        }
-
-        panic!("MCP body contained no JSON-RPC message: {text}");
+        crate::mcp::parse_response_body(body)
+            .unwrap_or_else(|error| panic!("MCP body could not be parsed: {error}"))
     }
 
     #[test]
