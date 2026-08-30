@@ -23,6 +23,35 @@ use crate::storage::AttachmentStore;
 const LEGACY_PROTOCOL_VERSIONS: &[ProtocolVersion] = &[ProtocolVersion::V_2025_03_26];
 const TOOL_ARGUMENT_DESERIALIZATION_ERROR_PREFIX: &str = "failed to deserialize parameters:";
 
+pub(crate) fn parse_response_body(body: &[u8]) -> Result<serde_json::Value, String> {
+    if let Ok(value) = serde_json::from_slice(body) {
+        return Ok(value);
+    }
+
+    let text = String::from_utf8_lossy(body);
+    let mut event_data = String::new();
+    for line in text.lines().chain(std::iter::once("")) {
+        if line.is_empty() {
+            if !event_data.is_empty() {
+                if let Ok(value) = serde_json::from_str(&event_data) {
+                    return Ok(value);
+                }
+                event_data.clear();
+            }
+            continue;
+        }
+
+        if let Some(data) = line.strip_prefix("data:") {
+            if !event_data.is_empty() {
+                event_data.push('\n');
+            }
+            event_data.push_str(data.strip_prefix(' ').unwrap_or(data));
+        }
+    }
+
+    Err("response was neither JSON nor an SSE JSON event".to_string())
+}
+
 /// Keep the pre-July MCP transport contract explicit while rmcp evolves.
 /// Legacy clients still negotiate an initialize session and receive
 /// `Mcp-Session-Id` on the HTTP response.
