@@ -3492,6 +3492,8 @@ mod cookie_fallback_tests {
             db: db.clone(),
             manager: crate::auth::create_key_manager().unwrap(),
             public_url: "https://example.com".into(),
+            issuer_is_explicit: true,
+            allowed_hosts: std::sync::Arc::from(Vec::<String>::new()),
             required: true,
         };
         with_attachment_layers(crate::api::router(db, &[]))
