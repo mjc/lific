@@ -20,8 +20,10 @@ use crate::links::IssueLinkContext;
 use crate::realtime::{RealtimeEvent, RealtimeHub};
 use crate::storage::AttachmentStore;
 
-const LEGACY_PROTOCOL_VERSIONS: &[ProtocolVersion] = &[ProtocolVersion::V_2025_03_26];
-const TOOL_ARGUMENT_DESERIALIZATION_ERROR_PREFIX: &str = "failed to deserialize parameters:";
+const LEGACY_PROTOCOL_VERSIONS: &[ProtocolVersion] = &[
+    ProtocolVersion::V_2025_06_18,
+    ProtocolVersion::V_2025_11_25,
+];
 
 pub(crate) fn parse_response_body(body: &[u8]) -> Result<serde_json::Value, String> {
     if let Ok(value) = serde_json::from_slice(body) {
@@ -529,33 +531,6 @@ impl LificMcp {
             .await
     }
 
-    /// rmcp 3 turns the invalid-params error produced while deserializing a
-    /// tool's arguments into an `isError` tool result. Restore the legacy MCP
-    /// JSON-RPC error so malformed arguments remain protocol errors.
-    fn restore_legacy_tool_argument_error(
-        response: rmcp::model::CallToolResponse,
-    ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
-        let rmcp::model::CallToolResponse::Complete(result) = &response else {
-            return Ok(response);
-        };
-        let Some(text) = result
-            .content
-            .first()
-            .and_then(rmcp::model::ContentBlock::as_text)
-        else {
-            return Ok(response);
-        };
-        if result.is_error != Some(true)
-            || !text
-                .text
-                .starts_with(TOOL_ARGUMENT_DESERIALIZATION_ERROR_PREFIX)
-        {
-            return Ok(response);
-        }
-
-        Err(rmcp::ErrorData::invalid_params(text.text.clone(), None))
-    }
-
     /// Point the attachment tools at an explicit store. An in-memory pool has
     /// no real database file to derive a directory from, so tests that upload
     /// bytes hand in a scratch directory instead of writing into the process's
@@ -687,10 +662,8 @@ impl ServerHandler for LificMcp {
     }
 
     fn get_info(&self) -> ServerInfo {
-        // Pin to 2025-03-26: rmcp defaults to 2025-06-18 which many clients
-        // (including Zed) skipped, going straight from 2025-03-26 to 2025-11-25.
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_protocol_version(ProtocolVersion::V_2025_03_26)
+            .with_protocol_version(ProtocolVersion::V_2025_11_25)
             // Identify as lific, not rmcp's build-env default — this name is
             // what connected clients (and `lific doctor`) display.
             .with_server_info(rmcp::model::Implementation::new(
@@ -733,8 +706,7 @@ impl ServerHandler for LificMcp {
             rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
         async move {
             self.dispatch_tool_with_context(request_context, || async {
-                let response = self.tool_router.call(tool_context).await?;
-                Self::restore_legacy_tool_argument_error(response)
+                self.tool_router.call(tool_context).await
             })
             .await
         }
@@ -921,6 +893,8 @@ mod tests {
             db: pool.clone(),
             manager: crate::auth::create_key_manager().unwrap(),
             public_url: "https://example.com".into(),
+            issuer_is_explicit: true,
+            allowed_hosts: std::sync::Arc::from(Vec::<String>::new()),
             required: true,
         };
 
@@ -1061,6 +1035,8 @@ mod tests {
             db: pool.clone(),
             manager,
             public_url: "https://example.com".into(),
+            issuer_is_explicit: true,
+            allowed_hosts: std::sync::Arc::from(Vec::<String>::new()),
             required: true,
         };
         let app = Router::new()

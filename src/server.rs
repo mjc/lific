@@ -252,21 +252,24 @@ fn build_app_with_store(
 
     let manager_ext = Arc::new(manager.clone());
 
+    let mcp_policy =
+        mcp::McpHttpPolicy::from_config(&cfg.server.cors_origins, cfg.server.public_url.as_deref());
+    let mcp_allowed_hosts = mcp_policy.allowed_hosts.clone();
+    let mcp_allowed_origins = mcp_policy.allowed_origins.clone();
+    let mcp_config = mcp_policy.transport_config();
+
     let auth_state = auth::AuthState {
         db: pool.clone(),
         manager,
         public_url: issuer.clone(),
+        issuer_is_explicit: cfg.server.public_url.is_some(),
+        allowed_hosts: mcp_allowed_hosts.clone().into(),
         required: cfg.auth.required,
     };
 
     // MCP StreamableHTTP service
     let db_for_mcp = pool.clone();
     let realtime_for_mcp = realtime.clone();
-    let mcp_policy =
-        mcp::McpHttpPolicy::from_config(&cfg.server.cors_origins, cfg.server.public_url.as_deref());
-    let mcp_allowed_hosts = mcp_policy.allowed_hosts.clone();
-    let mcp_allowed_origins = mcp_policy.allowed_origins.clone();
-    let mcp_config = mcp_policy.transport_config();
 
     let mcp_service = StreamableHttpService::new(
         move || {
@@ -1128,7 +1131,7 @@ mod authless_mcp_tests {
             "id": 1,
             "method": "initialize",
             "params": {
-                "protocolVersion": "2025-03-26",
+                "protocolVersion": "2025-11-25",
                 "capabilities": {},
                 "clientInfo": {"name": "test", "version": "1"}
             }
@@ -1175,7 +1178,7 @@ mod authless_mcp_tests {
                     .header("host", "localhost")
                     .header("content-type", "application/json")
                     .header("accept", "application/json, text/event-stream")
-                    .header("mcp-protocol-version", "2025-03-26")
+                    .header("mcp-protocol-version", "2025-11-25")
                     .header("mcp-session-id", session_id)
                     .body(Body::from(serde_json::to_vec(&body).unwrap()))
                     .unwrap(),
@@ -1234,7 +1237,7 @@ mod authless_mcp_tests {
                 "instructions",
             ],
         );
-        assert_eq!(initialized["result"]["protocolVersion"], "2025-03-26");
+        assert_eq!(initialized["result"]["protocolVersion"], "2025-11-25");
 
         let notification = post_session(
             router.clone(),
@@ -1300,8 +1303,8 @@ mod authless_mcp_tests {
         .await;
         assert_eq!(malformed.status(), StatusCode::OK);
         let malformed = jsonrpc_body(&malformed.into_body().collect().await.unwrap().to_bytes());
-        assert_eq!(malformed["error"]["code"], -32602);
-        assert!(malformed.get("result").is_none());
+        assert_eq!(malformed["result"]["isError"], true);
+        assert!(malformed.get("error").is_none());
     }
 
     #[tokio::test]
@@ -1342,7 +1345,7 @@ mod authless_mcp_tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let body = response.into_body().collect().await.unwrap().to_bytes();
-        assert_eq!(jsonrpc_body(&body)["result"]["protocolVersion"], "2025-03-26");
+        assert_eq!(jsonrpc_body(&body)["result"]["protocolVersion"], "2025-11-25");
     }
 
     /// A wrong path token does not match the route at all (no secret leak,
