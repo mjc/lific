@@ -18,7 +18,7 @@ use super::clients::{CompiledEntry, Format};
 
 /// What a write did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Action {
+pub(super) enum Action {
     /// The file did not exist and was created.
     Created,
     /// The file existed and Lific's entry was inserted or replaced in place.
@@ -36,28 +36,35 @@ impl Action {
 
 /// The result of a successful compile-to-text step (used by `--dry-run`, which
 /// renders the *whole* file that would be written without touching disk).
-pub struct Rendered {
-    pub contents: String,
-    pub action: Action,
+pub(super) struct Rendered {
+    pub(super) contents: String,
+    pub(super) action: Action,
 }
 
 /// Error from a writer that a caller should surface as a per-client failure
 /// (and keep going with the other clients).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum WriteFailureStage {
+    /// The target path still contains its original contents.
+    BeforePublish,
+    /// The target was replaced, but a later durability step failed.
+    AfterPublish,
+}
+
 #[derive(Debug)]
-pub struct WriteError {
-    pub message: String,
-    /// Whether the target was atomically replaced before the error occurred.
-    pub published: bool,
+pub(super) struct WriteError {
+    pub(super) message: String,
+    pub(super) stage: WriteFailureStage,
     /// A snippet the user can paste to merge manually, when we refused to touch
     /// an unparseable file.
-    pub manual_snippet: Option<String>,
+    pub(super) manual_snippet: Option<String>,
 }
 
 impl WriteError {
     fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
-            published: false,
+            stage: WriteFailureStage::BeforePublish,
             manual_snippet: None,
         }
     }
@@ -65,9 +72,14 @@ impl WriteError {
     fn with_snippet(message: impl Into<String>, snippet: impl Into<String>) -> Self {
         Self {
             message: message.into(),
-            published: false,
+            stage: WriteFailureStage::BeforePublish,
             manual_snippet: Some(snippet.into()),
         }
+    }
+
+    fn after_publish(mut self) -> Self {
+        self.stage = WriteFailureStage::AfterPublish;
+        self
     }
 }
 
@@ -82,7 +94,11 @@ impl std::error::Error for WriteError {}
 /// Render the full file contents that *would* be written for `entry` merged
 /// into whatever currently exists at `path`, without writing anything. Used by
 /// both `--dry-run` and the real write path (which then just writes the result).
-pub fn render(path: &Path, format: Format, entry: &CompiledEntry) -> Result<Rendered, WriteError> {
+pub(super) fn render(
+    path: &Path,
+    format: Format,
+    entry: &CompiledEntry,
+) -> Result<Rendered, WriteError> {
     render_from(read_existing(path)?.as_ref(), format, entry)
 }
 
@@ -111,7 +127,11 @@ fn render_from(
 
 /// Merge `entry` into the config at `path` and write it back, creating parent
 /// directories as needed. Returns whether the file was created or updated.
-pub fn write(path: &Path, format: Format, entry: &CompiledEntry) -> Result<Action, WriteError> {
+pub(super) fn write(
+    path: &Path,
+    format: Format,
+    entry: &CompiledEntry,
+) -> Result<Action, WriteError> {
     let existing = read_existing(path)?;
     let rendered = render_from(existing.as_ref(), format, entry)?;
     let parent_existed = path.parent().is_none_or(|parent| parent.exists());
@@ -175,10 +195,7 @@ pub fn write(path: &Path, format: Format, entry: &CompiledEntry) -> Result<Actio
         .map_err(|e| WriteError::new(format!("failed to sync {}: {e}", path.display())))?;
     std::fs::rename(&tmp, path)
         .map_err(|e| WriteError::new(format!("failed to finalize {}: {e}", path.display())))?;
-    if let Err(mut error) = sync_parent_dir(parent) {
-        error.published = true;
-        return Err(error);
-    }
+    sync_parent_dir(parent).map_err(WriteError::after_publish)?;
     Ok(rendered.action)
 }
 
