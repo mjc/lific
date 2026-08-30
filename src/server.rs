@@ -1141,14 +1141,34 @@ mod authless_mcp_tests {
             return value;
         }
         let text = String::from_utf8_lossy(body);
-        text.lines()
-            .find_map(|line| {
-                line.strip_prefix("data:")
-                    .map(str::trim)
-                    .filter(|data| !data.is_empty())
-            })
-            .and_then(|data| serde_json::from_str(data).ok())
-            .unwrap_or_else(|| panic!("MCP body contained no JSON-RPC message: {text}"))
+        let mut event_data = String::new();
+        for line in text.lines().chain(std::iter::once("")) {
+            if line.is_empty() {
+                if !event_data.is_empty() {
+                    if let Ok(value) = serde_json::from_str(&event_data) {
+                        return value;
+                    }
+                    event_data.clear();
+                }
+                continue;
+            }
+
+            if let Some(data) = line.strip_prefix("data:") {
+                if !event_data.is_empty() {
+                    event_data.push('\n');
+                }
+                event_data.push_str(data.strip_prefix(' ').unwrap_or(data));
+            }
+        }
+
+        panic!("MCP body contained no JSON-RPC message: {text}");
+    }
+
+    #[test]
+    fn jsonrpc_body_accepts_complete_sse_events() {
+        let body = b"event: message\ndata:{\"jsonrpc\":\"2.0\",\"id\":\ndata:1,\"result\":{}}\n\n";
+
+        assert_eq!(jsonrpc_body(body)["id"], 1);
     }
 
     fn assert_object_keys(value: &serde_json::Value, expected: &[&str]) {
@@ -1267,7 +1287,7 @@ mod authless_mcp_tests {
         assert_object_keys(&first["result"], &["tools"]);
 
         let call = post_session(
-            router,
+            router.clone(),
             token,
             &session_id,
             serde_json::json!({
@@ -1285,6 +1305,26 @@ mod authless_mcp_tests {
         let call = jsonrpc_body(&call.into_body().collect().await.unwrap().to_bytes());
         assert_object_keys(&call["result"], &["content", "isError"]);
         assert_eq!(call["result"]["isError"], false);
+
+        let malformed = post_session(
+            router,
+            token,
+            &session_id,
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "tools/call",
+                "params": {
+                    "name": "search",
+                    "arguments": {"query": 3}
+                }
+            }),
+        )
+        .await;
+        assert_eq!(malformed.status(), StatusCode::OK);
+        let malformed = jsonrpc_body(&malformed.into_body().collect().await.unwrap().to_bytes());
+        assert_eq!(malformed["error"]["code"], -32602);
+        assert!(malformed.get("result").is_none());
     }
 
     #[tokio::test]

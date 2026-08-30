@@ -733,34 +733,8 @@ pub async fn check_mcp(client: &reqwest::Client, base: &str, key: Option<&str>) 
             else {
                 return Check::new("mcp", Status::Fail, "initialize omitted its session id");
             };
-            let body = match response_json(resp).await {
-                Ok(body) => body,
-                Err(error) => {
-                    return Check::new(
-                        "mcp",
-                        Status::Fail,
-                        format!("initialize body was not JSON: {error}"),
-                    );
-                }
-            };
-            if body["result"]["protocolVersion"] != "2025-03-26"
-                || !has_server_info(&body["result"]["serverInfo"])
-            {
-                return Check::new(
-                    "mcp",
-                    Status::Fail,
-                    format!("initialize response was incomplete: {body}"),
-                );
-            }
-            let name = body["result"]["serverInfo"]["name"]
-                .as_str()
-                .unwrap_or("lific");
-            match check_mcp_session(client, &url, key, &session_id).await {
-                Ok(detail) => Check::new(
-                    "mcp",
-                    Status::Pass,
-                    format!("legacy lifecycle succeeded (serverInfo: {name}); {detail}"),
-                ),
+            match check_mcp_session(client, &url, key, &session_id, resp).await {
+                Ok(detail) => Check::new("mcp", Status::Pass, detail),
                 Err(detail) => Check::new("mcp", Status::Fail, detail),
             }
         }
@@ -789,77 +763,111 @@ async fn check_mcp_session(
     url: &str,
     key: &str,
     session_id: &str,
+    initialize: reqwest::Response,
 ) -> Result<String, String> {
-    let request = |body: serde_json::Value| {
-        client
-            .post(url)
-            .bearer_auth(key)
-            .header("Accept", "application/json, text/event-stream")
-            .header("Content-Type", "application/json")
-            .header("MCP-Protocol-Version", "2025-03-26")
-            .header("MCP-Session-Id", session_id)
-            .json(&body)
-    };
-
-    let initialized = request(serde_json::json!({
-        "jsonrpc": "2.0",
-        "method": "notifications/initialized",
-        "params": {}
-    }))
-    .send()
-    .await
-    .map_err(|error| format!("initialized notification failed: {error}"))?;
-    if !initialized.status().is_success() {
-        return Err(format!(
-            "initialized notification returned HTTP {}",
-            initialized.status().as_u16()
-        ));
-    }
-
-    let list = request(serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 2,
-        "method": "tools/list",
-        "params": {}
-    }))
-    .send()
-    .await
-    .map_err(|error| format!("tools/list request failed: {error}"))?;
-    if !list.status().is_success() {
-        return Err(format!(
-            "tools/list returned HTTP {}",
-            list.status().as_u16()
-        ));
-    }
-    let list = response_json(list).await?;
-    if list["id"] != 2 || !list["result"]["tools"].is_array() {
-        return Err(format!("tools/list response was incomplete: {list}"));
-    }
-
-    let call = request(serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 3,
-        "method": "tools/call",
-        "params": {
-            "name": "search",
-            "arguments": {"query": "lific-doctor-no-such-result"}
+    let result = async {
+        let body = response_json(initialize).await?;
+        if body["result"]["protocolVersion"] != "2025-03-26"
+            || !has_server_info(&body["result"]["serverInfo"])
+        {
+            return Err(format!("initialize response was incomplete: {body}"));
         }
-    }))
-    .send()
-    .await
-    .map_err(|error| format!("tools/call request failed: {error}"))?;
-    if !call.status().is_success() {
-        return Err(format!(
-            "tools/call returned HTTP {}",
-            call.status().as_u16()
-        ));
+        let name = body["result"]["serverInfo"]["name"]
+            .as_str()
+            .unwrap_or("lific");
+
+        let request = |body: serde_json::Value| {
+            client
+                .post(url)
+                .bearer_auth(key)
+                .header("Accept", "application/json, text/event-stream")
+                .header("Content-Type", "application/json")
+                .header("MCP-Protocol-Version", "2025-03-26")
+                .header("MCP-Session-Id", session_id)
+                .json(&body)
+        };
+
+        let initialized = request(serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized",
+            "params": {}
+        }))
+        .send()
+        .await
+        .map_err(|error| format!("initialized notification failed: {error}"))?;
+        if !initialized.status().is_success() {
+            return Err(format!(
+                "initialized notification returned HTTP {}",
+                initialized.status().as_u16()
+            ));
+        }
+
+        let list = request(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/list",
+            "params": {}
+        }))
+        .send()
+        .await
+        .map_err(|error| format!("tools/list request failed: {error}"))?;
+        if !list.status().is_success() {
+            return Err(format!(
+                "tools/list returned HTTP {}",
+                list.status().as_u16()
+            ));
+        }
+        let list = response_json(list).await?;
+        if list["id"] != 2 || !list["result"]["tools"].is_array() {
+            return Err(format!("tools/list response was incomplete: {list}"));
+        }
+
+        let call = request(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "search",
+                "arguments": {"query": "lific-doctor-no-such-result"}
+            }
+        }))
+        .send()
+        .await
+        .map_err(|error| format!("tools/call request failed: {error}"))?;
+        if !call.status().is_success() {
+            return Err(format!(
+                "tools/call returned HTTP {}",
+                call.status().as_u16()
+            ));
+        }
+        let call = response_json(call).await?;
+        if call["id"] != 3 || !call["result"]["content"].is_array() {
+            return Err(format!("tools/call response was incomplete: {call}"));
+        }
+
+        Ok(format!(
+            "legacy lifecycle succeeded (serverInfo: {name}); initialized, tools/list, and harmless tools/call succeeded"
+        ))
     }
-    let call = response_json(call).await?;
-    if call["id"] != 3 || !call["result"]["content"].is_array() {
-        return Err(format!("tools/call response was incomplete: {call}"));
+    .await;
+
+    match client
+        .delete(url)
+        .bearer_auth(key)
+        .header("MCP-Protocol-Version", "2025-03-26")
+        .header("MCP-Session-Id", session_id)
+        .send()
+        .await
+    {
+        Ok(response) if response.status().is_success() => {}
+        Ok(response) => tracing::warn!(
+            status = %response.status(),
+            "MCP doctor session cleanup returned a non-success status"
+        ),
+        Err(error) => tracing::warn!(error = %error, "MCP doctor session cleanup failed"),
     }
 
-    Ok("initialized, tools/list, and harmless tools/call succeeded".into())
+    result
 }
 
 // ── Check 7: public_url ──────────────────────────────────────────────────
@@ -1264,7 +1272,18 @@ mod tests {
     // 200, and an authorized `initialize` round-trip with a real key.
 
     use std::net::SocketAddr;
-    use std::sync::Arc;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+
+    use axum::{
+        extract::State,
+        http::{Method, Request, StatusCode},
+        response::{IntoResponse, Response},
+        routing::any,
+        Router,
+    };
 
     /// Build the production app for an instance whose issuer is `issuer`.
     fn build_test_app(pool: crate::db::DbPool, issuer: &str) -> axum::Router {
@@ -1367,6 +1386,96 @@ mod tests {
             c.detail
         );
         assert!(c.detail.contains("tools/list"), "detail: {}", c.detail);
+    }
+
+    struct MockMcpState {
+        posts: AtomicUsize,
+        deletes: AtomicUsize,
+    }
+
+    async fn mock_mcp(
+        State(state): State<Arc<MockMcpState>>,
+        request: Request<axum::body::Body>,
+    ) -> Response {
+        match *request.method() {
+            Method::DELETE => {
+                assert_eq!(
+                    request
+                        .headers()
+                        .get("authorization")
+                        .and_then(|value| value.to_str().ok()),
+                    Some("Bearer doctor-key")
+                );
+                assert_eq!(
+                    request
+                        .headers()
+                        .get("mcp-session-id")
+                        .and_then(|value| value.to_str().ok()),
+                    Some("doctor-session")
+                );
+                assert_eq!(
+                    request
+                        .headers()
+                        .get("mcp-protocol-version")
+                        .and_then(|value| value.to_str().ok()),
+                    Some("2025-03-26")
+                );
+                state.deletes.fetch_add(1, Ordering::Relaxed);
+                StatusCode::OK.into_response()
+            }
+            Method::POST => match state.posts.fetch_add(1, Ordering::Relaxed) {
+                0 => (
+                    StatusCode::OK,
+                    [("mcp-session-id", "doctor-session")],
+                    axum::Json(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": {
+                            "protocolVersion": "2025-03-26",
+                            "serverInfo": {"name": "mock", "version": "1"}
+                        }
+                    })),
+                )
+                    .into_response(),
+                1 => StatusCode::ACCEPTED.into_response(),
+                2 => (
+                    StatusCode::OK,
+                    axum::Json(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "result": {"tools": []}
+                    })),
+                )
+                    .into_response(),
+                3 => (
+                    StatusCode::OK,
+                    axum::Json(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": 3,
+                        "result": {"content": []}
+                    })),
+                )
+                    .into_response(),
+                _ => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+            },
+            _ => StatusCode::METHOD_NOT_ALLOWED.into_response(),
+        }
+    }
+
+    #[tokio::test]
+    async fn mcp_probe_deletes_the_legacy_session() {
+        let state = Arc::new(MockMcpState {
+            posts: AtomicUsize::new(0),
+            deletes: AtomicUsize::new(0),
+        });
+        let app = Router::new()
+            .route("/mcp", any(mock_mcp))
+            .with_state(state.clone());
+        let base = serve_ephemeral(app).await;
+
+        let c = check_mcp(&test_client(), &base, Some("doctor-key")).await;
+        assert_eq!(c.status, Status::Pass, "detail: {}", c.detail);
+        assert_eq!(state.deletes.load(Ordering::Relaxed), 1);
     }
 
     #[tokio::test]
