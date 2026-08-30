@@ -620,6 +620,8 @@ pub async fn check_oauth_discovery(client: &reqwest::Client, base: &str) -> Chec
 
 // ── Check 6: MCP round-trip ──────────────────────────────────────────────
 
+const MCP_DOCTOR_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V_2025_11_25;
+
 /// The JSON-RPC `initialize` request body. Request the newest protocol version
 /// supported by this legacy-foundation branch.
 fn initialize_body() -> serde_json::Value {
@@ -628,7 +630,7 @@ fn initialize_body() -> serde_json::Value {
         "id": 1,
         "method": "initialize",
         "params": {
-            "protocolVersion": "2025-11-25",
+            "protocolVersion": MCP_DOCTOR_PROTOCOL_VERSION.to_string(),
             "capabilities": {},
             "clientInfo": { "name": "lific-doctor", "version": env!("CARGO_PKG_VERSION") }
         }
@@ -839,7 +841,7 @@ struct McpDoctorSession<'a> {
     url: &'a str,
     key: &'a str,
     session_id: &'a str,
-    protocol_version: Option<ProtocolVersion>,
+    protocol_version: ProtocolVersion,
 }
 
 impl McpDoctorSession<'_> {
@@ -849,13 +851,7 @@ impl McpDoctorSession<'_> {
             .bearer_auth(self.key)
             .header("Accept", "application/json, text/event-stream")
             .header("Content-Type", "application/json")
-            .header(
-                "MCP-Protocol-Version",
-                self.protocol_version
-                    .as_ref()
-                    .expect("MCP doctor session must negotiate before sending requests")
-                    .to_string(),
-            )
+            .header("MCP-Protocol-Version", self.protocol_version.to_string())
             .header("MCP-Session-Id", self.session_id)
             .json(body)
     }
@@ -892,7 +888,7 @@ impl McpDoctorSession<'_> {
     async fn check(&mut self, initialize: reqwest::Response) -> Result<String, McpSessionError> {
         let initialize: InitializeResult = jsonrpc_response(initialize, 1, "initialize").await?;
         let server_name = validate_initialize(&initialize)?;
-        self.protocol_version = Some(initialize.protocol_version.clone());
+        self.protocol_version = initialize.protocol_version.clone();
 
         self.send(
             "initialized notification",
@@ -944,13 +940,7 @@ impl McpDoctorSession<'_> {
             .client
             .delete(self.url)
             .bearer_auth(self.key)
-            .header(
-                "MCP-Protocol-Version",
-                self.protocol_version
-                    .as_ref()
-                    .expect("MCP doctor session must negotiate before closing")
-                    .to_string(),
-            )
+            .header("MCP-Protocol-Version", self.protocol_version.to_string())
             .header("MCP-Session-Id", self.session_id)
             .send()
             .await
@@ -977,7 +967,7 @@ async fn check_mcp_session(
         url,
         key,
         session_id,
-        protocol_version: None,
+        protocol_version: MCP_DOCTOR_PROTOCOL_VERSION,
     };
     let result = session.check(initialize).await;
     session.close().await;
@@ -1054,16 +1044,35 @@ fn print_report(report: &Report, json: bool) {
 mod tests {
     use super::*;
 
-    fn initialize_response(server_info: serde_json::Value) -> serde_json::Value {
+    fn initialize_response_for(
+        protocol_version: ProtocolVersion,
+        server_info: serde_json::Value,
+    ) -> serde_json::Value {
         serde_json::json!({
             "jsonrpc": "2.0",
             "id": 1,
             "result": {
-                "protocolVersion": "2025-11-25",
+                "protocolVersion": protocol_version.to_string(),
                 "capabilities": {},
                 "serverInfo": server_info
             }
         })
+    }
+
+    fn initialize_response(server_info: serde_json::Value) -> serde_json::Value {
+        initialize_response_for(MCP_DOCTOR_PROTOCOL_VERSION, server_info)
+    }
+
+    fn initialize_result(
+        protocol_version: ProtocolVersion,
+        server_info: serde_json::Value,
+    ) -> InitializeResult {
+        jsonrpc_result(
+            initialize_response_for(protocol_version, server_info),
+            1,
+            "initialize",
+        )
+        .unwrap()
     }
 
     #[test]
@@ -1083,32 +1092,27 @@ mod tests {
 
     #[test]
     fn mcp_initialize_response_is_typed_and_validated() {
-        let initialize: InitializeResult = jsonrpc_result(
-            initialize_response(serde_json::json!({"name": "lific", "version": "2.7.1"})),
-            1,
-            "initialize",
-        )
-        .unwrap();
-        assert_eq!(validate_initialize(&initialize).unwrap(), "lific");
-
         for version in [ProtocolVersion::V_2025_06_18, ProtocolVersion::V_2025_11_25] {
-            let mut body = initialize_response(serde_json::json!({"name": "lific", "version": "2.7.1"}));
-            body["result"]["protocolVersion"] = serde_json::json!(version.to_string());
-            let initialize: InitializeResult = jsonrpc_result(body, 1, "initialize").unwrap();
+            let initialize = initialize_result(
+                version,
+                serde_json::json!({"name": "lific", "version": "2.7.1"}),
+            );
             assert_eq!(validate_initialize(&initialize).unwrap(), "lific");
         }
 
-        let mut unsupported = initialize_response(serde_json::json!({"name": "lific", "version": "2.7.1"}));
-        unsupported["result"]["protocolVersion"] = serde_json::json!("2024-11-05");
-        let unsupported: InitializeResult = jsonrpc_result(unsupported, 1, "initialize").unwrap();
-        assert!(matches!(validate_initialize(&unsupported), Err(McpSessionError::ProtocolVersion { .. })));
+        let unsupported = initialize_result(
+            ProtocolVersion::V_2024_11_05,
+            serde_json::json!({"name": "lific", "version": "2.7.1"}),
+        );
+        assert!(matches!(
+            validate_initialize(&unsupported),
+            Err(McpSessionError::ProtocolVersion { .. })
+        ));
 
-        let blank_name: InitializeResult = jsonrpc_result(
-            initialize_response(serde_json::json!({"name": " ", "version": "2.7.1"})),
-            1,
-            "initialize",
-        )
-        .unwrap();
+        let blank_name = initialize_result(
+            MCP_DOCTOR_PROTOCOL_VERSION,
+            serde_json::json!({"name": " ", "version": "2.7.1"}),
+        );
         assert!(matches!(
             validate_initialize(&blank_name),
             Err(McpSessionError::ServerInfo)
@@ -1588,6 +1592,7 @@ mod tests {
     struct MockMcpState {
         posts: AtomicUsize,
         deletes: AtomicUsize,
+        initialize: serde_json::Value,
     }
 
     async fn mock_mcp(
@@ -1624,9 +1629,7 @@ mod tests {
                 0 => (
                     StatusCode::OK,
                     [("mcp-session-id", "doctor-session")],
-                    axum::Json(initialize_response(
-                        serde_json::json!({"name": "mock", "version": "1"}),
-                    )),
+                    axum::Json(state.initialize.clone()),
                 )
                     .into_response(),
                 1 => StatusCode::ACCEPTED.into_response(),
@@ -1659,6 +1662,10 @@ mod tests {
         let state = Arc::new(MockMcpState {
             posts: AtomicUsize::new(0),
             deletes: AtomicUsize::new(0),
+            initialize: initialize_response(serde_json::json!({
+                "name": "mock",
+                "version": "1"
+            })),
         });
         let app = Router::new()
             .route("/mcp", any(mock_mcp))
@@ -1667,6 +1674,27 @@ mod tests {
 
         let c = check_mcp(&test_client(), &base, Some("doctor-key")).await;
         assert_eq!(c.status, Status::Pass, "detail: {}", c.detail);
+        assert_eq!(state.deletes.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn mcp_probe_deletes_the_session_after_invalid_initialize() {
+        let state = Arc::new(MockMcpState {
+            posts: AtomicUsize::new(0),
+            deletes: AtomicUsize::new(0),
+            initialize: initialize_response_for(
+                ProtocolVersion::V_2024_11_05,
+                serde_json::json!({"name": "mock", "version": "1"}),
+            ),
+        });
+        let app = Router::new()
+            .route("/mcp", any(mock_mcp))
+            .with_state(state.clone());
+        let base = serve_ephemeral(app).await;
+
+        let check = check_mcp(&test_client(), &base, Some("doctor-key")).await;
+
+        assert_eq!(check.status, Status::Fail, "detail: {}", check.detail);
         assert_eq!(state.deletes.load(Ordering::Relaxed), 1);
     }
 
