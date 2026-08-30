@@ -1156,8 +1156,9 @@ mod tests {
     /// real `ToolRouter::call` produces.
     type ToolBody = std::pin::Pin<
         Box<
-            dyn std::future::Future<Output = Result<rmcp::model::CallToolResult, rmcp::ErrorData>>
-                + Send,
+            dyn std::future::Future<
+                    Output = Result<rmcp::model::CallToolResponse, rmcp::ErrorData>,
+                > + Send,
         >,
     >;
 
@@ -1183,9 +1184,11 @@ mod tests {
                     [],
                 )
                 .unwrap();
-                Ok(rmcp::model::CallToolResult::success(vec![
-                    rmcp::model::ContentBlock::text("ran"),
-                ]))
+                Ok(rmcp::model::CallToolResponse::Complete(
+                    rmcp::model::CallToolResult::success(vec![
+                        rmcp::model::ContentBlock::text("ran"),
+                    ]),
+                ))
             }) as ToolBody
         };
         (body, ran)
@@ -1228,10 +1231,15 @@ mod tests {
         // Through `dispatch_tool`, which is the exact seam `call_tool` uses,
         // so this is the mapping a client actually receives.
         let (body, ran) = mutating_tool(&pool);
-        let result = server
+        let result: rmcp::model::CallToolResponse = server
             .dispatch_tool(body)
             .await
             .expect("a dead credential is a tool failure, not a protocol failure");
+
+        let result = match result {
+            rmcp::model::CallToolResponse::Complete(result) => result,
+            other => panic!("stdio auth failure must be a complete tool result: {other:?}"),
+        };
 
         assert_eq!(
             result.is_error,
@@ -1277,6 +1285,10 @@ mod tests {
 
         let (body, ran) = mutating_tool(&pool);
         let result = server.dispatch_tool(body).await.expect("dispatches");
+        let result = match result {
+            rmcp::model::CallToolResponse::Complete(result) => result,
+            other => panic!("a normal tool call must complete: {other:?}"),
+        };
 
         assert_eq!(result.is_error, Some(false));
         assert!(ran.load(std::sync::atomic::Ordering::SeqCst));

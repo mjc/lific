@@ -739,7 +739,7 @@ pub async fn check_mcp(client: &reqwest::Client, base: &str, key: Option<&str>) 
                     return Check::new(
                         "mcp",
                         Status::Fail,
-                        format!("initialize body was not JSON: {error}"),
+                        format!("initialize response could not be parsed: {error}"),
                     );
                 }
             };

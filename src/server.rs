@@ -1139,14 +1139,34 @@ mod authless_mcp_tests {
             return value;
         }
         let text = String::from_utf8_lossy(body);
-        text.lines()
-            .find_map(|line| {
-                line.strip_prefix("data:")
-                    .map(str::trim)
-                    .filter(|data| !data.is_empty())
-            })
-            .and_then(|data| serde_json::from_str(data).ok())
-            .unwrap_or_else(|| panic!("MCP body contained no JSON-RPC message: {text}"))
+        let mut event_data = String::new();
+        for line in text.lines().chain(std::iter::once("")) {
+            if line.is_empty() {
+                if !event_data.is_empty() {
+                    if let Ok(value) = serde_json::from_str(&event_data) {
+                        return value;
+                    }
+                    event_data.clear();
+                }
+                continue;
+            }
+
+            if let Some(data) = line.strip_prefix("data:") {
+                if !event_data.is_empty() {
+                    event_data.push('\n');
+                }
+                event_data.push_str(data.strip_prefix(' ').unwrap_or(data));
+            }
+        }
+
+        panic!("MCP body contained no JSON-RPC message: {text}");
+    }
+
+    #[test]
+    fn jsonrpc_body_accepts_complete_sse_events() {
+        let body = b"event: message\ndata:{\"jsonrpc\":\"2.0\",\"id\":\ndata:1,\"result\":{}}\n\n";
+
+        assert_eq!(jsonrpc_body(body)["id"], 1);
     }
 
     fn assert_object_keys(value: &serde_json::Value, expected: &[&str]) {
