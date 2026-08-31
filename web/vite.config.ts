@@ -14,13 +14,11 @@ const PROXY_SECURE = process.env.VITE_API_INSECURE !== "1";
 // Pull the canonical version from Cargo.toml so the UI never drifts from the
 // binary. Cargo.toml is the single source of truth (see AGENTS.md).
 function readCargoVersion(): string {
-  try {
-    const cargoToml = readFileSync(resolve(__dirname, "../Cargo.toml"), "utf8");
-    const match = cargoToml.match(/^version\s*=\s*"([^"]+)"/m);
-    return match?.[1] ?? "0.0.0";
-  } catch {
-    return "0.0.0";
-  }
+  const cargoTomlPath = resolve(__dirname, "../Cargo.toml");
+  const cargoToml = readFileSync(cargoTomlPath, "utf8");
+  const match = cargoToml.match(/^version\s*=\s*"([^"]+)"/m);
+  if (!match) throw new Error(`${cargoTomlPath} has no package version`);
+  return match[1];
 }
 const APP_VERSION = readCargoVersion();
 
