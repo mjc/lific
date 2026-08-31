@@ -9,7 +9,15 @@
   } from "./mermaidLimits";
   import { renderMermaidBlock } from "./mermaidRender";
   import IssueHoverCard from "./IssueHoverCard.svelte";
-  import { IDENTIFIER_RE, PROJECT_CODE_RE, refKind, routeFor, projectCodeOf } from "./references";
+  import {
+    IDENTIFIER_RE,
+    PROJECT_CODE_RE,
+    fetchIssueCached,
+    projectCodeOf,
+    refKind,
+    routeFor,
+  } from "./references";
+  import { issueStatusTreatment } from "./issueStatus";
   import { openPeek } from "./issues/peek.svelte"; // LIF-248
   import { openContextMenu } from "./contextMenuState.svelte"; // LIF-248
   import { PanelRight, ExternalLink } from "lucide-svelte";
@@ -374,6 +382,37 @@
         ]);
       });
     }
+  });
+
+  // Resolve each auto-linked issue once and add its status treatment after
+  // the synchronous Markdown pass. The shared resolver deduplicates requests
+  // with hover cards and autocomplete, while the cleanup prevents a late
+  // response from decorating links belonging to an older content revision.
+  $effect(() => {
+    html;
+    const root = containerEl;
+    if (!root) return;
+    let cancelled = false;
+    const links = root.querySelectorAll<HTMLAnchorElement>(
+      "a.identifier-link[data-issue-ident]:not([data-status-decorated])",
+    );
+    for (const link of Array.from(links)) {
+      link.dataset.statusDecorated = "true";
+      const identifier = link.dataset.issueIdent as string;
+      void fetchIssueCached(identifier).then((result) => {
+        if (cancelled || !link.isConnected) return;
+        const treatment = issueStatusTreatment(
+          result.status === "ok" ? result.issue.status : "unknown",
+        );
+        link.dataset.issueStatus = treatment.status;
+        link.dataset.issueStatusSymbol = treatment.symbol;
+        link.title = `${identifier} · ${treatment.label} · Shift-click to preview`;
+        link.setAttribute("aria-label", `${identifier} (${treatment.label})`);
+      });
+    }
+    return () => {
+      cancelled = true;
+    };
   });
 
   // LIF-107: render mermaid blocks after the HTML lands. Mermaid (~600KB)
