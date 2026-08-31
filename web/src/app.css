@@ -835,6 +835,7 @@ html[data-motion="reduced"] *::after {
 }
 
 .prose .identifier-link[data-issue-status] {
+  color: var(--text);
   background: var(--issue-status-bg, var(--accent-subtle));
   border: 1px solid var(--issue-status-color, var(--accent));
   box-shadow: inset 3px 0 0 var(--issue-status-color, var(--accent));
