@@ -37,6 +37,7 @@ RUN mkdir /data && chown 65532:65532 /data
 FROM gcr.io/distroless/cc-debian13:nonroot
 COPY --from=build /src/target/release/lific /usr/local/bin/lific
 COPY --from=build --chown=65532:65532 /data /data
+WORKDIR /data
 VOLUME /data
 EXPOSE 3456
 ENTRYPOINT ["/usr/local/bin/lific", "--db", "/data/lific.db"]
