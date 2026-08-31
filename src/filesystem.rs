@@ -187,7 +187,6 @@ pub(crate) fn set_private_file_path(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-#[cfg_attr(not(unix), expect(clippy::unnecessary_wraps, reason = "fallible on Unix"))]
 pub(crate) fn set_private_file(file: &File) -> io::Result<()> {
     #[cfg(unix)]
     {
@@ -198,7 +197,10 @@ pub(crate) fn set_private_file(file: &File) -> io::Result<()> {
         }
     }
     #[cfg(not(unix))]
-    let _ = file;
+    // Windows has no POSIX mode bits to tighten, but keep this API fallible by
+    // validating that the descriptor is still usable. That prevents a future
+    // platform branch from accidentally becoming an unchecked no-op.
+    file.metadata()?;
     Ok(())
 }
 
@@ -369,7 +371,6 @@ pub(crate) fn sync_dir(_path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-#[cfg_attr(not(unix), expect(clippy::unnecessary_wraps, reason = "fallible on Unix"))]
 fn reject_group_writable(path: &Path) -> io::Result<()> {
     #[cfg(unix)]
     {
@@ -383,7 +384,10 @@ fn reject_group_writable(path: &Path) -> io::Result<()> {
         }
     }
     #[cfg(not(unix))]
-    let _ = path;
+    // There are no POSIX group/other mode bits on Windows, but still verify
+    // the path through the shared no-follow policy instead of hiding errors in
+    // an apparently fallible no-op.
+    safe_metadata(path)?;
     Ok(())
 }
 
