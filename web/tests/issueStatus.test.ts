@@ -49,4 +49,10 @@ describe("issueStatusTreatment", () => {
       completed: false,
     });
   });
+
+  test("does not require color to distinguish known statuses", () => {
+    const statuses = ["backlog", "todo", "active", "done", "cancelled"];
+    const symbols = statuses.map((status) => issueStatusTreatment(status).symbol);
+    expect(new Set(symbols).size).toBe(statuses.length);
+  });
 });
