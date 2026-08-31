@@ -187,6 +187,7 @@ pub(crate) fn set_private_file_path(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg_attr(not(unix), expect(clippy::unnecessary_wraps, reason = "fallible on Unix"))]
 pub(crate) fn set_private_file(file: &File) -> io::Result<()> {
     #[cfg(unix)]
     {
@@ -368,6 +369,7 @@ pub(crate) fn sync_dir(_path: &Path) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg_attr(not(unix), expect(clippy::unnecessary_wraps, reason = "fallible on Unix"))]
 fn reject_group_writable(path: &Path) -> io::Result<()> {
     #[cfg(unix)]
     {
