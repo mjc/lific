@@ -40,6 +40,22 @@ Confirm that the binary is available.
 lific --version
 ```
 
+## Install with Nix
+
+On x86_64 Linux, aarch64 Linux, or Apple silicon macOS, install the package
+directly from the repository flake.
+
+```bash
+nix profile install github:VoidNullable/lific
+```
+
+The flake also exports `overlays.default` and `nixosModules.default` for
+declarative package and `services.lific` deployments.
+
+`lific service install` records the executable it starts. After a
+`nix profile upgrade`, run it again to update an installed user service before
+older profile generations are collected.
+
 ## Build from source
 
 Lific requires Rust 1.88 or later. SQLite is bundled with the Rust build.
