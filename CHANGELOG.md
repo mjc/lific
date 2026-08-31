@@ -1,6 +1,16 @@
 # Changelog
 
-## Unreleased
+## v2.8.0 (2026-08-30)
+
+The web UI stops treating the server as something to ask again and again and starts treating it as something to stay in sync with: every change carries a sequence number, tabs replay what they missed, navigation renders from a live read model instead of refetching, and deletes became reversible on the server. Around that, the OAuth consent screen finally says who is asking for what, and [@mjc](https://github.com/mjc) contributed another hardening pass across imports, rendered content, restores, filesystem writes, and the toolchain itself.
+
+### Live sync
+
+- **Changes propagate live and survive disconnects.** Every issue, page, and comment change is stamped with a per-project sequence number. A tab that loses its connection resumes from its cursor and replays what it missed; if it was gone longer than the replay window holds, it backfills just the missing deltas through the new `/changes` endpoint instead of re-downloading the project. A fresh client bootstraps once through `/index` and syncs by cursor from then on.
+- **Navigating a warm project stops refetching it.** The issue list, board, modules, and pages render from one in-memory read model kept current by the socket, so moving between views is instant instead of a skeleton flash and a round trip.
+- **All your tabs share one WebSocket.** One tab wins leader election through Web Locks and fans events out to the rest, so ten open tabs cost the server one connection instead of ten.
+- **Deletes are reversible on the server.** Deleting an issue, page, or comment now leaves a tombstone instead of removing the row. Maintainers can restore issues and pages through the REST API, and expired tombstones are purged after `retention.trash_days` (default 30 days). There is no trash UI yet; this release builds the shelf.
+- **Updates can refuse to clobber.** An update may carry `expected_seq`, and if someone else got there first the server answers 409 with the current state instead of silently overwriting. Clients that do not send it keep the old last-writer-wins behavior.
 
 ### OAuth consent
 
@@ -16,8 +26,38 @@ Approving an OAuth client used to happen on a screen that could not tell you wha
 - **A signed-out visitor gets a way in.** The authorization screen requires a session now, since it names the approving account, and an unauthenticated visit links to sign-in instead of dead-ending on a bare error.
 - **Disconnecting a tool returns its client registration.** Dynamic registrations are capped per instance, and a client could not be reclaimed while any grant still referenced it, including revoked ones. Revoked grants are now cleared, so a revoked token releases its slot instead of holding it forever. Tokens that are only expired are left alone, matching how Connected Tools reports them.
 
+### Security and robustness
+
+Five more pull requests by [@mjc](https://github.com/mjc), each closing off a way the server could be made to do unbounded or unsafe work.
+
+- **GitHub imports are bounded** (PR #40). Response bodies, issue and comment counts, retained memory, and concurrent import admission all have ceilings now, and hitting a deliberate ceiling returns 413 naming the limit instead of an opaque 500.
+- **Anonymous OAuth state cannot grow without bound** (PR #39). Client registrations and device codes have hard caps, size limits on their metadata, and expiry cleanup, so an unauthenticated visitor cannot fill the database.
+- **Rendered content is treated as hostile** (PR #38). Mermaid diagrams are size- and depth-bounded before rendering, label colors are sanitized before reaching CSS, and SVG attachments are served as downloads instead of rendering inline, since an inline SVG executes scripts.
+- **Restore refuses tampered archives** (PR #42). A restore now validates archive metadata, database schema integrity, and every attachment blob's hash, MIME type, and content before transactionally swapping it in. An archive that fails any check is refused rather than installed.
+- **Local filesystem writes are hardened** (PR #43). Config, service, database, and attachment writes reject symlink and path-traversal hazards, create files atomically with private permissions, and serialize storage operations across processes.
+- **Database failures stop masquerading as defaults** (PR #46). Reading settings, deriving a username, or checking a bot connection now propagates a database error instead of silently reporting "not found" or substituting a default, so a failing disk looks like a failing disk.
+
+### Web UI
+
+- **Back from a deep link goes up, not out.** Opening an issue or page directly by URL now synthesizes its parent list in history, so the system Back button returns to the list instead of leaving the app.
+- **The description editor matches the comment composer.** Same border, focus ring, attached toolbar, and proportions, so the two markdown inputs read as one control.
+
+### Fixes
+
+- **The server no longer slowly eats memory on long uptimes.** The backup task read the database through pooled connections whose 64 MB memory-map windows never close, pinning hundreds of megabytes of mappings forever; production sat at 944 MB resident against a 98 MB database after six days. Snapshots now run on a dedicated short-lived connection and retained heap is trimmed on the backup heartbeat. In an 8-cycle loop against the production snapshot, plateau RSS fell from 294 MB to 23 MB.
+- **Attachment operations stopped racing the backup.** Uploads, deletes, dumps, restores, and cleanup now share one cross-process lock, and an operation that would have to wait returns 503 with `Retry-After: 2` instead of blocking or corrupting. Windows classifies its lock violations the same way.
+- **Module statuses are validated.** REST, MCP, and CLI all refuse a module status outside the documented six (`backlog`, `planned`, `active`, `paused`, `done`, `cancelled`) instead of storing whatever arrived.
+
+### Development
+
+- **The toolchain now enforces what reviews used to catch.** CI and a pre-commit hook run `cargo fmt --check` and a repo-wide Clippy deny-list of selected pedantic and nursery lints (PRs #44 and #46 by [@mjc](https://github.com/mjc)). The whole-tree reformat is recorded in `.git-blame-ignore-revs`, so `git blame` still points at the commits that meant something.
+
 ### Upgrading
 
+- **SVG attachments no longer render inline.** They are served with a download disposition. If you relied on hotlinking an attached SVG into rendered markdown, it now downloads instead.
+- **A module status outside the documented six is refused.** Anything automated that wrote free-text module statuses will start getting validation errors.
+- **Attachment routes can answer 503.** During a backup, dump, or restore, attachment uploads and deletes may return 503 with `Retry-After: 2`. Retry after the delay instead of treating it as fatal.
+- **The WebSocket protocol grew, compatibly.** Events may carry `seq`, clients may resume with a cursor, and a `sync_required` message asks the client to backfill through `/changes`. Old clients can ignore all of it; deletes now being soft means a restore emits ordinary create and update events.
 - **`POST /oauth/device_authorization` now requires a registered `client_id`.** RFC 8628 has always required one for public clients; Lific used to accept free-text `client_name` instead and display it on the approval screen. Register at `/oauth/register` and send the returned `client_id`. `scope` remains optional and defaults to `mcp`, but an explicitly different scope is refused rather than quietly downgraded.
 - **`lific login` from a CLI older than this release will not work against a server running it.** Older CLIs send only `client_name` and get `invalid_request` back. Upgrade the CLI. The reverse direction still works: a current CLI registers a client when the server supports it and falls back to the old request shape when it does not, so upgrading the CLI first is safe.
 - **`lific login` remembers the client it registered.** It is stored in `~/.config/lific/clients.json`, keyed by server URL, and reused on later logins so each login does not consume one of the instance's registration slots. The file holds no secrets and deleting it is harmless; the next login simply registers again.
