@@ -156,8 +156,7 @@ pub fn client_ip(peer: IpAddr, headers: &HeaderMap, trusted_proxies: &[IpNetwork
     let client = if headers.contains_key("x-forwarded-for") {
         x_forwarded_for_client_ip(headers, trusted_proxies).unwrap_or(peer)
     } else {
-        header_ip(headers, "x-real-ip")
-            .map_or(peer, normalize_ip)
+        header_ip(headers, "x-real-ip").map_or(peer, normalize_ip)
     };
     normalize_ip(client).to_string()
 }
@@ -264,9 +263,7 @@ impl RateLimiter {
         let now = Instant::now();
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
 
-        if !state.attempts.contains_key(key)
-            && !Self::make_room(&mut state, now, self.window)
-        {
+        if !state.attempts.contains_key(key) && !Self::make_room(&mut state, now, self.window) {
             return None;
         }
 
@@ -387,9 +384,7 @@ impl<'a> Reservation<'a> {
         first: &str,
         second: &str,
     ) -> Result<Self, ReservationRejection> {
-        let first_id = limiter
-            .reserve(first)
-            .ok_or(ReservationRejection::First)?;
+        let first_id = limiter.reserve(first).ok_or(ReservationRejection::First)?;
         let Some(second_id) = limiter.reserve(second) else {
             limiter.refund(first, first_id);
             return Err(ReservationRejection::Second);
@@ -789,8 +784,7 @@ mod tests {
 
     #[test]
     fn trusted_proxy_chain_skips_trusted_intermediate_hops() {
-        let trusted = parse_trusted_proxies(&["127.0.0.0/8".into(), "10.0.0.0/8".into()])
-            .unwrap();
+        let trusted = parse_trusted_proxies(&["127.0.0.0/8".into(), "10.0.0.0/8".into()]).unwrap();
         let peer = "127.0.0.1".parse().unwrap();
         let mut h = HeaderMap::new();
         h.insert("x-forwarded-for", "203.0.113.9, 10.0.0.2".parse().unwrap());
@@ -799,8 +793,7 @@ mod tests {
 
     #[test]
     fn all_trusted_forwarded_for_hops_fall_back_to_peer() {
-        let trusted = parse_trusted_proxies(&["127.0.0.0/8".into(), "10.0.0.0/8".into()])
-            .unwrap();
+        let trusted = parse_trusted_proxies(&["127.0.0.0/8".into(), "10.0.0.0/8".into()]).unwrap();
         let peer = "127.0.0.1".parse().unwrap();
         let mut h = HeaderMap::new();
         h.insert("x-forwarded-for", "10.0.0.2, 127.0.0.2".parse().unwrap());

@@ -278,10 +278,7 @@ impl RealtimeHub {
             return;
         }
 
-        let Ok(json) = serde_json::to_string(&EventEnvelope {
-            event: &event,
-            seq,
-        }) else {
+        let Ok(json) = serde_json::to_string(&EventEnvelope { event: &event, seq }) else {
             warn!("failed to serialize realtime event");
             return;
         };
@@ -491,7 +488,8 @@ pub async fn serve_socket(
                 .await
             }
             SocketInput::Message(message) => {
-                handle_client_message(&mut socket, &hub, &db, &auth_user, &mut client, message).await
+                handle_client_message(&mut socket, &hub, &db, &auth_user, &mut client, message)
+                    .await
             }
             SocketInput::ProgressDeadline => close_socket(&mut socket).await,
         };
@@ -668,7 +666,10 @@ enum ClientAction {
     Send(Message),
     ActivityBaseline,
     /// LIF-440: replay this project's buffered events past `cursor`.
-    Resume { project_id: i64, cursor: i64 },
+    Resume {
+        project_id: i64,
+        cursor: i64,
+    },
     Heartbeat,
     /// A reply to one of the server's own pings. Every conforming WebSocket
     /// client sends these without any application-level cooperation, which is
@@ -1279,7 +1280,10 @@ mod tests {
             publish(&hub, 1, seq, seq);
         }
 
-        assert_eq!(replayed_seqs(hub.resume(1, 3, Instant::now())), vec![4, 5, 6]);
+        assert_eq!(
+            replayed_seqs(hub.resume(1, 3, Instant::now())),
+            vec![4, 5, 6]
+        );
     }
 
     /// The cursor is inclusive of what the client already applied, so resuming
@@ -1296,7 +1300,10 @@ mod tests {
             replayed_seqs(hub.resume(1, 3, Instant::now())),
             Vec::<i64>::new()
         );
-        assert_eq!(replayed_seqs(hub.resume(1, 0, Instant::now())), vec![1, 2, 3]);
+        assert_eq!(
+            replayed_seqs(hub.resume(1, 0, Instant::now())),
+            vec![1, 2, 3]
+        );
     }
 
     /// A project this process has published nothing for cannot have a gap, so
@@ -1335,7 +1342,10 @@ mod tests {
 
         // The oldest event still buffered is well past seq 1, so the events
         // between are unrecoverable from memory.
-        assert_eq!(hub.resume(1, 1, Instant::now()), ResumeOutcome::SyncRequired);
+        assert_eq!(
+            hub.resume(1, 1, Instant::now()),
+            ResumeOutcome::SyncRequired
+        );
         // A cursor inside the surviving window is still served.
         assert_eq!(
             replayed_seqs(hub.resume(1, published - 2, Instant::now())),
@@ -1383,7 +1393,10 @@ mod tests {
 
         let ring = &buffer.projects[&1];
         assert_eq!(
-            ring.events.iter().map(|event| event.seq).collect::<Vec<_>>(),
+            ring.events
+                .iter()
+                .map(|event| event.seq)
+                .collect::<Vec<_>>(),
             vec![2],
             "the aged-out entry must not survive the next publish"
         );

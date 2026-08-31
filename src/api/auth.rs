@@ -21,11 +21,10 @@ use super::{require_admin, require_user, with_read, with_write};
 fn session_cookie(token: &str, expires_at: &str, secure: bool) -> String {
     use chrono::DateTime;
     // Parse expiry for Max-Age calculation; fall back to 30 days
-    let max_age = DateTime::parse_from_rfc3339(expires_at)
-        .map_or(30 * 24 * 3600, |exp| {
-            let exp_utc: DateTime<chrono::Utc> = exp.into();
-            (exp_utc - chrono::Utc::now()).num_seconds().max(0)
-        });
+    let max_age = DateTime::parse_from_rfc3339(expires_at).map_or(30 * 24 * 3600, |exp| {
+        let exp_utc: DateTime<chrono::Utc> = exp.into();
+        (exp_utc - chrono::Utc::now()).num_seconds().max(0)
+    });
 
     let secure_attr = if secure { "; Secure" } else { "" };
     format!("lific_token={token}; Path=/; Max-Age={max_age}; HttpOnly{secure_attr}; SameSite=Lax")
@@ -224,7 +223,9 @@ async fn authenticate_off_writer(
 
     // The read connection is released with this binding, before the verify.
     let challenge = with_read(db, |conn| {
-        Ok(crate::db::queries::users::password_challenge(conn, identity))
+        Ok(crate::db::queries::users::password_challenge(
+            conn, identity,
+        ))
     })?;
 
     let password = password.to_string();
@@ -367,12 +368,11 @@ pub(super) async fn auth_auto_login(
     // LIFIC-8: the "no credential → first admin" fallback is consolidated in
     // `resolve_caller`. Auto-login has no credential (it is the thing that
     // *produces* a session), so the passwordless fallback applies.
-    let admin = crate::resolve_caller::resolve_caller_conn(
-        &conn,
-        None,
-        crate::actor::Transport::Web,
-    )?
-    .ok_or_else(|| LificError::BadRequest("no admin account exists to sign in as".into()))?;
+    let admin =
+        crate::resolve_caller::resolve_caller_conn(&conn, None, crate::actor::Transport::Web)?
+            .ok_or_else(|| {
+                LificError::BadRequest("no admin account exists to sign in as".into())
+            })?;
     let admin = admin.user;
 
     let session = crate::db::queries::users::create_session(
@@ -718,9 +718,7 @@ pub(super) async fn refresh_session(
                 Err(rejected) => {
                     let retry = match rejected {
                         crate::ratelimit::ReservationRejection::First => rl.retry_after(&ip_key),
-                        crate::ratelimit::ReservationRejection::Second => {
-                            rl.retry_after(&user_key)
-                        }
+                        crate::ratelimit::ReservationRejection::Second => rl.retry_after(&user_key),
                     };
                     return Err(LificError::BadRequest(
                         crate::ratelimit::retry_after_message(
@@ -892,9 +890,7 @@ pub(super) async fn change_password(
                 Err(rejected) => {
                     let retry = match rejected {
                         crate::ratelimit::ReservationRejection::First => rl.retry_after(&ip_key),
-                        crate::ratelimit::ReservationRejection::Second => {
-                            rl.retry_after(&user_key)
-                        }
+                        crate::ratelimit::ReservationRejection::Second => rl.retry_after(&user_key),
                     };
                     return Err(LificError::BadRequest(
                         crate::ratelimit::retry_after_message(
@@ -2946,9 +2942,9 @@ mod tests {
     /// This exercises the handler directly with a resolved identity of None.
     #[tokio::test]
     async fn user_roster_handler_refuses_without_an_identity() {
-        let app = zero_user_app(crate::db::open_memory().expect("test db")).layer(
-            axum::Extension(None::<crate::resolve_caller::ResolvedIdentity>),
-        );
+        let app = zero_user_app(crate::db::open_memory().expect("test db")).layer(axum::Extension(
+            None::<crate::resolve_caller::ResolvedIdentity>,
+        ));
         let resp = json_get(&app, "/api/users").await;
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     }
@@ -3198,7 +3194,7 @@ mod tests {
             "/api/instance/settings",
             serde_json::json!({ "authz_enforced": true }),
         )
-            .await;
+        .await;
         assert_eq!(patch.status(), StatusCode::OK);
         assert_eq!(parse_json(patch).await["authz_enforced"], true);
 
@@ -3280,8 +3276,8 @@ mod tests {
                 "/api/instance/settings",
                 serde_json::json!({ "allow_signup": true })
             )
-                .await
-                .status(),
+            .await
+            .status(),
             StatusCode::FORBIDDEN
         );
     }
@@ -3558,16 +3554,20 @@ mod tests {
     // ── LIF-412: login verifies off the database writer ──────
 
     fn login_app(db: crate::db::DbPool) -> axum::Router {
-        with_client_ip_test_layers(crate::api::router(db, &[]), test_peer()).layer(
-            axum::Extension(crate::config::AuthConfig {
+        with_client_ip_test_layers(crate::api::router(db, &[]), test_peer()).layer(axum::Extension(
+            crate::config::AuthConfig {
                 allow_signup: true,
                 required: true,
                 secure_cookies: false,
-            }),
-        )
+            },
+        ))
     }
 
-    async fn login(app: &axum::Router, identity: &str, password: &str) -> (StatusCode, serde_json::Value) {
+    async fn login(
+        app: &axum::Router,
+        identity: &str,
+        password: &str,
+    ) -> (StatusCode, serde_json::Value) {
         let resp = json_post(
             app,
             "/api/auth/login",
@@ -4632,7 +4632,12 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::FORBIDDEN, "create is admin-only");
 
         for action in ["promote", "demote", "deactivate", "reactivate"] {
-            let resp = json_post(&app, &format!("/api/users/{}/{action}", admin.id), json!({})).await;
+            let resp = json_post(
+                &app,
+                &format!("/api/users/{}/{action}", admin.id),
+                json!({}),
+            )
+            .await;
             assert_eq!(
                 resp.status(),
                 StatusCode::FORBIDDEN,
@@ -4668,8 +4673,12 @@ mod tests {
         );
 
         for action in ["demote", "deactivate"] {
-            let resp =
-                json_post(&app, &format!("/api/users/{}/{action}", admin.id), json!({})).await;
+            let resp = json_post(
+                &app,
+                &format!("/api/users/{}/{action}", admin.id),
+                json!({}),
+            )
+            .await;
             assert_eq!(
                 resp.status(),
                 StatusCode::CONFLICT,
@@ -4677,7 +4686,10 @@ mod tests {
             );
             let data = parse_json(resp).await;
             assert!(
-                data["error"].as_str().unwrap().contains("last instance admin"),
+                data["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("last instance admin"),
                 "{action}: {data}"
             );
         }

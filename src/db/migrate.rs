@@ -689,7 +689,10 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(has_column, 0, "fixture must start on the pre-checksum shape");
+        assert_eq!(
+            has_column, 0,
+            "fixture must start on the pre-checksum shape"
+        );
 
         run(&conn).expect("a legacy database must upgrade cleanly");
 
@@ -1008,7 +1011,9 @@ mod tests {
             .unwrap();
         assert_eq!(counts, (3, 2), "no rows may be lost or deduplicated");
         assert!(index_names(&conn, "oauth_codes").contains(&"idx_oauth_codes_client".to_string()));
-        assert!(index_names(&conn, "oauth_tokens").contains(&"idx_oauth_tokens_client".to_string()));
+        assert!(
+            index_names(&conn, "oauth_tokens").contains(&"idx_oauth_tokens_client".to_string())
+        );
 
         // Non-unique: another code for a client that already has two.
         conn.execute(
@@ -1256,7 +1261,10 @@ mod tests {
 
         let id = new_issue(&conn, project_id, "One", Status::Todo);
         assert_eq!(
-            count(&conn, "SELECT count(*) FROM audit_log WHERE entity_type = 'issue'"),
+            count(
+                &conn,
+                "SELECT count(*) FROM audit_log WHERE entity_type = 'issue'"
+            ),
             1,
             "creating an issue is one audit row; the stamp must add none"
         );
@@ -1451,7 +1459,11 @@ mod tests {
         .unwrap();
 
         let recorded = transitions(&conn);
-        assert_eq!(recorded.len(), 1, "one status change, one row: {recorded:?}");
+        assert_eq!(
+            recorded.len(),
+            1,
+            "one status change, one row: {recorded:?}"
+        );
         let (issue_id, from, to, actor_user_id, transport, seq) =
             recorded.into_iter().next().unwrap();
         assert_eq!(issue_id, id);

@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::db::models::*;
 use crate::error::LificError;
@@ -318,7 +318,9 @@ fn validate_page_folder(
         Some(folder_project_id) => Err(LificError::BadRequest(format!(
             "folder {folder_id} belongs to project {folder_project_id}, not page project {project_id}"
         ))),
-        None => Err(LificError::BadRequest(format!("folder {folder_id} not found"))),
+        None => Err(LificError::BadRequest(format!(
+            "folder {folder_id} not found"
+        ))),
     }
 }
 
@@ -472,13 +474,15 @@ pub fn delete_page(conn: &Connection, id: i64) -> Result<(), LificError> {
 /// counterpart of [`super::issues::issue_seq`]; see that function for why the
 /// caller's pre-delete copy of the row is the wrong seq to publish.
 pub fn page_seq(conn: &Connection, id: i64) -> Result<i64, LificError> {
-    conn.query_row("SELECT seq FROM pages WHERE id = ?1", [id], |row| row.get(0))
-        .map_err(|error| match error {
-            rusqlite::Error::QueryReturnedNoRows => {
-                LificError::NotFound(format!("page {id} not found"))
-            }
-            other => other.into(),
-        })
+    conn.query_row("SELECT seq FROM pages WHERE id = ?1", [id], |row| {
+        row.get(0)
+    })
+    .map_err(|error| match error {
+        rusqlite::Error::QueryReturnedNoRows => {
+            LificError::NotFound(format!("page {id} not found"))
+        }
+        other => other.into(),
+    })
 }
 
 /// Bring a tombstoned page back, together with the comments that went down
@@ -1383,18 +1387,20 @@ mod tests {
             .is_err(),
             "unknown order_by must error, not be interpolated"
         );
-        assert!(list_pages(
-            &conn,
-            Some(pid),
-            None,
-            None,
-            None,
-            None,
-            Some("up"),
-            None,
-            None
-        )
-        .is_err());
+        assert!(
+            list_pages(
+                &conn,
+                Some(pid),
+                None,
+                None,
+                None,
+                None,
+                Some("up"),
+                None,
+                None
+            )
+            .is_err()
+        );
     }
 
     // ── LIF-183: page pinning ────────────────────────────────

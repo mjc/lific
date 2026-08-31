@@ -74,7 +74,10 @@ fn write_private_config(path: &std::path::Path, contents: &str) -> std::io::Resu
 /// `sync_all` persists its bytes; the name that reaches them lives in the
 /// parent directory and survives a crash only once that is synced too.
 /// Unix only: Windows exposes no directory handle to sync.
-#[cfg_attr(not(unix), expect(clippy::unnecessary_wraps, reason = "fallible on Unix"))]
+#[cfg_attr(
+    not(unix),
+    expect(clippy::unnecessary_wraps, reason = "fallible on Unix")
+)]
 fn sync_parent_dir(_dir: &std::path::Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {

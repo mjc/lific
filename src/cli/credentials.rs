@@ -359,8 +359,7 @@ pub fn load_with_source(base_url: &str) -> Option<(String, TokenSource)> {
 pub fn delete(base_url: &str) -> bool {
     let key = normalize_base_url(base_url);
     let kr = keyring_delete(&key);
-    let file = default_file_path()
-        .is_some_and(|p| FileStore::new(p).delete(&key).unwrap_or(false));
+    let file = default_file_path().is_some_and(|p| FileStore::new(p).delete(&key).unwrap_or(false));
     kr || file
 }
 
@@ -512,7 +511,11 @@ mod tests {
     fn file_store_creates_missing_parent_dir() {
         let tmp = tempfile::tempdir().unwrap();
         // Path two levels deep, neither of which exists yet.
-        let path = tmp.path().join("deep").join("nested").join("credentials.json");
+        let path = tmp
+            .path()
+            .join("deep")
+            .join("nested")
+            .join("credentials.json");
         let store = FileStore::new(path.clone());
         store.store("http://a", "tok").unwrap();
         assert!(path.exists());
@@ -528,7 +531,10 @@ mod tests {
 
     #[test]
     fn origin_of_makes_default_ports_explicit() {
-        assert_eq!(origin_of("https://h.example").unwrap(), "https://h.example:443");
+        assert_eq!(
+            origin_of("https://h.example").unwrap(),
+            "https://h.example:443"
+        );
         assert_eq!(
             origin_of("https://h.example:443").unwrap(),
             origin_of("https://h.example").unwrap()
@@ -548,7 +554,10 @@ mod tests {
     fn origin_of_ignores_case_path_and_trailing_slash() {
         let base = origin_of("https://Lific.Example:3998").unwrap();
         assert_eq!(origin_of("https://lific.example:3998/").unwrap(), base);
-        assert_eq!(origin_of("HTTPS://LIFIC.EXAMPLE:3998/a/b?q=1#f").unwrap(), base);
+        assert_eq!(
+            origin_of("HTTPS://LIFIC.EXAMPLE:3998/a/b?q=1#f").unwrap(),
+            base
+        );
         assert_eq!(origin_of("  https://lific.example:3998  ").unwrap(), base);
     }
 
@@ -563,7 +572,11 @@ mod tests {
     #[test]
     fn env_token_attaches_when_target_origin_matches_env_url() {
         assert_eq!(
-            env_token_for(Some("env-tok"), Some("https://ci.example"), "https://ci.example"),
+            env_token_for(
+                Some("env-tok"),
+                Some("https://ci.example"),
+                "https://ci.example"
+            ),
             EnvToken::Bound("env-tok".into())
         );
         // Same origin spelled differently on either side still binds.
@@ -576,7 +589,11 @@ mod tests {
             EnvToken::Bound("env-tok".into())
         );
         assert_eq!(
-            env_token_for(Some("env-tok"), Some("http://127.0.0.1:3998"), "http://127.0.0.1:3998/"),
+            env_token_for(
+                Some("env-tok"),
+                Some("http://127.0.0.1:3998"),
+                "http://127.0.0.1:3998/"
+            ),
             EnvToken::Bound("env-tok".into())
         );
     }
@@ -585,22 +602,38 @@ mod tests {
     fn env_token_is_dropped_when_target_origin_differs() {
         // The attack: a cwd config (or --url) points somewhere else.
         assert_eq!(
-            env_token_for(Some("env-tok"), Some("https://ci.example"), "https://hostile.example"),
+            env_token_for(
+                Some("env-tok"),
+                Some("https://ci.example"),
+                "https://hostile.example"
+            ),
             EnvToken::Unbound
         );
         // Different port, same host.
         assert_eq!(
-            env_token_for(Some("env-tok"), Some("http://127.0.0.1:3998"), "http://127.0.0.1:4000"),
+            env_token_for(
+                Some("env-tok"),
+                Some("http://127.0.0.1:3998"),
+                "http://127.0.0.1:4000"
+            ),
             EnvToken::Unbound
         );
         // Different scheme, same host: an http downgrade must not carry it.
         assert_eq!(
-            env_token_for(Some("env-tok"), Some("https://ci.example"), "http://ci.example"),
+            env_token_for(
+                Some("env-tok"),
+                Some("https://ci.example"),
+                "http://ci.example"
+            ),
             EnvToken::Unbound
         );
         // Subdomain is a different origin.
         assert_eq!(
-            env_token_for(Some("env-tok"), Some("https://ci.example"), "https://evil.ci.example"),
+            env_token_for(
+                Some("env-tok"),
+                Some("https://ci.example"),
+                "https://evil.ci.example"
+            ),
             EnvToken::Unbound
         );
         // Unparseable/non-http on either side never binds.
@@ -635,11 +668,18 @@ mod tests {
             EnvToken::Absent
         );
         assert_eq!(
-            env_token_for(Some("   "), Some("https://ci.example"), "https://ci.example"),
+            env_token_for(
+                Some("   "),
+                Some("https://ci.example"),
+                "https://ci.example"
+            ),
             EnvToken::Absent
         );
         // Absent, not Unbound, even with no LIFIC_URL: nothing to warn about.
-        assert_eq!(env_token_for(None, None, "https://ci.example"), EnvToken::Absent);
+        assert_eq!(
+            env_token_for(None, None, "https://ci.example"),
+            EnvToken::Absent
+        );
     }
 
     // The remaining tests mutate the process env, so they serialize on the

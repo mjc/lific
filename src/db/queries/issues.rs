@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 
 use crate::db::models::*;
 use crate::error::LificError;
@@ -742,13 +742,15 @@ pub fn deleted_issue_project_id(conn: &Connection, id: i64) -> Result<i64, Lific
 /// tombstone, not of the last edit, or a resuming client would be handed a
 /// cursor that predates the deletion it just applied. Read after the write.
 pub fn issue_seq(conn: &Connection, id: i64) -> Result<i64, LificError> {
-    conn.query_row("SELECT seq FROM issues WHERE id = ?1", [id], |row| row.get(0))
-        .map_err(|error| match error {
-            rusqlite::Error::QueryReturnedNoRows => {
-                LificError::NotFound(format!("issue {id} not found"))
-            }
-            other => other.into(),
-        })
+    conn.query_row("SELECT seq FROM issues WHERE id = ?1", [id], |row| {
+        row.get(0)
+    })
+    .map_err(|error| match error {
+        rusqlite::Error::QueryReturnedNoRows => {
+            LificError::NotFound(format!("issue {id} not found"))
+        }
+        other => other.into(),
+    })
 }
 
 pub fn link_issues(
@@ -1028,15 +1030,17 @@ mod tests {
                     "module {module_id} does not belong to project {issue_project_id}"
                 )
         ));
-        assert!(list_issues(
-            &conn,
-            &ListIssuesQuery {
-                project_id: Some(issue_project_id),
-                ..Default::default()
-            }
-        )
-        .unwrap()
-        .is_empty());
+        assert!(
+            list_issues(
+                &conn,
+                &ListIssuesQuery {
+                    project_id: Some(issue_project_id),
+                    ..Default::default()
+                }
+            )
+            .unwrap()
+            .is_empty()
+        );
     }
 
     // LIF-130: the issue INSERT and its label attaches are one atomic unit.

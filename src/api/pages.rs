@@ -431,7 +431,9 @@ mod tests {
         let id = created["id"].as_i64().unwrap();
 
         assert_eq!(
-            json_delete(&app, &format!("/api/pages/{id}")).await.status(),
+            json_delete(&app, &format!("/api/pages/{id}"))
+                .await
+                .status(),
             StatusCode::OK
         );
         assert_eq!(
@@ -439,7 +441,9 @@ mod tests {
             StatusCode::NOT_FOUND
         );
         assert_eq!(
-            json_get(&app, "/api/pages/resolve/TST-DOC-1").await.status(),
+            json_get(&app, "/api/pages/resolve/TST-DOC-1")
+                .await
+                .status(),
             StatusCode::NOT_FOUND
         );
         let listed: Vec<serde_json::Value> = serde_json::from_value(
@@ -448,7 +452,12 @@ mod tests {
         .unwrap();
         assert!(listed.is_empty());
 
-        let resp = json_post(&app, &format!("/api/pages/{id}/restore"), serde_json::json!({})).await;
+        let resp = json_post(
+            &app,
+            &format!("/api/pages/{id}/restore"),
+            serde_json::json!({}),
+        )
+        .await;
         assert_eq!(resp.status(), StatusCode::OK);
         let restored = parse_json(resp).await;
         assert_eq!(restored["identifier"], "TST-DOC-1");
@@ -476,9 +485,13 @@ mod tests {
         .await;
         let id = created["id"].as_i64().unwrap();
         assert_eq!(
-            json_post(&app, &format!("/api/pages/{id}/restore"), serde_json::json!({}))
-                .await
-                .status(),
+            json_post(
+                &app,
+                &format!("/api/pages/{id}/restore"),
+                serde_json::json!({})
+            )
+            .await
+            .status(),
             StatusCode::NOT_FOUND
         );
     }

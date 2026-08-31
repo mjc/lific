@@ -179,20 +179,24 @@ pub fn write(path: &Path, format: Format, entry: &CompiledEntry) -> Result<Actio
 /// `connect` cannot leave the config missing even though the write reported
 /// success. Unix only: Windows exposes no directory handle to sync, and
 /// `fsync` on a directory has no meaning there.
-#[cfg_attr(not(unix), expect(clippy::unnecessary_wraps, reason = "fallible on Unix"))]
+#[cfg_attr(
+    not(unix),
+    expect(clippy::unnecessary_wraps, reason = "fallible on Unix")
+)]
 fn sync_parent_dir(_dir: &Path) -> Result<(), WriteError> {
     #[cfg(unix)]
     {
         std::fs::File::open(_dir)
             .and_then(|dir| dir.sync_all())
-            .map_err(|e| {
-                WriteError::new(format!("failed to sync {}: {e}", _dir.display()))
-            })?;
+            .map_err(|e| WriteError::new(format!("failed to sync {}: {e}", _dir.display())))?;
     }
     Ok(())
 }
 
-#[cfg_attr(not(unix), expect(clippy::unnecessary_wraps, reason = "fallible on Unix"))]
+#[cfg_attr(
+    not(unix),
+    expect(clippy::unnecessary_wraps, reason = "fallible on Unix")
+)]
 fn set_private_file(_file: &std::fs::File) -> Result<(), WriteError> {
     #[cfg(unix)]
     {
@@ -204,7 +208,10 @@ fn set_private_file(_file: &std::fs::File) -> Result<(), WriteError> {
     Ok(())
 }
 
-#[cfg_attr(not(unix), expect(clippy::unnecessary_wraps, reason = "fallible on Unix"))]
+#[cfg_attr(
+    not(unix),
+    expect(clippy::unnecessary_wraps, reason = "fallible on Unix")
+)]
 fn set_private_dir(_path: &Path) -> Result<(), WriteError> {
     #[cfg(unix)]
     {

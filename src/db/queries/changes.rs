@@ -691,7 +691,12 @@ mod tests {
                 .iter()
                 .all(|issue| issue.seq <= snapshot.cursor)
         );
-        assert!(snapshot.pages.iter().all(|page| page.seq <= snapshot.cursor));
+        assert!(
+            snapshot
+                .pages
+                .iter()
+                .all(|page| page.seq <= snapshot.cursor)
+        );
     }
 
     /// LIF-439's race rule, exercised against the real composition
