@@ -26,7 +26,7 @@ mod storage;
 mod test_env;
 
 use clap::{CommandFactory, Parser};
-use cli::{BackendKind, Cli, Command, ServiceAction};
+use cli::{BackendKind, Cli, Command};
 use config::Config;
 
 // Commands that operate directly on the database (no server required)
@@ -138,6 +138,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    // Service management addresses a fixed per-user unit and must remain
+    // usable when an ambient config is malformed or belongs to another cwd.
+    // Install validates its selected config explicitly inside service::run.
+    if let Command::Service { action } = &cli.command {
+        return cli::service::run(cli.config.as_deref(), cli.db.as_deref(), cli.json, action);
+    }
+
     // Load config (CLI flags override config values). A malformed config is
     // fatal: booting on defaults would silently widen the instance.
     let mut cfg = Config::load(cli.config.as_deref())?;
@@ -204,9 +211,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await;
         }
 
-        Command::Service { action } => {
-            return cmd_service(&cfg, cli.config.as_deref(), cli.json, &action);
-        }
+        Command::Service { .. } => unreachable!("service commands return before config loading"),
 
         Command::Dump { out } => {
             let json = cli::term::wants_json(cli.json);
@@ -618,46 +623,57 @@ async fn wait_healthy(base_url: &str, timeout: std::time::Duration) -> bool {
 /// whatever is missing and never overwrites existing config or keys.
 /// LIF-295: where `lific init` roots the instance.
 ///
-/// Returns `(config_path, default_db_path)`; `default_db_path` is `Some`
-/// only for the OS-dirs layout, where the generated config must carry an
-/// explicit absolute `database.path` (config dir and data dir differ).
+/// `initial_database` is `Some` only for the OS-dirs layout, where the
+/// generated config must carry an explicit absolute `database.path` (config
+/// dir and data dir differ).
 ///
 /// - `--config <p>` → root at `p`, relative db beside it.
 /// - `--here`, or a `lific.toml` already in the cwd (repairing an existing
 ///   directory-local instance must win over silently starting a second
 ///   instance in the OS dirs), or unresolvable platform dirs → cwd layout.
 /// - otherwise → OS config dir + OS data dir (`Config::os_default_instance`).
+#[derive(Debug, PartialEq, Eq)]
+struct InitTarget {
+    config: std::path::PathBuf,
+    initial_database: Option<std::path::PathBuf>,
+}
+
 fn resolve_init_target(
     config_flag: Option<&std::path::Path>,
     here: bool,
     cwd_config_exists: bool,
     os_default: Option<(std::path::PathBuf, std::path::PathBuf)>,
-) -> (std::path::PathBuf, Option<std::path::PathBuf>) {
+) -> InitTarget {
     if let Some(p) = config_flag {
-        return (p.to_path_buf(), None);
+        return InitTarget {
+            config: p.to_path_buf(),
+            initial_database: None,
+        };
     }
     if here || cwd_config_exists {
-        return (std::path::PathBuf::from("lific.toml"), None);
+        return InitTarget {
+            config: std::path::PathBuf::from("lific.toml"),
+            initial_database: None,
+        };
     }
     match os_default {
-        Some((config, db)) => (config, Some(db)),
-        None => (std::path::PathBuf::from("lific.toml"), None),
+        Some((config, db)) => InitTarget {
+            config,
+            initial_database: Some(db),
+        },
+        None => InitTarget {
+            config: std::path::PathBuf::from("lific.toml"),
+            initial_database: None,
+        },
     }
 }
 
-/// Load the config file `init` operates on, applying the optional `--db`
-/// override on top. Shared by the initial load and the post-auth-mode reload
-/// (LIFIC-25), so the override logic lives in exactly one place. A malformed
-/// config file is fatal, matching `Config::load`'s contract everywhere else.
-fn load_config_for_init(
-    config_path: &std::path::Path,
-    db_flag: Option<&std::path::Path>,
-) -> Result<Config, config::ConfigError> {
-    let mut cfg = Config::load(Some(config_path))?;
-    if let Some(db) = db_flag {
-        cfg.database.path = db.to_path_buf();
+fn absolute_cli_path(path: &std::path::Path, cwd: &std::path::Path) -> std::path::PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        cwd.join(path)
     }
-    Ok(cfg)
 }
 
 /// Resolve the auth mode the operator chose at `init` (LIFIC-25). Honors an
@@ -749,12 +765,13 @@ async fn cmd_init(
     // LIF-292 + LIF-295: the instance roots wherever the config file lives —
     // an explicit --config, the cwd (--here / existing ./lific.toml), or the
     // OS-standard config+data dirs by default.
-    let (config_path, default_db) = resolve_init_target(
+    let target = resolve_init_target(
         config_flag,
         here,
         std::path::Path::new("lific.toml").exists(),
         Config::os_default_instance(),
     );
+    let config_path = target.config;
     let created_config = if config_path.exists() {
         false
     } else {
@@ -773,7 +790,7 @@ async fn cmd_init(
             #[cfg(not(unix))]
             let _ = parent_existed;
         }
-        let toml = match &default_db {
+        let toml = match &target.initial_database {
             Some(db) => Config::default_toml_with_db(db),
             None => Config::default_toml(),
         };
@@ -781,13 +798,23 @@ async fn cmd_init(
         true
     };
 
+    // `init` creates a persistent service, so persist an explicit database
+    // selection into its sole source of truth. Keeping --db only in this
+    // process would initialize one database and then start another.
+    if let Some(db) = db_flag {
+        let db = absolute_cli_path(db, &std::env::current_dir()?);
+        let existing = std::fs::read_to_string(&config_path)?;
+        let toml = Config::apply_database_path(&existing, &db)?;
+        write_private_config(&config_path, &toml)?;
+    }
+
     // (Re)load from the file init actually operates on, so a relative
     // database.path anchors to the config's own directory — the same
-    // resolution the installed service (WorkingDirectory = that directory)
-    // applies at runtime. The pre-dispatch Config::load can't have done
+    // resolution the installed service applies at runtime. The pre-dispatch
+    // Config::load can't have done
     // this when the file didn't exist yet. Applied again after the auth-mode
     // edit rewrites the file (LIFIC-25).
-    let mut cfg = load_config_for_init(&config_path, db_flag)?;
+    let mut cfg = Config::load(Some(&config_path))?;
 
     // Create + migrate the database and seed instance settings now, while the
     // instance has zero users — this is the moment the authz-enforced default
@@ -819,7 +846,7 @@ async fn cmd_init(
         let existing = std::fs::read_to_string(&config_path).unwrap_or_default();
         let new_toml = Config::apply_auth_mode(&existing, mode.required(), mode.host())?;
         write_private_config(&config_path, &new_toml)?;
-        cfg = load_config_for_init(&config_path, db_flag)?;
+        cfg = Config::load(Some(&config_path))?;
 
         let op_name = match name {
             Some(n) => n,
@@ -1032,138 +1059,9 @@ async fn cmd_init(
     Ok(())
 }
 
-/// `lific service <action>`: manage the background service `init` installs.
-fn cmd_service(
-    cfg: &Config,
-    config_flag: Option<&std::path::Path>,
-    json_flag: bool,
-    action: &ServiceAction,
-) -> Result<(), Box<dyn std::error::Error>> {
-    use cli::ui;
-    let json = cli::term::wants_json(json_flag);
-    let Some(mgr) = cli::service::detect() else {
-        return Err(
-            "no supported service manager found (needs a systemd user session on \
-                    Linux, or launchd on macOS)"
-                .into(),
-        );
-    };
-    match action {
-        ServiceAction::Install => {
-            // LIF-292: honor --config; the unit is rendered around this
-            // exact file. Without the flag, discover the instance the same
-            // way Config::load does (cwd → user config dir → system config
-            // dir, LIF-295) so a bare install finds the OS-dirs instance
-            // that a bare `lific init` created.
-            let config_path: std::path::PathBuf = match config_flag {
-                Some(p) => p.to_path_buf(),
-                None => Config::discover_path()
-                    .unwrap_or_else(|| std::path::PathBuf::from("lific.toml")),
-            };
-            if !config_path.exists() {
-                return Err(format!(
-                    "config not found at {} — run `lific init` first (or point --config at an \
-                     existing lific.toml)",
-                    config_path.display()
-                )
-                .into());
-            }
-            let plan = cli::service::ServicePlan::for_config_file(&config_path)?;
-            let report = cli::service::install(mgr, &plan)?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&report)?);
-            } else {
-                ui::intro("lific service install");
-                ui::step(format!(
-                    "Service installed and started — {} {}",
-                    report.manager,
-                    ui::dim(&report.definition)
-                ));
-                if report.linger == Some(false) {
-                    ui::warn(
-                        "`loginctl enable-linger` didn't succeed — the service will stop \
-                         when you log out. Run it manually to fix that.",
-                    );
-                }
-                ui::outro(format!(
-                    "Logs: {}",
-                    ui::command(cli::service::logs_hint(mgr))
-                ));
-            }
-        }
-        ServiceAction::Uninstall => {
-            let removed = cli::service::uninstall(mgr)?;
-            if json {
-                println!(
-                    "{}",
-                    serde_json::json!({ "uninstalled": true, "definition": removed })
-                );
-            } else {
-                ui::intro("lific service uninstall");
-                ui::step(format!(
-                    "Service stopped and uninstalled {}",
-                    ui::dim(&removed)
-                ));
-                ui::outro(format!(
-                    "Reinstall anytime with {}",
-                    ui::command("lific service install")
-                ));
-            }
-        }
-        ServiceAction::Status => {
-            let s = cli::service::status(mgr)?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&s)?);
-            } else if s.active {
-                ui::step(format!(
-                    "Service is running ({}) — {}",
-                    s.manager,
-                    ui::command(local_url(cfg))
-                ));
-            } else if s.installed {
-                ui::error(format!(
-                    "Service is installed but NOT running ({}). Start it: {}",
-                    s.manager,
-                    ui::command("lific service restart")
-                ));
-            } else {
-                ui::error(format!(
-                    "Service is not installed. Install it: {}",
-                    ui::command("lific service install")
-                ));
-            }
-            if !(s.installed && s.active) {
-                std::process::exit(1);
-            }
-        }
-        ServiceAction::Stop => {
-            cli::service::stop(mgr)?;
-            if json {
-                println!("{}", serde_json::json!({ "stopped": true }));
-            } else {
-                ui::step(format!(
-                    "Service stopped {}",
-                    ui::dim("(still installed; it returns on reboot or `lific service restart`)")
-                ));
-            }
-        }
-        ServiceAction::Restart => {
-            cli::service::restart(mgr)?;
-            if json {
-                println!("{}", serde_json::json!({ "restarted": true }));
-            } else {
-                ui::step(format!(
-                    "Service restarted — {}",
-                    ui::command(local_url(cfg))
-                ));
-            }
-        }
-    }
-    Ok(())
-}
 #[cfg(test)]
 mod init_target_tests {
-    use super::{Config, auth, cmd_init, resolve_init_target};
+    use super::{Config, absolute_cli_path, auth, cmd_init, resolve_init_target};
     use crate::db;
     use std::path::{Path, PathBuf};
 
@@ -1178,47 +1076,59 @@ mod init_target_tests {
     // generated config can split config dir from data dir.
     #[test]
     fn bare_init_targets_os_dirs() {
-        let (config, db) = resolve_init_target(None, false, false, Some(os_default()));
-        assert_eq!(config, Path::new("/home/u/.config/lific/lific.toml"));
+        let target = resolve_init_target(None, false, false, Some(os_default()));
+        assert_eq!(target.config, Path::new("/home/u/.config/lific/lific.toml"));
         assert_eq!(
-            db.as_deref(),
+            target.initial_database.as_deref(),
             Some(Path::new("/home/u/.local/share/lific/lific.db"))
         );
     }
 
     #[test]
     fn here_flag_forces_cwd_layout() {
-        let (config, db) = resolve_init_target(None, true, false, Some(os_default()));
-        assert_eq!(config, Path::new("lific.toml"));
-        assert_eq!(db, None, "cwd layout keeps the relative default db");
+        let target = resolve_init_target(None, true, false, Some(os_default()));
+        assert_eq!(target.config, Path::new("lific.toml"));
+        assert_eq!(
+            target.initial_database, None,
+            "cwd layout keeps the relative default db"
+        );
     }
 
     // Repairing an existing directory-local instance must win over creating
     // a second instance in the OS dirs.
     #[test]
     fn existing_cwd_config_wins_over_os_dirs() {
-        let (config, db) = resolve_init_target(None, false, true, Some(os_default()));
-        assert_eq!(config, Path::new("lific.toml"));
-        assert_eq!(db, None);
+        let target = resolve_init_target(None, false, true, Some(os_default()));
+        assert_eq!(target.config, Path::new("lific.toml"));
+        assert_eq!(target.initial_database, None);
     }
 
     #[test]
     fn explicit_config_flag_wins_over_everything() {
-        let (config, db) = resolve_init_target(
+        let target = resolve_init_target(
             Some(Path::new("/srv/lific/lific.toml")),
             false,
             true,
             Some(os_default()),
         );
-        assert_eq!(config, Path::new("/srv/lific/lific.toml"));
-        assert_eq!(db, None);
+        assert_eq!(target.config, Path::new("/srv/lific/lific.toml"));
+        assert_eq!(target.initial_database, None);
     }
 
     #[test]
     fn unresolvable_platform_dirs_fall_back_to_cwd() {
-        let (config, db) = resolve_init_target(None, false, false, None);
-        assert_eq!(config, Path::new("lific.toml"));
-        assert_eq!(db, None);
+        let target = resolve_init_target(None, false, false, None);
+        assert_eq!(target.config, Path::new("lific.toml"));
+        assert_eq!(target.initial_database, None);
+    }
+
+    #[test]
+    fn relative_database_override_is_anchored_to_invocation_directory() {
+        let path = absolute_cli_path(
+            Path::new("data/lific.db"),
+            Path::new("/srv/lific-invocation"),
+        );
+        assert_eq!(path, Path::new("/srv/lific-invocation/data/lific.db"));
     }
 
     // The --here / --config conflict is enforced in cmd_init (clap can't
@@ -1284,6 +1194,30 @@ mod init_target_tests {
             "required": cfg.auth.required,
             "web_auto_login": settings.map(|s| s.web_auto_login),
         }))
+    }
+
+    #[tokio::test]
+    async fn init_persists_database_override_as_absolute_config_path() {
+        let dir = temp_dir();
+        let config_path = dir.path().join("config/lific.toml");
+        let db_path = dir.path().join("data/main.db");
+
+        cmd_init(
+            Some(&config_path),
+            Some(&db_path),
+            true,
+            true,
+            false,
+            Some("Blake".into()),
+            Some("login-free".into()),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let cfg = Config::load(Some(&config_path)).unwrap();
+        assert_eq!(cfg.database.path, db_path);
+        assert!(db_path.is_file());
     }
 
     // LIFIC-9: a fresh install (no humans) creates the first passwordless admin
