@@ -818,14 +818,6 @@ html[data-motion="reduced"] *::after {
   transition: background 0.15s;
 }
 
-.prose .identifier-link:hover {
-  background: var(--accent);
-  color: var(--accent-text);
-}
-
-/* Linked issue status (LIF-110). StatusIcon supplies the canonical shape and
-   color vocabulary used throughout issue lists and detail views. Keep the
-   identifier pill neutral so color never carries the meaning by itself. */
 .prose .identifier-status-icon {
   display: inline-flex;
   vertical-align: -0.15em;
@@ -842,7 +834,7 @@ html[data-motion="reduced"] *::after {
   text-decoration-thickness: 1.5px;
 }
 
-.prose .identifier-link[data-issue-status]:hover {
+.prose .identifier-link:hover {
   background: var(--accent);
   color: var(--accent-text);
 }

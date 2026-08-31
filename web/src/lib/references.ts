@@ -18,6 +18,7 @@ import {
   type Project,
 } from "./api";
 import { fuzzyMatch } from "./fuzzy";
+import { createConcurrencyQueue } from "./attachments/queue";
 
 // ── Identifier grammar ───────────────────────────────────────
 //
@@ -81,9 +82,7 @@ export type CachedIssue =
 
 const issueCache = new Map<string, CachedIssue>();
 const issueInFlight = new Map<string, Promise<CachedIssue>>();
-const ISSUE_RESOLUTION_CONCURRENCY = 6;
-let issueResolutionsActive = 0;
-const queuedIssueResolutions: Array<() => void> = [];
+const issueResolutionQueue = createConcurrencyQueue(6);
 
 // API credentials live in localStorage, and the app can log out/in without
 // reloading this module. A cache entry therefore belongs to the current token,
@@ -91,11 +90,6 @@ const queuedIssueResolutions: Array<() => void> = [];
 // repopulating a cache which has just been invalidated by realtime.
 let cacheSession: string | null | undefined;
 let cacheGeneration = 0;
-
-function currentSession(): string | null {
-  if (typeof localStorage === "undefined") return null;
-  return localStorage.getItem("lific_token");
-}
 
 function clearReferenceCaches() {
   cacheGeneration += 1;
@@ -106,48 +100,13 @@ function clearReferenceCaches() {
 }
 
 function ensureCacheSession() {
-  const session = currentSession();
+  const session = typeof localStorage === "undefined"
+    ? null
+    : localStorage.getItem("lific_token");
   if (cacheSession !== session) {
     cacheSession = session;
     clearReferenceCaches();
   }
-}
-
-function startQueuedIssueResolutions() {
-  while (
-    issueResolutionsActive < ISSUE_RESOLUTION_CONCURRENCY &&
-    queuedIssueResolutions.length > 0
-  ) {
-    const start = queuedIssueResolutions.shift();
-    if (start) start();
-  }
-}
-
-function resolveIssueBounded(identifier: string, generation: number): Promise<CachedIssue> {
-  return new Promise((resolve) => {
-    queuedIssueResolutions.push(() => {
-      // This request waited behind earlier links and became obsolete while it
-      // waited (logout, a new session, or realtime invalidation). Do not send
-      // it at all; the refresh pass for the current generation will enqueue
-      // the replacement if the link still exists.
-      if (cacheGeneration !== generation) {
-        resolve({ status: "unavailable" });
-        return;
-      }
-      issueResolutionsActive += 1;
-      void Promise.resolve()
-        .then(() => resolveIssue(identifier))
-        .then((res) => {
-          resolve(res.ok ? { status: "ok", issue: res.data } : { status: "unavailable" });
-        })
-        .catch(() => resolve({ status: "unavailable" }))
-        .finally(() => {
-          issueResolutionsActive -= 1;
-          startQueuedIssueResolutions();
-        });
-    });
-    startQueuedIssueResolutions();
-  });
 }
 
 /** Clear cached reference data after a realtime issue change or resync. */
@@ -165,7 +124,11 @@ export async function fetchIssueCached(identifier: string): Promise<CachedIssue>
   if (pending) return pending;
 
   const generation = cacheGeneration;
-  const promise = resolveIssueBounded(key, generation).then((result) => {
+  const promise = issueResolutionQueue.add(async (): Promise<CachedIssue> => {
+    if (cacheGeneration !== generation) return { status: "unavailable" };
+    const res = await resolveIssue(key);
+    return res.ok ? { status: "ok", issue: res.data } : { status: "unavailable" };
+  }).then((result) => {
     // Failed requests intentionally are not cached: a temporary outage should
     // not leave every linked issue permanently unavailable for this session.
     if (cacheGeneration === generation && result.status === "ok") {

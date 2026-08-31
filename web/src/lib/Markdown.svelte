@@ -19,8 +19,7 @@
     refKind,
     routeFor,
   } from "./references";
-  import { issueStatusTreatment } from "./issueStatus";
-  import { REALTIME_INVALIDATE_EVENT, type RealtimeEvent } from "./autoRefresh.svelte";
+  import { startAutoRefresh } from "./autoRefresh.svelte";
   import { openPeek } from "./issues/peek.svelte"; // LIF-248
   import { openContextMenu } from "./contextMenuState.svelte"; // LIF-248
   import { PanelRight, ExternalLink } from "lucide-svelte";
@@ -388,34 +387,23 @@
     }
   });
 
-  // Re-resolve linked issues after a relevant realtime update. The shared
-  // cache is invalidated first, so the next decoration pass cannot show a
-  // stale status. A bounded resolver in references.ts keeps long documents
-  // from starting an unbounded number of requests at once.
-  $effect(() => {
-    if (typeof window === "undefined") return;
-    const onRealtime = (event: Event) => {
-      const detail = (event as CustomEvent<RealtimeEvent>).detail;
-      if (
-        detail?.type === "issue.created" ||
-        detail?.type === "issue.updated" ||
-        detail?.type === "issue.deleted" ||
-        detail?.type === "resync.required"
-      ) {
+  $effect(() =>
+    startAutoRefresh({
+      refresh: () => {
         invalidateReferenceCache();
         issueStatusRefresh += 1;
-      }
-    };
-    window.addEventListener(REALTIME_INVALIDATE_EVENT, onRealtime);
-    return () => window.removeEventListener(REALTIME_INVALIDATE_EVENT, onRealtime);
-  });
+      },
+      shouldRefresh: (event) =>
+        event.type.startsWith("issue.") || event.type === "resync.required",
+    }),
+  );
 
   // Resolve each auto-linked issue and add its status treatment after the
   // synchronous Markdown pass. The cleanup prevents a late response from
   // decorating links belonging to an older content or refresh revision.
   $effect(() => {
     html;
-    const refresh = issueStatusRefresh;
+    issueStatusRefresh;
     const root = containerEl;
     if (!root) return;
     let cancelled = false;
@@ -426,27 +414,33 @@
     for (const link of Array.from(links)) {
       const identifier = link.dataset.issueIdent as string;
       void fetchIssueCached(identifier).then((result) => {
-        if (cancelled || refresh !== issueStatusRefresh || !link.isConnected) return;
-        const treatment = issueStatusTreatment(
-          result.status === "ok" ? result.issue.status : "unknown",
-        );
-        link.dataset.issueStatus = treatment.status;
+        if (cancelled || !link.isConnected) return;
+        if (result.status !== "ok") return;
+        const { status } = result.issue;
+        const label = status[0].toUpperCase() + status.slice(1);
+        link.dataset.issueStatus = status;
         const iconHost = document.createElement("span");
         iconHost.className = "identifier-status-icon";
         iconHost.setAttribute("aria-hidden", "true");
         link.prepend(iconHost);
         const icon = mount(StatusIcon, {
           target: iconHost,
-          props: { status: treatment.status, size: 12 },
+          props: { status, size: 12 },
         });
         mountedStatusIcons.push(icon);
-        link.title = `${identifier} · ${treatment.label} · Shift-click to preview`;
-        link.setAttribute("aria-label", `${link.textContent} (${treatment.label})`);
+        link.title = `${identifier} · ${label} · Shift-click to preview`;
+        link.setAttribute("aria-label", `${link.textContent} (${label})`);
       });
     }
     return () => {
       cancelled = true;
       for (const icon of mountedStatusIcons) void unmount(icon);
+      for (const link of links) {
+        link.querySelector(":scope > .identifier-status-icon")?.remove();
+        delete link.dataset.issueStatus;
+        link.removeAttribute("title");
+        link.removeAttribute("aria-label");
+      }
     };
   });
 
