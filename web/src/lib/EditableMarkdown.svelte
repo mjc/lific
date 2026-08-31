@@ -735,41 +735,43 @@
       the parent prose font + line-height so vertical math also matches.
     -->
     <!-- svelte-ignore a11y_autofocus -->
-    <AttachComposer composer={attach} radius="0.375rem" {footer}>
-      <!--
-        LIF-282: compact formatting toolbar. Buttons prevent focus theft
-        via onmousedown preventDefault so the textarea selection survives
-        the click. Styling mirrors the editor chrome (subtle border,
-        rounded, dark-mode-aware via CSS custom props).
-      -->
-      <div class="em-toolbar" role="toolbar" aria-label="Formatting">
-        {#each toolbarItems as item (item.title)}
-          {@const Icon = item.icon}
-          <button
-            type="button"
-            class="em-tool"
-            title={item.title}
-            aria-label={item.title}
-            onmousedown={(e) => e.preventDefault()}
-            onclick={item.run}
-          >
-            <Icon size={15} />
-          </button>
-        {/each}
-      </div>
+    <div class="em-composer">
+      <AttachComposer composer={attach} radius="0.75rem" {footer}>
+        <!--
+          LIF-282: compact formatting toolbar. Buttons prevent focus theft
+          via onmousedown preventDefault so the textarea selection survives
+          the click. Styling mirrors the editor chrome (subtle border,
+          rounded, dark-mode-aware via CSS custom props).
+        -->
+        <div class="em-toolbar" role="toolbar" aria-label="Formatting">
+          {#each toolbarItems as item (item.title)}
+            {@const Icon = item.icon}
+            <button
+              type="button"
+              class="em-tool"
+              title={item.title}
+              aria-label={item.title}
+              onmousedown={(e) => e.preventDefault()}
+              onclick={item.run}
+            >
+              <Icon size={15} />
+            </button>
+          {/each}
+        </div>
 
-      <textarea
-        bind:value={draft}
-        bind:this={textareaEl}
-        class="em-textarea"
-        {placeholder}
-        onkeydown={handleTextareaKey}
-        oninput={handleTextareaInput}
-        onblur={closeAutocomplete}
-        onpaste={(e) => attach.handlePaste(e)}
-        autofocus
-      ></textarea>
-    </AttachComposer>
+        <textarea
+          bind:value={draft}
+          bind:this={textareaEl}
+          class="em-textarea"
+          {placeholder}
+          onkeydown={handleTextareaKey}
+          oninput={handleTextareaInput}
+          onblur={closeAutocomplete}
+          onpaste={(e) => attach.handlePaste(e)}
+          autofocus
+        ></textarea>
+      </AttachComposer>
+    </div>
   {/if}
 
   <!--
@@ -879,6 +881,25 @@
     contain: layout;
   }
 
+  .em-composer {
+    width: 100%;
+    border: 1px solid var(--border);
+    border-radius: 0.75rem;
+    background: var(--surface);
+    overflow: visible;
+    transition:
+      border-color 0.18s var(--ease-out-expo),
+      box-shadow 0.18s var(--ease-out-expo);
+  }
+
+  .em-composer:focus-within {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-subtle);
+  }
+
+  /* Keep the description editor's active state and proportions in step with
+     the comment composer (.cmt__composer in Comments.svelte), while retaining
+     its formatting toolbar. */
   /* Rendered prose styling comes from app.css `.prose` — Markdown.svelte
      wraps its output in `.prose`, so `.em-rendered` carries no rules of
      its own. It's left as a class hook in the markup so future split-view
@@ -923,11 +944,12 @@
     flex-wrap: wrap;
     align-items: center;
     gap: 0.125rem;
-    margin-bottom: 0.625rem;
-    padding: 0.1875rem;
-    background: var(--bg-subtle);
-    border: 1px solid var(--border);
-    border-radius: 0.5rem;
+    margin: 0;
+    border: 0;
+    border-bottom: 1px solid var(--border);
+    border-radius: 0;
+    padding: 0.5rem 0.625rem 0.5rem 1rem;
+    background: transparent;
   }
   .em-tool {
     display: inline-flex;
@@ -962,13 +984,14 @@
     width: 100%;
     font-family: var(--font-body);
     font-size: 0.875rem;
-    line-height: 1.7;
+    min-height: 5.25rem;
+    line-height: 1.6;
     color: var(--text);
     background: transparent;
     border: 0;
     outline: none;
     resize: none;
-    padding: 0;
+    padding: 0.875rem 1rem 0.5rem;
     margin: 0;
   }
   .em-textarea::placeholder {
@@ -978,9 +1001,9 @@
   .em-footer {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
-    margin-top: 0.75rem;
-    padding-top: 0.75rem;
+    gap: 0.625rem;
+    margin-top: 0;
+    padding: 0.5rem 0.625rem 0.5rem 1rem;
     border-top: 1px solid var(--border);
   }
   .em-save {
