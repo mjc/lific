@@ -5,8 +5,7 @@
   src,
   stdenvNoCC,
   supportedSystems,
-}:
-let
+}: let
   manifest = builtins.fromTOML (builtins.readFile (src + "/Cargo.toml"));
   inherit (manifest.package) version;
 
@@ -34,7 +33,7 @@ let
     inherit version;
     src = webSrc;
 
-    nativeBuildInputs = [ bun2nix.hook ];
+    nativeBuildInputs = [bun2nix.hook];
     bunRoot = "web";
     bunDeps = bun2nix.fetchBunDeps {
       bunNix = src + "/web/bun.nix";
@@ -70,29 +69,31 @@ let
 
   cargoArtifacts = craneLib.buildDepsOnly commonArgs;
 in
-craneLib.buildPackage (
-  commonArgs
-  // {
-    inherit cargoArtifacts;
-    postPatch = commonArgs.postPatch + ''
-      cp -R ${frontend}/. web/dist/
-    '';
+  craneLib.buildPackage (
+    commonArgs
+    // {
+      inherit cargoArtifacts;
+      postPatch =
+        commonArgs.postPatch
+        + ''
+          cp -R ${frontend}/. web/dist/
+        '';
 
-    # The canonical Cargo CI runs the test suite. The Nix package verifies
-    # its integrated frontend + release build and leaves project testing to
-    # that existing workflow.
-    doCheck = false;
-    doInstallCheck = true;
-    installCheckPhase = ''
-      $out/bin/lific --version
-    '';
+      # The canonical Cargo CI runs the test suite. The Nix package verifies
+      # its integrated frontend + release build and leaves project testing to
+      # that existing workflow.
+      doCheck = false;
+      doInstallCheck = true;
+      installCheckPhase = ''
+        $out/bin/lific --version
+      '';
 
-    meta = {
-      inherit (manifest.package) description;
-      homepage = manifest.package.repository;
-      license = lib.licenses.asl20;
-      mainProgram = manifest.package.name;
-      platforms = supportedSystems;
-    };
-  }
-)
+      meta = {
+        inherit (manifest.package) description;
+        homepage = manifest.package.repository;
+        license = lib.licenses.asl20;
+        mainProgram = manifest.package.name;
+        platforms = supportedSystems;
+      };
+    }
+  )
