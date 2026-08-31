@@ -834,22 +834,18 @@ html[data-motion="reduced"] *::after {
 }
 
 .prose .identifier-link[data-issue-status] {
-  color: var(--issue-status-color, var(--accent));
   background: var(--issue-status-bg, var(--accent-subtle));
 }
 
 .prose .identifier-link[data-issue-status="backlog"] {
-  --issue-status-color: var(--text-muted);
   --issue-status-bg: var(--bg-subtle);
 }
 
 .prose .identifier-link[data-issue-status="todo"] {
-  --issue-status-color: var(--warning);
-  --issue-status-bg: var(--warning-bg);
+  --issue-status-bg: color-mix(in srgb, var(--warn) 14%, transparent);
 }
 
 .prose .identifier-link[data-issue-status="active"] {
-  --issue-status-color: var(--accent);
   --issue-status-bg: var(--accent-subtle);
 }
 
@@ -860,18 +856,21 @@ html[data-motion="reduced"] *::after {
 }
 
 .prose .identifier-link[data-issue-status="done"] {
-  --issue-status-color: var(--success);
   --issue-status-bg: var(--success-bg);
 }
 
 .prose .identifier-link[data-issue-status="cancelled"] {
-  --issue-status-color: var(--error);
   --issue-status-bg: var(--error-bg);
 }
 
 .prose .identifier-link[data-issue-status="unknown"] {
-  --issue-status-color: var(--text-muted);
   --issue-status-bg: var(--bg-subtle);
+}
+
+/* Keep the original link-hover affordance when a status tint is present. */
+.prose .identifier-link[data-issue-status]:hover {
+  background: var(--accent);
+  color: var(--accent-text);
 }
 
 /* ── @mention chips (LIF-263) ──────────────────────────── */

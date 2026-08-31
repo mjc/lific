@@ -13,11 +13,13 @@
     IDENTIFIER_RE,
     PROJECT_CODE_RE,
     fetchIssueCached,
+    invalidateReferenceCache,
     projectCodeOf,
     refKind,
     routeFor,
   } from "./references";
   import { issueStatusTreatment } from "./issueStatus";
+  import { REALTIME_INVALIDATE_EVENT, type RealtimeEvent } from "./autoRefresh.svelte";
   import { openPeek } from "./issues/peek.svelte"; // LIF-248
   import { openContextMenu } from "./contextMenuState.svelte"; // LIF-248
   import { PanelRight, ExternalLink } from "lucide-svelte";
@@ -48,6 +50,7 @@
   let mentionMap = $derived(
     new Map(mentions.map((m) => [m.username.toLowerCase(), m.display_name])),
   );
+  let issueStatusRefresh = $state(0);
 
   // LIF-239: identifiers must never be re-linked (or double-linked)
   // inside an existing <a> (would nest anchors — invalid HTML and
@@ -384,30 +387,51 @@
     }
   });
 
-  // Resolve each auto-linked issue once and add its status treatment after
-  // the synchronous Markdown pass. The shared resolver deduplicates requests
-  // with hover cards and autocomplete, while the cleanup prevents a late
-  // response from decorating links belonging to an older content revision.
+  // Re-resolve linked issues after a relevant realtime update. The shared
+  // cache is invalidated first, so the next decoration pass cannot show a
+  // stale status. A bounded resolver in references.ts keeps long documents
+  // from starting an unbounded number of requests at once.
+  $effect(() => {
+    if (typeof window === "undefined") return;
+    const onRealtime = (event: Event) => {
+      const detail = (event as CustomEvent<RealtimeEvent>).detail;
+      if (
+        detail?.type === "issue.created" ||
+        detail?.type === "issue.updated" ||
+        detail?.type === "issue.deleted" ||
+        detail?.type === "resync.required"
+      ) {
+        invalidateReferenceCache();
+        issueStatusRefresh += 1;
+      }
+    };
+    window.addEventListener(REALTIME_INVALIDATE_EVENT, onRealtime);
+    return () => window.removeEventListener(REALTIME_INVALIDATE_EVENT, onRealtime);
+  });
+
+  // Resolve each auto-linked issue and add its status treatment after the
+  // synchronous Markdown pass. The cleanup prevents a late response from
+  // decorating links belonging to an older content or refresh revision.
   $effect(() => {
     html;
+    const refresh = issueStatusRefresh;
     const root = containerEl;
     if (!root) return;
     let cancelled = false;
     const links = root.querySelectorAll<HTMLAnchorElement>(
-      "a.identifier-link[data-issue-ident]:not([data-status-decorated])",
+      "a.identifier-link[data-issue-ident]",
     );
     for (const link of Array.from(links)) {
-      link.dataset.statusDecorated = "true";
       const identifier = link.dataset.issueIdent as string;
       void fetchIssueCached(identifier).then((result) => {
-        if (cancelled || !link.isConnected) return;
+        if (cancelled || refresh !== issueStatusRefresh || !link.isConnected) return;
         const treatment = issueStatusTreatment(
           result.status === "ok" ? result.issue.status : "unknown",
         );
         link.dataset.issueStatus = treatment.status;
         link.dataset.issueStatusSymbol = treatment.symbol;
         link.title = `${identifier} · ${treatment.label} · Shift-click to preview`;
-        link.setAttribute("aria-label", `${identifier} (${treatment.label})`);
+        link.setAttribute("aria-label", `${link.textContent} (${treatment.label})`);
       });
     }
     return () => {

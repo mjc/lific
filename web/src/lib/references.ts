@@ -67,7 +67,7 @@ export function routeFor(project: string, kind: RefKind, identifier: string): st
   return `#/${project}/issues/${identifier}`;
 }
 
-// ── Issue + module cache (session-lived, module scope) ────────
+// ── Issue + module cache (session-scoped, module scope) ───────
 //
 // Hover cards and editor autocomplete both resolve issues by
 // identifier. A single shared cache means re-hovering an identifier, or
@@ -81,20 +81,97 @@ export type CachedIssue =
 
 const issueCache = new Map<string, CachedIssue>();
 const issueInFlight = new Map<string, Promise<CachedIssue>>();
+const ISSUE_RESOLUTION_CONCURRENCY = 6;
+let issueResolutionsActive = 0;
+const queuedIssueResolutions: Array<() => void> = [];
+
+// API credentials live in localStorage, and the app can log out/in without
+// reloading this module. A cache entry therefore belongs to the current token,
+// not the browser tab. The generation also prevents an older request from
+// repopulating a cache which has just been invalidated by realtime.
+let cacheSession: string | null | undefined;
+let cacheGeneration = 0;
+
+function currentSession(): string | null {
+  if (typeof localStorage === "undefined") return null;
+  return localStorage.getItem("lific_token");
+}
+
+function clearReferenceCaches() {
+  cacheGeneration += 1;
+  issueCache.clear();
+  issueInFlight.clear();
+  moduleCache.clear();
+  moduleInFlight.clear();
+}
+
+function ensureCacheSession() {
+  const session = currentSession();
+  if (cacheSession !== session) {
+    cacheSession = session;
+    clearReferenceCaches();
+  }
+}
+
+function startQueuedIssueResolutions() {
+  while (
+    issueResolutionsActive < ISSUE_RESOLUTION_CONCURRENCY &&
+    queuedIssueResolutions.length > 0
+  ) {
+    const start = queuedIssueResolutions.shift();
+    if (start) start();
+  }
+}
+
+function resolveIssueBounded(identifier: string, generation: number): Promise<CachedIssue> {
+  return new Promise((resolve) => {
+    queuedIssueResolutions.push(() => {
+      // This request waited behind earlier links and became obsolete while it
+      // waited (logout, a new session, or realtime invalidation). Do not send
+      // it at all; the refresh pass for the current generation will enqueue
+      // the replacement if the link still exists.
+      if (cacheGeneration !== generation) {
+        resolve({ status: "unavailable" });
+        return;
+      }
+      issueResolutionsActive += 1;
+      void Promise.resolve()
+        .then(() => resolveIssue(identifier))
+        .then((res) => {
+          resolve(res.ok ? { status: "ok", issue: res.data } : { status: "unavailable" });
+        })
+        .catch(() => resolve({ status: "unavailable" }))
+        .finally(() => {
+          issueResolutionsActive -= 1;
+          startQueuedIssueResolutions();
+        });
+    });
+    startQueuedIssueResolutions();
+  });
+}
+
+/** Clear cached reference data after a realtime issue change or resync. */
+export function invalidateReferenceCache() {
+  ensureCacheSession();
+  clearReferenceCaches();
+}
 
 export async function fetchIssueCached(identifier: string): Promise<CachedIssue> {
+  ensureCacheSession();
   const key = identifier.toUpperCase();
   const cached = issueCache.get(key);
   if (cached) return cached;
   const pending = issueInFlight.get(key);
   if (pending) return pending;
 
-  const promise = resolveIssue(key).then((res) => {
-    const result: CachedIssue = res.ok
-      ? { status: "ok", issue: res.data }
-      : { status: "unavailable" };
-    issueCache.set(key, result);
-    issueInFlight.delete(key);
+  const generation = cacheGeneration;
+  const promise = resolveIssueBounded(key, generation).then((result) => {
+    // Failed requests intentionally are not cached: a temporary outage should
+    // not leave every linked issue permanently unavailable for this session.
+    if (cacheGeneration === generation && result.status === "ok") {
+      issueCache.set(key, result);
+    }
+    if (issueInFlight.get(key) === promise) issueInFlight.delete(key);
     return result;
   });
   issueInFlight.set(key, promise);
@@ -105,6 +182,7 @@ const moduleCache = new Map<number, Module | null>();
 const moduleInFlight = new Map<number, Promise<Module | null>>();
 
 export async function fetchModuleCached(id: number): Promise<Module | null> {
+  ensureCacheSession();
   if (moduleCache.has(id)) return moduleCache.get(id) ?? null;
   const pending = moduleInFlight.get(id);
   if (pending) return pending;
