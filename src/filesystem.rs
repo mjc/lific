@@ -621,13 +621,21 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
-    fn destination_check_propagates_metadata_errors() {
+    fn unix_destination_check_propagates_metadata_errors() {
         let root = tempfile::tempdir().unwrap();
         let file = root.path().join("file");
         std::fs::write(&file, "not a directory").unwrap();
 
         assert!(safe_path_exists(&file.join("child")).is_err());
+    }
+
+    #[test]
+    fn missing_path_is_not_present() {
+        let root = tempfile::tempdir().unwrap();
+
+        assert!(!safe_path_exists(&root.path().join("missing")).unwrap());
     }
 
     #[cfg(unix)]
