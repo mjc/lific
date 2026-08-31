@@ -1,0 +1,23 @@
+#!/bin/sh
+set -eu
+
+cargo clippy --all-targets -- -D warnings
+
+target=x86_64-pc-windows-gnu
+target_libdir=$(rustc --print target-libdir --target "$target" 2>/dev/null || true)
+
+has_stdlib=false
+if [ -n "$target_libdir" ]; then
+    for stdlib in "$target_libdir"/libstd-*.rlib; do
+        if [ -f "$stdlib" ]; then
+            has_stdlib=true
+            break
+        fi
+    done
+fi
+
+if [ "$has_stdlib" = true ] && command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
+    cargo clippy --target "$target" --all-targets -- -D warnings
+else
+    echo "Skipping $target Clippy: target standard library or linker is unavailable."
+fi

@@ -66,6 +66,10 @@ pre-commit install
 
 Use `cargo fmt --all` to apply formatting fixes.
 
+The hook always runs native Clippy. It also checks the configured Windows
+target when its Rust standard library and linker are installed; otherwise that
+optional cross-target check is skipped.
+
 ## Commit message style
 
 Conventional-commits style, with a Lific issue identifier in parens where applicable:
