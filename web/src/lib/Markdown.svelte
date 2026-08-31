@@ -9,6 +9,7 @@
   } from "./mermaidLimits";
   import { renderMermaidBlock } from "./mermaidRender";
   import IssueHoverCard from "./IssueHoverCard.svelte";
+  import StatusIcon from "./StatusIcon.svelte";
   import {
     IDENTIFIER_RE,
     PROJECT_CODE_RE,
@@ -418,6 +419,7 @@
     const root = containerEl;
     if (!root) return;
     let cancelled = false;
+    const mountedStatusIcons: Array<ReturnType<typeof mount>> = [];
     const links = root.querySelectorAll<HTMLAnchorElement>(
       "a.identifier-link[data-issue-ident]",
     );
@@ -429,13 +431,22 @@
           result.status === "ok" ? result.issue.status : "unknown",
         );
         link.dataset.issueStatus = treatment.status;
-        link.dataset.issueStatusSymbol = treatment.symbol;
+        const iconHost = document.createElement("span");
+        iconHost.className = "identifier-status-icon";
+        iconHost.setAttribute("aria-hidden", "true");
+        link.prepend(iconHost);
+        const icon = mount(StatusIcon, {
+          target: iconHost,
+          props: { status: treatment.status, size: 12 },
+        });
+        mountedStatusIcons.push(icon);
         link.title = `${identifier} · ${treatment.label} · Shift-click to preview`;
         link.setAttribute("aria-label", `${link.textContent} (${treatment.label})`);
       });
     }
     return () => {
       cancelled = true;
+      for (const icon of mountedStatusIcons) void unmount(icon);
     };
   });
 

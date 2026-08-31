@@ -823,37 +823,17 @@ html[data-motion="reduced"] *::after {
   color: var(--accent-text);
 }
 
-/* Linked issue status (LIF-110). The symbol keeps status legible without
-   relying on color; completed links are also visibly de-emphasized. */
-.prose .identifier-link[data-issue-status]::before {
-  content: attr(data-issue-status-symbol);
-  display: inline-block;
+/* Linked issue status (LIF-110). StatusIcon supplies the canonical shape and
+   color vocabulary used throughout issue lists and detail views. Keep the
+   identifier pill neutral so color never carries the meaning by itself. */
+.prose .identifier-status-icon {
+  display: inline-flex;
+  vertical-align: -0.15em;
   margin-right: 0.3em;
-  font-family: var(--font-sans);
-  font-weight: 700;
-  color: var(--issue-status-color);
 }
 
 .prose .identifier-link[data-issue-status] {
   color: var(--text);
-  background: var(--issue-status-bg, var(--accent-subtle));
-  border: 1px solid var(--issue-status-color, var(--accent));
-  box-shadow: inset 3px 0 0 var(--issue-status-color, var(--accent));
-}
-
-.prose .identifier-link[data-issue-status="backlog"] {
-  --issue-status-color: var(--text-faint);
-  --issue-status-bg: var(--bg-subtle);
-}
-
-.prose .identifier-link[data-issue-status="todo"] {
-  --issue-status-color: var(--warn-text);
-  --issue-status-bg: color-mix(in srgb, var(--warn) 25%, transparent);
-}
-
-.prose .identifier-link[data-issue-status="active"] {
-  --issue-status-color: var(--accent);
-  --issue-status-bg: var(--accent-subtle);
 }
 
 .prose .identifier-link[data-issue-status="done"],
@@ -862,29 +842,9 @@ html[data-motion="reduced"] *::after {
   text-decoration-thickness: 1.5px;
 }
 
-.prose .identifier-link[data-issue-status="done"] {
-  --issue-status-color: var(--success);
-  --issue-status-bg: var(--success-bg);
-}
-
-.prose .identifier-link[data-issue-status="cancelled"] {
-  --issue-status-color: var(--error);
-  --issue-status-bg: var(--error-bg);
-}
-
-.prose .identifier-link[data-issue-status="unknown"] {
-  --issue-status-color: var(--text-muted);
-  --issue-status-bg: var(--bg-subtle);
-}
-
-/* Keep the original link-hover affordance when a status tint is present. */
 .prose .identifier-link[data-issue-status]:hover {
   background: var(--accent);
   color: var(--accent-text);
-}
-
-.prose .identifier-link[data-issue-status]:hover::before {
-  color: currentColor;
 }
 
 /* ── @mention chips (LIF-263) ──────────────────────────── */
