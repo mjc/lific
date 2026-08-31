@@ -706,6 +706,15 @@ fn unpack_zip_with_limits(
 fn prepare_output_path(target_dir: &Path, name: &str) -> Result<PathBuf, LificError> {
     let relative = contained_path(name)?;
 
+    if target_dir
+        .components()
+        .any(|component| component == Component::ParentDir)
+    {
+        return Err(LificError::BadRequest(format!(
+            "export target directory '{target_dir:?}' would write outside the output directory"
+        )));
+    }
+
     let full_path = target_dir.join(&relative);
     if let Err(error) = filesystem::reject_symlink_ancestors(&full_path) {
         if error.kind() != io::ErrorKind::InvalidInput {
@@ -1397,6 +1406,30 @@ mod tests {
             "unexpected error: {error}"
         );
         assert!(!Path::new("/tmp/lific-absolute-escape.md").exists());
+    }
+
+    #[test]
+    fn refuses_output_directories_with_parent_traversal() {
+        let root = scratch_dir("bundle-target-parent-traversal");
+        let output = root.path().join("out").join("..").join("out");
+        let error = write_bundle_to_directory(
+            &ExportBundle {
+                root: "EXP".into(),
+                files: vec![ExportFile {
+                    path: "EXP/file.md".into(),
+                    content: "owned".into(),
+                }],
+            },
+            &output,
+        )
+        .expect_err("a target directory with parent traversal should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("would write outside the output directory"),
+            "unexpected error: {error}"
+        );
     }
 
     /// Containment by string inspection alone is not enough: `EXP/evil.md` is
