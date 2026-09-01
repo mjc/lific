@@ -711,8 +711,8 @@ export async function createIssue(input: CreateIssueInput) {
   });
 }
 
-export async function resolveIssue(identifier: string) {
-  return request<Issue>(`/issues/resolve/${identifier}`);
+export async function resolveIssue(identifier: string, signal?: AbortSignal) {
+  return request<Issue>(`/issues/resolve/${identifier}`, { signal });
 }
 
 export interface UpdateIssueInput {

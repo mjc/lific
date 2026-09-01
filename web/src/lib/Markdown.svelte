@@ -13,13 +13,11 @@
   import {
     IDENTIFIER_RE,
     PROJECT_CODE_RE,
-    fetchIssueCached,
-    invalidateReferenceCache,
     projectCodeOf,
     refKind,
     routeFor,
+    subscribeIssueStatus,
   } from "./references";
-  import { startAutoRefresh } from "./autoRefresh.svelte";
   import { openPeek } from "./issues/peek.svelte"; // LIF-248
   import { openContextMenu } from "./contextMenuState.svelte"; // LIF-248
   import { PanelRight, ExternalLink } from "lucide-svelte";
@@ -50,7 +48,6 @@
   let mentionMap = $derived(
     new Map(mentions.map((m) => [m.username.toLowerCase(), m.display_name])),
   );
-  let issueStatusRefresh = $state(0);
 
   // LIF-239: identifiers must never be re-linked (or double-linked)
   // inside an existing <a> (would nest anchors — invalid HTML and
@@ -387,34 +384,31 @@
     }
   });
 
-  $effect(() =>
-    startAutoRefresh({
-      refresh: () => {
-        invalidateReferenceCache();
-        issueStatusRefresh += 1;
-      },
-      shouldRefresh: (event) =>
-        event.type.startsWith("issue.") || event.type === "resync.required",
-    }),
-  );
-
   // Resolve each auto-linked issue and add its status treatment after the
-  // synchronous Markdown pass. The cleanup prevents a late response from
-  // decorating links belonging to an older content or refresh revision.
+  // synchronous Markdown pass. The shared coordinator owns refresh,
+  // deduplication and bounded admission; this effect only owns live DOM.
   $effect(() => {
     html;
-    issueStatusRefresh;
     const root = containerEl;
     if (!root) return;
-    let cancelled = false;
-    const mountedStatusIcons: Array<ReturnType<typeof mount>> = [];
+    const cleanups: Array<() => void> = [];
     const links = root.querySelectorAll<HTMLAnchorElement>(
       "a.identifier-link[data-issue-ident]",
     );
-    for (const link of Array.from(links)) {
+    for (const link of links) {
       const identifier = link.dataset.issueIdent as string;
-      void fetchIssueCached(identifier).then((result) => {
-        if (cancelled || !link.isConnected) return;
+      let icon: ReturnType<typeof mount> | null = null;
+      const clear = () => {
+        if (icon) void unmount(icon);
+        icon = null;
+        link.querySelector(":scope > .identifier-status-icon")?.remove();
+        delete link.dataset.issueStatus;
+        link.removeAttribute("title");
+        link.removeAttribute("aria-label");
+      };
+      const unsubscribe = subscribeIssueStatus(identifier, (result) => {
+        if (!link.isConnected) return;
+        clear();
         if (result.status !== "ok") return;
         const { status } = result.issue;
         const label = status[0].toUpperCase() + status.slice(1);
@@ -423,24 +417,20 @@
         iconHost.className = "identifier-status-icon";
         iconHost.setAttribute("aria-hidden", "true");
         link.prepend(iconHost);
-        const icon = mount(StatusIcon, {
+        icon = mount(StatusIcon, {
           target: iconHost,
           props: { status, size: 14 },
         });
-        mountedStatusIcons.push(icon);
         link.title = `${identifier} · ${label} · Shift-click to preview`;
         link.setAttribute("aria-label", `${link.textContent} (${label})`);
       });
+      cleanups.push(() => {
+        unsubscribe();
+        clear();
+      });
     }
     return () => {
-      cancelled = true;
-      for (const icon of mountedStatusIcons) void unmount(icon);
-      for (const link of links) {
-        link.querySelector(":scope > .identifier-status-icon")?.remove();
-        delete link.dataset.issueStatus;
-        link.removeAttribute("title");
-        link.removeAttribute("aria-label");
-      }
+      for (const cleanup of cleanups) cleanup();
     };
   });
 
