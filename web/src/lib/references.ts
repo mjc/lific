@@ -157,7 +157,7 @@ function pumpIssueStatuses() {
     activeIssueStatuses.set(key, controller);
     void fetchIssueCachedInternal(key, controller.signal)
       .then((result) => {
-        if (revision !== issueStatusRevision) return;
+        if (controller.signal.aborted || revision !== issueStatusRevision) return;
         for (const subscriber of issueStatusSubscribers.get(key) ?? []) {
           try {
             subscriber(result);
@@ -250,11 +250,12 @@ async function fetchIssueCachedInternal(
   const cached = issueCache.get(key);
   if (cached) return cached;
   const pending = issueInFlight.get(key);
-  if (pending) {
+  if (pending && !pending.controller.signal.aborted) {
     if (signal) return attachAbortableConsumer(pending, signal, directConsumer);
     pending.hasPersistentConsumer = true;
     return pending.promise;
   }
+  if (pending && issueInFlight.get(key) === pending) issueInFlight.delete(key);
 
   const generation = cacheGeneration;
   const session = cacheSession;

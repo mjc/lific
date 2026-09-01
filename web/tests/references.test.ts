@@ -346,6 +346,29 @@ describe("fetchIssueCached", () => {
     stopNext();
   });
 
+  test("restarts a status request after immediate same-key resubscription", async () => {
+    storage.setItem("lific_token", "status-resubscribe");
+    gate = new Promise<void>((resolve) => { releaseGate = resolve; });
+    const first = subscribe("LIF-98", () => {});
+    await Promise.resolve();
+    expect(calls).toBe(1);
+
+    first();
+    const results: string[] = [];
+    const delivered = Promise.withResolvers<void>();
+    const second = subscribe("LIF-98", (result) => {
+      results.push(result.status);
+      delivered.resolve();
+    });
+
+    releaseGate!();
+    await delivered.promise;
+
+    expect(results).toEqual(["ok"]);
+    expect(calls).toBe(2);
+    second();
+  });
+
   test("releases queue slots after abortable direct consumers leave", async () => {
     storage.setItem("lific_token", "direct-cancelled");
     gate = new Promise<void>((resolve) => { releaseGate = resolve; });
@@ -367,6 +390,27 @@ describe("fetchIssueCached", () => {
     );
     releaseGate!();
     expect((await next).status).toBe("ok");
+  });
+
+  test("does not join an aborted queued request for the same identifier", async () => {
+    storage.setItem("lific_token", "direct-same-key");
+    gate = new Promise<void>((resolve) => { releaseGate = resolve; });
+    const blockers = Array.from({ length: 6 }, (_, i) =>
+      fetchIssueCached(`LIF-${i + 80}`, new AbortController().signal),
+    );
+    await Promise.resolve();
+    expect(calls).toBe(6);
+
+    const abandonedController = new AbortController();
+    const abandoned = fetchIssueCached("LIF-99", abandonedController.signal);
+    abandonedController.abort();
+    const retry = fetchIssueCached("LIF-99", new AbortController().signal);
+
+    releaseGate!();
+    expect((await abandoned).status).toBe("unavailable");
+    expect((await retry).status).toBe("ok");
+    await Promise.all(blockers);
+    expect(calls).toBe(7);
   });
 
   test("refreshes subscribers after the session changes during a request", async () => {
