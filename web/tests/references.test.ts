@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { REALTIME_INVALIDATE_EVENT } from "../src/lib/autoRefresh.svelte";
 
 class MemoryStorage {
   private store = new Map<string, string>();
@@ -10,6 +11,37 @@ class MemoryStorage {
   setItem(key: string, value: string) {
     this.store.set(key, value);
   }
+}
+
+class BrowserWindow extends EventTarget {
+  location = { origin: "http://localhost" };
+  private listenerCounts = new Map<string, number>();
+
+  override addEventListener(
+    type: string,
+    callback: EventListenerOrEventListenerObject | null,
+    options?: AddEventListenerOptions | boolean,
+  ) {
+    super.addEventListener(type, callback, options);
+    this.listenerCounts.set(type, (this.listenerCounts.get(type) ?? 0) + 1);
+  }
+
+  override removeEventListener(
+    type: string,
+    callback: EventListenerOrEventListenerObject | null,
+    options?: EventListenerOptions | boolean,
+  ) {
+    super.removeEventListener(type, callback, options);
+    this.listenerCounts.set(type, Math.max(0, (this.listenerCounts.get(type) ?? 0) - 1));
+  }
+
+  listenerCount(type: string): number {
+    return this.listenerCounts.get(type) ?? 0;
+  }
+}
+
+class BrowserDocument extends EventTarget {
+  hidden = false;
 }
 
 let fetchIssueCached: typeof import("../src/lib/references").fetchIssueCached;
@@ -27,12 +59,44 @@ let fail = false;
 let failureStatus = 503;
 let gate: Promise<void> | null = null;
 let releaseGate: (() => void) | null = null;
+let gatePath: string | null = null;
+let subscriptionCleanups: Array<() => void> = [];
+let browserWindow: BrowserWindow;
 const originalFetch = globalThis.fetch;
+const originalWindow = globalThis.window;
+const originalDocument = globalThis.document;
+const originalLocalStorage = globalThis.localStorage;
+
+function subscribe(
+  identifier: string,
+  subscriber: Parameters<typeof subscribeIssueStatus>[1],
+): () => void {
+  const stop = subscribeIssueStatus(identifier, subscriber);
+  subscriptionCleanups.push(stop);
+  return stop;
+}
+
+async function waitForGate(signal: AbortSignal | undefined): Promise<void> {
+  const currentGate = gate;
+  if (!currentGate) return;
+  if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+  await new Promise<void>((resolve, reject) => {
+    const onAbort = () => {
+      signal?.removeEventListener("abort", onAbort);
+      reject(new DOMException("Aborted", "AbortError"));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    currentGate.then(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, reject);
+  });
+}
 
 beforeEach(async () => {
-  (globalThis as { window?: unknown }).window = {
-    location: { origin: "http://localhost" },
-  };
+  browserWindow = new BrowserWindow();
+  (globalThis as { window: unknown }).window = browserWindow;
+  (globalThis as { document: unknown }).document = new BrowserDocument();
   ({ fetchIssueCached, fetchModuleCached, invalidateReferenceCache, subscribeIssueStatus } =
     await import("../src/lib/references"));
   storage = new MemoryStorage();
@@ -45,25 +109,40 @@ beforeEach(async () => {
   moduleName = "Module A";
   gate = null;
   releaseGate = null;
-  globalThis.fetch = (async (input: RequestInfo | URL) => {
+  gatePath = null;
+  subscriptionCleanups = [];
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     calls += 1;
     active += 1;
     peakActive = Math.max(peakActive, active);
-    if (gate) await gate;
-    active -= 1;
-    if (fail) return { ok: false, status: failureStatus, json: async () => ({ error: "busy" }) };
-    return {
-      ok: true,
-      status: 200,
-      json: async () => String(input).includes("/modules/")
-        ? { id: 1, name: moduleName }
-        : { identifier: "LIF-1", status },
-    };
+    const responseStatus = status;
+    const responseModuleName = moduleName;
+    try {
+      if (gate && (!gatePath || String(input).includes(gatePath))) {
+        await waitForGate(init?.signal ?? undefined);
+      }
+      if (fail) {
+        return { ok: false, status: failureStatus, json: async () => ({ error: "busy" }) };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => String(input).includes("/modules/")
+          ? { id: 1, name: responseModuleName }
+          : { identifier: "LIF-1", status: responseStatus },
+      };
+    } finally {
+      active -= 1;
+    }
   }) as unknown as typeof fetch;
 });
 
 afterEach(() => {
+  for (const stop of subscriptionCleanups.splice(0)) stop();
   globalThis.fetch = originalFetch;
+  (globalThis as { window: unknown }).window = originalWindow;
+  (globalThis as { document: unknown }).document = originalDocument;
+  (globalThis as { localStorage: unknown }).localStorage = originalLocalStorage;
 });
 
 describe("fetchIssueCached", () => {
@@ -124,8 +203,8 @@ describe("fetchIssueCached", () => {
       results.push(result.status);
       if (results.length === 2) seen.resolve();
     };
-    const stopFirst = subscribeIssueStatus("LIF-4", (result) => record(result));
-    const stopSecond = subscribeIssueStatus("LIF-4", (result) => record(result));
+    const stopFirst = subscribe("LIF-4", (result) => record(result));
+    const stopSecond = subscribe("LIF-4", (result) => record(result));
 
     await seen.promise;
 
@@ -135,15 +214,39 @@ describe("fetchIssueCached", () => {
     stopSecond();
   });
 
-  test("does not deliver a response invalidated while it was in flight", async () => {
-    storage.setItem("lific_token", "stale");
+  test("returns but does not cache a direct response invalidated in the same session", async () => {
+    storage.setItem("lific_token", "same-session");
+    status = "todo";
     gate = new Promise<void>((resolve) => { releaseGate = resolve; });
-    const stale = fetchIssueCached("LIF-5");
+    const inFlight = fetchIssueCached("LIF-5");
+    await Promise.resolve();
 
     invalidateReferenceCache();
+    status = "done";
+    releaseGate!();
+
+    const first = await inFlight;
+    expect(first.status).toBe("ok");
+    if (first.status === "ok") expect(first.issue.status).toBe("todo");
+    const refreshed = await fetchIssueCached("LIF-5");
+    expect(refreshed.status).toBe("ok");
+    if (refreshed.status === "ok") expect(refreshed.issue.status).toBe("done");
+    expect(calls).toBe(2);
+  });
+
+  test("suppresses a direct response from an old session", async () => {
+    storage.setItem("lific_token", "direct-account-a");
+    gatePath = "LIF-5";
+    gate = new Promise<void>((resolve) => { releaseGate = resolve; });
+    const stale = fetchIssueCached("LIF-5");
+    await Promise.resolve();
+
+    storage.setItem("lific_token", "direct-account-b");
+    await fetchIssueCached("LIF-7");
     releaseGate!();
 
     expect((await stale).status).toBe("unavailable");
+    expect(calls).toBe(2);
   });
 
   test("drops unsubscribed status work before it reaches the server", async () => {
@@ -152,7 +255,7 @@ describe("fetchIssueCached", () => {
     let settled = 0;
     const done = Promise.withResolvers<void>();
     const stops = Array.from({ length: 12 }, (_, i) =>
-      subscribeIssueStatus(`LIF-${i + 20}`, () => {
+      subscribe(`LIF-${i + 20}`, () => {
         settled += 1;
         if (settled === 6) done.resolve();
       }),
@@ -172,7 +275,7 @@ describe("fetchIssueCached", () => {
     let settled = 0;
     const done = Promise.withResolvers<void>();
     const stops = Array.from({ length: 12 }, (_, i) =>
-      subscribeIssueStatus(`LIF-${i + 10}`, () => {
+      subscribe(`LIF-${i + 10}`, () => {
         settled += 1;
         if (settled === 12) done.resolve();
       }),
@@ -183,6 +286,98 @@ describe("fetchIssueCached", () => {
     await done.promise;
     expect(calls).toBe(12);
     for (const stop of stops) stop();
+  });
+
+  test("releases active status work when its last subscriber leaves", async () => {
+    storage.setItem("lific_token", "active-cancelled");
+    gate = new Promise<void>((resolve) => { releaseGate = resolve; });
+    const stops = Array.from({ length: 6 }, (_, i) =>
+      subscribe(`LIF-${i + 60}`, () => {}),
+    );
+    await Promise.resolve();
+    expect(calls).toBe(6);
+
+    for (const stop of stops) stop();
+    const delivered = Promise.withResolvers<void>();
+    const stopNext = subscribe("LIF-99", () => delivered.resolve());
+    for (let i = 0; i < 12 && calls < 7; i += 1) await Promise.resolve();
+
+    expect(calls).toBe(7);
+    releaseGate!();
+    await delivered.promise;
+    stopNext();
+  });
+
+  test("refreshes subscribers after the session changes during a request", async () => {
+    storage.setItem("lific_token", "subscriber-account-a");
+    status = "done";
+    gatePath = "LIF-6";
+    gate = new Promise<void>((resolve) => { releaseGate = resolve; });
+    const results: Array<{ status: string; issueStatus?: string }> = [];
+    const delivered = Promise.withResolvers<void>();
+    const stop = subscribe("LIF-6", (result) => {
+      results.push({
+        status: result.status,
+        issueStatus: result.status === "ok" ? result.issue.status : undefined,
+      });
+      delivered.resolve();
+    });
+    await Promise.resolve();
+
+    storage.setItem("lific_token", "subscriber-account-b");
+    status = "todo";
+    await fetchIssueCached("LIF-7");
+    releaseGate!();
+    await delivered.promise;
+
+    expect(results).toEqual([{ status: "ok", issueStatus: "todo" }]);
+    expect(calls).toBe(3);
+    stop();
+  });
+
+  test("shares one browser refresh listener and removes it after teardown", async () => {
+    storage.setItem("lific_token", "listener");
+    let deliveries = 0;
+    let expectedDeliveries = 2;
+    let delivered = Promise.withResolvers<void>();
+    const record = () => {
+      deliveries += 1;
+      if (deliveries === expectedDeliveries) delivered.resolve();
+    };
+    const stopFirst = subscribe("LIF-8", () => record());
+    const stopSecond = subscribe("LIF-8", () => record());
+    await delivered.promise;
+    expect(deliveries).toBe(2);
+    expect(calls).toBe(1);
+    expect(browserWindow.listenerCount(REALTIME_INVALIDATE_EVENT)).toBe(1);
+
+    status = "done";
+    expectedDeliveries = 4;
+    delivered = Promise.withResolvers<void>();
+    const event = new Event(REALTIME_INVALIDATE_EVENT);
+    Object.defineProperty(event, "detail", { value: { type: "issue.updated" } });
+    window.dispatchEvent(event);
+    await delivered.promise;
+    expect(deliveries).toBe(4);
+    expect(calls).toBe(2);
+
+    stopFirst();
+    stopSecond();
+    expect(browserWindow.listenerCount(REALTIME_INVALIDATE_EVENT)).toBe(0);
+  });
+
+  test("keeps a shared request alive for a direct caller after status teardown", async () => {
+    storage.setItem("lific_token", "shared-direct");
+    gate = new Promise<void>((resolve) => { releaseGate = resolve; });
+    const stop = subscribe("LIF-9", () => {});
+    await Promise.resolve();
+    const direct = fetchIssueCached("LIF-9");
+
+    stop();
+    releaseGate!();
+
+    expect((await direct).status).toBe("ok");
+    expect(calls).toBe(1);
   });
 
   test("caps direct cached issue resolution", async () => {

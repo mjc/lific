@@ -84,9 +84,16 @@ export type CachedIssue =
 type IssueResolution = { result: CachedIssue; cacheable: boolean };
 
 const issueCache = new Map<string, CachedIssue>();
-const issueInFlight = new Map<string, Promise<CachedIssue>>();
 const ISSUE_STATUS_CONCURRENCY = 6;
-const issueResolutionQueue = createConcurrencyQueue(6);
+const issueResolutionQueue = createConcurrencyQueue(ISSUE_STATUS_CONCURRENCY);
+
+type IssueInFlight = {
+  promise: Promise<CachedIssue>;
+  controller: AbortController;
+  hasDirectConsumer: boolean;
+};
+
+const issueInFlight = new Map<string, IssueInFlight>();
 
 // API credentials live in localStorage, and the app can log out/in without
 // reloading this module. A cache entry therefore belongs to the current token,
@@ -96,26 +103,37 @@ let cacheSession: string | null | undefined;
 let cacheGeneration = 0;
 const issueStatusSubscribers = new Map<string, Set<(result: CachedIssue) => void>>();
 const pendingIssueStatuses = new Set<string>();
-const activeIssueStatuses = new Set<string>();
+const activeIssueStatuses = new Map<string, AbortController>();
 let issueStatusRevision = 0;
 let stopReferenceRefresh: (() => void) | null = null;
 
-function clearReferenceCaches() {
+function clearReferenceCaches(abortDirect: boolean) {
   cacheGeneration += 1;
   issueCache.clear();
+  for (const pending of issueInFlight.values()) {
+    if (abortDirect || !pending.hasDirectConsumer) pending.controller.abort();
+  }
   issueInFlight.clear();
   moduleCache.clear();
   moduleInFlight.clear();
 }
 
-function ensureCacheSession() {
+function refreshSubscribedIssueStatuses() {
+  issueStatusRevision += 1;
+  for (const controller of activeIssueStatuses.values()) controller.abort();
+  pendingIssueStatuses.clear();
+  for (const key of issueStatusSubscribers.keys()) scheduleIssueStatus(key);
+}
+
+function ensureCacheSession(): boolean {
   const session = typeof localStorage === "undefined"
     ? null
     : localStorage.getItem("lific_token");
-  if (cacheSession !== session) {
-    cacheSession = session;
-    clearReferenceCaches();
-  }
+  if (cacheSession === session) return false;
+  cacheSession = session;
+  clearReferenceCaches(true);
+  refreshSubscribedIssueStatuses();
+  return true;
 }
 
 function scheduleIssueStatus(key: string) {
@@ -131,15 +149,18 @@ function pumpIssueStatuses() {
     if (!issueStatusSubscribers.has(key)) continue;
 
     const revision = issueStatusRevision;
-    activeIssueStatuses.add(key);
-    void fetchIssueCached(key)
+    const controller = new AbortController();
+    activeIssueStatuses.set(key, controller);
+    void fetchIssueStatus(key, controller.signal)
       .then((result) => {
         if (revision !== issueStatusRevision) return;
         for (const subscriber of issueStatusSubscribers.get(key) ?? []) subscriber(result);
       })
       .finally(() => {
-        activeIssueStatuses.delete(key);
-        if (revision !== issueStatusRevision) scheduleIssueStatus(key);
+        if (activeIssueStatuses.get(key) === controller) activeIssueStatuses.delete(key);
+        if (controller.signal.aborted || revision !== issueStatusRevision) {
+          scheduleIssueStatus(key);
+        }
         pumpIssueStatuses();
       });
   }
@@ -147,11 +168,9 @@ function pumpIssueStatuses() {
 
 /** Clear cached reference data and refresh every subscribed issue status. */
 export function invalidateReferenceCache() {
-  ensureCacheSession();
-  clearReferenceCaches();
-  issueStatusRevision += 1;
-  pendingIssueStatuses.clear();
-  for (const key of issueStatusSubscribers.keys()) scheduleIssueStatus(key);
+  if (ensureCacheSession()) return;
+  clearReferenceCaches(false);
+  refreshSubscribedIssueStatuses();
 }
 
 /** Resolve one identifier through the shared, bounded status coordinator. */
@@ -159,6 +178,7 @@ export function subscribeIssueStatus(
   identifier: string,
   subscriber: (result: CachedIssue) => void,
 ): () => void {
+  ensureCacheSession();
   const key = identifier.toUpperCase();
   const subscribers = issueStatusSubscribers.get(key) ?? new Set();
   subscribers.add(subscriber);
@@ -176,6 +196,7 @@ export function subscribeIssueStatus(
     if (subscribers.size === 0) {
       issueStatusSubscribers.delete(key);
       pendingIssueStatuses.delete(key);
+      activeIssueStatuses.get(key)?.abort();
     }
     if (issueStatusSubscribers.size === 0) {
       stopReferenceRefresh?.();
@@ -184,20 +205,52 @@ export function subscribeIssueStatus(
   };
 }
 
-export async function fetchIssueCached(identifier: string): Promise<CachedIssue> {
+function attachStatusConsumer(
+  pending: IssueInFlight,
+  signal: AbortSignal,
+): Promise<CachedIssue> {
+  if (signal.aborted) return Promise.resolve({ status: "unavailable" });
+
+  let onAbort: () => void;
+  return new Promise<CachedIssue>((resolve) => {
+    onAbort = () => resolve({ status: "unavailable" });
+    signal.addEventListener("abort", onAbort, { once: true });
+    pending.promise.then(resolve, () => resolve({ status: "unavailable" }));
+  }).finally(() => {
+    signal.removeEventListener("abort", onAbort);
+    if (!pending.hasDirectConsumer) pending.controller.abort();
+  });
+}
+
+function fetchIssueStatus(identifier: string, signal: AbortSignal): Promise<CachedIssue> {
+  return fetchIssueCachedInternal(identifier, signal);
+}
+
+async function fetchIssueCachedInternal(
+  identifier: string,
+  signal?: AbortSignal,
+): Promise<CachedIssue> {
   ensureCacheSession();
+  if (signal?.aborted) return { status: "unavailable" };
   const key = identifier.toUpperCase();
   const cached = issueCache.get(key);
   if (cached) return cached;
   const pending = issueInFlight.get(key);
-  if (pending) return pending;
+  if (pending) {
+    if (signal) return attachStatusConsumer(pending, signal);
+    pending.hasDirectConsumer = true;
+    return pending.promise;
+  }
 
   const generation = cacheGeneration;
+  const session = cacheSession;
+  const controller = new AbortController();
+  let entry: IssueInFlight;
   const promise = issueResolutionQueue.add(async (): Promise<IssueResolution> => {
-    if (cacheGeneration !== generation) {
+    if (cacheSession !== session || controller.signal.aborted) {
       return { result: { status: "unavailable" }, cacheable: false };
     }
-    const res = await resolveIssue(key);
+    const res = await resolveIssue(key, controller.signal);
     return res.ok
       ? { result: { status: "ok", issue: res.data }, cacheable: true }
       : {
@@ -211,13 +264,24 @@ export async function fetchIssueCached(identifier: string): Promise<CachedIssue>
       if (cacheGeneration === generation && cacheable) {
         issueCache.set(key, result);
       }
-      return cacheGeneration === generation ? result : { status: "unavailable" };
+      return cacheGeneration === generation || (cacheSession === session && entry.hasDirectConsumer)
+        ? result
+        : { status: "unavailable" };
     })
     .finally(() => {
-      if (issueInFlight.get(key) === promise) issueInFlight.delete(key);
+      if (issueInFlight.get(key) === entry) issueInFlight.delete(key);
     });
-  issueInFlight.set(key, promise);
-  return promise;
+  entry = {
+    promise,
+    controller,
+    hasDirectConsumer: !signal,
+  };
+  issueInFlight.set(key, entry);
+  return signal ? attachStatusConsumer(entry, signal) : promise;
+}
+
+export function fetchIssueCached(identifier: string): Promise<CachedIssue> {
+  return fetchIssueCachedInternal(identifier);
 }
 
 const moduleCache = new Map<number, Module | null>();
