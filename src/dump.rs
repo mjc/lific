@@ -2005,7 +2005,6 @@ mod tests {
         let manifest = write_dump(&crate::db::open(&db_path).unwrap(), &db_path, &out).unwrap();
         assert!(!archive_entries(&out).contains(&format!("attachments/{name}")));
         assert_eq!(manifest.attachment_count, 2, "only the real blobs count");
-
     }
 
     #[cfg(windows)]

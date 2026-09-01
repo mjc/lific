@@ -364,7 +364,10 @@ fn write_atomic_with_mode(path: &Path, contents: &[u8], private: bool) -> io::Re
     sync_dir(parent)
 }
 
-#[cfg_attr(not(unix), expect(clippy::unnecessary_wraps, reason = "fallible on Unix"))]
+#[cfg_attr(
+    not(unix),
+    expect(clippy::unnecessary_wraps, reason = "fallible on Unix")
+)]
 pub(crate) fn sync_dir(_path: &Path) -> io::Result<()> {
     #[cfg(unix)]
     File::open(_path)?.sync_all()?;
