@@ -18,6 +18,7 @@ import {
   type Project,
 } from "./api";
 import { fuzzyMatch } from "./fuzzy";
+import { createConcurrencyQueue } from "./attachments/queue";
 
 // ── Identifier grammar ───────────────────────────────────────
 //
@@ -67,7 +68,7 @@ export function routeFor(project: string, kind: RefKind, identifier: string): st
   return `#/${project}/issues/${identifier}`;
 }
 
-// ── Issue + module cache (session-lived, module scope) ────────
+// ── Issue + module cache (session-scoped, module scope) ───────
 //
 // Hover cards and editor autocomplete both resolve issues by
 // identifier. A single shared cache means re-hovering an identifier, or
@@ -79,22 +80,70 @@ export type CachedIssue =
   // both render the same quiet "not available" card — see LIF-239.
   | { status: "unavailable" };
 
+type IssueResolution = { result: CachedIssue; cacheable: boolean };
+
 const issueCache = new Map<string, CachedIssue>();
 const issueInFlight = new Map<string, Promise<CachedIssue>>();
+const issueResolutionQueue = createConcurrencyQueue(6);
+
+// API credentials live in localStorage, and the app can log out/in without
+// reloading this module. A cache entry therefore belongs to the current token,
+// not the browser tab. The generation also prevents an older request from
+// repopulating a cache which has just been invalidated by realtime.
+let cacheSession: string | null | undefined;
+let cacheGeneration = 0;
+
+function clearReferenceCaches() {
+  cacheGeneration += 1;
+  issueCache.clear();
+  issueInFlight.clear();
+  moduleCache.clear();
+  moduleInFlight.clear();
+}
+
+function ensureCacheSession() {
+  const session = typeof localStorage === "undefined"
+    ? null
+    : localStorage.getItem("lific_token");
+  if (cacheSession !== session) {
+    cacheSession = session;
+    clearReferenceCaches();
+  }
+}
+
+/** Clear cached reference data after a realtime issue change or resync. */
+export function invalidateReferenceCache() {
+  ensureCacheSession();
+  clearReferenceCaches();
+}
 
 export async function fetchIssueCached(identifier: string): Promise<CachedIssue> {
+  ensureCacheSession();
   const key = identifier.toUpperCase();
   const cached = issueCache.get(key);
   if (cached) return cached;
   const pending = issueInFlight.get(key);
   if (pending) return pending;
 
-  const promise = resolveIssue(key).then((res) => {
-    const result: CachedIssue = res.ok
-      ? { status: "ok", issue: res.data }
-      : { status: "unavailable" };
-    issueCache.set(key, result);
-    issueInFlight.delete(key);
+  const generation = cacheGeneration;
+  const promise = issueResolutionQueue.add(async (): Promise<IssueResolution> => {
+    if (cacheGeneration !== generation) {
+      return { result: { status: "unavailable" }, cacheable: false };
+    }
+    const res = await resolveIssue(key);
+    return res.ok
+      ? { result: { status: "ok", issue: res.data }, cacheable: true }
+      : {
+          result: { status: "unavailable" },
+          cacheable: res.status === 403 || res.status === 404,
+        };
+  }).then(({ result, cacheable }) => {
+    // Cache successful and stable 403/404 results; transient failures stay
+    // retryable instead of leaving an issue permanently unavailable.
+    if (cacheGeneration === generation && cacheable) {
+      issueCache.set(key, result);
+    }
+    if (issueInFlight.get(key) === promise) issueInFlight.delete(key);
     return result;
   });
   issueInFlight.set(key, promise);
@@ -105,6 +154,7 @@ const moduleCache = new Map<number, Module | null>();
 const moduleInFlight = new Map<number, Promise<Module | null>>();
 
 export async function fetchModuleCached(id: number): Promise<Module | null> {
+  ensureCacheSession();
   if (moduleCache.has(id)) return moduleCache.get(id) ?? null;
   const pending = moduleInFlight.get(id);
   if (pending) return pending;
