@@ -830,6 +830,7 @@ html[data-motion="reduced"] *::after {
 
 .prose .identifier-link[data-issue-status] {
   --issue-status-color: var(--text-faint);
+  --issue-status-icon-color: var(--issue-status-color);
   color: var(--text);
   background: color-mix(in srgb, var(--issue-status-color) 18%, var(--surface));
   border-color: var(--issue-status-color);
@@ -837,6 +838,7 @@ html[data-motion="reduced"] *::after {
 
 .prose .identifier-link[data-issue-status="todo"] {
   --issue-status-color: var(--warn);
+  --issue-status-icon-color: var(--warn-text);
 }
 
 .prose .identifier-link[data-issue-status="active"] {
@@ -845,6 +847,7 @@ html[data-motion="reduced"] *::after {
 
 .prose .identifier-link[data-issue-status="done"] {
   --issue-status-color: var(--success);
+  --issue-status-icon-color: color-mix(in srgb, var(--success) 80%, var(--text));
 }
 
 .prose .identifier-link[data-issue-status="cancelled"] {
@@ -852,7 +855,7 @@ html[data-motion="reduced"] *::after {
 }
 
 .prose .identifier-link[data-issue-status] .identifier-status-icon svg {
-  color: var(--issue-status-color) !important;
+  color: var(--issue-status-icon-color) !important;
 }
 
 .prose .identifier-link[data-issue-status="done"],

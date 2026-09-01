@@ -13,10 +13,13 @@ class MemoryStorage {
 }
 
 let fetchIssueCached: typeof import("../src/lib/references").fetchIssueCached;
+let fetchModuleCached: typeof import("../src/lib/references").fetchModuleCached;
 let invalidateReferenceCache: typeof import("../src/lib/references").invalidateReferenceCache;
+let subscribeIssueStatus: typeof import("../src/lib/references").subscribeIssueStatus;
 
 let storage: MemoryStorage;
 let status = "todo";
+let moduleName = "Module A";
 let calls = 0;
 let active = 0;
 let peakActive = 0;
@@ -30,7 +33,8 @@ beforeEach(async () => {
   (globalThis as { window?: unknown }).window = {
     location: { origin: "http://localhost" },
   };
-  ({ fetchIssueCached, invalidateReferenceCache } = await import("../src/lib/references"));
+  ({ fetchIssueCached, fetchModuleCached, invalidateReferenceCache, subscribeIssueStatus } =
+    await import("../src/lib/references"));
   storage = new MemoryStorage();
   (globalThis as { localStorage: unknown }).localStorage = storage;
   calls = 0;
@@ -38,9 +42,10 @@ beforeEach(async () => {
   peakActive = 0;
   fail = false;
   failureStatus = 503;
+  moduleName = "Module A";
   gate = null;
   releaseGate = null;
-  globalThis.fetch = (async () => {
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
     calls += 1;
     active += 1;
     peakActive = Math.max(peakActive, active);
@@ -50,7 +55,9 @@ beforeEach(async () => {
     return {
       ok: true,
       status: 200,
-      json: async () => ({ identifier: "LIF-1", status }),
+      json: async () => String(input).includes("/modules/")
+        ? { id: 1, name: moduleName }
+        : { identifier: "LIF-1", status },
     };
   }) as unknown as typeof fetch;
 });
@@ -110,13 +117,100 @@ describe("fetchIssueCached", () => {
     expect(calls).toBe(2);
   });
 
+  test("resolves a shared status once for every subscriber", async () => {
+    const results: string[] = [];
+    const seen = Promise.withResolvers<void>();
+    const record = (result: { status: string }) => {
+      results.push(result.status);
+      if (results.length === 2) seen.resolve();
+    };
+    const stopFirst = subscribeIssueStatus("LIF-4", (result) => record(result));
+    const stopSecond = subscribeIssueStatus("LIF-4", (result) => record(result));
+
+    await seen.promise;
+
+    expect(results).toEqual(["ok", "ok"]);
+    expect(calls).toBe(1);
+    stopFirst();
+    stopSecond();
+  });
+
+  test("does not deliver a response invalidated while it was in flight", async () => {
+    storage.setItem("lific_token", "stale");
+    gate = new Promise<void>((resolve) => { releaseGate = resolve; });
+    const stale = fetchIssueCached("LIF-5");
+
+    invalidateReferenceCache();
+    releaseGate!();
+
+    expect((await stale).status).toBe("unavailable");
+  });
+
+  test("drops unsubscribed status work before it reaches the server", async () => {
+    storage.setItem("lific_token", "cancelled");
+    gate = new Promise<void>((resolve) => { releaseGate = resolve; });
+    let settled = 0;
+    const done = Promise.withResolvers<void>();
+    const stops = Array.from({ length: 12 }, (_, i) =>
+      subscribeIssueStatus(`LIF-${i + 20}`, () => {
+        settled += 1;
+        if (settled === 6) done.resolve();
+      }),
+    );
+
+    for (const stop of stops.slice(6)) stop();
+    releaseGate!();
+    await done.promise;
+
+    expect(calls).toBe(6);
+    for (const stop of stops.slice(0, 6)) stop();
+  });
+
   test("caps concurrent issue resolution", async () => {
     storage.setItem("lific_token", "bounded");
     gate = new Promise<void>((resolve) => { releaseGate = resolve; });
-    const pending = Array.from({ length: 12 }, (_, i) => fetchIssueCached(`LIF-${i + 10}`));
+    let settled = 0;
+    const done = Promise.withResolvers<void>();
+    const stops = Array.from({ length: 12 }, (_, i) =>
+      subscribeIssueStatus(`LIF-${i + 10}`, () => {
+        settled += 1;
+        if (settled === 12) done.resolve();
+      }),
+    );
     await Promise.resolve();
-    expect(peakActive).toBeLessThanOrEqual(6);
+    expect(peakActive).toBe(6);
+    releaseGate!();
+    await done.promise;
+    expect(calls).toBe(12);
+    for (const stop of stops) stop();
+  });
+
+  test("caps direct cached issue resolution", async () => {
+    storage.setItem("lific_token", "direct-bounded");
+    gate = new Promise<void>((resolve) => { releaseGate = resolve; });
+    const pending = Array.from({ length: 12 }, (_, i) => fetchIssueCached(`LIF-${i + 40}`));
+
+    await Promise.resolve();
+    expect(peakActive).toBe(6);
     releaseGate!();
     await Promise.all(pending);
+    expect(calls).toBe(12);
+  });
+});
+
+describe("fetchModuleCached", () => {
+  test("does not return or cache module data from an old session", async () => {
+    storage.setItem("lific_token", "account-a");
+    gate = new Promise<void>((resolve) => { releaseGate = resolve; });
+    const stale = fetchModuleCached(1);
+
+    storage.setItem("lific_token", "account-b");
+    moduleName = "Module B";
+    const current = fetchModuleCached(1);
+    releaseGate!();
+
+    expect(await stale).toBeNull();
+    expect((await current)?.name).toBe("Module B");
+    expect(calls).toBe(2);
   });
 });

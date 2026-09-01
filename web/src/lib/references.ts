@@ -19,6 +19,7 @@ import {
 } from "./api";
 import { fuzzyMatch } from "./fuzzy";
 import { createConcurrencyQueue } from "./attachments/queue";
+import { startAutoRefresh } from "./autoRefresh.svelte";
 
 // ── Identifier grammar ───────────────────────────────────────
 //
@@ -84,6 +85,7 @@ type IssueResolution = { result: CachedIssue; cacheable: boolean };
 
 const issueCache = new Map<string, CachedIssue>();
 const issueInFlight = new Map<string, Promise<CachedIssue>>();
+const ISSUE_STATUS_CONCURRENCY = 6;
 const issueResolutionQueue = createConcurrencyQueue(6);
 
 // API credentials live in localStorage, and the app can log out/in without
@@ -92,6 +94,11 @@ const issueResolutionQueue = createConcurrencyQueue(6);
 // repopulating a cache which has just been invalidated by realtime.
 let cacheSession: string | null | undefined;
 let cacheGeneration = 0;
+const issueStatusSubscribers = new Map<string, Set<(result: CachedIssue) => void>>();
+const pendingIssueStatuses = new Set<string>();
+const activeIssueStatuses = new Set<string>();
+let issueStatusRevision = 0;
+let stopReferenceRefresh: (() => void) | null = null;
 
 function clearReferenceCaches() {
   cacheGeneration += 1;
@@ -111,10 +118,70 @@ function ensureCacheSession() {
   }
 }
 
-/** Clear cached reference data after a realtime issue change or resync. */
+function scheduleIssueStatus(key: string) {
+  if (!issueStatusSubscribers.has(key) || activeIssueStatuses.has(key)) return;
+  pendingIssueStatuses.add(key);
+  pumpIssueStatuses();
+}
+
+function pumpIssueStatuses() {
+  while (activeIssueStatuses.size < ISSUE_STATUS_CONCURRENCY && pendingIssueStatuses.size > 0) {
+    const key = pendingIssueStatuses.values().next().value as string;
+    pendingIssueStatuses.delete(key);
+    if (!issueStatusSubscribers.has(key)) continue;
+
+    const revision = issueStatusRevision;
+    activeIssueStatuses.add(key);
+    void fetchIssueCached(key)
+      .then((result) => {
+        if (revision !== issueStatusRevision) return;
+        for (const subscriber of issueStatusSubscribers.get(key) ?? []) subscriber(result);
+      })
+      .finally(() => {
+        activeIssueStatuses.delete(key);
+        if (revision !== issueStatusRevision) scheduleIssueStatus(key);
+        pumpIssueStatuses();
+      });
+  }
+}
+
+/** Clear cached reference data and refresh every subscribed issue status. */
 export function invalidateReferenceCache() {
   ensureCacheSession();
   clearReferenceCaches();
+  issueStatusRevision += 1;
+  pendingIssueStatuses.clear();
+  for (const key of issueStatusSubscribers.keys()) scheduleIssueStatus(key);
+}
+
+/** Resolve one identifier through the shared, bounded status coordinator. */
+export function subscribeIssueStatus(
+  identifier: string,
+  subscriber: (result: CachedIssue) => void,
+): () => void {
+  const key = identifier.toUpperCase();
+  const subscribers = issueStatusSubscribers.get(key) ?? new Set();
+  subscribers.add(subscriber);
+  issueStatusSubscribers.set(key, subscribers);
+  scheduleIssueStatus(key);
+
+  stopReferenceRefresh ??= startAutoRefresh({
+    refresh: invalidateReferenceCache,
+    shouldRefresh: (event) =>
+      event.type.startsWith("issue.") || event.type === "resync.required",
+  });
+
+  return () => {
+    subscribers.delete(subscriber);
+    if (subscribers.size === 0) {
+      issueStatusSubscribers.delete(key);
+      pendingIssueStatuses.delete(key);
+    }
+    if (issueStatusSubscribers.size === 0) {
+      stopReferenceRefresh?.();
+      stopReferenceRefresh = null;
+    }
+  };
 }
 
 export async function fetchIssueCached(identifier: string): Promise<CachedIssue> {
@@ -137,15 +204,18 @@ export async function fetchIssueCached(identifier: string): Promise<CachedIssue>
           result: { status: "unavailable" },
           cacheable: res.status === 403 || res.status === 404,
         };
-  }).then(({ result, cacheable }) => {
-    // Cache successful and stable 403/404 results; transient failures stay
-    // retryable instead of leaving an issue permanently unavailable.
-    if (cacheGeneration === generation && cacheable) {
-      issueCache.set(key, result);
-    }
-    if (issueInFlight.get(key) === promise) issueInFlight.delete(key);
-    return result;
-  });
+  })
+    .then(({ result, cacheable }): CachedIssue => {
+      // Cache successful and stable 403/404 results; transient failures stay
+      // retryable instead of leaving an issue permanently unavailable.
+      if (cacheGeneration === generation && cacheable) {
+        issueCache.set(key, result);
+      }
+      return cacheGeneration === generation ? result : { status: "unavailable" };
+    })
+    .finally(() => {
+      if (issueInFlight.get(key) === promise) issueInFlight.delete(key);
+    });
   issueInFlight.set(key, promise);
   return promise;
 }
@@ -159,12 +229,17 @@ export async function fetchModuleCached(id: number): Promise<Module | null> {
   const pending = moduleInFlight.get(id);
   if (pending) return pending;
 
-  const promise = getModule(id).then((res) => {
-    const mod = res.ok ? res.data : null;
-    moduleCache.set(id, mod);
-    moduleInFlight.delete(id);
-    return mod;
-  });
+  const generation = cacheGeneration;
+  const promise = getModule(id)
+    .then((res): Module | null => {
+      const mod = res.ok ? res.data : null;
+      if (cacheGeneration !== generation) return null;
+      moduleCache.set(id, mod);
+      return mod;
+    })
+    .finally(() => {
+      if (moduleInFlight.get(id) === promise) moduleInFlight.delete(id);
+    });
   moduleInFlight.set(id, promise);
   return promise;
 }
