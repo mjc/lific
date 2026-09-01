@@ -237,6 +237,7 @@ pub fn open_memory() -> Result<DbPool, LificError> {
 /// Open (or create) the SQLite database, run migrations, and return a pool.
 pub fn open(path: &Path) -> Result<DbPool, LificError> {
     disable_sqlite_memstatus();
+    reject_sqlite_uri(path)?;
     secure_parent(path)?;
     ensure_private_file(path)?;
     // Writer connection — runs migrations
@@ -277,6 +278,17 @@ pub fn open(path: &Path) -> Result<DbPool, LificError> {
         path: path.to_path_buf(),
         export_slots: Arc::new(Semaphore::new(2)),
     })
+}
+
+/// Database paths are filesystem paths: accepting a SQLite URI here would let
+/// SQLite resolve a different file than the hardened filesystem operations.
+fn reject_sqlite_uri(path: &Path) -> Result<(), LificError> {
+    if path.to_string_lossy().starts_with("file:") {
+        return Err(LificError::BadRequest(
+            "database path must be a filesystem path, not a SQLite URI".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn ensure_private_file(path: &Path) -> Result<(), LificError> {
@@ -328,6 +340,15 @@ fn secure_sidecars(path: &Path) -> Result<(), LificError> {
 mod tests {
     use super::*;
     use crate::db::{models::CreateProject, queries};
+
+    #[test]
+    fn rejects_sqlite_uri_database_paths() {
+        let Err(error) = open(Path::new("file:lific.db")) else {
+            panic!("SQLite URI database path should be rejected");
+        };
+
+        assert!(error.to_string().contains("SQLite URI"));
+    }
 
     #[test]
     fn transaction_rolls_back_when_operation_fails() {
