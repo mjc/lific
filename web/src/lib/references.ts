@@ -90,7 +90,9 @@ const issueResolutionQueue = createConcurrencyQueue(ISSUE_STATUS_CONCURRENCY);
 type IssueInFlight = {
   promise: Promise<CachedIssue>;
   controller: AbortController;
-  hasDirectConsumer: boolean;
+  hasPersistentConsumer: boolean;
+  abortableConsumers: number;
+  directConsumers: number;
 };
 
 const issueInFlight = new Map<string, IssueInFlight>();
@@ -111,7 +113,9 @@ function clearReferenceCaches(abortDirect: boolean) {
   cacheGeneration += 1;
   issueCache.clear();
   for (const pending of issueInFlight.values()) {
-    if (abortDirect || !pending.hasDirectConsumer) pending.controller.abort();
+    if (abortDirect || (!pending.hasPersistentConsumer && pending.directConsumers === 0)) {
+      pending.controller.abort();
+    }
   }
   issueInFlight.clear();
   moduleCache.clear();
@@ -151,10 +155,16 @@ function pumpIssueStatuses() {
     const revision = issueStatusRevision;
     const controller = new AbortController();
     activeIssueStatuses.set(key, controller);
-    void fetchIssueStatus(key, controller.signal)
+    void fetchIssueCachedInternal(key, controller.signal)
       .then((result) => {
         if (revision !== issueStatusRevision) return;
-        for (const subscriber of issueStatusSubscribers.get(key) ?? []) subscriber(result);
+        for (const subscriber of issueStatusSubscribers.get(key) ?? []) {
+          try {
+            subscriber(result);
+          } catch (error) {
+            console.error("issue status subscriber failed", error);
+          }
+        }
       })
       .finally(() => {
         if (activeIssueStatuses.get(key) === controller) activeIssueStatuses.delete(key);
@@ -205,12 +215,15 @@ export function subscribeIssueStatus(
   };
 }
 
-function attachStatusConsumer(
+function attachAbortableConsumer(
   pending: IssueInFlight,
   signal: AbortSignal,
+  direct: boolean,
 ): Promise<CachedIssue> {
   if (signal.aborted) return Promise.resolve({ status: "unavailable" });
 
+  pending.abortableConsumers += 1;
+  if (direct) pending.directConsumers += 1;
   let onAbort: () => void;
   return new Promise<CachedIssue>((resolve) => {
     onAbort = () => resolve({ status: "unavailable" });
@@ -218,17 +231,18 @@ function attachStatusConsumer(
     pending.promise.then(resolve, () => resolve({ status: "unavailable" }));
   }).finally(() => {
     signal.removeEventListener("abort", onAbort);
-    if (!pending.hasDirectConsumer) pending.controller.abort();
+    pending.abortableConsumers -= 1;
+    if (direct) pending.directConsumers -= 1;
+    if (!pending.hasPersistentConsumer && pending.abortableConsumers === 0) {
+      pending.controller.abort();
+    }
   });
-}
-
-function fetchIssueStatus(identifier: string, signal: AbortSignal): Promise<CachedIssue> {
-  return fetchIssueCachedInternal(identifier, signal);
 }
 
 async function fetchIssueCachedInternal(
   identifier: string,
   signal?: AbortSignal,
+  directConsumer = false,
 ): Promise<CachedIssue> {
   ensureCacheSession();
   if (signal?.aborted) return { status: "unavailable" };
@@ -237,8 +251,8 @@ async function fetchIssueCachedInternal(
   if (cached) return cached;
   const pending = issueInFlight.get(key);
   if (pending) {
-    if (signal) return attachStatusConsumer(pending, signal);
-    pending.hasDirectConsumer = true;
+    if (signal) return attachAbortableConsumer(pending, signal, directConsumer);
+    pending.hasPersistentConsumer = true;
     return pending.promise;
   }
 
@@ -264,7 +278,8 @@ async function fetchIssueCachedInternal(
       if (cacheGeneration === generation && cacheable) {
         issueCache.set(key, result);
       }
-      return cacheGeneration === generation || (cacheSession === session && entry.hasDirectConsumer)
+      const hasDirectConsumer = entry.hasPersistentConsumer || entry.directConsumers > 0;
+      return cacheGeneration === generation || (cacheSession === session && hasDirectConsumer)
         ? result
         : { status: "unavailable" };
     })
@@ -274,14 +289,16 @@ async function fetchIssueCachedInternal(
   entry = {
     promise,
     controller,
-    hasDirectConsumer: !signal,
+    hasPersistentConsumer: !signal,
+    abortableConsumers: 0,
+    directConsumers: 0,
   };
   issueInFlight.set(key, entry);
-  return signal ? attachStatusConsumer(entry, signal) : promise;
+  return signal ? attachAbortableConsumer(entry, signal, directConsumer) : promise;
 }
 
-export function fetchIssueCached(identifier: string): Promise<CachedIssue> {
-  return fetchIssueCachedInternal(identifier);
+export function fetchIssueCached(identifier: string, signal?: AbortSignal): Promise<CachedIssue> {
+  return fetchIssueCachedInternal(identifier, signal, true);
 }
 
 const moduleCache = new Map<number, Module | null>();
@@ -294,12 +311,15 @@ export async function fetchModuleCached(id: number): Promise<Module | null> {
   if (pending) return pending;
 
   const generation = cacheGeneration;
+  const session = cacheSession;
   const promise = getModule(id)
     .then((res): Module | null => {
       const mod = res.ok ? res.data : null;
-      if (cacheGeneration !== generation) return null;
-      moduleCache.set(id, mod);
-      return mod;
+      if (cacheGeneration === generation) {
+        moduleCache.set(id, mod);
+        return mod;
+      }
+      return cacheSession === session ? mod : null;
     })
     .finally(() => {
       if (moduleInFlight.get(id) === promise) moduleInFlight.delete(id);

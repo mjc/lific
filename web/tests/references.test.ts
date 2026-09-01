@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { REALTIME_INVALIDATE_EVENT } from "../src/lib/autoRefresh.svelte";
 
 class MemoryStorage {
@@ -15,7 +15,14 @@ class MemoryStorage {
 
 class BrowserWindow extends EventTarget {
   location = { origin: "http://localhost" };
-  private listenerCounts = new Map<string, number>();
+  private listeners = new Map<
+    string,
+    Map<EventListenerOrEventListenerObject, Set<boolean>>
+  >();
+
+  private capture(options?: AddEventListenerOptions | EventListenerOptions | boolean): boolean {
+    return typeof options === "boolean" ? options : options?.capture ?? false;
+  }
 
   override addEventListener(
     type: string,
@@ -23,7 +30,12 @@ class BrowserWindow extends EventTarget {
     options?: AddEventListenerOptions | boolean,
   ) {
     super.addEventListener(type, callback, options);
-    this.listenerCounts.set(type, (this.listenerCounts.get(type) ?? 0) + 1);
+    if (!callback) return;
+    const callbacks = this.listeners.get(type) ?? new Map();
+    const captures = callbacks.get(callback) ?? new Set();
+    captures.add(this.capture(options));
+    callbacks.set(callback, captures);
+    this.listeners.set(type, callbacks);
   }
 
   override removeEventListener(
@@ -32,11 +44,18 @@ class BrowserWindow extends EventTarget {
     options?: EventListenerOptions | boolean,
   ) {
     super.removeEventListener(type, callback, options);
-    this.listenerCounts.set(type, Math.max(0, (this.listenerCounts.get(type) ?? 0) - 1));
+    if (!callback) return;
+    const callbacks = this.listeners.get(type);
+    const captures = callbacks?.get(callback);
+    captures?.delete(this.capture(options));
+    if (captures?.size === 0) callbacks?.delete(callback);
+    if (callbacks?.size === 0) this.listeners.delete(type);
   }
 
   listenerCount(type: string): number {
-    return this.listenerCounts.get(type) ?? 0;
+    let count = 0;
+    for (const captures of this.listeners.get(type)?.values() ?? []) count += captures.size;
+    return count;
   }
 }
 
@@ -214,11 +233,30 @@ describe("fetchIssueCached", () => {
     stopSecond();
   });
 
+  test("isolates subscriber exceptions", async () => {
+    const logged = spyOn(console, "error").mockImplementation(() => {});
+    const delivered = Promise.withResolvers<string>();
+    const stopFirst = subscribe("LIF-EXCEPTION", () => {
+      throw new Error("broken subscriber");
+    });
+    const stopSecond = subscribe("LIF-EXCEPTION", (result) => delivered.resolve(result.status));
+
+    try {
+      expect(await delivered.promise).toBe("ok");
+      expect(logged).toHaveBeenCalledTimes(1);
+    } finally {
+      stopFirst();
+      stopSecond();
+      logged.mockRestore();
+    }
+  });
+
   test("returns but does not cache a direct response invalidated in the same session", async () => {
     storage.setItem("lific_token", "same-session");
     status = "todo";
     gate = new Promise<void>((resolve) => { releaseGate = resolve; });
-    const inFlight = fetchIssueCached("LIF-5");
+    const controller = new AbortController();
+    const inFlight = fetchIssueCached("LIF-5", controller.signal);
     await Promise.resolve();
 
     invalidateReferenceCache();
@@ -308,6 +346,29 @@ describe("fetchIssueCached", () => {
     stopNext();
   });
 
+  test("releases queue slots after abortable direct consumers leave", async () => {
+    storage.setItem("lific_token", "direct-cancelled");
+    gate = new Promise<void>((resolve) => { releaseGate = resolve; });
+    const controllers = Array.from({ length: 6 }, () => new AbortController());
+    const abandoned = controllers.map((controller, i) =>
+      fetchIssueCached(`LIF-${i + 70}`, controller.signal)
+    );
+    await Promise.resolve();
+    expect(calls).toBe(6);
+
+    for (const controller of controllers) controller.abort();
+    const nextController = new AbortController();
+    const next = fetchIssueCached("LIF-99", nextController.signal);
+    for (let i = 0; i < 12 && calls < 7; i += 1) await Promise.resolve();
+
+    expect(calls).toBe(7);
+    expect((await Promise.all(abandoned)).map((result) => result.status)).toEqual(
+      Array(6).fill("unavailable"),
+    );
+    releaseGate!();
+    expect((await next).status).toBe("ok");
+  });
+
   test("refreshes subscribers after the session changes during a request", async () => {
     storage.setItem("lific_token", "subscriber-account-a");
     status = "done";
@@ -350,6 +411,7 @@ describe("fetchIssueCached", () => {
     expect(deliveries).toBe(2);
     expect(calls).toBe(1);
     expect(browserWindow.listenerCount(REALTIME_INVALIDATE_EVENT)).toBe(1);
+    expect(browserWindow.listenerCount("focus")).toBe(1);
 
     status = "done";
     expectedDeliveries = 4;
@@ -362,8 +424,11 @@ describe("fetchIssueCached", () => {
     expect(calls).toBe(2);
 
     stopFirst();
+    expect(browserWindow.listenerCount(REALTIME_INVALIDATE_EVENT)).toBe(1);
+    expect(browserWindow.listenerCount("focus")).toBe(1);
     stopSecond();
     expect(browserWindow.listenerCount(REALTIME_INVALIDATE_EVENT)).toBe(0);
+    expect(browserWindow.listenerCount("focus")).toBe(0);
   });
 
   test("keeps a shared request alive for a direct caller after status teardown", async () => {
@@ -394,6 +459,23 @@ describe("fetchIssueCached", () => {
 });
 
 describe("fetchModuleCached", () => {
+  test("returns but does not cache module data invalidated in the same session", async () => {
+    storage.setItem("lific_token", "same-session-module");
+    moduleName = "Module A";
+    gatePath = "/modules/";
+    gate = new Promise<void>((resolve) => { releaseGate = resolve; });
+    const inFlight = fetchModuleCached(1);
+    await Promise.resolve();
+
+    invalidateReferenceCache();
+    moduleName = "Module B";
+    releaseGate!();
+
+    expect((await inFlight)?.name).toBe("Module A");
+    expect((await fetchModuleCached(1))?.name).toBe("Module B");
+    expect(calls).toBe(2);
+  });
+
   test("does not return or cache module data from an old session", async () => {
     storage.setItem("lific_token", "account-a");
     gate = new Promise<void>((resolve) => { releaseGate = resolve; });
