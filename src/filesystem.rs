@@ -166,7 +166,7 @@ fn open_with_options(options: &mut OpenOptions, path: &Path) -> io::Result<File>
     let file = options.open(&path)?;
     #[cfg(windows)]
     if is_link(&file.metadata()?) {
-        return Err(unsafe_path(path, "must not be a symlink"));
+        return Err(unsafe_path(&path, "must not be a symlink"));
     }
     Ok(file)
 }
