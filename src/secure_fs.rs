@@ -10,6 +10,7 @@ pub(crate) fn parent_or_dot(path: &Path) -> &Path {
 
 pub(crate) fn ensure_private_parent(path: &Path) -> std::io::Result<()> {
     let parent = parent_or_dot(path);
+    #[cfg(unix)]
     let existed = parent.exists();
     std::fs::create_dir_all(parent)?;
     #[cfg(unix)]
@@ -66,6 +67,10 @@ enum PublishMode {
     Replace,
 }
 
+#[cfg_attr(
+    not(unix),
+    expect(clippy::unnecessary_wraps, reason = "fallible on Unix")
+)]
 pub(crate) fn set_private_file(file: &std::fs::File) -> std::io::Result<()> {
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
@@ -83,10 +88,18 @@ pub(crate) fn set_private_dir(path: &Path) -> std::io::Result<()> {
 }
 
 #[cfg(not(unix))]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "the Unix implementation is fallible"
+)]
 pub(crate) fn set_private_dir(_path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+#[cfg_attr(
+    not(unix),
+    expect(clippy::unnecessary_wraps, reason = "fallible on Unix")
+)]
 fn sync_parent(path: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     std::fs::File::open(path)?.sync_all()?;

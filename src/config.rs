@@ -942,6 +942,7 @@ enabled = false
     /// mount) may still load when it is read-only and has no bearer secret.
     /// The real-world root-owned `/etc/lific/lific.toml` shape cannot be staged
     /// without root, so the policy predicate is exercised directly.
+    #[cfg(unix)]
     #[test]
     fn untightenable_configs_are_tolerated_not_fatal() {
         use std::io::{Error, ErrorKind};
