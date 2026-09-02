@@ -8,8 +8,9 @@
 //!    Manager (Windows) via the `keyring` crate. This is the preferred, secure
 //!    store.
 //! 2. **Plaintext file fallback** — `~/.config/lific/credentials.json`, a map
-//!    of `base_url → token`, written 0600 under a 0700 parent. Used when the
-//!    keyring is unavailable (headless box with no Secret Service, CI, etc.).
+//!    of `base_url → token`, written with owner-only protection under a
+//!    private parent. Used when the keyring is unavailable (headless box with
+//!    no Secret Service, CI, etc.).
 //!    A loud one-line warning is printed to stderr whenever this path is taken,
 //!    because the token lands on disk in the clear.
 //!
@@ -31,15 +32,19 @@
 //!
 //! ## Testability
 //!
-//! The file backend is factored behind [`FileStore`] with an injectable path,
+//! The file backend is factored behind [`PlaintextCredentialFileStore`] with an injectable path,
 //! so the round-trip / permission / precedence tests never touch the real
 //! keyring or the real `~/.config`. The keyring itself is only reachable
 //! through [`store`]/[`load`]/[`delete`]; any test that would hit a live Secret
 //! Service is gated `#[ignore]` (CI has none).
 
 use std::collections::BTreeMap;
-use std::io::Write;
+use std::ffi::OsString;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+
+use fs2::FileExt;
+use thiserror::Error;
 
 /// Environment variable carrying an OAuth token, used in place of stored
 /// credentials when it is bound to the target origin (see [`env_token_for`]).
@@ -164,169 +169,590 @@ fn default_client_file_path() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("lific").join("clients.json"))
 }
 
-fn client_store() -> Option<FileStore> {
-    default_client_file_path().map(FileStore::new)
+fn client_store() -> Option<PlaintextCredentialFileStore> {
+    default_client_file_path().map(PlaintextCredentialFileStore::new)
 }
 
 // The three operations are factored to take the store, like the credential
 // file backend, so the round-trip is testable without touching a real
-// `~/.config`. All three are best-effort: losing this file only costs a
-// re-registration.
+// `~/.config`. A missing file is harmless; a present but unreadable file is
+// reported to the login flow rather than silently discarded.
 
-fn store_client_id_in(store: &FileStore, base_url: &str, client_id: &str) {
-    let _ = store.store(&normalize_base_url(base_url), client_id);
+fn store_client_id_in(
+    store: &PlaintextCredentialFileStore,
+    base_url: &str,
+    client_id: &str,
+) -> Result<(), PlaintextCredentialFileError> {
+    store.store_credential_for_server_key(&CredentialStoreKey::from_base_url(base_url), client_id)
 }
 
-fn load_client_id_from(store: &FileStore, base_url: &str) -> Option<String> {
-    store.load(&normalize_base_url(base_url))
+fn load_client_id_from(
+    store: &PlaintextCredentialFileStore,
+    base_url: &str,
+) -> Result<Option<String>, PlaintextCredentialFileError> {
+    store.load_credential_for_server_key(&CredentialStoreKey::from_base_url(base_url))
 }
 
-fn forget_client_id_in(store: &FileStore, base_url: &str) {
-    let _ = store.delete(&normalize_base_url(base_url));
+fn forget_client_id_in(
+    store: &PlaintextCredentialFileStore,
+    base_url: &str,
+) -> Result<(), PlaintextCredentialFileError> {
+    store
+        .delete_credential_for_server_key(&CredentialStoreKey::from_base_url(base_url))
+        .map(|_| ())
 }
 
 /// Remember the OAuth `client_id` registered with `base_url`.
-pub fn store_client_id(base_url: &str, client_id: &str) {
+pub fn store_client_id(
+    base_url: &str,
+    client_id: &str,
+) -> Result<(), PlaintextCredentialFileError> {
     if let Some(store) = client_store() {
-        store_client_id_in(&store, base_url, client_id);
+        store_client_id_in(&store, base_url, client_id)
+    } else {
+        Ok(())
     }
 }
 
 /// The `client_id` previously registered with `base_url`, if any.
-pub fn load_client_id(base_url: &str) -> Option<String> {
-    load_client_id_from(&client_store()?, base_url)
+pub fn load_client_id(base_url: &str) -> Result<Option<String>, PlaintextCredentialFileError> {
+    match client_store() {
+        Some(store) => load_client_id_from(&store, base_url),
+        None => Ok(None),
+    }
 }
 
 /// Drop the remembered `client_id` for `base_url`, after the server said it
 /// does not know it (reclaimed, or a rebuilt database).
-pub fn forget_client_id(base_url: &str) {
+pub fn forget_client_id(base_url: &str) -> Result<(), PlaintextCredentialFileError> {
     if let Some(store) = client_store() {
-        forget_client_id_in(&store, base_url);
+        forget_client_id_in(&store, base_url)
+    } else {
+        Ok(())
     }
 }
 
-// ── File backend ─────────────────────────────────────────────────────────
+// ── Plaintext credential file backend ───────────────────────────────────
 
-/// The JSON-on-disk fallback store, parameterized on its path so tests can
-/// point it at a tempdir.
-pub struct FileStore {
+/// Normalized key used to select one server's credential in the file.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CredentialStoreKey(String);
+
+impl CredentialStoreKey {
+    /// Normalize a server URL for use as a credential-file key.
+    pub fn from_base_url(base_url: &str) -> Self {
+        Self(normalize_base_url(base_url))
+    }
+
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// A failure while reading or mutating the plaintext credential file.
+#[derive(Debug, Error)]
+pub enum PlaintextCredentialFileError {
+    #[error("failed to read credential file {path}: {source}")]
+    Read {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("credential file {path} is a symbolic link")]
+    Symlink { path: PathBuf },
+    #[error("credential lock {path} is a symbolic link")]
+    LockSymlink { path: PathBuf },
+    #[error("credential lock {path} is not a regular file")]
+    LockNotRegular { path: PathBuf },
+    #[error("credential lock {path} has multiple hard links")]
+    LockHardLinked { path: PathBuf },
+    #[error("credential file {path} is not a regular file")]
+    NotRegular { path: PathBuf },
+    #[error("credential file {path} has multiple hard links")]
+    HardLinked { path: PathBuf },
+    #[error("credential file {path} is not valid UTF-8: {source}")]
+    InvalidUtf8 {
+        path: PathBuf,
+        #[source]
+        source: std::string::FromUtf8Error,
+    },
+    #[error("credential file {path} contains invalid JSON: {source}")]
+    InvalidJson {
+        path: PathBuf,
+        #[source]
+        source: serde_json::Error,
+    },
+    #[error("failed to open credential lock {path}: {source}")]
+    LockOpen {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("failed to lock credential store {path}: {source}")]
+    Lock {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("failed to secure credential directory {path}: {source}")]
+    SecureDirectory {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("credential directory {path} is not a directory")]
+    DirectoryNotRegular { path: PathBuf },
+    #[error("credential directory {path} is a symbolic link")]
+    DirectorySymlink { path: PathBuf },
+    #[error("failed to apply private credential permissions to {path}: {source}")]
+    Permissions {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("failed to create credential staging file in {path}: {source}")]
+    StageOpen {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("failed to write staged credential file for {path}: {source}")]
+    StageWrite {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("failed to synchronize staged credential file for {path}: {source}")]
+    StageSync {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("failed to publish credential file {path}: {source}")]
+    Publish {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("failed to synchronize credential directory {path}: {source}")]
+    DirectorySync {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+}
+
+/// JSON-on-disk fallback for credentials, parameterized on its path for tests.
+pub struct PlaintextCredentialFileStore {
     path: PathBuf,
 }
 
-impl FileStore {
+impl PlaintextCredentialFileStore {
+    /// Create a store backed by `path`. Reads and mutations use the path only
+    /// as a name; existing files are opened with no-follow semantics.
     pub fn new(path: PathBuf) -> Self {
         Self { path }
     }
 
-    fn read_map(&self) -> std::io::Result<BTreeMap<String, String>> {
-        match std::fs::read_to_string(&self.path) {
-            Ok(s) => serde_json::from_str(&s)
-                .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error)),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
-            Err(error) => Err(error),
-        }
-    }
-
-    fn write_map(&self, map: &BTreeMap<String, String>) -> std::io::Result<()> {
-        let parent = self
-            .path
+    fn parent_directory(&self) -> &Path {
+        self.path
             .parent()
             .filter(|path| !path.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."));
-        std::fs::create_dir_all(parent)?;
-        // Tighten the parent dir to 0700 (best-effort; only meaningful on unix).
-        set_dir_private(parent);
-        let json = serde_json::to_string_pretty(map).map_err(std::io::Error::other)?;
-        // Write beside the destination and rename it into place. This keeps a
-        // malformed or otherwise unreadable existing file intact on failure.
-        let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
-        temporary.write_all(json.as_bytes())?;
-        temporary.flush()?;
-        temporary.as_file().sync_all()?;
-        set_file_private(temporary.as_file());
-        temporary
-            .persist(&self.path)
-            .map(|_| ())
-            .map_err(|error| error.error)
+            .unwrap_or_else(|| Path::new("."))
     }
 
-    /// Store `token` under `key`, creating the file if needed.
-    pub fn store(&self, key: &str, token: &str) -> std::io::Result<()> {
-        let mut map = self.read_map()?;
-        map.insert(key.to_string(), token.to_string());
-        self.write_map(&map)
+    fn lock_path(&self) -> PathBuf {
+        let mut name = OsString::from(self.path.as_os_str());
+        name.push(".lock");
+        PathBuf::from(name)
     }
 
-    /// Load the token for `key`, if present.
-    pub fn load(&self, key: &str) -> Option<String> {
-        self.read_map().ok()?.get(key).cloned()
+    /// Read one complete credential generation, or report that the file is
+    /// absent. The descriptor supplies both metadata and bytes, so a final
+    /// path-component symlink or hard link is never followed or replaced.
+    fn read_existing_credentials_or_return_absent(
+        &self,
+    ) -> Result<Option<BTreeMap<String, String>>, PlaintextCredentialFileError> {
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true);
+        configure_no_follow(&mut options);
+        let mut file = match options.open(&self.path) {
+            Ok(file) => file,
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(source) if is_symlink_open_error(&source) => {
+                return Err(PlaintextCredentialFileError::Symlink {
+                    path: self.path.clone(),
+                });
+            }
+            Err(source) => {
+                return Err(PlaintextCredentialFileError::Read {
+                    path: self.path.clone(),
+                    source,
+                });
+            }
+        };
+
+        #[cfg(windows)]
+        if std::fs::symlink_metadata(&self.path)
+            .is_ok_and(|metadata| metadata.file_type().is_symlink())
+        {
+            return Err(PlaintextCredentialFileError::Symlink {
+                path: self.path.clone(),
+            });
+        }
+
+        let metadata = file
+            .metadata()
+            .map_err(|source| PlaintextCredentialFileError::Read {
+                path: self.path.clone(),
+                source,
+            })?;
+        if !metadata.file_type().is_file() {
+            return Err(PlaintextCredentialFileError::NotRegular {
+                path: self.path.clone(),
+            });
+        }
+        if file_has_multiple_links(&metadata) {
+            return Err(PlaintextCredentialFileError::HardLinked {
+                path: self.path.clone(),
+            });
+        }
+
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)
+            .map_err(|source| PlaintextCredentialFileError::Read {
+                path: self.path.clone(),
+                source,
+            })?;
+        let contents = String::from_utf8(bytes).map_err(|source| {
+            PlaintextCredentialFileError::InvalidUtf8 {
+                path: self.path.clone(),
+                source,
+            }
+        })?;
+        serde_json::from_str(&contents).map(Some).map_err(|source| {
+            PlaintextCredentialFileError::InvalidJson {
+                path: self.path.clone(),
+                source,
+            }
+        })
     }
 
-    /// Remove `key`. Returns whether an entry was actually removed.
-    pub fn delete(&self, key: &str) -> std::io::Result<bool> {
-        let mut map = self.read_map()?;
-        let removed = map.remove(key).is_some();
+    /// Create and restrict the immediate parent directory before any mutation.
+    /// Existing parents are tightened to owner-only Unix permissions; on
+    /// Windows the platform ACL/default security model remains authoritative.
+    fn secure_parent_directory(&self) -> Result<(), PlaintextCredentialFileError> {
+        let parent = self.parent_directory();
+        std::fs::create_dir_all(parent).map_err(|source| {
+            PlaintextCredentialFileError::SecureDirectory {
+                path: parent.to_owned(),
+                source,
+            }
+        })?;
+
+        let metadata = std::fs::symlink_metadata(parent).map_err(|source| {
+            PlaintextCredentialFileError::SecureDirectory {
+                path: parent.to_owned(),
+                source,
+            }
+        })?;
+        if metadata.file_type().is_symlink() {
+            return Err(PlaintextCredentialFileError::DirectorySymlink {
+                path: parent.to_owned(),
+            });
+        }
+        if !metadata.file_type().is_dir() {
+            return Err(PlaintextCredentialFileError::DirectoryNotRegular {
+                path: parent.to_owned(),
+            });
+        }
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+            let mut options = std::fs::OpenOptions::new();
+            options.read(true).custom_flags(libc::O_NOFOLLOW);
+            let directory = options.open(parent).map_err(|source| {
+                PlaintextCredentialFileError::SecureDirectory {
+                    path: parent.to_owned(),
+                    source,
+                }
+            })?;
+            directory
+                .set_permissions(std::fs::Permissions::from_mode(0o700))
+                .map_err(|source| PlaintextCredentialFileError::SecureDirectory {
+                    path: parent.to_owned(),
+                    source,
+                })?;
+        }
+        Ok(())
+    }
+
+    /// Open and exclusively lock the stable sibling lock file. The returned
+    /// file owns the lock; dropping it releases the lock after publication.
+    fn lock_for_mutation(&self) -> Result<std::fs::File, PlaintextCredentialFileError> {
+        let path = self.lock_path();
+        #[cfg(windows)]
+        if std::fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.file_type().is_symlink())
+        {
+            return Err(PlaintextCredentialFileError::LockSymlink { path });
+        }
+
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true).write(true).create(true);
+        configure_no_follow(&mut options);
+        let file = options.open(&path).map_err(|source| {
+            if is_symlink_open_error(&source) {
+                PlaintextCredentialFileError::LockSymlink { path: path.clone() }
+            } else {
+                PlaintextCredentialFileError::LockOpen {
+                    path: path.clone(),
+                    source,
+                }
+            }
+        })?;
+        let metadata =
+            file.metadata()
+                .map_err(|source| PlaintextCredentialFileError::LockOpen {
+                    path: path.clone(),
+                    source,
+                })?;
+        if !metadata.file_type().is_file() {
+            return Err(PlaintextCredentialFileError::LockNotRegular { path });
+        }
+        if file_has_multiple_links(&metadata) {
+            return Err(PlaintextCredentialFileError::LockHardLinked { path });
+        }
+        set_open_credential_file_owner_only_permissions(&file, &path)?;
+        file.lock_exclusive()
+            .map_err(|source| PlaintextCredentialFileError::Lock { path, source })?;
+        Ok(file)
+    }
+
+    /// Read the current valid map, treating only an absent document as empty.
+    fn read_credential_map(
+        &self,
+    ) -> Result<BTreeMap<String, String>, PlaintextCredentialFileError> {
+        Ok(self
+            .read_existing_credentials_or_return_absent()?
+            .unwrap_or_default())
+    }
+
+    /// Load the credential for one normalized server key. `Ok(None)` means
+    /// only an absent file, a valid empty map, or an absent key; corruption,
+    /// links, permissions, and I/O failures remain errors.
+    pub fn load_credential_for_server_key(
+        &self,
+        key: &CredentialStoreKey,
+    ) -> Result<Option<String>, PlaintextCredentialFileError> {
+        Ok(self
+            .read_existing_credentials_or_return_absent()?
+            .and_then(|map| map.get(key.as_str()).cloned()))
+    }
+
+    /// Store a credential while holding a stable sibling lock across the
+    /// complete read-modify-write-publication transaction.
+    pub fn store_credential_for_server_key(
+        &self,
+        key: &CredentialStoreKey,
+        credential: &str,
+    ) -> Result<(), PlaintextCredentialFileError> {
+        self.secure_parent_directory()?;
+        let _lock = self.lock_for_mutation()?;
+        let mut map = self.read_credential_map()?;
+        map.insert(key.as_str().to_owned(), credential.to_owned());
+        self.atomically_publish_synchronized_credential_document(&map)
+    }
+
+    /// Delete a credential under the same lock used for stores. A valid map
+    /// with no matching key is a successful no-op; malformed or unsafe files
+    /// are errors and are left untouched.
+    pub fn delete_credential_for_server_key(
+        &self,
+        key: &CredentialStoreKey,
+    ) -> Result<bool, PlaintextCredentialFileError> {
+        self.secure_parent_directory()?;
+        let _lock = self.lock_for_mutation()?;
+        let mut map = self.read_credential_map()?;
+        let removed = map.remove(key.as_str()).is_some();
         if removed {
-            self.write_map(&map)?;
+            self.atomically_publish_synchronized_credential_document(&map)?;
         }
         Ok(removed)
     }
+
+    /// Serialize, protect, flush, atomically publish, and durably sync one
+    /// credential generation. The caller holds the sibling lock for the full
+    /// read/modify/stage/publish transaction.
+    fn atomically_publish_synchronized_credential_document(
+        &self,
+        map: &BTreeMap<String, String>,
+    ) -> Result<(), PlaintextCredentialFileError> {
+        let json = serde_json::to_vec_pretty(map).map_err(|source| {
+            PlaintextCredentialFileError::StageWrite {
+                path: self.path.clone(),
+                source: std::io::Error::other(source),
+            }
+        })?;
+        let parent = self.parent_directory();
+        let mut temporary = tempfile::NamedTempFile::new_in(parent).map_err(|source| {
+            PlaintextCredentialFileError::StageOpen {
+                path: parent.to_owned(),
+                source,
+            }
+        })?;
+        set_open_credential_file_owner_only_permissions(temporary.as_file(), &self.path)?;
+        temporary.as_file_mut().write_all(&json).map_err(|source| {
+            PlaintextCredentialFileError::StageWrite {
+                path: self.path.clone(),
+                source,
+            }
+        })?;
+        temporary.as_file().sync_all().map_err(|source| {
+            PlaintextCredentialFileError::StageSync {
+                path: self.path.clone(),
+                source,
+            }
+        })?;
+        temporary
+            .persist(&self.path)
+            .map_err(|error| PlaintextCredentialFileError::Publish {
+                path: self.path.clone(),
+                source: error.error,
+            })?;
+        synchronize_credential_parent_directory(parent)
+    }
 }
 
-/// Best-effort chmod 0600 on the credentials file (unix only).
-fn set_file_private(file: &std::fs::File) {
+/// Apply owner-only protection to an open credential or lock file.
+fn set_open_credential_file_owner_only_permissions(
+    file: &std::fs::File,
+    path: &Path,
+) -> Result<(), PlaintextCredentialFileError> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))
+            .map_err(|source| PlaintextCredentialFileError::Permissions {
+                path: path.to_owned(),
+                source,
+            })?;
     }
     #[cfg(not(unix))]
     {
         let _ = file;
+        let _ = path;
     }
+    Ok(())
 }
 
-/// Best-effort chmod 0700 on the parent dir (unix only).
-fn set_dir_private(dir: &Path) {
+/// Sync the directory entry after publishing a credential file. File sync
+/// persists bytes; directory sync persists the name-to-inode replacement.
+fn synchronize_credential_parent_directory(
+    parent: &Path,
+) -> Result<(), PlaintextCredentialFileError> {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+        std::fs::File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|source| PlaintextCredentialFileError::DirectorySync {
+                path: parent.to_owned(),
+                source,
+            })?;
     }
     #[cfg(not(unix))]
     {
-        let _ = dir;
+        let _ = parent;
+    }
+    Ok(())
+}
+
+/// Configure the strongest stable final-component no-follow flag available
+/// on the target platform. Windows reparse points are rejected by handle
+/// metadata; ancestor replacement remains outside this path-level guarantee.
+fn configure_no_follow(options: &mut std::fs::OpenOptions) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        // FILE_FLAG_OPEN_REPARSE_POINT: open a reparse point itself instead
+        // of traversing it. The handle is then rejected as a symlink below.
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+}
+
+fn is_symlink_open_error(error: &std::io::Error) -> bool {
+    #[cfg(unix)]
+    {
+        error.raw_os_error() == Some(libc::ELOOP)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = error;
+        false
+    }
+}
+
+fn file_has_multiple_links(metadata: &std::fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        metadata.nlink() != 1
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        metadata.number_of_links() != 1
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = metadata;
+        false
     }
 }
 
 // ── Public API (keyring + file, with env override on load) ───────────────
 
+#[derive(Debug, Error)]
+pub enum CredentialStoreError {
+    #[error("cannot resolve the platform configuration directory")]
+    ConfigDirectoryUnavailable,
+    #[error(transparent)]
+    Plaintext(#[from] PlaintextCredentialFileError),
+}
+
 /// Store a token for `base_url`. Tries the keyring first; on any keyring error
 /// falls back to the plaintext file and prints a loud warning to stderr.
-pub fn store(base_url: &str, token: &str) -> Result<(), String> {
-    let key = normalize_base_url(base_url);
-    match keyring_store(&key, token) {
+pub fn store(base_url: &str, token: &str) -> Result<(), CredentialStoreError> {
+    let key = CredentialStoreKey::from_base_url(base_url);
+    match keyring_store(key.as_str(), token) {
         Ok(()) => Ok(()),
         Err(e) => {
-            let store = FileStore::new(
-                default_file_path().ok_or_else(|| "cannot resolve config dir".to_string())?,
+            let store = PlaintextCredentialFileStore::new(
+                default_file_path().ok_or(CredentialStoreError::ConfigDirectoryUnavailable)?,
             );
             eprintln!(
-                "warning: OS keyring unavailable ({e}); storing token in PLAINTEXT at {} (0600). \
+                "warning: OS keyring unavailable ({e}); storing token in PLAINTEXT at {} ({}). \
                  Set up a Secret Service/Keychain to secure it, or use {TOKEN_ENV} to avoid on-disk storage.",
-                store.path.display()
+                store.path.display(),
+                plaintext_protection_description()
             );
             store
-                .store(&key, token)
-                .map_err(|e| format!("failed to write credentials file: {e}"))
+                .store_credential_for_server_key(&key, token)
+                .map_err(CredentialStoreError::from)
         }
     }
 }
 
 /// Load a token for `base_url`. Precedence: `LIFIC_TOKEN` env (only when bound
 /// to `base_url`'s origin, see [`env_token_for`]) > keyring > file.
-pub fn load(base_url: &str) -> Option<String> {
-    load_with_source(base_url).map(|(token, _)| token)
+pub fn load(base_url: &str) -> Result<Option<String>, PlaintextCredentialFileError> {
+    load_with_source(base_url).map(|value| value.map(|(token, _)| token))
 }
 
 /// Describes where a loaded token came from, for `doctor`'s detail note.
@@ -349,32 +775,52 @@ impl TokenSource {
 
 /// Like [`load`] but also reports which backend supplied the token, so callers
 /// (doctor) can tell the user where it came from.
-pub fn load_with_source(base_url: &str) -> Option<(String, TokenSource)> {
+pub fn load_with_source(
+    base_url: &str,
+) -> Result<Option<(String, TokenSource)>, PlaintextCredentialFileError> {
     match env_token_for(
         std::env::var(TOKEN_ENV).ok().as_deref(),
         std::env::var(URL_ENV).ok().as_deref(),
         base_url,
     ) {
-        EnvToken::Bound(token) => return Some((token, TokenSource::Env)),
+        EnvToken::Bound(token) => return Ok(Some((token, TokenSource::Env))),
         EnvToken::Unbound => warn_env_token_unbound(base_url),
         EnvToken::Absent => {}
     }
-    let key = normalize_base_url(base_url);
-    if let Some(tok) = keyring_load(&key) {
-        return Some((tok, TokenSource::Keyring));
+    let key = CredentialStoreKey::from_base_url(base_url);
+    if let Some(tok) = keyring_load(key.as_str()) {
+        return Ok(Some((tok, TokenSource::Keyring)));
     }
-    default_file_path()
-        .and_then(|p| FileStore::new(p).load(&key))
-        .map(|tok| (tok, TokenSource::File))
+    match default_file_path() {
+        Some(path) => PlaintextCredentialFileStore::new(path)
+            .load_credential_for_server_key(&key)
+            .map(|token| token.map(|token| (token, TokenSource::File))),
+        None => Ok(None),
+    }
 }
 
 /// Delete the stored credential for `base_url` from BOTH backends. Returns
 /// whether anything was removed from either.
-pub fn delete(base_url: &str) -> bool {
-    let key = normalize_base_url(base_url);
-    let kr = keyring_delete(&key);
-    let file = default_file_path().is_some_and(|p| FileStore::new(p).delete(&key).unwrap_or(false));
-    kr || file
+pub fn delete(base_url: &str) -> Result<bool, PlaintextCredentialFileError> {
+    let key = CredentialStoreKey::from_base_url(base_url);
+    let kr = keyring_delete(key.as_str());
+    let file = match default_file_path() {
+        Some(path) => {
+            PlaintextCredentialFileStore::new(path).delete_credential_for_server_key(&key)?
+        }
+        None => false,
+    };
+    Ok(kr || file)
+}
+
+#[cfg(unix)]
+const fn plaintext_protection_description() -> &'static str {
+    "0600 file permissions"
+}
+
+#[cfg(not(unix))]
+const fn plaintext_protection_description() -> &'static str {
+    "platform file permissions"
 }
 
 // ── Keyring backend (thin wrappers so the public API stays backend-agnostic) ─
@@ -407,10 +853,10 @@ mod tests {
     /// A file store in a fresh scratch directory. Hold onto the returned
     /// [`TempDir`]: dropping it removes the directory, which also happens
     /// while a failed assertion unwinds.
-    fn tmp_store() -> (FileStore, tempfile::TempDir) {
+    fn tmp_store() -> (PlaintextCredentialFileStore, tempfile::TempDir) {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("credentials.json");
-        (FileStore::new(path), tmp)
+        (PlaintextCredentialFileStore::new(path), tmp)
     }
 
     /// The remembered client id is what keeps `lific login` from registering
@@ -420,32 +866,38 @@ mod tests {
     #[test]
     fn a_client_id_round_trips_per_server_and_can_be_forgotten() {
         let tmp = tempfile::tempdir().unwrap();
-        let store = FileStore::new(tmp.path().join("clients.json"));
+        let store = PlaintextCredentialFileStore::new(tmp.path().join("clients.json"));
 
-        assert_eq!(load_client_id_from(&store, "http://127.0.0.1:3998"), None);
+        assert_eq!(
+            load_client_id_from(&store, "http://127.0.0.1:3998").unwrap(),
+            None
+        );
 
-        store_client_id_in(&store, "http://127.0.0.1:3998", "client-abc");
+        store_client_id_in(&store, "http://127.0.0.1:3998", "client-abc").unwrap();
         // Same server, different spelling → same entry.
         assert_eq!(
-            load_client_id_from(&store, "http://127.0.0.1:3998/"),
+            load_client_id_from(&store, "http://127.0.0.1:3998/").unwrap(),
             Some("client-abc".to_string())
         );
 
         // A second server keeps its own id.
-        store_client_id_in(&store, "https://lific.example", "client-xyz");
+        store_client_id_in(&store, "https://lific.example", "client-xyz").unwrap();
         assert_eq!(
-            load_client_id_from(&store, "https://lific.example"),
+            load_client_id_from(&store, "https://lific.example").unwrap(),
             Some("client-xyz".to_string())
         );
         assert_eq!(
-            load_client_id_from(&store, "http://127.0.0.1:3998"),
+            load_client_id_from(&store, "http://127.0.0.1:3998").unwrap(),
             Some("client-abc".to_string())
         );
 
-        forget_client_id_in(&store, "http://127.0.0.1:3998/");
-        assert_eq!(load_client_id_from(&store, "http://127.0.0.1:3998"), None);
+        forget_client_id_in(&store, "http://127.0.0.1:3998/").unwrap();
         assert_eq!(
-            load_client_id_from(&store, "https://lific.example"),
+            load_client_id_from(&store, "http://127.0.0.1:3998").unwrap(),
+            None
+        );
+        assert_eq!(
+            load_client_id_from(&store, "https://lific.example").unwrap(),
             Some("client-xyz".to_string()),
             "forgetting one server must not clear another"
         );
@@ -477,39 +929,64 @@ mod tests {
     }
 
     #[test]
-    fn file_store_round_trip() {
+    fn plaintext_store_round_trip() {
         let (store, _g) = tmp_store();
-        assert_eq!(store.load("http://a"), None);
-        store.store("http://a", "tok-a").unwrap();
-        store.store("http://b", "tok-b").unwrap();
-        assert_eq!(store.load("http://a").as_deref(), Some("tok-a"));
-        assert_eq!(store.load("http://b").as_deref(), Some("tok-b"));
+        let a = CredentialStoreKey::from_base_url("http://a");
+        let b = CredentialStoreKey::from_base_url("http://b");
+        assert_eq!(store.load_credential_for_server_key(&a).unwrap(), None);
+        store.store_credential_for_server_key(&a, "tok-a").unwrap();
+        store.store_credential_for_server_key(&b, "tok-b").unwrap();
+        assert_eq!(
+            store.load_credential_for_server_key(&a).unwrap().as_deref(),
+            Some("tok-a")
+        );
+        assert_eq!(
+            store.load_credential_for_server_key(&b).unwrap().as_deref(),
+            Some("tok-b")
+        );
 
         // Overwrite existing key.
-        store.store("http://a", "tok-a2").unwrap();
-        assert_eq!(store.load("http://a").as_deref(), Some("tok-a2"));
+        store.store_credential_for_server_key(&a, "tok-a2").unwrap();
+        assert_eq!(
+            store.load_credential_for_server_key(&a).unwrap().as_deref(),
+            Some("tok-a2")
+        );
     }
 
     #[test]
-    fn file_store_delete_removes_only_target() {
+    fn plaintext_store_delete_removes_only_target() {
         let (store, _g) = tmp_store();
-        store.store("http://a", "tok-a").unwrap();
-        store.store("http://b", "tok-b").unwrap();
+        let a = CredentialStoreKey::from_base_url("http://a");
+        let b = CredentialStoreKey::from_base_url("http://b");
+        let missing = CredentialStoreKey::from_base_url("http://missing");
+        store.store_credential_for_server_key(&a, "tok-a").unwrap();
+        store.store_credential_for_server_key(&b, "tok-b").unwrap();
 
-        assert!(store.delete("http://a").unwrap(), "delete reports removal");
-        assert_eq!(store.load("http://a"), None);
-        assert_eq!(store.load("http://b").as_deref(), Some("tok-b"));
+        assert!(
+            store.delete_credential_for_server_key(&a).unwrap(),
+            "delete reports removal"
+        );
+        assert_eq!(store.load_credential_for_server_key(&a).unwrap(), None);
+        assert_eq!(
+            store.load_credential_for_server_key(&b).unwrap().as_deref(),
+            Some("tok-b")
+        );
 
         // Deleting a missing key is a no-op that reports false.
-        assert!(!store.delete("http://missing").unwrap());
+        assert!(!store.delete_credential_for_server_key(&missing).unwrap());
     }
 
     #[cfg(unix)]
     #[test]
-    fn file_store_writes_0600_file_and_0700_dir() {
+    fn plaintext_store_writes_0600_file_and_0700_dir() {
         use std::os::unix::fs::PermissionsExt;
         let (store, _g) = tmp_store();
-        store.store("http://a", "secret").unwrap();
+        store
+            .store_credential_for_server_key(
+                &CredentialStoreKey::from_base_url("http://a"),
+                "secret",
+            )
+            .unwrap();
 
         let file_mode = std::fs::metadata(&store.path).unwrap().permissions().mode() & 0o777;
         assert_eq!(file_mode, 0o600, "credentials file must be 0600");
@@ -523,7 +1000,7 @@ mod tests {
     }
 
     #[test]
-    fn file_store_creates_missing_parent_dir() {
+    fn plaintext_store_creates_missing_parent_dir() {
         let tmp = tempfile::tempdir().unwrap();
         // Path two levels deep, neither of which exists yet.
         let path = tmp
@@ -531,41 +1008,208 @@ mod tests {
             .join("deep")
             .join("nested")
             .join("credentials.json");
-        let store = FileStore::new(path.clone());
-        store.store("http://a", "tok").unwrap();
+        let store = PlaintextCredentialFileStore::new(path.clone());
+        store
+            .store_credential_for_server_key(&CredentialStoreKey::from_base_url("http://a"), "tok")
+            .unwrap();
         assert!(path.exists());
-        assert_eq!(store.load("http://a").as_deref(), Some("tok"));
+        assert_eq!(
+            store
+                .load_credential_for_server_key(&CredentialStoreKey::from_base_url("http://a"))
+                .unwrap()
+                .as_deref(),
+            Some("tok")
+        );
     }
 
     #[test]
-    fn file_store_rejects_malformed_existing_data_without_replacing_it() {
+    fn malformed_credential_file_is_a_typed_read_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("credentials.json");
+        let original = br#"{"http://a": broken}"#;
+        std::fs::write(&path, original).unwrap();
+        let store = PlaintextCredentialFileStore::new(path.clone());
+        let key = CredentialStoreKey::from_base_url("http://a");
+
+        assert!(matches!(
+            store.load_credential_for_server_key(&key),
+            Err(PlaintextCredentialFileError::InvalidJson { .. })
+        ));
+        assert_eq!(std::fs::read(path).unwrap(), original);
+    }
+
+    #[test]
+    fn plaintext_store_rejects_malformed_existing_data_without_replacing_it() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("credentials.json");
         let original = br#"{"http://a":"old-token", broken}"#;
         std::fs::write(&path, original).unwrap();
-        let store = FileStore::new(path.clone());
+        let store = PlaintextCredentialFileStore::new(path.clone());
 
-        assert!(store.store("http://a", "new-token").is_err());
+        assert!(
+            store
+                .store_credential_for_server_key(
+                    &CredentialStoreKey::from_base_url("http://a"),
+                    "new-token"
+                )
+                .is_err()
+        );
         assert_eq!(std::fs::read(path).unwrap(), original);
     }
 
+    #[test]
+    fn invalid_credential_documents_are_errors_and_remain_unchanged() {
+        let cases: &[(&str, &[u8])] = &[
+            ("malformed syntax", br#"{"http://a": broken}"#),
+            ("truncated object", br#"{"http://a":"token""#),
+            ("wrong top-level type", br#"["token"]"#),
+            ("non-string value", br#"{"http://a":42}"#),
+            ("invalid UTF-8", b"{\xff"),
+        ];
+        for (name, original) in cases {
+            let tmp = tempfile::tempdir().unwrap();
+            let path = tmp.path().join("credentials.json");
+            std::fs::write(&path, original).unwrap();
+            let store = PlaintextCredentialFileStore::new(path.clone());
+            let key = CredentialStoreKey::from_base_url("http://a");
+
+            assert!(
+                store.load_credential_for_server_key(&key).is_err(),
+                "{name}"
+            );
+            assert!(
+                store.store_credential_for_server_key(&key, "new").is_err(),
+                "{name}"
+            );
+            assert!(
+                store.delete_credential_for_server_key(&key).is_err(),
+                "{name}"
+            );
+            assert_eq!(std::fs::read(path).unwrap(), *original, "{name}");
+        }
+    }
+
+    #[test]
+    fn absent_empty_and_populated_documents_have_distinct_successful_results() {
+        let (store, _tmp) = tmp_store();
+        let key = CredentialStoreKey::from_base_url("http://a");
+        assert_eq!(store.load_credential_for_server_key(&key).unwrap(), None);
+
+        std::fs::write(&store.path, b"{}").unwrap();
+        assert_eq!(store.load_credential_for_server_key(&key).unwrap(), None);
+
+        store
+            .store_credential_for_server_key(&key, "token")
+            .unwrap();
+        assert_eq!(
+            store
+                .load_credential_for_server_key(&key)
+                .unwrap()
+                .as_deref(),
+            Some("token")
+        );
+    }
+
+    #[test]
+    fn credential_path_must_be_a_regular_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("credentials.json");
+        std::fs::create_dir(&path).unwrap();
+        let store = PlaintextCredentialFileStore::new(path.clone());
+        let key = CredentialStoreKey::from_base_url("http://a");
+
+        assert!(matches!(
+            store.load_credential_for_server_key(&key),
+            Err(PlaintextCredentialFileError::NotRegular { .. })
+        ));
+        assert!(matches!(
+            store.store_credential_for_server_key(&key, "new"),
+            Err(PlaintextCredentialFileError::NotRegular { .. })
+        ));
+        assert!(
+            path.is_dir(),
+            "a rejected directory must remain a directory"
+        );
+    }
+
     proptest! {
+        // Arbitrary Unicode exercises JSON escaping and round-trip behavior
+        // that a finite table of representative strings cannot cover.
+        #[test]
+        fn arbitrary_credential_text_round_trips(token in any::<String>()) {
+            let tmp = tempfile::tempdir().unwrap();
+            let store = PlaintextCredentialFileStore::new(tmp.path().join("credentials.json"));
+            let key = CredentialStoreKey::from_base_url("http://unicode");
+
+            store.store_credential_for_server_key(&key, &token).unwrap();
+            prop_assert_eq!(store.load_credential_for_server_key(&key).unwrap(), Some(token));
+        }
+
         #[test]
         fn malformed_file_content_is_never_replaced(payload in any::<String>()) {
             let tmp = tempfile::tempdir().unwrap();
             let path = tmp.path().join("credentials.json");
             let original = format!("not-json:{payload}");
             std::fs::write(&path, original.as_bytes()).unwrap();
-            let store = FileStore::new(path.clone());
+            let store = PlaintextCredentialFileStore::new(path.clone());
 
-            prop_assert!(store.store("http://a", "new-token").is_err());
+            prop_assert!(store.store_credential_for_server_key(&CredentialStoreKey::from_base_url("http://a"), "new-token").is_err());
             prop_assert_eq!(std::fs::read(path).unwrap(), original.into_bytes());
+        }
+    }
+
+    #[test]
+    fn concurrent_stores_preserve_both_credentials() {
+        use std::sync::{Arc, Barrier};
+
+        for _ in 0..16 {
+            let (store, _tmp) = tmp_store();
+            let barrier = Arc::new(Barrier::new(3));
+            let left = Arc::new(store);
+            let left_for_thread = Arc::clone(&left);
+            let right = Arc::clone(&left);
+            let left_barrier = Arc::clone(&barrier);
+            let right_barrier = Arc::clone(&barrier);
+            let left_thread = std::thread::spawn(move || {
+                left_barrier.wait();
+                left_for_thread.store_credential_for_server_key(
+                    &CredentialStoreKey::from_base_url("http://left"),
+                    "left-token",
+                )
+            });
+            let right_thread = std::thread::spawn(move || {
+                right_barrier.wait();
+                right.store_credential_for_server_key(
+                    &CredentialStoreKey::from_base_url("http://right"),
+                    "right-token",
+                )
+            });
+            barrier.wait();
+            left_thread.join().unwrap().unwrap();
+            right_thread.join().unwrap().unwrap();
+
+            assert_eq!(
+                left.load_credential_for_server_key(&CredentialStoreKey::from_base_url(
+                    "http://left"
+                ))
+                .unwrap()
+                .as_deref(),
+                Some("left-token")
+            );
+            assert_eq!(
+                left.load_credential_for_server_key(&CredentialStoreKey::from_base_url(
+                    "http://right"
+                ))
+                .unwrap()
+                .as_deref(),
+                Some("right-token")
+            );
         }
     }
 
     #[cfg(unix)]
     #[test]
-    fn atomic_write_replaces_symlink_without_touching_target() {
+    fn credential_store_rejects_symlink_without_touching_target() {
         use std::os::unix::fs::symlink;
 
         let tmp = tempfile::tempdir().unwrap();
@@ -574,43 +1218,52 @@ mod tests {
         std::fs::write(&target, br#"{"http://a":"old-token"}"#).unwrap();
         symlink(&target, &link).unwrap();
 
-        FileStore::new(link.clone())
-            .store("http://a", "new-token")
-            .unwrap();
+        let store = PlaintextCredentialFileStore::new(link.clone());
+        assert!(matches!(
+            store.store_credential_for_server_key(
+                &CredentialStoreKey::from_base_url("http://a"),
+                "new-token"
+            ),
+            Err(PlaintextCredentialFileError::Symlink { .. })
+        ));
+        assert!(matches!(
+            store.load_credential_for_server_key(&CredentialStoreKey::from_base_url("http://a")),
+            Err(PlaintextCredentialFileError::Symlink { .. })
+        ));
 
+        assert_eq!(std::fs::read_link(&link).unwrap(), target);
         assert_eq!(
-            std::fs::read_to_string(target).unwrap(),
+            std::fs::read_to_string(&target).unwrap(),
             r#"{"http://a":"old-token"}"#
-        );
-        assert_eq!(
-            FileStore::new(link).load("http://a").as_deref(),
-            Some("new-token")
         );
     }
 
     #[cfg(unix)]
     #[test]
-    fn atomic_write_replaces_hardlink_without_touching_other_name() {
+    fn credential_store_rejects_hardlink_without_touching_either_name() {
         use std::fs::hard_link;
 
         let tmp = tempfile::tempdir().unwrap();
         let original = tmp.path().join("original.json");
         let link = tmp.path().join("credentials.json");
-        std::fs::write(&original, br#"{"http://a":"old-token"}"#).unwrap();
+        let bytes = br#"{"http://a":"old-token"}"#;
+        std::fs::write(&original, bytes).unwrap();
         hard_link(&original, &link).unwrap();
 
-        FileStore::new(link.clone())
-            .store("http://a", "new-token")
-            .unwrap();
-
-        assert_eq!(
-            std::fs::read_to_string(original).unwrap(),
-            r#"{"http://a":"old-token"}"#
-        );
-        assert_eq!(
-            FileStore::new(link).load("http://a").as_deref(),
-            Some("new-token")
-        );
+        let store = PlaintextCredentialFileStore::new(link.clone());
+        assert!(matches!(
+            store.store_credential_for_server_key(
+                &CredentialStoreKey::from_base_url("http://a"),
+                "new-token"
+            ),
+            Err(PlaintextCredentialFileError::HardLinked { .. })
+        ));
+        assert!(matches!(
+            store.load_credential_for_server_key(&CredentialStoreKey::from_base_url("http://a")),
+            Err(PlaintextCredentialFileError::HardLinked { .. })
+        ));
+        assert_eq!(std::fs::read(&original).unwrap(), bytes);
+        assert_eq!(std::fs::read(&link).unwrap(), bytes);
     }
 
     // ── Origin binding for the env token (LIF-408) ───────────────────────
@@ -789,7 +1442,7 @@ mod tests {
 
         // SAFETY: guarded by the crate-wide LIFIC_TOKEN lock; restored below.
         unsafe { std::env::set_var(TOKEN_ENV, "env-tok") };
-        let got = load(target);
+        let got = load(target).unwrap();
         unsafe { std::env::remove_var(TOKEN_ENV) };
 
         assert_ne!(
@@ -804,7 +1457,7 @@ mod tests {
         let _lock = lock_lific_token_env_blocking();
         unsafe { std::env::set_var(TOKEN_ENV, "   ") };
         // An all-whitespace env var must not shadow real backends.
-        let got_source = load_with_source("http://noenv-empty");
+        let got_source = load_with_source("http://noenv-empty").unwrap();
         unsafe { std::env::remove_var(TOKEN_ENV) };
         // No token anywhere for this URL → None (env ignored).
         assert!(got_source.is_none() || got_source.unwrap().1 != TokenSource::Env);

@@ -356,7 +356,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 cli::login::run_logout(url.as_deref(), &cfg_clone, json)
             })
             .await
-            .map_err(|e| -> Box<dyn std::error::Error> { e.to_string().into() })?;
+            .map_err(|e| -> Box<dyn std::error::Error> { e.to_string().into() })?
+            .map_err(|e| -> Box<dyn std::error::Error> { std::io::Error::other(e).into() })?;
             return Ok(());
         }
 

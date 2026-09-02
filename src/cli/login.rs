@@ -249,13 +249,16 @@ impl DeviceFlow for HttpDeviceFlow {
         // one. A server can never reclaim a client that has minted a token,
         // so registering per login would leak one of its dynamic-client slots
         // every time, and spend one of this IP's ten hourly registrations.
-        if let Some(client_id) = crate::cli::credentials::load_client_id(&self.base) {
+        if let Some(client_id) = crate::cli::credentials::load_client_id(&self.base)
+            .map_err(|error| error.to_string())?
+        {
             match self.device_authorization(&[("scope", "mcp"), ("client_id", &client_id)]) {
                 Ok(resp) => return Ok(resp),
                 Err(DeviceAuthFailure::Other(e)) => return Err(e),
                 // Stale id: fall through and register a new one.
                 Err(DeviceAuthFailure::UnknownClient) => {
-                    crate::cli::credentials::forget_client_id(&self.base);
+                    crate::cli::credentials::forget_client_id(&self.base)
+                        .map_err(|error| error.to_string())?;
                 }
             }
         }
@@ -277,7 +280,8 @@ impl DeviceFlow for HttpDeviceFlow {
                 DeviceAuthFailure::Other(e) => e,
             });
         };
-        crate::cli::credentials::store_client_id(&self.base, &client_id);
+        crate::cli::credentials::store_client_id(&self.base, &client_id)
+            .map_err(|error| error.to_string())?;
 
         self.device_authorization(&[("scope", "mcp"), ("client_id", &client_id)])
             .map_err(|e| match e {
@@ -448,7 +452,7 @@ fn finish(args: &LoginArgs, base: &str, outcome: PollOutcome, json: bool) -> Res
                 }
                 return Ok(());
             }
-            crate::cli::credentials::store(base, &token)?;
+            crate::cli::credentials::store(base, &token).map_err(|error| error.to_string())?;
             if json {
                 println!(
                     "{}",
@@ -472,17 +476,17 @@ fn finish(args: &LoginArgs, base: &str, outcome: PollOutcome, json: bool) -> Res
 }
 
 /// `lific logout`: delete the stored credential and best-effort revoke it.
-pub fn run_logout(url: Option<&str>, cfg: &Config, json: bool) {
+pub fn run_logout(url: Option<&str>, cfg: &Config, json: bool) -> Result<(), String> {
     let base = resolve_base_url(url, cfg);
     // Grab the token first so we can revoke it before deleting.
-    let existing = crate::cli::credentials::load(&base);
+    let existing = crate::cli::credentials::load(&base).map_err(|error| error.to_string())?;
     if let Some(token) = &existing
         && let Ok(flow) = HttpDeviceFlow::new(&base)
     {
         // Best-effort; ignore revoke failures (server may be down).
         let _ = flow.revoke(token);
     }
-    let removed = crate::cli::credentials::delete(&base);
+    let removed = crate::cli::credentials::delete(&base).map_err(|error| error.to_string())?;
     if json {
         println!(
             "{}",
@@ -497,6 +501,7 @@ pub fn run_logout(url: Option<&str>, cfg: &Config, json: bool) {
     } else {
         crate::cli::ui::info(format!("No stored credential for {base}."));
     }
+    Ok(())
 }
 
 #[cfg(test)]
