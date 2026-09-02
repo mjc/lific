@@ -926,6 +926,16 @@ pub fn assign_key_to_user(
 /// Used for identities that must never be signed into by password (passwordless
 /// human admins, and bots) to satisfy the NOT NULL `password_hash` column while
 /// guaranteeing `authenticate` can never succeed against it.
+#[cfg(test)]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "test fixture keeps the production helper signature"
+)]
+fn unusable_password_hash() -> Result<String, LificError> {
+    Ok(DUMMY_HASH.to_string())
+}
+
+#[cfg(not(test))]
 fn unusable_password_hash() -> Result<String, LificError> {
     let random_pw: [u8; 32] = rand::random();
     let random_pw_hex = crate::auth::hex_encode(&random_pw);

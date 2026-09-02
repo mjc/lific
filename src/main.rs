@@ -20,6 +20,7 @@ mod ratelimit;
 mod realtime;
 mod resolve_caller;
 mod retention;
+mod secure_fs;
 mod server;
 mod storage;
 #[cfg(test)]
@@ -82,9 +83,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return cli::service::run(cli.config.as_deref(), cli.db.as_deref(), cli.json, action);
     }
 
-    // Load config (CLI flags override config values). A malformed config is
-    // fatal: booting on defaults would silently widen the instance.
-    let mut cfg = Config::load(cli.config.as_deref())?;
+    // Initialization creates and edits its selected config, so it must run
+    // before ordinary runtime loading can create or reject that file.
+    if let Command::Init {
+        no_service,
+        here,
+        name,
+        auth_mode,
+        password,
+    } = &cli.command
+    {
+        return cmd_init(InitOptions {
+            config: cli.config.as_deref(),
+            database: cli.db.as_deref(),
+            json: cli.json,
+            no_service: *no_service,
+            here: *here,
+            name: name.clone(),
+            auth_mode: auth_mode.clone(),
+            password: password.clone(),
+        })
+        .await;
+    }
+
+    // Load config (CLI flags override config values). Resolve an explicit
+    // pathname once at the CLI boundary so every later consumer refers to the
+    // same instance even if it changes its working directory.
+    let cwd = std::env::current_dir()?;
+    let config_path = cli
+        .config
+        .as_deref()
+        .map(|path| secure_fs::absolutize(path, &cwd));
+    // A malformed config is fatal: booting on defaults would silently widen
+    // the instance.
+    let mut cfg = Config::load(config_path.as_deref())?;
 
     // CLI overrides
     if let Some(ref db) = cli.db {
@@ -125,29 +157,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     match cli.command {
-        Command::Init {
-            no_service,
-            here,
-            name,
-            auth_mode,
-            password,
-        } => {
-            // LIF-292: init/service must honor --config; they take the raw
-            // flag (not the pre-loaded cfg) because init may need to CREATE
-            // the file at that path and then reload anchored to it.
-            return cmd_init(InitOptions {
-                config: cli.config.as_deref(),
-                database: cli.db.as_deref(),
-                json: cli.json,
-                no_service,
-                here,
-                name,
-                auth_mode,
-                password,
-            })
-            .await;
-        }
-
+        Command::Init { .. } => unreachable!("init returns before config loading"),
         Command::Service { .. } => unreachable!("service commands return before config loading"),
 
         Command::Dump { out } => {
@@ -308,7 +318,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // opens it itself and reports failure as a check, rather than
             // aborting `doctor` before it can tell you why.
             let json = cli::term::wants_json(cli.json);
-            cli::doctor::run(&cfg, cli.config.as_deref(), key, json)
+            cli::doctor::run(&cfg, config_path.as_deref(), key, json)
                 .await
                 .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
             return Ok(());
@@ -605,14 +615,6 @@ fn resolve_init_target(
     }
 }
 
-fn absolute_cli_path(path: &std::path::Path, cwd: &std::path::Path) -> std::path::PathBuf {
-    if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        cwd.join(path)
-    }
-}
-
 /// Resolve the auth mode the operator chose at `init` (LIFIC-25). Honors an
 /// explicit `--auth-mode` flag (non-interactive); otherwise, on a TTY, shows
 /// the interactive menu. Refuses (rather than hangs) off a TTY, matching
@@ -687,6 +689,84 @@ struct InitOptions<'a> {
     password: Option<String>,
 }
 
+enum InitServiceHealth {
+    Ready,
+    PortOccupied,
+    Exited,
+    Unreachable,
+}
+
+impl InitServiceHealth {
+    fn from_probe(answered: bool, installed_running: bool) -> Self {
+        match (answered, installed_running) {
+            (true, true) => Self::Ready,
+            (true, false) => Self::PortOccupied,
+            (false, false) => Self::Exited,
+            (false, true) => Self::Unreachable,
+        }
+    }
+
+    fn message(&self, url: &str, manager: cli::service::Manager) -> Option<String> {
+        let logs = cli::service::logs_hint(manager);
+        match self {
+            Self::Ready => None,
+            Self::PortOccupied => Some(format!(
+                "something is answering at {url}, but it isn't the installed service — another server is likely already using the port. Check: {logs}"
+            )),
+            Self::Exited => Some(format!(
+                "the service failed to stay running — most often the port is already in use. Check: {logs}"
+            )),
+            Self::Unreachable => Some(format!(
+                "the service is running but didn't answer at {url} within 15s. Check: {logs}"
+            )),
+        }
+    }
+
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Ready => "ready",
+            Self::PortOccupied => "port_occupied",
+            Self::Exited => "exited",
+            Self::Unreachable => "unreachable",
+        }
+    }
+}
+
+enum InitConfigOutcome {
+    Existing(std::path::PathBuf),
+    Created(std::path::PathBuf),
+}
+
+impl InitConfigOutcome {
+    fn path(&self) -> &std::path::Path {
+        match self {
+            Self::Existing(path) | Self::Created(path) => path,
+        }
+    }
+
+    fn created(&self) -> bool {
+        matches!(self, Self::Created(_))
+    }
+}
+
+enum InitOperatorOutcome {
+    Existing,
+    Created {
+        admin: db::models::User,
+        mode: config::AuthMode,
+    },
+}
+
+enum InitServiceOutcome {
+    Skipped,
+    Failed(String),
+    Installed {
+        manager: cli::service::Manager,
+        report: cli::service::InstallReport,
+        health: InitServiceHealth,
+    },
+}
+
 async fn cmd_init(options: InitOptions<'_>) -> Result<(), Box<dyn std::error::Error>> {
     use cli::ui;
 
@@ -718,41 +798,26 @@ async fn cmd_init(options: InitOptions<'_>) -> Result<(), Box<dyn std::error::Er
         std::path::Path::new("lific.toml").exists(),
         Config::os_default_instance(),
     );
-    let config_path = target.config;
-    let created_config = if config_path.exists() {
-        false
+    let cwd = std::env::current_dir()?;
+    let config_path = secure_fs::absolutize(&target.config, &cwd);
+    let seed = match &target.initial_database {
+        Some(db) => Config::default_toml_with_db(db),
+        None => Config::default_toml(),
+    };
+    let config_outcome = if config::ensure_private_config(&config_path, &seed)? {
+        InitConfigOutcome::Created(config_path.clone())
     } else {
-        if let Some(parent) = config_path.parent()
-            && !parent.as_os_str().is_empty()
-        {
-            let parent_existed = parent.exists();
-            std::fs::create_dir_all(parent)?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                if !parent_existed {
-                    std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
-                }
-            }
-            #[cfg(not(unix))]
-            let _ = parent_existed;
-        }
-        let toml = match &target.initial_database {
-            Some(db) => Config::default_toml_with_db(db),
-            None => Config::default_toml(),
-        };
-        config::publish_private_config(&config_path, &toml, config::ConfigPublish::Create)?;
-        true
+        InitConfigOutcome::Existing(config_path.clone())
     };
 
     // `init` creates a persistent service, so persist an explicit database
     // selection into its sole source of truth. Keeping --db only in this
     // process would initialize one database and then start another.
     if let Some(db) = database {
-        let db = absolute_cli_path(db, &std::env::current_dir()?);
-        let existing = std::fs::read_to_string(&config_path)?;
-        let toml = Config::apply_database_path(&existing, &db)?;
-        config::publish_private_config(&config_path, &toml, config::ConfigPublish::Replace)?;
+        let db = secure_fs::absolutize(db, &cwd);
+        config::edit_private_config(&config_path, |existing| {
+            Config::apply_database_path(existing, &db)
+        })?;
     }
 
     // (Re)load from the file init actually operates on, so a relative
@@ -783,16 +848,16 @@ async fn cmd_init(options: InitOptions<'_>) -> Result<(), Box<dyn std::error::Er
     // interactive TTY menu), persist the choice to the config file + database,
     // and create the first admin in that mode. An existing instance with users
     // skips all of this entirely.
-    let created_admin = if !auth::has_human_operator(&pool) {
+    let operator = if !auth::has_human_operator(&pool) {
         let mode = resolve_auth_mode(&auth_mode)?;
 
         // Persist the choice into the config file, editing it in place (the
         // change set `[auth] required` and `[server] host`; every other section
         // and setting survives). Reload cfg so downstream (local_url, JSON,
         // service plan) reflects required/host.
-        let existing = std::fs::read_to_string(&config_path).unwrap_or_default();
-        let new_toml = Config::apply_auth_mode(&existing, mode.required(), mode.host())?;
-        config::publish_private_config(&config_path, &new_toml, config::ConfigPublish::Replace)?;
+        config::edit_private_config(&config_path, |existing| {
+            Config::apply_auth_mode(existing, mode.required(), mode.host())
+        })?;
         cfg = Config::load(Some(&config_path))?;
 
         let op_name = match name {
@@ -823,9 +888,9 @@ async fn cmd_init(options: InitOptions<'_>) -> Result<(), Box<dyn std::error::Er
             db::queries::users::create_first_admin_with_password(&conn, &op_name, &pw)?
         };
         info!(operator = %admin.username, mode = mode.as_str(), "created first human admin");
-        Some(admin)
+        InitOperatorOutcome::Created { admin, mode }
     } else {
-        None
+        InitOperatorOutcome::Existing
     };
 
     // Mint the initial API key HERE, in the operator's terminal. Once the
@@ -846,86 +911,79 @@ async fn cmd_init(options: InitOptions<'_>) -> Result<(), Box<dyn std::error::Er
     // Background service: the README's 60-second setup has to end with a
     // server that is still alive tomorrow, not a process tied to a terminal.
     let url = local_url(&cfg);
-    let mut service_report = None;
-    let mut service_error = None;
-    let mut healthy = false;
-    if !no_service {
+    let service_outcome = if no_service {
+        InitServiceOutcome::Skipped
+    } else {
         match cli::service::detect() {
             Some(mgr) => {
                 let plan = cli::service::ServicePlan::for_config_file(&config_path)?;
                 match cli::service::install(mgr, &plan) {
                     Ok(report) => {
-                        healthy = wait_healthy(&url, std::time::Duration::from_secs(15)).await;
+                        let healthy = wait_healthy(&url, std::time::Duration::from_secs(15)).await;
                         // A 200 alone can lie (another process may own the
                         // port while our unit crash-loops on AddrInUse), and
                         // silence alone is ambiguous. Cross-check the unit's
                         // own active state to say something precise.
-                        let active = cli::service::status(mgr).is_ok_and(|s| s.active);
-                        match (healthy, active) {
-                            (true, true) => {}
-                            (true, false) => {
-                                healthy = false;
-                                service_error = Some(format!(
-                                    "something is answering at {url}, but it isn't the \
-                                     installed service — another server is likely already \
-                                     using the port. Check: {}",
-                                    cli::service::logs_hint(mgr)
-                                ));
-                            }
-                            (false, false) => {
-                                service_error = Some(format!(
-                                    "the service failed to stay running — most often the \
-                                     port is already in use. Check: {}",
-                                    cli::service::logs_hint(mgr)
-                                ));
-                            }
-                            (false, true) => {
-                                service_error = Some(format!(
-                                    "the service is running but didn't answer at {url} \
-                                     within 15s. Check: {}",
-                                    cli::service::logs_hint(mgr)
-                                ));
-                            }
+                        let active = cli::service::status(mgr)
+                            .is_ok_and(|s| s.state == cli::service::ServiceState::InstalledRunning);
+                        let health = InitServiceHealth::from_probe(healthy, active);
+                        InitServiceOutcome::Installed {
+                            manager: mgr,
+                            report,
+                            health,
                         }
-                        service_report = Some((mgr, report));
                     }
-                    Err(e) => service_error = Some(e),
+                    Err(e) => InitServiceOutcome::Failed(e),
                 }
             }
-            None => {
-                service_error = Some(
-                    "no supported service manager found (needs a systemd user session on \
+            None => InitServiceOutcome::Failed(
+                "no supported service manager found (needs a systemd user session on \
                      Linux, or launchd on macOS)"
-                        .to_string(),
-                )
-            }
+                    .to_string(),
+            ),
         }
-    }
+    };
 
     if json {
+        let service = match &service_outcome {
+            InitServiceOutcome::Skipped => serde_json::json!({
+                "requested": false,
+                "outcome": "skipped",
+            }),
+            InitServiceOutcome::Failed(error) => serde_json::json!({
+                "requested": true,
+                "outcome": "failed",
+                "error": error,
+            }),
+            InitServiceOutcome::Installed { report, health, .. } => serde_json::json!({
+                "requested": true,
+                "outcome": "installed",
+                "installed": serde_json::to_value(report)?,
+                "healthy": matches!(health, InitServiceHealth::Ready),
+                "health": health.as_str(),
+            }),
+        };
         let out = serde_json::json!({
-            "config": { "path": config_path.display().to_string(), "created": created_config },
+            "config": { "path": config_outcome.path().display().to_string(), "created": config_outcome.created() },
             "database": cfg.database.path.display().to_string(),
             "key": new_key,
-            "admin": created_admin.as_ref().map(|a| serde_json::json!({
-                "id": a.id,
-                "username": a.username,
-                "display_name": a.display_name,
-                "is_admin": a.is_admin,
-            })),
-            "url": url,
-            "service": {
-                "requested": !no_service,
-                "installed": service_report.as_ref().map(|(_, r)| serde_json::to_value(r).unwrap_or_default()),
-                "healthy": healthy,
-                "error": service_error,
+            "admin": match &operator {
+                InitOperatorOutcome::Existing => None,
+                InitOperatorOutcome::Created { admin, .. } => Some(serde_json::json!({
+                    "id": admin.id,
+                    "username": admin.username,
+                    "display_name": admin.display_name,
+                    "is_admin": admin.is_admin,
+                })),
             },
+            "url": url,
+            "service": service,
         });
         println!("{}", serde_json::to_string_pretty(&out)?);
         return Ok(());
     }
 
-    if created_config {
+    if config_outcome.created() {
         ui::step(format!("Created {}", config_path.display()));
     } else {
         ui::step(format!("Using existing {}", config_path.display()));
@@ -935,9 +993,14 @@ async fn cmd_init(options: InitOptions<'_>) -> Result<(), Box<dyn std::error::Er
         ui::dim(cfg.database.path.display())
     ));
 
-    if let Some(ref admin) = created_admin {
+    if let InitOperatorOutcome::Created { admin, mode } = &operator {
+        let mode_message = if mode.passwordless() {
+            "passwordless mode is on"
+        } else {
+            "password mode is on"
+        };
         ui::step(format!(
-            "First operator {} created — passwordless mode is on",
+            "First operator {} created — {mode_message}",
             ui::command(&admin.display_name)
         ));
     }
@@ -949,40 +1012,41 @@ async fn cmd_init(options: InitOptions<'_>) -> Result<(), Box<dyn std::error::Er
         );
     }
 
-    if let Some((mgr, ref report)) = service_report {
-        ui::step(format!(
-            "Service installed — {} {}",
-            report.manager,
-            ui::dim(&report.definition)
-        ));
-        if report.linger == Some(false) {
-            ui::warn(
-                "`loginctl enable-linger` didn't succeed — the service will stop when you \
-                 log out. Run it manually to fix that.",
-            );
-        }
-        if healthy {
-            ui::step(format!("Lific is running at {}", ui::command(&url)));
-        } else if let Some(ref e) = service_error {
-            ui::warn(e);
-        } else {
-            ui::warn(format!(
-                "service started but the server didn't answer at {url} within 15s — check \
-                 logs: {}",
-                cli::service::logs_hint(mgr)
+    match &service_outcome {
+        InitServiceOutcome::Installed {
+            manager,
+            report,
+            health,
+        } => {
+            ui::step(format!(
+                "Service installed — {} {}",
+                report.manager,
+                ui::dim(&report.definition)
             ));
+            if report.linger == Some(false) {
+                ui::warn(
+                    "`loginctl enable-linger` didn't succeed — the service will stop when you \
+                     log out. Run it manually to fix that.",
+                );
+            }
+            match health {
+                InitServiceHealth::Ready => {
+                    ui::step(format!("Lific is running at {}", ui::command(&url)));
+                }
+                health => ui::warn(health.message(&url, *manager).unwrap_or_default()),
+            }
         }
-    } else if no_service {
-        ui::info(format!(
+        InitServiceOutcome::Skipped => ui::info(format!(
             "Service install skipped (--no-service). Run the server with {}",
             ui::command("lific start")
-        ));
-    } else if let Some(e) = service_error {
-        ui::warn(format!("couldn't install a background service: {e}"));
-        ui::info(format!(
-            "run the server in the foreground instead: {}",
-            ui::command("lific start")
-        ));
+        )),
+        InitServiceOutcome::Failed(error) => {
+            ui::warn(format!("couldn't install a background service: {error}"));
+            ui::info(format!(
+                "run the server in the foreground instead: {}",
+                ui::command("lific start")
+            ));
+        }
     }
 
     ui::note(
@@ -996,7 +1060,7 @@ async fn cmd_init(options: InitOptions<'_>) -> Result<(), Box<dyn std::error::Er
     );
 
     let mut outro_msg = format!("Verify anytime with {}", ui::command("lific doctor"));
-    if service_report.is_some() {
+    if matches!(service_outcome, InitServiceOutcome::Installed { .. }) {
         outro_msg.push_str(&format!(
             " · manage the service with {}",
             ui::command("lific service status|restart|stop|uninstall")
@@ -1008,8 +1072,9 @@ async fn cmd_init(options: InitOptions<'_>) -> Result<(), Box<dyn std::error::Er
 
 #[cfg(test)]
 mod init_target_tests {
-    use super::{Config, InitOptions, absolute_cli_path, auth, cmd_init, resolve_init_target};
+    use super::{Config, InitOptions, auth, cmd_init, resolve_init_target};
     use crate::db;
+    use crate::secure_fs::absolutize;
     use std::path::{Path, PathBuf};
 
     fn os_default() -> (PathBuf, PathBuf) {
@@ -1071,7 +1136,7 @@ mod init_target_tests {
 
     #[test]
     fn relative_database_override_is_anchored_to_invocation_directory() {
-        let path = absolute_cli_path(
+        let path = absolutize(
             Path::new("data/lific.db"),
             Path::new("/srv/lific-invocation"),
         );

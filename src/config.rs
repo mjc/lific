@@ -1,63 +1,47 @@
+use crate::secure_fs;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use tracing::{info, warn};
+use tracing::info;
+#[cfg(unix)]
+use tracing::warn;
 
 const CONFIG_FILENAME: &str = "lific.toml";
 
-pub(crate) enum ConfigPublish {
-    Create,
-    Replace,
+pub(crate) fn create_private_config(path: &Path, contents: &str) -> std::io::Result<()> {
+    secure_fs::atomic_create_private(path, contents.as_bytes())
 }
 
-pub(crate) fn publish_private_config(
-    path: &Path,
-    contents: &str,
-    publish: ConfigPublish,
-) -> std::io::Result<()> {
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let staging = tempfile::Builder::new()
-        .prefix(".lific-config-")
-        .tempdir_in(parent)?;
-    let temp = staging.path().join(path.file_name().unwrap_or_default());
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-    }
-    let mut file = options.open(&temp)?;
-    std::io::Write::write_all(&mut file, contents.as_bytes())?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-    }
-    file.sync_all()?;
+pub(crate) fn replace_private_config(path: &Path, contents: &str) -> std::io::Result<()> {
+    secure_fs::atomic_replace_private(path, contents.as_bytes())
+}
 
-    match publish {
-        ConfigPublish::Create => {
-            // A hard link publishes only when the destination does not yet
-            // exist, leaving an existing configuration untouched on races.
-            std::fs::hard_link(temp, path)?;
+/// Create a private config if `path` is absent. The boolean reports whether
+/// this call won the creation race.
+pub(crate) fn ensure_private_config(path: &Path, contents: &str) -> std::io::Result<bool> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            match create_private_config(path, contents) {
+                Ok(()) => Ok(true),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+                Err(error) => Err(error),
+            }
         }
-        ConfigPublish::Replace => std::fs::rename(temp, path)?,
+        Err(error) => Err(error),
     }
-    sync_parent_dir(parent)
 }
 
-/// Flush the directory entry that publishes a config file. The file's own
-/// `sync_all` persists its bytes; the name that reaches them lives in the
-/// parent directory and survives a crash only once that is synced too.
-#[cfg_attr(
-    not(unix),
-    expect(clippy::unnecessary_wraps, reason = "fallible on Unix")
-)]
-fn sync_parent_dir(_dir: &Path) -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        std::fs::File::open(_dir)?.sync_all()?;
-    }
+/// Read, format-preservingly edit, and atomically replace one config file.
+/// Read failures are returned; an existing file is never replaced with
+/// defaults merely because it could not be read.
+pub(crate) fn edit_private_config(
+    path: &Path,
+    edit: impl FnOnce(&str) -> Result<String, String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let existing = std::fs::read_to_string(path)?;
+    let updated = edit(&existing)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    replace_private_config(path, &updated)?;
     Ok(())
 }
 
@@ -71,11 +55,14 @@ struct ConfigFile {
     #[cfg(unix)]
     file: std::fs::File,
     #[cfg(unix)]
-    systemd_credential: bool,
-    #[cfg(unix)]
-    permission_error: Option<std::io::Error>,
-    #[cfg(unix)]
-    writable_by_other: bool,
+    access: ConfigAccess,
+}
+
+#[cfg(unix)]
+enum ConfigAccess {
+    SystemdCredential,
+    OwnerOnly,
+    SharedReadOnly { repair_failure: std::io::Error },
 }
 
 #[cfg(unix)]
@@ -103,25 +90,26 @@ fn is_systemd_credential(path: &Path) -> bool {
 /// Make an ordinary config owner-only through the descriptor it was read
 /// from. systemd credentials are already protected by their credential
 /// directory and are intentionally immutable, so they are left untouched.
-#[cfg_attr(
-    not(unix),
-    expect(clippy::unnecessary_wraps, reason = "fallible on Unix")
-)]
-fn tighten_config_permissions(config: &ConfigFile) -> std::io::Result<()> {
-    #[cfg(not(unix))]
-    let _ = config;
+#[cfg(unix)]
+fn tighten_config_permissions(config: &ConfigFile) -> std::io::Result<ConfigAccess> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::{MetadataExt, PermissionsExt};
-
-        if !config.systemd_credential && config.file.metadata()?.mode() & 0o077 != 0 {
-            config
-                .file
-                .set_permissions(std::fs::Permissions::from_mode(0o600))?;
-        }
+    if matches!(&config.access, ConfigAccess::SystemdCredential) {
+        return Ok(ConfigAccess::SystemdCredential);
     }
-    Ok(())
+    if config.file.metadata()?.mode() & 0o077 == 0 {
+        return Ok(ConfigAccess::OwnerOnly);
+    }
+    match config
+        .file
+        .set_permissions(std::fs::Permissions::from_mode(0o600))
+    {
+        Ok(()) => Ok(ConfigAccess::OwnerOnly),
+        Err(error) if tightening_failure_is_tolerable(&error) => Ok(ConfigAccess::SharedReadOnly {
+            repair_failure: error,
+        }),
+        Err(error) => Err(error),
+    }
 }
 
 /// Whether a failed permission tightening is a reason to refuse the config.
@@ -136,20 +124,12 @@ fn tighten_config_permissions(config: &ConfigFile) -> std::io::Result<()> {
 /// toward copying the file somewhere writable, which is worse than loading
 /// it and saying so. Anything else means our own file misbehaved and stays
 /// fatal.
+#[cfg(unix)]
 fn tightening_failure_is_tolerable(error: &std::io::Error) -> bool {
     matches!(
         error.kind(),
         std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ReadOnlyFilesystem
     )
-}
-
-#[cfg(unix)]
-fn tightening_failure_is_fatal(
-    error: &std::io::Error,
-    writable_by_other: bool,
-    has_secret: bool,
-) -> bool {
-    !tightening_failure_is_tolerable(error) || writable_by_other || has_secret
 }
 
 fn editable_document(existing: &str) -> Result<toml_edit::DocumentMut, String> {
@@ -182,22 +162,25 @@ fn read_config_file(path: &Path) -> std::io::Result<ConfigFile> {
     }
     let systemd_credential = is_systemd_credential(path);
     let writable_by_other = file.metadata()?.mode() & 0o022 != 0;
+    if !systemd_credential && writable_by_other {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "configuration file is writable by group or other",
+        ));
+    }
     let mut config = ConfigFile {
         contents: String::new(),
         file,
-        systemd_credential,
-        permission_error: None,
-        writable_by_other,
+        access: if systemd_credential {
+            ConfigAccess::SystemdCredential
+        } else {
+            ConfigAccess::OwnerOnly
+        },
     };
     // Secure ordinary configs through the already-open descriptor before
-    // consuming their contents. A tolerated failure is retained for policy
-    // after parsing, because read-only non-secret configs may still be accepted.
-    config.permission_error = tighten_config_permissions(&config).err();
-    if let Some(error) = config.permission_error.take()
-        && (config.writable_by_other || !tightening_failure_is_tolerable(&error))
-    {
-        return Err(error);
-    }
+    // consuming their contents. A tolerated failure becomes a semantic state
+    // that survives through parsing and secret validation.
+    config.access = tighten_config_permissions(&config)?;
     config.file.read_to_string(&mut config.contents)?;
     Ok(config)
 }
@@ -556,33 +539,23 @@ impl Config {
         let candidates = Self::candidate_paths(explicit_path);
 
         for path in &candidates {
-            match std::fs::symlink_metadata(path) {
-                Ok(_) => {}
-                Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
-                    if explicit_path.is_some() {
-                        match publish_private_config(
-                            path,
-                            &Self::default_toml(),
-                            ConfigPublish::Create,
-                        ) {
-                            Ok(()) => {}
-                            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-                            Err(source) => {
-                                return Err(ConfigError::Read {
-                                    path: path.clone(),
-                                    source,
-                                });
-                            }
-                        }
-                    } else {
-                        continue;
-                    }
-                }
-                Err(source) => {
-                    return Err(ConfigError::Read {
+            if explicit_path.is_some() {
+                ensure_private_config(path, &Self::default_toml()).map_err(|source| {
+                    ConfigError::Read {
                         path: path.clone(),
                         source,
-                    });
+                    }
+                })?;
+            } else {
+                match std::fs::symlink_metadata(path) {
+                    Ok(_) => {}
+                    Err(source) if source.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(source) => {
+                        return Err(ConfigError::Read {
+                            path: path.clone(),
+                            source,
+                        });
+                    }
                 }
             }
             let file = match read_config_file(path) {
@@ -601,17 +574,16 @@ impl Config {
                 })?;
 
             #[cfg(unix)]
-            if let Some(source) = file.permission_error {
-                let has_secret = config.server.mcp_path_token.is_some();
-                if tightening_failure_is_fatal(&source, file.writable_by_other, has_secret) {
+            if let ConfigAccess::SharedReadOnly { repair_failure } = file.access {
+                if config.server.mcp_path_token.is_some() {
                     return Err(ConfigError::Read {
                         path: path.clone(),
-                        source,
+                        source: repair_failure,
                     });
                 }
                 warn!(
                     path = %path.display(),
-                    error = %source,
+                    error = %repair_failure,
                     "config is readable by other users and could not be made owner-only from here"
                 );
             }
@@ -682,7 +654,8 @@ impl Config {
 
     /// Generate a default config file as a TOML string.
     pub fn default_toml() -> String {
-        toml::to_string_pretty(&Config::default()).unwrap_or_default()
+        toml::to_string_pretty(&Config::default())
+            .expect("default config serialization cannot fail")
     }
 
     /// Like [`Config::default_toml`] but with an explicit database path
@@ -691,7 +664,7 @@ impl Config {
     pub fn default_toml_with_db(db_path: &Path) -> String {
         let mut cfg = Config::default();
         cfg.database.path = db_path.to_path_buf();
-        toml::to_string_pretty(&cfg).unwrap_or_default()
+        toml::to_string_pretty(&cfg).expect("default config serialization cannot fail")
     }
 
     /// Merge the auth-mode menu's choice into a config document, preserving
@@ -830,6 +803,26 @@ enabled = false
 
     #[cfg(unix)]
     #[test]
+    fn loading_config_rejects_originally_group_or_other_writable_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("lific.toml");
+        std::fs::write(&path, Config::default_toml()).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o664)).unwrap();
+
+        assert!(matches!(
+            Config::load(Some(&path)),
+            Err(ConfigError::Read { .. })
+        ));
+        assert_eq!(
+            std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o664
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn systemd_credential_path_requires_a_direct_child() {
         let tmp = tempfile::tempdir().unwrap();
         let credentials = tmp.path().join("credentials");
@@ -860,12 +853,13 @@ enabled = false
         let file = ConfigFile {
             contents: String::new(),
             file: std::fs::File::open(&path).unwrap(),
-            systemd_credential: true,
-            permission_error: None,
-            writable_by_other: false,
+            access: ConfigAccess::SystemdCredential,
         };
 
-        tighten_config_permissions(&file).unwrap();
+        assert!(matches!(
+            tighten_config_permissions(&file).unwrap(),
+            ConfigAccess::SystemdCredential
+        ));
 
         assert_eq!(
             file.file.metadata().unwrap().permissions().mode() & 0o777,
@@ -964,21 +958,6 @@ enabled = false
         assert!(!tightening_failure_is_tolerable(&Error::other(
             "descriptor went bad"
         )));
-        assert!(tightening_failure_is_fatal(
-            &Error::from(ErrorKind::PermissionDenied),
-            true,
-            false
-        ));
-        assert!(tightening_failure_is_fatal(
-            &Error::from(ErrorKind::ReadOnlyFilesystem),
-            false,
-            true
-        ));
-        assert!(!tightening_failure_is_fatal(
-            &Error::from(ErrorKind::PermissionDenied),
-            false,
-            false
-        ));
     }
 
     /// A directory opens fine on Linux, so the type check rejects it before

@@ -296,6 +296,8 @@ pub fn launchd_plist(plan: &ServicePlan, log: &Path) -> String {
     </array>
     <key>WorkingDirectory</key>
     <string>{workdir}</string>
+    <key>Umask</key>
+    <integer>63</integer>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
@@ -385,7 +387,6 @@ fn launchd_bootstrap(path: &Path) -> Result<(), String> {
 pub struct InstallReport {
     pub manager: String,
     pub definition: String,
-    pub enabled: bool,
     /// Linux only: whether lingering was enabled so the service survives
     /// logout. None when not applicable/attempted.
     pub linger: Option<bool>,
@@ -394,13 +395,11 @@ pub struct InstallReport {
 /// Write the service definition and start it now + on boot.
 pub fn install(manager: Manager, plan: &ServicePlan) -> Result<InstallReport, String> {
     let path = definition_path(manager)?;
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)
-            .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
-    }
+    crate::secure_fs::ensure_private_parent(&path)
+        .map_err(|e| format!("cannot create service directory: {e}"))?;
     match manager {
         Manager::SystemdUser => {
-            std::fs::write(&path, systemd_unit(plan))
+            crate::secure_fs::atomic_replace_private(&path, systemd_unit(plan).as_bytes())
                 .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
             run_ok("systemctl", &["--user", "daemon-reload"])?;
             run_ok(
@@ -417,24 +416,24 @@ pub fn install(manager: Manager, plan: &ServicePlan) -> Result<InstallReport, St
             Ok(InstallReport {
                 manager: manager.label().into(),
                 definition: path.display().to_string(),
-                enabled: true,
                 linger: Some(linger),
             })
         }
         Manager::Launchd => {
             let log = launchd_log_path()?;
             reject_control_paths([log.as_path()])?;
+            crate::secure_fs::ensure_private_parent(&log)
+                .map_err(|e| format!("cannot create log directory: {e}"))?;
             if let Some(dir) = log.parent() {
-                std::fs::create_dir_all(dir)
-                    .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+                crate::secure_fs::set_private_dir(dir)
+                    .map_err(|e| format!("cannot protect {}: {e}", dir.display()))?;
             }
-            std::fs::write(&path, launchd_plist(plan, &log))
+            crate::secure_fs::atomic_replace_private(&path, launchd_plist(plan, &log).as_bytes())
                 .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
             launchd_bootstrap(&path)?;
             Ok(InstallReport {
                 manager: manager.label().into(),
                 definition: path.display().to_string(),
-                enabled: true,
                 linger: None,
             })
         }
@@ -476,9 +475,17 @@ pub fn uninstall(manager: Manager) -> Result<String, String> {
 #[derive(Debug, serde::Serialize)]
 pub struct StatusReport {
     pub manager: String,
-    pub installed: bool,
-    pub active: bool,
+    pub state: ServiceState,
     pub definition: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ServiceState {
+    NotInstalled,
+    InstalledStopped,
+    InstalledRunning,
+    OrphanedRunning,
 }
 
 /// Is the service installed and currently running?
@@ -494,10 +501,15 @@ pub fn status(manager: Manager) -> Result<StatusReport, String> {
             .output()
             .is_ok_and(|o| o.status.success()),
     };
+    let state = match (path.exists(), active) {
+        (false, false) => ServiceState::NotInstalled,
+        (true, false) => ServiceState::InstalledStopped,
+        (true, true) => ServiceState::InstalledRunning,
+        (false, true) => ServiceState::OrphanedRunning,
+    };
     Ok(StatusReport {
         manager: manager.label().into(),
-        installed: path.exists(),
-        active,
+        state,
         definition: path.display().to_string(),
     })
 }
@@ -559,10 +571,12 @@ pub fn run(
 
     match action {
         ServiceAction::Install => {
+            let cwd = std::env::current_dir()?;
             let config_path = config_flag.map_or_else(
                 || Config::discover_path().unwrap_or_else(|| PathBuf::from("lific.toml")),
                 Path::to_path_buf,
             );
+            let config_path = crate::secure_fs::absolutize(&config_path, &cwd);
             if config_flag.is_none() && !config_path.exists() {
                 return Err(format!(
                     "config not found at {} — run `lific init` first (or point --config at an existing lific.toml)",
@@ -618,22 +632,29 @@ pub fn run(
             let status = status(manager)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&status)?);
-            } else if status.active {
-                ui::step(format!("Service is running ({})", status.manager));
-            } else if status.installed {
-                ui::error(format!(
-                    "Service is installed but NOT running ({}). Start it: {}",
-                    status.manager,
-                    ui::command("lific service restart")
-                ));
             } else {
-                ui::error(format!(
-                    "Service is not installed. Install it: {}",
-                    ui::command("lific service install")
-                ));
+                match status.state {
+                    ServiceState::InstalledRunning => {
+                        ui::step(format!("Service is running ({})", status.manager));
+                    }
+                    ServiceState::InstalledStopped => ui::error(format!(
+                        "Service is installed but NOT running ({}). Start it: {}",
+                        status.manager,
+                        ui::command("lific service restart")
+                    )),
+                    ServiceState::NotInstalled => ui::error(format!(
+                        "Service is not installed. Install it: {}",
+                        ui::command("lific service install")
+                    )),
+                    ServiceState::OrphanedRunning => ui::error(format!(
+                        "Service is running but its definition is missing ({}). Reinstall it: {}",
+                        status.manager,
+                        ui::command("lific service install")
+                    )),
+                }
             }
-            if !(status.installed && status.active) {
-                std::process::exit(1);
+            if status.state != ServiceState::InstalledRunning {
+                return Err("service is not installed and running".into());
             }
         }
         ServiceAction::Stop => {
@@ -810,6 +831,7 @@ mod tests {
         assert!(plist.contains("<string>--config</string>"));
         assert!(plist.contains("<string>/home/u/tracker/lific.toml</string>"));
         assert!(plist.contains("<key>RunAtLoad</key>"));
+        assert!(plist.contains("<key>Umask</key>\n    <integer>63</integer>"));
         assert!(plist.contains("<key>WorkingDirectory</key>"));
         assert!(plist.contains("/home/u/Library/Logs/Lific/lific.log"));
         assert!(!plist.contains("/home/u/tracker/lific.log"));

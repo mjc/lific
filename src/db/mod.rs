@@ -12,7 +12,15 @@ use crate::error::LificError;
 
 /// Number of read connections in the pool.
 /// SQLite WAL mode supports unlimited concurrent readers.
+#[cfg(not(test))]
 const READ_POOL_SIZE: usize = 8;
+
+// Unit tests create a fresh pool per case and the read path already opens a
+// connection on demand when this small pool is empty. Pre-opening eight
+// SQLite connections for every test multiplies the suite's file-descriptor,
+// memory, and schema-lock pressure without testing production pool sizing.
+#[cfg(test)]
+const READ_POOL_SIZE: usize = 1;
 
 /// Database pool with read/write splitting.
 ///

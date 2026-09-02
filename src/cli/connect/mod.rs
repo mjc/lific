@@ -590,6 +590,16 @@ pub fn run(
     pool: &DbPool,
     base: &PathBase,
 ) -> Result<ConnectResult, String> {
+    run_with_tty(args, cfg, pool, base, std::io::stdin().is_terminal())
+}
+
+fn run_with_tty(
+    args: &ConnectArgs,
+    cfg: &Config,
+    pool: &DbPool,
+    base: &PathBase,
+    stdin_tty: bool,
+) -> Result<ConnectResult, String> {
     // Flag conflicts: --oauth mints nothing and writes header-less config, so a
     // stdio transport or an explicit key make no sense together with it.
     if args.oauth && args.stdio {
@@ -607,8 +617,6 @@ pub fn run(
                 .into(),
         );
     }
-
-    let stdin_tty = std::io::stdin().is_terminal();
 
     // LIFIC-19: resolve the transport — flags win (non-interactive path, the
     // scripted equivalent); an interactive TTY with neither flag gets a visible
@@ -672,10 +680,17 @@ pub fn run(
     let key_origin = key_source.as_ref().map(|s| s.origin());
 
     let manager = if needs_minting {
-        Some(
-            crate::auth::create_key_manager()
-                .map_err(|e| format!("key manager init failed: {e}"))?,
-        )
+        #[cfg(test)]
+        {
+            Some(test_key_manager()?)
+        }
+        #[cfg(not(test))]
+        {
+            Some(
+                crate::auth::create_key_manager()
+                    .map_err(|e| format!("key manager init failed: {e}"))?,
+            )
+        }
     } else {
         None
     };
@@ -710,6 +725,25 @@ pub fn run(
         url,
         transport,
     })
+}
+
+/// The real key manager uses production-strength Argon2 parameters. Connect
+/// tests exercise ownership, rotation, and file-writing behavior—not password
+/// hashing—and run alongside hundreds of other hashing tests. Keep this test
+/// fixture cheap so the default parallel test runner does not exhaust memory
+/// and leave unrelated tests waiting behind the crypto allocator.
+#[cfg(test)]
+fn test_key_manager() -> Result<api_keys_simplified::ApiKeyManagerV0, String> {
+    use api_keys_simplified::{ApiKeyManagerV0, HashConfig, KeyConfig};
+
+    let hash = HashConfig::custom(8, 1, 1).map_err(|error| error.to_string())?;
+    ApiKeyManagerV0::init(
+        "lific_sk",
+        KeyConfig::default(),
+        hash,
+        std::time::Duration::from_secs(10),
+    )
+    .map_err(|error| error.to_string())
 }
 
 /// Write (or render, under `--dry-run`) every selected client, minting each
@@ -1048,6 +1082,18 @@ fn print_human(result: &ConnectResult) {
 mod tests {
     use super::*;
     use crate::db;
+
+    // Unit tests must not inherit whether the test runner itself has a PTY.
+    // Production `run` detects the real terminal; this seam makes the tests'
+    // non-interactive contract explicit and keeps them parallel-safe.
+    fn run(
+        args: &ConnectArgs,
+        cfg: &Config,
+        pool: &DbPool,
+        base: &PathBase,
+    ) -> Result<ConnectResult, String> {
+        super::run_with_tty(args, cfg, pool, base, false)
+    }
 
     fn cfg_with_port(port: u16) -> Config {
         let mut c = Config::default();
