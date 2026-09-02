@@ -257,8 +257,12 @@ impl DeviceFlow for HttpDeviceFlow {
                 Err(DeviceAuthFailure::Other(e)) => return Err(e),
                 // Stale id: fall through and register a new one.
                 Err(DeviceAuthFailure::UnknownClient) => {
-                    crate::cli::credentials::forget_client_id(&self.base)
-                        .map_err(|error| error.to_string())?;
+                    if let Err(error) = crate::cli::credentials::forget_client_id(&self.base) {
+                        eprintln!(
+                            "warning: could not remove stale OAuth client cache entry for {}: {error}; continuing with a new registration",
+                            self.base
+                        );
+                    }
                 }
             }
         }
@@ -280,8 +284,12 @@ impl DeviceFlow for HttpDeviceFlow {
                 DeviceAuthFailure::Other(e) => e,
             });
         };
-        crate::cli::credentials::store_client_id(&self.base, &client_id)
-            .map_err(|error| error.to_string())?;
+        if let Err(error) = crate::cli::credentials::store_client_id(&self.base, &client_id) {
+            eprintln!(
+                "warning: could not cache OAuth client registration for {}: {error}; continuing with the registered client",
+                self.base
+            );
+        }
 
         self.device_authorization(&[("scope", "mcp"), ("client_id", &client_id)])
             .map_err(|e| match e {
