@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use tracing::{info, warn};
+use tracing::info;
+#[cfg(unix)]
+use tracing::warn;
 
 use crate::filesystem;
 
@@ -105,15 +107,8 @@ fn is_systemd_credential(path: &Path) -> bool {
 /// Make an ordinary config owner-only through the descriptor it was read
 /// from. systemd credentials are already protected by their credential
 /// directory and are intentionally immutable, so they are left untouched.
-#[cfg_attr(
-    not(unix),
-    expect(clippy::unnecessary_wraps, reason = "fallible on Unix")
-)]
+#[cfg(unix)]
 fn tighten_config_permissions(config: &ConfigFile) -> std::io::Result<()> {
-    #[cfg(not(unix))]
-    let _ = config;
-
-    #[cfg(unix)]
     {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
@@ -138,6 +133,7 @@ fn tighten_config_permissions(config: &ConfigFile) -> std::io::Result<()> {
 /// toward copying the file somewhere writable, which is worse than loading
 /// it and saying so. Anything else means our own file misbehaved and stays
 /// fatal.
+#[cfg(unix)]
 fn tightening_failure_is_tolerable(error: &std::io::Error) -> bool {
     matches!(
         error.kind(),
@@ -950,6 +946,7 @@ enabled = false
     /// mount) may still load when it is read-only and has no bearer secret.
     /// The real-world root-owned `/etc/lific/lific.toml` shape cannot be staged
     /// without root, so the policy predicate is exercised directly.
+    #[cfg(unix)]
     #[test]
     fn untightenable_configs_are_tolerated_not_fatal() {
         use std::io::{Error, ErrorKind};
