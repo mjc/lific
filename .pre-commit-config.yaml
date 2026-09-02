@@ -9,6 +9,6 @@ repos:
         pass_filenames: false
       - id: cargo-clippy
         name: cargo clippy
-        entry: cargo clippy --all-targets -- -D warnings
+        entry: sh scripts/pre-commit-clippy
         language: system
         pass_filenames: false
