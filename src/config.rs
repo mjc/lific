@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tracing::{info, warn};
 
+use crate::filesystem;
+
 const CONFIG_FILENAME: &str = "lific.toml";
 
 pub(crate) enum ConfigPublish {
