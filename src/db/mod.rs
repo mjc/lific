@@ -159,7 +159,8 @@ fn open_read_connection(path: &Path) -> Result<Connection, LificError> {
         path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
             | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX
-            | rusqlite::OpenFlags::SQLITE_OPEN_URI,
+            | rusqlite::OpenFlags::SQLITE_OPEN_URI
+            | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
     )?;
     conn.execute_batch(
         "PRAGMA journal_mode = WAL;
@@ -348,6 +349,19 @@ mod tests {
         };
 
         assert!(error.to_string().contains("SQLite URI"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_connections_do_not_follow_database_symlinks() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("lific.db");
+        let link = directory.path().join("lific-link.db");
+        let pool = open(&database).unwrap();
+        drop(pool);
+        std::os::unix::fs::symlink(&database, &link).unwrap();
+
+        assert!(open_read_connection(&link).is_err());
     }
 
     #[test]

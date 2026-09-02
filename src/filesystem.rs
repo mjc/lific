@@ -2,6 +2,18 @@ use std::fs::{self, File, Metadata, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
 
+fn resolve_path(path: &Path, current_dir: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        current_dir.join(path)
+    }
+}
+
+fn absolute_path(path: &Path) -> io::Result<PathBuf> {
+    Ok(resolve_path(path, &std::env::current_dir()?))
+}
+
 /// Reject a path that contains a symlink in any existing component.
 pub(crate) fn reject_symlink_ancestors(path: &Path) -> io::Result<()> {
     inspect_ancestors(path, false)
@@ -12,11 +24,12 @@ fn reject_unsafe_ancestors(path: &Path) -> io::Result<()> {
 }
 
 fn inspect_ancestors(path: &Path, reject_writable: bool) -> io::Result<()> {
+    let path = absolute_path(path)?;
     if path
         .components()
         .any(|component| component == Component::ParentDir)
     {
-        return Err(unsafe_path(path, "must not contain parent traversal"));
+        return Err(unsafe_path(&path, "must not contain parent traversal"));
     }
     let mut current = PathBuf::new();
     for component in path.components() {
@@ -26,7 +39,7 @@ fn inspect_ancestors(path: &Path, reject_writable: bool) -> io::Result<()> {
         current.push(component);
         match fs::symlink_metadata(&current) {
             Ok(metadata) if is_link(&metadata) => {
-                return Err(unsafe_path(path, "must not contain a symlink"));
+                return Err(unsafe_path(&path, "must not contain a symlink"));
             }
             Ok(metadata) => {
                 #[cfg(unix)]
@@ -53,17 +66,19 @@ fn inspect_ancestors(path: &Path, reject_writable: bool) -> io::Result<()> {
 /// Create a directory tree with owner-only permissions where the platform
 /// supports them. Existing group/other-writable directories are rejected.
 pub(crate) fn ensure_private_dir(path: &Path) -> io::Result<()> {
-    ensure_private_parent(path)?;
-    reject_group_writable(path)?;
-    set_private_dir(path)
+    let path = absolute_path(path)?;
+    ensure_private_parent(&path)?;
+    reject_group_writable(&path)?;
+    set_private_dir(&path)
 }
 
 /// Create a private parent when absent, or validate an existing parent without
 /// changing a safe, traversable mode such as 0755.
 pub(crate) fn ensure_private_parent(path: &Path) -> io::Result<()> {
-    reject_unsafe_ancestors(path)?;
-    create_private_dir_all(path)?;
-    reject_unsafe_ancestors(path)
+    let path = absolute_path(path)?;
+    reject_unsafe_ancestors(&path)?;
+    create_private_dir_all(&path)?;
+    reject_unsafe_ancestors(&path)
 }
 
 #[cfg(unix)]
@@ -83,18 +98,20 @@ fn create_private_dir_all(path: &Path) -> io::Result<()> {
 /// symlinks. This is for non-secret output directories that should retain their
 /// normal permissions.
 pub(crate) fn ensure_dir(path: &Path) -> io::Result<()> {
-    reject_symlink_ancestors(path)?;
-    fs::create_dir_all(path)?;
-    reject_symlink_ancestors(path)
+    let path = absolute_path(path)?;
+    reject_symlink_ancestors(&path)?;
+    fs::create_dir_all(&path)?;
+    reject_symlink_ancestors(&path)
 }
 
 /// Validate a directory that will receive private output. Sticky directories
 /// are allowed because they protect entries from other users' renames.
 pub(crate) fn validate_private_parent(path: &Path) -> io::Result<()> {
-    reject_unsafe_ancestors(path)?;
-    match symlink_metadata_if_exists(path)? {
+    let path = absolute_path(path)?;
+    reject_unsafe_ancestors(&path)?;
+    match symlink_metadata_if_exists(&path)? {
         Some(metadata) if metadata.is_dir() => Ok(()),
-        Some(_) => Err(unsafe_path(path, "must be a directory")),
+        Some(_) => Err(unsafe_path(&path, "must be a directory")),
         None => Err(io::ErrorKind::NotFound.into()),
     }
 }
@@ -131,7 +148,8 @@ pub(crate) fn read_to_string(path: &Path) -> io::Result<String> {
 }
 
 fn open_with_options(options: &mut OpenOptions, path: &Path) -> io::Result<File> {
-    reject_symlink_ancestors(path)?;
+    let path = absolute_path(path)?;
+    reject_symlink_ancestors(&path)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -145,7 +163,7 @@ fn open_with_options(options: &mut OpenOptions, path: &Path) -> io::Result<File>
         // final reparse point when opening the file.
         options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
     }
-    let file = options.open(path)?;
+    let file = options.open(&path)?;
     #[cfg(windows)]
     if is_link(&file.metadata()?) {
         return Err(unsafe_path(path, "must not be a symlink"));
@@ -166,24 +184,26 @@ pub(crate) fn private_tempfile_in(
     parent: &Path,
     prefix: &str,
 ) -> io::Result<tempfile::NamedTempFile> {
-    reject_symlink_ancestors(parent)?;
+    let parent = absolute_path(parent)?;
+    reject_symlink_ancestors(&parent)?;
     tempfile::Builder::new().prefix(prefix).tempfile_in(parent)
 }
 
 /// Tighten permissions on a file path without first reopening it through a
 /// possibly swapped symlink.
 pub(crate) fn set_private_file_path(path: &Path) -> io::Result<()> {
+    let path = absolute_path(path)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
 
         let mut options = OpenOptions::new();
         options.read(true);
-        let file = open_with_options(&mut options, path)?;
+        let file = open_with_options(&mut options, &path)?;
         file.set_permissions(fs::Permissions::from_mode(0o600))?;
     }
     #[cfg(not(unix))]
-    reject_symlink(path)?;
+    reject_symlink(&path)?;
     Ok(())
 }
 
@@ -207,16 +227,17 @@ pub(crate) fn set_private_file(file: &File) -> io::Result<()> {
 /// Tighten permissions on an existing directory after verifying it is not a
 /// symlink. Directory permission changes are a no-op on Windows.
 fn set_private_dir(path: &Path) -> io::Result<()> {
+    let path = absolute_path(path)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let mut options = OpenOptions::new();
         options.read(true);
-        let directory = open_with_options(&mut options, path)?;
+        let directory = open_with_options(&mut options, &path)?;
         directory.set_permissions(fs::Permissions::from_mode(0o700))?;
     }
     #[cfg(not(unix))]
-    reject_symlink(path)?;
+    reject_symlink(&path)?;
     Ok(())
 }
 
@@ -224,7 +245,9 @@ fn set_private_dir(path: &Path) -> io::Result<()> {
 /// symlinks. Replacing a hard link safely detaches that directory entry from
 /// the old inode.
 pub(crate) fn atomic_replace(temp: &Path, destination: &Path) -> io::Result<()> {
-    safe_path_exists(destination)?;
+    let temp = absolute_path(temp)?;
+    let destination = absolute_path(destination)?;
+    safe_path_exists(&destination)?;
 
     #[cfg(not(windows))]
     {
@@ -245,8 +268,8 @@ pub(crate) fn atomic_replace(temp: &Path, destination: &Path) -> io::Result<()> 
             wide.push(0);
             Ok(wide)
         };
-        let temp = wide(temp)?;
-        let destination = wide(destination)?;
+        let temp = wide(&temp)?;
+        let destination = wide(&destination)?;
         // SAFETY: both vectors are NUL-terminated UTF-16 paths owned for the
         // duration of the call, and MoveFileExW does not retain the pointers.
         let ok = unsafe {
@@ -269,14 +292,15 @@ pub(crate) fn safe_path_exists(path: &Path) -> io::Result<bool> {
 }
 
 pub(crate) fn safe_regular_file_exists(path: &Path) -> io::Result<bool> {
-    let Some(metadata) = safe_metadata(path)? else {
+    let path = absolute_path(path)?;
+    let Some(metadata) = safe_metadata(&path)? else {
         return Ok(false);
     };
     if !metadata.file_type().is_file() {
-        return Err(unsafe_path(path, "must be a regular file"));
+        return Err(unsafe_path(&path, "must be a regular file"));
     }
-    if link_count(path, &metadata)? != 1 {
-        return Err(unsafe_path(path, "must not be a hard link"));
+    if link_count(&path, &metadata)? != 1 {
+        return Err(unsafe_path(&path, "must not be a hard link"));
     }
     Ok(true)
 }
@@ -285,10 +309,11 @@ pub(crate) fn safe_regular_file_exists(path: &Path) -> io::Result<bool> {
 /// policy so it cannot replace only one name for a file the user may expect to
 /// remain linked.
 pub(crate) fn reject_hard_link(path: &Path) -> io::Result<()> {
-    if let Some(metadata) = safe_metadata(path)?
-        && link_count(path, &metadata)? > 1
+    let path = absolute_path(path)?;
+    if let Some(metadata) = safe_metadata(&path)?
+        && link_count(&path, &metadata)? > 1
     {
-        return Err(unsafe_path(path, "must not be a hard link"));
+        return Err(unsafe_path(&path, "must not be a hard link"));
     }
     Ok(())
 }
@@ -323,6 +348,7 @@ pub(crate) fn write_private_atomic(path: &Path, contents: &[u8]) -> io::Result<(
 }
 
 fn write_atomic_with_mode(path: &Path, contents: &[u8], private: bool) -> io::Result<()> {
+    let path = absolute_path(path)?;
     let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty());
@@ -345,7 +371,7 @@ fn write_atomic_with_mode(path: &Path, contents: &[u8], private: bool) -> io::Re
         None
     } else {
         use std::os::unix::fs::MetadataExt;
-        safe_metadata(path)?.map(|metadata| metadata.mode() & 0o777)
+        safe_metadata(&path)?.map(|metadata| metadata.mode() & 0o777)
     };
     let mut file = if private {
         create_private(&temp)?
@@ -360,7 +386,7 @@ fn write_atomic_with_mode(path: &Path, contents: &[u8], private: bool) -> io::Re
     file.write_all(contents)?;
     file.sync_all()?;
     drop(file);
-    atomic_replace(&temp, path)?;
+    atomic_replace(&temp, &path)?;
     sync_dir(parent)
 }
 
@@ -368,9 +394,11 @@ fn write_atomic_with_mode(path: &Path, contents: &[u8], private: bool) -> io::Re
     not(unix),
     expect(clippy::unnecessary_wraps, reason = "fallible on Unix")
 )]
-pub(crate) fn sync_dir(_path: &Path) -> io::Result<()> {
+pub(crate) fn sync_dir(path: &Path) -> io::Result<()> {
     #[cfg(unix)]
-    File::open(_path)?.sync_all()?;
+    File::open(absolute_path(path)?)?.sync_all()?;
+    #[cfg(not(unix))]
+    let _ = path;
     Ok(())
 }
 
@@ -395,10 +423,11 @@ fn reject_group_writable(path: &Path) -> io::Result<()> {
 }
 
 fn safe_metadata(path: &Path) -> io::Result<Option<Metadata>> {
-    reject_symlink_ancestors(path)?;
-    let metadata = symlink_metadata_if_exists(path)?;
+    let path = absolute_path(path)?;
+    reject_symlink_ancestors(&path)?;
+    let metadata = symlink_metadata_if_exists(&path)?;
     if metadata.as_ref().is_some_and(is_link) {
-        return Err(unsafe_path(path, "must not be a symlink"));
+        return Err(unsafe_path(&path, "must not be a symlink"));
     }
     Ok(metadata)
 }
@@ -539,6 +568,16 @@ mod tests {
         std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o777)).unwrap();
 
         assert!(ensure_private_dir(&shared.join("private")).is_err());
+    }
+
+    #[test]
+    fn relative_paths_are_inspected_below_the_current_directory() {
+        let directory = tempfile::tempdir().unwrap();
+
+        assert_eq!(
+            super::resolve_path(std::path::Path::new("private/file"), directory.path()),
+            directory.path().join("private/file")
+        );
     }
 
     #[cfg(unix)]

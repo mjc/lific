@@ -38,7 +38,10 @@
 //! Service is gated `#[ignore]` (CI has none).
 
 use std::collections::BTreeMap;
+use std::fs::{File, OpenOptions};
 use std::path::PathBuf;
+
+use fs2::FileExt;
 
 use crate::filesystem;
 
@@ -226,6 +229,30 @@ impl FileStore {
             .unwrap_or_default()
     }
 
+    fn lock_path(&self) -> PathBuf {
+        let mut name = self.path.file_name().unwrap_or_default().to_os_string();
+        name.push(".lock");
+        self.path.with_file_name(name)
+    }
+
+    fn open_lock_file(&self) -> std::io::Result<File> {
+        let path = self.lock_path();
+        if let Some(parent) = path.parent() {
+            filesystem::ensure_private_dir(parent)?;
+        }
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create(true).truncate(false);
+        let file = filesystem::open_private_with_options(&mut options, &path)?;
+        filesystem::set_private_file(&file)?;
+        Ok(file)
+    }
+
+    fn with_lock<T>(&self, operation: impl FnOnce() -> std::io::Result<T>) -> std::io::Result<T> {
+        let lock = self.open_lock_file()?;
+        lock.lock_exclusive()?;
+        operation()
+    }
+
     fn write_map(&self, map: &BTreeMap<String, String>) -> std::io::Result<()> {
         if let Some(parent) = self.path.parent() {
             filesystem::ensure_private_dir(parent)?;
@@ -236,9 +263,11 @@ impl FileStore {
 
     /// Store `token` under `key`, creating the file if needed.
     pub fn store(&self, key: &str, token: &str) -> std::io::Result<()> {
-        let mut map = self.read_map();
-        map.insert(key.to_string(), token.to_string());
-        self.write_map(&map)
+        self.with_lock(|| {
+            let mut map = self.read_map();
+            map.insert(key.to_string(), token.to_string());
+            self.write_map(&map)
+        })
     }
 
     /// Load the token for `key`, if present.
@@ -248,12 +277,14 @@ impl FileStore {
 
     /// Remove `key`. Returns whether an entry was actually removed.
     pub fn delete(&self, key: &str) -> std::io::Result<bool> {
-        let mut map = self.read_map();
-        let removed = map.remove(key).is_some();
-        if removed {
-            self.write_map(&map)?;
-        }
-        Ok(removed)
+        self.with_lock(|| {
+            let mut map = self.read_map();
+            let removed = map.remove(key).is_some();
+            if removed {
+                self.write_map(&map)?;
+            }
+            Ok(removed)
+        })
     }
 }
 
@@ -445,6 +476,32 @@ mod tests {
         // Overwrite existing key.
         store.store("http://a", "tok-a2").unwrap();
         assert_eq!(store.load("http://a").as_deref(), Some("tok-a2"));
+    }
+
+    #[test]
+    fn file_stores_at_the_same_path_serialize_writes() {
+        use fs2::FileExt;
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("clients.json");
+        let lock = std::fs::File::create(path.with_file_name("clients.json.lock")).unwrap();
+        lock.lock_exclusive().unwrap();
+
+        let (done_tx, done_rx) = mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            FileStore::new(path).store("http://a", "client-a").unwrap();
+            done_tx.send(()).unwrap();
+        });
+
+        assert!(
+            done_rx.recv_timeout(Duration::from_millis(100)).is_err(),
+            "a second store must wait for the shared lock"
+        );
+        drop(lock);
+        done_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        writer.join().unwrap();
     }
 
     #[test]
