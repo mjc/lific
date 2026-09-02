@@ -45,64 +45,6 @@ fn is_crud_command(cmd: &Command) -> bool {
     )
 }
 
-enum ConfigPublish {
-    Create,
-    Replace,
-}
-
-fn publish_private_config(
-    path: &std::path::Path,
-    contents: &str,
-    publish: ConfigPublish,
-) -> std::io::Result<()> {
-    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-    let staging = tempfile::Builder::new()
-        .prefix(".lific-config-")
-        .tempdir_in(parent)?;
-    let temp = staging.path().join(path.file_name().unwrap_or_default());
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-    }
-    let mut file = options.open(&temp)?;
-    std::io::Write::write_all(&mut file, contents.as_bytes())?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-    }
-    file.sync_all()?;
-
-    match publish {
-        ConfigPublish::Create => {
-            // A hard link publishes only when the destination does not yet
-            // exist, leaving an existing configuration untouched on races.
-            std::fs::hard_link(temp, path)?;
-        }
-        ConfigPublish::Replace => std::fs::rename(temp, path)?,
-    }
-    sync_parent_dir(parent)
-}
-
-/// Flush the directory entry that publishes a config file. The file's own
-/// `sync_all` persists its bytes; the name that reaches them lives in the
-/// parent directory and survives a crash only once that is synced too.
-/// Unix only: Windows exposes no directory handle to sync.
-#[cfg_attr(
-    not(unix),
-    expect(clippy::unnecessary_wraps, reason = "fallible on Unix")
-)]
-fn sync_parent_dir(_dir: &std::path::Path) -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        std::fs::File::open(_dir)?.sync_all()?;
-    }
-    Ok(())
-}
-
 use rmcp::ServiceExt;
 use tracing::info;
 
@@ -799,7 +741,7 @@ async fn cmd_init(options: InitOptions<'_>) -> Result<(), Box<dyn std::error::Er
             Some(db) => Config::default_toml_with_db(db),
             None => Config::default_toml(),
         };
-        publish_private_config(&config_path, &toml, ConfigPublish::Create)?;
+        config::publish_private_config(&config_path, &toml, config::ConfigPublish::Create)?;
         true
     };
 
@@ -810,7 +752,7 @@ async fn cmd_init(options: InitOptions<'_>) -> Result<(), Box<dyn std::error::Er
         let db = absolute_cli_path(db, &std::env::current_dir()?);
         let existing = std::fs::read_to_string(&config_path)?;
         let toml = Config::apply_database_path(&existing, &db)?;
-        publish_private_config(&config_path, &toml, ConfigPublish::Replace)?;
+        config::publish_private_config(&config_path, &toml, config::ConfigPublish::Replace)?;
     }
 
     // (Re)load from the file init actually operates on, so a relative
@@ -850,7 +792,7 @@ async fn cmd_init(options: InitOptions<'_>) -> Result<(), Box<dyn std::error::Er
         // service plan) reflects required/host.
         let existing = std::fs::read_to_string(&config_path).unwrap_or_default();
         let new_toml = Config::apply_auth_mode(&existing, mode.required(), mode.host())?;
-        publish_private_config(&config_path, &new_toml, ConfigPublish::Replace)?;
+        config::publish_private_config(&config_path, &new_toml, config::ConfigPublish::Replace)?;
         cfg = Config::load(Some(&config_path))?;
 
         let op_name = match name {

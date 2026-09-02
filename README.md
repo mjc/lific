@@ -405,6 +405,11 @@ it owner-only, since it cannot chmod a file it does not own). Hand it to 65532
 with `0600` if you want that warning gone and the file private:
 
 ```bash
+mkdir -p data
+cp lific.toml data/lific.toml
+sudo chown -R 65532:65532 data
+sudo chmod 0750 data
+sudo chmod 0600 data/lific.toml
 docker run -p 3456:3456 -v ./data:/data lific
 ```
 

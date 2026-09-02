@@ -40,6 +40,9 @@
   relativeConfigModule = evaluate {
     configFile = "lific.toml";
   };
+  relativeWritePathModule = evaluate {
+    extraReadWritePaths = ["backups"];
+  };
   invalidPort = builtins.tryEval (
     (evaluate {
       port = 80;
@@ -48,10 +51,12 @@
   generatedModule = evaluate {};
   externalModule = evaluate {
     configFile = externalConfig;
+    extraReadWritePaths = ["/srv/lific-backups"];
   };
 
   generatedService = generatedModule.config.systemd.services.lific.serviceConfig;
   externalService = externalModule.config.systemd.services.lific.serviceConfig;
+  externalWritePaths = externalService.ReadWritePaths;
 in
   assert lib.any (item: lib.hasInfix "mutually exclusive" item.message) (
     failedAssertions invalidModule
@@ -59,6 +64,9 @@ in
   assert lib.any (item: lib.hasInfix "mcp_path_token" item.message) (failedAssertions invalidModule);
   assert lib.any (item: lib.hasInfix "configFile must be an absolute path" item.message) (
     failedAssertions relativeConfigModule
+  );
+  assert lib.any (item: lib.hasInfix "extraReadWritePaths entries must be absolute" item.message) (
+    failedAssertions relativeWritePathModule
   );
   assert !invalidPort.success;
   assert failedAssertions generatedModule == [];
@@ -69,8 +77,9 @@ in
   assert lib.hasInfix "/var/lib/lific/lific.db" externalService.ExecStart;
   assert generatedService.StateDirectory == "lific";
   assert generatedService.WorkingDirectory == "/var/lib/lific";
-  assert generatedService.ProtectSystem == "full";
-  assert !(generatedService ? ReadWritePaths);
+  assert generatedService.ProtectSystem == "strict";
+  assert generatedService.ReadWritePaths == [];
+  assert externalWritePaths == ["/srv/lific-backups"];
     pkgs.testers.runNixOSTest {
       name = "lific";
 
@@ -86,14 +95,19 @@ in
             [auth]
             required = false
 
+            [backup]
+            dir = "/srv/lific-backups"
+
           '';
         };
 
         services.lific = {
           enable = true;
           configFile = "/etc/lific-test.toml";
+          extraReadWritePaths = ["/srv/lific-backups"];
         };
 
+        systemd.tmpfiles.rules = ["d /srv/lific-backups 0750 lific lific -"];
         environment.systemPackages = [pkgs.curl];
       };
 
@@ -114,6 +128,8 @@ in
         machine.succeed("test -s /run/credentials/lific.service/lific.toml")
         machine.succeed("test $(stat -c %a /etc/lific-test.toml) = 400")
         machine.succeed("test $(stat -c %U:%G /etc/lific-test.toml) = root:root")
-        machine.wait_until_succeeds("test -s /var/lib/lific/backups/lific_*.tar.gz")
+        machine.succeed("runuser -u lific -- touch /srv/lific-backups/probe")
+        machine.fail("runuser -u lific -- touch /var/cache/lific-escape-probe")
+        machine.wait_until_succeeds("test -s /srv/lific-backups/lific_*.tar.gz")
       '';
     }

@@ -22,7 +22,7 @@ User and system paths vary by platform.
 | macOS | `~/Library/Application Support/lific/lific.toml` | `/Library/Application Support/Lific/lific.toml` |
 | Windows | `%APPDATA%\lific\lific.toml` | `%ProgramData%\lific\lific.toml` |
 
-A file that exists but cannot be read or parsed is a fatal error. Lific stops and names the file and the error; it does not warn and fall through to the next location, because quietly running on different settings than the ones you wrote is the more surprising outcome. Unknown keys are rejected for the same reason, so a typo such as `allow_signupp` fails loudly instead of being ignored. If no file exists at any of these paths, Lific uses its built-in defaults.
+A file that exists but cannot be read or parsed is a fatal error. Lific stops and names the file and the error; it does not warn and fall through to the next location, because quietly running on different settings than the ones you wrote is the more surprising outcome. Unknown keys are rejected for the same reason, so a typo such as `allow_signupp` fails loudly instead of being ignored. If no file exists at any discovered path, Lific uses its built-in defaults. An explicit `--config <path>` creates a private default file when its parent is writable; an unusable path is still an error.
 
 Relative `database.path` values resolve relative to the directory containing the selected configuration file. A relative backup directory then resolves relative to the database directory.
 

@@ -86,6 +86,17 @@ in {
       default = "lific";
       description = "Group account under which Lific runs.";
     };
+
+    extraReadWritePaths = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [];
+      example = ["/srv/lific-backups"];
+      description = ''
+        Additional absolute runtime paths that Lific may write. Use this for
+        an external absolute backup.dir; the default database, attachments,
+        and backups remain under StateDirectory.
+      '';
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -101,6 +112,10 @@ in {
       {
         assertion = lib.attrByPath ["server" "mcp_path_token"] null cfg.settings == null;
         message = "services.lific.settings.server.mcp_path_token would be exposed in the Nix store; use services.lific.configFile";
+      }
+      {
+        assertion = builtins.all (path: lib.hasPrefix "/" path) cfg.extraReadWritePaths;
+        message = "services.lific.extraReadWritePaths entries must be absolute paths";
       }
     ];
 
@@ -157,7 +172,8 @@ in {
         ProtectKernelLogs = true;
         ProtectKernelModules = true;
         ProtectKernelTunables = true;
-        ProtectSystem = "full";
+        ProtectSystem = "strict";
+        ReadWritePaths = cfg.extraReadWritePaths;
         RestrictAddressFamilies = [
           "AF_UNIX"
           "AF_INET"

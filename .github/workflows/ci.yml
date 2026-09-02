@@ -35,6 +35,52 @@ jobs:
       - name: Test
         run: cargo test --all-targets
 
+  nix:
+    name: Nix (${{ matrix.label }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: x86_64-linux flake check
+            os: ubuntu-latest
+            check: true
+          - label: aarch64-linux package
+            os: ubuntu-24.04-arm
+            check: false
+          - label: aarch64-darwin package
+            os: macos-14
+            check: false
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            accept-flake-config = true
+      - name: Check flake and NixOS VM test
+        if: matrix.check
+        run: nix flake check --print-build-logs
+      - name: Build native package
+        if: ${{ !matrix.check }}
+        run: nix build .#lific --print-build-logs
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build image
+        run: docker build --tag lific:ci .
+      - name: Start with a bind-mounted private config
+        run: |
+          mkdir -p data
+          printf '[auth]\nrequired = true\n' > data/lific.toml
+          sudo chown -R 65532:65532 data
+          sudo chmod 0750 data
+          sudo chmod 0600 data/lific.toml
+          docker run --detach --name lific-ci --publish 3456:3456 --volume "$PWD/data:/data" lific:ci
+          trap 'docker logs lific-ci; docker rm --force lific-ci' EXIT
+          curl --fail --retry 30 --retry-delay 1 http://127.0.0.1:3456/api/health
+
   windows:
     # Windows ships a release binary, so it gets the same gate as Linux rather
     # than a compile-only smoke check. Nothing verified the platform at all

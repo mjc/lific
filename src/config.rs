@@ -4,6 +4,63 @@ use tracing::{info, warn};
 
 const CONFIG_FILENAME: &str = "lific.toml";
 
+pub(crate) enum ConfigPublish {
+    Create,
+    Replace,
+}
+
+pub(crate) fn publish_private_config(
+    path: &Path,
+    contents: &str,
+    publish: ConfigPublish,
+) -> std::io::Result<()> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let staging = tempfile::Builder::new()
+        .prefix(".lific-config-")
+        .tempdir_in(parent)?;
+    let temp = staging.path().join(path.file_name().unwrap_or_default());
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    let mut file = options.open(&temp)?;
+    std::io::Write::write_all(&mut file, contents.as_bytes())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    file.sync_all()?;
+
+    match publish {
+        ConfigPublish::Create => {
+            // A hard link publishes only when the destination does not yet
+            // exist, leaving an existing configuration untouched on races.
+            std::fs::hard_link(temp, path)?;
+        }
+        ConfigPublish::Replace => std::fs::rename(temp, path)?,
+    }
+    sync_parent_dir(parent)
+}
+
+/// Flush the directory entry that publishes a config file. The file's own
+/// `sync_all` persists its bytes; the name that reaches them lives in the
+/// parent directory and survives a crash only once that is synced too.
+#[cfg_attr(
+    not(unix),
+    expect(clippy::unnecessary_wraps, reason = "fallible on Unix")
+)]
+fn sync_parent_dir(_dir: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        std::fs::File::open(_dir)?.sync_all()?;
+    }
+    Ok(())
+}
+
 /// A config file that has been opened and read.
 ///
 /// Keeping the descriptor alongside the contents means permission tightening
@@ -451,7 +508,8 @@ impl Default for RetentionConfig {
 
 impl Config {
     /// Load config from the first file found, or return defaults when no file
-    /// exists anywhere in the search path.
+    /// exists anywhere in the discovered search path. An explicit missing path
+    /// is initialized with a private default when its parent is writable.
     ///
     /// A file that exists but cannot be read or parsed is a hard error, not a
     /// fallback. Probing past a broken file would be just as surprising: if
@@ -473,7 +531,26 @@ impl Config {
         for path in &candidates {
             match std::fs::symlink_metadata(path) {
                 Ok(_) => {}
-                Err(source) if source.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+                    if explicit_path.is_some() {
+                        match publish_private_config(
+                            path,
+                            &Self::default_toml(),
+                            ConfigPublish::Create,
+                        ) {
+                            Ok(()) => {}
+                            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                            Err(source) => {
+                                return Err(ConfigError::Read {
+                                    path: path.clone(),
+                                    source,
+                                });
+                            }
+                        }
+                    } else {
+                        continue;
+                    }
+                }
                 Err(source) => {
                     return Err(ConfigError::Read {
                         path: path.clone(),
@@ -918,13 +995,41 @@ enabled = false
         assert_eq!(config.database.path, PathBuf::from(ABSOLUTE_DB_PATH));
     }
 
-    /// No config file anywhere is a legitimate first-run state, so defaults
-    /// are correct here. This is the ONLY path that may return defaults.
+    /// An explicit missing path is a legitimate first-run state when its
+    /// parent is writable, so loading it creates a private default config.
     #[test]
-    fn missing_file_returns_defaults() {
-        let config =
-            Config::load(Some(Path::new("/tmp/nonexistent_lific_cfg_12345.toml"))).unwrap();
+    fn missing_explicit_file_generates_private_defaults() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("lific.toml");
+        let config = Config::load(Some(&path)).unwrap();
         assert_eq!(config.server.port, 3456);
+        assert!(path.is_file());
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            Config::default_toml()
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+    }
+
+    #[test]
+    fn missing_explicit_file_with_unusable_parent_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let parent = tmp.path().join("not-a-directory");
+        std::fs::write(&parent, "not a directory").unwrap();
+        let path = parent.join("lific.toml");
+
+        assert!(matches!(
+            Config::load(Some(&path)),
+            Err(ConfigError::Read { .. })
+        ));
+        assert!(!path.exists());
     }
 
     /// A malformed config must refuse to load rather than silently reverting

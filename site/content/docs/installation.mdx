@@ -52,9 +52,9 @@ nix profile install github:VoidNullable/lific
 The flake also exports `overlays.default` and `nixosModules.default` for
 declarative package and `services.lific` deployments.
 
-`lific service install` records the executable it starts. After a
-`nix profile upgrade`, run it again to update an installed user service before
-older profile generations are collected.
+The user service records the stable profile executable path, so a later
+`nix profile upgrade` takes effect on the next service restart without
+pinning the service to an old store generation.
 
 ## Build from source
 

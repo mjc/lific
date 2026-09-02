@@ -95,7 +95,12 @@ resolves beneath the module's `/var/lib/lific` state directory, which the
 service user owns and the unit manages with `StateDirectory`. No separate
 tmpfiles rule is needed. An external `configFile` remains authoritative for
 `backup.dir`; if it selects an absolute directory outside the state directory,
-create that directory separately and make it writable by the service user.
+create that directory separately, make it writable by the service user, and
+list it in `extraReadWritePaths`:
+
+```nix
+services.lific.extraReadWritePaths = [ "/srv/lific-backups" ];
+```
 
 ## Generic systemd system service
 
@@ -119,7 +124,7 @@ RestartSec=2
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
-ProtectSystem=full
+ProtectSystem=strict
 
 [Install]
 WantedBy=multi-user.target
@@ -128,9 +133,10 @@ WantedBy=multi-user.target
 Save the unit as `lific.service` in the systemd system unit directory. Reload systemd after saving it. Enable and start the unit through the system service manager.
 
 The configured backup directory must be writable by the `lific` user. The
-database and attachments stay under the systemd-managed state directory. The
-configuration source may be root-only because systemd loads it as a service
-credential.
+database and attachments stay under the systemd-managed state directory. With
+`ProtectSystem=strict`, add an absolute external backup directory to
+`ReadWritePaths` in the unit as well. The configuration source may be root-only
+because systemd loads it as a service credential.
 
 ## Authentication
 

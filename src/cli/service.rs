@@ -63,8 +63,7 @@ impl ServicePlan {
     /// binary as the exec target. Persistent application paths remain owned by
     /// lific.toml; this plan only records manager-owned paths.
     pub fn for_config_file(config: &Path) -> Result<Self, String> {
-        let exe = std::env::current_exe()
-            .map_err(|e| format!("cannot resolve the lific binary path: {e}"))?;
+        let exe = service_executable()?;
         let config = config
             .canonicalize()
             .map_err(|e| format!("cannot resolve config path {}: {e}", config.display()))?;
@@ -89,6 +88,86 @@ impl ServicePlan {
             OsStr::new("start"),
         ]
     }
+}
+
+/// Keep a stable launcher path such as `~/.nix-profile/bin/lific` in generated
+/// services while checking that it resolves to this running binary. Nix
+/// profiles update that symlink between generations; storing `current_exe()`
+/// would pin the unit to one `/nix/store` path instead.
+fn service_executable() -> Result<PathBuf, String> {
+    let current = std::env::current_exe()
+        .map_err(|e| format!("cannot resolve the lific binary path: {e}"))?;
+    let cwd = std::env::current_dir()
+        .map_err(|e| format!("cannot resolve the current directory: {e}"))?;
+    let argv0 = std::env::args_os().next();
+    let path = std::env::var_os("PATH");
+    resolve_executable_path(argv0.as_deref(), &current, path.as_deref(), &cwd)
+}
+
+fn resolve_executable_path(
+    argv0: Option<&OsStr>,
+    current_exe: &Path,
+    path: Option<&OsStr>,
+    cwd: &Path,
+) -> Result<PathBuf, String> {
+    let candidate = argv0
+        .and_then(|value| {
+            let value_path = Path::new(value);
+            if value_path.is_absolute() || value_path.components().count() > 1 {
+                Some(if value_path.is_absolute() {
+                    value_path.to_path_buf()
+                } else {
+                    cwd.join(value_path)
+                })
+            } else {
+                path.and_then(|path| {
+                    std::env::split_paths(path)
+                        .map(|dir| {
+                            if dir.as_os_str().is_empty() {
+                                cwd.join(value_path)
+                            } else if dir.is_absolute() {
+                                dir.join(value_path)
+                            } else {
+                                cwd.join(dir).join(value_path)
+                            }
+                        })
+                        .find(|candidate| candidate.is_file())
+                })
+            }
+        })
+        .unwrap_or_else(|| current_exe.to_path_buf());
+    let candidate = if candidate.is_absolute() {
+        candidate
+    } else {
+        cwd.join(candidate)
+    };
+    let current = if current_exe.is_absolute() {
+        current_exe.to_path_buf()
+    } else {
+        cwd.join(current_exe)
+    };
+    reject_control_paths([candidate.as_path(), current.as_path()])?;
+
+    let resolved = candidate.canonicalize().map_err(|e| {
+        format!(
+            "cannot resolve service executable {}: {e}",
+            candidate.display()
+        )
+    })?;
+    let current = current.canonicalize().map_err(|e| {
+        format!(
+            "cannot resolve running executable {}: {e}",
+            current.display()
+        )
+    })?;
+    if resolved != current {
+        return Err(format!(
+            "service executable {} does not resolve to the running lific binary {}",
+            candidate.display(),
+            current.display()
+        ));
+    }
+    Ok(candidate)
 }
 
 fn reject_control_paths<'a>(paths: impl IntoIterator<Item = &'a Path>) -> Result<(), String> {
@@ -487,13 +566,18 @@ pub fn run(
                 || Config::discover_path().unwrap_or_else(|| PathBuf::from("lific.toml")),
                 Path::to_path_buf,
             );
-            if !config_path.exists() {
+            if config_flag.is_none() && !config_path.exists() {
                 return Err(format!(
                     "config not found at {} — run `lific init` first (or point --config at an existing lific.toml)",
                     config_path.display()
                 )
                 .into());
             }
+            // An explicit --config path is an initialization authority: load
+            // it here so a missing writable file gets a private default before
+            // the service plan canonicalizes it. Ambient discovery still
+            // requires an existing config and keeps `service install` from
+            // silently creating an unrelated instance.
             Config::load(Some(&config_path))?;
             let plan = ServicePlan::for_config_file(&config_path)?;
             let report = install(manager, &plan)?;
@@ -749,6 +833,26 @@ mod tests {
             ServicePlan::for_config_file(Path::new("/tmp/nonexistent_lific_dir_12345/lific.toml"))
                 .unwrap_err();
         assert!(err.contains("cannot resolve config path"), "got: {err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn executable_resolution_preserves_a_profile_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let store = tmp.path().join("store");
+        let profile = tmp.path().join("profile/bin");
+        std::fs::create_dir_all(&store).unwrap();
+        std::fs::create_dir_all(&profile).unwrap();
+        let current = store.join("lific");
+        let stable = profile.join("lific");
+        std::fs::write(&current, "binary").unwrap();
+        symlink(&current, &stable).unwrap();
+
+        let resolved =
+            resolve_executable_path(Some(stable.as_os_str()), &current, None, tmp.path()).unwrap();
+        assert_eq!(resolved, stable);
     }
 
     // The five launchctl call sites used to inline `gui/{uid}` themselves; they
