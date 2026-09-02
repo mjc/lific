@@ -138,6 +138,10 @@ impl Display for IssueRelations<'_> {
 
 struct IssueLine<'a> {
     issue: &'a models::Issue,
+    /// Resolved module name, rendered as `(module: …)` after the labels.
+    /// Callers that have no module map at hand pass `None` and the line
+    /// renders exactly as before.
+    module: Option<&'a str>,
     context: Option<&'a IssueLinkContext>,
 }
 
@@ -165,6 +169,8 @@ impl Display for IssueLine<'_> {
                 }
             )
         })?;
+        self.module
+            .map_or(Ok(()), |name| write!(formatter, " (module: {name})"))?;
         [
             (" blocks:", issue.blocks.as_slice()),
             (" blocked_by:", issue.blocked_by.as_slice()),
@@ -1716,6 +1722,17 @@ impl LificMcp {
         }
         let has_more = issues.has_more;
         let issues = issues.items;
+        // Resolve module ids to names once for the whole page, so each row can
+        // carry its module without a per-issue lookup (GitHub #48).
+        let module_names: std::collections::HashMap<i64, String> =
+            if issues.iter().any(|issue| issue.module_id.is_some()) {
+                self.read(|conn| queries::list_modules(conn, pid))?
+                    .into_iter()
+                    .map(|module| (module.id, module.name))
+                    .collect()
+            } else {
+                std::collections::HashMap::new()
+            };
         let context = current_issue_link_context();
         Ok(render_response(|output| {
             writeln!(output, "{} issues:", issues.len())?;
@@ -1725,6 +1742,9 @@ impl LificMcp {
                     "- {}",
                     IssueLine {
                         issue,
+                        module: issue
+                            .module_id
+                            .and_then(|id| module_names.get(&id).map(String::as_str)),
                         context: context.as_deref(),
                     }
                 )
@@ -2155,6 +2175,7 @@ impl LificMcp {
                 },
                 IssueLine {
                     issue: &issue,
+                    module: None,
                     context: context.as_deref(),
                 }
             )?;
@@ -2335,6 +2356,7 @@ impl LificMcp {
                 },
                 IssueLine {
                     issue: &issue,
+                    module: None,
                     context: context.as_deref(),
                 }
             )
@@ -2471,6 +2493,7 @@ impl LificMcp {
                         "  {}",
                         IssueLine {
                             issue,
+                            module: None,
                             context: context.as_deref(),
                         }
                     )
@@ -5948,6 +5971,45 @@ mod tests {
     }
 
     #[test]
+    fn list_issues_rows_carry_module_name() {
+        let (m, _guard) = mcp();
+        let _ag = first_admin_guard();
+        seed_project(&m, "Test", "LSM");
+        let created = m.manage_resource(Parameters(ManageResourceInput {
+            resource_type: "module".into(),
+            action: "create".into(),
+            project: Some("LSM".into()),
+            name: Some("Backend".into()),
+            ..Default::default()
+        }));
+        assert!(created.starts_with("Created module"), "got: {created}");
+
+        m.create_issue(Parameters(CreateIssueInput {
+            project: "LSM".into(),
+            title: "In a module".into(),
+            module: Some("Backend".into()),
+            ..Default::default()
+        }));
+        m.create_issue(Parameters(CreateIssueInput {
+            project: "LSM".into(),
+            title: "Unassigned".into(),
+            ..Default::default()
+        }));
+
+        let result = m.list_issues(Parameters(ListIssuesInput {
+            project: "LSM".into(),
+            ..Default::default()
+        }));
+        assert!(result.contains("2 issues"), "got: {result}");
+        assert!(
+            result.contains("In a module (module: Backend)"),
+            "got: {result}"
+        );
+        // The unassigned issue's row must not grow a module annotation.
+        assert!(result.contains("Unassigned\n"), "got: {result}");
+    }
+
+    #[test]
     fn list_issues_reads_link_context_once() {
         let (m, _guard) = mcp();
         seed_project(&m, "Context", "CTX");
@@ -7258,6 +7320,7 @@ mod tests {
                 "{}",
                 IssueLine {
                     issue: &issue,
+                    module: None,
                     context: context.as_deref(),
                 }
             )
