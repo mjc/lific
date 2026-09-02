@@ -19,6 +19,7 @@ import {
 } from "./api";
 import { fuzzyMatch } from "./fuzzy";
 import { createConcurrencyQueue } from "./attachments/queue";
+import { startAutoRefresh } from "./autoRefresh.svelte";
 
 // ── Identifier grammar ───────────────────────────────────────
 //
@@ -83,8 +84,18 @@ export type CachedIssue =
 type IssueResolution = { result: CachedIssue; cacheable: boolean };
 
 const issueCache = new Map<string, CachedIssue>();
-const issueInFlight = new Map<string, Promise<CachedIssue>>();
-const issueResolutionQueue = createConcurrencyQueue(6);
+const ISSUE_STATUS_CONCURRENCY = 6;
+const issueResolutionQueue = createConcurrencyQueue(ISSUE_STATUS_CONCURRENCY);
+
+type IssueInFlight = {
+  promise: Promise<CachedIssue>;
+  controller: AbortController;
+  hasPersistentConsumer: boolean;
+  abortableConsumers: number;
+  directConsumers: number;
+};
+
+const issueInFlight = new Map<string, IssueInFlight>();
 
 // API credentials live in localStorage, and the app can log out/in without
 // reloading this module. A cache entry therefore belongs to the current token,
@@ -92,62 +103,206 @@ const issueResolutionQueue = createConcurrencyQueue(6);
 // repopulating a cache which has just been invalidated by realtime.
 let cacheSession: string | null | undefined;
 let cacheGeneration = 0;
+const issueStatusSubscribers = new Map<string, Set<(result: CachedIssue) => void>>();
+const pendingIssueStatuses = new Set<string>();
+const activeIssueStatuses = new Map<string, AbortController>();
+let issueStatusRevision = 0;
+let stopReferenceRefresh: (() => void) | null = null;
 
-function clearReferenceCaches() {
+function clearReferenceCaches(abortDirect: boolean) {
   cacheGeneration += 1;
   issueCache.clear();
+  for (const pending of issueInFlight.values()) {
+    if (abortDirect || (!pending.hasPersistentConsumer && pending.directConsumers === 0)) {
+      pending.controller.abort();
+    }
+  }
   issueInFlight.clear();
   moduleCache.clear();
   moduleInFlight.clear();
 }
 
-function ensureCacheSession() {
+function refreshSubscribedIssueStatuses() {
+  issueStatusRevision += 1;
+  for (const controller of activeIssueStatuses.values()) controller.abort();
+  pendingIssueStatuses.clear();
+  for (const key of issueStatusSubscribers.keys()) scheduleIssueStatus(key);
+}
+
+function ensureCacheSession(): boolean {
   const session = typeof localStorage === "undefined"
     ? null
     : localStorage.getItem("lific_token");
-  if (cacheSession !== session) {
-    cacheSession = session;
-    clearReferenceCaches();
+  if (cacheSession === session) return false;
+  cacheSession = session;
+  clearReferenceCaches(true);
+  refreshSubscribedIssueStatuses();
+  return true;
+}
+
+function scheduleIssueStatus(key: string) {
+  if (!issueStatusSubscribers.has(key) || activeIssueStatuses.has(key)) return;
+  pendingIssueStatuses.add(key);
+  pumpIssueStatuses();
+}
+
+function pumpIssueStatuses() {
+  while (activeIssueStatuses.size < ISSUE_STATUS_CONCURRENCY && pendingIssueStatuses.size > 0) {
+    const key = pendingIssueStatuses.values().next().value as string;
+    pendingIssueStatuses.delete(key);
+    if (!issueStatusSubscribers.has(key)) continue;
+
+    const revision = issueStatusRevision;
+    const controller = new AbortController();
+    activeIssueStatuses.set(key, controller);
+    void fetchIssueCachedInternal(key, controller.signal)
+      .then((result) => {
+        if (controller.signal.aborted || revision !== issueStatusRevision) return;
+        for (const subscriber of issueStatusSubscribers.get(key) ?? []) {
+          try {
+            subscriber(result);
+          } catch (error) {
+            console.error("issue status subscriber failed", error);
+          }
+        }
+      })
+      .finally(() => {
+        if (activeIssueStatuses.get(key) === controller) activeIssueStatuses.delete(key);
+        if (controller.signal.aborted || revision !== issueStatusRevision) {
+          scheduleIssueStatus(key);
+        }
+        pumpIssueStatuses();
+      });
   }
 }
 
-/** Clear cached reference data after a realtime issue change or resync. */
+/** Clear cached reference data and refresh every subscribed issue status. */
 export function invalidateReferenceCache() {
-  ensureCacheSession();
-  clearReferenceCaches();
+  if (ensureCacheSession()) return;
+  clearReferenceCaches(false);
+  refreshSubscribedIssueStatuses();
 }
 
-export async function fetchIssueCached(identifier: string): Promise<CachedIssue> {
+/** Resolve one identifier through the shared, bounded status coordinator. */
+export function subscribeIssueStatus(
+  identifier: string,
+  subscriber: (result: CachedIssue) => void,
+): () => void {
   ensureCacheSession();
+  const key = identifier.toUpperCase();
+  const subscribers = issueStatusSubscribers.get(key) ?? new Set();
+  subscribers.add(subscriber);
+  issueStatusSubscribers.set(key, subscribers);
+  scheduleIssueStatus(key);
+
+  stopReferenceRefresh ??= startAutoRefresh({
+    refresh: invalidateReferenceCache,
+    shouldRefresh: (event) =>
+      event.type.startsWith("issue.") || event.type === "resync.required",
+  });
+
+  let disposed = false;
+  return () => {
+    if (disposed) return;
+    disposed = true;
+    subscribers.delete(subscriber);
+    if (subscribers.size === 0 && issueStatusSubscribers.get(key) === subscribers) {
+      issueStatusSubscribers.delete(key);
+      pendingIssueStatuses.delete(key);
+      activeIssueStatuses.get(key)?.abort();
+    }
+    if (issueStatusSubscribers.size === 0) {
+      stopReferenceRefresh?.();
+      stopReferenceRefresh = null;
+    }
+  };
+}
+
+function attachAbortableConsumer(
+  pending: IssueInFlight,
+  signal: AbortSignal,
+  direct: boolean,
+): Promise<CachedIssue> {
+  if (signal.aborted) return Promise.resolve({ status: "unavailable" });
+
+  pending.abortableConsumers += 1;
+  if (direct) pending.directConsumers += 1;
+  let onAbort: () => void;
+  return new Promise<CachedIssue>((resolve) => {
+    onAbort = () => resolve({ status: "unavailable" });
+    signal.addEventListener("abort", onAbort, { once: true });
+    pending.promise.then(resolve, () => resolve({ status: "unavailable" }));
+  }).finally(() => {
+    signal.removeEventListener("abort", onAbort);
+    pending.abortableConsumers -= 1;
+    if (direct) pending.directConsumers -= 1;
+    if (!pending.hasPersistentConsumer && pending.abortableConsumers === 0) {
+      pending.controller.abort();
+    }
+  });
+}
+
+async function fetchIssueCachedInternal(
+  identifier: string,
+  signal?: AbortSignal,
+  directConsumer = false,
+): Promise<CachedIssue> {
+  ensureCacheSession();
+  if (signal?.aborted) return { status: "unavailable" };
   const key = identifier.toUpperCase();
   const cached = issueCache.get(key);
   if (cached) return cached;
   const pending = issueInFlight.get(key);
-  if (pending) return pending;
+  if (pending && !pending.controller.signal.aborted) {
+    if (signal) return attachAbortableConsumer(pending, signal, directConsumer);
+    pending.hasPersistentConsumer = true;
+    return pending.promise;
+  }
+  if (pending && issueInFlight.get(key) === pending) issueInFlight.delete(key);
 
   const generation = cacheGeneration;
+  const session = cacheSession;
+  const controller = new AbortController();
+  let entry: IssueInFlight;
   const promise = issueResolutionQueue.add(async (): Promise<IssueResolution> => {
-    if (cacheGeneration !== generation) {
+    if (cacheSession !== session || controller.signal.aborted) {
       return { result: { status: "unavailable" }, cacheable: false };
     }
-    const res = await resolveIssue(key);
+    const res = await resolveIssue(key, controller.signal);
     return res.ok
       ? { result: { status: "ok", issue: res.data }, cacheable: true }
       : {
           result: { status: "unavailable" },
           cacheable: res.status === 403 || res.status === 404,
         };
-  }).then(({ result, cacheable }) => {
-    // Cache successful and stable 403/404 results; transient failures stay
-    // retryable instead of leaving an issue permanently unavailable.
-    if (cacheGeneration === generation && cacheable) {
-      issueCache.set(key, result);
-    }
-    if (issueInFlight.get(key) === promise) issueInFlight.delete(key);
-    return result;
-  });
-  issueInFlight.set(key, promise);
-  return promise;
+  })
+    .then(({ result, cacheable }): CachedIssue => {
+      // Cache successful and stable 403/404 results; transient failures stay
+      // retryable instead of leaving an issue permanently unavailable.
+      if (cacheGeneration === generation && cacheable) {
+        issueCache.set(key, result);
+      }
+      const hasDirectConsumer = entry.hasPersistentConsumer || entry.directConsumers > 0;
+      return cacheGeneration === generation || (cacheSession === session && hasDirectConsumer)
+        ? result
+        : { status: "unavailable" };
+    })
+    .finally(() => {
+      if (issueInFlight.get(key) === entry) issueInFlight.delete(key);
+    });
+  entry = {
+    promise,
+    controller,
+    hasPersistentConsumer: !signal,
+    abortableConsumers: 0,
+    directConsumers: 0,
+  };
+  issueInFlight.set(key, entry);
+  return signal ? attachAbortableConsumer(entry, signal, directConsumer) : promise;
+}
+
+export function fetchIssueCached(identifier: string, signal?: AbortSignal): Promise<CachedIssue> {
+  return fetchIssueCachedInternal(identifier, signal, true);
 }
 
 const moduleCache = new Map<number, Module | null>();
@@ -159,12 +314,20 @@ export async function fetchModuleCached(id: number): Promise<Module | null> {
   const pending = moduleInFlight.get(id);
   if (pending) return pending;
 
-  const promise = getModule(id).then((res) => {
-    const mod = res.ok ? res.data : null;
-    moduleCache.set(id, mod);
-    moduleInFlight.delete(id);
-    return mod;
-  });
+  const generation = cacheGeneration;
+  const session = cacheSession;
+  const promise = getModule(id)
+    .then((res): Module | null => {
+      const mod = res.ok ? res.data : null;
+      if (cacheGeneration === generation) {
+        moduleCache.set(id, mod);
+        return mod;
+      }
+      return cacheSession === session ? mod : null;
+    })
+    .finally(() => {
+      if (moduleInFlight.get(id) === promise) moduleInFlight.delete(id);
+    });
   moduleInFlight.set(id, promise);
   return promise;
 }

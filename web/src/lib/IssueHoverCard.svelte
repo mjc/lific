@@ -79,8 +79,9 @@
     cached = null;
     mod = null;
     let cancelled = false;
+    const controller = new AbortController();
     (async () => {
-      const result = await fetchIssueCached(ident);
+      const result = await fetchIssueCached(ident, controller.signal);
       if (cancelled) return;
       cached = result;
       if (result.status === "ok" && result.issue.module_id != null) {
@@ -90,6 +91,7 @@
     })();
     return () => {
       cancelled = true;
+      controller.abort();
     };
   });
 
