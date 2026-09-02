@@ -369,6 +369,24 @@ describe("fetchIssueCached", () => {
     second();
   });
 
+  test("an old cleanup cannot remove a replacement same-key subscription", async () => {
+    storage.setItem("lific_token", "idempotent-cleanup");
+    gate = new Promise<void>((resolve) => { releaseGate = resolve; });
+    const first = subscribe("LIF-97", () => {});
+    await Promise.resolve();
+
+    first();
+    const delivered = Promise.withResolvers<boolean>();
+    const second = subscribe("LIF-97", () => delivered.resolve(true));
+    first();
+    expect(browserWindow.listenerCount(REALTIME_INVALIDATE_EVENT)).toBe(1);
+    expect(browserWindow.listenerCount("focus")).toBe(1);
+    releaseGate!();
+
+    expect(await delivered.promise).toBe(true);
+    second();
+  });
+
   test("releases queue slots after abortable direct consumers leave", async () => {
     storage.setItem("lific_token", "direct-cancelled");
     gate = new Promise<void>((resolve) => { releaseGate = resolve; });

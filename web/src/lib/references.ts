@@ -201,9 +201,12 @@ export function subscribeIssueStatus(
       event.type.startsWith("issue.") || event.type === "resync.required",
   });
 
+  let disposed = false;
   return () => {
+    if (disposed) return;
+    disposed = true;
     subscribers.delete(subscriber);
-    if (subscribers.size === 0) {
+    if (subscribers.size === 0 && issueStatusSubscribers.get(key) === subscribers) {
       issueStatusSubscribers.delete(key);
       pendingIssueStatuses.delete(key);
       activeIssueStatuses.get(key)?.abort();
