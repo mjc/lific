@@ -138,9 +138,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    // Load config (CLI flags override config values). A malformed config is
-    // fatal: booting on defaults would silently widen the instance.
-    let mut cfg = Config::load(cli.config.as_deref())?;
+    // Resolve config once. Normal commands fail closed on a selected config
+    // error; doctor receives the same typed result and reports the failure
+    // while continuing independent diagnostics.
+    let resolution = Config::resolve(cli.config.as_deref());
+    if let Command::Doctor { key } = &cli.command {
+        let mut cfg = resolution
+            .as_ref()
+            .map(|resolved| resolved.config.clone())
+            .unwrap_or_default();
+        if let Some(ref db) = cli.db {
+            cfg.database.path = db.clone();
+        }
+        let json = cli::term::wants_json(cli.json);
+        cli::doctor::run_with_resolution(&cfg, &resolution, key.clone(), json)
+            .await
+            .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
+        return Ok(());
+    }
+    let resolved_config_path = resolution
+        .as_ref()
+        .ok()
+        .and_then(|resolved| resolved.path.clone());
+    let mut cfg = match resolution {
+        Ok(resolved) => resolved.config,
+        Err(config::ConfigError::MissingExplicit { .. })
+            if matches!(&cli.command, Command::Init { .. }) =>
+        {
+            Config::default()
+        }
+        Err(error) => return Err(error.into()),
+    };
 
     // CLI overrides
     if let Some(ref db) = cli.db {
@@ -205,7 +233,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         Command::Service { action } => {
-            return cmd_service(&cfg, cli.config.as_deref(), cli.json, &action);
+            return cmd_service(&cfg, resolved_config_path.as_deref(), cli.json, &action);
         }
 
         Command::Dump { out } => {
@@ -358,18 +386,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await
             .map_err(|e| -> Box<dyn std::error::Error> { e.to_string().into() })?
             .map_err(|e| -> Box<dyn std::error::Error> { std::io::Error::other(e).into() })?;
-            return Ok(());
-        }
-
-        Command::Doctor { key } => {
-            // Diagnostics only: no tracing subscriber (keep stdout clean for the
-            // human table / JSON), and no DB open up front — the database check
-            // opens it itself and reports failure as a check, rather than
-            // aborting `doctor` before it can tell you why.
-            let json = cli::term::wants_json(cli.json);
-            cli::doctor::run(&cfg, cli.config.as_deref(), key, json)
-                .await
-                .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
             return Ok(());
         }
 
@@ -545,6 +561,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // CRUD commands and Completion are handled before this match
         Command::Completion { .. }
+        | Command::Doctor { .. }
         | Command::Issue { .. }
         | Command::Project { .. }
         | Command::Page { .. }
@@ -649,12 +666,12 @@ fn resolve_init_target(
 /// Load the config file `init` operates on, applying the optional `--db`
 /// override on top. Shared by the initial load and the post-auth-mode reload
 /// (LIFIC-25), so the override logic lives in exactly one place. A malformed
-/// config file is fatal, matching `Config::load`'s contract everywhere else.
+/// config file is fatal, matching `Config::resolve`'s contract everywhere else.
 fn load_config_for_init(
     config_path: &std::path::Path,
     db_flag: Option<&std::path::Path>,
 ) -> Result<Config, config::ConfigError> {
-    let mut cfg = Config::load(Some(config_path))?;
+    let mut cfg = Config::resolve(Some(config_path))?.config;
     if let Some(db) = db_flag {
         cfg.database.path = db.to_path_buf();
     }
@@ -1036,7 +1053,7 @@ async fn cmd_init(
 /// `lific service <action>`: manage the background service `init` installs.
 fn cmd_service(
     cfg: &Config,
-    config_flag: Option<&std::path::Path>,
+    resolved_config_path: Option<&std::path::Path>,
     json_flag: bool,
     action: &ServiceAction,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -1051,25 +1068,10 @@ fn cmd_service(
     };
     match action {
         ServiceAction::Install => {
-            // LIF-292: honor --config; the unit is rendered around this
-            // exact file. Without the flag, discover the instance the same
-            // way Config::load does (cwd → user config dir → system config
-            // dir, LIF-295) so a bare install finds the OS-dirs instance
-            // that a bare `lific init` created.
-            let config_path: std::path::PathBuf = match config_flag {
-                Some(p) => p.to_path_buf(),
-                None => Config::discover_path()
-                    .unwrap_or_else(|| std::path::PathBuf::from("lific.toml")),
-            };
-            if !config_path.exists() {
-                return Err(format!(
-                    "config not found at {} — run `lific init` first (or point --config at an \
-                     existing lific.toml)",
-                    config_path.display()
-                )
-                .into());
-            }
-            let plan = cli::service::ServicePlan::for_config_file(&config_path)?;
+            let config_path = resolved_config_path.ok_or(
+                "no configuration file selected — run `lific init` first (or pass --config)",
+            )?;
+            let plan = cli::service::ServicePlan::for_config_file(config_path)?;
             let report = cli::service::install(mgr, &plan)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
