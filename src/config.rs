@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use tracing::info;
+use tracing::{info, warn};
 
 const CONFIG_FILENAME: &str = "lific.toml";
 
@@ -60,6 +60,25 @@ fn tighten_config_permissions(config: &ConfigFile) -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Whether a failed permission tightening is a reason to refuse the config.
+///
+/// The chmod only ever runs on a file we already read successfully, so the
+/// question is purely "can we fix its mode from here". Two answers are no
+/// through no fault of the operator: the file belongs to someone else
+/// (`EPERM`: a root-owned `/etc/lific/lific.toml` read by the service user,
+/// a Docker bind mount owned by the host user, another user's config picked
+/// up by the CLI) or it sits on a read-only mount (`EROFS`: an `:ro` bind
+/// mount, a Nix store path). Refusing to start there would only push people
+/// toward copying the file somewhere writable, which is worse than loading
+/// it and saying so. Anything else means our own file misbehaved and stays
+/// fatal.
+fn tightening_failure_is_tolerable(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ReadOnlyFilesystem
+    )
 }
 
 fn editable_document(existing: &str) -> Result<toml_edit::DocumentMut, String> {
@@ -477,10 +496,19 @@ impl Config {
                     source: Box::new(source),
                 })?;
 
-            tighten_config_permissions(&file).map_err(|source| ConfigError::Read {
-                path: path.clone(),
-                source,
-            })?;
+            if let Err(source) = tighten_config_permissions(&file) {
+                if !tightening_failure_is_tolerable(&source) {
+                    return Err(ConfigError::Read {
+                        path: path.clone(),
+                        source,
+                    });
+                }
+                warn!(
+                    path = %path.display(),
+                    error = %source,
+                    "config is readable by other users and could not be made owner-only from here"
+                );
+            }
 
             info!(path = %path.display(), "loaded config");
             // Anchor a relative database path to the config file's own
@@ -754,6 +782,81 @@ enabled = false
             std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
             0o644
         );
+    }
+
+    /// The chmod rides the descriptor the contents were read from, so it can
+    /// only ever land on that inode. Swapping the *name* for a symlink to a
+    /// sensitive file after the read cannot redirect the permission change,
+    /// which a check-then-chmod-by-path pair would allow.
+    #[cfg(unix)]
+    #[test]
+    fn tightening_follows_the_opened_file_not_the_pathname() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("lific.toml");
+        std::fs::write(&path, Config::default_toml()).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let inode = std::fs::metadata(&path).unwrap().ino();
+
+        // A bystander an attacker would want the chmod to hit.
+        let bystander = tmp.path().join("secrets");
+        std::fs::write(&bystander, "secret").unwrap();
+        std::fs::set_permissions(&bystander, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        Config::load(Some(&path)).unwrap();
+
+        let after = std::fs::metadata(&path).unwrap();
+        assert_eq!(after.ino(), inode, "same file, start to finish");
+        assert_eq!(after.permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            std::fs::metadata(&bystander).unwrap().permissions().mode() & 0o777,
+            0o644,
+            "nothing else may be chmodded"
+        );
+    }
+
+    /// An already-tight config is left exactly as it is: no needless chmod,
+    /// and in particular no widening of a 0400 file to 0600.
+    #[cfg(unix)]
+    #[test]
+    fn loading_config_leaves_owner_only_permissions_alone() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("lific.toml");
+        std::fs::write(&path, Config::default_toml()).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400)).unwrap();
+
+        Config::load(Some(&path)).unwrap();
+
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o400
+        );
+    }
+
+    /// A config the process cannot chmod (someone else's file, a read-only
+    /// mount) still loads; only failures on our own file are fatal. The
+    /// real-world shape is a root-owned `/etc/lific/lific.toml` read by the
+    /// service user, which a unit test cannot stage without root, so the
+    /// predicate is exercised directly.
+    #[test]
+    fn untightenable_configs_are_tolerated_not_fatal() {
+        use std::io::{Error, ErrorKind};
+
+        assert!(tightening_failure_is_tolerable(&Error::from(
+            ErrorKind::PermissionDenied
+        )));
+        assert!(tightening_failure_is_tolerable(&Error::from(
+            ErrorKind::ReadOnlyFilesystem
+        )));
+        assert!(!tightening_failure_is_tolerable(&Error::from(
+            ErrorKind::NotFound
+        )));
+        assert!(!tightening_failure_is_tolerable(&Error::other(
+            "descriptor went bad"
+        )));
     }
 
     /// A directory opens fine on Linux, so the type check rejects it before

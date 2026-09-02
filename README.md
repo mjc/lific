@@ -321,11 +321,13 @@ Config is discovered in standard locations, first match wins:
 
 A relative `database.path` always resolves against the config file's own directory, so the same config works no matter where the process starts. `lific init --config /path/to/lific.toml` and `lific service install --config ...` root the whole instance (config, database, service working directory) at that path. `lific init --db` persists an absolute database path into that config before installing the service; `lific service install --db` is rejected so a persistent service never has two competing path authorities.
 
-On Unix, config files loaded from these normal paths must be private. Lific
-tightens group/other permissions to `0600`; startup fails if the process cannot
-make that change, such as for a root-owned `0644` file under `/etc`. For a
-system service, load the file as a systemd credential instead; credential files
-are already protected and are not modified by Lific.
+On Unix, Lific keeps the config it loads private: a group- or other-readable
+file it owns is tightened to `0600` in place. A file it cannot change (a
+root-owned file under `/etc` read by the service user, a bind mount owned by
+another uid, a read-only mount) still loads, with a warning that it remains
+readable by others. Prefer `root:lific 0640` for a shared system config, or
+load it as a systemd credential, which is already protected and is never
+modified by Lific.
 
 </details>
 
@@ -397,12 +399,12 @@ docker run -p 3456:3456 -v lific-data:/data lific
 The image runs as UID/GID 65532 and always stores the database, attachments,
 and default backups under `/data`; make a bind mount writable by that identity.
 Because `/data` is the working directory, a mounted `/data/lific.toml` is
-discovered automatically. If that file exists in a bind mount, make it owned
-by UID/GID 65532 with owner-only permissions so Lific can load it:
+discovered automatically. It only has to be readable by UID 65532; a file
+owned by your own user loads as-is (Lific logs a warning that it could not make
+it owner-only, since it cannot chmod a file it does not own). Hand it to 65532
+with `0600` if you want that warning gone and the file private:
 
 ```bash
-chown 65532:65532 ./data/lific.toml
-chmod 600 ./data/lific.toml
 docker run -p 3456:3456 -v ./data:/data lific
 ```
 
