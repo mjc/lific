@@ -204,8 +204,16 @@ pub async fn build_report_with_config_path(
     ) = match key {
         Some(k) => (Some(k.to_string()), None),
         None => match crate::cli::credentials::load_with_source(cred_base) {
-            Some((tok, src)) => (Some(tok), Some(src)),
-            None => (None, None),
+            Ok(Some((tok, src))) => (Some(tok), Some(src)),
+            Ok(None) => (None, None),
+            Err(error) => {
+                checks.push(Check::new(
+                    "credentials",
+                    Status::Fail,
+                    format!("failed to read stored credentials: {error}"),
+                ));
+                (None, None)
+            }
         },
     };
 

@@ -22,6 +22,14 @@ use std::path::PathBuf;
 #[error("--api-key was provided but empty")]
 pub(super) struct EmptyHttpCredential;
 
+#[derive(Debug, thiserror::Error)]
+pub(super) enum HttpCredentialError {
+    #[error(transparent)]
+    Empty(#[from] EmptyHttpCredential),
+    #[error("failed to load stored credential: {0}")]
+    Stored(#[from] credentials::PlaintextCredentialFileError),
+}
+
 #[must_use = "iterate over the non-empty CSV values"]
 pub(super) fn split_csv(value: &str) -> impl Iterator<Item = &str> {
     value
@@ -42,18 +50,18 @@ pub(super) fn owned_labels(value: Option<&str>) -> Option<Vec<String>> {
 #[must_use = "use the resolved HTTP credential"]
 pub(super) fn resolve_http_credential(
     explicit: Option<&str>,
-    stored: impl FnOnce() -> Option<String>,
-) -> Result<Option<String>, EmptyHttpCredential> {
+    stored: impl FnOnce() -> Result<Option<String>, credentials::PlaintextCredentialFileError>,
+) -> Result<Option<String>, HttpCredentialError> {
     match explicit {
         Some(value) => {
             let value = value.trim();
             if value.is_empty() {
-                Err(EmptyHttpCredential)
+                Err(HttpCredentialError::Empty(EmptyHttpCredential))
             } else {
                 Ok(Some(value.to_owned()))
             }
         }
-        None => Ok(stored()
+        None => Ok(stored()?
             .map(|value| value.trim().to_owned())
             .filter(|value| !value.is_empty())),
     }
@@ -1270,22 +1278,22 @@ mod tests {
     #[test]
     fn http_credential_prefers_explicit_and_ignores_blank_stored_values() {
         assert_eq!(
-            resolve_http_credential(Some(" explicit "), || Some("stored".into())),
-            Ok(Some("explicit".into()))
+            resolve_http_credential(Some(" explicit "), || Ok(Some("stored".into()))).unwrap(),
+            Some("explicit".into())
         );
         assert_eq!(
-            resolve_http_credential(None, || Some(" stored ".into())),
-            Ok(Some("stored".into()))
+            resolve_http_credential(None, || Ok(Some(" stored ".into()))).unwrap(),
+            Some("stored".into())
         );
         assert_eq!(
-            resolve_http_credential(None, || Some("  ".into())),
-            Ok(None)
+            resolve_http_credential(None, || Ok(Some("  ".into()))).unwrap(),
+            None
         );
     }
 
     #[test]
     fn http_credential_rejects_blank_explicit_value() {
-        let error = resolve_http_credential(Some("  "), || Some("stored".into())).unwrap_err();
+        let error = resolve_http_credential(Some("  "), || Ok(Some("stored".into()))).unwrap_err();
         assert_eq!(error.to_string(), "--api-key was provided but empty");
     }
 
@@ -1294,11 +1302,29 @@ mod tests {
         let mut loaded = false;
         let credential = resolve_http_credential(Some("explicit"), || {
             loaded = true;
-            Some("stored".into())
+            Ok(Some("stored".into()))
         });
 
         assert_eq!(credential.unwrap(), Some("explicit".into()));
         assert!(!loaded);
+    }
+
+    #[test]
+    fn http_credential_surfaces_stored_read_errors() {
+        let error = resolve_http_credential(None, || {
+            Err(credentials::PlaintextCredentialFileError::Read {
+                path: PathBuf::from("credentials.json"),
+                source: std::io::Error::other("permission denied"),
+            })
+        })
+        .unwrap_err();
+
+        assert!(matches!(error, HttpCredentialError::Stored(_)));
+        assert!(
+            error
+                .to_string()
+                .contains("failed to load stored credential")
+        );
     }
 
     #[test]
