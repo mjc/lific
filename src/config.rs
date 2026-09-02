@@ -46,6 +46,9 @@ fn is_systemd_credential(path: &Path) -> bool {
     expect(clippy::unnecessary_wraps, reason = "fallible on Unix")
 )]
 fn tighten_config_permissions(config: &ConfigFile) -> std::io::Result<()> {
+    #[cfg(not(unix))]
+    let _ = config;
+
     #[cfg(unix)]
     {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
