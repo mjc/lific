@@ -411,6 +411,8 @@ pub fn map_issue(
         description: adf_to_markdown(&issue.fields.description),
         status,
         priority,
+        start_date: None,
+        target_date: None,
         labels,
         comments: mapped_comments,
     }

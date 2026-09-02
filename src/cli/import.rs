@@ -7,6 +7,7 @@
 
 use crate::config::Config;
 use crate::db::{self, DbPool};
+use crate::import::beads;
 use crate::import::github::{self, StateFilter};
 use crate::import::jira::{self, JiraStatusMap};
 use crate::import::linear::{self, LinearStatusMap};
@@ -25,6 +26,13 @@ pub fn run(
     crate::actor::set_default_transport(crate::actor::Transport::Cli);
 
     let summary = match action {
+        ImportAction::Beads {
+            path,
+            source,
+            project,
+            user,
+            dry_run,
+        } => run_beads(&pool, path, source, project, user.as_deref(), *dry_run)?,
         ImportAction::Github {
             repo,
             project,
@@ -81,6 +89,33 @@ pub fn run(
 
     print_summary(&summary, json);
     Ok(())
+}
+
+fn run_beads(
+    pool: &DbPool,
+    path: &std::path::Path,
+    source: &str,
+    project: &str,
+    user: Option<&str>,
+    dry_run: bool,
+) -> Result<ImportSummary, Box<dyn std::error::Error>> {
+    let fetched = beads::collect(path, source)?;
+    let project_id = resolve_project(pool, project)?;
+    if dry_run {
+        return Ok(import::run_import(pool, project_id, None, &fetched, true)?);
+    }
+    let has_comments = fetched
+        .issues
+        .iter()
+        .any(|issue| !issue.comments.is_empty());
+    if has_comments && import::resolve_owner(pool, user)?.is_none() {
+        return Err(
+            "Beads export contains comments but no human owner exists; pass --user <username>"
+                .into(),
+        );
+    }
+    let bot = resolve_bot(pool, "beads", "Beads Import", user)?;
+    Ok(import::run_import(pool, project_id, bot, &fetched, false)?)
 }
 
 /// Resolve a project identifier to its id, or a friendly error.
@@ -247,6 +282,51 @@ pub fn print_summary(summary: &ImportSummary, json: bool) {
                 "    {} milestone/estimate/type reference(s)",
                 summary.skipped_other
             );
+        }
+    }
+    if summary.skipped_tombstones + summary.skipped_ephemeral + summary.skipped_templates > 0 {
+        println!();
+        println!("  Skipped source records:");
+        if summary.skipped_tombstones > 0 {
+            println!("    {} tombstone(s)", summary.skipped_tombstones);
+        }
+        if summary.skipped_ephemeral > 0 {
+            println!("    {} ephemeral record(s)", summary.skipped_ephemeral);
+        }
+        if summary.skipped_templates > 0 {
+            println!("    {} template(s)", summary.skipped_templates);
+        }
+    }
+    if summary.relations_created
+        + summary.relations_planned
+        + summary.relations_existing
+        + summary.relations_missing_endpoint
+        + summary.relations_unsupported
+        + summary.relations_self
+        > 0
+    {
+        println!();
+        println!("  Relations:");
+        if summary.relations_created > 0 {
+            println!("    created: {}", summary.relations_created);
+        }
+        if summary.relations_planned > 0 {
+            println!("    planned: {}", summary.relations_planned);
+        }
+        if summary.relations_existing > 0 {
+            println!("    existing: {}", summary.relations_existing);
+        }
+        if summary.relations_missing_endpoint > 0 {
+            println!(
+                "    missing endpoint: {}",
+                summary.relations_missing_endpoint
+            );
+        }
+        if summary.relations_unsupported > 0 {
+            println!("    unsupported: {}", summary.relations_unsupported);
+        }
+        if summary.relations_self > 0 {
+            println!("    self relation: {}", summary.relations_self);
         }
     }
     println!();

@@ -450,7 +450,7 @@ pub enum Command {
         action: FolderAction,
     },
 
-    /// Import issues from an external tracker (GitHub, Linear, Jira).
+    /// Import issues from an external tracker (GitHub, Linear, Jira, Beads).
     ///
     /// Each importer records a stable `source` marker per issue so re-running
     /// is idempotent: already-imported issues are skipped, never duplicated.
@@ -489,6 +489,29 @@ pub enum ServiceAction {
 
 #[derive(Subcommand)]
 pub enum ImportAction {
+    /// Import a Beads JSONL export. The path may be an exported JSONL file or
+    /// a `.beads` directory containing the exact `issues.jsonl` export.
+    Beads {
+        #[arg(long)]
+        path: PathBuf,
+
+        /// Stable logical name for this Beads dataset, used for idempotency.
+        #[arg(long)]
+        source: String,
+
+        /// Destination Lific project identifier.
+        #[arg(long)]
+        project: String,
+
+        /// Username who should own the import bot.
+        #[arg(long)]
+        user: Option<String>,
+
+        /// Report what would be imported without writing anything.
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+    },
+
     /// Import GitHub repo issues (filters out pull requests).
     Github {
         /// Source repo as owner/name (e.g. octocat/hello).
@@ -1257,6 +1280,44 @@ pub enum UserAction {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    #[test]
+    fn parses_beads_import_arguments() {
+        let cli = Cli::try_parse_from([
+            "lific",
+            "import",
+            "beads",
+            "--path",
+            ".beads",
+            "--source",
+            "demo",
+            "--project",
+            "APP",
+            "--user",
+            "alice",
+            "--dry-run",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Import {
+                action:
+                    ImportAction::Beads {
+                        path,
+                        source,
+                        project,
+                        user,
+                        dry_run,
+                    },
+            } => {
+                assert_eq!(path, PathBuf::from(".beads"));
+                assert_eq!(source, "demo");
+                assert_eq!(project, "APP");
+                assert_eq!(user.as_deref(), Some("alice"));
+                assert!(dry_run);
+            }
+            _ => panic!("expected Beads import"),
+        }
+    }
 
     #[test]
     fn owned_labels_preserve_values_and_discard_empty_items() {

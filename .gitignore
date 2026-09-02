@@ -12,6 +12,9 @@ deploy.sh
 dev-backend.sh
 /.dev/
 
+# LIF-111: local Beads databases and exports are private test source material.
+/tests/fixtures/beads/
+
 # Krita working/autosave files + editor backups (keep exported PNGs, not these)
 *.kra
 *~

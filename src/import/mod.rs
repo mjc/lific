@@ -1,7 +1,7 @@
 //! Issue import (LIF-264 / LIF-265).
 //!
-//! Pulls issues from external trackers — GitHub, Linear, Jira — into a Lific
-//! project. Three sources share one spine so behavior is uniform:
+//! Pulls issues from external trackers — GitHub, Linear, Jira, and Beads — into
+//! a Lific project. All sources share one spine so behavior is uniform:
 //!
 //! - **Idempotency.** Every imported issue records a stable `source` marker
 //!   (`github:owner/name#12`, `linear:ENG-3`, `jira:site:KEY-7`). A partial
@@ -31,12 +31,18 @@
 //! - this module — shared core: import bot, label ensure-with-color, the
 //!   source-marker dedupe insert, [`ImportSummary`], and the generic
 //!   [`apply_issue`] that turns a normalized [`NormalizedIssue`] into DB rows.
-//! - [`github`] / [`linear`] / [`jira`] — per-source fetch + map to
-//!   [`NormalizedIssue`].
+//! - [`github`] / [`linear`] / [`jira`] / [`beads`] — per-source fetch + map to
+//!   [`NormalizedIssue`]. Beads is intentionally JSONL-only and parses its
+//!   complete snapshot before entering the write spine.
 
+pub mod beads;
 pub mod github;
 pub mod jira;
 pub mod linear;
+
+use std::collections::HashSet;
+
+use rusqlite::OptionalExtension;
 
 use crate::db::DbPool;
 use crate::db::models::{CreateIssue, CreateLabel, Priority, Status};
@@ -56,6 +62,10 @@ pub struct NormalizedIssue {
     pub status: Status,
     /// Mapped Lific priority.
     pub priority: Priority,
+    /// Calendar dates extracted from source timestamps when the source has
+    /// them. `None` means the source did not provide that facet.
+    pub start_date: Option<String>,
+    pub target_date: Option<String>,
     /// Labels to attach, with the color the source reported (hex like
     /// `#EF4444`) or `None` to use the Lific default.
     pub labels: Vec<NormalizedLabel>,
@@ -80,6 +90,15 @@ pub struct NormalizedComment {
     pub body: String,
 }
 
+/// A source relation waiting for the shared issue-write pass to resolve both
+/// stable source markers to local issue ids.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NormalizedRelation {
+    pub source: String,
+    pub target: String,
+    pub relation_type: String,
+}
+
 impl NormalizedComment {
     /// Render the stored comment body with a provenance prefix so the original
     /// author + time survive the import (the DB comment is authored by the
@@ -100,6 +119,10 @@ impl NormalizedComment {
 #[derive(Debug, Default, Clone)]
 pub struct FetchedIssues {
     pub issues: Vec<NormalizedIssue>,
+    pub relations: Vec<NormalizedRelation>,
+    pub skipped_tombstones: usize,
+    pub skipped_ephemeral: usize,
+    pub skipped_templates: usize,
     /// Count of entries the source returned that were skipped before
     /// normalization (PRs on GitHub's issues endpoint, etc.).
     pub skipped_non_issues: usize,
@@ -133,6 +156,24 @@ pub struct ImportSummary {
     pub skipped_assignees: usize,
     /// Milestone/sprint/epic/estimate/etc. dropped.
     pub skipped_other: usize,
+    /// Tombstones omitted by a source before normalization.
+    pub skipped_tombstones: usize,
+    /// Ephemeral source records omitted before normalization.
+    pub skipped_ephemeral: usize,
+    /// Template source records omitted before normalization.
+    pub skipped_templates: usize,
+    /// Relations newly created this run.
+    pub relations_created: usize,
+    /// Relations that would be created by a dry run.
+    pub relations_planned: usize,
+    /// Relations already present or planned in a dry run.
+    pub relations_existing: usize,
+    /// Relations whose endpoint was not imported/resolvable.
+    pub relations_missing_endpoint: usize,
+    /// Relations skipped because Lific does not support their type.
+    pub relations_unsupported: usize,
+    /// Relations rejected because both endpoints were the same issue.
+    pub relations_self: usize,
 }
 
 /// Find-or-create the import bot for a source, owned by a human user, mirroring
@@ -199,6 +240,120 @@ pub fn source_exists(conn: &rusqlite::Connection, source: &str) -> Result<bool, 
         |row| row.get(0),
     )?;
     Ok(exists)
+}
+
+fn validate_source_projects(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+    issues: &[NormalizedIssue],
+) -> Result<(), LificError> {
+    for issue in issues {
+        let mut stmt = conn.prepare_cached(
+            "SELECT project_id FROM issues
+             WHERE source = ?1 AND deleted_at IS NULL",
+        )?;
+        let projects = stmt
+            .query_map([&issue.source], |row| row.get::<_, i64>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        if projects.iter().any(|id| *id != project_id) {
+            return Err(LificError::Conflict(format!(
+                "source marker '{}' already belongs to another Lific project",
+                issue.source
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn resolve_source(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+    source: &str,
+) -> Result<Option<i64>, LificError> {
+    conn.query_row(
+        "SELECT id FROM issues
+         WHERE project_id = ?1 AND source = ?2 AND deleted_at IS NULL",
+        rusqlite::params![project_id, source],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+fn apply_relations(
+    pool: &DbPool,
+    project_id: i64,
+    relations: &[NormalizedRelation],
+    dry_run: bool,
+    planned_sources: &[String],
+) -> Result<ImportSummary, LificError> {
+    let mut summary = ImportSummary {
+        dry_run,
+        ..Default::default()
+    };
+    let planned_sources = planned_sources
+        .iter()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
+    let mut seen = HashSet::new();
+    let conn = if dry_run { None } else { Some(pool.write()?) };
+    let read_conn = if dry_run { Some(pool.read()?) } else { None };
+    for relation in relations {
+        if !seen.insert((
+            relation.source.as_str(),
+            relation.target.as_str(),
+            relation.relation_type.as_str(),
+        )) {
+            continue;
+        }
+        if relation.source == relation.target {
+            summary.relations_self += 1;
+            continue;
+        }
+        let conn_ref: &rusqlite::Connection = match (&conn, &read_conn) {
+            (Some(conn), None) => conn,
+            (None, Some(conn)) => conn,
+            _ => unreachable!("relation pass has exactly one connection"),
+        };
+        let source_id = resolve_source(conn_ref, project_id, &relation.source)?;
+        let target_id = resolve_source(conn_ref, project_id, &relation.target)?;
+        if !["blocks", "relates_to", "duplicate"].contains(&relation.relation_type.as_str()) {
+            summary.relations_unsupported += 1;
+            continue;
+        }
+        let source_planned =
+            source_id.is_none() && planned_sources.contains(relation.source.as_str());
+        let target_planned =
+            target_id.is_none() && planned_sources.contains(relation.target.as_str());
+        if (source_id.is_none() && !source_planned) || (target_id.is_none() && !target_planned) {
+            summary.relations_missing_endpoint += 1;
+            continue;
+        }
+        if dry_run && (source_planned || target_planned) {
+            summary.relations_planned += 1;
+            continue;
+        }
+        let (Some(source_id), Some(target_id)) = (source_id, target_id) else {
+            unreachable!("non-planned relation endpoints were resolved above");
+        };
+        let exists: bool = conn_ref.query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM issue_relations
+                 WHERE source_id = ?1 AND target_id = ?2 AND relation_type = ?3
+             )",
+            rusqlite::params![source_id, target_id, relation.relation_type],
+            |row| row.get(0),
+        )?;
+        if exists {
+            summary.relations_existing += 1;
+        } else if dry_run {
+            summary.relations_planned += 1;
+        } else {
+            queries::link_issues(conn_ref, source_id, target_id, &relation.relation_type)?;
+            summary.relations_created += 1;
+        }
+    }
+    Ok(summary)
 }
 
 /// Ensure a label exists in the project, creating it with the given color when
@@ -270,6 +425,8 @@ pub fn apply_issue(
                 description: issue.description.clone(),
                 status: issue.status,
                 priority: issue.priority,
+                start_date: issue.start_date.clone(),
+                target_date: issue.target_date.clone(),
                 labels: issue.labels.iter().map(|l| l.name.clone()).collect(),
                 source: Some(issue.source.clone()),
                 ..Default::default()
@@ -311,8 +468,16 @@ pub fn run_import(
         skipped_non_issues: fetched.skipped_non_issues,
         skipped_assignees: fetched.skipped_assignees,
         skipped_other: fetched.skipped_other,
+        skipped_tombstones: fetched.skipped_tombstones,
+        skipped_ephemeral: fetched.skipped_ephemeral,
+        skipped_templates: fetched.skipped_templates,
         ..Default::default()
     };
+
+    {
+        let conn = pool.read()?;
+        validate_source_projects(&conn, project_id, &fetched.issues)?;
+    }
 
     if dry_run {
         // Count what a real run would do without writing. A label is "planned"
@@ -321,12 +486,14 @@ pub fn run_import(
         let conn = pool.read()?;
         let mut planned_labels: std::collections::HashSet<String> =
             std::collections::HashSet::new();
+        let mut planned_sources = Vec::new();
         for issue in &fetched.issues {
             if source_exists(&conn, &issue.source)? {
                 summary.issues_skipped_existing += 1;
                 continue;
             }
             summary.issues_created += 1;
+            planned_sources.push(issue.source.clone());
             summary.comments_planned += issue.comments.len();
             for label in &issue.labels {
                 if queries::resolve_label_name(&conn, project_id, &label.name).is_err() {
@@ -335,6 +502,13 @@ pub fn run_import(
             }
         }
         summary.labels_planned = planned_labels.len();
+        let relations =
+            apply_relations(pool, project_id, &fetched.relations, true, &planned_sources)?;
+        summary.relations_existing = relations.relations_existing;
+        summary.relations_planned = relations.relations_planned;
+        summary.relations_missing_endpoint = relations.relations_missing_endpoint;
+        summary.relations_unsupported = relations.relations_unsupported;
+        summary.relations_self = relations.relations_self;
         return Ok(summary);
     }
 
@@ -351,6 +525,12 @@ pub fn run_import(
             ApplyOutcome::Skipped => summary.issues_skipped_existing += 1,
         }
     }
+    let relations = apply_relations(pool, project_id, &fetched.relations, false, &[])?;
+    summary.relations_created = relations.relations_created;
+    summary.relations_existing = relations.relations_existing;
+    summary.relations_missing_endpoint = relations.relations_missing_endpoint;
+    summary.relations_unsupported = relations.relations_unsupported;
+    summary.relations_self = relations.relations_self;
     Ok(summary)
 }
 
@@ -417,6 +597,8 @@ mod tests {
             description: "body".into(),
             status: Status::Backlog,
             priority: Priority::None,
+            start_date: None,
+            target_date: None,
             labels: vec![],
             comments: vec![],
         }
@@ -575,6 +757,7 @@ mod tests {
             skipped_non_issues: 3,
             skipped_assignees: 2,
             skipped_other: 1,
+            ..Default::default()
         };
 
         let summary = run_import(&pool, pid, None, &fetched, true).unwrap();
@@ -658,5 +841,97 @@ mod tests {
             )
             .unwrap();
         assert_eq!(tombstoned, 1);
+    }
+
+    #[test]
+    fn relation_pass_is_idempotent_and_preserves_direction() {
+        let pool = db::open_memory().unwrap();
+        let pid = seed_project(&pool, "APP");
+        let fetched = FetchedIssues {
+            issues: vec![
+                norm("beads:test:bd-1", "blocked"),
+                norm("beads:test:bd-2", "blocker"),
+            ],
+            relations: vec![
+                NormalizedRelation {
+                    source: "beads:test:bd-2".into(),
+                    target: "beads:test:bd-1".into(),
+                    relation_type: "blocks".into(),
+                },
+                NormalizedRelation {
+                    source: "beads:test:bd-1".into(),
+                    target: "beads:test:bd-2".into(),
+                    relation_type: "parent-child".into(),
+                },
+                NormalizedRelation {
+                    source: "beads:test:bd-1".into(),
+                    target: "beads:test:missing".into(),
+                    relation_type: "blocks".into(),
+                },
+            ],
+            ..Default::default()
+        };
+
+        let first = run_import(&pool, pid, None, &fetched, false).unwrap();
+        assert_eq!(first.relations_created, 1);
+        assert_eq!(first.relations_unsupported, 1);
+        assert_eq!(first.relations_missing_endpoint, 1);
+        let second = run_import(&pool, pid, None, &fetched, false).unwrap();
+        assert_eq!(second.relations_existing, 1);
+
+        let preview_pool = db::open_memory().unwrap();
+        let preview_project = seed_project(&preview_pool, "PREV");
+        let preview = run_import(&preview_pool, preview_project, None, &fetched, true).unwrap();
+        assert_eq!(preview.relations_planned, 1);
+        assert_eq!(preview.relations_unsupported, 1);
+        assert_eq!(preview.relations_missing_endpoint, 1);
+
+        let conn = pool.read().unwrap();
+        let direction: (i64, i64) = conn
+            .query_row(
+                "SELECT source_id, target_id FROM issue_relations",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        let ids: Vec<i64> = conn
+            .prepare("SELECT id FROM issues ORDER BY source")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(direction, (ids[1], ids[0]));
+    }
+
+    #[test]
+    fn source_marker_collision_is_rejected_before_writes() {
+        let pool = db::open_memory().unwrap();
+        let first = seed_project(&pool, "ONE");
+        let second = seed_project(&pool, "TWO");
+        run_import(
+            &pool,
+            first,
+            None,
+            &FetchedIssues {
+                issues: vec![norm("beads:test:bd-1", "existing")],
+                ..Default::default()
+            },
+            false,
+        )
+        .unwrap();
+
+        let error = run_import(
+            &pool,
+            second,
+            None,
+            &FetchedIssues {
+                issues: vec![norm("beads:test:bd-1", "collision")],
+                ..Default::default()
+            },
+            false,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("another Lific project"));
     }
 }

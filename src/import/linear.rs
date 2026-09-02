@@ -177,6 +177,8 @@ pub fn map_issue(issue: &LinearIssue, map: &LinearStatusMap) -> NormalizedIssue 
         description: issue.description.clone().unwrap_or_default(),
         status,
         priority: map_priority(issue.priority),
+        start_date: None,
+        target_date: None,
         labels,
         comments,
     }

@@ -242,6 +242,8 @@ pub fn map_issue(
         description: issue.body.clone().unwrap_or_default(),
         status: map_status(&issue.state, map),
         priority: map_priority(issue),
+        start_date: None,
+        target_date: None,
         labels,
         comments: mapped_comments,
     }

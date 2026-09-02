@@ -1212,6 +1212,58 @@ lific import jira --site <SITE> --jira-project <JIRA_PROJECT> --project <PROJECT
 - `--user <USERNAME>` selects the owner of the import bot.
 - `--dry-run` reports planned changes without writing data.
 
+### import beads
+
+Imports a Beads `issues.jsonl` export into an existing Lific project. The
+command is a one-shot snapshot import: it does not read Beads databases, run
+`bd`/`br`, or synchronize later changes.
+
+```shell
+lific import beads --path <PATH> --source <SOURCE> --project <PROJECT> [--user <USERNAME>] [--dry-run]
+```
+
+**Arguments**
+
+- `--path <PATH>` is either the exported JSONL file or a `.beads` directory
+  containing exactly `issues.jsonl`. Database-only directories fail with an
+  export-first message.
+- `--source <SOURCE>` is the stable logical dataset name. It forms the
+  idempotency marker `beads:<source>:<id>` and is required when files move or
+  multiple exports share a basename.
+- `--project <PROJECT>` selects the destination project.
+
+**Flags**
+
+- `--user <USERNAME>` selects the human owner of the Beads import bot when
+  imported comments need attribution.
+- `--dry-run` performs parsing and mapping, then reports planned issues,
+  comments, labels, and relations without writing data.
+
+Beads descriptions, design, acceptance criteria, notes, agent context, and
+unsupported metadata are assembled into the canonical Lific issue description;
+comments remain chronological history. Statuses map `open` to `backlog`,
+`in_progress` to `active`, and `closed` to `done`; priorities `0..4` map to
+`urgent`, `high`, `medium`, `low`, and `none`. Beads `blocks` relations are
+reversed into Lific's blocker direction. `parent-child`, `conditional-blocks`,
+`waits-for`, and other unsupported relation types are reported and skipped.
+
+The full JSONL snapshot is validated before the first database write. Repeating
+the same source/project is idempotent and does not update existing imported
+issues or synchronize deletions.
+
+To prepare a retained developer fixture from a real export, keep the source
+outside Git and run the test-only helper with explicit paths:
+
+```shell
+LIFIC_BEADS_ANON_INPUT=/tmp/private/issues.jsonl \
+LIFIC_BEADS_ANON_OUTPUT=tests/fixtures/beads/anonymized.jsonl \
+bash scripts/anonymize-beads.sh
+```
+
+It rewrites supported DTO fields deterministically, drops unknown fields,
+refuses databases and in-place writes, and publishes only after the complete
+input passes privacy checks. Do not use this workflow on a database file.
+
 ## Shell completion
 
 ### completion
