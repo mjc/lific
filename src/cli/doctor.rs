@@ -15,12 +15,11 @@
 //!
 //! 1. **config** — which config file is in use. Explicit `--config` / `./lific.toml`
 //!    / `~/.config/lific/lific.toml` = pass. Built-in defaults (no file) = warn.
-//!    A file that exists but fails to parse = fail (we re-parse directly here
-//!    so the diagnostic can report the parse error as one check among many,
-//!    rather than aborting the whole run the way `Config::load` now does).
-//! 2. **database** — file present + opens + migrations apply. Missing file with a
-//!    writable parent = warn ("created on first start"); unwritable parent = fail.
-//!    Opening runs migrations (same as `lific start`); we say so.
+//!    A file that exists but fails to parse = fail; the already-computed
+//!    resolution is reported without repeating candidate discovery.
+//! 2. **database** — file present and readable without migrations. Missing file
+//!    with a writable parent = warn ("created on first start"); unwritable
+//!    parent = fail. An existing non-Lific database = fail.
 //! 3. **backups** — only when enabled. Dir missing = warn (server creates it);
 //!    dir present but unwritable = fail; no backups yet = warn; otherwise pass
 //!    with the most-recent backup age vs the configured interval.
@@ -148,17 +147,16 @@ fn connect_base(cfg: &Config) -> String {
     )
 }
 
-/// Entry point invoked from `main`.
-///
-/// Returns `Ok(())` when no check failed, or `Err(message)` when at least one
-/// did — which propagates to a non-zero process exit via `main`'s `?`.
-pub async fn run(
+/// Run doctor with the already-selected configuration result. This keeps
+/// malformed configuration diagnostic while letting the remaining checks run
+/// against safe defaults, instead of reconstructing candidate discovery.
+pub async fn run_with_resolution(
     cfg: &Config,
-    explicit_config: Option<&Path>,
+    resolution: &Result<crate::config::ResolvedConfig, crate::config::ConfigError>,
     key: Option<String>,
     json: bool,
 ) -> Result<(), String> {
-    let report = build_report_with_config_path(cfg, explicit_config, key.as_deref()).await;
+    let report = build_report_with_resolution(cfg, resolution, key.as_deref()).await;
     print_report(&report, json);
     if report.fail_count() > 0 {
         Err(format!("doctor: {} check(s) failed", report.fail_count()))
@@ -167,7 +165,7 @@ pub async fn run(
     }
 }
 
-/// Run every check and assemble the report. Split from `run` so tests can
+/// Run every check and assemble the report. Split from the printing entry point so tests can
 /// inspect the structured result without touching stdout. Uses the default
 /// config search order for provenance (no explicit `--config`).
 #[cfg_attr(not(test), allow(dead_code))]
@@ -182,9 +180,18 @@ pub async fn build_report_with_config_path(
     explicit_config: Option<&Path>,
     key: Option<&str>,
 ) -> Report {
+    let resolution = Config::resolve(explicit_config);
+    build_report_with_resolution(cfg, &resolution, key).await
+}
+
+async fn build_report_with_resolution(
+    cfg: &Config,
+    resolution: &Result<crate::config::ResolvedConfig, crate::config::ConfigError>,
+    key: Option<&str>,
+) -> Report {
     let mut checks = Vec::new();
 
-    checks.push(check_config(explicit_config));
+    checks.push(check_config(resolution));
     checks.push(check_database(cfg));
     if let Some(c) = check_backups(cfg) {
         checks.push(c);
@@ -274,79 +281,35 @@ pub async fn build_report_with_config_path(
 
 // ── Check 1: config ──────────────────────────────────────────────────────
 
-/// Determine which config file is in use and whether it parses.
+/// Report the already-computed configuration selection or its typed failure.
 ///
-/// We do NOT reuse `Config::load` here. It now refuses to load a malformed
-/// config at all, which is right for booting the server but wrong for a
-/// diagnostic: `lific doctor` is exactly the tool you reach for when the
-/// config is broken, so it must report the parse failure as a FAIL check and
-/// carry on with the remaining checks. So we re-run the same search order and
-/// parse the found file directly.
-fn check_config(explicit_config: Option<&Path>) -> Check {
-    // The search is re-done here (rather than trusting the already-loaded
-    // config) to report provenance and catch parse errors the loader hides. If
-    // an explicit `--config` was given, it wins and is the only candidate — a
-    // broken explicit file must be a hard fail, not a silent fall-through.
-    let candidates = config_candidates(explicit_config);
-    for (label, path) in &candidates {
-        if path.exists() {
-            match std::fs::read_to_string(path) {
-                Ok(contents) => match toml::from_str::<Config>(&contents) {
-                    Ok(_) => {
-                        return Check::new(
-                            "config",
-                            Status::Pass,
-                            format!("using {} ({})", path.display(), label),
-                        );
-                    }
-                    Err(e) => {
-                        return Check::new(
-                            "config",
-                            Status::Fail,
-                            format!("{} exists but failed to parse: {e}", path.display()),
-                        );
-                    }
-                },
-                Err(e) => {
-                    return Check::new(
-                        "config",
-                        Status::Fail,
-                        format!("{} exists but is unreadable: {e}", path.display()),
-                    );
-                }
-            }
-        } else if *label == "--config" {
-            // An explicit --config that doesn't exist is a user error, not a
-            // silent fall-back to defaults.
-            return Check::new(
+/// Doctor keeps running after a configuration error so it can report other
+/// independent checks, but it never hides the failed selection behind defaults.
+fn check_config(
+    resolution: &Result<crate::config::ResolvedConfig, crate::config::ConfigError>,
+) -> Check {
+    match resolution {
+        Err(error) => Check::new("config", Status::Fail, error.to_string()),
+        Ok(resolved) if resolved.source == crate::config::ConfigSource::BuiltInDefault => {
+            Check::new(
                 "config",
-                Status::Fail,
-                format!("--config {} does not exist", path.display()),
-            );
+                Status::Warn,
+                "no lific.toml found — using built-in defaults (run `lific init`)",
+            )
         }
+        Ok(resolved) => Check::new(
+            "config",
+            Status::Pass,
+            format!(
+                "using {} ({})",
+                resolved.path.as_deref().map_or_else(
+                    || "built-in defaults".to_owned(),
+                    |path| path.display().to_string()
+                ),
+                resolved.source.label()
+            ),
+        ),
     }
-    Check::new(
-        "config",
-        Status::Warn,
-        "no lific.toml found — using built-in defaults (run `lific init`)",
-    )
-}
-
-/// The config-file search order, mirroring `Config::load`. An explicit
-/// `--config` path, if provided, is the sole candidate (matching the loader,
-/// which searches nothing else when `--config` is set).
-fn config_candidates(explicit_config: Option<&Path>) -> Vec<(&'static str, std::path::PathBuf)> {
-    if let Some(p) = explicit_config {
-        return vec![("--config", p.to_path_buf())];
-    }
-    let mut c = vec![("./lific.toml", std::path::PathBuf::from("lific.toml"))];
-    if let Some(dir) = dirs::config_dir() {
-        c.push((
-            "~/.config/lific/lific.toml",
-            dir.join("lific").join("lific.toml"),
-        ));
-    }
-    c
 }
 
 // ── Check 2: database ────────────────────────────────────────────────────
@@ -382,38 +345,56 @@ fn check_database(cfg: &Config) -> Check {
         };
     }
 
-    // File exists: open it (runs migrations, same as `lific start`) to confirm
-    // it's a healthy lific DB at the current schema.
-    match crate::db::open(path) {
-        Ok(pool) => match schema_version(&pool) {
-            Some(v) => Check::new(
-                "database",
-                Status::Pass,
-                format!("{} opens; migrations applied (schema v{v})", path.display()),
+    // File exists: inspect it read-only. Doctor must not run migrations or
+    // enable WAL, because those operations mutate the instance being diagnosed.
+    match inspect_database(path) {
+        Ok(Some(version)) => Check::new(
+            "database",
+            Status::Pass,
+            format!(
+                "{} opens read-only (schema v{version}); no migrations run",
+                path.display()
             ),
-            None => Check::new(
-                "database",
-                Status::Pass,
-                format!("{} opens; migrations applied", path.display()),
-            ),
-        },
+        ),
+        Ok(None) => Check::new(
+            "database",
+            Status::Fail,
+            format!("{} is not a Lific database", path.display()),
+        ),
         Err(e) => Check::new(
             "database",
             Status::Fail,
-            format!("{} failed to open: {e}", path.display()),
+            format!("{} failed to inspect read-only: {e}", path.display()),
         ),
     }
 }
 
-/// Read the highest applied migration version, if the table is present.
-fn schema_version(pool: &crate::db::DbPool) -> Option<i64> {
-    let conn = pool.read().ok()?;
-    conn.query_row(
-        "SELECT COALESCE(MAX(version), 0) FROM _migrations",
-        [],
-        |row| row.get::<_, i64>(0),
-    )
-    .ok()
+/// Inspect the migration marker without creating WAL/SHM files or applying
+/// migrations. `Ok(None)` means the file opened but is not a Lific database.
+fn inspect_database(path: &Path) -> rusqlite::Result<Option<i64>> {
+    use rusqlite::OptionalExtension;
+
+    let connection = rusqlite::Connection::open_with_flags(
+        path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    let migration_table: Option<String> = connection
+        .query_row(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = '_migrations'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(_) = migration_table else {
+        return Ok(None);
+    };
+    connection
+        .query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM _migrations",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(Some)
 }
 
 /// Best-effort writability probe: try to create (and remove) a temp file in the
@@ -809,6 +790,7 @@ fn print_report(report: &Report, json: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::{prop_assert, prop_assert_eq};
 
     fn check(name: &str, status: Status) -> Check {
         Check::new(name, status, "")
@@ -958,6 +940,36 @@ mod tests {
         assert!(parsed.is_err(), "broken toml must fail to parse");
     }
 
+    #[test]
+    fn config_check_warns_for_built_in_defaults() {
+        let resolution = crate::config::ResolvedConfig {
+            config: Config::default(),
+            path: None,
+            source: crate::config::ConfigSource::BuiltInDefault,
+        };
+
+        let check = check_config(&Ok(resolution));
+
+        assert_eq!(check.status, Status::Warn);
+        assert!(check.detail.contains("built-in defaults"));
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn every_explicit_config_failure_is_reported_as_a_fail(
+            name in "[a-zA-Z0-9_-]{1,24}"
+        ) {
+            let error = crate::config::ConfigError::MissingExplicit {
+                path: std::path::PathBuf::from(format!("{name}.toml")),
+            };
+
+            let check = check_config(&Err(error));
+
+            prop_assert_eq!(check.status, Status::Fail);
+            prop_assert!(check.detail.contains("does not exist"));
+        }
+    }
+
     // ── database check ───────────────────────────────────────────────────
 
     #[test]
@@ -993,7 +1005,27 @@ mod tests {
         cfg.database.path = db_path;
         let c = check_database(&cfg);
         assert_eq!(c.status, Status::Pass, "detail: {}", c.detail);
-        assert!(c.detail.contains("migrations applied"));
+        assert!(c.detail.contains("no migrations run"));
+    }
+
+    #[test]
+    fn database_check_does_not_migrate_an_old_database() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("old.db");
+        let connection = rusqlite::Connection::open(&db_path).unwrap();
+        connection
+            .execute("CREATE TABLE marker (value TEXT NOT NULL)", [])
+            .unwrap();
+        drop(connection);
+
+        let mut cfg = Config::default();
+        cfg.database.path = db_path.clone();
+        let c = check_database(&cfg);
+
+        assert_eq!(c.status, Status::Fail, "an unrecognized database must fail");
+        assert!(!db_path.with_extension("db-wal").exists());
+        assert!(!db_path.with_extension("db-shm").exists());
+        assert!(!db_path.with_extension("db.bak").exists());
     }
 
     // ── backups check ────────────────────────────────────────────────────
