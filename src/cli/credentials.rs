@@ -169,8 +169,8 @@ fn default_client_file_path() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("lific").join("clients.json"))
 }
 
-fn client_store() -> Option<PlaintextCredentialFileStore> {
-    default_client_file_path().map(PlaintextCredentialFileStore::new)
+fn client_store() -> Option<OAuthClientRegistrationCache> {
+    default_client_file_path().map(OAuthClientRegistrationCache::new)
 }
 
 // The three operations are factored to take the store, like the credential
@@ -179,34 +179,29 @@ fn client_store() -> Option<PlaintextCredentialFileStore> {
 // reported to the login flow rather than silently discarded.
 
 fn store_client_id_in(
-    store: &PlaintextCredentialFileStore,
+    store: &OAuthClientRegistrationCache,
     base_url: &str,
     client_id: &str,
-) -> Result<(), PlaintextCredentialFileError> {
-    store.store_credential_for_server_key(&CredentialStoreKey::from_base_url(base_url), client_id)
+) -> Result<(), OAuthClientCacheError> {
+    store.remember(base_url, client_id)
 }
 
 fn load_client_id_from(
-    store: &PlaintextCredentialFileStore,
+    store: &OAuthClientRegistrationCache,
     base_url: &str,
-) -> Result<Option<String>, PlaintextCredentialFileError> {
-    store.load_credential_for_server_key(&CredentialStoreKey::from_base_url(base_url))
+) -> Result<Option<String>, OAuthClientCacheError> {
+    store.load(base_url)
 }
 
 fn forget_client_id_in(
-    store: &PlaintextCredentialFileStore,
+    store: &OAuthClientRegistrationCache,
     base_url: &str,
-) -> Result<(), PlaintextCredentialFileError> {
-    store
-        .delete_credential_for_server_key(&CredentialStoreKey::from_base_url(base_url))
-        .map(|_| ())
+) -> Result<(), OAuthClientCacheError> {
+    store.forget(base_url)
 }
 
 /// Remember the OAuth `client_id` registered with `base_url`.
-pub fn store_client_id(
-    base_url: &str,
-    client_id: &str,
-) -> Result<(), PlaintextCredentialFileError> {
+pub fn store_client_id(base_url: &str, client_id: &str) -> Result<(), OAuthClientCacheError> {
     if let Some(store) = client_store() {
         store_client_id_in(&store, base_url, client_id)
     } else {
@@ -215,7 +210,7 @@ pub fn store_client_id(
 }
 
 /// The `client_id` previously registered with `base_url`, if any.
-pub fn load_client_id(base_url: &str) -> Result<Option<String>, PlaintextCredentialFileError> {
+pub fn load_client_id(base_url: &str) -> Result<Option<String>, OAuthClientCacheError> {
     match client_store() {
         Some(store) => load_client_id_from(&store, base_url),
         None => Ok(None),
@@ -224,11 +219,76 @@ pub fn load_client_id(base_url: &str) -> Result<Option<String>, PlaintextCredent
 
 /// Drop the remembered `client_id` for `base_url`, after the server said it
 /// does not know it (reclaimed, or a rebuilt database).
-pub fn forget_client_id(base_url: &str) -> Result<(), PlaintextCredentialFileError> {
+pub fn forget_client_id(base_url: &str) -> Result<(), OAuthClientCacheError> {
     if let Some(store) = client_store() {
         forget_client_id_in(&store, base_url)
     } else {
         Ok(())
+    }
+}
+
+/// The public OAuth client-registration cache deliberately has different
+/// naming from the credential store. Its contents are public identifiers;
+/// malformed or unsafe data is still a hard error when read, but callers may
+/// choose to warn and continue after a successful remote registration.
+#[derive(Debug, Error)]
+pub enum OAuthClientCacheError {
+    #[error("OAuth client cache {path}: {detail}")]
+    Storage {
+        path: PathBuf,
+        detail: String,
+        #[source]
+        source: Box<PlaintextCredentialFileError>,
+    },
+}
+
+struct OAuthClientRegistrationCache {
+    store: PlaintextCredentialFileStore,
+}
+
+impl OAuthClientRegistrationCache {
+    fn new(path: PathBuf) -> Self {
+        Self {
+            store: PlaintextCredentialFileStore::new(path),
+        }
+    }
+
+    fn load(&self, base_url: &str) -> Result<Option<String>, OAuthClientCacheError> {
+        self.store
+            .load_credential_for_server_key(&CredentialStoreKey::from_base_url(base_url))
+            .map_err(|source| self.error("could not load", source))
+    }
+
+    fn remember(&self, base_url: &str, client_id: &str) -> Result<(), OAuthClientCacheError> {
+        self.store
+            .store_credential_for_server_key(
+                &CredentialStoreKey::from_base_url(base_url),
+                client_id,
+            )
+            .map_err(|source| self.error("could not store", source))
+    }
+
+    fn forget(&self, base_url: &str) -> Result<(), OAuthClientCacheError> {
+        self.store
+            .delete_credential_for_server_key(&CredentialStoreKey::from_base_url(base_url))
+            .map(|_| ())
+            .map_err(|source| self.error("could not delete", source))
+    }
+
+    fn error(
+        &self,
+        operation: &str,
+        source: PlaintextCredentialFileError,
+    ) -> OAuthClientCacheError {
+        let source_detail = source
+            .to_string()
+            .replace("credential", "OAuth client cache");
+        let detail = format!("{operation}: {source_detail}");
+        OAuthClientCacheError::Storage {
+            path: self.store.path.clone(),
+            detail,
+            source: Box::new(source),
+        }
     }
 }
 
@@ -304,6 +364,7 @@ pub enum PlaintextCredentialFileError {
     DirectoryNotRegular { path: PathBuf },
     #[error("credential directory {path} is a symbolic link")]
     DirectorySymlink { path: PathBuf },
+    #[cfg(unix)]
     #[error("failed to apply private credential permissions to {path}: {source}")]
     Permissions {
         path: PathBuf,
@@ -334,6 +395,7 @@ pub enum PlaintextCredentialFileError {
         #[source]
         source: std::io::Error,
     },
+    #[cfg(unix)]
     #[error("failed to synchronize credential directory {path}: {source}")]
     DirectorySync {
         path: PathBuf,
@@ -373,6 +435,28 @@ impl PlaintextCredentialFileStore {
     fn read_existing_credentials_or_return_absent(
         &self,
     ) -> Result<Option<BTreeMap<String, String>>, PlaintextCredentialFileError> {
+        #[cfg(windows)]
+        match std::fs::symlink_metadata(&self.path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(PlaintextCredentialFileError::Symlink {
+                    path: self.path.clone(),
+                });
+            }
+            Ok(metadata) if !metadata.file_type().is_file() => {
+                return Err(PlaintextCredentialFileError::NotRegular {
+                    path: self.path.clone(),
+                });
+            }
+            Ok(_) => {}
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(source) => {
+                return Err(PlaintextCredentialFileError::Read {
+                    path: self.path.clone(),
+                    source,
+                });
+            }
+        }
+
         let mut options = std::fs::OpenOptions::new();
         options.read(true);
         configure_no_follow(&mut options);
@@ -625,6 +709,10 @@ impl PlaintextCredentialFileStore {
 }
 
 /// Apply owner-only protection to an open credential or lock file.
+#[cfg_attr(
+    not(unix),
+    expect(clippy::unnecessary_wraps, reason = "fallible on Unix")
+)]
 fn set_open_credential_file_owner_only_permissions(
     file: &std::fs::File,
     path: &Path,
@@ -648,6 +736,10 @@ fn set_open_credential_file_owner_only_permissions(
 
 /// Sync the directory entry after publishing a credential file. File sync
 /// persists bytes; directory sync persists the name-to-inode replacement.
+#[cfg_attr(
+    not(unix),
+    expect(clippy::unnecessary_wraps, reason = "fallible on Unix")
+)]
 fn synchronize_credential_parent_directory(
     parent: &Path,
 ) -> Result<(), PlaintextCredentialFileError> {
@@ -794,17 +886,21 @@ pub fn load_with_source(
     }
 }
 
-/// Delete the stored credential for `base_url` from BOTH backends. Returns
-/// whether anything was removed from either.
+/// Delete the stored credential for `base_url` from BOTH backends.
+///
+/// The plaintext store is attempted first. That means a plaintext corruption
+/// or safety error returns before the keyring is changed. Keyring deletion is
+/// best-effort, so a successful result can still mean that only the plaintext
+/// copy was removed; the two backends are not a transaction.
 pub fn delete(base_url: &str) -> Result<bool, PlaintextCredentialFileError> {
     let key = CredentialStoreKey::from_base_url(base_url);
-    let kr = keyring_delete(key.as_str());
     let file = match default_file_path() {
         Some(path) => {
             PlaintextCredentialFileStore::new(path).delete_credential_for_server_key(&key)?
         }
         None => false,
     };
+    let kr = keyring_delete(key.as_str());
     Ok(kr || file)
 }
 
@@ -861,7 +957,7 @@ mod tests {
     #[test]
     fn a_client_id_round_trips_per_server_and_can_be_forgotten() {
         let tmp = tempfile::tempdir().unwrap();
-        let store = PlaintextCredentialFileStore::new(tmp.path().join("clients.json"));
+        let store = OAuthClientRegistrationCache::new(tmp.path().join("clients.json"));
 
         assert_eq!(
             load_client_id_from(&store, "http://127.0.0.1:3998").unwrap(),
@@ -896,6 +992,32 @@ mod tests {
             Some("client-xyz".to_string()),
             "forgetting one server must not clear another"
         );
+    }
+
+    #[test]
+    fn client_cache_errors_name_the_public_cache_not_credentials() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("clients.json");
+        std::fs::write(&path, br#"{"http://a": broken}"#).unwrap();
+        let cache = OAuthClientRegistrationCache::new(path);
+
+        let error = cache.load("http://a").unwrap_err();
+
+        assert!(error.to_string().contains("OAuth client cache"));
+        assert!(error.to_string().contains("invalid JSON"));
+        assert!(!error.to_string().contains("credential file"));
+    }
+
+    proptest! {
+        #[test]
+        fn oauth_client_cache_round_trips_arbitrary_identifiers(client_id in any::<String>()) {
+            let tmp = tempfile::tempdir().unwrap();
+            let cache = OAuthClientRegistrationCache::new(tmp.path().join("clients.json"));
+
+            cache.remember("https://lific.example", &client_id).unwrap();
+
+            prop_assert_eq!(cache.load("https://lific.example").unwrap(), Some(client_id));
+        }
     }
 
     #[test]
