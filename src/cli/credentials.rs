@@ -38,6 +38,7 @@
 //! Service is gated `#[ignore]` (CI has none).
 
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// Environment variable carrying an OAuth token, used in place of stored
@@ -217,40 +218,51 @@ impl FileStore {
         Self { path }
     }
 
-    fn read_map(&self) -> BTreeMap<String, String> {
+    fn read_map(&self) -> std::io::Result<BTreeMap<String, String>> {
         match std::fs::read_to_string(&self.path) {
-            Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
-            Err(_) => BTreeMap::new(),
+            Ok(s) => serde_json::from_str(&s).map_err(std::io::Error::other),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
+            Err(error) => Err(error),
         }
     }
 
     fn write_map(&self, map: &BTreeMap<String, String>) -> std::io::Result<()> {
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent)?;
-            // Tighten the parent dir to 0700 (best-effort; only meaningful on unix).
-            set_dir_private(parent);
-        }
+        let parent = self
+            .path
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        std::fs::create_dir_all(parent)?;
+        // Tighten the parent dir to 0700 (best-effort; only meaningful on unix).
+        set_dir_private(parent);
         let json = serde_json::to_string_pretty(map).map_err(std::io::Error::other)?;
-        std::fs::write(&self.path, json)?;
-        set_file_private(&self.path);
-        Ok(())
+        // Write beside the destination and rename it into place. This keeps a
+        // malformed or otherwise unreadable existing file intact on failure.
+        let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+        temporary.write_all(json.as_bytes())?;
+        temporary.flush()?;
+        set_file_private(temporary.path());
+        temporary
+            .persist(&self.path)
+            .map(|_| ())
+            .map_err(|error| error.error)
     }
 
     /// Store `token` under `key`, creating the file if needed.
     pub fn store(&self, key: &str, token: &str) -> std::io::Result<()> {
-        let mut map = self.read_map();
+        let mut map = self.read_map()?;
         map.insert(key.to_string(), token.to_string());
         self.write_map(&map)
     }
 
     /// Load the token for `key`, if present.
     pub fn load(&self, key: &str) -> Option<String> {
-        self.read_map().get(key).cloned()
+        self.read_map().ok()?.get(key).cloned()
     }
 
     /// Remove `key`. Returns whether an entry was actually removed.
     pub fn delete(&self, key: &str) -> std::io::Result<bool> {
-        let mut map = self.read_map();
+        let mut map = self.read_map()?;
         let removed = map.remove(key).is_some();
         if removed {
             self.write_map(&map)?;
@@ -388,6 +400,7 @@ fn keyring_delete(key: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     /// A file store in a fresh scratch directory. Hold onto the returned
     /// [`TempDir`]: dropping it removes the directory, which also happens
@@ -520,6 +533,82 @@ mod tests {
         store.store("http://a", "tok").unwrap();
         assert!(path.exists());
         assert_eq!(store.load("http://a").as_deref(), Some("tok"));
+    }
+
+    #[test]
+    fn file_store_rejects_malformed_existing_data_without_replacing_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("credentials.json");
+        let original = br#"{"http://a":"old-token", broken}"#;
+        std::fs::write(&path, original).unwrap();
+        let store = FileStore::new(path.clone());
+
+        assert!(store.store("http://a", "new-token").is_err());
+        assert_eq!(std::fs::read(path).unwrap(), original);
+    }
+
+    proptest! {
+        #[test]
+        fn malformed_file_content_is_never_replaced(payload in any::<String>()) {
+            let tmp = tempfile::tempdir().unwrap();
+            let path = tmp.path().join("credentials.json");
+            let original = format!("{{{payload}");
+            std::fs::write(&path, original.as_bytes()).unwrap();
+            let store = FileStore::new(path.clone());
+
+            prop_assert!(store.store("http://a", "new-token").is_err());
+            prop_assert_eq!(std::fs::read(path).unwrap(), original.into_bytes());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_replaces_symlink_without_touching_target() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("target.json");
+        let link = tmp.path().join("credentials.json");
+        std::fs::write(&target, br#"{"http://a":"old-token"}"#).unwrap();
+        symlink(&target, &link).unwrap();
+
+        FileStore::new(link.clone())
+            .store("http://a", "new-token")
+            .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(target).unwrap(),
+            r#"{"http://a":"old-token"}"#
+        );
+        assert_eq!(
+            FileStore::new(link).load("http://a").as_deref(),
+            Some("new-token")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_replaces_hardlink_without_touching_other_name() {
+        use std::fs::hard_link;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let original = tmp.path().join("original.json");
+        let link = tmp.path().join("credentials.json");
+        std::fs::write(&original, br#"{"http://a":"old-token"}"#).unwrap();
+        hard_link(&original, &link).unwrap();
+
+        FileStore::new(link.clone())
+            .store("http://a", "new-token")
+            .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(original).unwrap(),
+            r#"{"http://a":"old-token"}"#
+        );
+        assert_eq!(
+            FileStore::new(link).load("http://a").as_deref(),
+            Some("new-token")
+        );
     }
 
     // ── Origin binding for the env token (LIF-408) ───────────────────────
