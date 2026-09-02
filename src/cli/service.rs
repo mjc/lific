@@ -234,7 +234,8 @@ pub fn definition_path(manager: Manager) -> Result<PathBuf, String> {
     })
 }
 
-/// Render the systemd user unit. Paths are systemd-quoted so spaces survive.
+/// Render the systemd user unit. Every argument is quoted so systemd treats
+/// Unix path punctuation, including apostrophes, as literal data.
 pub fn systemd_unit(plan: &ServicePlan) -> String {
     let command = plan.argv().map(|arg| systemd_quote(arg, true)).join(" ");
     format!(
@@ -257,7 +258,7 @@ WantedBy=default.target
     )
 }
 
-/// Quote a path for a systemd ExecStart line (double quotes, escape embedded
+/// Quote a value for a systemd line (double quotes, escape embedded
 /// quotes/backslashes). systemd's quoting rules accept this for paths.
 fn systemd_quote(value: &OsStr, escape_dollar: bool) -> String {
     let s = value.to_string_lossy();
@@ -268,11 +269,7 @@ fn systemd_quote(value: &OsStr, escape_dollar: bool) -> String {
     if escape_dollar {
         escaped = escaped.replace('$', "$$");
     }
-    if s.contains(' ') || s.contains('"') || s.contains('\\') {
-        format!("\"{escaped}\"")
-    } else {
-        escaped
-    }
+    format!("\"{escaped}\"")
 }
 
 /// Render the launchd LaunchAgent plist.
@@ -725,11 +722,11 @@ mod tests {
         let unit = systemd_unit(&plan());
         assert!(
             unit.contains(
-                "ExecStart=/home/u/.cargo/bin/lific --config /home/u/tracker/lific.toml start"
+                r#"ExecStart="/home/u/.cargo/bin/lific" "--config" "/home/u/tracker/lific.toml" "start""#
             ),
             "unit was:\n{unit}"
         );
-        assert!(unit.contains("WorkingDirectory=/home/u/tracker"));
+        assert!(unit.contains(r#"WorkingDirectory="/home/u/tracker""#));
         assert!(unit.contains("WantedBy=default.target"));
         assert!(unit.contains("Restart=on-failure"));
         assert!(unit.contains("UMask=0077"));
@@ -743,10 +740,26 @@ mod tests {
         let unit = systemd_unit(&p);
         assert!(
             unit.contains(
-                r#"ExecStart="/home/u/my tools/lific" --config "/home/u/my tracker/lific.toml" start"#
+                r#"ExecStart="/home/u/my tools/lific" "--config" "/home/u/my tracker/lific.toml" "start""#
             ),
             "unit was:\n{unit}"
         );
+    }
+
+    #[test]
+    fn systemd_unit_quotes_apostrophes_in_paths() {
+        let mut p = plan();
+        p.exe = PathBuf::from("/home/o'connor/bin/lific");
+        p.config = PathBuf::from("/home/o'connor/lific.toml");
+        p.workdir = PathBuf::from("/home/o'connor");
+        let unit = systemd_unit(&p);
+        assert!(
+            unit.contains(
+                r#"ExecStart="/home/o'connor/bin/lific" "--config" "/home/o'connor/lific.toml" "start""#
+            ),
+            "unit was:\n{unit}"
+        );
+        assert!(unit.contains(r#"WorkingDirectory="/home/o'connor""#));
     }
 
     #[test]

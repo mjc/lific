@@ -64,13 +64,18 @@ fn sync_parent_dir(_dir: &Path) -> std::io::Result<()> {
 /// A config file that has been opened and read.
 ///
 /// Keeping the descriptor alongside the contents means permission tightening
-/// acts on the file we read, not on a later pathname lookup.
+/// acts on the file we read, not on a later pathname lookup. The descriptor is
+/// secured before its contents are consumed.
 struct ConfigFile {
     contents: String,
     #[cfg(unix)]
     file: std::fs::File,
     #[cfg(unix)]
     systemd_credential: bool,
+    #[cfg(unix)]
+    permission_error: Option<std::io::Error>,
+    #[cfg(unix)]
+    writable_by_other: bool,
 }
 
 #[cfg(unix)]
@@ -121,8 +126,8 @@ fn tighten_config_permissions(config: &ConfigFile) -> std::io::Result<()> {
 
 /// Whether a failed permission tightening is a reason to refuse the config.
 ///
-/// The chmod only ever runs on a file we already read successfully, so the
-/// question is purely "can we fix its mode from here". Two answers are no
+/// The chmod runs before ordinary config contents are read, so the question is
+/// purely "can we fix its mode from here". Two answers are no
 /// through no fault of the operator: the file belongs to someone else
 /// (`EPERM`: a root-owned `/etc/lific/lific.toml` read by the service user,
 /// a Docker bind mount owned by the host user, another user's config picked
@@ -136,6 +141,15 @@ fn tightening_failure_is_tolerable(error: &std::io::Error) -> bool {
         error.kind(),
         std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ReadOnlyFilesystem
     )
+}
+
+#[cfg(unix)]
+fn tightening_failure_is_fatal(
+    error: &std::io::Error,
+    writable_by_other: bool,
+    has_secret: bool,
+) -> bool {
+    !tightening_failure_is_tolerable(error) || writable_by_other || has_secret
 }
 
 fn editable_document(existing: &str) -> Result<toml_edit::DocumentMut, String> {
@@ -153,11 +167,11 @@ fn editable_document(existing: &str) -> Result<toml_edit::DocumentMut, String> {
 #[cfg(unix)]
 fn read_config_file(path: &Path) -> std::io::Result<ConfigFile> {
     use std::io::Read;
-    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 
     let mut options = std::fs::OpenOptions::new();
     options.read(true).custom_flags(libc::O_NOFOLLOW);
-    let mut file = options.open(path)?;
+    let file = options.open(path)?;
     // A directory opens fine on Linux and only fails at read time. Devices and
     // FIFOs are not configuration files either, so reject them before reading.
     if !file.metadata()?.file_type().is_file() {
@@ -166,13 +180,21 @@ fn read_config_file(path: &Path) -> std::io::Result<ConfigFile> {
             "configuration path must be a regular file",
         ));
     }
-    let mut contents = String::new();
-    file.read_to_string(&mut contents)?;
-    Ok(ConfigFile {
-        contents,
+    let systemd_credential = is_systemd_credential(path);
+    let writable_by_other = file.metadata()?.mode() & 0o022 != 0;
+    let mut config = ConfigFile {
+        contents: String::new(),
         file,
-        systemd_credential: is_systemd_credential(path),
-    })
+        systemd_credential,
+        permission_error: None,
+        writable_by_other,
+    };
+    // Secure ordinary configs through the already-open descriptor before
+    // consuming their contents. A failed chmod is retained for policy after
+    // parsing, because read-only non-secret configs may still be accepted.
+    config.permission_error = tighten_config_permissions(&config).err();
+    config.file.read_to_string(&mut config.contents)?;
+    Ok(config)
 }
 
 #[cfg(not(unix))]
@@ -573,8 +595,10 @@ impl Config {
                     source: Box::new(source),
                 })?;
 
-            if let Err(source) = tighten_config_permissions(&file) {
-                if !tightening_failure_is_tolerable(&source) {
+            #[cfg(unix)]
+            if let Some(source) = file.permission_error {
+                let has_secret = config.server.mcp_path_token.is_some();
+                if tightening_failure_is_fatal(&source, file.writable_by_other, has_secret) {
                     return Err(ConfigError::Read {
                         path: path.clone(),
                         source,
@@ -828,10 +852,12 @@ enabled = false
         let path = tmp.path().join("lific.toml");
         std::fs::write(&path, Config::default_toml()).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o440)).unwrap();
-        let file = read_config_file(&path).unwrap();
         let file = ConfigFile {
+            contents: String::new(),
+            file: std::fs::File::open(&path).unwrap(),
             systemd_credential: true,
-            ..file
+            permission_error: None,
+            writable_by_other: false,
         };
 
         tighten_config_permissions(&file).unwrap();
@@ -914,10 +940,9 @@ enabled = false
     }
 
     /// A config the process cannot chmod (someone else's file, a read-only
-    /// mount) still loads; only failures on our own file are fatal. The
-    /// real-world shape is a root-owned `/etc/lific/lific.toml` read by the
-    /// service user, which a unit test cannot stage without root, so the
-    /// predicate is exercised directly.
+    /// mount) may still load when it is read-only and has no bearer secret.
+    /// The real-world root-owned `/etc/lific/lific.toml` shape cannot be staged
+    /// without root, so the policy predicate is exercised directly.
     #[test]
     fn untightenable_configs_are_tolerated_not_fatal() {
         use std::io::{Error, ErrorKind};
@@ -934,6 +959,21 @@ enabled = false
         assert!(!tightening_failure_is_tolerable(&Error::other(
             "descriptor went bad"
         )));
+        assert!(tightening_failure_is_fatal(
+            &Error::from(ErrorKind::PermissionDenied),
+            true,
+            false
+        ));
+        assert!(tightening_failure_is_fatal(
+            &Error::from(ErrorKind::ReadOnlyFilesystem),
+            false,
+            true
+        ));
+        assert!(!tightening_failure_is_fatal(
+            &Error::from(ErrorKind::PermissionDenied),
+            false,
+            false
+        ));
     }
 
     /// A directory opens fine on Linux, so the type check rejects it before

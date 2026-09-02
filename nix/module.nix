@@ -94,7 +94,9 @@ in {
       description = ''
         Additional absolute runtime paths that Lific may write. Use this for
         an external absolute backup.dir; the default database, attachments,
-        and backups remain under StateDirectory.
+        and backups remain under StateDirectory. Prefer /srv, /var/lib, or
+        another service-oriented mount: ProtectHome prevents access to /home,
+        /root, and /run/user.
       '';
     };
   };

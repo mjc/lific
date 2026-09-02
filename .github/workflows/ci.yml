@@ -79,7 +79,7 @@ jobs:
           sudo chmod 0600 data/lific.toml
           docker run --detach --name lific-ci --publish 3456:3456 --volume "$PWD/data:/data" lific:ci
           trap 'docker logs lific-ci; docker rm --force lific-ci' EXIT
-          curl --fail --retry 30 --retry-delay 1 http://127.0.0.1:3456/api/health
+          curl --fail --retry 30 --retry-delay 1 --retry-all-errors http://127.0.0.1:3456/api/health
 
   windows:
     # Windows ships a release binary, so it gets the same gate as Linux rather
