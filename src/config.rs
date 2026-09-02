@@ -4,6 +4,61 @@ use tracing::info;
 
 const CONFIG_FILENAME: &str = "lific.toml";
 
+/// A config file that has been opened and read.
+///
+/// Keeping the descriptor alongside the contents means permission tightening
+/// acts on the file we read, not on a later pathname lookup.
+struct ConfigFile {
+    contents: String,
+    #[cfg(unix)]
+    file: std::fs::File,
+    #[cfg(unix)]
+    systemd_credential: bool,
+}
+
+#[cfg(unix)]
+fn is_systemd_credential_path(path: &Path, credentials_dir: &Path) -> bool {
+    if !credentials_dir.is_absolute() {
+        return false;
+    }
+
+    let Ok(path) = std::fs::canonicalize(path) else {
+        return false;
+    };
+    let Ok(credentials_dir) = std::fs::canonicalize(credentials_dir) else {
+        return false;
+    };
+    path.parent() == Some(credentials_dir.as_path())
+}
+
+#[cfg(unix)]
+fn is_systemd_credential(path: &Path) -> bool {
+    std::env::var_os("CREDENTIALS_DIRECTORY")
+        .map(PathBuf::from)
+        .is_some_and(|dir| is_systemd_credential_path(path, &dir))
+}
+
+/// Make an ordinary config owner-only through the descriptor it was read
+/// from. systemd credentials are already protected by their credential
+/// directory and are intentionally immutable, so they are left untouched.
+#[cfg_attr(
+    not(unix),
+    expect(clippy::unnecessary_wraps, reason = "fallible on Unix")
+)]
+fn tighten_config_permissions(config: &ConfigFile) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        if !config.systemd_credential && config.file.metadata()?.mode() & 0o077 != 0 {
+            config
+                .file
+                .set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        }
+    }
+    Ok(())
+}
+
 fn editable_document(existing: &str) -> Result<toml_edit::DocumentMut, String> {
     if existing.trim().is_empty() {
         Config::default_toml()
@@ -17,7 +72,7 @@ fn editable_document(existing: &str) -> Result<toml_edit::DocumentMut, String> {
 }
 
 #[cfg(unix)]
-fn read_config_file(path: &Path) -> std::io::Result<String> {
+fn read_config_file(path: &Path) -> std::io::Result<ConfigFile> {
     use std::io::Read;
     use std::os::unix::fs::OpenOptionsExt;
 
@@ -34,12 +89,18 @@ fn read_config_file(path: &Path) -> std::io::Result<String> {
     }
     let mut contents = String::new();
     file.read_to_string(&mut contents)?;
-    Ok(contents)
+    Ok(ConfigFile {
+        contents,
+        file,
+        systemd_credential: is_systemd_credential(path),
+    })
 }
 
 #[cfg(not(unix))]
-fn read_config_file(path: &Path) -> std::io::Result<String> {
-    std::fs::read_to_string(path)
+fn read_config_file(path: &Path) -> std::io::Result<ConfigFile> {
+    Ok(ConfigFile {
+        contents: std::fs::read_to_string(path)?,
+    })
 }
 
 /// A config file was found but could not be honored.
@@ -398,8 +459,8 @@ impl Config {
                     });
                 }
             }
-            let contents = match read_config_file(path) {
-                Ok(contents) => contents,
+            let file = match read_config_file(path) {
+                Ok(file) => file,
                 Err(source) => {
                     return Err(ConfigError::Read {
                         path: path.clone(),
@@ -408,10 +469,15 @@ impl Config {
                 }
             };
             let mut config =
-                toml::from_str::<Config>(&contents).map_err(|source| ConfigError::Parse {
+                toml::from_str::<Config>(&file.contents).map_err(|source| ConfigError::Parse {
                     path: path.clone(),
                     source: Box::new(source),
                 })?;
+
+            tighten_config_permissions(&file).map_err(|source| ConfigError::Read {
+                path: path.clone(),
+                source,
+            })?;
 
             info!(path = %path.display(), "loaded config");
             // Anchor a relative database path to the config file's own
@@ -609,7 +675,7 @@ enabled = false
 
     #[cfg(unix)]
     #[test]
-    fn loading_config_does_not_change_file_permissions() {
+    fn loading_config_tightens_non_credential_file_permissions() {
         use std::os::unix::fs::PermissionsExt;
 
         let tmp = tempfile::tempdir().unwrap();
@@ -621,7 +687,50 @@ enabled = false
 
         assert_eq!(
             std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
-            0o444
+            0o600
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn systemd_credential_path_requires_a_direct_child() {
+        let tmp = tempfile::tempdir().unwrap();
+        let credentials = tmp.path().join("credentials");
+        std::fs::create_dir(&credentials).unwrap();
+        let credential = credentials.join("lific.toml");
+        std::fs::write(&credential, "").unwrap();
+
+        assert!(is_systemd_credential_path(&credential, &credentials));
+        assert!(!is_systemd_credential_path(
+            &credentials.join("nested/lific.toml"),
+            &credentials,
+        ));
+        assert!(!is_systemd_credential_path(
+            &tmp.path().join("credentials-other/lific.toml"),
+            &credentials,
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn systemd_credentials_skip_permission_tightening() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("lific.toml");
+        std::fs::write(&path, Config::default_toml()).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o440)).unwrap();
+        let file = read_config_file(&path).unwrap();
+        let file = ConfigFile {
+            systemd_credential: true,
+            ..file
+        };
+
+        tighten_config_permissions(&file).unwrap();
+
+        assert_eq!(
+            file.file.metadata().unwrap().permissions().mode() & 0o777,
+            0o440
         );
     }
 
