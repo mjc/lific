@@ -190,9 +190,14 @@ fn read_config_file(path: &Path) -> std::io::Result<ConfigFile> {
         writable_by_other,
     };
     // Secure ordinary configs through the already-open descriptor before
-    // consuming their contents. A failed chmod is retained for policy after
-    // parsing, because read-only non-secret configs may still be accepted.
+    // consuming their contents. A tolerated failure is retained for policy
+    // after parsing, because read-only non-secret configs may still be accepted.
     config.permission_error = tighten_config_permissions(&config).err();
+    if let Some(error) = config.permission_error.take()
+        && (config.writable_by_other || !tightening_failure_is_tolerable(&error))
+    {
+        return Err(error);
+    }
     config.file.read_to_string(&mut config.contents)?;
     Ok(config)
 }
