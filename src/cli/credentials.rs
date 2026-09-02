@@ -220,7 +220,8 @@ impl FileStore {
 
     fn read_map(&self) -> std::io::Result<BTreeMap<String, String>> {
         match std::fs::read_to_string(&self.path) {
-            Ok(s) => serde_json::from_str(&s).map_err(std::io::Error::other),
+            Ok(s) => serde_json::from_str(&s)
+                .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error)),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
             Err(error) => Err(error),
         }
@@ -241,7 +242,8 @@ impl FileStore {
         let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
         temporary.write_all(json.as_bytes())?;
         temporary.flush()?;
-        set_file_private(temporary.path());
+        temporary.as_file().sync_all()?;
+        set_file_private(temporary.as_file());
         temporary
             .persist(&self.path)
             .map(|_| ())
@@ -272,15 +274,15 @@ impl FileStore {
 }
 
 /// Best-effort chmod 0600 on the credentials file (unix only).
-fn set_file_private(path: &Path) {
+fn set_file_private(file: &std::fs::File) {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+        let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
     }
     #[cfg(not(unix))]
     {
-        let _ = path;
+        let _ = file;
     }
 }
 
@@ -552,7 +554,7 @@ mod tests {
         fn malformed_file_content_is_never_replaced(payload in any::<String>()) {
             let tmp = tempfile::tempdir().unwrap();
             let path = tmp.path().join("credentials.json");
-            let original = format!("{{{payload}");
+            let original = format!("not-json:{payload}");
             std::fs::write(&path, original.as_bytes()).unwrap();
             let store = FileStore::new(path.clone());
 
