@@ -206,77 +206,77 @@ fn diagnostic_config(
 
 /// Run checks that depend on the configured server or its credentials.
 async fn check_remote(cfg: &Config, key: Option<&str>) -> Vec<Check> {
-    let mut checks = Vec::new();
-
-    // Build the base URL a client would use to reach this server.
     let base = connect_base(cfg);
-
-    // LIF-252/LIF-258: if no --key/LIFIC_API_KEY was given, fall back to a
-    // token stored by `lific login` (env > keyring > file). We probe the
-    // credential store keyed by the server's public_url when set, else the
-    // loopback base, since that's how `lific login` would have keyed it.
-    let cred_base = cfg.server.public_url.as_deref().unwrap_or(&base);
-    let (effective_key, key_source) = match key {
-        Some(k) => (Some(k.to_string()), None),
-        None => match crate::cli::credentials::load_with_source(cred_base) {
-            Ok(Some((tok, src))) => (Some(tok), Some(src)),
-            Ok(None) => (None, None),
-            Err(error) => {
-                checks.push(Check::new(
-                    "credentials",
-                    Status::Fail,
-                    format!("failed to read stored credentials: {error}"),
-                ));
-                (None, None)
-            }
-        },
-    };
+    let credential_base = cfg.server.public_url.as_deref().unwrap_or(&base);
+    let mut checks = Vec::new();
 
     let Ok(client) = reqwest::Client::builder()
         .timeout(Duration::from_secs(3))
         .build()
     else {
-        checks.extend([
-            Check::new(
-                "server",
-                Status::Warn,
-                "could not build HTTP client — skipped",
-            ),
-            Check::new("oauth_discovery", Status::Skipped, "skipped"),
-            Check::new("mcp", Status::Skipped, "skipped"),
-        ]);
+        checks.push(Check::new(
+            "server",
+            Status::Warn,
+            "could not build HTTP client — skipped",
+        ));
+        checks.extend(skipped_local_checks("skipped"));
         return checks;
     };
 
-    let probe = http_server_reachable(&client, &base).await;
-    checks.push(server_check_result(&probe));
-    match probe {
-        ServerProbe::Reachable(_) => {
-            checks.push(check_oauth_discovery(&client, &base).await);
-            let mut mcp_check = check_mcp(&client, &base, effective_key.as_deref()).await;
-            // Note where the credential came from when it was a stored
-            // login token rather than an explicit --key/LIFIC_API_KEY.
-            if let Some(src) = key_source {
-                mcp_check.detail = format!("{} (using {})", mcp_check.detail, src.label());
-            }
-            checks.push(mcp_check);
-        }
-        ServerProbe::Unreachable => checks.extend([
-            Check::new(
-                "oauth_discovery",
-                Status::Skipped,
-                "server not reachable — skipped",
-            ),
-            Check::new("mcp", Status::Skipped, "server not reachable — skipped"),
-        ]),
-    }
+    checks.extend(check_local_remote(&client, &base, key, credential_base).await);
 
-    // public_url check only when configured.
     if let Some(url) = cfg.server.public_url.as_deref() {
         checks.push(check_public_url(&client, url).await);
     }
 
     checks
+}
+
+/// Run the server checks sharing the local configured endpoint.
+async fn check_local_remote(
+    client: &reqwest::Client,
+    base: &str,
+    explicit_key: Option<&str>,
+    credential_base: &str,
+) -> Vec<Check> {
+    let probe = http_server_reachable(client, base).await;
+    let mut checks = vec![server_check_result(&probe)];
+    match probe {
+        ServerProbe::Reachable(_) => {
+            checks.push(check_oauth_discovery(client, base).await);
+            let (key, key_source) = match explicit_key {
+                Some(key) => (Some(key.to_owned()), None),
+                None => match crate::cli::credentials::load_with_source(credential_base) {
+                    Ok(Some((key, source))) => (Some(key), Some(source)),
+                    Ok(None) => (None, None),
+                    Err(error) => {
+                        checks.push(Check::new(
+                            "credentials",
+                            Status::Fail,
+                            format!("failed to read stored credentials: {error}"),
+                        ));
+                        (None, None)
+                    }
+                },
+            };
+            let mut mcp = check_mcp(client, base, key.as_deref()).await;
+            if let Some(source) = key_source {
+                mcp.detail = format!("{} (using {})", mcp.detail, source.label());
+            }
+            checks.push(mcp);
+        }
+        ServerProbe::Unreachable => {
+            checks.extend(skipped_local_checks("server not reachable — skipped"));
+        }
+    }
+    checks
+}
+
+fn skipped_local_checks(detail: &str) -> [Check; 2] {
+    [
+        Check::new("oauth_discovery", Status::Skipped, detail),
+        Check::new("mcp", Status::Skipped, detail),
+    ]
 }
 
 // ── Check 1: config ──────────────────────────────────────────────────────
@@ -1497,6 +1497,29 @@ mod tests {
             .unwrap()
     }
 
+    fn config_at(base: &str) -> Config {
+        let url = reqwest::Url::parse(base).unwrap();
+        let mut config = Config::default();
+        config.server.host = url.host_str().unwrap().into();
+        config.server.port = url.port().unwrap();
+        config
+    }
+
+    fn status_of(checks: &[Check], name: &str) -> Option<Status> {
+        checks
+            .iter()
+            .find(|check| check.name == name)
+            .map(|check| check.status)
+    }
+
+    fn initialize_response() -> axum::Json<serde_json::Value> {
+        axum::Json(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": { "serverInfo": { "name": "test" } }
+        }))
+    }
+
     #[tokio::test]
     async fn http_server_reachable_true_against_live_server() {
         let pool = crate::db::open_memory().unwrap();
@@ -1522,30 +1545,54 @@ mod tests {
             )
             .route(
                 "/mcp",
-                axum::routing::post(|| async {
-                    axum::Json(serde_json::json!({
-                        "jsonrpc": "2.0",
-                        "id": 1,
-                        "result": { "serverInfo": { "name": "test" } }
-                    }))
-                }),
+                axum::routing::post(|| async { initialize_response() }),
             );
         let base = serve_ephemeral(app).await;
-        let url = reqwest::Url::parse(&base).unwrap();
-        let mut config = Config::default();
-        config.server.host = url.host_str().unwrap().into();
-        config.server.port = url.port().unwrap();
+        let config = config_at(&base);
 
         let checks = check_remote(&config, Some("explicit-test-key")).await;
-        let status = |name: &str| {
-            checks
-                .iter()
-                .find(|check| check.name == name)
-                .map(|check| check.status)
-        };
-        assert_eq!(status("server"), Some(Status::Warn));
-        assert_eq!(status("oauth_discovery"), Some(Status::Pass));
-        assert_eq!(status("mcp"), Some(Status::Pass));
+        assert_eq!(status_of(&checks, "server"), Some(Status::Warn));
+        assert_eq!(status_of(&checks, "oauth_discovery"), Some(Status::Pass));
+        assert_eq!(status_of(&checks, "mcp"), Some(Status::Pass));
+    }
+
+    #[tokio::test]
+    async fn reachable_server_runs_mcp_when_discovery_fails() {
+        let app = axum::Router::new()
+            .route(
+                "/api/health",
+                axum::routing::get(|| async { reqwest::StatusCode::OK }),
+            )
+            .route(
+                "/.well-known/oauth-protected-resource/mcp",
+                axum::routing::get(|| async { reqwest::StatusCode::SERVICE_UNAVAILABLE }),
+            )
+            .route(
+                "/mcp",
+                axum::routing::post(|| async { initialize_response() }),
+            );
+        let base = serve_ephemeral(app).await;
+
+        let checks = check_remote(&config_at(&base), Some("explicit-test-key")).await;
+
+        assert_eq!(status_of(&checks, "server"), Some(Status::Pass));
+        assert_eq!(status_of(&checks, "oauth_discovery"), Some(Status::Fail));
+        assert_eq!(status_of(&checks, "mcp"), Some(Status::Pass));
+    }
+
+    #[tokio::test]
+    async fn unreachable_server_skips_local_checks_without_loading_credentials() {
+        let addr = serve_reset_connections().await;
+        let checks = check_remote(
+            &config_at(&format!("http://{addr}")),
+            Some("explicit-test-key"),
+        )
+        .await;
+
+        assert_eq!(status_of(&checks, "server"), Some(Status::Warn));
+        assert_eq!(status_of(&checks, "oauth_discovery"), Some(Status::Skipped));
+        assert_eq!(status_of(&checks, "mcp"), Some(Status::Skipped));
+        assert_eq!(status_of(&checks, "credentials"), None);
     }
 
     #[tokio::test]
@@ -1601,12 +1648,6 @@ mod tests {
 
     #[tokio::test]
     async fn full_report_offline_has_no_fails_and_skips_http() {
-        // build_report reaches credentials::load_with_source, which reads
-        // LIFIC_TOKEN from the process env. Other tests mutate that variable
-        // with unsafe setenv; an unsynchronized getenv racing one of those
-        // can observe a reallocated environ. Hold the crate-wide lock across
-        // the whole report build (LIF-401).
-        let _env = crate::test_env::lock_lific_token_env().await;
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
         let mut cfg = Config::default();
