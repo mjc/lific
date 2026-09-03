@@ -651,43 +651,45 @@ async fn check_oauth_discovery(client: &reqwest::Client, base: &str) -> Check {
         "{}/.well-known/oauth-protected-resource/mcp",
         base.trim_end_matches('/')
     );
-    match client.get(&url).send().await {
-        Ok(resp) => {
-            let status = resp.status();
-            if !status.is_success() {
-                return Check::new(
-                    "oauth_discovery",
-                    Status::Fail,
-                    format!("discovery endpoint returned HTTP {}", status.as_u16()),
-                );
-            }
-            match resp.json::<serde_json::Value>().await {
-                Ok(body) => {
-                    if let Some(resource) = body.get("resource").and_then(|r| r.as_str()) {
-                        Check::new(
-                            "oauth_discovery",
-                            Status::Pass,
-                            format!("advertised, resource = {resource}"),
-                        )
-                    } else {
-                        Check::new(
-                            "oauth_discovery",
-                            Status::Fail,
-                            "200 but JSON is missing the `resource` field",
-                        )
-                    }
-                }
-                Err(e) => Check::new(
-                    "oauth_discovery",
-                    Status::Fail,
-                    format!("200 but body was not JSON: {e}"),
-                ),
-            }
+    let response = match client.get(&url).send().await {
+        Ok(response) => response,
+        Err(error) => {
+            return Check::new(
+                "oauth_discovery",
+                Status::Fail,
+                format!("request failed: {error}"),
+            );
         }
-        Err(e) => Check::new(
+    };
+    let status = response.status();
+    if !status.is_success() {
+        return Check::new(
             "oauth_discovery",
             Status::Fail,
-            format!("request failed: {e}"),
+            format!("discovery endpoint returned HTTP {}", status.as_u16()),
+        );
+    }
+    match response.json::<serde_json::Value>().await {
+        Ok(body) => check_oauth_discovery_body(body),
+        Err(error) => Check::new(
+            "oauth_discovery",
+            Status::Fail,
+            format!("200 but body was not JSON: {error}"),
+        ),
+    }
+}
+
+fn check_oauth_discovery_body(body: serde_json::Value) -> Check {
+    match body.get("resource").and_then(serde_json::Value::as_str) {
+        Some(resource) => Check::new(
+            "oauth_discovery",
+            Status::Pass,
+            format!("advertised, resource = {resource}"),
+        ),
+        None => Check::new(
+            "oauth_discovery",
+            Status::Fail,
+            "200 but JSON is missing the `resource` field",
         ),
     }
 }
@@ -713,6 +715,24 @@ fn initialize_body() -> serde_json::Value {
 /// `WWW-Authenticate` header (auth enforced, discovery advertised). With a key
 /// we expect a 200 whose JSON-RPC result contains `serverInfo`.
 async fn check_mcp(client: &reqwest::Client, base: &str, key: Option<&str>) -> Check {
+    let response = match send_mcp_initialize(client, base, key).await {
+        Ok(response) => response,
+        Err(error) => {
+            return Check::new("mcp", Status::Fail, format!("request failed: {error}"));
+        }
+    };
+
+    match key {
+        None => check_mcp_auth_response(&response),
+        Some(_) => check_mcp_authorized_response(response).await,
+    }
+}
+
+async fn send_mcp_initialize(
+    client: &reqwest::Client,
+    base: &str,
+    key: Option<&str>,
+) -> Result<reqwest::Response, reqwest::Error> {
     let url = format!("{}/mcp", base.trim_end_matches('/'));
     let mut req = client
         .post(&url)
@@ -722,95 +742,92 @@ async fn check_mcp(client: &reqwest::Client, base: &str, key: Option<&str>) -> C
     if let Some(k) = key {
         req = req.bearer_auth(k);
     }
+    req.send().await
+}
 
-    let resp = match req.send().await {
-        Ok(r) => r,
-        Err(e) => {
-            return Check::new("mcp", Status::Fail, format!("request failed: {e}"));
-        }
-    };
-
-    let status = resp.status();
-    let has_www_auth = resp
+fn check_mcp_auth_response(response: &reqwest::Response) -> Check {
+    let status = response.status();
+    let has_www_auth = response
         .headers()
         .contains_key(reqwest::header::WWW_AUTHENTICATE);
 
-    match key {
-        None => {
-            // No key: the correct, healthy behavior is a 401 that advertises
-            // where to discover auth.
-            if status == reqwest::StatusCode::UNAUTHORIZED && has_www_auth {
-                Check::new(
-                    "mcp",
-                    Status::Pass,
-                    "auth enforced (401 + WWW-Authenticate); discovery advertised",
-                )
-            } else if status == reqwest::StatusCode::UNAUTHORIZED {
-                Check::new(
-                    "mcp",
-                    Status::Warn,
-                    "401 but no WWW-Authenticate header — discovery not advertised",
-                )
-            } else {
-                Check::new(
-                    "mcp",
-                    Status::Fail,
-                    format!(
-                        "expected 401 without a key, got HTTP {} (auth may be disabled)",
-                        status.as_u16()
-                    ),
-                )
-            }
-        }
-        Some(_) => {
-            if status == reqwest::StatusCode::UNAUTHORIZED {
-                return Check::new(
-                    "mcp",
-                    Status::Fail,
-                    "provided key was rejected (401) — wrong or revoked key",
-                );
-            }
-            if !status.is_success() {
-                return Check::new(
-                    "mcp",
-                    Status::Fail,
-                    format!("initialize returned HTTP {}", status.as_u16()),
-                );
-            }
-            // json_response mode: the body is a plain JSON-RPC envelope.
-            match resp.json::<serde_json::Value>().await {
-                Ok(body) => {
-                    if body
-                        .get("result")
-                        .and_then(|r| r.get("serverInfo"))
-                        .is_some()
-                    {
-                        let name = body
-                            .pointer("/result/serverInfo/name")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("lific");
-                        Check::new(
-                            "mcp",
-                            Status::Pass,
-                            format!("authorized initialize succeeded (serverInfo: {name})"),
-                        )
-                    } else if body.get("error").is_some() {
-                        Check::new(
-                            "mcp",
-                            Status::Fail,
-                            format!("initialize returned a JSON-RPC error: {}", body["error"]),
-                        )
-                    } else {
-                        Check::new("mcp", Status::Fail, "200 but result had no serverInfo")
-                    }
-                }
-                Err(e) => Check::new(
-                    "mcp",
-                    Status::Fail,
-                    format!("200 but body was not JSON: {e}"),
-                ),
-            }
-        }
+    // No key: the correct, healthy behavior is a 401 that advertises where to
+    // discover auth.
+    if status == reqwest::StatusCode::UNAUTHORIZED && has_www_auth {
+        Check::new(
+            "mcp",
+            Status::Pass,
+            "auth enforced (401 + WWW-Authenticate); discovery advertised",
+        )
+    } else if status == reqwest::StatusCode::UNAUTHORIZED {
+        Check::new(
+            "mcp",
+            Status::Warn,
+            "401 but no WWW-Authenticate header — discovery not advertised",
+        )
+    } else {
+        Check::new(
+            "mcp",
+            Status::Fail,
+            format!(
+                "expected 401 without a key, got HTTP {} (auth may be disabled)",
+                status.as_u16()
+            ),
+        )
+    }
+}
+
+async fn check_mcp_authorized_response(response: reqwest::Response) -> Check {
+    let status = response.status();
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        return Check::new(
+            "mcp",
+            Status::Fail,
+            "provided key was rejected (401) — wrong or revoked key",
+        );
+    }
+    if !status.is_success() {
+        return Check::new(
+            "mcp",
+            Status::Fail,
+            format!("initialize returned HTTP {}", status.as_u16()),
+        );
+    }
+
+    // json_response mode: the body is a plain JSON-RPC envelope.
+    match response.json::<serde_json::Value>().await {
+        Ok(body) => check_mcp_json_response(body),
+        Err(error) => Check::new(
+            "mcp",
+            Status::Fail,
+            format!("200 but body was not JSON: {error}"),
+        ),
+    }
+}
+
+fn check_mcp_json_response(body: serde_json::Value) -> Check {
+    if body
+        .get("result")
+        .and_then(|result| result.get("serverInfo"))
+        .is_some()
+    {
+        let name = body
+            .pointer("/result/serverInfo/name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("lific");
+        Check::new(
+            "mcp",
+            Status::Pass,
+            format!("authorized initialize succeeded (serverInfo: {name})"),
+        )
+    } else if let Some(error) = body.get("error") {
+        Check::new(
+            "mcp",
+            Status::Fail,
+            format!("initialize returned a JSON-RPC error: {error}"),
+        )
+    } else {
+        Check::new("mcp", Status::Fail, "200 but result had no serverInfo")
     }
 }
 
