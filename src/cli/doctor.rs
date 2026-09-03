@@ -296,18 +296,17 @@ fn check_config(
                 "no lific.toml found — using built-in defaults (run `lific init`)",
             )
         }
-        Ok(resolved) => Check::new(
-            "config",
-            Status::Pass,
-            format!(
-                "using {} ({})",
-                resolved.path.as_deref().map_or_else(
-                    || "built-in defaults".to_owned(),
-                    |path| path.display().to_string()
-                ),
-                resolved.source.label()
-            ),
-        ),
+        Ok(resolved) => {
+            let path = resolved
+                .path
+                .as_deref()
+                .expect("non-default config resolution must have a path");
+            Check::new(
+                "config",
+                Status::Pass,
+                format!("using {} ({})", path.display(), resolved.source.label()),
+            )
+        }
     }
 }
 
