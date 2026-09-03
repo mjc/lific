@@ -148,14 +148,14 @@ fn connect_base(cfg: &Config) -> String {
     )
 }
 
-/// Run doctor with the already-selected configuration result. This keeps
-/// malformed configuration diagnostic while letting the remaining checks run
-/// against safe defaults, instead of reconstructing candidate discovery.
-/// `repair` explicitly opts the database check into applying migrations.
-pub async fn run_with_resolution(
-    cfg: &Config,
-    resolution: &Result<crate::config::ResolvedConfig, crate::config::ConfigError>,
-    key: Option<String>,
+/// Run doctor with the canonical configuration-selection result. A malformed
+/// configuration remains diagnostic while independent checks continue against
+/// safe defaults. `database_override` is applied to that diagnostic config,
+/// and `repair` explicitly opts into applying migrations.
+pub async fn run(
+    resolution: Result<crate::config::ResolvedConfig, crate::config::ConfigError>,
+    database_override: Option<&Path>,
+    key: Option<&str>,
     repair: bool,
     json: bool,
 ) -> Result<(), String> {
@@ -164,37 +164,48 @@ pub async fn run_with_resolution(
     } else {
         DatabaseCheckMode::ReadOnly
     };
-    let report = build_report_with_resolution(cfg, resolution, key.as_deref(), database_mode).await;
+    let report = build_report(resolution, database_override, key, database_mode).await;
     print_report(&report, json);
-    if report.fail_count() > 0 {
-        Err(format!("doctor: {} check(s) failed", report.fail_count()))
-    } else {
-        Ok(())
+    match report.fail_count() {
+        0 => Ok(()),
+        count => Err(format!("doctor: {count} check(s) failed")),
     }
 }
 
-/// Assemble a report without printing it so tests can inspect structured
-/// results. Production callers pass their already-resolved configuration to
-/// [`run_with_resolution`].
-#[cfg(test)]
-async fn build_report(cfg: &Config, key: Option<&str>) -> Report {
-    let resolution = Config::resolve(None);
-    build_report_with_resolution(cfg, &resolution, key, DatabaseCheckMode::ReadOnly).await
-}
-
-async fn build_report_with_resolution(
-    cfg: &Config,
-    resolution: &Result<crate::config::ResolvedConfig, crate::config::ConfigError>,
+/// Assemble the structured report from the single configuration-selection
+/// result. This function owns doctor's deliberate fallback policy, so callers
+/// cannot report one resolution while checking an unrelated configuration.
+async fn build_report(
+    resolution: Result<crate::config::ResolvedConfig, crate::config::ConfigError>,
+    database_override: Option<&Path>,
     key: Option<&str>,
     database_mode: DatabaseCheckMode,
 ) -> Report {
-    let mut checks = Vec::new();
+    let (cfg, config_check) = diagnostic_config(resolution, database_override);
 
-    checks.push(check_config(resolution));
-    checks.push(check_database(cfg, database_mode));
-    if let Some(c) = check_backups(cfg) {
-        checks.push(c);
+    let mut checks = vec![config_check, check_database(&cfg, database_mode)];
+    checks.extend(check_backups(&cfg));
+    checks.extend(check_remote(&cfg, key).await);
+    Report::new(checks)
+}
+
+fn diagnostic_config(
+    resolution: Result<crate::config::ResolvedConfig, crate::config::ConfigError>,
+    database_override: Option<&Path>,
+) -> (Config, Check) {
+    let check = check_config(&resolution);
+    let mut config = resolution
+        .map(|resolved| resolved.config)
+        .unwrap_or_default();
+    if let Some(path) = database_override {
+        config.database.path = path.to_owned();
     }
+    (config, check)
+}
+
+/// Run checks that depend on the configured server or its credentials.
+async fn check_remote(cfg: &Config, key: Option<&str>) -> Vec<Check> {
+    let mut checks = Vec::new();
 
     // Build the base URL a client would use to reach this server.
     let base = connect_base(cfg);
@@ -204,10 +215,7 @@ async fn build_report_with_resolution(
     // credential store keyed by the server's public_url when set, else the
     // loopback base, since that's how `lific login` would have keyed it.
     let cred_base = cfg.server.public_url.as_deref().unwrap_or(&base);
-    let (effective_key, key_source): (
-        Option<String>,
-        Option<crate::cli::credentials::TokenSource>,
-    ) = match key {
+    let (effective_key, key_source) = match key {
         Some(k) => (Some(k.to_string()), None),
         None => match crate::cli::credentials::load_with_source(cred_base) {
             Ok(Some((tok, src))) => (Some(tok), Some(src)),
@@ -223,35 +231,10 @@ async fn build_report_with_resolution(
         },
     };
 
-    let client = reqwest::Client::builder()
+    let Ok(client) = reqwest::Client::builder()
         .timeout(Duration::from_secs(3))
         .build()
-        .ok();
-
-    if let Some(c) = &client {
-        let probe = http_server_reachable(c, &base).await;
-        checks.push(server_check_result(&probe));
-        if probe.reachable {
-            checks.push(check_oauth_discovery(c, &base).await);
-            let mut mcp_check = check_mcp(c, &base, effective_key.as_deref()).await;
-            // Note where the credential came from when it was a stored
-            // login token rather than an explicit --key/LIFIC_API_KEY.
-            if let Some(src) = key_source {
-                mcp_check.detail = format!("{} (using {})", mcp_check.detail, src.label());
-            }
-            checks.push(mcp_check);
-        } else {
-            checks.extend([
-                Check::new(
-                    "oauth_discovery",
-                    Status::Skipped,
-                    "server not reachable — skipped",
-                ),
-                Check::new("mcp", Status::Skipped, "server not reachable — skipped"),
-            ]);
-        }
-    } else {
-        // Could not even build a client; report all HTTP checks as skipped.
+    else {
         checks.extend([
             Check::new(
                 "server",
@@ -261,14 +244,38 @@ async fn build_report_with_resolution(
             Check::new("oauth_discovery", Status::Skipped, "skipped"),
             Check::new("mcp", Status::Skipped, "skipped"),
         ]);
+        return checks;
+    };
+
+    let probe = http_server_reachable(&client, &base).await;
+    checks.push(server_check_result(&probe));
+    match probe {
+        ServerProbe::Reachable(_) => {
+            checks.push(check_oauth_discovery(&client, &base).await);
+            let mut mcp_check = check_mcp(&client, &base, effective_key.as_deref()).await;
+            // Note where the credential came from when it was a stored
+            // login token rather than an explicit --key/LIFIC_API_KEY.
+            if let Some(src) = key_source {
+                mcp_check.detail = format!("{} (using {})", mcp_check.detail, src.label());
+            }
+            checks.push(mcp_check);
+        }
+        ServerProbe::Unreachable => checks.extend([
+            Check::new(
+                "oauth_discovery",
+                Status::Skipped,
+                "server not reachable — skipped",
+            ),
+            Check::new("mcp", Status::Skipped, "server not reachable — skipped"),
+        ]),
     }
 
     // public_url check only when configured.
-    if let (Some(c), Some(url)) = (&client, cfg.server.public_url.as_deref()) {
-        checks.push(check_public_url(c, url).await);
+    if let Some(url) = cfg.server.public_url.as_deref() {
+        checks.push(check_public_url(&client, url).await);
     }
 
-    Report::new(checks)
+    checks
 }
 
 // ── Check 1: config ──────────────────────────────────────────────────────
@@ -585,45 +592,39 @@ fn newest_backup_age_minutes(dir: &Path) -> Option<u64> {
 // ── Check 4: server reachability ─────────────────────────────────────────
 
 /// Result of probing the server's health endpoint.
-pub struct ServerProbe {
-    pub reachable: bool,
-    pub status: Option<u16>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ServerProbe {
+    Reachable(reqwest::StatusCode),
+    Unreachable,
 }
 
 /// Probe `GET {base}/api/health`. Kept separate from the `Check` so the
 /// follow-on HTTP checks can gate on `reachable` without re-parsing a detail
 /// string.
-pub async fn http_server_reachable(client: &reqwest::Client, base: &str) -> ServerProbe {
+async fn http_server_reachable(client: &reqwest::Client, base: &str) -> ServerProbe {
     let url = format!("{}/api/health", base.trim_end_matches('/'));
     match client.get(&url).send().await {
-        Ok(resp) => ServerProbe {
-            reachable: true,
-            status: Some(resp.status().as_u16()),
-        },
-        Err(_) => ServerProbe {
-            reachable: false,
-            status: None,
-        },
+        Ok(response) => ServerProbe::Reachable(response.status()),
+        Err(_) => ServerProbe::Unreachable,
     }
 }
 
 fn server_check_result(probe: &ServerProbe) -> Check {
-    if probe.reachable {
-        let ver = env!("CARGO_PKG_VERSION");
-        Check::new(
+    match probe {
+        ServerProbe::Reachable(status) => Check::new(
             "server",
             Status::Pass,
             format!(
-                "reachable (health {}); this binary is lific {ver}",
-                probe.status.unwrap_or(0)
+                "reachable (health {}); this binary is lific {}",
+                status.as_u16(),
+                env!("CARGO_PKG_VERSION")
             ),
-        )
-    } else {
-        Check::new(
+        ),
+        ServerProbe::Unreachable => Check::new(
             "server",
             Status::Warn,
             "not running (start it with `lific start`) — server checks skipped",
-        )
+        ),
     }
 }
 
@@ -631,7 +632,7 @@ fn server_check_result(probe: &ServerProbe) -> Check {
 
 /// `GET {base}/.well-known/oauth-protected-resource/mcp` → 200 + JSON with a
 /// `resource` field.
-pub async fn check_oauth_discovery(client: &reqwest::Client, base: &str) -> Check {
+async fn check_oauth_discovery(client: &reqwest::Client, base: &str) -> Check {
     let url = format!(
         "{}/.well-known/oauth-protected-resource/mcp",
         base.trim_end_matches('/')
@@ -697,7 +698,7 @@ fn initialize_body() -> serde_json::Value {
 /// `POST {base}/mcp` an `initialize`. Without a key we expect a 401 carrying a
 /// `WWW-Authenticate` header (auth enforced, discovery advertised). With a key
 /// we expect a 200 whose JSON-RPC result contains `serverInfo`.
-pub async fn check_mcp(client: &reqwest::Client, base: &str, key: Option<&str>) -> Check {
+async fn check_mcp(client: &reqwest::Client, base: &str, key: Option<&str>) -> Check {
     let url = format!("{}/mcp", base.trim_end_matches('/'));
     let mut req = client
         .post(&url)
@@ -1305,7 +1306,7 @@ mod tests {
             .unwrap();
         // Port 1 is privileged and nothing listens there in test.
         let probe = http_server_reachable(&client, "http://127.0.0.1:1").await;
-        assert!(!probe.reachable);
+        assert_eq!(probe, ServerProbe::Unreachable);
         let c = server_check_result(&probe);
         assert_eq!(c.status, Status::Warn);
     }
@@ -1375,8 +1376,7 @@ mod tests {
         let base = serve_ephemeral(app).await;
 
         let probe = http_server_reachable(&test_client(), &base).await;
-        assert!(probe.reachable);
-        assert_eq!(probe.status, Some(200));
+        assert_eq!(probe, ServerProbe::Reachable(reqwest::StatusCode::OK));
     }
 
     #[tokio::test]
@@ -1447,7 +1447,12 @@ mod tests {
         cfg.server.port = 1;
         cfg.backup.enabled = false;
 
-        let report = build_report(&cfg, None).await;
+        let resolution = Ok(crate::config::ResolvedConfig {
+            config: cfg,
+            path: Some(dir.join("lific.toml")),
+            source: crate::config::ConfigSource::Explicit,
+        });
+        let report = build_report(resolution, None, None, DatabaseCheckMode::ReadOnly).await;
         assert_eq!(report.fail_count(), 0, "offline run must not fail");
         assert!(report.ok);
 
@@ -1456,5 +1461,19 @@ mod tests {
         assert_eq!(by("server"), Some(Status::Warn));
         assert_eq!(by("oauth_discovery"), Some(Status::Skipped));
         assert_eq!(by("mcp"), Some(Status::Skipped));
+    }
+
+    #[test]
+    fn database_override_survives_config_resolution_failure() {
+        let tmp = tempfile::tempdir().unwrap();
+        let database_path = tmp.path().join("override.db");
+        let resolution = Err(crate::config::ConfigError::MissingExplicit {
+            path: tmp.path().join("missing.toml"),
+        });
+
+        let (config, check) = diagnostic_config(resolution, Some(&database_path));
+
+        assert_eq!(check.status, Status::Fail);
+        assert_eq!(config.database.path, database_path);
     }
 }
