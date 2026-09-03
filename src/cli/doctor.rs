@@ -1067,9 +1067,32 @@ mod tests {
         let c = check_database(&cfg, false);
 
         assert_eq!(c.status, Status::Fail, "an unrecognized database must fail");
-        assert!(!db_path.with_extension("db-wal").exists());
-        assert!(!db_path.with_extension("db-shm").exists());
-        assert!(!db_path.with_extension("db.bak").exists());
+        assert!(!has_migration_table(&db_path));
+        assert_no_database_sidecars(&db_path);
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn read_only_database_checks_never_repair_arbitrary_paths(
+            name in "[a-zA-Z0-9_-]{1,24}"
+        ) {
+            let tmp = tempfile::tempdir().unwrap();
+            let db_path = tmp.path().join(format!("{name}.db"));
+            let connection = rusqlite::Connection::open(&db_path).unwrap();
+            connection
+                .execute("CREATE TABLE marker (value TEXT NOT NULL)", [])
+                .unwrap();
+            drop(connection);
+
+            let mut cfg = Config::default();
+            cfg.database.path = db_path.clone();
+
+            let check = check_database(&cfg, false);
+
+            prop_assert_eq!(check.status, Status::Fail);
+            prop_assert!(!has_migration_table(&db_path));
+            assert_no_database_sidecars(&db_path);
+        }
     }
 
     #[test]
@@ -1087,24 +1110,34 @@ mod tests {
 
         let read_only = check_database(&cfg, false);
         assert_eq!(read_only.status, Status::Fail);
-        let connection = rusqlite::Connection::open(&db_path).unwrap();
-        let migration_table: Option<String> = connection
-            .query_row(
-                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = '_migrations'",
-                [],
-                |row| row.get(0),
-            )
-            .optional()
-            .unwrap();
         assert!(
-            migration_table.is_none(),
+            !has_migration_table(&db_path),
             "read-only doctor must not repair"
         );
-        drop(connection);
+        assert_no_database_sidecars(&db_path);
 
         let repaired = check_database(&cfg, true);
         assert_eq!(repaired.status, Status::Pass, "detail: {}", repaired.detail);
         assert!(repaired.detail.contains("migrations applied"));
+    }
+
+    fn has_migration_table(path: &Path) -> bool {
+        let connection = rusqlite::Connection::open(path).unwrap();
+        connection
+            .query_row(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = '_migrations'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .unwrap()
+            .is_some()
+    }
+
+    fn assert_no_database_sidecars(path: &Path) {
+        assert!(!path.with_extension("db-wal").exists());
+        assert!(!path.with_extension("db-shm").exists());
+        assert!(!path.with_extension("db.bak").exists());
     }
 
     // ── backups check ────────────────────────────────────────────────────
