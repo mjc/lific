@@ -252,12 +252,17 @@ pub fn update_module(
                 params![status, id],
             )?;
         }
-        // Tristate: Some(None) clears to NULL, Some(Some) sets, None skips.
-        if let Some(emoji) = &input.emoji {
-            conn.execute(
-                "UPDATE modules SET emoji = ?1 WHERE id = ?2",
-                params![emoji.as_ref(), id],
-            )?;
+        match &input.emoji {
+            FieldUpdate::Keep => {}
+            FieldUpdate::Clear => {
+                conn.execute("UPDATE modules SET emoji = NULL WHERE id = ?1", params![id])?;
+            }
+            FieldUpdate::Set(emoji) => {
+                conn.execute(
+                    "UPDATE modules SET emoji = ?1 WHERE id = ?2",
+                    params![emoji, id],
+                )?;
+            }
         }
         Ok(())
     })?;
@@ -1049,7 +1054,7 @@ mod tests {
             &conn,
             module.id,
             &UpdateModule {
-                emoji: Some(Some("🚀".into())),
+                emoji: FieldUpdate::Set("🚀".into()),
                 ..Default::default()
             },
         )
@@ -1073,7 +1078,7 @@ mod tests {
             &conn,
             module.id,
             &UpdateModule {
-                emoji: Some(None),
+                emoji: FieldUpdate::Clear,
                 ..Default::default()
             },
         )

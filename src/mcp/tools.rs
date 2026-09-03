@@ -949,14 +949,13 @@ fn emoji_for_create(emoji: &Option<String>) -> Option<String> {
     emoji.as_ref().filter(|s| !s.is_empty()).cloned()
 }
 
-/// LIF-145 sentinel for an update's tristate `Option<Option<String>>` icon
-/// field: omitted (None) = leave unchanged, empty string = clear to NULL,
-/// non-empty = set.
-fn emoji_for_update(emoji: &Option<String>) -> Option<Option<String>> {
+/// LIF-145 sentinel for an update's tri-state icon field: omitted leaves it
+/// unchanged, an empty string clears it to NULL, and a non-empty string sets it.
+fn emoji_for_update(emoji: &Option<String>) -> models::FieldUpdate<String> {
     match emoji {
-        None => None,
-        Some(s) if s.is_empty() => Some(None),
-        Some(s) => Some(Some(s.clone())),
+        None => models::FieldUpdate::Keep,
+        Some(s) if s.is_empty() => models::FieldUpdate::Clear,
+        Some(s) => models::FieldUpdate::Set(s.clone()),
     }
 }
 
@@ -2251,13 +2250,13 @@ impl LificMcp {
             // LIF-145 sentinel: field omitted (None) = skip, empty string = clear
             // (unassign module), non-empty = resolve + set.
             let module_id = match &input.module {
-                Some(name) if name.is_empty() => Some(None),
-                Some(name) => Some(Some(queries::resolve_module_name(
+                Some(name) if name.is_empty() => models::FieldUpdate::Clear,
+                Some(name) => models::FieldUpdate::Set(queries::resolve_module_name(
                     conn,
                     previous_issue.project_id,
                     name,
-                )?)),
-                None => None,
+                )?),
+                None => models::FieldUpdate::Keep,
             };
             // LIF-369/LIF-409: resolved before the write it authorizes, on the
             // same connection and transaction, so no revocation can slip in.
@@ -2396,7 +2395,9 @@ impl LificMcp {
                                     input.set_priority.as_deref(),
                                 )
                                 .map_err(crate::error::LificError::BadRequest)?,
-                                module_id: set_module_id.map(Some),
+                                module_id: set_module_id
+                                    .map(models::FieldUpdate::Set)
+                                    .unwrap_or_default(),
                                 ..Default::default()
                             },
                         )
@@ -2850,7 +2851,7 @@ impl LificMcp {
             // LIF-145 sentinel: field omitted (None) = skip, empty string = clear
             // (move page to root), non-empty = resolve folder + set.
             let folder_id = match &input.folder {
-                Some(name) if name.is_empty() => Some(None),
+                Some(name) if name.is_empty() => models::FieldUpdate::Clear,
                 Some(name) => {
                     let page = queries::get_page(conn, id)?;
                     let pid = page.project_id.ok_or_else(|| {
@@ -2858,9 +2859,9 @@ impl LificMcp {
                             "page has no project for folder resolution".into(),
                         )
                     })?;
-                    Some(Some(queries::resolve_folder_name(conn, pid, name)?))
+                    models::FieldUpdate::Set(queries::resolve_folder_name(conn, pid, name)?)
                 }
-                None => None,
+                None => models::FieldUpdate::Keep,
             };
             // LIF-369/LIF-409: resolved before the write it authorizes,
             // against the page's project as it stands inside this transaction.
@@ -4142,9 +4143,11 @@ impl LificMcp {
                 // ── Plan-level update ──
                 None => {
                     let anchor = match (&input.anchor_issue, input.clear_anchor) {
-                        (Some(ident), _) => Some(Some(queries::resolve_identifier(conn, ident)?)),
-                        (None, Some(true)) => Some(None),
-                        _ => None,
+                        (Some(ident), _) => {
+                            models::FieldUpdate::Set(queries::resolve_identifier(conn, ident)?)
+                        }
+                        (None, Some(true)) => models::FieldUpdate::Clear,
+                        _ => models::FieldUpdate::Keep,
                     };
                     queries::plans::update_plan(
                         conn,

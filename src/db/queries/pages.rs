@@ -385,8 +385,8 @@ pub fn create_page(conn: &Connection, input: &CreatePage) -> Result<Page, LificE
 
 pub fn update_page(conn: &Connection, id: i64, input: &UpdatePage) -> Result<Page, LificError> {
     let page = get_page(conn, id)?;
-    if let Some(folder_id) = input.folder_id {
-        validate_page_folder(conn, page.project_id, folder_id)?;
+    if let FieldUpdate::Set(folder_id) = &input.folder_id {
+        validate_page_folder(conn, page.project_id, Some(*folder_id))?;
     }
     super::savepoint::<_, Page>(conn, "update_page", || {
         // LIF-441: see `update_issue` — checked inside the savepoint so the
@@ -414,11 +414,20 @@ pub fn update_page(conn: &Connection, id: i64, input: &UpdatePage) -> Result<Pag
                 params![unescape_text(content), id],
             )?;
         }
-        if let Some(ref folder_id) = input.folder_id {
-            conn.execute(
-                "UPDATE pages SET folder_id = ?1 WHERE id = ?2",
-                params![folder_id, id],
-            )?;
+        match &input.folder_id {
+            FieldUpdate::Keep => {}
+            FieldUpdate::Clear => {
+                conn.execute(
+                    "UPDATE pages SET folder_id = NULL WHERE id = ?1",
+                    params![id],
+                )?;
+            }
+            FieldUpdate::Set(folder_id) => {
+                conn.execute(
+                    "UPDATE pages SET folder_id = ?1 WHERE id = ?2",
+                    params![folder_id, id],
+                )?;
+            }
         }
         if let Some(sort_order) = input.sort_order {
             conn.execute(
@@ -766,7 +775,7 @@ mod tests {
             &conn,
             page.id,
             &UpdatePage {
-                folder_id: Some(Some(folder_id)),
+                folder_id: FieldUpdate::Set(folder_id),
                 ..Default::default()
             },
         );
@@ -807,7 +816,7 @@ mod tests {
             &conn,
             page.id,
             &UpdatePage {
-                folder_id: Some(Some(folder_id)),
+                folder_id: FieldUpdate::Set(folder_id),
                 ..Default::default()
             },
         );
@@ -839,7 +848,7 @@ mod tests {
             &conn,
             page.id,
             &UpdatePage {
-                folder_id: Some(None),
+                folder_id: FieldUpdate::Clear,
                 ..Default::default()
             },
         )
