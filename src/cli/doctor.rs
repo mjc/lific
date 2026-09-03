@@ -228,46 +228,39 @@ async fn build_report_with_resolution(
         .build()
         .ok();
 
-    let server_up = match &client {
-        Some(c) => http_server_reachable(c, &base).await,
-        None => None,
-    };
-
-    match (&client, &server_up) {
-        (Some(c), Some(reachable)) => {
-            checks.push(server_check_result(reachable));
-            if reachable.reachable {
-                checks.push(check_oauth_discovery(c, &base).await);
-                let mut mcp_check = check_mcp(c, &base, effective_key.as_deref()).await;
-                // Note where the credential came from when it was a stored
-                // login token rather than an explicit --key/LIFIC_API_KEY.
-                if let Some(src) = key_source {
-                    mcp_check.detail = format!("{} (using {})", mcp_check.detail, src.label());
-                }
-                checks.push(mcp_check);
-            } else {
-                checks.push(Check::new(
+    if let Some(c) = &client {
+        let probe = http_server_reachable(c, &base).await;
+        checks.push(server_check_result(&probe));
+        if probe.reachable {
+            checks.push(check_oauth_discovery(c, &base).await);
+            let mut mcp_check = check_mcp(c, &base, effective_key.as_deref()).await;
+            // Note where the credential came from when it was a stored
+            // login token rather than an explicit --key/LIFIC_API_KEY.
+            if let Some(src) = key_source {
+                mcp_check.detail = format!("{} (using {})", mcp_check.detail, src.label());
+            }
+            checks.push(mcp_check);
+        } else {
+            checks.extend([
+                Check::new(
                     "oauth_discovery",
                     Status::Skipped,
                     "server not reachable — skipped",
-                ));
-                checks.push(Check::new(
-                    "mcp",
-                    Status::Skipped,
-                    "server not reachable — skipped",
-                ));
-            }
+                ),
+                Check::new("mcp", Status::Skipped, "server not reachable — skipped"),
+            ]);
         }
-        _ => {
-            // Could not even build a client; report all HTTP checks as skipped.
-            checks.push(Check::new(
+    } else {
+        // Could not even build a client; report all HTTP checks as skipped.
+        checks.extend([
+            Check::new(
                 "server",
                 Status::Warn,
                 "could not build HTTP client — skipped",
-            ));
-            checks.push(Check::new("oauth_discovery", Status::Skipped, "skipped"));
-            checks.push(Check::new("mcp", Status::Skipped, "skipped"));
-        }
+            ),
+            Check::new("oauth_discovery", Status::Skipped, "skipped"),
+            Check::new("mcp", Status::Skipped, "skipped"),
+        ]);
     }
 
     // public_url check only when configured.
@@ -597,20 +590,20 @@ pub struct ServerProbe {
     pub status: Option<u16>,
 }
 
-/// Probe `GET {base}/api/health`. `Some(probe)` always (reachable flags whether
-/// a connection succeeded). Kept separate from the `Check` so the follow-on
-/// HTTP checks can gate on `reachable` without re-parsing a detail string.
-pub async fn http_server_reachable(client: &reqwest::Client, base: &str) -> Option<ServerProbe> {
+/// Probe `GET {base}/api/health`. Kept separate from the `Check` so the
+/// follow-on HTTP checks can gate on `reachable` without re-parsing a detail
+/// string.
+pub async fn http_server_reachable(client: &reqwest::Client, base: &str) -> ServerProbe {
     let url = format!("{}/api/health", base.trim_end_matches('/'));
     match client.get(&url).send().await {
-        Ok(resp) => Some(ServerProbe {
+        Ok(resp) => ServerProbe {
             reachable: true,
             status: Some(resp.status().as_u16()),
-        }),
-        Err(_) => Some(ServerProbe {
+        },
+        Err(_) => ServerProbe {
             reachable: false,
             status: None,
-        }),
+        },
     }
 }
 
@@ -1311,9 +1304,7 @@ mod tests {
             .build()
             .unwrap();
         // Port 1 is privileged and nothing listens there in test.
-        let probe = http_server_reachable(&client, "http://127.0.0.1:1")
-            .await
-            .unwrap();
+        let probe = http_server_reachable(&client, "http://127.0.0.1:1").await;
         assert!(!probe.reachable);
         let c = server_check_result(&probe);
         assert_eq!(c.status, Status::Warn);
@@ -1383,7 +1374,7 @@ mod tests {
         let app = build_test_app(pool, "http://127.0.0.1");
         let base = serve_ephemeral(app).await;
 
-        let probe = http_server_reachable(&test_client(), &base).await.unwrap();
+        let probe = http_server_reachable(&test_client(), &base).await;
         assert!(probe.reachable);
         assert_eq!(probe.status, Some(200));
     }
