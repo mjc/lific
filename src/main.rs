@@ -143,15 +143,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // while continuing independent diagnostics.
     let resolution = Config::resolve(cli.config.as_deref());
     if let Command::Doctor { key, repair } = &cli.command {
-        let mut cfg = resolution
-            .as_ref()
-            .map(|resolved| resolved.config.clone())
-            .unwrap_or_default();
-        if let Some(ref db) = cli.db {
-            cfg.database.path = db.clone();
-        }
         let json = cli::term::wants_json(cli.json);
-        cli::doctor::run_with_resolution(&cfg, &resolution, key.clone(), *repair, json)
+        cli::doctor::run(resolution, cli.db.as_deref(), key.as_deref(), *repair, json)
             .await
             .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
         return Ok(());

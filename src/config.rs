@@ -844,8 +844,8 @@ enabled = false
         assert_eq!(config.database.path, PathBuf::from(ABSOLUTE_DB_PATH));
     }
 
-    /// No config file anywhere is a legitimate first-run state, so defaults
-    /// are correct here. This is the ONLY path that may return defaults.
+    /// An explicit `--config` path names one file. A missing file is a hard
+    /// error; only complete absence of every candidate may return defaults.
     #[test]
     fn missing_explicit_file_is_a_hard_error() {
         let tmp = tempfile::tempdir().unwrap();
