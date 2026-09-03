@@ -159,7 +159,12 @@ pub async fn run_with_resolution(
     repair: bool,
     json: bool,
 ) -> Result<(), String> {
-    let report = build_report_with_resolution(cfg, resolution, key.as_deref(), repair).await;
+    let database_mode = if repair {
+        DatabaseCheckMode::Repair
+    } else {
+        DatabaseCheckMode::ReadOnly
+    };
+    let report = build_report_with_resolution(cfg, resolution, key.as_deref(), database_mode).await;
     print_report(&report, json);
     if report.fail_count() > 0 {
         Err(format!("doctor: {} check(s) failed", report.fail_count()))
@@ -184,19 +189,19 @@ pub async fn build_report_with_config_path(
     key: Option<&str>,
 ) -> Report {
     let resolution = Config::resolve(explicit_config);
-    build_report_with_resolution(cfg, &resolution, key, false).await
+    build_report_with_resolution(cfg, &resolution, key, DatabaseCheckMode::ReadOnly).await
 }
 
 async fn build_report_with_resolution(
     cfg: &Config,
     resolution: &Result<crate::config::ResolvedConfig, crate::config::ConfigError>,
     key: Option<&str>,
-    repair: bool,
+    database_mode: DatabaseCheckMode,
 ) -> Report {
     let mut checks = Vec::new();
 
     checks.push(check_config(resolution));
-    checks.push(check_database(cfg, repair));
+    checks.push(check_database(cfg, database_mode));
     if let Some(c) = check_backups(cfg) {
         checks.push(c);
     }
@@ -318,7 +323,13 @@ fn check_config(
 
 // ── Check 2: database ────────────────────────────────────────────────────
 
-fn check_database(cfg: &Config, repair: bool) -> Check {
+#[derive(Clone, Copy)]
+enum DatabaseCheckMode {
+    ReadOnly,
+    Repair,
+}
+
+fn check_database(cfg: &Config, mode: DatabaseCheckMode) -> Check {
     let path = &cfg.database.path;
     if !path.exists() {
         // Missing is fine if the server could create it; the deciding factor is
@@ -349,12 +360,15 @@ fn check_database(cfg: &Config, repair: bool) -> Check {
         };
     }
 
-    if repair {
-        return check_database_with_repair(path);
+    match mode {
+        DatabaseCheckMode::ReadOnly => check_database_read_only(path),
+        DatabaseCheckMode::Repair => check_database_with_repair(path),
     }
+}
 
-    // File exists: inspect it read-only. Doctor must not run migrations or
-    // enable WAL, because those operations mutate the instance being diagnosed.
+fn check_database_read_only(path: &Path) -> Check {
+    // Doctor must not run migrations or enable WAL, because those operations
+    // mutate the instance being diagnosed.
     match inspect_database(path) {
         Ok(Some(version)) => Check::new(
             "database",
@@ -379,7 +393,11 @@ fn check_database(cfg: &Config, repair: bool) -> Check {
 
 fn check_database_with_repair(path: &Path) -> Check {
     match crate::db::open(path) {
-        Ok(pool) => match schema_version(&pool) {
+        Ok(pool) => match pool
+            .read()
+            .ok()
+            .and_then(|connection| schema_version(&connection).ok())
+        {
             Some(version) => Check::new(
                 "database",
                 Status::Pass,
@@ -402,14 +420,12 @@ fn check_database_with_repair(path: &Path) -> Check {
     }
 }
 
-fn schema_version(pool: &crate::db::DbPool) -> Option<i64> {
-    let conn = pool.read().ok()?;
-    conn.query_row(
+fn schema_version(connection: &rusqlite::Connection) -> rusqlite::Result<i64> {
+    connection.query_row(
         "SELECT COALESCE(MAX(version), 0) FROM _migrations",
         [],
         |row| row.get::<_, i64>(0),
     )
-    .ok()
 }
 
 /// Inspect the migration marker without creating WAL/SHM files or applying
@@ -431,13 +447,7 @@ fn inspect_database(path: &Path) -> rusqlite::Result<Option<i64>> {
     let Some(_) = migration_table else {
         return Ok(None);
     };
-    connection
-        .query_row(
-            "SELECT COALESCE(MAX(version), 0) FROM _migrations",
-            [],
-            |row| row.get::<_, i64>(0),
-        )
-        .map(Some)
+    schema_version(&connection).map(Some)
 }
 
 /// Best-effort writability probe: try to create (and remove) a temp file in the
@@ -1023,7 +1033,7 @@ mod tests {
         let mut cfg = Config::default();
         cfg.database.path = dir.join("nope.db");
 
-        let c = check_database(&cfg, false);
+        let c = check_database(&cfg, DatabaseCheckMode::ReadOnly);
         assert_eq!(c.status, Status::Warn, "detail: {}", c.detail);
         assert!(c.detail.contains("first start"));
     }
@@ -1033,7 +1043,7 @@ mod tests {
         let mut cfg = Config::default();
         // A path under a directory that does not exist → parent not writable.
         cfg.database.path = std::path::PathBuf::from("/nonexistent-lific-doctor-xyz/deep/lific.db");
-        let c = check_database(&cfg, false);
+        let c = check_database(&cfg, DatabaseCheckMode::ReadOnly);
         assert_eq!(c.status, Status::Fail, "detail: {}", c.detail);
     }
 
@@ -1047,7 +1057,7 @@ mod tests {
 
         let mut cfg = Config::default();
         cfg.database.path = db_path;
-        let c = check_database(&cfg, false);
+        let c = check_database(&cfg, DatabaseCheckMode::ReadOnly);
         assert_eq!(c.status, Status::Pass, "detail: {}", c.detail);
         assert!(c.detail.contains("no migrations run"));
     }
@@ -1056,15 +1066,11 @@ mod tests {
     fn database_check_does_not_migrate_an_old_database() {
         let tmp = tempfile::tempdir().unwrap();
         let db_path = tmp.path().join("old.db");
-        let connection = rusqlite::Connection::open(&db_path).unwrap();
-        connection
-            .execute("CREATE TABLE marker (value TEXT NOT NULL)", [])
-            .unwrap();
-        drop(connection);
+        create_unrecognized_database(&db_path);
 
         let mut cfg = Config::default();
         cfg.database.path = db_path.clone();
-        let c = check_database(&cfg, false);
+        let c = check_database(&cfg, DatabaseCheckMode::ReadOnly);
 
         assert_eq!(c.status, Status::Fail, "an unrecognized database must fail");
         assert!(!has_migration_table(&db_path));
@@ -1078,16 +1084,12 @@ mod tests {
         ) {
             let tmp = tempfile::tempdir().unwrap();
             let db_path = tmp.path().join(format!("{name}.db"));
-            let connection = rusqlite::Connection::open(&db_path).unwrap();
-            connection
-                .execute("CREATE TABLE marker (value TEXT NOT NULL)", [])
-                .unwrap();
-            drop(connection);
+            create_unrecognized_database(&db_path);
 
             let mut cfg = Config::default();
             cfg.database.path = db_path.clone();
 
-            let check = check_database(&cfg, false);
+            let check = check_database(&cfg, DatabaseCheckMode::ReadOnly);
 
             prop_assert_eq!(check.status, Status::Fail);
             prop_assert!(!has_migration_table(&db_path));
@@ -1099,16 +1101,12 @@ mod tests {
     fn database_check_repairs_an_old_database_only_when_requested() {
         let tmp = tempfile::tempdir().unwrap();
         let db_path = tmp.path().join("old.db");
-        let connection = rusqlite::Connection::open(&db_path).unwrap();
-        connection
-            .execute("CREATE TABLE marker (value TEXT NOT NULL)", [])
-            .unwrap();
-        drop(connection);
+        create_unrecognized_database(&db_path);
 
         let mut cfg = Config::default();
         cfg.database.path = db_path.clone();
 
-        let read_only = check_database(&cfg, false);
+        let read_only = check_database(&cfg, DatabaseCheckMode::ReadOnly);
         assert_eq!(read_only.status, Status::Fail);
         assert!(
             !has_migration_table(&db_path),
@@ -1116,7 +1114,7 @@ mod tests {
         );
         assert_no_database_sidecars(&db_path);
 
-        let repaired = check_database(&cfg, true);
+        let repaired = check_database(&cfg, DatabaseCheckMode::Repair);
         assert_eq!(repaired.status, Status::Pass, "detail: {}", repaired.detail);
         assert!(repaired.detail.contains("migrations applied"));
     }
@@ -1132,6 +1130,13 @@ mod tests {
             .optional()
             .unwrap()
             .is_some()
+    }
+
+    fn create_unrecognized_database(path: &Path) {
+        rusqlite::Connection::open(path)
+            .unwrap()
+            .execute("CREATE TABLE marker (value TEXT NOT NULL)", [])
+            .unwrap();
     }
 
     fn assert_no_database_sidecars(path: &Path) {
