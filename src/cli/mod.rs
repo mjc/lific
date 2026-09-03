@@ -1694,7 +1694,7 @@ mod tests {
         let cli = Cli::try_parse_from(["lific", "doctor", "--repair"]).unwrap();
         match cli.command {
             Command::Doctor { key, repair } => {
-                assert!(key.is_none());
+                assert_eq!(key, env_fallback("LIFIC_API_KEY"));
                 assert!(repair);
             }
             _ => panic!("expected Doctor"),
