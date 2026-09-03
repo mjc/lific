@@ -2544,7 +2544,7 @@ async fn revoke_token(
             Ok(conn) => crate::db::queries::users::validate_session(&conn, t).is_ok(),
             Err(_) => false,
         },
-        Some(t) if t.starts_with("lific_at_") => authenticate_oauth_token(&state.db, t).is_some(),
+        Some(t) if t.starts_with("lific_at_") => authenticate_oauth_token(&state.db, t),
         // LIF-208: default-deny unknown bearer shapes. The previous
         // `Some(_) => true` treated *any* other string (including arbitrary
         // garbage) as authenticated, which is sloppier than the rest of the
@@ -2807,21 +2807,17 @@ pub fn resolve_oauth_credential(db: &DbPool, token: &str) -> Result<OAuthCredent
 
 /// Authenticate an OAuth access token as an *approving identity*.
 ///
-/// Returns:
-/// - `None` when the token does not authenticate at all: invalid, revoked,
-///   expired, or bound to a user who may no longer authenticate (deactivated,
-///   or a bot whose owner is deactivated — LIF-214 follow-up, see
-///   `queries::users::credential_is_live`).
-/// - `Some(None)` for a valid legacy token carrying no user binding.
-/// - `Some(Some(id))` for a valid token bound to a live user.
+/// Returns whether the token authenticates at all: invalid, revoked, expired,
+/// or bound to a user who may no longer authenticate (deactivated, or a bot
+/// whose owner is deactivated — LIF-214 follow-up, see
+/// `queries::users::credential_is_live`).
 ///
 /// This is the OAuth-token twin of [`crate::db::queries::users::validate_session`],
 /// which applies the same liveness rule to session tokens.
-fn authenticate_oauth_token(db: &DbPool, token: &str) -> Option<Option<i64>> {
+fn authenticate_oauth_token(db: &DbPool, token: &str) -> bool {
     match resolve_oauth_credential(db, token) {
-        Ok(OAuthCredential::Bound(user)) => Some(Some(user.id)),
-        Ok(OAuthCredential::LegacyUnbound) => Some(None),
-        Err(_) => None,
+        Ok(OAuthCredential::Bound(_)) | Ok(OAuthCredential::LegacyUnbound) => true,
+        Err(_) => false,
     }
 }
 

@@ -276,7 +276,7 @@ pub fn remove_member_guarded(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::models::{CreateProject, UpdateProject};
+    use crate::db::models::{CreateProject, FieldUpdate, UpdateProject};
     use crate::db::{self, queries::projects};
 
     fn test_db() -> db::DbPool {
@@ -556,7 +556,7 @@ mod tests {
             &conn,
             project.id,
             &UpdateProject {
-                lead_user_id: Some(Some(bob)),
+                lead_user_id: FieldUpdate::Set(bob),
                 ..Default::default()
             },
         )
@@ -594,7 +594,7 @@ mod tests {
             &conn,
             project.id,
             &UpdateProject {
-                lead_user_id: Some(None), // explicit clear
+                lead_user_id: FieldUpdate::Clear, // explicit clear
                 ..Default::default()
             },
         )

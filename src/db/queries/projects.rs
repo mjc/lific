@@ -316,20 +316,32 @@ pub fn update_project(
                 params![unescape_text(description), id],
             )?;
         }
-        // LIF-103: tristate fields. Outer Some means the client sent the key;
-        // inner None means they want NULL. rusqlite binds Option<T> to NULL
-        // automatically when the inner is None.
-        if let Some(emoji) = &input.emoji {
-            conn.execute(
-                "UPDATE projects SET emoji = ?1 WHERE id = ?2",
-                params![emoji.as_ref(), id],
-            )?;
+        match &input.emoji {
+            FieldUpdate::Keep => {}
+            FieldUpdate::Clear => {
+                conn.execute(
+                    "UPDATE projects SET emoji = NULL WHERE id = ?1",
+                    params![id],
+                )?;
+            }
+            FieldUpdate::Set(emoji) => {
+                conn.execute(
+                    "UPDATE projects SET emoji = ?1 WHERE id = ?2",
+                    params![emoji, id],
+                )?;
+            }
         }
-        if let Some(lead) = input.lead_user_id {
-            // When setting a non-null lead, validate the user exists so we
-            // return a 400 with a clear message instead of letting the FK
-            // constraint surface as a generic 500.
-            if let Some(uid) = lead {
+        match &input.lead_user_id {
+            FieldUpdate::Keep => {}
+            FieldUpdate::Clear => {
+                conn.execute(
+                    "UPDATE projects SET lead_user_id = NULL WHERE id = ?1",
+                    params![id],
+                )?;
+            }
+            FieldUpdate::Set(uid) => {
+                // Validate the user exists so we return a 400 with a clear
+                // message instead of surfacing a generic FK failure.
                 let exists =
                     match conn.query_row("SELECT 1 FROM users WHERE id = ?1", params![uid], |_| {
                         Ok(true)
@@ -341,16 +353,13 @@ pub fn update_project(
                 if !exists {
                     return Err(LificError::BadRequest(format!("user {uid} not found")));
                 }
-            }
-            conn.execute(
-                "UPDATE projects SET lead_user_id = ?1 WHERE id = ?2",
-                params![lead, id],
-            )?;
-            // LIF-195: upsert a 'lead' membership for the new lead. The old
-            // lead (if any) keeps their existing membership row — this is
-            // additive, not a swap.
-            if let Some(uid) = lead {
-                super::members::upsert_member(conn, id, uid, Role::Lead)?;
+                conn.execute(
+                    "UPDATE projects SET lead_user_id = ?1 WHERE id = ?2",
+                    params![uid, id],
+                )?;
+                // LIF-195: upsert a 'lead' membership for the new lead. The
+                // old lead keeps their existing membership row.
+                super::members::upsert_member(conn, id, *uid, Role::Lead)?;
             }
         }
         // A separate update fires the publication audit trigger only when set.
@@ -997,7 +1006,7 @@ mod tests {
             &conn,
             project.id,
             &UpdateProject {
-                emoji: Some(None), // explicit clear
+                emoji: FieldUpdate::Clear, // explicit clear
                 ..Default::default()
             },
         )
@@ -1026,7 +1035,7 @@ mod tests {
             &conn,
             project.id,
             &UpdateProject {
-                lead_user_id: Some(None), // explicit clear
+                lead_user_id: FieldUpdate::Clear, // explicit clear
                 ..Default::default()
             },
         )
@@ -1087,7 +1096,7 @@ mod tests {
             &conn,
             project.id,
             &UpdateProject {
-                lead_user_id: Some(Some(99999)),
+                lead_user_id: FieldUpdate::Set(99999),
                 ..Default::default()
             },
         );
