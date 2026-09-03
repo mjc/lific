@@ -1068,9 +1068,22 @@ fn cmd_service(
     };
     match action {
         ServiceAction::Install => {
-            let config_path = resolved_config_path.ok_or(
-                "no configuration file selected — run `lific init` first (or pass --config)",
-            )?;
+            let config_path = match resolved_config_path {
+                Some(path) => path,
+                None => {
+                    let (init_path, _) = resolve_init_target(
+                        None,
+                        false,
+                        std::path::Path::new("lific.toml").exists(),
+                        Config::os_default_instance(),
+                    );
+                    return Err(format!(
+                        "no configuration file selected — run `lific init` to create '{}' or pass --config PATH",
+                        init_path.display()
+                    )
+                    .into());
+                }
+            };
             let plan = cli::service::ServicePlan::for_config_file(config_path)?;
             let report = cli::service::install(mgr, &plan)?;
             if json {

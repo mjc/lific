@@ -77,7 +77,7 @@ fn read_config_file(path: &Path) -> std::io::Result<ConfigFile> {
 /// start is the safe failure mode.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
-    #[error("explicit config {} does not exist", path.display())]
+    #[error("--config path '{}' does not exist", path.display())]
     MissingExplicit { path: PathBuf },
 
     #[error("failed to read config {}: {source}", path.display())]
@@ -444,7 +444,7 @@ impl Config {
     /// 4. System config dir (LIF-293): /etc/lific/ on Linux/BSD,
     ///    /Library/Application Support/Lific/ on macOS,
     ///    %ProgramData%\lific\ on Windows
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub fn load(explicit_path: Option<&Path>) -> Result<Self, ConfigError> {
         Self::resolve(explicit_path).map(|resolved| resolved.config)
     }
@@ -851,6 +851,10 @@ enabled = false
         let path = tmp.path().join("missing.toml");
         let error = Config::load(Some(&path)).unwrap_err();
         assert!(matches!(error, ConfigError::MissingExplicit { .. }));
+        assert_eq!(
+            error.to_string(),
+            format!("--config path '{}' does not exist", path.display())
+        );
     }
 
     #[test]
