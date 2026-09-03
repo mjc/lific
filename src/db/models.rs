@@ -1275,7 +1275,9 @@ pub struct CreatePlanStep {
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct UpdatePlan {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
     /// LIF-103: clients can clear the anchor issue back to NULL.
     #[serde(default, skip_serializing_if = "FieldUpdate::is_keep")]
@@ -1567,7 +1569,7 @@ mod tests {
 
     proptest::proptest! {
         #[test]
-        fn field_update_set_round_trips_arbitrary_unicode(
+    fn field_update_set_round_trips_arbitrary_unicode(
             value in proptest::collection::vec(proptest::prelude::any::<char>(), 0..64)
                 .prop_map(|chars| chars.into_iter().collect::<String>())
         ) {
@@ -1583,6 +1585,25 @@ mod tests {
                 payload,
             );
         }
+    }
+
+    #[test]
+    fn update_plan_omits_unset_fields_and_preserves_issue_states() {
+        let absent = serde_json::to_value(UpdatePlan::default()).unwrap();
+        let cleared = serde_json::to_value(UpdatePlan {
+            issue_id: FieldUpdate::Clear,
+            ..UpdatePlan::default()
+        })
+        .unwrap();
+        let assigned = serde_json::to_value(UpdatePlan {
+            issue_id: FieldUpdate::Set(42),
+            ..UpdatePlan::default()
+        })
+        .unwrap();
+
+        assert_eq!(absent, serde_json::json!({}));
+        assert_eq!(cleared, serde_json::json!({"issue_id": null}));
+        assert_eq!(assigned, serde_json::json!({"issue_id": 42}));
     }
 
     const STATUSES: [Status; 5] = [
