@@ -121,7 +121,7 @@ pub(super) async fn update_project(
     // expansion `POST /api/projects/{id}/members` performs and must carry the
     // same rule. Renames, descriptions, emoji and *clearing* the lead are not
     // expansions and stay ungated.
-    let grants_lead = matches!(input.lead_user_id, Some(Some(_)));
+    let grants_lead = matches!(input.lead_user_id, FieldUpdate::Set(_));
     let recent = if grants_lead {
         let granter = super::require_user(&identity)?;
         Some((crate::auth::recent_session_token(&headers)?, granter.id))

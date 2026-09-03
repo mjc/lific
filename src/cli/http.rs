@@ -499,9 +499,8 @@ impl HttpBackend {
                     status: models::Status::parse_opt(status.as_deref()).map_err(|e| anyhow!(e))?,
                     priority: models::Priority::parse_opt(priority.as_deref())
                         .map_err(|e| anyhow!(e))?,
-                    // LIF-145: module_id is tristate; the CLI only sets or
-                    // skips (no clear), so map Some(id) -> Some(Some(id)).
-                    module_id: module_id.map(Some),
+                    // LIF-145: the CLI only sets or skips (no clear).
+                    module_id: module_id.map(models::FieldUpdate::Set).unwrap_or_default(),
                     sort_order: None,
                     start_date: None,
                     target_date: None,
@@ -553,8 +552,8 @@ impl HttpBackend {
                     name: name.clone(),
                     identifier: None,
                     description: description.clone(),
-                    emoji: None,
-                    lead_user_id: None,
+                    emoji: models::FieldUpdate::Keep,
+                    lead_user_id: models::FieldUpdate::Keep,
                     // Ordinary CLI edits must not change publication.
                     is_public: None,
                 };
@@ -853,7 +852,7 @@ impl HttpBackend {
                 let body = models::UpdatePage {
                     title: title.clone(),
                     content: content.clone(),
-                    folder_id: folder_id.map(Some),
+                    folder_id: folder_id.map(models::FieldUpdate::Set).unwrap_or_default(),
                     sort_order: None,
                     status: None,
                     pinned: None,
@@ -1039,7 +1038,7 @@ impl HttpBackend {
                     name: new_name.clone(),
                     description: description.clone(),
                     status: status.clone(),
-                    emoji: None,
+                    emoji: models::FieldUpdate::Keep,
                 };
                 self.send_json(Method::PUT, &format!("/api/modules/{id}"), &body)
                     .await
@@ -3157,7 +3156,7 @@ mod tests {
             description: None,
             status: None,
             priority: None,
-            module_id: None,
+            module_id: models::FieldUpdate::Keep,
             sort_order: None,
             start_date: None,
             target_date: None,
@@ -3197,12 +3196,12 @@ mod tests {
     fn distinguishes_absent_cleared_and_assigned_module_ids() {
         let absent = serde_json::to_value(issue_update()).unwrap();
         let cleared = serde_json::to_value(models::UpdateIssue {
-            module_id: Some(None),
+            module_id: models::FieldUpdate::Clear,
             ..issue_update()
         })
         .unwrap();
         let assigned = serde_json::to_value(models::UpdateIssue {
-            module_id: Some(Some(7)),
+            module_id: models::FieldUpdate::Set(7),
             ..issue_update()
         })
         .unwrap();
@@ -3222,8 +3221,8 @@ mod tests {
             name: Some("Docs".into()),
             identifier: None,
             description: Some("Reference material".into()),
-            emoji: None,
-            lead_user_id: None,
+            emoji: models::FieldUpdate::Keep,
+            lead_user_id: models::FieldUpdate::Keep,
             is_public: None,
         })
         .unwrap();
