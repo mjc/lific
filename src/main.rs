@@ -142,7 +142,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // error; doctor receives the same typed result and reports the failure
     // while continuing independent diagnostics.
     let resolution = Config::resolve(cli.config.as_deref());
-    if let Command::Doctor { key } = &cli.command {
+    if let Command::Doctor { key, repair } = &cli.command {
         let mut cfg = resolution
             .as_ref()
             .map(|resolved| resolved.config.clone())
@@ -151,7 +151,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             cfg.database.path = db.clone();
         }
         let json = cli::term::wants_json(cli.json);
-        cli::doctor::run_with_resolution(&cfg, &resolution, key.clone(), json)
+        cli::doctor::run_with_resolution(&cfg, &resolution, key.clone(), *repair, json)
             .await
             .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
         return Ok(());

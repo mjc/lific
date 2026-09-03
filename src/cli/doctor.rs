@@ -19,7 +19,8 @@
 //!    resolution is reported without repeating candidate discovery.
 //! 2. **database** — file present and readable without migrations. Missing file
 //!    with a writable parent = warn ("created on first start"); unwritable
-//!    parent = fail. An existing non-Lific database = fail.
+//!    parent = fail. An existing non-Lific database = fail. `--repair` opts
+//!    into applying pending migrations through the normal database opener.
 //! 3. **backups** — only when enabled. Dir missing = warn (server creates it);
 //!    dir present but unwritable = fail; no backups yet = warn; otherwise pass
 //!    with the most-recent backup age vs the configured interval.
@@ -150,13 +151,15 @@ fn connect_base(cfg: &Config) -> String {
 /// Run doctor with the already-selected configuration result. This keeps
 /// malformed configuration diagnostic while letting the remaining checks run
 /// against safe defaults, instead of reconstructing candidate discovery.
+/// `repair` explicitly opts the database check into applying migrations.
 pub async fn run_with_resolution(
     cfg: &Config,
     resolution: &Result<crate::config::ResolvedConfig, crate::config::ConfigError>,
     key: Option<String>,
+    repair: bool,
     json: bool,
 ) -> Result<(), String> {
-    let report = build_report_with_resolution(cfg, resolution, key.as_deref()).await;
+    let report = build_report_with_resolution(cfg, resolution, key.as_deref(), repair).await;
     print_report(&report, json);
     if report.fail_count() > 0 {
         Err(format!("doctor: {} check(s) failed", report.fail_count()))
@@ -181,18 +184,19 @@ pub async fn build_report_with_config_path(
     key: Option<&str>,
 ) -> Report {
     let resolution = Config::resolve(explicit_config);
-    build_report_with_resolution(cfg, &resolution, key).await
+    build_report_with_resolution(cfg, &resolution, key, false).await
 }
 
 async fn build_report_with_resolution(
     cfg: &Config,
     resolution: &Result<crate::config::ResolvedConfig, crate::config::ConfigError>,
     key: Option<&str>,
+    repair: bool,
 ) -> Report {
     let mut checks = Vec::new();
 
     checks.push(check_config(resolution));
-    checks.push(check_database(cfg));
+    checks.push(check_database(cfg, repair));
     if let Some(c) = check_backups(cfg) {
         checks.push(c);
     }
@@ -314,7 +318,7 @@ fn check_config(
 
 // ── Check 2: database ────────────────────────────────────────────────────
 
-fn check_database(cfg: &Config) -> Check {
+fn check_database(cfg: &Config, repair: bool) -> Check {
     let path = &cfg.database.path;
     if !path.exists() {
         // Missing is fine if the server could create it; the deciding factor is
@@ -345,6 +349,10 @@ fn check_database(cfg: &Config) -> Check {
         };
     }
 
+    if repair {
+        return check_database_with_repair(path);
+    }
+
     // File exists: inspect it read-only. Doctor must not run migrations or
     // enable WAL, because those operations mutate the instance being diagnosed.
     match inspect_database(path) {
@@ -367,6 +375,41 @@ fn check_database(cfg: &Config) -> Check {
             format!("{} failed to inspect read-only: {e}", path.display()),
         ),
     }
+}
+
+fn check_database_with_repair(path: &Path) -> Check {
+    match crate::db::open(path) {
+        Ok(pool) => match schema_version(&pool) {
+            Some(version) => Check::new(
+                "database",
+                Status::Pass,
+                format!(
+                    "{} opens; migrations applied (schema v{version})",
+                    path.display()
+                ),
+            ),
+            None => Check::new(
+                "database",
+                Status::Pass,
+                format!("{} opens; migrations applied", path.display()),
+            ),
+        },
+        Err(error) => Check::new(
+            "database",
+            Status::Fail,
+            format!("{} failed to open: {error}", path.display()),
+        ),
+    }
+}
+
+fn schema_version(pool: &crate::db::DbPool) -> Option<i64> {
+    let conn = pool.read().ok()?;
+    conn.query_row(
+        "SELECT COALESCE(MAX(version), 0) FROM _migrations",
+        [],
+        |row| row.get::<_, i64>(0),
+    )
+    .ok()
 }
 
 /// Inspect the migration marker without creating WAL/SHM files or applying
@@ -791,6 +834,7 @@ fn print_report(report: &Report, json: bool) {
 mod tests {
     use super::*;
     use proptest::{prop_assert, prop_assert_eq};
+    use rusqlite::OptionalExtension;
 
     fn check(name: &str, status: Status) -> Check {
         Check::new(name, status, "")
@@ -979,7 +1023,7 @@ mod tests {
         let mut cfg = Config::default();
         cfg.database.path = dir.join("nope.db");
 
-        let c = check_database(&cfg);
+        let c = check_database(&cfg, false);
         assert_eq!(c.status, Status::Warn, "detail: {}", c.detail);
         assert!(c.detail.contains("first start"));
     }
@@ -989,7 +1033,7 @@ mod tests {
         let mut cfg = Config::default();
         // A path under a directory that does not exist → parent not writable.
         cfg.database.path = std::path::PathBuf::from("/nonexistent-lific-doctor-xyz/deep/lific.db");
-        let c = check_database(&cfg);
+        let c = check_database(&cfg, false);
         assert_eq!(c.status, Status::Fail, "detail: {}", c.detail);
     }
 
@@ -1003,7 +1047,7 @@ mod tests {
 
         let mut cfg = Config::default();
         cfg.database.path = db_path;
-        let c = check_database(&cfg);
+        let c = check_database(&cfg, false);
         assert_eq!(c.status, Status::Pass, "detail: {}", c.detail);
         assert!(c.detail.contains("no migrations run"));
     }
@@ -1020,12 +1064,47 @@ mod tests {
 
         let mut cfg = Config::default();
         cfg.database.path = db_path.clone();
-        let c = check_database(&cfg);
+        let c = check_database(&cfg, false);
 
         assert_eq!(c.status, Status::Fail, "an unrecognized database must fail");
         assert!(!db_path.with_extension("db-wal").exists());
         assert!(!db_path.with_extension("db-shm").exists());
         assert!(!db_path.with_extension("db.bak").exists());
+    }
+
+    #[test]
+    fn database_check_repairs_an_old_database_only_when_requested() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("old.db");
+        let connection = rusqlite::Connection::open(&db_path).unwrap();
+        connection
+            .execute("CREATE TABLE marker (value TEXT NOT NULL)", [])
+            .unwrap();
+        drop(connection);
+
+        let mut cfg = Config::default();
+        cfg.database.path = db_path.clone();
+
+        let read_only = check_database(&cfg, false);
+        assert_eq!(read_only.status, Status::Fail);
+        let connection = rusqlite::Connection::open(&db_path).unwrap();
+        let migration_table: Option<String> = connection
+            .query_row(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = '_migrations'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .unwrap();
+        assert!(
+            migration_table.is_none(),
+            "read-only doctor must not repair"
+        );
+        drop(connection);
+
+        let repaired = check_database(&cfg, true);
+        assert_eq!(repaired.status, Status::Pass, "detail: {}", repaired.detail);
+        assert!(repaired.detail.contains("migrations applied"));
     }
 
     // ── backups check ────────────────────────────────────────────────────
