@@ -2274,3 +2274,21 @@ mod write_private_config_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod cli_error_tests {
+    use super::{cli_error_message, Cli};
+    use clap::Parser;
+
+    #[test]
+    fn parse_errors_sanitize_untrusted_argument_text() {
+        let error = match Cli::try_parse_from(["lific", "\u{202e}"]) {
+            Ok(_) => panic!("invalid subcommand unexpectedly parsed"),
+            Err(error) => error,
+        };
+        let rendered = cli_error_message(&error);
+
+        assert!(!rendered.contains('\u{202e}'));
+        assert!(!rendered.chars().any(char::is_control));
+    }
+}
