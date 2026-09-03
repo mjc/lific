@@ -185,6 +185,10 @@ pub enum Command {
         /// verifies that auth is enforced and discovery is advertised.
         #[arg(long, env = "LIFIC_API_KEY")]
         key: Option<String>,
+
+        /// Apply pending database migrations while checking the database.
+        #[arg(long)]
+        repair: bool,
     },
 
     /// Set up a ready-to-use Lific instance.
@@ -1569,8 +1573,9 @@ mod tests {
         // env var polluting the assertion.
         let cli = Cli::try_parse_from(["lific", "doctor"]).unwrap();
         match cli.command {
-            Command::Doctor { key } => {
+            Command::Doctor { key, repair } => {
                 assert_eq!(key, env_fallback("LIFIC_API_KEY"));
+                assert!(!repair);
             }
             _ => panic!("expected Doctor"),
         }
@@ -1676,7 +1681,22 @@ mod tests {
     fn parse_doctor_with_key_flag() {
         let cli = Cli::try_parse_from(["lific", "doctor", "--key", "lific_sk-live-abc"]).unwrap();
         match cli.command {
-            Command::Doctor { key } => assert_eq!(key, Some("lific_sk-live-abc".into())),
+            Command::Doctor { key, repair } => {
+                assert_eq!(key, Some("lific_sk-live-abc".into()));
+                assert!(!repair);
+            }
+            _ => panic!("expected Doctor"),
+        }
+    }
+
+    #[test]
+    fn parse_doctor_with_repair_flag() {
+        let cli = Cli::try_parse_from(["lific", "doctor", "--repair"]).unwrap();
+        match cli.command {
+            Command::Doctor { key, repair } => {
+                assert!(key.is_none());
+                assert!(repair);
+            }
             _ => panic!("expected Doctor"),
         }
     }
