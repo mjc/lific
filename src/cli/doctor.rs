@@ -243,32 +243,42 @@ async fn check_local_remote(
     let mut checks = vec![server_check_result(&probe)];
     match probe {
         ServerProbe::Reachable(_) => {
-            checks.push(check_oauth_discovery(client, base).await);
-            let (key, key_source) = match explicit_key {
-                Some(key) => (Some(key.to_owned()), None),
-                None => match crate::cli::credentials::load_with_source(credential_base) {
-                    Ok(Some((key, source))) => (Some(key), Some(source)),
-                    Ok(None) => (None, None),
-                    Err(error) => {
-                        checks.push(Check::new(
-                            "credentials",
-                            Status::Fail,
-                            format!("failed to read stored credentials: {error}"),
-                        ));
-                        (None, None)
-                    }
-                },
-            };
-            let mut mcp = check_mcp(client, base, key.as_deref()).await;
-            if let Some(source) = key_source {
-                mcp.detail = format!("{} (using {})", mcp.detail, source.label());
-            }
-            checks.push(mcp);
+            checks.extend(check_reachable_remote(client, base, explicit_key, credential_base).await)
         }
         ServerProbe::Unreachable => {
             checks.extend(skipped_local_checks("server not reachable — skipped"));
         }
     }
+    checks
+}
+
+async fn check_reachable_remote(
+    client: &reqwest::Client,
+    base: &str,
+    explicit_key: Option<&str>,
+    credential_base: &str,
+) -> Vec<Check> {
+    let mut checks = vec![check_oauth_discovery(client, base).await];
+    let (key, key_source) = match explicit_key {
+        Some(key) => (Some(key.to_owned()), None),
+        None => match crate::cli::credentials::load_with_source(credential_base) {
+            Ok(Some((key, source))) => (Some(key), Some(source)),
+            Ok(None) => (None, None),
+            Err(error) => {
+                checks.push(Check::new(
+                    "credentials",
+                    Status::Fail,
+                    format!("failed to read stored credentials: {error}"),
+                ));
+                (None, None)
+            }
+        },
+    };
+    let mut mcp = check_mcp(client, base, key.as_deref()).await;
+    if let Some(source) = key_source {
+        mcp.detail = format!("{} (using {})", mcp.detail, source.label());
+    }
+    checks.push(mcp);
     checks
 }
 
