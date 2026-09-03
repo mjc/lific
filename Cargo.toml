@@ -132,6 +132,7 @@ fs2 = "0.4"
 libc = "0.2"
 
 [dev-dependencies]
+proptest = "1"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 # Scratch directories for tests. Replaces hand-rolled

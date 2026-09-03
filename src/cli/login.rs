@@ -388,7 +388,7 @@ pub fn run_login_with_flow<F: DeviceFlow>(
         let payload = non_interactive_json(&resp, base);
         println!(
             "{}",
-            serde_json::to_string_pretty(&payload).unwrap_or_default()
+            crate::cli::term::json_string(&payload).unwrap_or_default()
         );
         return Ok(());
     }
@@ -435,7 +435,7 @@ fn finish(args: &LoginArgs, base: &str, outcome: PollOutcome, json: bool) -> Res
                 if json {
                     println!(
                         "{}",
-                        serde_json::to_string_pretty(&serde_json::json!({
+                        crate::cli::term::json_string(&serde_json::json!({
                             "status": "approved",
                             "stored": false,
                             "access_token": token,
@@ -452,7 +452,7 @@ fn finish(args: &LoginArgs, base: &str, outcome: PollOutcome, json: bool) -> Res
             if json {
                 println!(
                     "{}",
-                    serde_json::to_string_pretty(&serde_json::json!({
+                    crate::cli::term::json_string(&serde_json::json!({
                         "status": "approved",
                         "stored": true,
                         "url": base,
@@ -486,7 +486,7 @@ pub fn run_logout(url: Option<&str>, cfg: &Config, json: bool) {
     if json {
         println!(
             "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
+            crate::cli::term::json_string(&serde_json::json!({
                 "url": base,
                 "removed": removed,
             }))

@@ -60,7 +60,7 @@ fn export(
 // ── Helpers ──────────────────────────────────────────────────
 
 fn print_json<T: serde::Serialize>(val: &T) {
-    println!("{}", serde_json::to_string_pretty(val).unwrap());
+    println!("{}", term::json_string(val).unwrap());
 }
 
 fn page_folder_id(
@@ -660,7 +660,10 @@ fn module(
             drop(conn);
 
             if json {
-                print_json(&render::Deleted::named(name));
+                println!(
+                    "{}",
+                    term::json_string(&serde_json::json!({"deleted": true, "name": name})).unwrap()
+                );
             } else {
                 print!("{}", render::module_deleted(name));
             }
@@ -747,7 +750,10 @@ fn label(
             drop(conn);
 
             if json {
-                print_json(&render::Deleted::named(name));
+                println!(
+                    "{}",
+                    term::json_string(&serde_json::json!({"deleted": true, "name": name})).unwrap()
+                );
             } else {
                 print!("{}", render::label_deleted(name));
             }
@@ -828,7 +834,10 @@ fn folder(
             drop(conn);
 
             if json {
-                print_json(&render::Deleted::named(name));
+                println!(
+                    "{}",
+                    term::json_string(&serde_json::json!({"deleted": true, "name": name})).unwrap()
+                );
             } else {
                 print!("{}", render::folder_deleted(name));
             }
