@@ -36,7 +36,7 @@
 //!    {public_url}/.well-known/oauth-protected-resource/mcp` reachable = pass;
 //!    unreachable = warn (may be firewalled from this vantage point).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -173,22 +173,12 @@ pub async fn run_with_resolution(
     }
 }
 
-/// Run every check and assemble the report. Split from the printing entry point so tests can
-/// inspect the structured result without touching stdout. Uses the default
-/// config search order for provenance (no explicit `--config`).
-#[cfg_attr(not(test), allow(dead_code))]
-pub async fn build_report(cfg: &Config, key: Option<&str>) -> Report {
-    build_report_with_config_path(cfg, None, key).await
-}
-
-/// Like [`build_report`] but honors an explicit `--config` path when reporting
-/// which config file is in use.
-pub async fn build_report_with_config_path(
-    cfg: &Config,
-    explicit_config: Option<&Path>,
-    key: Option<&str>,
-) -> Report {
-    let resolution = Config::resolve(explicit_config);
+/// Assemble a report without printing it so tests can inspect structured
+/// results. Production callers pass their already-resolved configuration to
+/// [`run_with_resolution`].
+#[cfg(test)]
+async fn build_report(cfg: &Config, key: Option<&str>) -> Report {
+    let resolution = Config::resolve(None);
     build_report_with_resolution(cfg, &resolution, key, DatabaseCheckMode::ReadOnly).await
 }
 
@@ -430,13 +420,27 @@ fn schema_version(connection: &rusqlite::Connection) -> rusqlite::Result<i64> {
 
 /// Inspect the migration marker without creating WAL/SHM files or applying
 /// migrations. `Ok(None)` means the file opened but is not a Lific database.
-fn inspect_database(path: &Path) -> rusqlite::Result<Option<i64>> {
+fn inspect_database(path: &Path) -> anyhow::Result<Option<i64>> {
+    let wal = database_sidecar(path, "-wal");
+    if wal.exists() {
+        let shm = database_sidecar(path, "-shm");
+        if shm.exists() {
+            return inspect_connection(&open_read_only_database(path)?).map_err(Into::into);
+        }
+
+        let snapshot = tempfile::tempdir()?;
+        let snapshot_path = snapshot.path().join("lific.db");
+        std::fs::copy(path, &snapshot_path)?;
+        std::fs::copy(wal, database_sidecar(&snapshot_path, "-wal"))?;
+        return inspect_connection(&open_read_only_database(&snapshot_path)?).map_err(Into::into);
+    }
+
+    inspect_connection(&open_immutable_database(path)?).map_err(Into::into)
+}
+
+fn inspect_connection(connection: &rusqlite::Connection) -> rusqlite::Result<Option<i64>> {
     use rusqlite::OptionalExtension;
 
-    let connection = rusqlite::Connection::open_with_flags(
-        path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )?;
     let migration_table: Option<String> = connection
         .query_row(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name = '_migrations'",
@@ -447,7 +451,36 @@ fn inspect_database(path: &Path) -> rusqlite::Result<Option<i64>> {
     let Some(_) = migration_table else {
         return Ok(None);
     };
-    schema_version(&connection).map(Some)
+    schema_version(connection).map(Some)
+}
+
+fn open_immutable_database(path: &Path) -> anyhow::Result<rusqlite::Connection> {
+    let absolute = std::path::absolute(path)?;
+    let mut uri = reqwest::Url::from_file_path(&absolute)
+        .map_err(|()| anyhow::anyhow!("cannot represent {} as a file URI", path.display()))?;
+    uri.query_pairs_mut()
+        .append_pair("immutable", "1")
+        .append_pair("mode", "ro");
+    rusqlite::Connection::open_with_flags(
+        uri.as_str(),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+            | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | rusqlite::OpenFlags::SQLITE_OPEN_URI,
+    )
+    .map_err(Into::into)
+}
+
+fn open_read_only_database(path: &Path) -> rusqlite::Result<rusqlite::Connection> {
+    rusqlite::Connection::open_with_flags(
+        path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+}
+
+fn database_sidecar(path: &Path, suffix: &str) -> PathBuf {
+    let mut sidecar = path.as_os_str().to_os_string();
+    sidecar.push(suffix);
+    sidecar.into()
 }
 
 /// Best-effort writability probe: try to create (and remove) a temp file in the
@@ -1080,7 +1113,7 @@ mod tests {
     proptest::proptest! {
         #[test]
         fn read_only_database_checks_never_repair_arbitrary_paths(
-            name in "[a-zA-Z0-9_-]{1,24}"
+            name in "[a-zA-Z0-9 _#?%é-]{1,24}"
         ) {
             let tmp = tempfile::tempdir().unwrap();
             let db_path = tmp.path().join(format!("{name}.db"));
@@ -1095,6 +1128,40 @@ mod tests {
             prop_assert!(!has_migration_table(&db_path));
             assert_no_database_sidecars(&db_path);
         }
+    }
+
+    #[test]
+    fn read_only_database_check_does_not_create_shm_for_a_wal_database() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("source.db");
+        let inspected = tmp.path().join("inspected.db");
+        let connection = rusqlite::Connection::open(&source).unwrap();
+        connection
+            .pragma_update(None, "journal_mode", "WAL")
+            .unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE _migrations (version INTEGER NOT NULL);
+                 INSERT INTO _migrations VALUES (1);
+                 PRAGMA wal_checkpoint(TRUNCATE);
+                 CREATE TABLE pending (value TEXT NOT NULL);
+                 INSERT INTO pending VALUES ('keeps the WAL present');",
+            )
+            .unwrap();
+
+        std::fs::copy(&source, &inspected).unwrap();
+        std::fs::copy(
+            database_sidecar(&source, "-wal"),
+            database_sidecar(&inspected, "-wal"),
+        )
+        .unwrap();
+        assert!(!database_sidecar(&inspected, "-shm").exists());
+
+        assert_eq!(inspect_database(&inspected).unwrap(), Some(1));
+        assert!(
+            !database_sidecar(&inspected, "-shm").exists(),
+            "read-only inspection must not create SQLite bookkeeping files"
+        );
     }
 
     #[test]
@@ -1140,8 +1207,8 @@ mod tests {
     }
 
     fn assert_no_database_sidecars(path: &Path) {
-        assert!(!path.with_extension("db-wal").exists());
-        assert!(!path.with_extension("db-shm").exists());
+        assert!(!database_sidecar(path, "-wal").exists());
+        assert!(!database_sidecar(path, "-shm").exists());
         assert!(!path.with_extension("db.bak").exists());
     }
 
