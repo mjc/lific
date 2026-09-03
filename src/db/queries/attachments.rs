@@ -338,14 +338,15 @@ fn attachment_allowed_for_entity(
     if is_admin {
         return attachment_exists(conn, attachment_id);
     }
-    let owned: Option<Option<i64>> = conn
-        .query_row(
-            "SELECT uploader_id FROM attachments WHERE id = ?1",
-            params![attachment_id],
-            |row| row.get(0),
-        )
-        .optional()?;
-    if owned == Some(Some(user_id)) {
+    let owned: bool = conn.query_row(
+        "SELECT EXISTS(
+                 SELECT 1 FROM attachments
+                 WHERE id = ?1 AND uploader_id = ?2
+             )",
+        params![attachment_id, user_id],
+        |row| row.get(0),
+    )?;
+    if owned {
         return Ok(true);
     }
     let Some(project_id) = project_id else {

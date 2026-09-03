@@ -581,8 +581,8 @@ pub fn create_issue(conn: &Connection, input: &CreateIssue) -> Result<Issue, Lif
 pub fn update_issue(conn: &Connection, id: i64, input: &UpdateIssue) -> Result<Issue, LificError> {
     let issue = get_issue(conn, id)?;
 
-    if let Some(Some(module_id)) = input.module_id {
-        validate_module_project(conn, issue.project_id, module_id)?;
+    if let FieldUpdate::Set(module_id) = &input.module_id {
+        validate_module_project(conn, issue.project_id, *module_id)?;
     }
 
     super::savepoint(conn, "update_issue", || {
@@ -625,13 +625,20 @@ pub fn update_issue(conn: &Connection, id: i64, input: &UpdateIssue) -> Result<I
                 params![priority, id],
             )?;
         }
-        // LIF-145: tristate. Outer Some means the client set the key; inner
-        // None unassigns (NULL). rusqlite binds Option<i64> to NULL when None.
-        if let Some(module_id) = input.module_id {
-            conn.execute(
-                "UPDATE issues SET module_id = ?1 WHERE id = ?2",
-                params![module_id, id],
-            )?;
+        match &input.module_id {
+            FieldUpdate::Keep => {}
+            FieldUpdate::Clear => {
+                conn.execute(
+                    "UPDATE issues SET module_id = NULL WHERE id = ?1",
+                    params![id],
+                )?;
+            }
+            FieldUpdate::Set(module_id) => {
+                conn.execute(
+                    "UPDATE issues SET module_id = ?1 WHERE id = ?2",
+                    params![module_id, id],
+                )?;
+            }
         }
         if let Some(sort_order) = input.sort_order {
             conn.execute(
@@ -1597,7 +1604,7 @@ mod tests {
             &conn,
             issue.id,
             &UpdateIssue {
-                module_id: Some(Some(module_id)),
+                module_id: FieldUpdate::Set(module_id),
                 ..Default::default()
             },
         )
@@ -1634,7 +1641,7 @@ mod tests {
             &conn,
             issue.id,
             &UpdateIssue {
-                module_id: Some(None),
+                module_id: FieldUpdate::Clear,
                 ..Default::default()
             },
         )

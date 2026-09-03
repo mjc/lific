@@ -1,5 +1,54 @@
 use serde::{Deserialize, Serialize};
 
+/// An update operation for a nullable field.
+///
+/// `Keep` is omitted from JSON, `Clear` is encoded as `null`, and `Set` is
+/// encoded as the contained value. This keeps the three wire states explicit
+/// without nesting `Option`s at every update call site.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum FieldUpdate<T> {
+    #[default]
+    Keep,
+    Clear,
+    Set(T),
+}
+
+impl<T> FieldUpdate<T> {
+    pub(crate) const fn is_keep(&self) -> bool {
+        matches!(self, Self::Keep)
+    }
+}
+
+impl<'de, T> Deserialize<'de> for FieldUpdate<T>
+where
+    T: Deserialize<'de>,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Ok(match Option::<T>::deserialize(deserializer)? {
+            Some(value) => Self::Set(value),
+            None => Self::Clear,
+        })
+    }
+}
+
+impl<T> Serialize for FieldUpdate<T>
+where
+    T: Serialize,
+{
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            Self::Keep | Self::Clear => serializer.serialize_none(),
+            Self::Set(value) => value.serialize(serializer),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
     pub id: i64,
@@ -35,10 +84,8 @@ pub struct CreateProject {
 }
 
 /// LIF-374: `Serialize` is what the HTTP CLI backend sends as the request
-/// body, so the remote path cannot drift from the local one. `Option::is_none`
-/// skips absent fields, which keeps "field omitted" (don't change) distinct
-/// from an explicit `null` — the distinction `deserialize_nullable` reads on
-/// the tristate fields below.
+/// body, so the remote path cannot drift from the local one. `FieldUpdate`
+/// keeps omitted fields distinct from explicit `null` values.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct UpdateProject {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -47,22 +94,12 @@ pub struct UpdateProject {
     pub identifier: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    /// LIF-103: tristate so clients can explicitly clear the emoji back to NULL.
-    /// None = field absent (don't change), Some(None) = set NULL, Some(Some(s)) = set string.
-    #[serde(
-        default,
-        deserialize_with = "crate::db::models::deserialize_nullable",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub emoji: Option<Option<String>>,
-    /// LIF-103: tristate so clients can explicitly clear the lead back to NULL.
-    /// None = field absent (don't change), Some(None) = set NULL, Some(Some(id)) = set id.
-    #[serde(
-        default,
-        deserialize_with = "crate::db::models::deserialize_nullable",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub lead_user_id: Option<Option<i64>>,
+    /// LIF-103: clients can explicitly clear the emoji back to NULL.
+    #[serde(default, skip_serializing_if = "FieldUpdate::is_keep")]
+    pub emoji: FieldUpdate<String>,
+    /// LIF-103: clients can explicitly clear the lead back to NULL.
+    #[serde(default, skip_serializing_if = "FieldUpdate::is_keep")]
+    pub lead_user_id: FieldUpdate<i64>,
 }
 
 /// A user's named group of projects in the sidebar. `project_ids` is derived,
@@ -347,14 +384,9 @@ pub struct UpdateIssue {
     pub status: Option<Status>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub priority: Option<Priority>,
-    /// LIF-145: tristate so clients can clear an issue's module back to NULL.
-    /// None = absent (don't change), Some(None) = unassign (NULL), Some(Some(id)) = set.
-    #[serde(
-        default,
-        deserialize_with = "crate::db::models::deserialize_nullable",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub module_id: Option<Option<i64>>,
+    /// LIF-145: clients can clear an issue's module back to NULL.
+    #[serde(default, skip_serializing_if = "FieldUpdate::is_keep")]
+    pub module_id: FieldUpdate<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sort_order: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -444,14 +476,9 @@ pub struct UpdateModule {
     pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
-    /// LIF-124: tristate so clients can clear the icon back to NULL.
-    /// None = absent (don't change), Some(None) = NULL, Some(Some(s)) = set.
-    #[serde(
-        default,
-        deserialize_with = "crate::db::models::deserialize_nullable",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub emoji: Option<Option<String>>,
+    /// LIF-124: clients can clear the icon back to NULL.
+    #[serde(default, skip_serializing_if = "FieldUpdate::is_keep")]
+    pub emoji: FieldUpdate<String>,
 }
 
 fn default_module_status() -> String {
@@ -560,13 +587,9 @@ pub struct UpdatePage {
     pub title: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
-    /// None = don't change, Some(None) = set to NULL, Some(Some(id)) = set to id
-    #[serde(
-        default,
-        deserialize_with = "crate::db::models::deserialize_nullable",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub folder_id: Option<Option<i64>>,
+    /// LIF-103: clients can clear the folder back to NULL.
+    #[serde(default, skip_serializing_if = "FieldUpdate::is_keep")]
+    pub folder_id: FieldUpdate<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sort_order: Option<f64>,
     /// LIF-112: lifecycle status. None = don't change.
@@ -1250,14 +1273,13 @@ pub struct CreatePlanStep {
     pub steps: Vec<CreatePlanStep>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct UpdatePlan {
     pub title: Option<String>,
     pub status: Option<String>,
-    /// Tristate anchor issue: None = don't change, Some(None) = clear,
-    /// Some(Some(id)) = set.
-    #[serde(default, deserialize_with = "crate::db::models::deserialize_nullable")]
-    pub issue_id: Option<Option<i64>>,
+    /// LIF-103: clients can clear the anchor issue back to NULL.
+    #[serde(default, skip_serializing_if = "FieldUpdate::is_keep")]
+    pub issue_id: FieldUpdate<i64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1491,22 +1513,77 @@ pub struct PendingOrphanList {
     pub total_bytes: i64,
 }
 
-/// Deserializes a JSON field as Option<Option<T>>:
-/// - absent key → None (don't change)
-/// - "field": null → Some(None) (set to null)
-/// - "field": value → Some(Some(value))
-pub fn deserialize_nullable<'de, T, D>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
-where
-    T: serde::Deserialize<'de>,
-    D: serde::Deserializer<'de>,
-{
-    Ok(Some(Option::deserialize(deserializer)?))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::strategy::Strategy;
     use rusqlite::types::{FromSql, ToSql, ValueRef};
+
+    #[derive(Debug, Default, Deserialize, PartialEq, Serialize)]
+    struct FieldUpdatePayload {
+        #[serde(default, skip_serializing_if = "FieldUpdate::is_keep")]
+        value: FieldUpdate<String>,
+    }
+
+    #[test]
+    fn field_update_preserves_absent_null_and_value_json_states() {
+        assert_eq!(
+            serde_json::from_str::<FieldUpdatePayload>(r#"{}"#)
+                .unwrap()
+                .value,
+            FieldUpdate::Keep
+        );
+        assert_eq!(
+            serde_json::from_str::<FieldUpdatePayload>(r#"{"value":null}"#)
+                .unwrap()
+                .value,
+            FieldUpdate::Clear
+        );
+        assert_eq!(
+            serde_json::from_str::<FieldUpdatePayload>(r#"{"value":"hello"}"#)
+                .unwrap()
+                .value,
+            FieldUpdate::Set("hello".into())
+        );
+
+        for (patch, expected) in [
+            (FieldUpdatePayload::default(), serde_json::json!({})),
+            (
+                FieldUpdatePayload {
+                    value: FieldUpdate::Clear,
+                },
+                serde_json::json!({"value": null}),
+            ),
+            (
+                FieldUpdatePayload {
+                    value: FieldUpdate::Set("hello".into()),
+                },
+                serde_json::json!({"value": "hello"}),
+            ),
+        ] {
+            assert_eq!(serde_json::to_value(patch).unwrap(), expected);
+        }
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn field_update_set_round_trips_arbitrary_unicode(
+            value in proptest::collection::vec(proptest::prelude::any::<char>(), 0..64)
+                .prop_map(|chars| chars.into_iter().collect::<String>())
+        ) {
+            let payload = FieldUpdatePayload {
+                value: FieldUpdate::Set(value.clone()),
+            };
+            let json = serde_json::to_value(&payload).unwrap();
+            let expected = serde_json::json!({"value": value});
+
+            proptest::prop_assert_eq!(&json, &expected);
+            proptest::prop_assert_eq!(
+                serde_json::from_value::<FieldUpdatePayload>(json).unwrap(),
+                payload,
+            );
+        }
+    }
 
     const STATUSES: [Status; 5] = [
         Status::Backlog,

@@ -206,9 +206,8 @@ fn issue(
                     description: description.clone(),
                     status: Status::parse_opt(status.as_deref())?,
                     priority: Priority::parse_opt(priority.as_deref())?,
-                    // LIF-145: module_id is now tristate; the CLI only sets or
-                    // skips (no clear), so map Some(id) -> Some(Some(id)).
-                    module_id: module_id.map(Some),
+                    // LIF-145: the CLI only sets or skips (no clear).
+                    module_id: module_id.map(FieldUpdate::Set).unwrap_or_default(),
                     labels: label_list,
                     ..Default::default()
                 },
@@ -415,7 +414,8 @@ fn page(pool: &DbPool, action: &PageAction, json: bool) -> Result<(), Box<dyn st
                 .as_deref()
                 .map(|name| page_folder_id(&conn, id, name))
                 .transpose()?
-                .map(Some);
+                .map(FieldUpdate::Set)
+                .unwrap_or_default();
 
             let label_list = owned_labels(labels.as_deref());
 
