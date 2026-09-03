@@ -25,7 +25,8 @@
 //!    dir present but unwritable = fail; no backups yet = warn; otherwise pass
 //!    with the most-recent backup age vs the configured interval.
 //! 4. **server** — HTTP reachability of `http://{host}:{port}/api/health`
-//!    (0.0.0.0 → 127.0.0.1). Not running = warn (doctor must work offline).
+//!    (0.0.0.0 → 127.0.0.1). A 2xx response passes; another HTTP status warns
+//!    while dependent checks continue. Not running warns and skips them.
 //! 5. **oauth_discovery** — `GET {base}/.well-known/oauth-protected-resource/mcp`
 //!    → 200 + JSON containing `resource`. Skipped when the server is unreachable.
 //! 6. **mcp** — `POST {base}/mcp` JSON-RPC `initialize`. No key → expect 401 with
@@ -422,11 +423,6 @@ fn schema_version(connection: &rusqlite::Connection) -> rusqlite::Result<i64> {
 fn inspect_database(path: &Path) -> anyhow::Result<Option<i64>> {
     let wal = database_sidecar(path, "-wal");
     if wal.exists() {
-        let shm = database_sidecar(path, "-shm");
-        if shm.exists() {
-            return inspect_connection(&open_read_only_database(path)?).map_err(Into::into);
-        }
-
         let snapshot = tempfile::tempdir()?;
         let snapshot_path = snapshot.path().join("lific.db");
         std::fs::copy(path, &snapshot_path)?;
@@ -611,13 +607,21 @@ async fn http_server_reachable(client: &reqwest::Client, base: &str) -> ServerPr
 
 fn server_check_result(probe: &ServerProbe) -> Check {
     match probe {
-        ServerProbe::Reachable(status) => Check::new(
+        ServerProbe::Reachable(status) if status.is_success() => Check::new(
             "server",
             Status::Pass,
             format!(
                 "reachable (health {}); this binary is lific {}",
                 status.as_u16(),
                 env!("CARGO_PKG_VERSION")
+            ),
+        ),
+        ServerProbe::Reachable(status) => Check::new(
+            "server",
+            Status::Warn,
+            format!(
+                "reachable, but health returned HTTP {}; server checks will continue",
+                status.as_u16()
             ),
         ),
         ServerProbe::Unreachable => Check::new(
@@ -907,6 +911,31 @@ mod tests {
         assert_eq!(r.fail_count(), 0);
     }
 
+    proptest::proptest! {
+        #[test]
+        fn report_failure_state_matches_every_status_set(values in proptest::collection::vec(0u8..4, 0..64)) {
+            let statuses = values.into_iter().map(|value| match value {
+                0 => Status::Pass,
+                1 => Status::Warn,
+                2 => Status::Fail,
+                _ => Status::Skipped,
+            });
+            let checks: Vec<_> = statuses
+                .enumerate()
+                .map(|(index, status)| Check::new(&index.to_string(), status, ""))
+                .collect();
+            let expected_failures = checks
+                .iter()
+                .filter(|check| check.status == Status::Fail)
+                .count();
+
+            let report = Report::new(checks);
+
+            prop_assert_eq!(report.fail_count(), expected_failures);
+            prop_assert_eq!(report.ok, expected_failures == 0);
+        }
+    }
+
     // ── Summary text ─────────────────────────────────────────────────────
 
     #[test]
@@ -1007,17 +1036,23 @@ mod tests {
 
     #[test]
     fn config_check_fails_on_unparseable_file() {
-        // A file that exists but is broken TOML must surface as a FAIL rather
-        // than aborting the run. We exercise the parse branch directly.
         let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path();
-        let path = dir.join("bad.toml");
+        let path = tmp.path().join("bad.toml");
         std::fs::write(&path, "{{{ not toml").unwrap();
 
-        // Reproduce the inner parse logic the check uses.
-        let contents = std::fs::read_to_string(&path).unwrap();
-        let parsed = toml::from_str::<Config>(&contents);
-        assert!(parsed.is_err(), "broken toml must fail to parse");
+        let resolution = Config::resolve(Some(&path));
+        assert!(matches!(
+            resolution,
+            Err(crate::config::ConfigError::Parse { .. })
+        ));
+        let check = check_config(&resolution);
+
+        assert_eq!(check.status, Status::Fail);
+        assert!(
+            check.detail.contains("bad.toml"),
+            "detail: {}",
+            check.detail
+        );
     }
 
     #[test]
@@ -1155,6 +1190,72 @@ mod tests {
             !database_sidecar(&inspected, "-shm").exists(),
             "read-only inspection must not create SQLite bookkeeping files"
         );
+    }
+
+    #[test]
+    fn read_only_database_check_reads_an_uncheckpointed_wal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("source.db");
+        let inspected = tmp.path().join("inspected.db");
+        let connection = rusqlite::Connection::open(&source).unwrap();
+        connection
+            .pragma_update(None, "journal_mode", "WAL")
+            .unwrap();
+        connection
+            .execute_batch(
+                "PRAGMA wal_checkpoint(TRUNCATE);
+                 CREATE TABLE _migrations (version INTEGER NOT NULL);
+                 INSERT INTO _migrations VALUES (7);",
+            )
+            .unwrap();
+
+        std::fs::copy(&source, &inspected).unwrap();
+        std::fs::copy(
+            database_sidecar(&source, "-wal"),
+            database_sidecar(&inspected, "-wal"),
+        )
+        .unwrap();
+        assert_eq!(
+            inspect_connection(&open_immutable_database(&inspected).unwrap()).unwrap(),
+            None,
+            "the migration marker must exist only in the WAL"
+        );
+        let database_before = std::fs::read(&inspected).unwrap();
+        let wal_path = database_sidecar(&inspected, "-wal");
+        let wal_before = std::fs::read(&wal_path).unwrap();
+
+        assert_eq!(inspect_database(&inspected).unwrap(), Some(7));
+        assert!(!database_sidecar(&inspected, "-shm").exists());
+        assert_eq!(std::fs::read(&inspected).unwrap(), database_before);
+        assert_eq!(std::fs::read(wal_path).unwrap(), wal_before);
+    }
+
+    #[test]
+    fn read_only_database_check_preserves_an_active_wal_database() {
+        let tmp = tempfile::tempdir().unwrap();
+        let database = tmp.path().join("active.db");
+        let connection = rusqlite::Connection::open(&database).unwrap();
+        connection
+            .pragma_update(None, "journal_mode", "WAL")
+            .unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE _migrations (version INTEGER NOT NULL);
+                 INSERT INTO _migrations VALUES (9);",
+            )
+            .unwrap();
+        let wal = database_sidecar(&database, "-wal");
+        let shm = database_sidecar(&database, "-shm");
+        assert!(wal.exists());
+        assert!(shm.exists());
+        let database_before = std::fs::read(&database).unwrap();
+        let wal_before = std::fs::read(&wal).unwrap();
+        let shm_before = std::fs::read(&shm).unwrap();
+
+        assert_eq!(inspect_database(&database).unwrap(), Some(9));
+        assert_eq!(std::fs::read(&database).unwrap(), database_before);
+        assert_eq!(std::fs::read(wal).unwrap(), wal_before);
+        assert_eq!(std::fs::read(shm).unwrap(), shm_before);
     }
 
     #[test]
@@ -1304,11 +1405,25 @@ mod tests {
             .timeout(Duration::from_millis(500))
             .build()
             .unwrap();
-        // Port 1 is privileged and nothing listens there in test.
-        let probe = http_server_reachable(&client, "http://127.0.0.1:1").await;
+        let addr = serve_reset_connections().await;
+        let probe = http_server_reachable(&client, &format!("http://{addr}")).await;
         assert_eq!(probe, ServerProbe::Unreachable);
         let c = server_check_result(&probe);
         assert_eq!(c.status, Status::Warn);
+    }
+
+    #[test]
+    fn every_health_status_is_classified_by_success() {
+        for code in 100..=999 {
+            let probe = ServerProbe::Reachable(reqwest::StatusCode::from_u16(code).unwrap());
+            let expected = if (200..300).contains(&code) {
+                Status::Pass
+            } else {
+                Status::Warn
+            };
+
+            assert_eq!(server_check_result(&probe).status, expected, "HTTP {code}");
+        }
     }
 
     // ── HTTP integration: spin up a real server in-process ───────────────
@@ -1362,6 +1477,19 @@ mod tests {
         format!("http://127.0.0.1:{}", addr.port())
     }
 
+    /// Accept connections on an owned ephemeral port and reset them before an
+    /// HTTP response, deterministically exercising the transport-error path.
+    async fn serve_reset_connections() -> SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                drop(stream);
+            }
+        });
+        addr
+    }
+
     fn test_client() -> reqwest::Client {
         reqwest::Client::builder()
             .timeout(Duration::from_secs(3))
@@ -1377,6 +1505,47 @@ mod tests {
 
         let probe = http_server_reachable(&test_client(), &base).await;
         assert_eq!(probe, ServerProbe::Reachable(reqwest::StatusCode::OK));
+    }
+
+    #[tokio::test]
+    async fn unhealthy_server_still_runs_dependent_checks() {
+        let app = axum::Router::new()
+            .route(
+                "/api/health",
+                axum::routing::get(|| async { reqwest::StatusCode::SERVICE_UNAVAILABLE }),
+            )
+            .route(
+                "/.well-known/oauth-protected-resource/mcp",
+                axum::routing::get(|| async {
+                    axum::Json(serde_json::json!({ "resource": "http://example.test/mcp" }))
+                }),
+            )
+            .route(
+                "/mcp",
+                axum::routing::post(|| async {
+                    axum::Json(serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": { "serverInfo": { "name": "test" } }
+                    }))
+                }),
+            );
+        let base = serve_ephemeral(app).await;
+        let url = reqwest::Url::parse(&base).unwrap();
+        let mut config = Config::default();
+        config.server.host = url.host_str().unwrap().into();
+        config.server.port = url.port().unwrap();
+
+        let checks = check_remote(&config, Some("explicit-test-key")).await;
+        let status = |name: &str| {
+            checks
+                .iter()
+                .find(|check| check.name == name)
+                .map(|check| check.status)
+        };
+        assert_eq!(status("server"), Some(Status::Warn));
+        assert_eq!(status("oauth_discovery"), Some(Status::Pass));
+        assert_eq!(status("mcp"), Some(Status::Pass));
     }
 
     #[tokio::test]
@@ -1442,9 +1611,9 @@ mod tests {
         let dir = tmp.path();
         let mut cfg = Config::default();
         cfg.database.path = dir.join("lific.db");
-        // Point at a port nothing listens on.
-        cfg.server.host = "127.0.0.1".into();
-        cfg.server.port = 1;
+        let addr = serve_reset_connections().await;
+        cfg.server.host = addr.ip().to_string();
+        cfg.server.port = addr.port();
         cfg.backup.enabled = false;
 
         let resolution = Ok(crate::config::ResolvedConfig {
@@ -1463,17 +1632,67 @@ mod tests {
         assert_eq!(by("mcp"), Some(Status::Skipped));
     }
 
-    #[test]
-    fn database_override_survives_config_resolution_failure() {
+    #[tokio::test]
+    async fn public_url_is_checked_when_the_local_server_is_offline() {
         let tmp = tempfile::tempdir().unwrap();
-        let database_path = tmp.path().join("override.db");
-        let resolution = Err(crate::config::ConfigError::MissingExplicit {
-            path: tmp.path().join("missing.toml"),
+        let app = build_test_app(crate::db::open_memory().unwrap(), "http://127.0.0.1");
+        let public_url = serve_ephemeral(app).await;
+        let mut config = Config::default();
+        config.database.path = tmp.path().join("missing.db");
+        config.backup.enabled = false;
+        let addr = serve_reset_connections().await;
+        config.server.host = addr.ip().to_string();
+        config.server.port = addr.port();
+        config.server.public_url = Some(public_url);
+        let resolution = Ok(crate::config::ResolvedConfig {
+            config,
+            path: Some(tmp.path().join("lific.toml")),
+            source: crate::config::ConfigSource::Explicit,
         });
 
-        let (config, check) = diagnostic_config(resolution, Some(&database_path));
+        let report = build_report(
+            resolution,
+            None,
+            Some("unused-explicit-key"),
+            DatabaseCheckMode::ReadOnly,
+        )
+        .await;
+        let status = |name: &str| {
+            report
+                .checks
+                .iter()
+                .find(|check| check.name == name)
+                .map(|check| check.status)
+        };
 
-        assert_eq!(check.status, Status::Fail);
-        assert_eq!(config.database.path, database_path);
+        assert_eq!(status("server"), Some(Status::Warn));
+        assert_eq!(status("oauth_discovery"), Some(Status::Skipped));
+        assert_eq!(status("mcp"), Some(Status::Skipped));
+        assert_eq!(status("public_url"), Some(Status::Pass));
+    }
+
+    #[test]
+    fn database_override_is_diagnosed_after_config_resolution_failure() {
+        let tmp = tempfile::tempdir().unwrap();
+        let database_path = tmp.path().join("override.db");
+        let connection = rusqlite::Connection::open(&database_path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE _migrations (version INTEGER NOT NULL);
+                 INSERT INTO _migrations VALUES (11);",
+            )
+            .unwrap();
+        let resolution = Config::resolve(Some(&tmp.path().join("missing.toml")));
+
+        let (config, config_check) = diagnostic_config(resolution, Some(&database_path));
+        let database_check = check_database(&config, DatabaseCheckMode::ReadOnly);
+
+        assert_eq!(config_check.status, Status::Fail);
+        assert_eq!(database_check.status, Status::Pass);
+        assert!(
+            database_check
+                .detail
+                .contains(database_path.to_str().unwrap())
+        );
     }
 }
