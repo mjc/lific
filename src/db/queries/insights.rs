@@ -507,7 +507,7 @@ mod tests {
             &conn,
             a.id,
             &UpdateIssue {
-                module_id: Some(Some(module.id)),
+                module_id: FieldUpdate::Set(module.id),
                 ..Default::default()
             },
         )
