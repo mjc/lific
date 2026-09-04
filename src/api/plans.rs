@@ -341,6 +341,62 @@ mod tests {
         assert_eq!(plan["identifier"], "TST-PLAN-1");
         let step_id = plan["steps"][0]["id"].as_i64().unwrap();
 
+        // Every plan-level issue-link state must survive the HTTP boundary.
+        let plan = body_json(
+            json_put(
+                &app,
+                &format!("/api/plans/{plan_id}"),
+                serde_json::json!({"issue_id": issue_id}),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(plan["issue_id"], issue_id);
+        let plan = body_json(
+            json_put(
+                &app,
+                &format!("/api/plans/{plan_id}"),
+                serde_json::json!({}),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(plan["issue_id"], issue_id);
+        let plan = body_json(
+            json_put(
+                &app,
+                &format!("/api/plans/{plan_id}"),
+                serde_json::json!({"issue_id": null}),
+            )
+            .await,
+        )
+        .await;
+        assert!(plan["issue_id"].is_null());
+
+        // The same three states apply to a step's issue link.
+        let response = json_put(
+            &app,
+            &format!("/api/plans/{plan_id}/steps/{step_id}"),
+            serde_json::json!({"issue_id": null}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let response = json_put(
+            &app,
+            &format!("/api/plans/{plan_id}/steps/{step_id}"),
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(body_json(response).await["plan"]["steps"][0]["issue_id"].is_null());
+        let response = json_put(
+            &app,
+            &format!("/api/plans/{plan_id}/steps/{step_id}"),
+            serde_json::json!({"issue_id": issue_id}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+
         // Mark the step done → issue should close, effect reported.
         let resp = app
             .clone()

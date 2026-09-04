@@ -842,8 +842,8 @@ fn emoji_for_create(emoji: &Option<String>) -> Option<String> {
     emoji.as_ref().filter(|s| !s.is_empty()).cloned()
 }
 
-/// LIF-145 sentinel for an update's tri-state icon field: omitted leaves it
-/// unchanged, an empty string clears it to NULL, and a non-empty string sets it.
+/// An update's tri-state icon field: omitted leaves it unchanged, an empty
+/// string clears it to NULL, and a non-empty string sets it.
 fn emoji_for_update(emoji: &Option<String>) -> models::FieldUpdate<String> {
     match emoji {
         None => models::FieldUpdate::Keep,
@@ -4021,28 +4021,42 @@ impl LificMcp {
                             queries::plans::set_step_title(conn, step_id, t)?;
                             notes.push(format!("Renamed step #{step_id}"));
                         }
-                        if let Some(ref ident) = input.attach_issue {
-                            let iid = queries::resolve_identifier(conn, ident)?;
-                            let issue = queries::get_issue(conn, iid)?;
-                            queries::plans::set_step_issue(conn, step_id, Some(iid))?;
-                            notes.push(
-                                try_render(|output| {
-                                    write!(
-                                        output,
-                                        "Attached {} to step #{step_id}",
-                                        issue_reference(context.as_deref(), &issue.identifier,)
-                                    )
-                                })
-                                .map_err(|error| {
-                                    crate::error::LificError::Internal(format!(
-                                        "failed to format plan-step response: {error}"
-                                    ))
-                                })?,
-                            );
+                        if input.attach_issue.is_some() && input.detach_issue == Some(true) {
+                            return Err(crate::error::LificError::BadRequest(
+                                "attach_issue and detach_issue are mutually exclusive".into(),
+                            ));
                         }
-                        if input.detach_issue.unwrap_or(false) {
-                            queries::plans::set_step_issue(conn, step_id, None)?;
-                            notes.push(format!("Detached issue from step #{step_id}"));
+                        let issue_update = match (&input.attach_issue, input.detach_issue) {
+                            (Some(ident), _) => {
+                                models::FieldUpdate::Set(queries::resolve_identifier(conn, ident)?)
+                            }
+                            (None, Some(true)) => models::FieldUpdate::Clear,
+                            _ => models::FieldUpdate::Keep,
+                        };
+                        match issue_update {
+                            models::FieldUpdate::Keep => {}
+                            models::FieldUpdate::Clear => {
+                                queries::plans::set_step_issue(conn, step_id, None)?;
+                                notes.push(format!("Detached issue from step #{step_id}"));
+                            }
+                            models::FieldUpdate::Set(iid) => {
+                                let issue = queries::get_issue(conn, iid)?;
+                                queries::plans::set_step_issue(conn, step_id, Some(iid))?;
+                                notes.push(
+                                    try_render(|output| {
+                                        write!(
+                                            output,
+                                            "Attached {} to step #{step_id}",
+                                            issue_reference(context.as_deref(), &issue.identifier,)
+                                        )
+                                    })
+                                    .map_err(|error| {
+                                        crate::error::LificError::Internal(format!(
+                                            "failed to format plan-step response: {error}"
+                                        ))
+                                    })?,
+                                );
+                            }
                         }
                         if let Some(done) = input.done {
                             let effect = queries::plans::set_step_done(conn, step_id, done)?;

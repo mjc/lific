@@ -89,9 +89,9 @@ pub struct CreateProject {
     pub lead_user_id: Option<i64>,
 }
 
-/// LIF-374: `Serialize` is what the HTTP CLI backend sends as the request
-/// body, so the remote path cannot drift from the local one. `FieldUpdate`
-/// keeps omitted fields distinct from explicit `null` values.
+/// `Serialize` is what the HTTP CLI backend sends as the request body, so the
+/// remote path cannot drift from the local one. `FieldUpdate` keeps omitted
+/// fields distinct from explicit `null` values.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct UpdateProject {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -100,10 +100,10 @@ pub struct UpdateProject {
     pub identifier: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    /// LIF-103: clients can explicitly clear the emoji back to NULL.
+    /// Clients can explicitly clear the emoji back to NULL.
     #[serde(default, skip_serializing_if = "FieldUpdate::is_keep")]
     pub emoji: FieldUpdate<String>,
-    /// LIF-103: clients can explicitly clear the lead back to NULL.
+    /// Clients can explicitly clear the lead back to NULL.
     #[serde(default, skip_serializing_if = "FieldUpdate::is_keep")]
     pub lead_user_id: FieldUpdate<i64>,
 }
@@ -390,7 +390,7 @@ pub struct UpdateIssue {
     pub status: Option<Status>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub priority: Option<Priority>,
-    /// LIF-145: clients can clear an issue's module back to NULL.
+    /// Clients can clear an issue's module back to NULL.
     #[serde(default, skip_serializing_if = "FieldUpdate::is_keep")]
     pub module_id: FieldUpdate<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -482,7 +482,7 @@ pub struct UpdateModule {
     pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
-    /// LIF-124: clients can clear the icon back to NULL.
+    /// Clients can clear the icon back to NULL.
     #[serde(default, skip_serializing_if = "FieldUpdate::is_keep")]
     pub emoji: FieldUpdate<String>,
 }
@@ -593,7 +593,7 @@ pub struct UpdatePage {
     pub title: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
-    /// LIF-103: clients can clear the folder back to NULL.
+    /// Clients can clear the folder back to NULL.
     #[serde(default, skip_serializing_if = "FieldUpdate::is_keep")]
     pub folder_id: FieldUpdate<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1285,7 +1285,7 @@ pub struct UpdatePlan {
     pub title: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
-    /// LIF-103: clients can clear the anchor issue back to NULL.
+    /// Clients can clear the anchor issue back to NULL.
     #[serde(default, skip_serializing_if = "FieldUpdate::is_keep")]
     pub issue_id: FieldUpdate<i64>,
 }
@@ -1533,6 +1533,12 @@ mod tests {
         value: FieldUpdate<String>,
     }
 
+    #[derive(Debug, Default, Deserialize, PartialEq, Serialize)]
+    struct NumericFieldUpdatePayload {
+        #[serde(default, skip_serializing_if = "FieldUpdate::is_keep")]
+        value: FieldUpdate<i64>,
+    }
+
     #[test]
     fn field_update_preserves_absent_null_and_value_json_states() {
         assert_eq!(
@@ -1596,21 +1602,70 @@ mod tests {
 
     #[test]
     fn update_plan_omits_unset_fields_and_preserves_issue_states() {
-        let absent = serde_json::to_value(UpdatePlan::default()).unwrap();
-        let cleared = serde_json::to_value(UpdatePlan {
-            issue_id: FieldUpdate::Clear,
-            ..UpdatePlan::default()
-        })
-        .unwrap();
-        let assigned = serde_json::to_value(UpdatePlan {
-            issue_id: FieldUpdate::Set(42),
-            ..UpdatePlan::default()
-        })
-        .unwrap();
+        for (json, expected) in [
+            (r#"{}"#, FieldUpdate::Keep),
+            (r#"{"issue_id":null}"#, FieldUpdate::Clear),
+            (r#"{"issue_id":42}"#, FieldUpdate::Set(42)),
+        ] {
+            assert_eq!(
+                serde_json::from_str::<UpdatePlan>(json).unwrap().issue_id,
+                expected
+            );
+        }
 
-        assert_eq!(absent, serde_json::json!({}));
-        assert_eq!(cleared, serde_json::json!({"issue_id": null}));
-        assert_eq!(assigned, serde_json::json!({"issue_id": 42}));
+        for (plan, expected) in [
+            (UpdatePlan::default(), serde_json::json!({})),
+            (
+                UpdatePlan {
+                    issue_id: FieldUpdate::Clear,
+                    ..UpdatePlan::default()
+                },
+                serde_json::json!({"issue_id": null}),
+            ),
+            (
+                UpdatePlan {
+                    issue_id: FieldUpdate::Set(42),
+                    ..UpdatePlan::default()
+                },
+                serde_json::json!({"issue_id": 42}),
+            ),
+        ] {
+            assert_eq!(serde_json::to_value(plan).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn numeric_field_update_preserves_all_json_states() {
+        for (json, expected) in [
+            (r#"{}"#, FieldUpdate::Keep),
+            (r#"{"value":null}"#, FieldUpdate::Clear),
+            (r#"{"value":42}"#, FieldUpdate::Set(42)),
+        ] {
+            assert_eq!(
+                serde_json::from_str::<NumericFieldUpdatePayload>(json)
+                    .unwrap()
+                    .value,
+                expected
+            );
+        }
+
+        for (payload, expected) in [
+            (NumericFieldUpdatePayload::default(), serde_json::json!({})),
+            (
+                NumericFieldUpdatePayload {
+                    value: FieldUpdate::Clear,
+                },
+                serde_json::json!({"value": null}),
+            ),
+            (
+                NumericFieldUpdatePayload {
+                    value: FieldUpdate::Set(42),
+                },
+                serde_json::json!({"value": 42}),
+            ),
+        ] {
+            assert_eq!(serde_json::to_value(payload).unwrap(), expected);
+        }
     }
 
     const STATUSES: [Status; 5] = [

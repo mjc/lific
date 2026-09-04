@@ -206,7 +206,7 @@ fn issue(
                     description: description.clone(),
                     status: Status::parse_opt(status.as_deref())?,
                     priority: Priority::parse_opt(priority.as_deref())?,
-                    // LIF-145: the CLI only sets or skips (no clear).
+                    // The CLI only sets or skips (no clear).
                     module_id: module_id.map(FieldUpdate::Set).unwrap_or_default(),
                     labels: label_list,
                     ..Default::default()

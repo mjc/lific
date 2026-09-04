@@ -307,7 +307,7 @@ pub fn update_project(
                     "UPDATE projects SET lead_user_id = ?1 WHERE id = ?2",
                     params![uid, id],
                 )?;
-                // LIF-195: upsert a 'lead' membership for the new lead. The
+                // Upsert a 'lead' membership for the new lead. The
                 // old lead keeps their existing membership row.
                 super::members::upsert_member(conn, id, *uid, Role::Lead)?;
             }

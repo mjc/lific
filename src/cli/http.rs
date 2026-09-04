@@ -436,7 +436,7 @@ impl HttpBackend {
                     status: models::Status::parse_opt(status.as_deref()).map_err(|e| anyhow!(e))?,
                     priority: models::Priority::parse_opt(priority.as_deref())
                         .map_err(|e| anyhow!(e))?,
-                    // LIF-145: the CLI only sets or skips (no clear).
+                    // The CLI only sets or skips (no clear).
                     module_id: module_id.map(models::FieldUpdate::Set).unwrap_or_default(),
                     sort_order: None,
                     start_date: None,
