@@ -185,6 +185,10 @@ pub enum Command {
         /// verifies that auth is enforced and discovery is advertised.
         #[arg(long, env = "LIFIC_API_KEY")]
         key: Option<String>,
+
+        /// Apply pending database migrations while checking the database.
+        #[arg(long)]
+        repair: bool,
     },
 
     /// Set up a ready-to-use Lific instance.
@@ -1265,6 +1269,7 @@ pub enum UserAction {
 mod tests {
     use super::*;
     use clap::Parser;
+    use proptest::prelude::*;
 
     #[test]
     fn owned_labels_preserve_values_and_discard_empty_items() {
@@ -1569,8 +1574,9 @@ mod tests {
         // env var polluting the assertion.
         let cli = Cli::try_parse_from(["lific", "doctor"]).unwrap();
         match cli.command {
-            Command::Doctor { key } => {
+            Command::Doctor { key, repair } => {
                 assert_eq!(key, env_fallback("LIFIC_API_KEY"));
+                assert!(!repair);
             }
             _ => panic!("expected Doctor"),
         }
@@ -1676,7 +1682,22 @@ mod tests {
     fn parse_doctor_with_key_flag() {
         let cli = Cli::try_parse_from(["lific", "doctor", "--key", "lific_sk-live-abc"]).unwrap();
         match cli.command {
-            Command::Doctor { key } => assert_eq!(key, Some("lific_sk-live-abc".into())),
+            Command::Doctor { key, repair } => {
+                assert_eq!(key, Some("lific_sk-live-abc".into()));
+                assert!(!repair);
+            }
+            _ => panic!("expected Doctor"),
+        }
+    }
+
+    #[test]
+    fn parse_doctor_with_repair_flag() {
+        let cli = Cli::try_parse_from(["lific", "doctor", "--repair"]).unwrap();
+        match cli.command {
+            Command::Doctor { key, repair } => {
+                assert!(key.is_none());
+                assert!(repair);
+            }
             _ => panic!("expected Doctor"),
         }
     }
@@ -2224,6 +2245,15 @@ mod tests {
     fn parse_global_config_flag() {
         let cli = Cli::try_parse_from(["lific", "--config", "/etc/lific.toml", "start"]).unwrap();
         assert_eq!(cli.config, Some(PathBuf::from("/etc/lific.toml")));
+    }
+
+    proptest! {
+        #[test]
+        fn arbitrary_unknown_commands_are_rejected(argument in "[a-z]{1,32}") {
+            let invalid = format!("unknown-{argument}");
+            let argv = vec!["lific".to_owned(), invalid];
+            prop_assert!(Cli::try_parse_from(argv).is_err());
+        }
     }
 
     #[test]

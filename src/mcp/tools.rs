@@ -842,14 +842,13 @@ fn emoji_for_create(emoji: &Option<String>) -> Option<String> {
     emoji.as_ref().filter(|s| !s.is_empty()).cloned()
 }
 
-/// LIF-145 sentinel for an update's tristate `Option<Option<String>>` icon
-/// field: omitted (None) = leave unchanged, empty string = clear to NULL,
-/// non-empty = set.
-fn emoji_for_update(emoji: &Option<String>) -> Option<Option<String>> {
+/// An update's tri-state icon field: omitted leaves it unchanged, an empty
+/// string clears it to NULL, and a non-empty string sets it.
+fn emoji_for_update(emoji: &Option<String>) -> models::FieldUpdate<String> {
     match emoji {
-        None => None,
-        Some(s) if s.is_empty() => Some(None),
-        Some(s) => Some(Some(s.clone())),
+        None => models::FieldUpdate::Keep,
+        Some(s) if s.is_empty() => models::FieldUpdate::Clear,
+        Some(s) => models::FieldUpdate::Set(s.clone()),
     }
 }
 
@@ -2102,13 +2101,13 @@ impl LificMcp {
             // LIF-145 sentinel: field omitted (None) = skip, empty string = clear
             // (unassign module), non-empty = resolve + set.
             let module_id = match &input.module {
-                Some(name) if name.is_empty() => Some(None),
-                Some(name) => Some(Some(queries::resolve_module_name(
+                Some(name) if name.is_empty() => models::FieldUpdate::Clear,
+                Some(name) => models::FieldUpdate::Set(queries::resolve_module_name(
                     conn,
                     previous_issue.project_id,
                     name,
-                )?)),
-                None => None,
+                )?),
+                None => models::FieldUpdate::Keep,
             };
             let issue = queries::update_issue(
                 conn,
@@ -2252,7 +2251,9 @@ impl LificMcp {
                                     input.set_priority.as_deref(),
                                 )
                                 .map_err(crate::error::LificError::BadRequest)?,
-                                module_id: set_module_id.map(Some),
+                                module_id: set_module_id
+                                    .map(models::FieldUpdate::Set)
+                                    .unwrap_or_default(),
                                 ..Default::default()
                             },
                         )
@@ -2718,7 +2719,7 @@ impl LificMcp {
             // LIF-145 sentinel: field omitted (None) = skip, empty string = clear
             // (move page to root), non-empty = resolve folder + set.
             let folder_id = match &input.folder {
-                Some(name) if name.is_empty() => Some(None),
+                Some(name) if name.is_empty() => models::FieldUpdate::Clear,
                 Some(name) => {
                     let page = queries::get_page(conn, id)?;
                     let pid = page.project_id.ok_or_else(|| {
@@ -2726,9 +2727,9 @@ impl LificMcp {
                             "page has no project for folder resolution".into(),
                         )
                     })?;
-                    Some(Some(queries::resolve_folder_name(conn, pid, name)?))
+                    models::FieldUpdate::Set(queries::resolve_folder_name(conn, pid, name)?)
                 }
-                None => None,
+                None => models::FieldUpdate::Keep,
             };
             let page = queries::update_page(
                 conn,
@@ -3992,9 +3993,11 @@ impl LificMcp {
                 // ── Plan-level update ──
                 None => {
                     let anchor = match (&input.anchor_issue, input.clear_anchor) {
-                        (Some(ident), _) => Some(Some(queries::resolve_identifier(conn, ident)?)),
-                        (None, Some(true)) => Some(None),
-                        _ => None,
+                        (Some(ident), _) => {
+                            models::FieldUpdate::Set(queries::resolve_identifier(conn, ident)?)
+                        }
+                        (None, Some(true)) => models::FieldUpdate::Clear,
+                        _ => models::FieldUpdate::Keep,
                     };
                     queries::plans::update_plan(
                         conn,
@@ -4018,28 +4021,42 @@ impl LificMcp {
                             queries::plans::set_step_title(conn, step_id, t)?;
                             notes.push(format!("Renamed step #{step_id}"));
                         }
-                        if let Some(ref ident) = input.attach_issue {
-                            let iid = queries::resolve_identifier(conn, ident)?;
-                            let issue = queries::get_issue(conn, iid)?;
-                            queries::plans::set_step_issue(conn, step_id, Some(iid))?;
-                            notes.push(
-                                try_render(|output| {
-                                    write!(
-                                        output,
-                                        "Attached {} to step #{step_id}",
-                                        issue_reference(context.as_deref(), &issue.identifier,)
-                                    )
-                                })
-                                .map_err(|error| {
-                                    crate::error::LificError::Internal(format!(
-                                        "failed to format plan-step response: {error}"
-                                    ))
-                                })?,
-                            );
+                        if input.attach_issue.is_some() && input.detach_issue == Some(true) {
+                            return Err(crate::error::LificError::BadRequest(
+                                "attach_issue and detach_issue are mutually exclusive".into(),
+                            ));
                         }
-                        if input.detach_issue.unwrap_or(false) {
-                            queries::plans::set_step_issue(conn, step_id, None)?;
-                            notes.push(format!("Detached issue from step #{step_id}"));
+                        let issue_update = match (&input.attach_issue, input.detach_issue) {
+                            (Some(ident), _) => {
+                                models::FieldUpdate::Set(queries::resolve_identifier(conn, ident)?)
+                            }
+                            (None, Some(true)) => models::FieldUpdate::Clear,
+                            _ => models::FieldUpdate::Keep,
+                        };
+                        match issue_update {
+                            models::FieldUpdate::Keep => {}
+                            models::FieldUpdate::Clear => {
+                                queries::plans::set_step_issue(conn, step_id, None)?;
+                                notes.push(format!("Detached issue from step #{step_id}"));
+                            }
+                            models::FieldUpdate::Set(iid) => {
+                                let issue = queries::get_issue(conn, iid)?;
+                                queries::plans::set_step_issue(conn, step_id, Some(iid))?;
+                                notes.push(
+                                    try_render(|output| {
+                                        write!(
+                                            output,
+                                            "Attached {} to step #{step_id}",
+                                            issue_reference(context.as_deref(), &issue.identifier,)
+                                        )
+                                    })
+                                    .map_err(|error| {
+                                        crate::error::LificError::Internal(format!(
+                                            "failed to format plan-step response: {error}"
+                                        ))
+                                    })?,
+                                );
+                            }
                         }
                         if let Some(done) = input.done {
                             let effect = queries::plans::set_step_done(conn, step_id, done)?;
