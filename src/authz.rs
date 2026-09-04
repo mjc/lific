@@ -54,7 +54,7 @@
 
 use std::collections::HashSet;
 
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::db::models::{AuthUser, Role};
 use crate::db::{DbPool, queries};
@@ -73,19 +73,21 @@ use crate::resolve_caller::ResolvedIdentity;
 pub fn effective_user(conn: &Connection, auth_user: &Option<AuthUser>) -> Option<AuthUser> {
     let user = auth_user.as_ref()?;
 
-    // A missing bot row and an ownerless bot both fall through to evaluating
-    // the user as itself, so one optional owner id is sufficient here.
-    let bot_owner: Option<i64> = conn
+    // Some(Some(owner_id)) = bot with an owner
+    // Some(None)           = bot with no owner
+    // None                 = not a bot (or the id doesn't exist)
+    let bot_owner: Option<Option<i64>> = conn
         .query_row(
             "SELECT owner_id FROM users WHERE id = ?1 AND is_bot = 1",
             params![user.id],
             |row| row.get::<_, Option<i64>>(0),
         )
+        .optional()
         .ok()
         .flatten();
 
     match bot_owner {
-        Some(owner_id) => queries::users::get_user_by_id(conn, owner_id)
+        Some(Some(owner_id)) => queries::users::get_user_by_id(conn, owner_id)
             .ok()
             .map(|owner| AuthUser {
                 id: owner.id,
