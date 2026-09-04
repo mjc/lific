@@ -2,9 +2,12 @@ use serde::{Deserialize, Serialize};
 
 /// An update operation for a nullable field.
 ///
-/// `Keep` is omitted from JSON, `Clear` is encoded as `null`, and `Set` is
-/// encoded as the contained value. This keeps the three wire states explicit
-/// without nesting `Option`s at every update call site.
+/// `Keep` is omitted from JSON when used on a struct field with
+/// `skip_serializing_if = "FieldUpdate::is_keep"`, `Clear` is encoded as
+/// `null`, and `Set` is encoded as the contained value. Direct serialization
+/// of `Keep` fails because a serializer cannot omit a field without its
+/// containing struct. This keeps the three wire states explicit without
+/// nesting `Option`s at every update call site.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum FieldUpdate<T> {
     #[default]
@@ -43,7 +46,10 @@ where
         S: serde::Serializer,
     {
         match self {
-            Self::Keep | Self::Clear => serializer.serialize_none(),
+            Self::Keep => Err(serde::ser::Error::custom(
+                "FieldUpdate::Keep must be skipped when serializing a field",
+            )),
+            Self::Clear => serializer.serialize_none(),
             Self::Set(value) => value.serialize(serializer),
         }
     }
@@ -1565,6 +1571,7 @@ mod tests {
         ] {
             assert_eq!(serde_json::to_value(patch).unwrap(), expected);
         }
+        assert!(serde_json::to_value(FieldUpdate::<String>::Keep).is_err());
     }
 
     proptest::proptest! {
