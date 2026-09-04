@@ -13,6 +13,10 @@ use std::path::Path;
 use std::time::SystemTime;
 
 fn main() {
+    // `web/dist/.gitkeep` keeps the embed directory present in clean checkouts.
+    // Do not create it here: builds must not mutate the source tree.
+    let dist = Path::new("web/dist");
+
     // The built bundle: changing it must trigger a re-embed.
     println!("cargo:rerun-if-changed=web/dist");
     // The frontend sources: changing them cannot rebuild the bundle for us,
@@ -20,7 +24,6 @@ fn main() {
     // to point out that web/dist no longer matches web/src.
     println!("cargo:rerun-if-changed=web/src");
 
-    let dist = Path::new("web/dist");
     let src = Path::new("web/src");
 
     match (newest_mtime(dist), newest_mtime(src)) {
