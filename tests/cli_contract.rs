@@ -132,17 +132,24 @@ fn doctor_process_contract_requires_explicit_repair() {
 
     let db = db_path.to_str().unwrap();
     let config = config_path.to_str().unwrap();
-    lific(&["--config", config, "--db", db, "--json", "doctor"])
-        .failure()
-        .code(1)
-        .stdout(predicate::str::contains("\"status\": \"fail\""));
+    let output = lific_command()
+        .args(["--config", config, "--db", db, "--json", "doctor"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["ok"], false);
     assert!(!migration_table_exists(&db_path));
 
-    lific(&[
-        "--config", config, "--db", db, "--json", "doctor", "--repair",
-    ])
-    .success()
-    .stdout(predicate::str::contains("\"status\": \"pass\""));
+    let output = lific_command()
+        .args([
+            "--config", config, "--db", db, "--json", "doctor", "--repair",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["ok"], true);
     assert!(migration_table_exists(&db_path));
 }
 
@@ -169,6 +176,7 @@ fn doctor_process_contract_honors_database_override_after_config_failure() {
         "--repair",
     ])
     .success();
+    assert!(migration_table_exists(&db_path));
 
     let output = lific_command()
         .current_dir(tmp.path())
