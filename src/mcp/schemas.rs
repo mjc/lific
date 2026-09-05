@@ -344,6 +344,7 @@ pub struct ManageResourceInput {
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct AddCommentInput {
+    #[serde(alias = "issue")]
     #[schemars(
         description = "Issue ID (e.g. LIF-1), project page ID (e.g. LIF-DOC-1), or workspace page ID (e.g. DOC-1)"
     )]
@@ -524,4 +525,16 @@ pub struct ExportInput {
         description = "What to export: an issue ID (PRO-42), a page ID (PRO-DOC-3), or a bare project ID (PRO) for the whole project"
     )]
     pub identifier: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AddCommentInput;
+
+    #[test]
+    fn add_comment_accepts_legacy_issue_parameter() {
+        let input: AddCommentInput =
+            serde_json::from_str(r#"{"issue":"LIF-42","content":"hello"}"#).unwrap();
+        assert_eq!(input.identifier, "LIF-42");
+    }
 }
