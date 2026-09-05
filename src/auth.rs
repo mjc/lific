@@ -749,13 +749,12 @@ pub async fn require_api_key(
     // canonical protected-resource metadata lives at the path-aware well-known
     // location. Point Claude there so the `resource` it reads matches the URL
     // the user entered.
-    let resource_metadata =
-        crate::oauth::protected_resource_metadata_url_for_request(
-            &auth.public_url,
-            auth.issuer_is_explicit,
-            &auth.allowed_hosts,
-            request.headers(),
-        );
+    let resource_metadata = crate::oauth::protected_resource_metadata_url_for_request(
+        &auth.public_url,
+        auth.issuer_is_explicit,
+        &auth.allowed_hosts,
+        request.headers(),
+    );
     let www_auth = format!("Bearer resource_metadata=\"{resource_metadata}\"");
 
     let Some(token) = token else {

@@ -21,8 +21,7 @@ use axum::{
     routing::{any, get},
 };
 use rmcp::transport::streamable_http_server::{
-    session::local::LocalSessionManager,
-    tower::StreamableHttpService,
+    session::local::LocalSessionManager, tower::StreamableHttpService,
 };
 use rust_embed::Embed;
 use tower_http::compression::CompressionLayer;
@@ -32,7 +31,9 @@ use tracing::{info, warn};
 use api_keys_simplified::ApiKeyManagerV0;
 
 use crate::config::{self, Config};
-use crate::{actor, api, auth, backup, db, links, mcp, oauth, ratelimit, realtime, resolve_caller, storage};
+use crate::{
+    actor, api, auth, backup, db, links, mcp, oauth, ratelimit, realtime, resolve_caller, storage,
+};
 
 /// Embedded frontend assets compiled from web/dist/.
 /// Falls back gracefully if dist/ doesn't exist (e.g. dev builds without frontend).
@@ -389,14 +390,12 @@ fn build_app_with_store(
                             }),
                         // LIFIC-8: the "no credential → first admin"
                         // fallback is consolidated in `resolve_caller`.
-                        None => resolve_caller::resolve_caller_conn(
-                            &conn,
-                            None,
-                            actor::Transport::Mcp,
-                        )
-                        .ok()
-                        .flatten()
-                        .map(|i| i.user),
+                        None => {
+                            resolve_caller::resolve_caller_conn(&conn, None, actor::Transport::Mcp)
+                                .ok()
+                                .flatten()
+                                .map(|i| i.user)
+                        }
                     },
                     Err(_) => None,
                 }
@@ -564,7 +563,9 @@ pub async fn run(cfg: &Config) -> Result<(), Box<dyn std::error::Error>> {
         // A human operator exists (should_mint was false for lack of
         // keys alone) but no key has been created yet: keys are minted
         // on demand via `lific key create`.
-        info!("human operator present — passwordless mode; mint keys on demand with `lific key create`");
+        info!(
+            "human operator present — passwordless mode; mint keys on demand with `lific key create`"
+        );
     } else {
         let count = auth::list_api_keys(&pool)?
             .iter()
@@ -593,10 +594,7 @@ pub async fn run(cfg: &Config) -> Result<(), Box<dyn std::error::Error>> {
     // request router so its operation lock covers both upload and GC paths.
     let attachment_store = storage::AttachmentStore::from_db_path(&cfg.database.path);
     let gc_attachment_store = attachment_store.clone();
-    storage::start_gc_task(
-        pool.clone(),
-        gc_attachment_store,
-    );
+    storage::start_gc_task(pool.clone(), gc_attachment_store);
 
     let app = build_app_with_store(
         cfg,
@@ -672,10 +670,8 @@ fn build_global_cors(cors_origins: &[String]) -> CorsLayer {
     if cors_origins.is_empty() {
         layer.allow_origin(Any)
     } else {
-        let origins: Vec<HeaderValue> = cors_origins
-            .iter()
-            .filter_map(|o| o.parse().ok())
-            .collect();
+        let origins: Vec<HeaderValue> =
+            cors_origins.iter().filter_map(|o| o.parse().ok()).collect();
         layer.allow_origin(origins)
     }
 }
@@ -703,12 +699,7 @@ fn build_authless_mcp_router(
     let allowed_hosts_for_links = allowed_hosts.clone();
     let config = mcp::legacy_streamable_http_config(allowed_hosts, allowed_origins);
     let service = StreamableHttpService::new(
-        move || {
-            Ok(mcp::LificMcp::with_realtime(
-                pool.clone(),
-                realtime.clone(),
-            ))
-        },
+        move || Ok(mcp::LificMcp::with_realtime(pool.clone(), realtime.clone())),
         Arc::new(LocalSessionManager::default()),
         config,
     );
@@ -944,7 +935,10 @@ mod cors_tests {
             .uri("/mcp")
             .header("origin", "https://claude.ai")
             .header("access-control-request-method", "POST")
-            .header("access-control-request-headers", "authorization,content-type")
+            .header(
+                "access-control-request-headers",
+                "authorization,content-type",
+            )
             .body(Body::empty())
             .unwrap();
 
@@ -1345,7 +1339,10 @@ mod authless_mcp_tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let body = response.into_body().collect().await.unwrap().to_bytes();
-        assert_eq!(jsonrpc_body(&body)["result"]["protocolVersion"], "2025-11-25");
+        assert_eq!(
+            jsonrpc_body(&body)["result"]["protocolVersion"],
+            "2025-11-25"
+        );
     }
 
     /// A wrong path token does not match the route at all (no secret leak,

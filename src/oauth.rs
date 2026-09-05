@@ -35,8 +35,7 @@ const MAX_DYNAMIC_CLIENT_STORAGE_BYTES: i64 = 4 * 1024 * 1024;
 const MAX_DEVICE_CODE_ROWS: i64 = 1024;
 
 /// Per-process CSRF secret, generated randomly on startup.
-static CSRF_SECRET: std::sync::LazyLock<[u8; 32]> =
-    std::sync::LazyLock::new(rand::random);
+static CSRF_SECRET: std::sync::LazyLock<[u8; 32]> = std::sync::LazyLock::new(rand::random);
 
 /// Generate a CSRF token bound to the approving session: `timestamp.hmac(ts || binding)`.
 ///
@@ -172,10 +171,7 @@ fn device_confirmation_token(session: &str, user_code: &str) -> String {
 }
 
 fn validate_device_confirmation_token(token: &str, session: &str, user_code: &str) -> bool {
-    validate_csrf_token(
-        token,
-        &format!("device-confirmation:{session}:{user_code}"),
-    )
+    validate_csrf_token(token, &format!("device-confirmation:{session}:{user_code}"))
 }
 
 #[derive(Clone)]
@@ -230,9 +226,7 @@ fn effective_issuer_for_request(
         return issuer.to_string();
     };
     match crate::links::parse_http_authority(host_header) {
-        Some(authority)
-            if crate::links::authority_is_allowlisted(&authority, allowed_hosts) =>
-        {
+        Some(authority) if crate::links::authority_is_allowlisted(&authority, allowed_hosts) => {
             // Allowlisted hosts are loopback names (a proxy host only enters
             // the allowlist via public_url, which makes the issuer explicit),
             // so plain http matches what the client dialed.
@@ -306,7 +300,9 @@ fn requested_resource(resource: Option<&str>, expected: &str) -> Result<String, 
         || parsed.query().is_some()
         || parsed.fragment().is_some()
     {
-        return Err("resource must be an absolute HTTP(S) URL without credentials, query, or fragment");
+        return Err(
+            "resource must be an absolute HTTP(S) URL without credentials, query, or fragment",
+        );
     }
     let canonical = parsed.to_string();
     if canonical != expected {
@@ -367,9 +363,7 @@ pub(crate) fn validate_redirect_uri(uri: &str) -> Result<(), &'static str> {
     }
     // Require some host after `://`.
     let rest = &after_scheme[3..];
-    let host_end = rest
-        .find(['/', '?', '#'])
-        .unwrap_or(rest.len());
+    let host_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
     if rest[..host_end].is_empty() {
         return Err("redirect_uri must include a host");
     }
@@ -399,10 +393,7 @@ pub fn router(state: OAuthState) -> Router {
             "/oauth/authorize",
             get(authorize_page).post(authorize_approve),
         )
-        .route(
-            "/oauth/device_authorization",
-            post(device_authorization),
-        )
+        .route("/oauth/device_authorization", post(device_authorization))
         .route("/oauth/device", get(device_page).post(device_approve))
         .route("/oauth/token", post(token_exchange))
         .route("/oauth/revoke", post(revoke_token))
@@ -512,15 +503,19 @@ async fn register_client(
             })),
         )
             .into_response();
-        if retry > 0 && let Ok(v) = retry.to_string().parse() {
+        if retry > 0
+            && let Ok(v) = retry.to_string().parse()
+        {
             resp.headers_mut().insert("retry-after", v);
         }
         return resp;
     }
 
-    let device_only =
-        matches!(req.grant_types.as_deref(), Some([grant]) if grant == DEVICE_CODE_GRANT)
-        && req.response_types.as_deref().is_none_or(<[String]>::is_empty);
+    let device_only = matches!(req.grant_types.as_deref(), Some([grant]) if grant == DEVICE_CODE_GRANT)
+        && req
+            .response_types
+            .as_deref()
+            .is_none_or(<[String]>::is_empty);
     if req.redirect_uris.is_empty() && !device_only {
         return (
             StatusCode::BAD_REQUEST,
@@ -549,9 +544,7 @@ async fn register_client(
     }
 
     let client_name = req.client_name.unwrap_or_else(|| "MCP Client".into());
-    if client_name.len() > MAX_CLIENT_NAME_BYTES
-        || client_name.chars().any(|c| c.is_control())
-    {
+    if client_name.len() > MAX_CLIENT_NAME_BYTES || client_name.chars().any(|c| c.is_control()) {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
@@ -796,19 +789,17 @@ async fn authorize_page(
             .into_response();
     }
     let requested_scope = params.scope.as_deref().unwrap_or_default();
-    let resource = match requested_resource(
-        params.resource.as_deref(),
-        &mcp_resource(&oauth, &headers),
-    ) {
-        Ok(resource) => resource,
-        Err(reason) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Html(format!("<h1>Invalid resource</h1><p>{reason}</p>")),
-            )
-                .into_response();
-        }
-    };
+    let resource =
+        match requested_resource(params.resource.as_deref(), &mcp_resource(&oauth, &headers)) {
+            Ok(resource) => resource,
+            Err(reason) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Html(format!("<h1>Invalid resource</h1><p>{reason}</p>")),
+                )
+                    .into_response();
+            }
+        };
     if !valid_authorize_request(
         &params.response_type,
         params.scope.as_deref(),
@@ -851,7 +842,10 @@ async fn authorize_page(
     let Some(client_name) = client_name else {
         return (
             StatusCode::BAD_REQUEST,
-            Html("<h1>Invalid OAuth client</h1><p>The client or redirect URI is not registered.</p>".to_string()),
+            Html(
+                "<h1>Invalid OAuth client</h1><p>The client or redirect URI is not registered.</p>"
+                    .to_string(),
+            ),
         )
             .into_response();
     };
@@ -1189,28 +1183,28 @@ async fn authorize_approve(
     // Validate the redirect_uri against the client's registered URIs
     let redirect_ok = validate_redirect_uri(&form.redirect_uri).is_ok()
         && if let Ok(conn) = oauth.db.read() {
-        let registered: Result<String, _> = conn.query_row(
-            "SELECT redirect_uris FROM oauth_clients WHERE client_id = ?1",
-            params![form.client_id],
-            |row| row.get(0),
-        );
-        match registered {
-            Ok(uris_json) => {
-                let uris: Vec<String> = serde_json::from_str(&uris_json).unwrap_or_default();
-                uris.iter().any(|u| u == &form.redirect_uri)
+            let registered: Result<String, _> = conn.query_row(
+                "SELECT redirect_uris FROM oauth_clients WHERE client_id = ?1",
+                params![form.client_id],
+                |row| row.get(0),
+            );
+            match registered {
+                Ok(uris_json) => {
+                    let uris: Vec<String> = serde_json::from_str(&uris_json).unwrap_or_default();
+                    uris.iter().any(|u| u == &form.redirect_uri)
+                }
+                Err(_) => false,
             }
-            Err(_) => false,
-        }
-    } else {
-        false
-    };
+        } else {
+            false
+        };
 
     if !redirect_ok {
         return (
             StatusCode::BAD_REQUEST,
             Html("Invalid client_id or redirect_uri does not match registered URIs.".to_string()),
         )
-        .into_response();
+            .into_response();
     }
 
     // Denial must never create an authorization code. The redirect was already
@@ -1496,18 +1490,17 @@ fn resolve_approval_bot(
 ) -> Result<i64, (StatusCode, String)> {
     let tool_text = match (tool, tool_custom) {
         // A specific known tool chosen from the pick-list.
-        (Some(id), _)
-            if !id.trim().is_empty() && id.trim() != CUSTOM_TOOL_OPTION =>
-        {
-            id.clone()
-        }
+        (Some(id), _) if !id.trim().is_empty() && id.trim() != CUSTOM_TOOL_OPTION => id.clone(),
         // "Custom tool…" chosen — the free-text name is required.
-        (Some(id), Some(name))
-            if id.trim() == CUSTOM_TOOL_OPTION && !name.trim().is_empty() =>
-        {
+        (Some(id), Some(name)) if id.trim() == CUSTOM_TOOL_OPTION && !name.trim().is_empty() => {
             name.clone()
         }
-        _ => return Err((StatusCode::BAD_REQUEST, "Pick which tool is connecting".into())),
+        _ => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "Pick which tool is connecting".into(),
+            ));
+        }
     };
     let (tool_id, display_name) = match resolve_tool(&tool_text) {
         Ok(v) => v,
@@ -1599,7 +1592,9 @@ async fn device_authorization(
             })),
         )
             .into_response();
-        if retry > 0 && let Ok(v) = retry.to_string().parse() {
+        if retry > 0
+            && let Ok(v) = retry.to_string().parse()
+        {
             resp.headers_mut().insert("retry-after", v);
         }
         return resp;
@@ -1676,11 +1671,19 @@ async fn device_authorization(
         }
     };
 
-    let resource = match requested_resource(req.resource.as_deref(), &mcp_resource(&state, &headers)) {
-        Ok(resource) => resource,
-        Err(reason) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "invalid_target", "error_description": reason}))).into_response(),
-    };
-
+    let resource =
+        match requested_resource(req.resource.as_deref(), &mcp_resource(&state, &headers)) {
+            Ok(resource) => resource,
+            Err(reason) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(
+                        serde_json::json!({"error": "invalid_target", "error_description": reason}),
+                    ),
+                )
+                    .into_response();
+            }
+        };
 
     // High-entropy device code — return raw once, store only its hash.
     let device_code = format!("{}{}", uuid_v4(), uuid_v4()).replace('-', "");
@@ -1698,17 +1701,16 @@ async fn device_authorization(
         warn!(%error, "failed to clean up expired OAuth device codes");
         return (StatusCode::SERVICE_UNAVAILABLE, "database cleanup error").into_response();
     }
-    let device_count: i64 = match conn.query_row(
-        "SELECT COUNT(*) FROM oauth_device_codes",
-        [],
-        |row| row.get(0),
-    ) {
-        Ok(count) => count,
-        Err(error) => {
-            warn!(%error, "failed to inspect OAuth device-code storage");
-            return (StatusCode::SERVICE_UNAVAILABLE, "database error").into_response();
-        }
-    };
+    let device_count: i64 =
+        match conn.query_row("SELECT COUNT(*) FROM oauth_device_codes", [], |row| {
+            row.get(0)
+        }) {
+            Ok(count) => count,
+            Err(error) => {
+                warn!(%error, "failed to inspect OAuth device-code storage");
+                return (StatusCode::SERVICE_UNAVAILABLE, "database error").into_response();
+            }
+        };
     if device_count >= MAX_DEVICE_CODE_ROWS {
         warn!("OAuth device-code storage limit reached");
         return (
@@ -2171,10 +2173,17 @@ async fn token_exchange(
     axum::Form(req): axum::Form<TokenRequest>,
 ) -> Response {
     if req.grant_type == DEVICE_CODE_GRANT {
-        let resource = match requested_resource(req.resource.as_deref(), &mcp_resource(&state, &headers)) {
-            Ok(resource) => resource,
-            Err(reason) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "invalid_target", "error_description": reason}))).into_response(),
-        };
+        let resource =
+            match requested_resource(req.resource.as_deref(), &mcp_resource(&state, &headers)) {
+                Ok(resource) => resource,
+                Err(reason) => return (
+                    StatusCode::BAD_REQUEST,
+                    Json(
+                        serde_json::json!({"error": "invalid_target", "error_description": reason}),
+                    ),
+                )
+                    .into_response(),
+            };
         return device_token_exchange(&state, &req, &resource);
     }
     if req.grant_type != "authorization_code" {
@@ -2201,10 +2210,19 @@ async fn token_exchange(
             .into_response();
     };
 
-    let resource = match requested_resource(req.resource.as_deref(), &mcp_resource(&state, &headers)) {
-        Ok(resource) => resource,
-        Err(reason) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "invalid_target", "error_description": reason}))).into_response(),
-    };
+    let resource =
+        match requested_resource(req.resource.as_deref(), &mcp_resource(&state, &headers)) {
+            Ok(resource) => resource,
+            Err(reason) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(
+                        serde_json::json!({"error": "invalid_target", "error_description": reason}),
+                    ),
+                )
+                    .into_response();
+            }
+        };
 
     // The whole exchange is one transaction: read the code, validate it, check
     // that the identity it names may still authenticate, burn it, and insert
@@ -2415,7 +2433,11 @@ async fn token_exchange(
 /// `expired_token`) or, on approval, mints and returns an access token.
 fn device_token_exchange(state: &OAuthState, req: &TokenRequest, resource: &str) -> Response {
     let Some(device_code) = req.device_code.as_deref().filter(|c| !c.is_empty()) else {
-        return device_error(StatusCode::BAD_REQUEST, "invalid_request", Some("missing device_code"));
+        return device_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            Some("missing device_code"),
+        );
     };
     let device_code_hash = sha256_hex(device_code.as_bytes());
 
@@ -2485,7 +2507,11 @@ fn device_token_exchange(state: &OAuthState, req: &TokenRequest, resource: &str)
     };
 
     if row.resource.as_deref() != Some(resource) {
-        return device_error(StatusCode::BAD_REQUEST, "invalid_grant", Some("resource mismatch"));
+        return device_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_grant",
+            Some("resource mismatch"),
+        );
     }
 
     let now = chrono::Utc::now();
@@ -2706,12 +2732,10 @@ async fn revoke_token(
         .map(|s| s.trim().to_string());
 
     let is_authenticated = match &caller_token {
-        Some(t) if t.starts_with("lific_sess_") => {
-            match state.db.read() {
-                Ok(conn) => crate::db::queries::users::validate_session(&conn, t).is_ok(),
-                Err(_) => false,
-            }
-        }
+        Some(t) if t.starts_with("lific_sess_") => match state.db.read() {
+            Ok(conn) => crate::db::queries::users::validate_session(&conn, t).is_ok(),
+            Err(_) => false,
+        },
         Some(t) if t.starts_with("lific_at_") => authenticate_oauth_token(&state.db, t).is_some(),
         // LIF-208: default-deny unknown bearer shapes. The previous
         // `Some(_) => true` treated *any* other string (including arbitrary
@@ -2803,7 +2827,10 @@ mod resource_tests {
     #[test]
     fn resource_indicator_is_exact_and_rejects_malformed_or_other_targets() {
         let expected = "https://example.com/mcp";
-        assert_eq!(requested_resource(Some(expected), expected).unwrap(), expected);
+        assert_eq!(
+            requested_resource(Some(expected), expected).unwrap(),
+            expected
+        );
         assert!(requested_resource(Some("https://example.com/other"), expected).is_err());
         assert!(requested_resource(Some("https://example.com/mcp?x=1"), expected).is_err());
         assert!(requested_resource(Some("not a URL"), expected).is_err());
@@ -2815,7 +2842,10 @@ mod resource_tests {
             "client_id=abc&resource=https%3A%2F%2Fexample.com%2Fmcp&resource=https%3A%2F%2Fexample.com%2Fmcp",
             "resource"
         ));
-        assert!(!query_has_duplicate("client_id=abc&resource=https%3A%2F%2Fexample.com%2Fmcp", "resource"));
+        assert!(!query_has_duplicate(
+            "client_id=abc&resource=https%3A%2F%2Fexample.com%2Fmcp",
+            "resource"
+        ));
     }
 
     #[test]
@@ -2825,12 +2855,7 @@ mod resource_tests {
         headers.insert("host", "localhost:3456".parse().unwrap());
 
         assert_eq!(
-            mcp_resource_for_request(
-                "http://127.0.0.1:3456",
-                false,
-                &allowed_hosts,
-                &headers,
-            ),
+            mcp_resource_for_request("http://127.0.0.1:3456", false, &allowed_hosts, &headers,),
             "http://localhost:3456/mcp"
         );
     }
@@ -2856,7 +2881,10 @@ mod resource_tests {
             )
             .unwrap();
 
-        assert!(resolve_oauth_credential_for_resource(&db, token, Some("https://example.com/mcp")).is_ok());
+        assert!(
+            resolve_oauth_credential_for_resource(&db, token, Some("https://example.com/mcp"))
+                .is_ok()
+        );
         assert!(matches!(
             resolve_oauth_credential_for_resource(&db, token, Some("https://other.example/mcp")),
             Err(OAuthReject::Invalid)
@@ -3017,14 +3045,22 @@ pub(crate) fn resolve_oauth_credential_for_resource(
     let Some(bound_user_id) = row.bound_user_id else {
         return Ok(OAuthCredential::LegacyUnbound);
     };
-    let (Some(user_id), Some(username), Some(display_name), Some(is_admin), Some(is_active), Some(is_bot)) = (
+    let (
+        Some(user_id),
+        Some(username),
+        Some(display_name),
+        Some(is_admin),
+        Some(is_active),
+        Some(is_bot),
+    ) = (
         row.user_id,
         row.username,
         row.display_name,
         row.is_admin,
         row.is_active,
         row.is_bot,
-    ) else {
+    )
+    else {
         return Err(OAuthReject::DeadBinding);
     };
     debug_assert_eq!(user_id, bound_user_id);
@@ -3217,7 +3253,9 @@ mod tests {
     }
 
     fn test_code_challenge() -> String {
-        base64_url_encode(&Sha256::digest(b"test_verifier_abcdefghijklmnopqrstuvwxyz_0123456789"))
+        base64_url_encode(&Sha256::digest(
+            b"test_verifier_abcdefghijklmnopqrstuvwxyz_0123456789",
+        ))
     }
 
     // ── Authorization approval validates tokens ─────────────
@@ -3264,8 +3302,15 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = String::from_utf8(resp.into_body().collect().await.unwrap().to_bytes().to_vec())
-            .unwrap();
+        let body = String::from_utf8(
+            resp.into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes()
+                .to_vec(),
+        )
+        .unwrap();
         assert!(body.contains("Test Client"));
         assert!(body.contains("MCP issue-tracker access"));
         assert!(body.contains("http://localhost/callback"));
@@ -3298,8 +3343,15 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-        let body = String::from_utf8(resp.into_body().collect().await.unwrap().to_bytes().to_vec())
-            .unwrap();
+        let body = String::from_utf8(
+            resp.into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes()
+                .to_vec(),
+        )
+        .unwrap();
         assert!(
             body.contains("/#/login"),
             "signed-out consent must link to sign-in: {body}"
@@ -3331,7 +3383,11 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "resource={resource}");
+            assert_eq!(
+                response.status(),
+                StatusCode::BAD_REQUEST,
+                "resource={resource}"
+            );
         }
     }
 
@@ -3346,7 +3402,12 @@ mod tests {
         );
         let resp = app
             .clone()
-            .oneshot(Request::builder().uri(bad_scope).body(axum::body::Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri(bad_scope)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
@@ -3355,7 +3416,12 @@ mod tests {
             "/oauth/authorize?client_id=unknown&redirect_uri=http%3A%2F%2Flocalhost%2Fcallback&response_type=code&scope=mcp&code_challenge={challenge}&code_challenge_method=S256"
         );
         let resp = app
-            .oneshot(Request::builder().uri(unknown).body(axum::body::Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri(unknown)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
@@ -3430,7 +3496,10 @@ mod tests {
         if !resp.status().is_redirection() {
             let status = resp.status();
             let body = resp.into_body().collect().await.unwrap().to_bytes();
-            panic!("deny status={status}, body={}", String::from_utf8_lossy(&body));
+            panic!(
+                "deny status={status}, body={}",
+                String::from_utf8_lossy(&body)
+            );
         }
         let location = resp.headers().get("location").unwrap().to_str().unwrap();
         assert!(location.starts_with("http://localhost/callback?error=access_denied"));
@@ -3488,7 +3557,12 @@ mod tests {
             urlencoding::encode("http://localhost/callback")
         );
         let resp = app
-            .oneshot(Request::builder().uri(uri).body(axum::body::Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
@@ -3708,7 +3782,10 @@ mod tests {
     #[test]
     fn csrf_rejects_tampered_and_malformed_signatures() {
         let t = generate_csrf_token("sess");
-        assert!(validate_csrf_token(&t, "sess"), "honest token must validate");
+        assert!(
+            validate_csrf_token(&t, "sess"),
+            "honest token must validate"
+        );
 
         let (ts, sig) = t.split_once('.').unwrap();
 
@@ -4085,11 +4162,7 @@ mod tests {
     // public_url is never overridden, and forwarded headers are ignored.
 
     /// GET a metadata path and parse the JSON body.
-    async fn get_metadata(
-        app: &Router,
-        path: &str,
-        headers: &[(&str, &str)],
-    ) -> serde_json::Value {
+    async fn get_metadata(app: &Router, path: &str, headers: &[(&str, &str)]) -> serde_json::Value {
         let mut builder = Request::builder().uri(path);
         for (name, value) in headers {
             builder = builder.header(*name, *value);
@@ -4115,10 +4188,7 @@ mod tests {
         )
         .await;
         assert_eq!(val["issuer"], "http://localhost:3456");
-        assert_eq!(
-            val["token_endpoint"],
-            "http://localhost:3456/oauth/token"
-        );
+        assert_eq!(val["token_endpoint"], "http://localhost:3456/oauth/token");
 
         let val = get_metadata(
             &app,
@@ -4865,11 +4935,13 @@ mod tests {
             )
         };
 
-        assert!(approve(app.clone())
-            .await
-            .unwrap()
-            .status()
-            .is_redirection());
+        assert!(
+            approve(app.clone())
+                .await
+                .unwrap()
+                .status()
+                .is_redirection()
+        );
         let first_id: i64 = {
             let conn = db.read().unwrap();
             conn.query_row(
@@ -4880,11 +4952,13 @@ mod tests {
             .unwrap()
         };
         // Re-approval of the same tool+owner must reuse the same bot.
-        assert!(approve(app.clone())
-            .await
-            .unwrap()
-            .status()
-            .is_redirection());
+        assert!(
+            approve(app.clone())
+                .await
+                .unwrap()
+                .status()
+                .is_redirection()
+        );
         let second_id: i64 = {
             let conn = db.read().unwrap();
             conn.query_row(
@@ -5203,7 +5277,10 @@ mod tests {
             client_name.unwrap_or("Test Device Client"),
         )
         .await;
-        let body = format!("scope=mcp&client_id={}&resource=https%3A%2F%2Fexample.com%2Fmcp", urlencoding::encode(&client_id));
+        let body = format!(
+            "scope=mcp&client_id={}&resource=https%3A%2F%2Fexample.com%2Fmcp",
+            urlencoding::encode(&client_id)
+        );
         let resp = app
             .clone()
             .oneshot(
@@ -5222,10 +5299,7 @@ mod tests {
     }
 
     /// POST the device grant to /oauth/token and return (status, json).
-    async fn poll_device_token(
-        app: &Router,
-        device_code: &str,
-    ) -> (StatusCode, serde_json::Value) {
+    async fn poll_device_token(app: &Router, device_code: &str) -> (StatusCode, serde_json::Value) {
         let body = format!(
             "grant_type={}&device_code={}&resource=https%3A%2F%2Fexample.com%2Fmcp",
             urlencoding::encode("urn:ietf:params:oauth:grant-type:device_code"),
@@ -5506,7 +5580,12 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK, "approval should succeed");
         let confirmation_page = String::from_utf8(
-            resp.into_body().collect().await.unwrap().to_bytes().to_vec(),
+            resp.into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes()
+                .to_vec(),
         )
         .unwrap();
         let status: String = db
@@ -5927,7 +6006,10 @@ mod tests {
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         let html = String::from_utf8_lossy(&bytes);
         // Normalized + uppercased + dash-inserted into the input value.
-        assert!(html.contains("value=\"BCDF-GHJK\""), "prefill missing: {html}");
+        assert!(
+            html.contains("value=\"BCDF-GHJK\""),
+            "prefill missing: {html}"
+        );
     }
 
     /// Approval is two steps now, and the confirmation page is the one that
