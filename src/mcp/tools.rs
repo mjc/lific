@@ -2201,6 +2201,10 @@ impl LificMcp {
     }
 
     fn bulk_update_inner(&self, input: BulkUpdateInput) -> Result<String, String> {
+        if input.set_status.is_none() && input.set_priority.is_none() && input.set_module.is_none()
+        {
+            return Err("at least one set_* field is required".into());
+        }
         let conn = self.read_conn()?;
         let pid = resolve_project(&conn, &input.project)?;
         // Authz: mirror update_issue — project-scoped Maintainer gate.
@@ -5631,6 +5635,31 @@ mod tests {
     }
 
     // ── bulk_update (LIF-24) ──
+
+    #[test]
+    fn bulk_update_requires_a_field_to_set() {
+        let (m, _guard) = mcp();
+        let _ag = first_admin_guard();
+        seed_project(&m, "Bulk", "BLK");
+        seed_issue(&m, "BLK", "Untouched");
+
+        let result = m.bulk_update(Parameters(BulkUpdateInput {
+            project: "BLK".into(),
+            ..Default::default()
+        }));
+
+        assert!(
+            result.contains("at least one set_* field is required"),
+            "{result}"
+        );
+        assert!(
+            m.get_issue(Parameters(GetIssueInput {
+                identifier: "BLK-1".into(),
+                ..Default::default()
+            }))
+            .contains("Status: backlog")
+        );
+    }
 
     #[test]
     fn bulk_update_sets_status_on_module_matches_only() {

@@ -349,6 +349,7 @@ pub struct AddCommentInput {
         description = "Issue ID (e.g. LIF-1), project page ID (e.g. LIF-DOC-1), or workspace page ID (e.g. DOC-1)"
     )]
     pub identifier: String,
+    #[serde(alias = "body")]
     #[schemars(description = "Comment content (markdown)")]
     pub content: String,
 }
@@ -534,7 +535,8 @@ mod tests {
     #[test]
     fn add_comment_accepts_legacy_issue_parameter() {
         let input: AddCommentInput =
-            serde_json::from_str(r#"{"issue":"LIF-42","content":"hello"}"#).unwrap();
+            serde_json::from_str(r#"{"issue":"LIF-42","body":"hello"}"#).unwrap();
         assert_eq!(input.identifier, "LIF-42");
+        assert_eq!(input.content, "hello");
     }
 }
