@@ -1517,6 +1517,8 @@ mod tests {
                 db: db.clone(),
                 manager: manager.clone(),
                 public_url: "https://example.com".into(),
+                issuer_is_explicit: true,
+                allowed_hosts: std::sync::Arc::from(Vec::<String>::new()),
                 required: true,
             };
             // `with_client_ip_test_layers` supplies the peer and trusted-proxy

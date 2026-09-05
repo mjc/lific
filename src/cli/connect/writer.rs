@@ -18,7 +18,7 @@ use super::clients::{CompiledEntry, Format};
 
 /// What a write did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Action {
+pub(super) enum Action {
     /// The file did not exist and was created.
     Created,
     /// The file existed and Lific's entry was inserted or replaced in place.
@@ -36,25 +36,35 @@ impl Action {
 
 /// The result of a successful compile-to-text step (used by `--dry-run`, which
 /// renders the *whole* file that would be written without touching disk).
-pub struct Rendered {
-    pub contents: String,
-    pub action: Action,
+pub(super) struct Rendered {
+    pub(super) contents: String,
+    pub(super) action: Action,
 }
 
 /// Error from a writer that a caller should surface as a per-client failure
 /// (and keep going with the other clients).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum WriteFailureStage {
+    /// The target path still contains its original contents.
+    BeforePublish,
+    /// The target was replaced, but a later durability step failed.
+    AfterPublish,
+}
+
 #[derive(Debug)]
-pub struct WriteError {
-    pub message: String,
+pub(super) struct WriteError {
+    pub(super) message: String,
+    pub(super) stage: WriteFailureStage,
     /// A snippet the user can paste to merge manually, when we refused to touch
     /// an unparseable file.
-    pub manual_snippet: Option<String>,
+    pub(super) manual_snippet: Option<String>,
 }
 
 impl WriteError {
     fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
+            stage: WriteFailureStage::BeforePublish,
             manual_snippet: None,
         }
     }
@@ -62,8 +72,14 @@ impl WriteError {
     fn with_snippet(message: impl Into<String>, snippet: impl Into<String>) -> Self {
         Self {
             message: message.into(),
+            stage: WriteFailureStage::BeforePublish,
             manual_snippet: Some(snippet.into()),
         }
+    }
+
+    fn after_publish(mut self) -> Self {
+        self.stage = WriteFailureStage::AfterPublish;
+        self
     }
 }
 
@@ -78,7 +94,11 @@ impl std::error::Error for WriteError {}
 /// Render the full file contents that *would* be written for `entry` merged
 /// into whatever currently exists at `path`, without writing anything. Used by
 /// both `--dry-run` and the real write path (which then just writes the result).
-pub fn render(path: &Path, format: Format, entry: &CompiledEntry) -> Result<Rendered, WriteError> {
+pub(super) fn render(
+    path: &Path,
+    format: Format,
+    entry: &CompiledEntry,
+) -> Result<Rendered, WriteError> {
     render_from(read_existing(path)?.as_ref(), format, entry)
 }
 
@@ -107,7 +127,11 @@ fn render_from(
 
 /// Merge `entry` into the config at `path` and write it back, creating parent
 /// directories as needed. Returns whether the file was created or updated.
-pub fn write(path: &Path, format: Format, entry: &CompiledEntry) -> Result<Action, WriteError> {
+pub(super) fn write(
+    path: &Path,
+    format: Format,
+    entry: &CompiledEntry,
+) -> Result<Action, WriteError> {
     let existing = read_existing(path)?;
     let rendered = render_from(existing.as_ref(), format, entry)?;
     let parent_existed = path.parent().is_none_or(|parent| parent.exists());
@@ -171,7 +195,7 @@ pub fn write(path: &Path, format: Format, entry: &CompiledEntry) -> Result<Actio
         .map_err(|e| WriteError::new(format!("failed to sync {}: {e}", path.display())))?;
     std::fs::rename(&tmp, path)
         .map_err(|e| WriteError::new(format!("failed to finalize {}: {e}", path.display())))?;
-    sync_parent_dir(parent)?;
+    sync_parent_dir(parent).map_err(WriteError::after_publish)?;
     Ok(rendered.action)
 }
 
@@ -600,7 +624,7 @@ mod tests {
         let guard = tmp();
         let dir = guard.path().join("proj");
         let path = dir.join("opencode.json");
-        let entry = find_client("opencode").unwrap().compile(&remote());
+        let entry = find_client("opencode").unwrap().compile(&remote()).unwrap();
         let action = write(&path, Format::Json, &entry).unwrap();
         assert_eq!(action, Action::Created);
 
@@ -617,7 +641,7 @@ mod tests {
         let guard = tmp();
         let dir = guard.path().join("proj");
         let path = dir.join("opencode.json");
-        let entry = find_client("opencode").unwrap().compile(&remote());
+        let entry = find_client("opencode").unwrap().compile(&remote()).unwrap();
         write(&path, Format::Json, &entry).unwrap();
         assert_eq!(
             std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
@@ -642,7 +666,7 @@ mod tests {
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         let path = dir.join("opencode.json");
-        let entry = find_client("opencode").unwrap().compile(&remote());
+        let entry = find_client("opencode").unwrap().compile(&remote()).unwrap();
         write(&path, Format::Json, &entry).unwrap();
 
         assert_eq!(
@@ -670,7 +694,7 @@ mod tests {
         )
         .unwrap();
 
-        let entry = find_client("opencode").unwrap().compile(&remote());
+        let entry = find_client("opencode").unwrap().compile(&remote()).unwrap();
         let action = write(&path, Format::Json, &entry).unwrap();
         assert_eq!(action, Action::Updated);
 
@@ -699,7 +723,7 @@ mod tests {
         )
         .unwrap();
 
-        let entry = find_client("opencode").unwrap().compile(&remote());
+        let entry = find_client("opencode").unwrap().compile(&remote()).unwrap();
         write(&path, Format::Json, &entry).unwrap();
 
         let v: serde_json::Value =
@@ -720,7 +744,7 @@ mod tests {
         let original = "{\n  // my config\n  \"mcp\": {}\n}\n";
         std::fs::write(&path, original).unwrap();
 
-        let entry = find_client("opencode").unwrap().compile(&remote());
+        let entry = find_client("opencode").unwrap().compile(&remote()).unwrap();
         let err = write(&path, Format::Json, &entry).unwrap_err();
         assert!(err.manual_snippet.is_some(), "must hand back a snippet");
         let snippet = err.manual_snippet.unwrap();
@@ -739,7 +763,7 @@ mod tests {
             "# Codex config\nmodel = \"gpt-5\"\n\n[mcp_servers.other]\nurl = \"http://other\"\n";
         std::fs::write(&path, original).unwrap();
 
-        let entry = find_client("codex").unwrap().compile(&remote());
+        let entry = find_client("codex").unwrap().compile(&remote()).unwrap();
         let action = write(&path, Format::Toml, &entry).unwrap();
         assert_eq!(action, Action::Updated);
 
@@ -785,7 +809,7 @@ mod tests {
         let guard = tmp();
         let dir = guard.path().join("proj");
         let path = dir.join("config.toml");
-        let entry = find_client("codex").unwrap().compile(&remote());
+        let entry = find_client("codex").unwrap().compile(&remote()).unwrap();
         let action = write(&path, Format::Toml, &entry).unwrap();
         assert_eq!(action, Action::Created);
         let doc: toml_edit::DocumentMut = std::fs::read_to_string(&path).unwrap().parse().unwrap();
@@ -803,7 +827,7 @@ mod tests {
         let path = dir.join("config.toml");
         let original = "this is = = not valid toml [[[\n";
         std::fs::write(&path, original).unwrap();
-        let entry = find_client("codex").unwrap().compile(&remote());
+        let entry = find_client("codex").unwrap().compile(&remote()).unwrap();
         let err = write(&path, Format::Toml, &entry).unwrap_err();
         assert!(err.manual_snippet.is_some());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
@@ -821,7 +845,7 @@ mod tests {
         )
         .unwrap();
 
-        let entry = find_client("goose").unwrap().compile(&remote());
+        let entry = find_client("goose").unwrap().compile(&remote()).unwrap();
         let action = write(&path, Format::Yaml, &entry).unwrap();
         assert_eq!(action, Action::Updated);
 
@@ -863,7 +887,7 @@ mod tests {
         let path = dir.join("opencode.json");
         symlink(&target, &path).unwrap();
 
-        let entry = find_client("opencode").unwrap().compile(&remote());
+        let entry = find_client("opencode").unwrap().compile(&remote()).unwrap();
         let err = write(&path, Format::Json, &entry).unwrap_err();
         assert!(err.to_string().contains("symlink"), "{err}");
 
@@ -904,7 +928,7 @@ mod tests {
         let missing = dir.join("nowhere.json");
         symlink(&missing, &path).unwrap();
 
-        let entry = find_client("opencode").unwrap().compile(&remote());
+        let entry = find_client("opencode").unwrap().compile(&remote()).unwrap();
         assert!(write(&path, Format::Json, &entry).is_err());
         assert!(!missing.exists(), "must not materialize the link's target");
     }
@@ -921,7 +945,7 @@ mod tests {
         std::fs::write(&path, "model = \"gpt-5\"\n").unwrap();
         std::fs::hard_link(&path, dir.join("config.toml.bak")).unwrap();
 
-        let entry = find_client("codex").unwrap().compile(&remote());
+        let entry = find_client("codex").unwrap().compile(&remote()).unwrap();
         let err = write(&path, Format::Toml, &entry).unwrap_err();
         assert!(err.to_string().contains("hard-linked"), "{err}");
         assert_eq!(
@@ -937,7 +961,7 @@ mod tests {
     fn update_preserves_the_mode_of_the_file_it_read() {
         use std::os::unix::fs::PermissionsExt;
 
-        let entry = find_client("codex").unwrap().compile(&remote());
+        let entry = find_client("codex").unwrap().compile(&remote()).unwrap();
         for mode in [0o600, 0o640, 0o644] {
             let guard = tmp();
             let dir = guard.path().join("proj");
@@ -965,7 +989,7 @@ mod tests {
         let guard = tmp();
         let dir = guard.path().join("proj");
         let path = dir.join("opencode.json");
-        let entry = find_client("opencode").unwrap().compile(&remote());
+        let entry = find_client("opencode").unwrap().compile(&remote()).unwrap();
         let rendered = render(&path, Format::Json, &entry).unwrap();
         assert_eq!(rendered.action, Action::Created);
         assert!(rendered.contents.contains("lific"));

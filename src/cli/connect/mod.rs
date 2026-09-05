@@ -131,9 +131,6 @@ pub struct ConnectResult {
     pub key_origin: Option<KeyOrigin>,
     pub agents_md: Option<AgentsMdOutcome>,
     pub dry_run: bool,
-    pub stdio: bool,
-    /// True when this run wrote header-less OAuth configs (`--oauth`).
-    pub oauth: bool,
     pub url: String,
     /// The resolved transport (LIFIC-19), so interactive and flag runs report
     /// the same choice.
@@ -371,17 +368,18 @@ pub fn resolve_transport_inner(
     stdin_tty: bool,
     picker: impl FnOnce() -> Result<TransportMode, String>,
 ) -> Result<TransportMode, String> {
-    if stdio {
-        return Ok(TransportMode::Stdio);
-    }
-    if oauth {
-        return Ok(TransportMode::Oauth);
-    }
-    if stdin_tty {
-        picker()
-    } else {
+    match (stdio, oauth, stdin_tty) {
+        (true, true, _) => Err(
+            "--oauth and --stdio are mutually exclusive: --oauth writes a header-less remote \
+             config for the client's native MCP OAuth flow, while --stdio writes a local spawn \
+             with no network auth at all."
+                .into(),
+        ),
+        (true, false, _) => Ok(TransportMode::Stdio),
+        (false, true, _) => Ok(TransportMode::Oauth),
+        (false, false, true) => picker(),
         // No transport flag and not interactive → remote, the standing default.
-        Ok(TransportMode::Remote)
+        (false, false, false) => Ok(TransportMode::Remote),
     }
 }
 
@@ -432,22 +430,77 @@ impl TransportMode {
 
 /// How this run mints per-tool keys, resolved once up front (owner selection is
 /// a run-wide decision) and then applied per selected client.
-#[derive(Debug)]
 enum KeySource {
     /// `--key <k>`: use this verbatim for every client, mint nothing.
     Provided(String),
-    /// Humans exist: mint a bot `{tool}-{owner}` owned by `owner_id` per tool.
-    Bot { owner_id: i64 },
-    /// Fresh install (zero humans): mint a plain unassigned key named `{tool}`.
-    FreshInstall,
+    /// Mint a per-tool key with the run-wide owner decision and key manager.
+    Generated {
+        owner: OwnerChoice,
+        manager: api_keys_simplified::ApiKeyManagerV0,
+    },
+}
+
+impl std::fmt::Debug for KeySource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Provided(_) => f.debug_tuple("Provided").field(&"<redacted>").finish(),
+            Self::Generated { owner, .. } => f
+                .debug_struct("Generated")
+                .field("owner", owner)
+                .finish_non_exhaustive(),
+        }
+    }
+}
+
+enum ToolCredential {
+    Provided(String),
+    Pending {
+        value: String,
+        provisional_name: String,
+        final_name: String,
+    },
+}
+
+impl ToolCredential {
+    fn value(&self) -> &str {
+        match self {
+            Self::Provided(value) | Self::Pending { value, .. } => value,
+        }
+    }
+
+    fn promote(&self, pool: &DbPool) -> Result<(), crate::error::LificError> {
+        match self {
+            Self::Provided(_) => Ok(()),
+            Self::Pending {
+                provisional_name,
+                final_name,
+                ..
+            } => crate::auth::promote_api_key(pool, provisional_name, final_name),
+        }
+    }
+
+    fn revoke_pending(&self, pool: &DbPool) {
+        if let Self::Pending {
+            provisional_name, ..
+        } = self
+        {
+            let _ = crate::auth::revoke_api_key(pool, provisional_name);
+        }
+    }
 }
 
 impl KeySource {
     fn origin(&self) -> KeyOrigin {
         match self {
             KeySource::Provided(_) => KeyOrigin::Provided,
-            KeySource::Bot { .. } => KeyOrigin::Bot,
-            KeySource::FreshInstall => KeyOrigin::Unassigned,
+            KeySource::Generated {
+                owner: OwnerChoice::User(_),
+                ..
+            } => KeyOrigin::Bot,
+            KeySource::Generated {
+                owner: OwnerChoice::FreshInstall,
+                ..
+            } => KeyOrigin::Unassigned,
         }
     }
 }
@@ -459,31 +512,32 @@ fn resolve_key_source(args: &ConnectArgs, pool: &DbPool) -> Result<KeySource, St
     if let Some(k) = &args.key {
         return Ok(KeySource::Provided(k.clone()));
     }
-    match choose_owner(pool, args.user.as_deref())? {
-        OwnerChoice::User(owner_id) => Ok(KeySource::Bot { owner_id }),
-        OwnerChoice::FreshInstall => Ok(KeySource::FreshInstall),
-    }
+    let owner = choose_owner(pool, args.user.as_deref())?;
+    let manager = crate::auth::create_key_manager()
+        .map_err(|error| format!("key manager init failed: {error}"))?;
+    Ok(KeySource::Generated { owner, manager })
 }
 
-/// Mint (or rotate) the key for one specific tool under `source`.
+/// Resolve the credential for one specific tool under `source`.
 ///
 /// - **Bot:** find-or-create the bot `{tool}-{owner}` (web-UI convention), with
-///   the tool's display name, mint-or-rotate a key named after the bot, and
-///   assign the key to the bot. The bot's `owner_id` points at the human, so
-///   authz resolves bot → owner (src/authz.rs).
-/// - **FreshInstall:** mint-or-rotate a plain unassigned key named just `{tool}`.
+///   the tool's display name, mint a pending key assigned to the bot, then
+///   promote it after the config is published. The bot's `owner_id` points at
+///   the human, so authz resolves bot → owner (src/authz.rs).
+/// - **FreshInstall:** mint a pending, unassigned key named for the tool.
 /// - **Provided:** the verbatim `--key` (no DB writes).
-///
-/// Returns the plaintext key for that tool.
-fn mint_for_tool(
+fn credential_for_tool(
     source: &KeySource,
     spec: &ClientSpec,
     pool: &DbPool,
-    manager: &api_keys_simplified::ApiKeyManagerV0,
-) -> Result<String, String> {
-    match source {
-        KeySource::Provided(k) => Ok(k.clone()),
-        KeySource::Bot { owner_id } => {
+) -> Result<ToolCredential, String> {
+    let (owner, manager) = match source {
+        KeySource::Provided(value) => return Ok(ToolCredential::Provided(value.clone())),
+        KeySource::Generated { owner, manager } => (owner, manager),
+    };
+
+    let (final_name, user_id) = match owner {
+        OwnerChoice::User(owner_id) => {
             // Bot username = `{tool}-{owner.username}`, matching the web UI's
             // Connected Tools (src/api/auth.rs create_bot) so a CLI-connected
             // bot is indistinguishable from a web-connected one.
@@ -500,47 +554,29 @@ fn mint_for_tool(
                     .map_err(|e| e.to_string())?
                     .id
             };
-            // LIF-391: the key is bound to the bot as it is minted, never
-            // created unbound and patched afterwards.
-            mint_or_rotate(pool, manager, &bot_username, Some(bot_id))
+            (bot_username, Some(bot_id))
         }
-        KeySource::FreshInstall => {
+        OwnerChoice::FreshInstall => {
             // Zero human users: enforcement can't be on (needs an admin to
             // enable), so a plain unassigned key behaves like `lific start`'s
             // first-run default key. Named just `{tool}` — per-tool attribution
             // in the key name even without a human owner.
-            mint_or_rotate(pool, manager, spec.id, None)
+            (spec.id.to_string(), None)
         }
-    }
-}
-
-/// Create a key named `name`, or — if an active key with that name already
-/// exists (a previous `connect` run) — rotate it instead so re-running
-/// `connect` (e.g. to add another client later) always succeeds with a fresh
-/// plaintext. `user_id` is the owner the key is bound to; `None` mints an
-/// unbound key and, on the rotate path, preserves any existing binding.
-fn mint_or_rotate(
-    pool: &DbPool,
-    manager: &api_keys_simplified::ApiKeyManagerV0,
-    name: &str,
-    user_id: Option<i64>,
-) -> Result<String, String> {
-    let active_exists = {
-        let conn = pool.read().map_err(|e| e.to_string())?;
-        conn.query_row(
-            "SELECT COUNT(*) > 0 FROM api_keys WHERE name = ?1 AND revoked = 0",
-            rusqlite::params![name],
-            |row| row.get::<_, bool>(0),
-        )
-        .unwrap_or(false)
     };
-    if active_exists {
-        crate::auth::rotate_api_key_bound(pool, manager, name, user_id).map_err(|e| e.to_string())
-    } else {
-        crate::auth::create_api_key(pool, manager, name, user_id).map_err(|e| e.to_string())
-    }
+    let provisional_name = format!("{final_name}-pending-{:016x}", rand::random::<u64>());
+    // LIF-391: the key is bound to the bot as it is minted, never created
+    // unbound and patched afterwards.
+    let value = crate::auth::create_api_key(pool, manager, &provisional_name, user_id)
+        .map_err(|error| error.to_string())?;
+    Ok(ToolCredential::Pending {
+        value,
+        provisional_name,
+        final_name,
+    })
 }
 
+#[derive(Debug)]
 enum OwnerChoice {
     User(i64),
     FreshInstall,
@@ -590,16 +626,8 @@ pub fn run(
     pool: &DbPool,
     base: &PathBase,
 ) -> Result<ConnectResult, String> {
-    // Flag conflicts: --oauth mints nothing and writes header-less config, so a
-    // stdio transport or an explicit key make no sense together with it.
-    if args.oauth && args.stdio {
-        return Err(
-            "--oauth and --stdio are mutually exclusive: --oauth writes a header-less remote \
-             config for the client's native OAuth flow, while --stdio writes a local spawn with \
-             no network auth at all."
-                .into(),
-        );
-    }
+    // OAuth mints nothing and writes header-less config, so an explicit key
+    // contradicts it. Transport flag conflicts are resolved below.
     if args.oauth && args.key.is_some() {
         return Err(
             "--oauth and --key are mutually exclusive: --oauth writes no key (the client \
@@ -643,8 +671,8 @@ pub fn run(
     // for stdio the key becomes the `LIFIC_TOKEN` written into the client's
     // env field. `--oauth` mints nothing, and dry-run is skipped so a preview
     // never touches the DB.
-    let needs_minting = !args.oauth && !args.dry_run;
-    let key_source = if needs_minting {
+    let needs_credentials = !args.oauth && !args.dry_run;
+    let key_source = if needs_credentials {
         // For stdio (LIFIC-18), a bot+key is optional: if the owner can't be
         // resolved unambiguously (no --user on a multi-user box), degrade to a
         // plain operator stdio config rather than aborting the run — a stdio
@@ -671,24 +699,7 @@ pub fn run(
     };
     let key_origin = key_source.as_ref().map(|s| s.origin());
 
-    let manager = if needs_minting {
-        Some(
-            crate::auth::create_key_manager()
-                .map_err(|e| format!("key manager init failed: {e}"))?,
-        )
-    } else {
-        None
-    };
-
-    let outcomes = write_all_clients(
-        &selected,
-        &args,
-        cfg,
-        pool,
-        base,
-        key_source.as_ref(),
-        manager.as_ref(),
-    );
+    let outcomes = write_all_clients(&selected, &args, cfg, pool, base, key_source.as_ref());
 
     // AGENTS.md (LIF-251).
     let agents_md = maybe_write_agents_md(&args, base, stdin_tty)?;
@@ -705,8 +716,6 @@ pub fn run(
         key_origin,
         agents_md,
         dry_run: args.dry_run,
-        stdio: args.stdio,
-        oauth: args.oauth,
         url,
         transport,
     })
@@ -722,7 +731,6 @@ fn write_all_clients(
     pool: &DbPool,
     base: &PathBase,
     key_source: Option<&KeySource>,
-    manager: Option<&api_keys_simplified::ApiKeyManagerV0>,
 ) -> Vec<ClientOutcome> {
     let mut outcomes = Vec::new();
     for id in selected {
@@ -764,10 +772,30 @@ fn write_all_clients(
             continue;
         };
 
-        // Mint this client's own key (per-tool). Only when a real remote write
-        // with minting is happening; stdio/oauth/dry-run supply their own.
-        let this_key = match (key_source, manager) {
-            (Some(source), Some(mgr)) => match mint_for_tool(source, &spec, pool, mgr) {
+        // An agent-bound stdio connection must preserve its identity. Reject
+        // unsupported client schemas before minting a bot or key so a skipped
+        // config leaves no credential side effects behind.
+        if args.stdio
+            && key_source.is_some()
+            && let Err(error) = spec.stdio_identity_env_key()
+        {
+            outcomes.push(ClientOutcome {
+                id: id.clone(),
+                display: spec.display.to_string(),
+                format: spec.format.as_str().to_string(),
+                path: Some(path),
+                error: Some(format!("{error}; skipped")),
+                ..Default::default()
+            });
+            continue;
+        }
+
+        // Mint this client's own key (per-tool) for every generated config
+        // credential; the provisional name is promoted after the durable write.
+        let credential = match key_source {
+            // Any generated credential embedded in a config uses the same
+            // publish-then-promote lifecycle, regardless of transport.
+            Some(source) => match credential_for_tool(source, &spec, pool) {
                 Ok(k) => Some(k),
                 Err(e) => {
                     // Minting failed for this tool — record and keep going.
@@ -782,21 +810,39 @@ fn write_all_clients(
                     continue;
                 }
             },
-            // Dry-run placeholder (Provided) with no manager, or provided --key.
-            _ => match key_source {
-                Some(KeySource::Provided(k)) => Some(k.clone()),
-                _ => None,
-            },
+            None => None,
         };
 
-        let server = build_server_config(args, cfg, this_key.as_deref().unwrap_or(""));
-        let entry = spec.compile(&server);
+        let server = build_server_config(
+            args,
+            cfg,
+            credential.as_ref().map_or("", ToolCredential::value),
+        );
+        let entry = match spec.compile(&server) {
+            Ok(entry) => entry,
+            Err(error) => {
+                if let Some(credential) = credential.as_ref() {
+                    credential.revoke_pending(pool);
+                }
+                outcomes.push(ClientOutcome {
+                    id: id.clone(),
+                    display: spec.display.to_string(),
+                    format: spec.format.as_str().to_string(),
+                    path: Some(path),
+                    error: Some(error),
+                    ..Default::default()
+                });
+                continue;
+            }
+        };
 
         // The per-client key we surface: none for stdio/oauth (no header key).
         let out_key = if args.stdio || args.oauth {
             None
         } else {
-            this_key.clone()
+            credential
+                .as_ref()
+                .map(|credential| credential.value().to_owned())
         };
         let auth_hint = if args.oauth {
             match spec.oauth {
@@ -834,27 +880,55 @@ fn write_all_clients(
             }
         } else {
             match writer::write(&path, spec.format, &entry) {
-                Ok(action) => outcomes.push(ClientOutcome {
-                    id: id.clone(),
-                    display: spec.display.to_string(),
-                    format: spec.format.as_str().to_string(),
-                    path: Some(path),
-                    action: Some(action.as_str().to_string()),
-                    notes: entry.notes.clone(),
-                    key: out_key,
-                    auth_hint,
-                    ..Default::default()
-                }),
-                Err(e) => outcomes.push(ClientOutcome {
-                    id: id.clone(),
-                    display: spec.display.to_string(),
-                    format: spec.format.as_str().to_string(),
-                    path: Some(path),
-                    notes: entry.notes.clone(),
-                    error: Some(e.message.clone()),
-                    manual_snippet: e.manual_snippet,
-                    ..Default::default()
-                }),
+                Ok(action) => {
+                    if let Some(credential) = credential.as_ref()
+                        && let Err(error) = credential.promote(pool)
+                    {
+                        outcomes.push(ClientOutcome {
+                            id: id.clone(),
+                            display: spec.display.to_string(),
+                            format: spec.format.as_str().to_string(),
+                            path: Some(path),
+                            notes: entry.notes.clone(),
+                            error: Some(format!(
+                                "config was written, but credential promotion failed: {error}"
+                            )),
+                            ..Default::default()
+                        });
+                    } else {
+                        outcomes.push(ClientOutcome {
+                            id: id.clone(),
+                            display: spec.display.to_string(),
+                            format: spec.format.as_str().to_string(),
+                            path: Some(path),
+                            action: Some(action.as_str().to_string()),
+                            notes: entry.notes.clone(),
+                            key: out_key,
+                            auth_hint,
+                            ..Default::default()
+                        });
+                    }
+                }
+                Err(e) => {
+                    match e.stage {
+                        writer::WriteFailureStage::BeforePublish => {
+                            if let Some(credential) = credential.as_ref() {
+                                credential.revoke_pending(pool);
+                            }
+                        }
+                        writer::WriteFailureStage::AfterPublish => {}
+                    }
+                    outcomes.push(ClientOutcome {
+                        id: id.clone(),
+                        display: spec.display.to_string(),
+                        format: spec.format.as_str().to_string(),
+                        path: Some(path),
+                        notes: entry.notes.clone(),
+                        error: Some(e.message.clone()),
+                        manual_snippet: e.manual_snippet,
+                        ..Default::default()
+                    });
+                }
             }
         }
     }
@@ -948,8 +1022,8 @@ fn print_json(result: &ConnectResult) {
         // Top-level key is always null now — keys live per-client above.
         "key": serde_json::Value::Null,
         "dry_run": result.dry_run,
-        "stdio": result.stdio,
-        "oauth": result.oauth,
+        "stdio": result.transport == TransportMode::Stdio,
+        "oauth": result.transport == TransportMode::Oauth,
         "transport": result.transport.as_str(),
         "url": result.url,
         "agents_md": result.agents_md.as_ref().map(|a| serde_json::json!({
@@ -1223,6 +1297,12 @@ mod tests {
     }
 
     #[test]
+    fn transport_flags_reject_conflicting_modes() {
+        let error = resolve_transport_inner(true, true, false, no_transport_picker).unwrap_err();
+        assert!(error.contains("--oauth") && error.contains("--stdio"));
+    }
+
+    #[test]
     fn transport_non_tty_no_flag_defaults_to_remote() {
         // The historical non-interactive default. No picker, no menu.
         assert_eq!(
@@ -1425,6 +1505,97 @@ mod tests {
             .unwrap();
         assert!(is_bot, "opencode-solo must be a bot");
         assert_eq!(owner, Some(owner_id), "bot must be owned by the operator");
+    }
+
+    fn assert_write_failure_keeps_existing_key_and_cleans_provisional(transport: TransportMode) {
+        let guard = tmp();
+        let dir = guard.path();
+        let b = base(dir);
+        let pool = db::open_memory().unwrap();
+        let owner_id = seed_user(&pool, "solo", true);
+        let bot_id = {
+            let conn = pool.write().unwrap();
+            crate::db::queries::users::ensure_bot(&conn, owner_id, "opencode", "OpenCode")
+                .unwrap()
+                .id
+        };
+        let manager = crate::auth::create_key_manager().unwrap();
+        let old_key =
+            crate::auth::create_api_key(&pool, &manager, "opencode-solo", Some(bot_id)).unwrap();
+        std::fs::create_dir_all(&b.project).unwrap();
+        std::fs::write(b.project.join("opencode.json"), "not json").unwrap();
+
+        let mut cfg = Config::default();
+        cfg.database.path = dir.join("mydb.db");
+        let mut a = args(&["opencode"], Scope::Project);
+        a.stdio = match transport {
+            TransportMode::Stdio => true,
+            TransportMode::Remote => false,
+            TransportMode::Oauth => panic!("OAuth does not mint a credential"),
+        };
+        a.key = None;
+
+        let result = run(&a, &cfg, &pool, &b).unwrap();
+        assert!(result.outcomes[0].error.is_some());
+        assert!(
+            crate::auth::resolve_api_key_user(&pool, &manager, &old_key).is_ok(),
+            "a failed config write must not revoke the previously published key"
+        );
+        let conn = pool.read().unwrap();
+        let provisional_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM api_keys WHERE name LIKE 'opencode-solo-pending-%' AND revoked = 0",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(provisional_count, 0);
+    }
+
+    #[test]
+    fn run_stdio_write_failure_keeps_existing_key_and_cleans_provisional() {
+        assert_write_failure_keeps_existing_key_and_cleans_provisional(TransportMode::Stdio);
+    }
+
+    #[test]
+    fn run_remote_write_failure_keeps_existing_key_and_cleans_provisional() {
+        assert_write_failure_keeps_existing_key_and_cleans_provisional(TransportMode::Remote);
+    }
+
+    #[test]
+    fn run_stdio_rejects_missing_identity_carrier_before_minting() {
+        let guard = tmp();
+        let dir = guard.path();
+        let b = base(dir);
+        let pool = db::open_memory().unwrap();
+        seed_user(&pool, "solo", true);
+        let mut cfg = Config::default();
+        cfg.database.path = dir.join("mydb.db");
+        let mut a = args(&["cursor"], Scope::Global);
+        a.stdio = true;
+        a.key = None;
+
+        let result = run(&a, &cfg, &pool, &b).unwrap();
+        let outcome = &result.outcomes[0];
+        assert!(
+            outcome
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("cannot carry LIFIC_TOKEN")),
+            "missing identity carrier must be explicit: {:?}",
+            outcome.error
+        );
+        assert!(!b.home.join(".cursor/mcp.json").exists());
+
+        let conn = pool.read().unwrap();
+        let bot_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM users WHERE username = 'cursor-solo'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(bot_count, 0, "a skipped client must not mint an identity");
     }
 
     #[test]
@@ -1705,7 +1876,7 @@ mod tests {
         let a = args(&["opencode"], Scope::Global); // provides --key
         match resolve_key_source(&a, &pool).unwrap() {
             KeySource::Provided(k) => assert_eq!(k, "lific_sk-live-TESTKEY"),
-            _ => panic!("expected Provided"),
+            KeySource::Generated { .. } => panic!("expected Provided"),
         }
     }
 
@@ -2055,7 +2226,7 @@ mod tests {
         a.oauth = true;
 
         let result = run(&a, &cfg, &pool, &b).unwrap();
-        assert!(result.oauth);
+        assert_eq!(result.transport, TransportMode::Oauth);
 
         let oc = result.outcomes.iter().find(|o| o.id == "opencode").unwrap();
         assert_eq!(oc.action.as_deref(), Some("created"));

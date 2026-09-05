@@ -2,7 +2,7 @@ use std::{net::SocketAddr, sync::Arc};
 
 use axum::{
     Router,
-    extract::{ConnectInfo, DefaultBodyLimit, Json, Query, State},
+    extract::{ConnectInfo, DefaultBodyLimit, Json, Query, RawQuery, State},
     http::{HeaderMap, StatusCode},
     response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
@@ -93,6 +93,7 @@ struct AuthorizationRequest<'a> {
     code_challenge: Option<&'a str>,
     code_challenge_method: Option<&'a str>,
     scope: Option<&'a str>,
+    resource: &'a str,
 }
 
 impl AuthorizationRequest<'_> {
@@ -107,6 +108,7 @@ impl AuthorizationRequest<'_> {
             self.code_challenge,
             self.code_challenge_method,
             self.scope,
+            Some(self.resource),
         ] {
             let value = value.unwrap_or_default();
             binding.push_str(&value.len().to_string());
@@ -206,9 +208,14 @@ pub struct OAuthState {
 /// are unauthenticated endpoints, and trusting forwarded headers here would
 /// let any direct client control the advertised authorization/token endpoint
 /// URLs (issuer spoofing).
-fn effective_issuer(state: &OAuthState, headers: &HeaderMap) -> String {
-    if state.issuer_is_explicit {
-        return state.issuer.clone();
+fn effective_issuer_for_request(
+    issuer: &str,
+    issuer_is_explicit: bool,
+    allowed_hosts: &[String],
+    headers: &HeaderMap,
+) -> String {
+    if issuer_is_explicit {
+        return issuer.to_string();
     }
     let Some(host_header) = headers
         .get(axum::http::header::HOST)
@@ -216,12 +223,10 @@ fn effective_issuer(state: &OAuthState, headers: &HeaderMap) -> String {
         .map(str::trim)
         .filter(|h| !h.is_empty())
     else {
-        return state.issuer.clone();
+        return issuer.to_string();
     };
     match crate::links::parse_http_authority(host_header) {
-        Some(authority)
-            if crate::links::authority_is_allowlisted(&authority, &state.allowed_hosts) =>
-        {
+        Some(authority) if crate::links::authority_is_allowlisted(&authority, allowed_hosts) => {
             // Allowlisted hosts are loopback names (a proxy host only enters
             // the allowlist via public_url, which makes the issuer explicit),
             // so plain http matches what the client dialed.
@@ -230,14 +235,94 @@ fn effective_issuer(state: &OAuthState, headers: &HeaderMap) -> String {
         Some(_) => {
             warn!(
                 host = %host_header,
-                issuer = %state.issuer,
+                issuer = %issuer,
                 "request Host does not match the advertised OAuth issuer; \
                  set server.public_url for proxied deployments"
             );
-            state.issuer.clone()
+            issuer.to_string()
         }
-        None => state.issuer.clone(),
+        None => issuer.to_string(),
     }
+}
+
+fn effective_issuer(state: &OAuthState, headers: &HeaderMap) -> String {
+    effective_issuer_for_request(
+        &state.issuer,
+        state.issuer_is_explicit,
+        &state.allowed_hosts,
+        headers,
+    )
+}
+
+pub(crate) fn mcp_resource_for_request(
+    issuer: &str,
+    issuer_is_explicit: bool,
+    allowed_hosts: &[String],
+    headers: &HeaderMap,
+) -> String {
+    let issuer = effective_issuer_for_request(issuer, issuer_is_explicit, allowed_hosts, headers);
+    let mut url = reqwest::Url::parse(&issuer).expect("OAuth issuer must be an absolute URL");
+    let path = url.path().trim_end_matches('/');
+    url.set_path(&format!("{path}/mcp"));
+    url.set_query(None);
+    url.set_fragment(None);
+    url.to_string()
+}
+
+pub(crate) fn protected_resource_metadata_url_for_request(
+    issuer: &str,
+    issuer_is_explicit: bool,
+    allowed_hosts: &[String],
+    headers: &HeaderMap,
+) -> String {
+    let issuer = effective_issuer_for_request(issuer, issuer_is_explicit, allowed_hosts, headers);
+    format!("{issuer}/.well-known/oauth-protected-resource/mcp")
+}
+
+/// Canonical protected resource URI for this Lific instance. MCP's OAuth
+/// resource indicator is the MCP endpoint itself, not the issuer origin.
+pub(crate) fn mcp_resource(state: &OAuthState, headers: &HeaderMap) -> String {
+    mcp_resource_for_request(
+        &state.issuer,
+        state.issuer_is_explicit,
+        &state.allowed_hosts,
+        headers,
+    )
+}
+
+fn requested_resource(resource: Option<&str>, expected: &str) -> Result<String, &'static str> {
+    let resource = resource.ok_or("missing resource")?;
+    let parsed = reqwest::Url::parse(resource).map_err(|_| "resource must be an absolute URL")?;
+    if !matches!(parsed.scheme(), "http" | "https")
+        || parsed.host_str().is_none()
+        || parsed.username() != ""
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err(
+            "resource must be an absolute HTTP(S) URL without credentials, query, or fragment",
+        );
+    }
+    let canonical = parsed.to_string();
+    if canonical != expected {
+        return Err("resource does not identify this MCP server");
+    }
+    Ok(canonical)
+}
+
+fn query_has_duplicate(query: &str, name: &str) -> bool {
+    query
+        .split('&')
+        .filter_map(|pair| pair.split_once('=').map(|(key, _)| key))
+        .filter_map(|key| {
+            urlencoding::decode(&key.replace('+', " "))
+                .ok()
+                .map(std::borrow::Cow::into_owned)
+        })
+        .filter(|key| key == name)
+        .count()
+        > 1
 }
 
 /// Validate a redirect URI submitted to dynamic client registration.
@@ -337,7 +422,7 @@ async fn protected_resource_metadata(
     // metadata advertises a different resource (e.g. the bare origin). Returning
     // the bare issuer here is what surfaced as "Authorization with the MCP server
     // failed" on claude.ai web even though the token exchange succeeded.
-    let resource = format!("{}/mcp", issuer.trim_end_matches('/'));
+    let resource = mcp_resource(&state, &headers);
     Json(serde_json::json!({
         "resource": resource,
         "authorization_servers": [issuer],
@@ -662,6 +747,7 @@ struct AuthorizeParams {
     code_challenge: Option<String>,
     code_challenge_method: Option<String>,
     scope: Option<String>,
+    resource: Option<String>,
 }
 
 /// Validate the authorization request shape before rendering consent or
@@ -682,8 +768,19 @@ fn valid_authorize_request(
 async fn authorize_page(
     State(oauth): State<OAuthState>,
     headers: HeaderMap,
+    RawQuery(raw_query): RawQuery,
     Query(params): Query<AuthorizeParams>,
 ) -> Response {
+    if raw_query
+        .as_deref()
+        .is_some_and(|query| query_has_duplicate(query, "resource"))
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Html("<h1>Invalid resource</h1><p>resource must occur exactly once</p>".to_string()),
+        )
+            .into_response();
+    }
     if let Err(reason) = validate_redirect_uri(&params.redirect_uri) {
         return (
             StatusCode::BAD_REQUEST,
@@ -692,6 +789,17 @@ async fn authorize_page(
             .into_response();
     }
     let requested_scope = params.scope.as_deref().unwrap_or_default();
+    let resource =
+        match requested_resource(params.resource.as_deref(), &mcp_resource(&oauth, &headers)) {
+            Ok(resource) => resource,
+            Err(reason) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Html(format!("<h1>Invalid resource</h1><p>{reason}</p>")),
+                )
+                    .into_response();
+            }
+        };
     if !valid_authorize_request(
         &params.response_type,
         params.scope.as_deref(),
@@ -754,6 +862,7 @@ async fn authorize_page(
         code_challenge: params.code_challenge.as_deref(),
         code_challenge_method: params.code_challenge_method.as_deref(),
         scope: params.scope.as_deref(),
+        resource: &resource,
     };
     let csrf_token = request.csrf_token(&session);
     // Consent must name the account that would be granting access, so this
@@ -818,6 +927,7 @@ async fn authorize_page(
         <input type="hidden" name="code_challenge" value="{code_challenge}">
         <input type="hidden" name="code_challenge_method" value="{code_challenge_method}">
         <input type="hidden" name="scope" value="{scope}">
+        <input type="hidden" name="resource" value="{resource}">
         <input type="hidden" name="csrf_token" value="{csrf_token}">
         {tool_pick_list}
         <button type="submit" name="decision" value="approve">Approve</button>
@@ -834,6 +944,7 @@ async fn authorize_page(
         code_challenge_method =
             html_escape(params.code_challenge_method.as_deref().unwrap_or("S256")),
         scope = html_escape(requested_scope),
+        resource = html_escape(&resource),
         csrf_token = html_escape(&csrf_token),
         token_lifetime = ACCESS_TOKEN_LIFETIME_LABEL,
         approving_identity = html_escape(&approving_identity),
@@ -855,6 +966,7 @@ struct ApproveForm {
     code_challenge: Option<String>,
     code_challenge_method: Option<String>,
     scope: Option<String>,
+    resource: String,
     csrf_token: Option<String>,
     /// LIFIC-13: which tool is connecting — a Connected Tools registry id, or
     /// empty meaning `tool_custom` holds a free-text name.
@@ -1006,6 +1118,17 @@ async fn authorize_approve(
             .into_response();
     }
 
+    let resource = match requested_resource(Some(&form.resource), &mcp_resource(&oauth, &headers)) {
+        Ok(resource) => resource,
+        Err(reason) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Html(format!("<h1>Invalid resource</h1><p>{reason}</p>")),
+            )
+                .into_response();
+        }
+    };
+
     let decision = match ConsentDecision::parse(form.decision.as_deref()) {
         Some(decision) => decision,
         None => return invalid_decision_page(),
@@ -1027,6 +1150,7 @@ async fn authorize_approve(
         code_challenge: form.code_challenge.as_deref(),
         code_challenge_method: form.code_challenge_method.as_deref(),
         scope: form.scope.as_deref(),
+        resource: &resource,
     };
     match &form.csrf_token {
         Some(token) if request.validates_csrf_token(token, &credential) => {}
@@ -1152,8 +1276,8 @@ async fn authorize_approve(
     };
 
     if let Err(e) = tx.execute(
-        "INSERT INTO oauth_codes (code, client_id, redirect_uri, code_challenge, code_challenge_method, expires_at, scope, user_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO oauth_codes (code, client_id, redirect_uri, code_challenge, code_challenge_method, expires_at, scope, user_id, resource)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![
             code,
             form.client_id,
@@ -1163,6 +1287,7 @@ async fn authorize_approve(
             expires.to_rfc3339(),
             scope,
             bot_id,
+            resource,
         ],
     ) {
         tracing::error!(error = %e, "failed to store OAuth authorization code");
@@ -1439,6 +1564,7 @@ struct DeviceAuthRequest {
     /// scopes instead of silently upgrading the request.
     #[serde(default)]
     scope: Option<String>,
+    resource: Option<String>,
 }
 
 /// `POST /oauth/device_authorization` (RFC 8628 §3.1/§3.2). Accepts form OR
@@ -1483,12 +1609,14 @@ async fn device_authorization(
         serde_json::from_slice(&body).unwrap_or(DeviceAuthRequest {
             client_id: None,
             scope: None,
+            resource: None,
         })
     } else {
         // application/x-www-form-urlencoded (default)
         serde_urlencoded::from_bytes(&body).unwrap_or(DeviceAuthRequest {
             client_id: None,
             scope: None,
+            resource: None,
         })
     };
 
@@ -1543,6 +1671,20 @@ async fn device_authorization(
         }
     };
 
+    let resource =
+        match requested_resource(req.resource.as_deref(), &mcp_resource(&state, &headers)) {
+            Ok(resource) => resource,
+            Err(reason) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(
+                        serde_json::json!({"error": "invalid_target", "error_description": reason}),
+                    ),
+                )
+                    .into_response();
+            }
+        };
+
     // High-entropy device code — return raw once, store only its hash.
     let device_code = format!("{}{}", uuid_v4(), uuid_v4()).replace('-', "");
     let device_code_hash = sha256_hex(device_code.as_bytes());
@@ -1584,8 +1726,8 @@ async fn device_authorization(
     for _ in 0..5 {
         let res = conn.execute(
             "INSERT INTO oauth_device_codes
-                (device_code_hash, user_code, client_name, expires_at, interval_seconds, status, scope, client_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?7)",
+                (device_code_hash, user_code, client_name, expires_at, interval_seconds, status, scope, client_id, resource)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?7, ?8)",
             params![
                 device_code_hash,
                 user_code,
@@ -1594,6 +1736,7 @@ async fn device_authorization(
                 DEVICE_CODE_INTERVAL,
                 OAUTH_SCOPE,
                 client_id,
+                resource,
             ],
         );
         match res {
@@ -2013,6 +2156,7 @@ struct TokenRequest {
     /// RFC 8628 device grant: the opaque device_code returned by
     /// /oauth/device_authorization.
     device_code: Option<String>,
+    resource: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -2025,10 +2169,22 @@ struct TokenResponse {
 
 async fn token_exchange(
     State(state): State<OAuthState>,
+    headers: HeaderMap,
     axum::Form(req): axum::Form<TokenRequest>,
 ) -> Response {
     if req.grant_type == DEVICE_CODE_GRANT {
-        return device_token_exchange(&state, &req);
+        let resource =
+            match requested_resource(req.resource.as_deref(), &mcp_resource(&state, &headers)) {
+                Ok(resource) => resource,
+                Err(reason) => return (
+                    StatusCode::BAD_REQUEST,
+                    Json(
+                        serde_json::json!({"error": "invalid_target", "error_description": reason}),
+                    ),
+                )
+                    .into_response(),
+            };
+        return device_token_exchange(&state, &req, &resource);
     }
     if req.grant_type != "authorization_code" {
         return (
@@ -2053,6 +2209,20 @@ async fn token_exchange(
         )
             .into_response();
     };
+
+    let resource =
+        match requested_resource(req.resource.as_deref(), &mcp_resource(&state, &headers)) {
+            Ok(resource) => resource,
+            Err(reason) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(
+                        serde_json::json!({"error": "invalid_target", "error_description": reason}),
+                    ),
+                )
+                    .into_response();
+            }
+        };
 
     // The whole exchange is one transaction: read the code, validate it, check
     // that the identity it names may still authenticate, burn it, and insert
@@ -2081,13 +2251,14 @@ async fn token_exchange(
         used: i64,
         scope: String,
         user_id: Option<i64>,
+        resource: Option<String>,
     }
 
     let code_row: Result<AuthCodeRow, _> = conn.query_row(
         // `datetime(expires_at)` for the same reason as the device codes: the
         // column holds RFC 3339, and raw text comparison against
         // `datetime('now')` mis-orders it within the same day.
-        "SELECT client_id, redirect_uri, code_challenge, code_challenge_method, used, scope, user_id \
+        "SELECT client_id, redirect_uri, code_challenge, code_challenge_method, used, scope, user_id, resource \
          FROM oauth_codes WHERE code = ?1 AND datetime(expires_at) > datetime('now')",
         params![code],
         |row| {
@@ -2099,6 +2270,7 @@ async fn token_exchange(
                 used: row.get(4)?,
                 scope: row.get(5)?,
                 user_id: row.get(6)?,
+                resource: row.get(7)?,
             })
         },
     );
@@ -2111,6 +2283,7 @@ async fn token_exchange(
         used,
         scope,
         user_id: code_user_id,
+        resource: code_resource,
     } = match code_row {
         Ok(row) => row,
         Err(_) => {
@@ -2121,6 +2294,14 @@ async fn token_exchange(
                 .into_response();
         }
     };
+
+    if code_resource.as_deref() != Some(resource.as_str()) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "invalid_grant", "error_description": "resource mismatch"})),
+        )
+            .into_response();
+    }
 
     if used != 0 {
         return (
@@ -2223,8 +2404,8 @@ async fn token_exchange(
     let expires_at = chrono::Utc::now() + chrono::Duration::seconds(expires_in as i64);
 
     if let Err(e) = conn.execute(
-        "INSERT INTO oauth_tokens (access_token, client_id, expires_at, scope, user_id) VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![token_hash, stored_client_id, expires_at.to_rfc3339(), scope, code_user_id],
+        "INSERT INTO oauth_tokens (access_token, client_id, expires_at, scope, user_id, resource) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![token_hash, stored_client_id, expires_at.to_rfc3339(), scope, code_user_id, resource],
     ) {
         tracing::error!(error = %e, "failed to store OAuth token");
         return (StatusCode::INTERNAL_SERVER_ERROR, "database error").into_response();
@@ -2250,7 +2431,7 @@ async fn token_exchange(
 /// hash, enforces the polling interval (`slow_down`), and returns the
 /// per-status error (`authorization_pending` / `access_denied` /
 /// `expired_token`) or, on approval, mints and returns an access token.
-fn device_token_exchange(state: &OAuthState, req: &TokenRequest) -> Response {
+fn device_token_exchange(state: &OAuthState, req: &TokenRequest, resource: &str) -> Response {
     let Some(device_code) = req.device_code.as_deref().filter(|c| !c.is_empty()) else {
         return device_error(
             StatusCode::BAD_REQUEST,
@@ -2298,10 +2479,11 @@ fn device_token_exchange(state: &OAuthState, req: &TokenRequest) -> Response {
         expires_at: String,
         interval_seconds: i64,
         last_polled_at: Option<String>,
+        resource: Option<String>,
     }
 
     let row: Result<DeviceRow, _> = conn.query_row(
-        "SELECT client_id, status, user_id, scope, expires_at, interval_seconds, last_polled_at
+        "SELECT client_id, status, user_id, scope, expires_at, interval_seconds, last_polled_at, resource
          FROM oauth_device_codes WHERE device_code_hash = ?1",
         params![device_code_hash],
         |r| {
@@ -2313,6 +2495,7 @@ fn device_token_exchange(state: &OAuthState, req: &TokenRequest) -> Response {
                 expires_at: r.get(4)?,
                 interval_seconds: r.get(5)?,
                 last_polled_at: r.get(6)?,
+                resource: r.get(7)?,
             })
         },
     );
@@ -2322,6 +2505,14 @@ fn device_token_exchange(state: &OAuthState, req: &TokenRequest) -> Response {
         // Unknown device_code → invalid_grant per RFC 8628 §3.5.
         Err(_) => return device_error(StatusCode::BAD_REQUEST, "invalid_grant", None),
     };
+
+    if row.resource.as_deref() != Some(resource) {
+        return device_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_grant",
+            Some("resource mismatch"),
+        );
+    }
 
     let now = chrono::Utc::now();
 
@@ -2449,14 +2640,15 @@ fn device_token_exchange(state: &OAuthState, req: &TokenRequest) -> Response {
             let tx = conn;
 
             if let Err(e) = tx.execute(
-                "INSERT INTO oauth_tokens (access_token, client_id, expires_at, scope, user_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                "INSERT INTO oauth_tokens (access_token, client_id, expires_at, scope, user_id, resource)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![
                     token_hash,
                     client_id,
                     expires_at.to_rfc3339(),
                     scope,
-                    approved_user_id
+                    approved_user_id,
+                    resource
                 ],
             ) {
                 tracing::error!(error = %e, "failed to store device OAuth token");
@@ -2628,6 +2820,78 @@ mod pkce_tests {
     }
 }
 
+#[cfg(test)]
+mod resource_tests {
+    use super::*;
+
+    #[test]
+    fn resource_indicator_is_exact_and_rejects_malformed_or_other_targets() {
+        let expected = "https://example.com/mcp";
+        assert_eq!(
+            requested_resource(Some(expected), expected).unwrap(),
+            expected
+        );
+        assert!(requested_resource(Some("https://example.com/other"), expected).is_err());
+        assert!(requested_resource(Some("https://example.com/mcp?x=1"), expected).is_err());
+        assert!(requested_resource(Some("not a URL"), expected).is_err());
+    }
+
+    #[test]
+    fn duplicate_resource_parameters_are_rejected() {
+        assert!(query_has_duplicate(
+            "client_id=abc&resource=https%3A%2F%2Fexample.com%2Fmcp&resource=https%3A%2F%2Fexample.com%2Fmcp",
+            "resource"
+        ));
+        assert!(!query_has_duplicate(
+            "client_id=abc&resource=https%3A%2F%2Fexample.com%2Fmcp",
+            "resource"
+        ));
+    }
+
+    #[test]
+    fn token_resource_uses_the_same_implicit_host_as_discovery() {
+        let allowed_hosts = ["localhost".to_string(), "127.0.0.1".to_string()];
+        let mut headers = HeaderMap::new();
+        headers.insert("host", "localhost:3456".parse().unwrap());
+
+        assert_eq!(
+            mcp_resource_for_request("http://127.0.0.1:3456", false, &allowed_hosts, &headers,),
+            "http://localhost:3456/mcp"
+        );
+    }
+
+    #[test]
+    fn token_audience_must_match_the_requested_mcp_resource() {
+        let db = crate::db::open_memory().expect("test db");
+        let token = "lific_at_resource-test";
+        let hash = sha256_hex(token.as_bytes());
+        let expires = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+        db.write()
+            .unwrap()
+            .execute(
+                "INSERT INTO oauth_clients (client_id, client_name, redirect_uris) VALUES ('resource-client', 'Test', '[\"http://localhost\"]')",
+                [],
+            )
+            .unwrap();
+        db.write()
+            .unwrap()
+            .execute(
+                "INSERT INTO oauth_tokens (access_token, client_id, expires_at, scope, resource) VALUES (?1, 'resource-client', ?2, 'mcp', ?3)",
+                params![hash, expires, "https://example.com/mcp"],
+            )
+            .unwrap();
+
+        assert!(
+            resolve_oauth_credential_for_resource(&db, token, Some("https://example.com/mcp"))
+                .is_ok()
+        );
+        assert!(matches!(
+            resolve_oauth_credential_for_resource(&db, token, Some("https://other.example/mcp")),
+            Err(OAuthReject::Invalid)
+        ));
+    }
+}
+
 /// Decode a lowercase/uppercase hex string into bytes. Returns `Err(())` on
 /// odd length or any non-hex digit. Used to parse a presented CSRF MAC before
 /// constant-time verification (LIF-208).
@@ -2714,6 +2978,16 @@ pub enum OAuthReject {
 /// binding, the bound user, and the bot owner's liveness in one joined query so
 /// revocation cannot land between those decisions.
 pub fn resolve_oauth_credential(db: &DbPool, token: &str) -> Result<OAuthCredential, OAuthReject> {
+    resolve_oauth_credential_for_resource(db, token, None)
+}
+
+/// Resolve an OAuth token and, when requested, require that it was issued for
+/// the exact protected resource being accessed (RFC 8707).
+pub(crate) fn resolve_oauth_credential_for_resource(
+    db: &DbPool,
+    token: &str,
+    resource: Option<&str>,
+) -> Result<OAuthCredential, OAuthReject> {
     if !token.starts_with("lific_at_") {
         return Err(OAuthReject::Invalid);
     }
@@ -2744,8 +3018,9 @@ pub fn resolve_oauth_credential(db: &DbPool, token: &str) -> Result<OAuthCredent
              LEFT JOIN users user ON user.id = token.user_id
              LEFT JOIN users owner ON owner.id = user.owner_id
              WHERE token.access_token = ?1 AND token.revoked = 0
-               AND datetime(token.expires_at) > datetime('now')",
-            params![token_hash],
+               AND datetime(token.expires_at) > datetime('now')
+               AND (?2 IS NULL OR token.resource = ?2)",
+            params![token_hash, resource],
             |row| {
                 Ok(CredentialRow {
                     bound_user_id: row.get(0)?,
@@ -2965,10 +3240,11 @@ mod tests {
             code_challenge: Some(&challenge),
             code_challenge_method: Some("S256"),
             scope: Some("mcp"),
+            resource: "https://example.com/mcp",
         };
         let csrf = request.csrf_token(binding);
         format!(
-            "client_id={}&redirect_uri={}&response_type=code&code_challenge={}&code_challenge_method=S256&scope=mcp&csrf_token={}&tool=claude-code&decision=approve",
+            "client_id={}&redirect_uri={}&response_type=code&code_challenge={}&code_challenge_method=S256&scope=mcp&resource=https%3A%2F%2Fexample.com%2Fmcp&csrf_token={}&tool=claude-code&decision=approve",
             client_id,
             urlencoding::encode(redirect_uri),
             urlencoding::encode(&challenge),
@@ -3011,7 +3287,7 @@ mod tests {
         let client_id = register_client_helper(&app, "http://localhost/callback").await;
         let challenge = test_code_challenge();
         let uri = format!(
-            "/oauth/authorize?client_id={client_id}&redirect_uri={}&response_type=code&scope=mcp&code_challenge={challenge}&code_challenge_method=S256",
+            "/oauth/authorize?client_id={client_id}&redirect_uri={}&response_type=code&scope=mcp&code_challenge={challenge}&code_challenge_method=S256&resource=https%3A%2F%2Fexample.com%2Fmcp",
             urlencoding::encode("http://localhost/callback"),
         );
         let resp = app
@@ -3053,7 +3329,7 @@ mod tests {
         let client_id = register_client_helper(&app, "http://localhost/callback").await;
         let challenge = test_code_challenge();
         let uri = format!(
-            "/oauth/authorize?client_id={client_id}&redirect_uri={}&response_type=code&scope=mcp&code_challenge={challenge}&code_challenge_method=S256",
+            "/oauth/authorize?client_id={client_id}&redirect_uri={}&response_type=code&scope=mcp&code_challenge={challenge}&code_challenge_method=S256&resource=https%3A%2F%2Fexample.com%2Fmcp",
             urlencoding::encode("http://localhost/callback"),
         );
         let resp = app
@@ -3080,6 +3356,39 @@ mod tests {
             body.contains("/#/login"),
             "signed-out consent must link to sign-in: {body}"
         );
+    }
+
+    #[tokio::test]
+    async fn authorize_requires_one_matching_resource_indicator() {
+        let (app, _db) = test_oauth_app();
+        let client_id = register_client_helper(&app, "http://localhost/callback").await;
+        let challenge = test_code_challenge();
+        let base = format!(
+            "/oauth/authorize?client_id={client_id}&redirect_uri={}&response_type=code&scope=mcp&code_challenge={challenge}&code_challenge_method=S256",
+            urlencoding::encode("http://localhost/callback")
+        );
+
+        for resource in [
+            "",
+            "&resource=https%3A%2F%2Fother.example%2Fmcp",
+            "&resource=https%3A%2F%2Fexample.com%2Fmcp&resource=https%3A%2F%2Fexample.com%2Fmcp",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("{base}{resource}"))
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::BAD_REQUEST,
+                "resource={resource}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -3164,10 +3473,11 @@ mod tests {
             code_challenge: Some(&challenge),
             code_challenge_method: Some("S256"),
             scope: Some("mcp"),
+            resource: "https://example.com/mcp",
         };
         let csrf = request.csrf_token(&session_token);
         let body = format!(
-            "client_id={client_id}&redirect_uri={}&response_type=code&scope=mcp&code_challenge={challenge}&code_challenge_method=S256&state=opaque-state&csrf_token={csrf}&decision=deny",
+            "client_id={client_id}&redirect_uri={}&response_type=code&scope=mcp&code_challenge={challenge}&code_challenge_method=S256&resource=https%3A%2F%2Fexample.com%2Fmcp&state=opaque-state&csrf_token={csrf}&decision=deny",
             urlencoding::encode("http://localhost/callback"),
         );
         let resp = app
@@ -3216,10 +3526,11 @@ mod tests {
             code_challenge: Some(&challenge),
             code_challenge_method: Some("S256"),
             scope: Some("mcp"),
+            resource: "https://example.com/mcp",
         };
         let csrf = request.csrf_token(&session_token);
         let body = format!(
-            "client_id={tampered_client}&redirect_uri={}&response_type=code&scope=mcp&code_challenge={challenge}&code_challenge_method=S256&csrf_token={csrf}&decision=approve",
+            "client_id={tampered_client}&redirect_uri={}&response_type=code&scope=mcp&code_challenge={challenge}&code_challenge_method=S256&resource=https%3A%2F%2Fexample.com%2Fmcp&csrf_token={csrf}&decision=approve",
             urlencoding::encode("http://localhost/tampered")
         );
         let resp = app
@@ -4345,7 +4656,7 @@ mod tests {
                     .header("content-type", "application/x-www-form-urlencoded")
                     .header("x-forwarded-for", "198.51.100.201")
                     .body(axum::body::Body::from(
-                        "scope=mcp&client_id=device-cap-client",
+                        "scope=mcp&client_id=device-cap-client&resource=https%3A%2F%2Fexample.com%2Fmcp",
                     ))
                     .unwrap(),
             )
@@ -4479,10 +4790,11 @@ mod tests {
             code_challenge: Some(&challenge),
             code_challenge_method: Some("S256"),
             scope: Some(OAUTH_SCOPE),
+            resource: "https://example.com/mcp",
         };
         let csrf = request.csrf_token(&session_token);
         let body = format!(
-            "client_id={}&redirect_uri={}&response_type=code&code_challenge={}&code_challenge_method=S256&scope=mcp&csrf_token={}&tool=claude-code&decision=approve",
+            "client_id={}&redirect_uri={}&response_type=code&code_challenge={}&code_challenge_method=S256&scope=mcp&resource=https%3A%2F%2Fexample.com%2Fmcp&csrf_token={}&tool=claude-code&decision=approve",
             client_id,
             urlencoding::encode("http://localhost/callback"),
             urlencoding::encode(&challenge),
@@ -4554,7 +4866,7 @@ mod tests {
 
         // Exchange the code; the issued token must carry the same identity.
         let token_body = format!(
-            "grant_type=authorization_code&code={}&redirect_uri={}&client_id={}&code_verifier={}",
+            "grant_type=authorization_code&code={}&redirect_uri={}&client_id={}&code_verifier={}&resource=https%3A%2F%2Fexample.com%2Fmcp",
             code,
             urlencoding::encode("http://localhost/callback"),
             client_id,
@@ -4602,10 +4914,11 @@ mod tests {
                 code_challenge: Some(&challenge),
                 code_challenge_method: Some("S256"),
                 scope: Some(OAUTH_SCOPE),
+                resource: "https://example.com/mcp",
             };
             let csrf = request.csrf_token(&session_token);
             let body = format!(
-                "client_id={}&redirect_uri={}&response_type=code&code_challenge={}&code_challenge_method=S256&scope=mcp&csrf_token={}&tool=opencode&decision=approve",
+                "client_id={}&redirect_uri={}&response_type=code&code_challenge={}&code_challenge_method=S256&scope=mcp&resource=https%3A%2F%2Fexample.com%2Fmcp&csrf_token={}&tool=opencode&decision=approve",
                 client_id,
                 urlencoding::encode("http://localhost/callback"),
                 urlencoding::encode(&challenge),
@@ -4719,7 +5032,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri(format!("/oauth/authorize?client_id={client_id}&redirect_uri={}&response_type=code&scope=mcp&code_challenge={challenge}&code_challenge_method=S256", urlencoding::encode("http://localhost/callback")))
+                    .uri(format!("/oauth/authorize?client_id={client_id}&redirect_uri={}&response_type=code&scope=mcp&code_challenge={challenge}&code_challenge_method=S256&resource=https%3A%2F%2Fexample.com%2Fmcp", urlencoding::encode("http://localhost/callback")))
                     .header("cookie", format!("lific_token={session_token}"))
                     .body(axum::body::Body::empty())
                     .unwrap(),
@@ -4762,7 +5075,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri(format!("/oauth/authorize?client_id={client_id}&redirect_uri={}&response_type=code&scope=mcp&code_challenge={challenge}&code_challenge_method=S256", urlencoding::encode("http://localhost/callback")))
+                    .uri(format!("/oauth/authorize?client_id={client_id}&redirect_uri={}&response_type=code&scope=mcp&code_challenge={challenge}&code_challenge_method=S256&resource=https%3A%2F%2Fexample.com%2Fmcp", urlencoding::encode("http://localhost/callback")))
                     .header("cookie", format!("lific_token={session_token}"))
                     .body(axum::body::Body::empty())
                     .unwrap(),
@@ -4797,11 +5110,12 @@ mod tests {
             code_challenge: Some(&challenge),
             code_challenge_method: Some("S256"),
             scope: Some(OAUTH_SCOPE),
+            resource: "https://example.com/mcp",
         };
         let csrf = request.csrf_token(&session_token);
         // No tool, no tool_custom → must be rejected, not silently attributed.
         let body = format!(
-            "client_id={}&redirect_uri={}&response_type=code&code_challenge={}&code_challenge_method=S256&scope=mcp&csrf_token={}&decision=approve",
+            "client_id={}&redirect_uri={}&response_type=code&code_challenge={}&code_challenge_method=S256&scope=mcp&resource=https%3A%2F%2Fexample.com%2Fmcp&csrf_token={}&decision=approve",
             client_id,
             urlencoding::encode("http://localhost/callback"),
             urlencoding::encode(&challenge),
@@ -4837,10 +5151,11 @@ mod tests {
             code_challenge: Some(&challenge),
             code_challenge_method: Some("S256"),
             scope: Some(OAUTH_SCOPE),
+            resource: "https://example.com/mcp",
         };
         let csrf = request.csrf_token(&session_token);
         let body = format!(
-            "client_id={}&redirect_uri={}&response_type=code&code_challenge={}&code_challenge_method=S256&scope=mcp&csrf_token={}&tool=__custom__&tool_custom=admin&decision=approve",
+            "client_id={}&redirect_uri={}&response_type=code&code_challenge={}&code_challenge_method=S256&scope=mcp&resource=https%3A%2F%2Fexample.com%2Fmcp&csrf_token={}&tool=__custom__&tool_custom=admin&decision=approve",
             client_id,
             urlencoding::encode("http://localhost/callback"),
             urlencoding::encode(&challenge),
@@ -4878,10 +5193,11 @@ mod tests {
             code_challenge: Some(&challenge),
             code_challenge_method: Some("S256"),
             scope: Some(OAUTH_SCOPE),
+            resource: "https://example.com/mcp",
         };
         let csrf = request.csrf_token(&session_token);
         let body = format!(
-            "client_id={}&redirect_uri={}&response_type=code&code_challenge={}&code_challenge_method=S256&scope=mcp&csrf_token={}&tool=__custom__&tool_custom=My Editor&decision=approve",
+            "client_id={}&redirect_uri={}&response_type=code&code_challenge={}&code_challenge_method=S256&scope=mcp&resource=https%3A%2F%2Fexample.com%2Fmcp&csrf_token={}&tool=__custom__&tool_custom=My Editor&decision=approve",
             client_id,
             urlencoding::encode("http://localhost/callback"),
             urlencoding::encode(&challenge),
@@ -4961,7 +5277,10 @@ mod tests {
             client_name.unwrap_or("Test Device Client"),
         )
         .await;
-        let body = format!("scope=mcp&client_id={}", urlencoding::encode(&client_id));
+        let body = format!(
+            "scope=mcp&client_id={}&resource=https%3A%2F%2Fexample.com%2Fmcp",
+            urlencoding::encode(&client_id)
+        );
         let resp = app
             .clone()
             .oneshot(
@@ -4982,7 +5301,7 @@ mod tests {
     /// POST the device grant to /oauth/token and return (status, json).
     async fn poll_device_token(app: &Router, device_code: &str) -> (StatusCode, serde_json::Value) {
         let body = format!(
-            "grant_type={}&device_code={}",
+            "grant_type={}&device_code={}&resource=https%3A%2F%2Fexample.com%2Fmcp",
             urlencoding::encode("urn:ietf:params:oauth:grant-type:device_code"),
             urlencoding::encode(device_code),
         );
@@ -5044,7 +5363,7 @@ mod tests {
                     .uri("/oauth/device_authorization")
                     .header("content-type", "application/x-www-form-urlencoded")
                     .body(axum::body::Body::from(format!(
-                        "client_id={}",
+                        "client_id={}&resource=https%3A%2F%2Fexample.com%2Fmcp",
                         urlencoding::encode(&client_id)
                     )))
                     .unwrap(),
@@ -5083,7 +5402,7 @@ mod tests {
                     .uri("/oauth/device_authorization")
                     .header("content-type", "application/x-www-form-urlencoded")
                     .body(axum::body::Body::from(format!(
-                        "client_id={}&scope=admin",
+                        "client_id={}&scope=admin&resource=https%3A%2F%2Fexample.com%2Fmcp",
                         urlencoding::encode(&client_id)
                     )))
                     .unwrap(),
@@ -5121,7 +5440,7 @@ mod tests {
         }
 
         let body = format!(
-            "scope=mcp&client_id={}&client_name=Impostor",
+            "scope=mcp&client_id={}&client_name=Impostor&resource=https%3A%2F%2Fexample.com%2Fmcp",
             urlencoding::encode(&client_id)
         );
         let resp = app
@@ -5994,6 +6313,8 @@ mod tests {
                 db: f.db.clone(),
                 manager: crate::auth::create_key_manager().unwrap(),
                 public_url: "https://example.com".into(),
+                issuer_is_explicit: true,
+                allowed_hosts: Arc::from(Vec::<String>::new()),
                 required: true,
             };
             let app = crate::api::router(f.db.clone(), &[])
@@ -6225,10 +6546,11 @@ mod tests {
                 code_challenge: Some(&challenge),
                 code_challenge_method: Some("S256"),
                 scope: Some(OAUTH_SCOPE),
+                resource: "https://example.com/mcp",
             }
             .csrf_token(credential);
             format!(
-                "client_id={}&redirect_uri={}&response_type=code&code_challenge={}&code_challenge_method=S256&scope=mcp&csrf_token={}&tool=claude-code&decision=approve",
+                "client_id={}&redirect_uri={}&response_type=code&code_challenge={}&code_challenge_method=S256&scope=mcp&resource=https%3A%2F%2Fexample.com%2Fmcp&csrf_token={}&tool=claude-code&decision=approve",
                 client_id,
                 urlencoding::encode("http://localhost/callback"),
                 urlencoding::encode(&challenge),
@@ -6292,7 +6614,7 @@ mod tests {
             code: &str,
         ) -> (StatusCode, serde_json::Value) {
             let body = format!(
-                "grant_type=authorization_code&code={}&redirect_uri={}&client_id={}&code_verifier={}",
+                "grant_type=authorization_code&code={}&redirect_uri={}&client_id={}&code_verifier={}&resource=https%3A%2F%2Fexample.com%2Fmcp",
                 code,
                 urlencoding::encode("http://localhost/callback"),
                 client_id,

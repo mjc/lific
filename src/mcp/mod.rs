@@ -1,6 +1,7 @@
 pub(crate) mod schemas;
 pub(crate) mod tools;
 
+use std::borrow::Cow;
 #[cfg(test)]
 use std::cell::Cell;
 use std::sync::Arc;
@@ -10,6 +11,7 @@ use rmcp::{
     ServerHandler,
     handler::server::router::tool::ToolRouter,
     model::{ProtocolVersion, ServerCapabilities, ServerInfo},
+    transport::streamable_http_server::tower::StreamableHttpServerConfig,
 };
 
 use crate::db::DbPool;
@@ -18,24 +20,180 @@ use crate::links::IssueLinkContext;
 use crate::realtime::{RealtimeEvent, RealtimeHub};
 use crate::storage::AttachmentStore;
 
+const LEGACY_PROTOCOL_VERSIONS: &[ProtocolVersion] =
+    &[ProtocolVersion::V_2025_06_18, ProtocolVersion::V_2025_11_25];
+
+pub(crate) fn parse_response_body(body: &[u8]) -> Result<serde_json::Value, String> {
+    if let Ok(value) = serde_json::from_slice(body) {
+        return Ok(value);
+    }
+
+    let text = String::from_utf8_lossy(body);
+    let mut event_data = String::new();
+    for line in text.lines().chain(std::iter::once("")) {
+        if line.is_empty() {
+            if !event_data.is_empty() {
+                if let Ok(value) = serde_json::from_str(&event_data) {
+                    return Ok(value);
+                }
+                event_data.clear();
+            }
+            continue;
+        }
+
+        if let Some(data) = line.strip_prefix("data:") {
+            if !event_data.is_empty() {
+                event_data.push('\n');
+            }
+            event_data.push_str(data.strip_prefix(' ').unwrap_or(data));
+        }
+    }
+
+    Err("response was neither JSON nor an SSE JSON event".to_string())
+}
+
+/// Keep the pre-July MCP transport contract explicit while rmcp evolves.
+/// Legacy clients still negotiate an initialize session and receive
+/// `Mcp-Session-Id` on the HTTP response.
+#[must_use]
+pub(crate) fn legacy_streamable_http_config<I, S, J, T>(
+    allowed_hosts: I,
+    allowed_origins: J,
+) -> StreamableHttpServerConfig
+where
+    I: IntoIterator<Item = S>,
+    S: Into<String>,
+    J: IntoIterator<Item = T>,
+    T: Into<String>,
+{
+    StreamableHttpServerConfig::default()
+        .with_legacy_session_mode(true)
+        .with_json_response(true)
+        .with_allowed_hosts(allowed_hosts)
+        .with_allowed_origins(allowed_origins)
+}
+
+pub(crate) fn default_allowed_origins() -> Vec<String> {
+    ["http://localhost", "http://127.0.0.1", "http://[::1]"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+}
+
+fn allowed_origins(cors_origins: &[String], public_url: Option<&str>) -> Vec<String> {
+    if !cors_origins.is_empty() {
+        return cors_origins.to_vec();
+    }
+
+    let mut origins = default_allowed_origins();
+    if let Some(public_url) = public_url
+        && let Ok(uri) = public_url.parse::<axum::http::Uri>()
+        && let (Some(scheme), Some(authority)) = (uri.scheme_str(), uri.authority())
+    {
+        let origin = format!("{scheme}://{authority}");
+        if !origins.iter().any(|existing| existing == &origin) {
+            origins.push(origin);
+        }
+    }
+    origins
+}
+
+pub(crate) fn origin_is_allowed(origin: &str, allowed_origins: &[String]) -> bool {
+    if origin == "null" && allowed_origins.iter().any(|allowed| allowed == origin) {
+        return true;
+    }
+    let Some(actual) = parse_origin(origin) else {
+        return false;
+    };
+    allowed_origins.iter().any(|allowed| {
+        let Some(expected) = parse_origin(allowed) else {
+            return false;
+        };
+        (actual.scheme == expected.scheme
+            && actual.host == expected.host
+            && actual.port == expected.port)
+            || (!expected.explicit_port
+                && actual.explicit_port
+                && expected.scheme == "http"
+                && crate::config::is_localhost_host(&expected.host)
+                && actual.scheme == expected.scheme
+                && actual.host == expected.host)
+    })
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ParsedOrigin {
+    scheme: String,
+    host: String,
+    port: u16,
+    explicit_port: bool,
+}
+
+fn parse_origin(value: &str) -> Option<ParsedOrigin> {
+    let uri = value.parse::<axum::http::Uri>().ok()?;
+    let scheme = uri.scheme_str()?.to_ascii_lowercase();
+    let host = uri.host()?.trim_matches(['[', ']']).to_ascii_lowercase();
+    if !matches!(uri.path(), "" | "/") || uri.query().is_some() {
+        return None;
+    }
+    let explicit_port = uri.port_u16().is_some();
+    let port = uri.port_u16().or(match scheme.as_str() {
+        "http" => Some(80),
+        "https" => Some(443),
+        _ => None,
+    })?;
+    Some(ParsedOrigin {
+        scheme,
+        host,
+        port,
+        explicit_port,
+    })
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct McpHttpPolicy {
+    pub(crate) allowed_hosts: Vec<String>,
+    pub(crate) allowed_origins: Vec<String>,
+}
+
+impl McpHttpPolicy {
+    pub(crate) fn from_config(cors_origins: &[String], public_url: Option<&str>) -> Self {
+        let mut allowed_hosts = vec!["localhost".into(), "127.0.0.1".into(), "::1".into()];
+        if let Some(public_url) = public_url
+            && let Ok(uri) = public_url.parse::<axum::http::Uri>()
+            && let Some(authority) = uri.authority()
+        {
+            let host = authority.host().to_owned();
+            if !allowed_hosts.iter().any(|allowed| allowed == &host) {
+                allowed_hosts.push(host);
+            }
+        }
+        Self {
+            allowed_hosts,
+            allowed_origins: allowed_origins(cors_origins, public_url),
+        }
+    }
+
+    pub(crate) fn transport_config(&self) -> StreamableHttpServerConfig {
+        legacy_streamable_http_config(self.allowed_hosts.clone(), self.allowed_origins.clone())
+    }
+}
+
 /// Serialization lock for MCP request handling.
 /// Ensures only one MCP request processes at a time, preventing the race
 /// condition where concurrent requests could overwrite each other's user identity.
 /// Acceptable throughput cost for a local-first, single-user tool.
 static MCP_HANDLER_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// Per-request user identity storage.
-/// Protected from races by MCP_HANDLER_LOCK ensuring serial access.
-/// Uses unwrap_or_else to recover from poison (e.g. if a handler panics).
-static MCP_REQUEST_USER: Mutex<Option<AuthUser>> = Mutex::new(None);
-
-/// Per-request external origin used for structured resource links.
-/// Protected by [`MCP_HANDLER_LOCK`] for the same reason as the identity state.
-static MCP_REQUEST_ISSUE_LINKS: Mutex<Option<Arc<IssueLinkContext>>> = Mutex::new(None);
+/// The process-wide request context used by MCP tool dispatch.
+///
+/// Identity and link-origin metadata describe the same request, so they are
+/// installed and cleared together under [`MCP_HANDLER_LOCK`].
+static MCP_REQUEST_CONTEXT: Mutex<Option<McpRequestContext>> = Mutex::new(None);
 
 #[cfg(test)]
 tokio::task_local! {
-    static TEST_REQUEST_ISSUE_LINKS: Option<Arc<IssueLinkContext>>;
+    static TEST_REQUEST_CONTEXT: Option<McpRequestContext>;
 }
 
 #[cfg(test)]
@@ -72,27 +230,24 @@ where
     Fut: std::future::Future<Output = R>,
 {
     let _guard = MCP_HANDLER_LOCK.lock().await;
-    let issue_links = issue_links.map(Arc::new);
+    let request_context = McpRequestContext::new(user, issue_links);
     #[cfg(test)]
-    let test_issue_links = issue_links.clone();
+    let test_request_context = request_context.clone();
     let actor = crate::actor::ActorCtx {
-        user_id: user.as_ref().map(|u| u.id),
+        user_id: request_context.user.as_ref().map(|user| user.id),
         transport: crate::actor::Transport::Mcp,
     };
-    *MCP_REQUEST_USER
+    *MCP_REQUEST_CONTEXT
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = user;
-    *MCP_REQUEST_ISSUE_LINKS
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = issue_links;
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(request_context);
     // Panic-safe cleanup: clear the globals on scope exit (including if `f`
     // panics), before `_guard` releases MCP_HANDLER_LOCK (reverse declaration
     // order). Without this, a panicking request would leave a stale user in the
     // process-wide global for the next (concurrent) test to read.
     let _clear = RequestGlobalGuard;
     #[cfg(test)]
-    let result = TEST_REQUEST_ISSUE_LINKS
-        .scope(test_issue_links, crate::actor::scope(actor, f()))
+    let result = TEST_REQUEST_CONTEXT
+        .scope(Some(test_request_context), crate::actor::scope(actor, f()))
         .await;
     #[cfg(not(test))]
     let result = crate::actor::scope(actor, f()).await;
@@ -105,21 +260,56 @@ where
 struct RequestGlobalGuard;
 impl Drop for RequestGlobalGuard {
     fn drop(&mut self) {
-        *MCP_REQUEST_USER
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
-        *MCP_REQUEST_ISSUE_LINKS
+        *MCP_REQUEST_CONTEXT
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
     }
 }
 
+/// Lific-owned state attached to an HTTP request after authentication and
+/// copied by rmcp into the eventual tool-call context.
+#[derive(Clone, Default)]
+pub(crate) struct McpRequestContext {
+    user: Option<AuthUser>,
+    issue_links: Option<Arc<IssueLinkContext>>,
+}
+
+impl McpRequestContext {
+    pub(crate) fn new(user: Option<AuthUser>, issue_links: Option<IssueLinkContext>) -> Self {
+        Self {
+            user,
+            issue_links: issue_links.map(Arc::new),
+        }
+    }
+
+    fn from_transport(context: &rmcp::service::RequestContext<rmcp::service::RoleServer>) -> Self {
+        context
+            .extensions
+            .get::<axum::http::request::Parts>()
+            .and_then(|parts| parts.extensions.get::<Self>())
+            .cloned()
+            .unwrap_or_default()
+    }
+}
+
 /// Get the authenticated user for the current MCP request, if any.
 pub(crate) fn current_auth_user() -> Option<AuthUser> {
-    MCP_REQUEST_USER
+    current_request_context().and_then(|context| context.user)
+}
+
+fn current_request_context() -> Option<McpRequestContext> {
+    MCP_REQUEST_CONTEXT
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clone()
+}
+
+#[cfg(test)]
+pub(crate) fn set_request_user_for_test(user: Option<AuthUser>) {
+    *MCP_REQUEST_CONTEXT
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+        user.map(|user| McpRequestContext::new(Some(user), None));
 }
 
 /// The `LIFIC_TOKEN` a stdio MCP session was launched with, plus what it takes
@@ -129,8 +319,9 @@ pub(crate) fn current_auth_user() -> Option<AuthUser> {
 /// credential the HTTP transport would validate per request. A stdio session
 /// has no per-request credential to validate, which is exactly the problem:
 /// the process can outlive the key by days. Keeping the raw token here lets
-/// [`LificMcp::with_stdio_auth`] re-check it on every tool call, so revoking
-/// the key takes effect at the next call instead of the next restart.
+/// [`LificMcp::dispatch_tool_with_context`] re-checks it on every tool call,
+/// so revoking the key takes effect at the next call instead of the next
+/// restart.
 ///
 /// The token is never logged, never rendered, and never leaves this struct;
 /// there is deliberately no `Debug`, `Display` or accessor for it.
@@ -172,7 +363,7 @@ impl StdioAuthFailed {
          restart the MCP server.";
 
     fn into_tool_result(self) -> rmcp::model::CallToolResult {
-        rmcp::model::CallToolResult::error(vec![rmcp::model::Content::text(Self::MESSAGE)])
+        rmcp::model::CallToolResult::error(vec![rmcp::model::ContentBlock::text(Self::MESSAGE)])
     }
 }
 
@@ -197,15 +388,16 @@ pub(crate) fn current_issue_link_context() -> Option<Arc<IssueLinkContext>> {
     #[cfg(test)]
     {
         TEST_ISSUE_LINK_CONTEXT_READS.set(TEST_ISSUE_LINK_CONTEXT_READS.get() + 1);
-        TEST_REQUEST_ISSUE_LINKS
-            .try_with(Clone::clone)
+        TEST_REQUEST_CONTEXT
+            .try_with(|context| {
+                context
+                    .as_ref()
+                    .and_then(|context| context.issue_links.clone())
+            })
             .unwrap_or(None)
     }
     #[cfg(not(test))]
-    MCP_REQUEST_ISSUE_LINKS
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .clone()
+    current_request_context().and_then(|context| context.issue_links)
 }
 
 #[cfg(test)]
@@ -242,11 +434,9 @@ pub struct LificMcp {
     /// one content-addressed directory.
     store: AttachmentStore,
     tool_router: ToolRouter<Self>,
-    /// Present only for a stdio session launched with a `LIFIC_TOKEN`. `None`
-    /// covers both the HTTP transport (where per-request middleware already
-    /// owns identity, and where re-entering [`with_request_context`] here would
-    /// deadlock on [`MCP_HANDLER_LOCK`]) and a tokenless local stdio session,
-    /// which keeps its credential-less operator behavior.
+    /// Present only for a stdio session launched with a `LIFIC_TOKEN`. HTTP
+    /// identity arrives in [`McpRequestContext`]; a tokenless local stdio
+    /// session keeps its credential-less operator behavior.
     stdio_auth: Option<Arc<StdioAuth>>,
 }
 
@@ -283,39 +473,20 @@ impl LificMcp {
         }
     }
 
-    /// The stdio revalidation seam. Every tool call goes through here.
-    ///
-    /// With no stdio credential this is a pass-through, which is what the HTTP
-    /// transport needs: `server.rs` already wraps each request in
-    /// [`with_request_context`], and taking [`MCP_HANDLER_LOCK`] a second time
-    /// here would deadlock.
-    ///
-    /// With one, the token is re-resolved against the database *on this call*
-    /// and the tool runs inside [`with_request_user`] with whatever came back,
-    /// so both the authorization gates and the audit actor read the identity as
-    /// it is now rather than as it was at launch. A token that no longer
-    /// authenticates returns [`StdioAuthFailed`] and `f` is never awaited, so a
-    /// revoked agent cannot mutate anything on its next call.
-    ///
-    /// The failure is a typed local error rather than a wire type, so the seam
-    /// stays reusable and the decision about how a client should see it lives
-    /// in one place ([`Self::dispatch_tool`]).
-    async fn with_stdio_auth<F, Fut, R>(&self, f: F) -> Result<R, StdioAuthFailed>
-    where
-        F: FnOnce() -> Fut,
-        Fut: std::future::Future<Output = R>,
-    {
-        let Some(auth) = self.stdio_auth.clone() else {
-            return Ok(f().await);
+    fn resolve_request_user(
+        &self,
+        http_user: Option<AuthUser>,
+    ) -> Result<Option<AuthUser>, StdioAuthFailed> {
+        let Some(auth) = &self.stdio_auth else {
+            return Ok(http_user);
         };
-        let user = auth.resolve(&self.db).map_err(|reason| {
+        auth.resolve(&self.db).map_err(|reason| {
             // The reason names DB state (revoked, expired, deactivated owner,
             // backend fault). It is useful in the operator's log and is not
             // something the agent needs, or should be told.
             tracing::warn!(reason, "stdio LIFIC_TOKEN no longer authenticates");
             StdioAuthFailed
-        })?;
-        Ok(with_request_user(user, f).await)
+        })
     }
 
     /// The central tool-call seam: revalidate, then dispatch.
@@ -328,18 +499,34 @@ impl LificMcp {
     /// surfacing anything to the model. A tool error reaches the agent as text
     /// it can read and act on, which is the whole point of telling it to
     /// reconnect. Either way `f` never runs.
-    async fn dispatch_tool<F, Fut>(
+    async fn dispatch_tool_with_context<F, Fut, R>(
         &self,
+        request_context: McpRequestContext,
         f: F,
-    ) -> Result<rmcp::model::CallToolResult, rmcp::ErrorData>
+    ) -> Result<R, rmcp::ErrorData>
     where
         F: FnOnce() -> Fut,
-        Fut: std::future::Future<Output = Result<rmcp::model::CallToolResult, rmcp::ErrorData>>,
+        Fut: std::future::Future<Output = Result<R, rmcp::ErrorData>>,
+        R: From<rmcp::model::CallToolResult>,
     {
-        match self.with_stdio_auth(f).await {
-            Ok(result) => result,
-            Err(StdioAuthFailed) => Ok(StdioAuthFailed.into_tool_result()),
-        }
+        let user = match self.resolve_request_user(request_context.user) {
+            Ok(user) => user,
+            Err(StdioAuthFailed) => {
+                return Ok(R::from(StdioAuthFailed.into_tool_result()));
+            }
+        };
+        with_request_context(user, request_context.issue_links.as_deref().cloned(), f).await
+    }
+
+    #[cfg(test)]
+    async fn dispatch_tool<F, Fut, R>(&self, f: F) -> Result<R, rmcp::ErrorData>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<R, rmcp::ErrorData>>,
+        R: From<rmcp::model::CallToolResult>,
+    {
+        self.dispatch_tool_with_context(McpRequestContext::default(), f)
+            .await
     }
 
     /// Point the attachment tools at an explicit store. An in-memory pool has
@@ -382,8 +569,8 @@ impl LificMcp {
     /// LIF-155: re-stamp the audit actor from the MCP request-user global.
     /// The task-local stamped by `DbPool::write()` does NOT survive rmcp's
     /// internal task spawns (verified in production: tool writes attributed
-    /// to 'system'), but `MCP_REQUEST_USER` does — it's a global guarded by
-    /// the serialization lock, so it is exactly this request's identity.
+    /// to 'system'), but the process-wide MCP request context does. The
+    /// serialization lock ensures it belongs to exactly this request.
     fn stamp_request_actor(conn: &rusqlite::Connection) {
         let user = current_auth_user();
         crate::actor::stamp(
@@ -468,11 +655,13 @@ impl LificMcp {
 }
 
 impl ServerHandler for LificMcp {
+    fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
+        Cow::Borrowed(LEGACY_PROTOCOL_VERSIONS)
+    }
+
     fn get_info(&self) -> ServerInfo {
-        // Pin to 2025-03-26: rmcp defaults to 2025-06-18 which many clients
-        // (including Zed) skipped, going straight from 2025-03-26 to 2025-11-25.
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_protocol_version(ProtocolVersion::V_2025_03_26)
+            .with_protocol_version(ProtocolVersion::V_2025_11_25)
             // Identify as lific, not rmcp's build-env default — this name is
             // what connected clients (and `lific doctor`) display.
             .with_server_info(rmcp::model::Implementation::new(
@@ -507,14 +696,17 @@ impl ServerHandler for LificMcp {
         &self,
         request: rmcp::model::CallToolRequestParams,
         context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
-    ) -> impl std::future::Future<Output = Result<rmcp::model::CallToolResult, rmcp::ErrorData>>
+    ) -> impl std::future::Future<Output = Result<rmcp::model::CallToolResponse, rmcp::ErrorData>>
     + rmcp::service::MaybeSendFuture
     + '_ {
+        let request_context = McpRequestContext::from_transport(&context);
+        let tool_context =
+            rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
         async move {
-            let tool_context =
-                rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
-            self.dispatch_tool(|| self.tool_router.call(tool_context))
-                .await
+            self.dispatch_tool_with_context(request_context, || async {
+                self.tool_router.call(tool_context).await
+            })
+            .await
         }
     }
 
@@ -536,6 +728,50 @@ mod tests {
     use http_body_util::BodyExt;
     use rusqlite::params;
     use tower::ServiceExt;
+
+    #[test]
+    fn streamable_http_policy_keeps_legacy_sessions_and_validates_origins() {
+        let policy = McpHttpPolicy::from_config(&[], None);
+        let config = policy.transport_config();
+
+        assert!(config.legacy_session_mode);
+        assert!(config.json_response);
+        assert!(!config.allowed_origins.is_empty());
+        assert!(
+            !config
+                .allowed_origins
+                .iter()
+                .any(|origin| origin == "https://evil.example")
+        );
+    }
+
+    #[test]
+    fn local_origins_allow_browser_ports_but_not_other_hosts() {
+        let allowed = default_allowed_origins();
+
+        assert!(origin_is_allowed("http://localhost:3456", &allowed));
+        assert!(origin_is_allowed("http://127.0.0.1:3456", &allowed));
+        assert!(origin_is_allowed("http://[::1]:3456", &allowed));
+        assert!(!origin_is_allowed("https://localhost:3456", &allowed));
+        assert!(!origin_is_allowed("http://localhost:3456/path", &allowed));
+        assert!(!origin_is_allowed("http://evil.example:3456", &allowed));
+    }
+
+    #[test]
+    fn http_policy_shares_public_url_host_and_origin() {
+        let policy = McpHttpPolicy::from_config(&[], Some("https://LIFIC.example:443/mcp"));
+
+        assert!(
+            policy
+                .allowed_hosts
+                .iter()
+                .any(|host| host == "LIFIC.example")
+        );
+        assert!(origin_is_allowed(
+            "https://lific.example",
+            &policy.allowed_origins
+        ));
+    }
 
     // ── LIF-204: OAuth-token user_id -> resolved AuthUser (MCP path) ─────
     //
@@ -655,6 +891,8 @@ mod tests {
             db: pool.clone(),
             manager: crate::auth::create_key_manager().unwrap(),
             public_url: "https://example.com".into(),
+            issuer_is_explicit: true,
+            allowed_hosts: std::sync::Arc::from(Vec::<String>::new()),
             required: true,
         };
 
@@ -689,10 +927,8 @@ mod tests {
                 .expect("request origin should be visible")
                 .issue_markdown("LIF-1")
                 .to_string();
-            let global = MCP_REQUEST_ISSUE_LINKS
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .clone()
+            let global = current_request_context()
+                .and_then(|context| context.issue_links)
                 .expect("production request context should also be populated")
                 .issue_markdown("LIF-1")
                 .to_string();
@@ -707,7 +943,7 @@ mod tests {
         assert_eq!(global_seen, seen);
         assert!(current_issue_link_context().is_none());
         assert!(
-            MCP_REQUEST_ISSUE_LINKS
+            MCP_REQUEST_CONTEXT
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .is_none()
@@ -797,6 +1033,8 @@ mod tests {
             db: pool.clone(),
             manager,
             public_url: "https://example.com".into(),
+            issuer_is_explicit: true,
+            allowed_hosts: std::sync::Arc::from(Vec::<String>::new()),
             required: true,
         };
         let app = Router::new()
@@ -960,23 +1198,20 @@ mod tests {
         LificMcp::for_stdio(pool.clone(), auth)
     }
 
-    /// Run a body through the revalidation seam and report what identity it
-    /// saw. Standing in for a real tool body: `with_stdio_auth` is what every
-    /// tool runs inside, so whatever this observes, a tool observes.
+    /// Resolve the identity used by the central tool-dispatch seam.
     async fn observed_identity(
         server: &LificMcp,
         pool: &crate::db::DbPool,
     ) -> Result<Option<crate::resolve_caller::ResolvedIdentity>, StdioAuthFailed> {
-        server
-            .with_stdio_auth(|| async { current_identity(pool) })
-            .await
+        let user = server.resolve_request_user(None)?;
+        Ok(with_request_user(user, || async { current_identity(pool) }).await)
     }
 
     /// The shape `dispatch_tool` dispatches: a boxed future producing what the
     /// real `ToolRouter::call` produces.
     type ToolBody = std::pin::Pin<
         Box<
-            dyn std::future::Future<Output = Result<rmcp::model::CallToolResult, rmcp::ErrorData>>
+            dyn std::future::Future<Output = Result<rmcp::model::CallToolResponse, rmcp::ErrorData>>
                 + Send,
         >,
     >;
@@ -1003,9 +1238,11 @@ mod tests {
                     [],
                 )
                 .unwrap();
-                Ok(rmcp::model::CallToolResult::success(vec![
-                    rmcp::model::Content::text("ran"),
-                ]))
+                Ok(rmcp::model::CallToolResponse::Complete(
+                    rmcp::model::CallToolResult::success(vec![rmcp::model::ContentBlock::text(
+                        "ran",
+                    )]),
+                ))
             }) as ToolBody
         };
         (body, ran)
@@ -1048,10 +1285,15 @@ mod tests {
         // Through `dispatch_tool`, which is the exact seam `call_tool` uses,
         // so this is the mapping a client actually receives.
         let (body, ran) = mutating_tool(&pool);
-        let result = server
+        let result: rmcp::model::CallToolResponse = server
             .dispatch_tool(body)
             .await
             .expect("a dead credential is a tool failure, not a protocol failure");
+
+        let result = match result {
+            rmcp::model::CallToolResponse::Complete(result) => result,
+            other => panic!("stdio auth failure must be a complete tool result: {other:?}"),
+        };
 
         assert_eq!(
             result.is_error,
@@ -1097,6 +1339,10 @@ mod tests {
 
         let (body, ran) = mutating_tool(&pool);
         let result = server.dispatch_tool(body).await.expect("dispatches");
+        let result = match result {
+            rmcp::model::CallToolResponse::Complete(result) => result,
+            other => panic!("a normal tool call must complete: {other:?}"),
+        };
 
         assert_eq!(result.is_error, Some(false));
         assert!(ran.load(std::sync::atomic::Ordering::SeqCst));
@@ -1174,28 +1420,30 @@ mod tests {
         assert_eq!(identity.transport, crate::actor::Transport::Mcp);
     }
 
-    /// The HTTP transport is already wrapped in `with_request_context` by
-    /// `server.rs`, which holds `MCP_HANDLER_LOCK` for the whole request. If
-    /// the seam took that lock again the request would deadlock, so an
-    /// HTTP-shaped server must pass straight through.
     #[tokio::test]
-    async fn the_http_transport_seam_does_not_retake_the_handler_lock() {
+    async fn http_identity_is_installed_only_at_tool_dispatch() {
         let _sguard = crate::mcp::tools::acquire_test_guard();
         let pool = crate::db::open_memory().expect("test db");
         let server = LificMcp::new(pool.clone());
         let user = seed_user(&pool, "http-caller", true);
+        let seen = Arc::new(Mutex::new(None));
+        let seen_in_tool = seen.clone();
 
-        let seen = with_request_context(Some(user.clone()), None, || async {
-            server
-                .with_stdio_auth(|| async { current_auth_user() })
-                .await
-                .expect("pass-through")
-        })
-        .await;
+        server
+            .dispatch_tool_with_context(
+                McpRequestContext::new(Some(user.clone()), None),
+                || async move {
+                    *seen_in_tool.lock().unwrap() = current_auth_user();
+                    Ok(rmcp::model::CallToolResult::success(Vec::new()))
+                },
+            )
+            .await
+            .expect("dispatches");
         assert_eq!(
-            seen.map(|u| u.id),
+            seen.lock().unwrap().as_ref().map(|user| user.id),
             Some(user.id),
-            "the middleware's identity survives the seam untouched"
+            "the authenticated HTTP identity reaches the tool body"
         );
+        assert!(current_auth_user().is_none(), "dispatch cleans up identity");
     }
 }

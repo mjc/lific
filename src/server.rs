@@ -21,8 +21,7 @@ use axum::{
     routing::{any, get},
 };
 use rmcp::transport::streamable_http_server::{
-    session::local::LocalSessionManager,
-    tower::{StreamableHttpServerConfig, StreamableHttpService},
+    session::local::LocalSessionManager, tower::StreamableHttpService,
 };
 use rust_embed::Embed;
 use tower_http::compression::CompressionLayer;
@@ -254,33 +253,24 @@ fn build_app_with_store(
 
     let manager_ext = Arc::new(manager.clone());
 
+    let mcp_policy =
+        mcp::McpHttpPolicy::from_config(&cfg.server.cors_origins, cfg.server.public_url.as_deref());
+    let mcp_allowed_hosts = mcp_policy.allowed_hosts.clone();
+    let mcp_allowed_origins = mcp_policy.allowed_origins.clone();
+    let mcp_config = mcp_policy.transport_config();
+
     let auth_state = auth::AuthState {
         db: pool.clone(),
         manager,
         public_url: issuer.clone(),
+        issuer_is_explicit: cfg.server.public_url.is_some(),
+        allowed_hosts: mcp_allowed_hosts.clone().into(),
         required: cfg.auth.required,
     };
 
     // MCP StreamableHTTP service
     let db_for_mcp = pool.clone();
     let realtime_for_mcp = realtime.clone();
-    let mut mcp_allowed_hosts: Vec<String> =
-        vec!["localhost".into(), "127.0.0.1".into(), "::1".into()];
-
-    // If public_url is set, allow its hostname through the DNS rebinding check
-    // so reverse proxies (Tailscale funnel, nginx, etc.) can forward requests.
-    if let Some(ref url) = cfg.server.public_url
-        && let Ok(parsed) = url.parse::<axum::http::Uri>()
-        && let Some(authority) = parsed.authority()
-    {
-        let host: String = authority.host().to_string();
-        mcp_allowed_hosts.push(host);
-    }
-
-    let mcp_config = StreamableHttpServerConfig::default()
-        .with_stateful_mode(false)
-        .with_json_response(true)
-        .with_allowed_hosts(mcp_allowed_hosts.clone());
 
     let mcp_service = StreamableHttpService::new(
         move || {
@@ -313,10 +303,10 @@ fn build_app_with_store(
     let authed_routes = api::router(pool.clone(), &cfg.server.cors_origins)
         .route(
             "/mcp",
-            any(move |request: Request<Body>| async move {
-                // Extract the authenticated user (set by auth middleware)
-                // and store it for MCP tools to read. Serialized to prevent
-                // concurrent requests from overwriting each other's identity.
+            any(move |mut request: Request<Body>| async move {
+                // Attach the authenticated user set by auth middleware. The
+                // MCP tool-dispatch boundary installs and serializes it only
+                // after rmcp has validated the transport request.
                 let auth_user = request
                     .extensions()
                     .get::<Option<db::models::AuthUser>>()
@@ -332,10 +322,10 @@ fn build_app_with_store(
                     &mcp_allowed_hosts_for_links,
                 );
 
-                mcp::with_request_context(auth_user, issue_links, || async {
-                    mcp_service.handle(request).await.into_response()
-                })
-                .await
+                request
+                    .extensions_mut()
+                    .insert(mcp::McpRequestContext::new(auth_user, issue_links));
+                mcp_service.handle(request).await.into_response()
             }),
         )
         .layer(axum::Extension(realtime.clone()))
@@ -421,6 +411,7 @@ fn build_app_with_store(
                 &token,
                 authless_user,
                 mcp_allowed_hosts.clone(),
+                mcp_allowed_origins.clone(),
                 cfg.server.public_url.clone(),
                 realtime.clone(),
             )
@@ -451,6 +442,10 @@ fn build_app_with_store(
         // The internal CORS layer inside `api::router()` still runs for
         // /api/* but is effectively shadowed by this outer one.
         .layer(build_global_cors(&cfg.server.cors_origins))
+        .layer(middleware::from_fn_with_state(
+            mcp_allowed_origins,
+            mcp_origin_middleware,
+        ))
         .layer(axum::extract::DefaultBodyLimit::max(2 * 1024 * 1024)) // 2 MB
         // Gzip/brotli compression for text responses. The embedded
         // frontend ships a ~1 MB JS bundle that was previously served
@@ -697,14 +692,12 @@ fn build_authless_mcp_router(
     token: &str,
     user: Option<db::models::AuthUser>,
     allowed_hosts: Vec<String>,
+    allowed_origins: Vec<String>,
     public_url: Option<String>,
     realtime: realtime::RealtimeHub,
 ) -> Router {
     let allowed_hosts_for_links = allowed_hosts.clone();
-    let config = StreamableHttpServerConfig::default()
-        .with_stateful_mode(false)
-        .with_json_response(true)
-        .with_allowed_hosts(allowed_hosts);
+    let config = mcp::legacy_streamable_http_config(allowed_hosts, allowed_origins);
     let service = StreamableHttpService::new(
         move || Ok(mcp::LificMcp::with_realtime(pool.clone(), realtime.clone())),
         Arc::new(LocalSessionManager::default()),
@@ -712,7 +705,7 @@ fn build_authless_mcp_router(
     );
     Router::new().route(
         &format!("/mcp/{token}"),
-        any(move |request: Request<Body>| async move {
+        any(move |mut request: Request<Body>| async move {
             let issue_links = links::IssueLinkContext::for_http_request(
                 public_url.as_deref(),
                 request
@@ -721,12 +714,30 @@ fn build_authless_mcp_router(
                     .and_then(|value| value.to_str().ok()),
                 &allowed_hosts_for_links,
             );
-            mcp::with_request_context(user, issue_links, || async {
-                service.handle(request).await.into_response()
-            })
-            .await
+            request
+                .extensions_mut()
+                .insert(mcp::McpRequestContext::new(user.clone(), issue_links));
+            service.handle(request).await.into_response()
         }),
     )
+}
+
+async fn mcp_origin_middleware(
+    axum::extract::State(allowed_origins): axum::extract::State<Vec<String>>,
+    request: Request<Body>,
+    next: middleware::Next,
+) -> axum::response::Response {
+    if (request.uri().path() == "/mcp" || request.uri().path().starts_with("/mcp/"))
+        && let Some(origin) = request.headers().get(header::ORIGIN)
+    {
+        let allowed = origin
+            .to_str()
+            .is_ok_and(|origin| mcp::origin_is_allowed(origin, &allowed_origins));
+        if !allowed {
+            return StatusCode::FORBIDDEN.into_response();
+        }
+    }
+    next.run(request).await
 }
 
 /// Wrapper that skips auth for /api/health
@@ -901,6 +912,16 @@ mod cors_tests {
         inner.layer(build_global_cors(origins))
     }
 
+    fn app_with_mcp_origin_and_cors(origins: &[String]) -> Router {
+        Router::new()
+            .route("/mcp", post(|| async { StatusCode::OK.into_response() }))
+            .layer(build_global_cors(&[]))
+            .layer(middleware::from_fn_with_state(
+                origins.to_vec(),
+                mcp_origin_middleware,
+            ))
+    }
+
     /// A browser MCP client (Claude Web) issues a CORS preflight before the
     /// authenticated POST. That preflight must succeed WITHOUT any
     /// Authorization header — otherwise the browser blocks the real request
@@ -985,6 +1006,38 @@ mod cors_tests {
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
     }
 
+    #[tokio::test]
+    async fn invalid_mcp_origin_is_rejected_before_cors_preflight() {
+        let app = app_with_mcp_origin_and_cors(&crate::mcp::default_allowed_origins());
+        let req = Request::builder()
+            .method(Method::OPTIONS)
+            .uri("/mcp")
+            .header("origin", "https://evil.example")
+            .header("access-control-request-method", "POST")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn malformed_mcp_origin_is_rejected() {
+        let app = app_with_mcp_origin_and_cors(&crate::mcp::default_allowed_origins());
+        let mut req = Request::builder()
+            .method(Method::POST)
+            .uri("/mcp")
+            .body(Body::empty())
+            .unwrap();
+        req.headers_mut().insert(
+            header::ORIGIN,
+            axum::http::HeaderValue::from_bytes(b"http://evil.\x80").unwrap(),
+        );
+
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
     /// When configured with an explicit origin list, only those origins
     /// receive an Access-Control-Allow-Origin header echoing them back.
     #[tokio::test]
@@ -1060,6 +1113,9 @@ mod cors_tests {
 #[cfg(test)]
 mod authless_mcp_tests {
     use super::*;
+    use std::convert::Infallible;
+
+    use axum::body::Bytes;
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
@@ -1069,12 +1125,60 @@ mod authless_mcp_tests {
             "id": 1,
             "method": "initialize",
             "params": {
-                "protocolVersion": "2025-06-18",
+                "protocolVersion": "2025-11-25",
                 "capabilities": {},
                 "clientInfo": {"name": "test", "version": "1"}
             }
         });
         Body::from(serde_json::to_vec(&body).unwrap())
+    }
+
+    fn jsonrpc_body(body: &[u8]) -> serde_json::Value {
+        crate::mcp::parse_response_body(body)
+            .unwrap_or_else(|error| panic!("MCP body could not be parsed: {error}"))
+    }
+
+    #[test]
+    fn jsonrpc_body_accepts_complete_sse_events() {
+        let body = b"event: message\ndata:{\"jsonrpc\":\"2.0\",\"id\":\ndata:1,\"result\":{}}\n\n";
+
+        assert_eq!(jsonrpc_body(body)["id"], 1);
+    }
+
+    fn assert_object_keys(value: &serde_json::Value, expected: &[&str]) {
+        let mut actual: Vec<_> = value
+            .as_object()
+            .expect("expected JSON object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        actual.sort_unstable();
+        let mut expected = expected.to_vec();
+        expected.sort_unstable();
+        assert_eq!(actual, expected);
+    }
+
+    async fn post_session(
+        router: Router,
+        token: &str,
+        session_id: &str,
+        body: serde_json::Value,
+    ) -> axum::response::Response {
+        router
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(format!("/mcp/{token}"))
+                    .header("host", "localhost")
+                    .header("content-type", "application/json")
+                    .header("accept", "application/json, text/event-stream")
+                    .header("mcp-protocol-version", "2025-11-25")
+                    .header("mcp-session-id", session_id)
+                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
     }
 
     /// The whole point: a request to /mcp/<token> with NO Authorization header
@@ -1089,6 +1193,7 @@ mod authless_mcp_tests {
             token,
             None,
             vec!["localhost".into()],
+            crate::mcp::default_allowed_origins(),
             None,
             realtime::RealtimeHub::new(),
         );
@@ -1102,17 +1207,141 @@ mod authless_mcp_tests {
             .body(initialize_body())
             .unwrap();
 
-        let res = router.oneshot(req).await.unwrap();
+        let res = router.clone().oneshot(req).await.unwrap();
         assert_eq!(
             res.status(),
             StatusCode::OK,
             "authless MCP initialize must succeed without any auth header"
         );
+        let session_id = res
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|value| value.to_str().ok())
+            .expect("legacy initialize must establish an MCP session")
+            .to_owned();
         let bytes = res.into_body().collect().await.unwrap().to_bytes();
-        let val: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert!(
-            val["result"]["serverInfo"].is_object(),
-            "expected an initialize result, got: {val}"
+        let initialized = jsonrpc_body(&bytes);
+        assert_object_keys(&initialized, &["jsonrpc", "id", "result"]);
+        assert_object_keys(
+            &initialized["result"],
+            &[
+                "protocolVersion",
+                "capabilities",
+                "serverInfo",
+                "instructions",
+            ],
+        );
+        assert_eq!(initialized["result"]["protocolVersion"], "2025-11-25");
+
+        let notification = post_session(
+            router.clone(),
+            token,
+            &session_id,
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized",
+                "params": {}
+            }),
+        )
+        .await;
+        assert!(notification.status().is_success());
+
+        let list = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/list",
+            "params": {}
+        });
+        let first = post_session(router.clone(), token, &session_id, list.clone()).await;
+        let second = post_session(router.clone(), token, &session_id, list).await;
+        assert_eq!(first.status(), StatusCode::OK);
+        let first = jsonrpc_body(&first.into_body().collect().await.unwrap().to_bytes());
+        let second = jsonrpc_body(&second.into_body().collect().await.unwrap().to_bytes());
+        assert_eq!(first, second, "legacy tools/list must be stable");
+        assert_object_keys(&first["result"], &["tools"]);
+
+        let call = post_session(
+            router.clone(),
+            token,
+            &session_id,
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {
+                    "name": "search",
+                    "arguments": {"query": "lific-legacy-contract-no-match"}
+                }
+            }),
+        )
+        .await;
+        assert_eq!(call.status(), StatusCode::OK);
+        let call = jsonrpc_body(&call.into_body().collect().await.unwrap().to_bytes());
+        assert_object_keys(&call["result"], &["content", "isError"]);
+        assert_eq!(call["result"]["isError"], false);
+
+        let malformed = post_session(
+            router,
+            token,
+            &session_id,
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "tools/call",
+                "params": {
+                    "name": "search",
+                    "arguments": {"query": 3}
+                }
+            }),
+        )
+        .await;
+        assert_eq!(malformed.status(), StatusCode::OK);
+        let malformed = jsonrpc_body(&malformed.into_body().collect().await.unwrap().to_bytes());
+        assert_eq!(malformed["result"]["isError"], true);
+        assert!(malformed.get("error").is_none());
+    }
+
+    #[tokio::test]
+    async fn legacy_initialize_unknown_version_uses_supported_fallback() {
+        let pool = db::open_memory().unwrap();
+        let token = "legacy-fallback-token";
+        let router = build_authless_mcp_router(
+            pool,
+            token,
+            None,
+            vec!["localhost".into()],
+            crate::mcp::default_allowed_origins(),
+            None,
+            realtime::RealtimeHub::new(),
+        );
+        let body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "legacy-fallback-test", "version": "1"}
+            }
+        });
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(format!("/mcp/{token}"))
+                    .header("host", "localhost")
+                    .header("content-type", "application/json")
+                    .header("accept", "application/json, text/event-stream")
+                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(
+            jsonrpc_body(&body)["result"]["protocolVersion"],
+            "2025-11-25"
         );
     }
 
@@ -1126,6 +1355,7 @@ mod authless_mcp_tests {
             "the-right-token",
             None,
             vec!["localhost".into()],
+            crate::mcp::default_allowed_origins(),
             None,
             realtime::RealtimeHub::new(),
         );
@@ -1141,5 +1371,86 @@ mod authless_mcp_tests {
 
         let res = router.oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn authless_path_rejects_disallowed_origin() {
+        let pool = db::open_memory().unwrap();
+        let token = "origin-token-abcdef";
+        let router = build_authless_mcp_router(
+            pool,
+            token,
+            None,
+            vec!["localhost".into()],
+            crate::mcp::default_allowed_origins(),
+            None,
+            realtime::RealtimeHub::new(),
+        );
+
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri(format!("/mcp/{token}"))
+            .header("host", "localhost")
+            .header("origin", "https://evil.example")
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream")
+            .body(initialize_body())
+            .unwrap();
+
+        let res = router.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn incomplete_request_does_not_block_an_independent_mcp_request() {
+        let pool = db::open_memory().unwrap();
+        let token = "independent-request-token";
+        let router = build_authless_mcp_router(
+            pool,
+            token,
+            None,
+            vec!["localhost".into()],
+            crate::mcp::default_allowed_origins(),
+            None,
+            realtime::RealtimeHub::new(),
+        );
+
+        let (body_polled_tx, body_polled_rx) = tokio::sync::oneshot::channel();
+        let mut body_polled_tx = Some(body_polled_tx);
+        let stalled_body = futures_util::stream::poll_fn(move |_| {
+            if let Some(sender) = body_polled_tx.take() {
+                let _ = sender.send(());
+            }
+            std::task::Poll::<Option<Result<Bytes, Infallible>>>::Pending
+        });
+        let stalled_request = Request::builder()
+            .method(Method::POST)
+            .uri(format!("/mcp/{token}"))
+            .header("host", "localhost")
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream")
+            .body(Body::from_stream(stalled_body))
+            .unwrap();
+        let stalled = tokio::spawn(router.clone().oneshot(stalled_request));
+        body_polled_rx.await.expect("server polled stalled body");
+
+        let valid_request = Request::builder()
+            .method(Method::POST)
+            .uri(format!("/mcp/{token}"))
+            .header("host", "localhost")
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream")
+            .body(initialize_body())
+            .unwrap();
+        let response = tokio::time::timeout(
+            std::time::Duration::from_millis(250),
+            router.oneshot(valid_request),
+        )
+        .await
+        .expect("an incomplete request must not serialize independent MCP traffic")
+        .unwrap();
+        stalled.abort();
+
+        assert_eq!(response.status(), StatusCode::OK);
     }
 }
