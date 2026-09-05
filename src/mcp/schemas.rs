@@ -133,6 +133,7 @@ pub struct UpdateIssueInput {
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct BulkUpdateInput {
     #[schemars(description = "Project ID (e.g. LIF)")]
     pub project: String,
@@ -343,13 +344,12 @@ pub struct ManageResourceInput {
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct AddCommentInput {
-    #[serde(alias = "issue")]
     #[schemars(
         description = "Issue ID (e.g. LIF-1), project page ID (e.g. LIF-DOC-1), or workspace page ID (e.g. DOC-1)"
     )]
     pub identifier: String,
-    #[serde(alias = "body")]
     #[schemars(description = "Comment content (markdown)")]
     pub content: String,
 }
@@ -530,13 +530,27 @@ pub struct ExportInput {
 
 #[cfg(test)]
 mod tests {
-    use super::AddCommentInput;
+    use super::{AddCommentInput, BulkUpdateInput};
 
     #[test]
-    fn add_comment_accepts_legacy_issue_parameter() {
-        let input: AddCommentInput =
-            serde_json::from_str(r#"{"issue":"LIF-42","body":"hello"}"#).unwrap();
-        assert_eq!(input.identifier, "LIF-42");
-        assert_eq!(input.content, "hello");
+    fn add_comment_rejects_legacy_parameter_names() {
+        let error = serde_json::from_str::<AddCommentInput>(r#"{"issue":"LIF-42","body":"hello"}"#)
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("unknown field `issue`"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn bulk_update_rejects_legacy_parameters() {
+        let error = serde_json::from_str::<BulkUpdateInput>(
+            r#"{"project":"NIXOS","identifiers":["NIXOS-84"],"status":"done"}"#,
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("unknown field `identifiers`"),
+            "{error}"
+        );
     }
 }
