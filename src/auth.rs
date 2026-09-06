@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use axum::{
     body::Body,
     extract::State,
@@ -18,6 +20,8 @@ pub struct AuthState {
     pub db: DbPool,
     pub manager: ApiKeyManagerV0,
     pub public_url: String,
+    pub issuer_is_explicit: bool,
+    pub allowed_hosts: Arc<[String]>,
     /// LIF-294: mirror of `[auth] required`. When false, a request with no
     /// credential at all passes as operator-equivalent; see `require_api_key`.
     pub required: bool,
@@ -63,6 +67,66 @@ pub fn create_api_key(
     user_id: Option<i64>,
 ) -> Result<String, crate::error::LificError> {
     create_api_key_with_expiry(db, manager, name, None, user_id)
+}
+
+/// Replace a named key after a dependent file has been published. The old key
+/// remains valid until this transaction commits.
+pub fn promote_api_key(
+    db: &DbPool,
+    provisional_name: &str,
+    name: &str,
+) -> Result<(), crate::error::LificError> {
+    db.transaction(|tx| {
+        let active: bool = tx
+            .query_row(
+                "SELECT revoked = 0 FROM api_keys WHERE name = ?1",
+                params![provisional_name],
+                |row| row.get(0),
+            )
+            .map_err(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => crate::error::LificError::NotFound(
+                    format!("no provisional key named '{provisional_name}'"),
+                ),
+                other => other.into(),
+            })?;
+        if !active {
+            return Err(crate::error::LificError::BadRequest(
+                "provisional API key is revoked".into(),
+            ));
+        }
+        let provisional_user_id: Option<i64> = tx.query_row(
+            "SELECT user_id FROM api_keys WHERE name = ?1",
+            params![provisional_name],
+            |row| row.get(0),
+        )?;
+        let target = match tx.query_row(
+            "SELECT revoked, user_id FROM api_keys WHERE name = ?1",
+            params![name],
+            |row| Ok((row.get::<_, bool>(0)?, row.get::<_, Option<i64>>(1)?)),
+        ) {
+            Ok(target) => Some(target),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(error) => return Err(error.into()),
+        };
+        if let Some((_revoked, target_user_id)) = target
+            && target_user_id != provisional_user_id
+        {
+            return Err(crate::error::LificError::BadRequest(format!(
+                "API key named '{name}' belongs to another user"
+            )));
+        }
+        tx.execute("DELETE FROM api_keys WHERE name = ?1", params![name])?;
+        let changed = tx.execute(
+            "UPDATE api_keys SET name = ?1 WHERE name = ?2 AND revoked = 0",
+            params![name, provisional_name],
+        )?;
+        if changed != 1 {
+            return Err(crate::error::LificError::Internal(
+                "provisional API key could not be promoted".into(),
+            ));
+        }
+        Ok(())
+    })
 }
 
 /// Like [`create_api_key`] but writes an optional `expires_at` (ISO 8601). Once
@@ -706,10 +770,13 @@ pub async fn require_api_key(
     // canonical protected-resource metadata lives at the path-aware well-known
     // location. Point Claude there so the `resource` it reads matches the URL
     // the user entered.
-    let www_auth = format!(
-        "Bearer resource_metadata=\"{}/.well-known/oauth-protected-resource/mcp\"",
-        auth.public_url
+    let resource_metadata = crate::oauth::protected_resource_metadata_url_for_request(
+        &auth.public_url,
+        auth.issuer_is_explicit,
+        &auth.allowed_hosts,
+        request.headers(),
     );
+    let www_auth = format!("Bearer resource_metadata=\"{resource_metadata}\"");
 
     let Some(token) = token else {
         // LIF-267: session-cookie fallback, scoped to GET /api/attachments/{id}.
@@ -871,7 +938,21 @@ pub async fn require_api_key(
         // first two answered "valid" and then "unbound", and an unbound OAuth
         // token takes the operator fallback, so revoking a tool's credential
         // could promote it. The typed outcome makes that state unrepresentable.
-        match crate::oauth::resolve_oauth_credential(&auth.db, &token) {
+        let credential = if is_mcp_request {
+            crate::oauth::resolve_oauth_credential_for_resource(
+                &auth.db,
+                &token,
+                Some(&crate::oauth::mcp_resource_for_request(
+                    &auth.public_url,
+                    auth.issuer_is_explicit,
+                    &auth.allowed_hosts,
+                    request.headers(),
+                )),
+            )
+        } else {
+            crate::oauth::resolve_oauth_credential(&auth.db, &token)
+        };
+        match credential {
             Ok(credential) => {
                 if is_mcp_request {
                     info!("/mcp authorized: OAuth token accepted");
@@ -1860,6 +1941,64 @@ mod tests {
     }
 
     #[test]
+    fn promotion_refuses_a_revoked_key_owned_by_someone_else() {
+        let pool = test_db();
+        let manager = create_key_manager().unwrap();
+        let first = seed_key_owner(&pool, "first");
+        let second = seed_key_owner(&pool, "second");
+        create_api_key(&pool, &manager, "provisional", Some(first)).unwrap();
+        create_api_key(&pool, &manager, "final", Some(second)).unwrap();
+        pool.write()
+            .unwrap()
+            .execute("UPDATE api_keys SET revoked = 1 WHERE name = 'final'", [])
+            .unwrap();
+
+        assert!(promote_api_key(&pool, "provisional", "final").is_err());
+        let conn = pool.read().unwrap();
+        let owner: Option<i64> = conn
+            .query_row(
+                "SELECT user_id FROM api_keys WHERE name = 'final'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(owner, Some(second));
+    }
+
+    #[test]
+    fn promotion_refuses_to_replace_an_active_key() {
+        let pool = test_db();
+        let manager = create_key_manager().unwrap();
+        let first = seed_key_owner(&pool, "first");
+        let second = seed_key_owner(&pool, "second");
+        create_api_key(&pool, &manager, "provisional", Some(first)).unwrap();
+        create_api_key(&pool, &manager, "final", Some(second)).unwrap();
+
+        assert!(promote_api_key(&pool, "provisional", "final").is_err());
+    }
+
+    #[test]
+    fn promotion_can_replace_a_key_owned_by_the_same_user() {
+        let pool = test_db();
+        let manager = create_key_manager().unwrap();
+        let owner = seed_key_owner(&pool, "owner");
+        create_api_key(&pool, &manager, "provisional", Some(owner)).unwrap();
+        create_api_key(&pool, &manager, "final", Some(owner)).unwrap();
+
+        promote_api_key(&pool, "provisional", "final").unwrap();
+        let count: i64 = pool
+            .read()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM api_keys WHERE name = 'final' AND revoked = 0",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
     fn verify_key_succeeds() {
         let pool = test_db();
         let manager = create_key_manager().unwrap();
@@ -2209,6 +2348,8 @@ mod tests {
             db: pool.clone(),
             manager: create_key_manager().unwrap(),
             public_url: "https://example.com".into(),
+            issuer_is_explicit: true,
+            allowed_hosts: Arc::from(Vec::<String>::new()),
             required: true,
         }
     }
@@ -2245,7 +2386,7 @@ mod tests {
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO oauth_tokens (access_token, client_id, expires_at, scope, user_id) VALUES (?1, ?2, ?3, 'mcp', ?4)",
+            "INSERT INTO oauth_tokens (access_token, client_id, expires_at, scope, user_id, resource) VALUES (?1, ?2, ?3, 'mcp', ?4, 'https://example.com/mcp')",
             params![hash, client_id, expires, user_id],
         )
         .unwrap();

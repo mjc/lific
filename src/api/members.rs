@@ -896,6 +896,8 @@ mod tests {
                 db: db.clone(),
                 manager,
                 public_url: "https://example.com".into(),
+                issuer_is_explicit: true,
+                allowed_hosts: std::sync::Arc::from(Vec::<String>::new()),
                 required: true,
             };
             let app = crate::api::router(db.clone(), &[])

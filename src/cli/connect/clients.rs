@@ -187,7 +187,7 @@ impl Os {
 /// The `top_key` is the map the server entry lives under (e.g. `mcpServers`,
 /// `servers`, `mcp`, `context_servers`, `extensions`). For Codex the value is
 /// the whole `[mcp_servers.lific]` sub-table addressed by a dotted key.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct CompiledEntry {
     /// The server name this entry is keyed under within `top_key` (always
     /// `"lific"`, taken from the canonical [`ServerConfig::name`]).
@@ -217,10 +217,10 @@ pub struct ClientSpec {
     pub oauth: OauthSupport,
     pub format: Format,
     /// The env-field name this client uses for a stdio command's environment
-    /// (LIFIC-18): `environment` for OpenCode, `env` for Claude Code and Codex,
-    /// per those tools' config schemas. `None` when the client's stdio entry
-    /// cannot carry an env map (the token is then simply not written).
-    pub stdio_env_key: Option<&'static str>,
+    /// (LIFIC-18): `environment` for OpenCode; `env` for Claude Desktop,
+    /// Claude Code, Codex, and Zed. `None` means an agent-bound stdio
+    /// configuration is unsupported and must be rejected.
+    stdio_env_key: Option<&'static str>,
     /// Compute the global-scope config path for this OS, or `None` if the
     /// client has no global config (rare).
     global_path: fn(&PathBase) -> Option<PathBuf>,
@@ -242,25 +242,35 @@ impl ClientSpec {
         }
     }
 
-    pub fn compile(&self, cfg: &ServerConfig) -> CompiledEntry {
+    /// Compile one canonical server config, rejecting identity-bearing stdio
+    /// configs when this client's schema has no documented environment map.
+    pub fn compile(&self, cfg: &ServerConfig) -> Result<CompiledEntry, String> {
         let mut entry = (self.compile)(cfg);
         // The mappers don't set `name` themselves; inject the canonical server
         // name here so there's one source of truth (always `"lific"`).
         entry.name = cfg.name.clone();
-        // LIFIC-18: for a stdio transport carrying an agent token, write the
-        // token into the client's env field as LIFIC_TOKEN so the spawned
-        // server resolves the caller as the bound agent. Clients that can't
-        // carry an env map get the token silently dropped (i.e. write nothing).
-        if let (
-            Transport::Stdio {
-                token: Some(tok), ..
-            },
-            Some(env_key),
-        ) = (&cfg.transport, self.stdio_env_key)
+        // LIFIC-18: an agent-bound stdio config is valid only when the client
+        // has a documented environment carrier. Never degrade it to operator
+        // identity by silently dropping the token.
+        if let Transport::Stdio {
+            token: Some(tok), ..
+        } = &cfg.transport
         {
+            let env_key = self.stdio_identity_env_key()?;
             entry.value[env_key] = serde_json::json!({ "LIFIC_TOKEN": tok });
         }
-        entry
+        Ok(entry)
+    }
+
+    /// Return the schema key that carries an agent token for stdio, or explain
+    /// why this client cannot preserve that identity.
+    pub fn stdio_identity_env_key(&self) -> Result<&'static str, String> {
+        self.stdio_env_key.ok_or_else(|| {
+            format!(
+                "{} cannot carry LIFIC_TOKEN in its stdio configuration",
+                self.display
+            )
+        })
     }
 
     /// Whether this client appears installed for the given scope: its config
@@ -447,7 +457,7 @@ pub fn all_clients() -> Vec<ClientSpec> {
                          config-file entry — add Lific there instead.",
             },
             format: Format::Json,
-            stdio_env_key: None,
+            stdio_env_key: Some("env"),
             global_path: |b| {
                 Some(match b.os {
                     Os::Mac => home_dot(
@@ -562,7 +572,7 @@ pub fn all_clients() -> Vec<ClientSpec> {
                 hint: "VS Code starts the browser OAuth flow on first connect",
             },
             format: Format::Json,
-            stdio_env_key: None,
+            stdio_env_key: Some("env"),
             global_path: |b| {
                 Some(match b.os {
                     Os::Mac => home_dot(
@@ -670,7 +680,7 @@ pub fn all_clients() -> Vec<ClientSpec> {
                 hint: "Zed runs the OAuth flow automatically when no header is set",
             },
             format: Format::Json,
-            stdio_env_key: None,
+            stdio_env_key: Some("env"),
             global_path: |b| Some(config_dir(b, &["zed", "settings.json"])),
             project_path: |_| None,
             detect_extra: |b, scope| match scope {
@@ -714,7 +724,7 @@ pub fn all_clients() -> Vec<ClientSpec> {
                 hint: "run /mcp auth lific inside Gemini CLI",
             },
             format: Format::Json,
-            stdio_env_key: None,
+            stdio_env_key: Some("env"),
             global_path: |b| Some(home_dot(b, &[".gemini", "settings.json"])),
             project_path: |b| Some(project_rel(b, &[".gemini", "settings.json"])),
             detect_extra: |b, scope| match scope {
@@ -941,41 +951,190 @@ mod tests {
         }
     }
 
+    const FIXTURE_URL: &str = "http://127.0.0.1:3456/mcp";
+    const FIXTURE_DB_PATH: &str = "/abs/lific.db";
+    const FIXTURE_API_KEY: &str = "lific_sk-live-KEY";
+    const FIXTURE_AGENT_TOKEN: &str = "lific_sk-live-AGENTTOKEN";
+
     fn remote_cfg() -> ServerConfig {
-        ServerConfig::remote("http://127.0.0.1:3456/mcp", "lific_sk-live-KEY")
+        ServerConfig::remote(FIXTURE_URL, FIXTURE_API_KEY)
     }
 
     fn stdio_cfg() -> ServerConfig {
-        ServerConfig::stdio("/abs/lific.db")
+        ServerConfig::stdio(FIXTURE_DB_PATH)
     }
 
     fn stdio_token_cfg() -> ServerConfig {
-        ServerConfig::stdio_with_token("/abs/lific.db", "lific_sk-live-AGENTTOKEN")
+        ServerConfig::stdio_with_token(FIXTURE_DB_PATH, FIXTURE_AGENT_TOKEN)
     }
 
     fn oauth_cfg() -> ServerConfig {
-        ServerConfig::oauth_remote("http://127.0.0.1:3456/mcp")
+        ServerConfig::oauth_remote(FIXTURE_URL)
+    }
+
+    fn stdio_args() -> serde_json::Value {
+        serde_json::json!(["--db", FIXTURE_DB_PATH, "mcp"])
+    }
+
+    fn token_env() -> serde_json::Value {
+        serde_json::json!({ "LIFIC_TOKEN": FIXTURE_AGENT_TOKEN })
+    }
+
+    fn bearer_headers() -> serde_json::Value {
+        serde_json::json!({ "Authorization": format!("Bearer {FIXTURE_API_KEY}") })
+    }
+
+    #[derive(Clone, Copy)]
+    enum StdioShape {
+        Plain,
+        Typed,
+    }
+
+    impl StdioShape {
+        fn expected(self, with_token: bool) -> serde_json::Value {
+            let mut value = serde_json::json!({
+                "command": "lific",
+                "args": stdio_args(),
+            });
+            if matches!(self, Self::Typed) {
+                value["type"] = "stdio".into();
+            }
+            if with_token {
+                value["env"] = token_env();
+            }
+            value
+        }
+    }
+
+    struct LifecycleFixture {
+        client: &'static str,
+        top_key: &'static str,
+        remote: serde_json::Value,
+        oauth: Option<serde_json::Value>,
+        stdio: StdioShape,
+    }
+
+    impl LifecycleFixture {
+        fn assert_config(
+            &self,
+            lifecycle: &'static str,
+            config: ServerConfig,
+            expected: serde_json::Value,
+        ) {
+            let entry = find_client(self.client)
+                .unwrap()
+                .compile(&config)
+                .unwrap_or_else(|error| {
+                    panic!("{} {lifecycle} failed to compile: {error}", self.client)
+                });
+            assert_eq!(entry.name, "lific", "{} {lifecycle} name", self.client);
+            assert_eq!(
+                entry.top_key, self.top_key,
+                "{} {lifecycle} top-level key",
+                self.client
+            );
+            assert_eq!(entry.value, expected, "{} {lifecycle} config", self.client);
+        }
+
+        fn assert(&self) {
+            self.assert_config("HTTP bearer", remote_cfg(), self.remote.clone());
+            if let Some(oauth) = &self.oauth {
+                self.assert_config("HTTP OAuth", oauth_cfg(), oauth.clone());
+            }
+            self.assert_config(
+                "retained operator stdio",
+                stdio_cfg(),
+                self.stdio.expected(false),
+            );
+            self.assert_config(
+                "retained stdio with agent identity",
+                stdio_token_cfg(),
+                self.stdio.expected(true),
+            );
+        }
+    }
+
+    #[test]
+    fn named_clients_match_declared_lifecycle_fixtures() {
+        let fixtures = [
+            LifecycleFixture {
+                client: "codex",
+                top_key: "mcp_servers.lific",
+                remote: serde_json::json!({
+                    "url": FIXTURE_URL,
+                    "bearer_token_env_var": "LIFIC_API_KEY",
+                }),
+                oauth: Some(serde_json::json!({
+                    "url": FIXTURE_URL,
+                })),
+                stdio: StdioShape::Plain,
+            },
+            LifecycleFixture {
+                client: "claude-code",
+                top_key: "mcpServers",
+                remote: serde_json::json!({
+                    "type": "http",
+                    "url": FIXTURE_URL,
+                    "headers": bearer_headers(),
+                }),
+                oauth: Some(serde_json::json!({
+                    "type": "http",
+                    "url": FIXTURE_URL,
+                })),
+                stdio: StdioShape::Typed,
+            },
+            LifecycleFixture {
+                client: "claude-desktop",
+                top_key: "mcpServers",
+                remote: serde_json::json!({
+                    "command": "npx",
+                    "args": [
+                        "-y",
+                        "mcp-remote",
+                        FIXTURE_URL,
+                        "--header",
+                        format!("Authorization: Bearer {FIXTURE_API_KEY}"),
+                    ],
+                }),
+                oauth: None,
+                stdio: StdioShape::Plain,
+            },
+            LifecycleFixture {
+                client: "zed",
+                top_key: "context_servers",
+                remote: serde_json::json!({
+                    "url": FIXTURE_URL,
+                    "headers": bearer_headers(),
+                }),
+                oauth: Some(serde_json::json!({
+                    "url": FIXTURE_URL,
+                })),
+                stdio: StdioShape::Plain,
+            },
+        ];
+
+        for fixture in fixtures {
+            fixture.assert();
+        }
+
+        assert!(matches!(
+            find_client("claude-desktop").unwrap().oauth,
+            OauthSupport::Unsupported { .. }
+        ));
     }
 
     #[test]
     fn opencode_oauth_has_url_but_no_headers() {
-        let e = find_client("opencode").unwrap().compile(&oauth_cfg());
+        let e = find_client("opencode")
+            .unwrap()
+            .compile(&oauth_cfg())
+            .unwrap();
         assert_eq!(e.value["url"], "http://127.0.0.1:3456/mcp");
         assert!(
             e.value.get("headers").is_none(),
             "oauth opencode entry must have no headers"
         );
         assert_eq!(e.value["type"], "remote");
-    }
-
-    #[test]
-    fn codex_oauth_has_url_and_no_bearer_env_var() {
-        let e = find_client("codex").unwrap().compile(&oauth_cfg());
-        assert_eq!(e.value["url"], "http://127.0.0.1:3456/mcp");
-        assert!(
-            e.value.get("bearer_token_env_var").is_none(),
-            "oauth codex entry must not set bearer_token_env_var"
-        );
     }
 
     #[test]
@@ -1035,7 +1194,10 @@ mod tests {
 
     #[test]
     fn opencode_remote_uses_type_remote_and_headers() {
-        let e = find_client("opencode").unwrap().compile(&remote_cfg());
+        let e = find_client("opencode")
+            .unwrap()
+            .compile(&remote_cfg())
+            .unwrap();
         assert_eq!(e.top_key, "mcp");
         assert_eq!(e.value["type"], "remote");
         assert_eq!(e.value["url"], "http://127.0.0.1:3456/mcp");
@@ -1048,19 +1210,26 @@ mod tests {
 
     #[test]
     fn opencode_stdio_uses_type_local_and_command_array() {
-        let e = find_client("opencode").unwrap().compile(&stdio_cfg());
+        let e = find_client("opencode")
+            .unwrap()
+            .compile(&stdio_cfg())
+            .unwrap();
         assert_eq!(e.value["type"], "local");
         assert_eq!(
             e.value["command"],
             serde_json::json!(["lific", "--db", "/abs/lific.db", "mcp"])
         );
+        assert!(e.value.get("environment").is_none());
     }
 
     // ── LIFIC-18: stdio agent token → env field ────────────────────────────
 
     #[test]
     fn opencode_stdio_token_writes_into_environment_field() {
-        let e = find_client("opencode").unwrap().compile(&stdio_token_cfg());
+        let e = find_client("opencode")
+            .unwrap()
+            .compile(&stdio_token_cfg())
+            .unwrap();
         assert_eq!(e.value["type"], "local");
         // Command stays unchanged.
         assert_eq!(
@@ -1075,67 +1244,47 @@ mod tests {
     }
 
     #[test]
-    fn claude_code_stdio_token_writes_into_env_field() {
-        let e = find_client("claude-code")
+    fn stdio_token_for_env_incapable_client_is_rejected() {
+        let error = find_client("cursor")
             .unwrap()
-            .compile(&stdio_token_cfg());
-        assert_eq!(e.value["type"], "stdio");
-        assert_eq!(e.value["env"]["LIFIC_TOKEN"], "lific_sk-live-AGENTTOKEN");
-    }
-
-    #[test]
-    fn codex_stdio_token_writes_into_env_field() {
-        let e = find_client("codex").unwrap().compile(&stdio_token_cfg());
-        assert_eq!(e.value["env"]["LIFIC_TOKEN"], "lific_sk-live-AGENTTOKEN");
-    }
-
-    #[test]
-    fn stdio_without_token_writes_no_env_entry() {
-        // A plain stdio config (operator, no agent) must not invent an env map.
-        for id in ["opencode", "claude-code", "codex"] {
-            let e = find_client(id).unwrap().compile(&stdio_cfg());
-            assert!(
-                e.value.get("environment").is_none() && e.value.get("env").is_none(),
-                "{id} plain stdio must not write an env field"
-            );
-        }
-    }
-
-    #[test]
-    fn stdio_token_for_env_incapable_client_is_dropped() {
-        // Clients with no documented env field (well, cursor here as stand-in)
-        // must not write the token into an invented key.
-        let e = find_client("cursor").unwrap().compile(&stdio_token_cfg());
-        assert!(e.value.get("env").is_none());
-        assert!(e.value.get("environment").is_none());
-        // The stdio command still stands.
-        assert_eq!(e.value["command"], "lific");
+            .compile(&stdio_token_cfg())
+            .unwrap_err();
+        assert!(error.contains("cannot carry LIFIC_TOKEN"), "{error}");
     }
 
     #[test]
     fn connect_stdio_env_uses_per_client_env_key() {
-        // opencode=environment, claude-code & codex=env — the three named in
-        // the spec. Others are None.
+        // opencode=environment; Claude, Claude Code, VS Code, Codex, Zed, and
+        // Gemini=env. Others are None.
         let spec_env = |id: &str| find_client(id).unwrap().stdio_env_key;
         assert_eq!(spec_env("opencode"), Some("environment"));
         assert_eq!(spec_env("claude-code"), Some("env"));
+        assert_eq!(spec_env("claude-desktop"), Some("env"));
+        assert_eq!(spec_env("vscode"), Some("env"));
         assert_eq!(spec_env("codex"), Some("env"));
-        for id in [
-            "claude-desktop",
-            "cursor",
-            "vscode",
-            "zed",
-            "gemini",
-            "windsurf",
-            "goose",
-            "crush",
-        ] {
+        assert_eq!(spec_env("zed"), Some("env"));
+        assert_eq!(spec_env("gemini"), Some("env"));
+        for id in ["cursor", "windsurf", "goose", "crush"] {
             assert_eq!(spec_env(id), None, "{id} has no documented stdio env field");
         }
     }
 
     #[test]
-    fn claude_code_paths_and_http_type() {
+    fn vscode_and_gemini_stdio_preserve_agent_identity() {
+        for id in ["vscode", "gemini"] {
+            let entry = find_client(id)
+                .unwrap()
+                .compile(&stdio_token_cfg())
+                .unwrap();
+            assert_eq!(
+                entry.value["env"]["LIFIC_TOKEN"], "lific_sk-live-AGENTTOKEN",
+                "{id} must carry the connected agent identity"
+            );
+        }
+    }
+
+    #[test]
+    fn claude_code_paths() {
         let base = linux_base();
         let c = find_client("claude-code").unwrap();
         assert_eq!(
@@ -1146,23 +1295,14 @@ mod tests {
             c.path_for(&base, Scope::Project).unwrap(),
             PathBuf::from("/proj/.mcp.json")
         );
-        let e = c.compile(&remote_cfg());
-        assert_eq!(e.top_key, "mcpServers");
-        assert_eq!(e.value["type"], "http");
     }
 
     #[test]
-    fn claude_desktop_remote_uses_mcp_remote_shim() {
+    fn claude_desktop_remote_has_shim_note() {
         let e = find_client("claude-desktop")
             .unwrap()
-            .compile(&remote_cfg());
-        assert_eq!(e.value["command"], "npx");
-        let args = e.value["args"].as_array().unwrap();
-        assert!(args.iter().any(|a| a == "mcp-remote"));
-        assert!(
-            args.iter()
-                .any(|a| a.as_str() == Some("Authorization: Bearer lific_sk-live-KEY"))
-        );
+            .compile(&remote_cfg())
+            .unwrap();
         assert!(!e.notes.is_empty(), "shim note should be present");
     }
 
@@ -1215,7 +1355,10 @@ mod tests {
 
     #[test]
     fn vscode_uses_servers_key_not_mcpservers() {
-        let e = find_client("vscode").unwrap().compile(&remote_cfg());
+        let e = find_client("vscode")
+            .unwrap()
+            .compile(&remote_cfg())
+            .unwrap();
         assert_eq!(e.top_key, "servers");
         assert_eq!(e.value["type"], "http");
     }
@@ -1239,7 +1382,10 @@ mod tests {
 
     #[test]
     fn cursor_remote_uses_bare_url_and_headers() {
-        let e = find_client("cursor").unwrap().compile(&remote_cfg());
+        let e = find_client("cursor")
+            .unwrap()
+            .compile(&remote_cfg())
+            .unwrap();
         assert_eq!(e.top_key, "mcpServers");
         assert_eq!(e.value["url"], "http://127.0.0.1:3456/mcp");
         assert!(e.value.get("type").is_none());
@@ -1247,7 +1393,10 @@ mod tests {
 
     #[test]
     fn gemini_remote_uses_httpurl_not_url() {
-        let e = find_client("gemini").unwrap().compile(&remote_cfg());
+        let e = find_client("gemini")
+            .unwrap()
+            .compile(&remote_cfg())
+            .unwrap();
         assert_eq!(e.value["httpUrl"], "http://127.0.0.1:3456/mcp");
         assert!(
             e.value.get("url").is_none(),
@@ -1257,7 +1406,10 @@ mod tests {
 
     #[test]
     fn windsurf_remote_uses_serverurl_not_url() {
-        let e = find_client("windsurf").unwrap().compile(&remote_cfg());
+        let e = find_client("windsurf")
+            .unwrap()
+            .compile(&remote_cfg())
+            .unwrap();
         assert_eq!(e.value["serverUrl"], "http://127.0.0.1:3456/mcp");
         assert!(
             e.value.get("url").is_none(),
@@ -1277,28 +1429,20 @@ mod tests {
     }
 
     #[test]
-    fn codex_remote_uses_env_var_and_dotted_key() {
-        let e = find_client("codex").unwrap().compile(&remote_cfg());
-        assert_eq!(e.top_key, "mcp_servers.lific");
-        assert_eq!(e.value["url"], "http://127.0.0.1:3456/mcp");
-        assert_eq!(e.value["bearer_token_env_var"], "LIFIC_API_KEY");
-        // The key itself is NEVER written inline for Codex.
-        assert!(
-            !e.value.to_string().contains("lific_sk-live-KEY"),
-            "codex must not inline the bearer key"
-        );
+    fn codex_remote_has_env_setup_note() {
+        let e = find_client("codex")
+            .unwrap()
+            .compile(&remote_cfg())
+            .unwrap();
         assert!(!e.notes.is_empty());
     }
 
     #[test]
-    fn zed_uses_context_servers_key() {
-        let e = find_client("zed").unwrap().compile(&remote_cfg());
-        assert_eq!(e.top_key, "context_servers");
-    }
-
-    #[test]
     fn goose_remote_uses_streamable_http_and_uri() {
-        let e = find_client("goose").unwrap().compile(&remote_cfg());
+        let e = find_client("goose")
+            .unwrap()
+            .compile(&remote_cfg())
+            .unwrap();
         assert_eq!(e.top_key, "extensions");
         assert_eq!(e.value["type"], "streamable_http");
         assert_eq!(e.value["uri"], "http://127.0.0.1:3456/mcp");
@@ -1314,7 +1458,7 @@ mod tests {
             c.path_for(&base, Scope::Project).unwrap(),
             PathBuf::from("/proj/crush.json")
         );
-        let e = c.compile(&remote_cfg());
+        let e = c.compile(&remote_cfg()).unwrap();
         assert_eq!(e.top_key, "mcp");
         assert_eq!(e.value["type"], "http");
     }
