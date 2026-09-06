@@ -261,7 +261,9 @@ pub(crate) fn mcp_resource_for_request(
     headers: &HeaderMap,
 ) -> String {
     let issuer = effective_issuer_for_request(issuer, issuer_is_explicit, allowed_hosts, headers);
-    let mut url = reqwest::Url::parse(&issuer).expect("OAuth issuer must be an absolute URL");
+    let Ok(mut url) = reqwest::Url::parse(&issuer) else {
+        return format!("{}/mcp", issuer.trim_end_matches('/'));
+    };
     let path = url.path().trim_end_matches('/');
     url.set_path(&format!("{path}/mcp"));
     url.set_query(None);
@@ -2890,6 +2892,33 @@ mod resource_tests {
             Err(OAuthReject::Invalid)
         ));
     }
+
+    #[test]
+    fn pre_resource_tokens_remain_usable_on_mcp() {
+        let db = crate::db::open_memory().expect("test db");
+        let token = "lific_at_pre-resource-test";
+        let hash = sha256_hex(token.as_bytes());
+        let expires = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+        db.write()
+            .unwrap()
+            .execute(
+                "INSERT INTO oauth_clients (client_id, client_name, redirect_uris) VALUES ('legacy-client', 'Legacy', '[\"http://localhost\"]')",
+                [],
+            )
+            .unwrap();
+        db.write()
+            .unwrap()
+            .execute(
+                "INSERT INTO oauth_tokens (access_token, client_id, expires_at, scope) VALUES (?1, 'legacy-client', ?2, 'mcp')",
+                params![hash, expires],
+            )
+            .unwrap();
+
+        assert!(matches!(
+            resolve_oauth_credential_for_resource(&db, token, Some("https://example.com/mcp")),
+            Ok(OAuthCredential::LegacyUnbound)
+        ));
+    }
 }
 
 /// Decode a lowercase/uppercase hex string into bytes. Returns `Err(())` on
@@ -3019,7 +3048,7 @@ pub(crate) fn resolve_oauth_credential_for_resource(
              LEFT JOIN users owner ON owner.id = user.owner_id
              WHERE token.access_token = ?1 AND token.revoked = 0
                AND datetime(token.expires_at) > datetime('now')
-               AND (?2 IS NULL OR token.resource = ?2)",
+               AND (?2 IS NULL OR token.resource = ?2 OR token.resource IS NULL)",
             params![token_hash, resource],
             |row| {
                 Ok(CredentialRow {

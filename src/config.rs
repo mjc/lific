@@ -93,6 +93,9 @@ pub enum ConfigError {
         #[source]
         source: Box<toml::de::Error>,
     },
+
+    #[error("invalid config {}: {message}", path.display())]
+    Invalid { path: PathBuf, message: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -418,6 +421,14 @@ impl Config {
                 Ok(_) => match read_config_file(path) {
                     Ok(file) => match toml::from_str::<Config>(&file.contents) {
                         Ok(mut config) => {
+                            if let Some(public_url) = config.server.public_url.as_deref()
+                                && let Err(message) = validate_public_url(public_url)
+                            {
+                                return Err(ConfigError::Invalid {
+                                    path: path.clone(),
+                                    message,
+                                });
+                            }
                             if let Err(source) = tighten_config_permissions(&file)
                                 && source.kind() != std::io::ErrorKind::PermissionDenied
                             {
@@ -576,6 +587,24 @@ impl Config {
     }
 }
 
+fn validate_public_url(public_url: &str) -> Result<(), String> {
+    let url = reqwest::Url::parse(public_url)
+        .map_err(|_| "server.public_url must be an absolute URL".to_string())?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(
+            "server.public_url must be an HTTP(S) URL without credentials, query, or fragment"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -636,6 +665,18 @@ enabled = false
         assert_eq!(config.server.host, "127.0.0.1");
         assert_eq!(config.database.path, PathBuf::from(ABSOLUTE_DB_PATH));
         assert!(!config.backup.enabled);
+    }
+
+    #[test]
+    fn invalid_public_url_is_rejected_during_config_load() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("lific.toml");
+        std::fs::write(&path, "[server]\npublic_url = \"not an absolute URL\"\n").unwrap();
+
+        assert!(matches!(
+            Config::load(Some(&path)),
+            Err(ConfigError::Invalid { .. })
+        ));
     }
 
     #[cfg(unix)]

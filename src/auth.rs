@@ -94,6 +94,27 @@ pub fn promote_api_key(
                 "provisional API key is revoked".into(),
             ));
         }
+        let provisional_user_id: Option<i64> = tx.query_row(
+            "SELECT user_id FROM api_keys WHERE name = ?1",
+            params![provisional_name],
+            |row| row.get(0),
+        )?;
+        let target = match tx.query_row(
+            "SELECT revoked, user_id FROM api_keys WHERE name = ?1",
+            params![name],
+            |row| Ok((row.get::<_, bool>(0)?, row.get::<_, Option<i64>>(1)?)),
+        ) {
+            Ok(target) => Some(target),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(error) => return Err(error.into()),
+        };
+        if let Some((_revoked, target_user_id)) = target
+            && target_user_id != provisional_user_id
+        {
+            return Err(crate::error::LificError::BadRequest(format!(
+                "API key named '{name}' belongs to another user"
+            )));
+        }
         tx.execute("DELETE FROM api_keys WHERE name = ?1", params![name])?;
         let changed = tx.execute(
             "UPDATE api_keys SET name = ?1 WHERE name = ?2 AND revoked = 0",
@@ -1917,6 +1938,64 @@ mod tests {
                 "the refused mint wrote nothing"
             );
         }
+    }
+
+    #[test]
+    fn promotion_refuses_a_revoked_key_owned_by_someone_else() {
+        let pool = test_db();
+        let manager = create_key_manager().unwrap();
+        let first = seed_key_owner(&pool, "first");
+        let second = seed_key_owner(&pool, "second");
+        create_api_key(&pool, &manager, "provisional", Some(first)).unwrap();
+        create_api_key(&pool, &manager, "final", Some(second)).unwrap();
+        pool.write()
+            .unwrap()
+            .execute("UPDATE api_keys SET revoked = 1 WHERE name = 'final'", [])
+            .unwrap();
+
+        assert!(promote_api_key(&pool, "provisional", "final").is_err());
+        let conn = pool.read().unwrap();
+        let owner: Option<i64> = conn
+            .query_row(
+                "SELECT user_id FROM api_keys WHERE name = 'final'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(owner, Some(second));
+    }
+
+    #[test]
+    fn promotion_refuses_to_replace_an_active_key() {
+        let pool = test_db();
+        let manager = create_key_manager().unwrap();
+        let first = seed_key_owner(&pool, "first");
+        let second = seed_key_owner(&pool, "second");
+        create_api_key(&pool, &manager, "provisional", Some(first)).unwrap();
+        create_api_key(&pool, &manager, "final", Some(second)).unwrap();
+
+        assert!(promote_api_key(&pool, "provisional", "final").is_err());
+    }
+
+    #[test]
+    fn promotion_can_replace_a_key_owned_by_the_same_user() {
+        let pool = test_db();
+        let manager = create_key_manager().unwrap();
+        let owner = seed_key_owner(&pool, "owner");
+        create_api_key(&pool, &manager, "provisional", Some(owner)).unwrap();
+        create_api_key(&pool, &manager, "final", Some(owner)).unwrap();
+
+        promote_api_key(&pool, "provisional", "final").unwrap();
+        let count: i64 = pool
+            .read()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM api_keys WHERE name = 'final' AND revoked = 0",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
     }
 
     #[test]

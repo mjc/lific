@@ -6,6 +6,15 @@ use serde_json::{Value, json};
 
 #[test]
 fn legacy_stdio_process_negotiates_lists_and_calls() {
+    assert_legacy_stdio_process("2025-11-25");
+}
+
+#[test]
+fn legacy_stdio_process_negotiates_june_lists_and_calls() {
+    assert_legacy_stdio_process("2025-06-18");
+}
+
+fn assert_legacy_stdio_process(protocol_version: &str) {
     let scratch = tempfile::tempdir().expect("create scratch directory");
     let mut child = Command::new(env!("CARGO_BIN_EXE_lific"))
         .args([
@@ -29,7 +38,7 @@ fn legacy_stdio_process_negotiates_lists_and_calls() {
             "id": 41,
             "method": "initialize",
             "params": {
-                "protocolVersion": "2025-11-25",
+                "protocolVersion": protocol_version,
                 "capabilities": {},
                 "clientInfo": {"name": "lific-process-test", "version": "1"}
             }
@@ -123,7 +132,7 @@ fn legacy_stdio_process_negotiates_lists_and_calls() {
             .find(|response| response["id"] == id)
             .unwrap_or_else(|| panic!("missing response {id}: {responses:?}"))
     };
-    assert_eq!(response(41)["result"]["protocolVersion"], "2025-11-25");
+    assert_eq!(response(41)["result"]["protocolVersion"], protocol_version);
     assert!(response(17)["result"]["tools"].is_array());
     assert!(response(88)["result"]["content"].is_array());
     assert_eq!(response(89)["result"]["isError"], true);

@@ -443,7 +443,7 @@ fn build_app_with_store(
         // /api/* but is effectively shadowed by this outer one.
         .layer(build_global_cors(&cfg.server.cors_origins))
         .layer(middleware::from_fn_with_state(
-            mcp_allowed_origins,
+            Arc::<[String]>::from(mcp_allowed_origins),
             mcp_origin_middleware,
         ))
         .layer(axum::extract::DefaultBodyLimit::max(2 * 1024 * 1024)) // 2 MB
@@ -723,7 +723,7 @@ fn build_authless_mcp_router(
 }
 
 async fn mcp_origin_middleware(
-    axum::extract::State(allowed_origins): axum::extract::State<Vec<String>>,
+    axum::extract::State(allowed_origins): axum::extract::State<Arc<[String]>>,
     request: Request<Body>,
     next: middleware::Next,
 ) -> axum::response::Response {
@@ -917,7 +917,7 @@ mod cors_tests {
             .route("/mcp", post(|| async { StatusCode::OK.into_response() }))
             .layer(build_global_cors(&[]))
             .layer(middleware::from_fn_with_state(
-                origins.to_vec(),
+                Arc::<[String]>::from(origins.to_vec()),
                 mcp_origin_middleware,
             ))
     }
@@ -1164,6 +1164,16 @@ mod authless_mcp_tests {
         session_id: &str,
         body: serde_json::Value,
     ) -> axum::response::Response {
+        post_session_for(router, token, session_id, "2025-11-25", body).await
+    }
+
+    async fn post_session_for(
+        router: Router,
+        token: &str,
+        session_id: &str,
+        protocol_version: &str,
+        body: serde_json::Value,
+    ) -> axum::response::Response {
         router
             .oneshot(
                 Request::builder()
@@ -1172,7 +1182,7 @@ mod authless_mcp_tests {
                     .header("host", "localhost")
                     .header("content-type", "application/json")
                     .header("accept", "application/json, text/event-stream")
-                    .header("mcp-protocol-version", "2025-11-25")
+                    .header("mcp-protocol-version", protocol_version)
                     .header("mcp-session-id", session_id)
                     .body(Body::from(serde_json::to_vec(&body).unwrap()))
                     .unwrap(),
@@ -1299,6 +1309,105 @@ mod authless_mcp_tests {
         let malformed = jsonrpc_body(&malformed.into_body().collect().await.unwrap().to_bytes());
         assert_eq!(malformed["result"]["isError"], true);
         assert!(malformed.get("error").is_none());
+    }
+
+    #[tokio::test]
+    async fn legacy_june_version_completes_http_lifecycle() {
+        let pool = db::open_memory().unwrap();
+        let token = "legacy-june-token";
+        let router = build_authless_mcp_router(
+            pool,
+            token,
+            None,
+            vec!["localhost".into()],
+            crate::mcp::default_allowed_origins(),
+            None,
+            realtime::RealtimeHub::new(),
+        );
+        let version = "2025-06-18";
+        let initialize = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": version,
+                "capabilities": {},
+                "clientInfo": {"name": "legacy-june-test", "version": "1"}
+            }
+        });
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(format!("/mcp/{token}"))
+                    .header("host", "localhost")
+                    .header("content-type", "application/json")
+                    .header("accept", "application/json, text/event-stream")
+                    .body(Body::from(serde_json::to_vec(&initialize).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let session_id = response
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|value| value.to_str().ok())
+            .unwrap()
+            .to_owned();
+        let initialized = post_session_for(
+            router.clone(),
+            token,
+            &session_id,
+            version,
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized",
+                "params": {}
+            }),
+        )
+        .await;
+        assert!(initialized.status().is_success());
+        let tools = post_session_for(
+            router.clone(),
+            token,
+            &session_id,
+            version,
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/list",
+                "params": {}
+            }),
+        )
+        .await;
+        assert_eq!(tools.status(), StatusCode::OK);
+        assert!(
+            jsonrpc_body(&tools.into_body().collect().await.unwrap().to_bytes())["result"]["tools"]
+                .is_array()
+        );
+        let call = post_session_for(
+            router,
+            token,
+            &session_id,
+            version,
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {
+                    "name": "search",
+                    "arguments": {"query": "legacy-june-no-match"}
+                }
+            }),
+        )
+        .await;
+        assert_eq!(call.status(), StatusCode::OK);
+        assert_eq!(
+            jsonrpc_body(&call.into_body().collect().await.unwrap().to_bytes())["result"]["isError"],
+            false
+        );
     }
 
     #[tokio::test]

@@ -12,9 +12,10 @@
 //! YAML: `serde_yaml` round-trip (YAML comments are lost — this is called out
 //!       in the per-client notes surfaced to the user).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use super::clients::{CompiledEntry, Format};
+use fs2::FileExt;
 
 /// What a write did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,6 +92,34 @@ impl std::fmt::Display for WriteError {
 
 impl std::error::Error for WriteError {}
 
+pub(super) struct ConfigLock {
+    _file: std::fs::File,
+}
+
+fn lock_path(path: &Path) -> PathBuf {
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    path.with_file_name(format!(".{name}.lific.lock"))
+}
+
+pub(super) fn lock(path: &Path) -> Result<ConfigLock, WriteError> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    if !parent.as_os_str().is_empty() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| WriteError::new(format!("failed to create {}: {e}", parent.display())))?;
+    }
+    let lock_path = lock_path(path);
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .map_err(|e| WriteError::new(format!("failed to open {}: {e}", lock_path.display())))?;
+    file.lock_exclusive()
+        .map_err(|e| WriteError::new(format!("failed to lock {}: {e}", path.display())))?;
+    Ok(ConfigLock { _file: file })
+}
+
 /// Render the full file contents that *would* be written for `entry` merged
 /// into whatever currently exists at `path`, without writing anything. Used by
 /// both `--dry-run` and the real write path (which then just writes the result).
@@ -127,11 +156,27 @@ fn render_from(
 
 /// Merge `entry` into the config at `path` and write it back, creating parent
 /// directories as needed. Returns whether the file was created or updated.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(super) fn write(
     path: &Path,
     format: Format,
     entry: &CompiledEntry,
 ) -> Result<Action, WriteError> {
+    let _lock = lock(path)?;
+    write_locked(path, format, entry)
+}
+
+pub(super) fn write_with_lock(
+    path: &Path,
+    format: Format,
+    entry: &CompiledEntry,
+) -> Result<(Action, ConfigLock), WriteError> {
+    let lock = lock(path)?;
+    let action = write_locked(path, format, entry)?;
+    Ok((action, lock))
+}
+
+fn write_locked(path: &Path, format: Format, entry: &CompiledEntry) -> Result<Action, WriteError> {
     let existing = read_existing(path)?;
     let rendered = render_from(existing.as_ref(), format, entry)?;
     let parent_existed = path.parent().is_none_or(|parent| parent.exists());
@@ -909,7 +954,12 @@ mod tests {
         for entry in std::fs::read_dir(&dir).unwrap() {
             let entry = entry.unwrap();
             if entry.file_type().unwrap().is_file() {
-                assert_eq!(entry.path(), target, "unexpected file {:?}", entry.path());
+                let entry_path = entry.path();
+                assert!(
+                    entry_path == target || entry_path == lock_path(&path),
+                    "unexpected file {:?}",
+                    entry_path
+                );
             }
         }
     }

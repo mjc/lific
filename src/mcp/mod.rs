@@ -282,13 +282,14 @@ impl McpRequestContext {
         }
     }
 
-    fn from_transport(context: &rmcp::service::RequestContext<rmcp::service::RoleServer>) -> Self {
+    fn from_transport(
+        context: &rmcp::service::RequestContext<rmcp::service::RoleServer>,
+    ) -> Option<Self> {
         context
             .extensions
             .get::<axum::http::request::Parts>()
             .and_then(|parts| parts.extensions.get::<Self>())
             .cloned()
-            .unwrap_or_default()
     }
 }
 
@@ -438,6 +439,7 @@ pub struct LificMcp {
     /// identity arrives in [`McpRequestContext`]; a tokenless local stdio
     /// session keeps its credential-less operator behavior.
     stdio_auth: Option<Arc<StdioAuth>>,
+    is_stdio: bool,
 }
 
 impl LificMcp {
@@ -457,6 +459,7 @@ impl LificMcp {
             store,
             tool_router: Self::create_tool_router(),
             stdio_auth: None,
+            is_stdio: false,
         }
     }
 
@@ -469,6 +472,7 @@ impl LificMcp {
     pub fn for_stdio(db: DbPool, auth: Option<StdioAuth>) -> Self {
         Self {
             stdio_auth: auth.map(Arc::new),
+            is_stdio: true,
             ..Self::with_realtime(db, RealtimeHub::new())
         }
     }
@@ -699,10 +703,20 @@ impl ServerHandler for LificMcp {
     ) -> impl std::future::Future<Output = Result<rmcp::model::CallToolResponse, rmcp::ErrorData>>
     + rmcp::service::MaybeSendFuture
     + '_ {
-        let request_context = McpRequestContext::from_transport(&context);
-        let tool_context =
-            rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
         async move {
+            let request_context = match McpRequestContext::from_transport(&context) {
+                Some(request_context) => request_context,
+                None if self.is_stdio => McpRequestContext::default(),
+                None => {
+                    return Ok(rmcp::model::CallToolResponse::from(
+                        rmcp::model::CallToolResult::error(vec![rmcp::model::ContentBlock::text(
+                            "MCP request context was missing; the tool was not run",
+                        )]),
+                    ));
+                }
+            };
+            let tool_context =
+                rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
             self.dispatch_tool_with_context(request_context, || async {
                 self.tool_router.call(tool_context).await
             })

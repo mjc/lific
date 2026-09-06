@@ -879,8 +879,8 @@ fn write_all_clients(
                 }),
             }
         } else {
-            match writer::write(&path, spec.format, &entry) {
-                Ok(action) => {
+            match writer::write_with_lock(&path, spec.format, &entry) {
+                Ok((action, _lock)) => {
                     if let Some(credential) = credential.as_ref()
                         && let Err(error) = credential.promote(pool)
                     {
@@ -890,6 +890,7 @@ fn write_all_clients(
                             format: spec.format.as_str().to_string(),
                             path: Some(path),
                             notes: entry.notes.clone(),
+                            key: out_key.clone(),
                             error: Some(format!(
                                 "config was written, but credential promotion failed: {error}"
                             )),
@@ -924,6 +925,7 @@ fn write_all_clients(
                         format: spec.format.as_str().to_string(),
                         path: Some(path),
                         notes: entry.notes.clone(),
+                        key: out_key.clone(),
                         error: Some(e.message.clone()),
                         manual_snippet: e.manual_snippet,
                         ..Default::default()

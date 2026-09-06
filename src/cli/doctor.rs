@@ -202,16 +202,25 @@ pub async fn build_report_with_config_path(
     // credential store keyed by the server's public_url when set, else the
     // loopback base, since that's how `lific login` would have keyed it.
     let cred_base = cfg.server.public_url.as_deref().unwrap_or(&base);
-    let (effective_key, key_source): (
+    let (effective_key, key_source, credential_error): (
         Option<String>,
         Option<crate::cli::credentials::TokenSource>,
+        Option<String>,
     ) = match key {
-        Some(k) => (Some(k.to_string()), None),
+        Some(k) => (Some(k.to_string()), None, None),
         None => match crate::cli::credentials::load_with_source(cred_base) {
-            Ok(Some((tok, src))) => (Some(tok), Some(src)),
-            Ok(None) | Err(_) => (None, None),
+            Ok(Some((tok, src))) => (Some(tok), Some(src), None),
+            Ok(None) => (None, None, None),
+            Err(error) => (None, None, Some(error.to_string())),
         },
     };
+    if let Some(error) = credential_error {
+        checks.push(Check::new(
+            "credentials",
+            Status::Fail,
+            format!("stored credential could not be read: {error}"),
+        ));
+    }
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(3))
@@ -638,6 +647,13 @@ fn initialize_body() -> serde_json::Value {
 /// we expect a 200 whose JSON-RPC result contains `serverInfo`.
 pub async fn check_mcp(client: &reqwest::Client, base: &str, key: Option<&str>) -> Check {
     let url = format!("{}/mcp", base.trim_end_matches('/'));
+    if key.is_some() && !credential_transport_is_safe(&url) {
+        return Check::new(
+            "mcp",
+            Status::Fail,
+            "refusing to send bearer credentials over cleartext HTTP to a non-loopback host",
+        );
+    }
     let mut req = client
         .post(&url)
         .header("Accept", "application/json, text/event-stream")
@@ -717,6 +733,24 @@ pub async fn check_mcp(client: &reqwest::Client, base: &str, key: Option<&str>) 
     }
 }
 
+fn credential_transport_is_safe(url: &str) -> bool {
+    reqwest::Url::parse(url).is_ok_and(|url| {
+        url.scheme() == "https"
+            || (url.scheme() == "http"
+                && url.host_str().is_some_and(crate::config::is_localhost_host))
+    })
+}
+
+fn validate_tool_result(
+    result: CallToolResult,
+    operation: &'static str,
+) -> Result<CallToolResult, McpSessionError> {
+    if result.is_error == Some(true) {
+        return Err(McpSessionError::ToolError { operation });
+    }
+    Ok(result)
+}
+
 #[derive(Debug, thiserror::Error)]
 enum McpSessionError {
     #[error("{operation} request failed: {source}")]
@@ -764,6 +798,9 @@ enum McpSessionError {
     ProtocolVersion { actual: ProtocolVersion },
     #[error("initialize returned incomplete serverInfo")]
     ServerInfo,
+
+    #[error("{operation} returned a tool-level error")]
+    ToolError { operation: &'static str },
 }
 
 #[derive(Deserialize)]
@@ -844,14 +881,18 @@ struct McpDoctorSession<'a> {
 
 impl McpDoctorSession<'_> {
     fn request(&self, body: &serde_json::Value) -> reqwest::RequestBuilder {
-        self.client
+        let mut request = self
+            .client
             .post(self.url)
-            .bearer_auth(self.key)
             .header("Accept", "application/json, text/event-stream")
             .header("Content-Type", "application/json")
             .header("MCP-Protocol-Version", self.protocol_version.to_string())
             .header("MCP-Session-Id", self.session_id)
-            .json(body)
+            .json(body);
+        if credential_transport_is_safe(self.url) {
+            request = request.bearer_auth(self.key);
+        }
+        request
     }
 
     async fn send(
@@ -911,7 +952,7 @@ impl McpDoctorSession<'_> {
             )
             .await?;
 
-        let _: CallToolResult = self
+        let tool_result: CallToolResult = self
             .call(
                 "tools/call",
                 3,
@@ -926,6 +967,7 @@ impl McpDoctorSession<'_> {
                 }),
             )
             .await?;
+        validate_tool_result(tool_result, "tools/call")?;
 
         Ok(format!(
             "legacy lifecycle succeeded (serverInfo: {}); initialized, tools/list, and harmless tools/call succeeded",
@@ -1091,6 +1133,23 @@ mod tests {
             crate::mcp::parse_response_body(split_sse.as_bytes()).unwrap()["id"],
             1
         );
+    }
+
+    #[test]
+    fn doctor_only_sends_credentials_to_secure_or_loopback_mcp_endpoints() {
+        assert!(credential_transport_is_safe("http://localhost:3456/mcp"));
+        assert!(credential_transport_is_safe("http://127.0.0.1:3456/mcp"));
+        assert!(credential_transport_is_safe("https://tracker.example/mcp"));
+        assert!(!credential_transport_is_safe("http://tracker.example/mcp"));
+    }
+
+    #[test]
+    fn doctor_fails_on_tool_level_errors() {
+        let result = CallToolResult::error(vec![rmcp::model::ContentBlock::text("failed")]);
+        assert!(matches!(
+            validate_tool_result(result, "tools/call"),
+            Err(McpSessionError::ToolError { .. })
+        ));
     }
 
     #[test]
