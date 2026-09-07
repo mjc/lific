@@ -140,7 +140,7 @@ pub fn run_sql(
     if json {
         println!(
             "{}",
-            serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string())
+            crate::cli::term::json_string(&value).unwrap_or_else(|_| value.to_string())
         );
     } else {
         print!("{}", human(&value));

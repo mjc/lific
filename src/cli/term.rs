@@ -394,6 +394,8 @@ mod tests {
             "src/cli/login.rs",
             "src/cli/connect/mod.rs",
             "src/cli/connect/writer.rs",
+            "src/cli/bind.rs",
+            "src/cli/git_hook.rs",
         ] {
             let source = std::fs::read_to_string(
                 std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(path),
