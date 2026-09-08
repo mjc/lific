@@ -2536,7 +2536,7 @@ mod authz_gating_tests {
     }
 
     #[tokio::test]
-    async fn websocket_reuses_recent_activity_baseline() {
+    async fn websocket_refreshes_activity_baseline_after_revalidation() {
         let (db, token) = websocket_session();
         let realtime = crate::realtime::RealtimeHub::new();
         let (url, server) = websocket_test_server(db.clone(), realtime).await;
@@ -2558,7 +2558,7 @@ mod authz_gating_tests {
             .unwrap();
         }
 
-        assert_eq!(request_activity_baseline(&mut socket).await, initial);
+        assert_eq!(request_activity_baseline(&mut socket).await, initial + 1);
         server.abort();
     }
 

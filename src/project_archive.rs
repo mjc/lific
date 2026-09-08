@@ -127,13 +127,12 @@ const SPECS: &[Spec] = &[
 ];
 
 impl Spec {
-    fn cols(&self) -> Vec<&'static str> {
-        self.columns.split(',').collect()
+    fn cols(&self) -> impl Iterator<Item = &'static str> {
+        self.columns.split(',')
     }
     fn index(&self, name: &str) -> usize {
         self.cols()
-            .iter()
-            .position(|c| *c == name)
+            .position(|c| c == name)
             .expect("static archive column")
     }
     fn get<'a>(&self, row: &'a Row, name: &str) -> &'a Value {
@@ -375,7 +374,7 @@ fn read_table(
     bytes: &mut u64,
     remaining_rows: &mut usize,
 ) -> Result<Table> {
-    let columns = s.cols().into_iter().map(|c| {
+    let columns = s.cols().map(|c| {
         if c == "imported_author" {
             let actor = match s.name { "comments" => "user_id", "attachments" => "uploader_id", _ => "actor_user_id" };
             format!("COALESCE(imported_author, (SELECT COALESCE(NULLIF(display_name,''), username) || ' (imported)' FROM users WHERE id = {}.{actor}), 'Unknown author (imported)')", s.name)
@@ -388,7 +387,7 @@ fn read_table(
         MAX_ROWS + 1
     );
     let mut stmt = conn.prepare(&sql)?;
-    let count = s.cols().len();
+    let count = s.cols().count();
     let mut cursor = stmt.query([project])?;
     let mut rows = Vec::new();
     while let Some(row) = cursor.next()? {
@@ -469,7 +468,7 @@ fn source_maps(m: &Manifest) -> Result<IdMaps> {
     let mut maps = IdMaps::new();
     for t in &m.tables {
         let s = spec(&t.name)?;
-        if !s.cols().contains(&"id") {
+        if !s.cols().any(|column| column == "id") {
             continue;
         }
         let mut ids = BTreeMap::new();
@@ -577,7 +576,7 @@ fn collect_manifest(conn: &Connection, project: &str) -> Result<Manifest> {
         let s = spec(&t.name)?;
         for row in &t.rows {
             for column in ["description", "content", "old_value", "new_value"] {
-                if s.cols().contains(&column)
+                if s.cols().any(|candidate| candidate == column)
                     && let Some(body) = s.get(row, column).as_str()
                 {
                     remap_markdown(body, &maps, &mut external)?;
@@ -649,30 +648,55 @@ fn check_store(store: &AttachmentStore) -> Result<()> {
     }
 }
 
-fn verified_blob(path: &Path, size: u64, hash: &str) -> Result<Vec<u8>> {
+fn verified_blob_file(path: &Path, size: u64, hash: &str) -> Result<File> {
     if size > MAX_BLOB {
         return Err(invalid("blob exceeds 256 MiB"));
     }
-    let file = regular(path)?;
+    let mut file = regular(path)?;
     if file.metadata().map_err(io)?.len() != size {
         return Err(invalid("blob size mismatch"));
     }
-    let mut bytes = Vec::new();
-    file.take(size + 1).read_to_end(&mut bytes).map_err(io)?;
-    if bytes.len() as u64 != size || format!("{:x}", Sha256::digest(&bytes)) != hash {
+    let mut hasher = Sha256::new();
+    let mut total = 0_u64;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer).map_err(io)?;
+        if read == 0 {
+            break;
+        }
+        total = total
+            .checked_add(read as u64)
+            .ok_or_else(|| invalid("blob size overflow"))?;
+        hasher.update(&buffer[..read]);
+    }
+    if total != size || format!("{:x}", hasher.finalize()) != hash {
         return Err(invalid("blob checksum mismatch"));
     }
+    regular(path)
+}
+
+fn verified_blob(path: &Path, size: u64, hash: &str) -> Result<Vec<u8>> {
+    let mut file = verified_blob_file(path, size, hash)?;
+    let mut bytes = Vec::with_capacity(size as usize);
+    file.read_to_end(&mut bytes).map_err(io)?;
     Ok(bytes)
+}
+fn append_reader<W: Write, R: Read>(
+    tar: &mut tar::Builder<W>,
+    name: &str,
+    size: u64,
+    mut reader: R,
+) -> Result<()> {
+    let mut header = tar::Header::new_ustar();
+    header.set_size(size);
+    header.set_mode(0o600);
+    header.set_cksum();
+    tar.append_data(&mut header, name, &mut reader).map_err(io)
 }
 
 fn append<W: Write>(tar: &mut tar::Builder<W>, name: &str, bytes: &[u8]) -> Result<()> {
-    let mut header = tar::Header::new_ustar();
-    header.set_size(bytes.len() as u64);
-    header.set_mode(0o600);
-    header.set_cksum();
-    tar.append_data(&mut header, name, bytes).map_err(io)
+    append_reader(tar, name, bytes.len() as u64, bytes)
 }
-
 fn report(m: &Manifest) -> Result<Report> {
     Ok(Report {
         project: text(spec("projects")?.get(&m.rows("projects")[0], "identifier"))?.to_string(),
@@ -701,8 +725,9 @@ pub fn export(pool: &DbPool, store: &AttachmentStore, project: &str, out: &Path)
             let mut tar = tar::Builder::new(gzip);
             append(&mut tar, "manifest.json", &metadata)?;
             for blob in &m.blobs {
-                let bytes = verified_blob(&store.path_for(&blob.sha256)?, blob.size, &blob.sha256)?;
-                append(&mut tar, &format!("blobs/{}", blob.sha256), &bytes)?;
+                let path = store.path_for(&blob.sha256)?;
+                let file = verified_blob_file(&path, blob.size, &blob.sha256)?;
+                append_reader(&mut tar, &format!("blobs/{}", blob.sha256), blob.size, file)?;
             }
             tar.into_inner().map_err(io)?.finish().map_err(io)?;
         }
@@ -749,10 +774,10 @@ fn validate_manifest(m: &Manifest) -> Result<()> {
             return Err(invalid("too many rows"));
         }
         for row in &t.rows {
-            if row.len() != s.cols().len() {
+            if row.len() != s.cols().count() {
                 return Err(invalid("invalid column count"));
             }
-            for (column, value) in s.cols().into_iter().zip(row) {
+            for (column, value) in s.cols().zip(row) {
                 sql_value(value)?;
                 if value.is_null() {
                     continue;
@@ -811,13 +836,15 @@ fn validate_manifest(m: &Manifest) -> Result<()> {
         let s = spec(&t.name)?;
         let mut sequences = BTreeSet::new();
         for row in &t.rows {
-            if s.cols().contains(&"sequence") {
+            if s.cols().any(|column| column == "sequence") {
                 let sequence = number(s.get(row, "sequence"))?;
                 if sequence <= 0 || !sequences.insert(sequence) {
                     return Err(invalid("duplicate or invalid readable sequence"));
                 }
             }
-            if s.cols().contains(&"project_id") && number(s.get(row, "project_id"))? != project_id {
+            if s.cols().any(|column| column == "project_id")
+                && number(s.get(row, "project_id"))? != project_id
+            {
                 return Err(invalid("cross-project row"));
             }
             if s.name == "audit_log" {
@@ -1196,7 +1223,7 @@ fn imported_row(
     external: &mut RewriteState,
 ) -> Result<Row> {
     let mut row = original.clone();
-    if s.cols().contains(&"imported_author") {
+    if s.cols().any(|column| column == "imported_author") {
         let author = s
             .get(original, "imported_author")
             .as_str()
@@ -1224,7 +1251,7 @@ fn imported_row(
             );
         }
     }
-    if s.cols().contains(&"id") {
+    if s.cols().any(|column| column == "id") {
         s.set(
             &mut row,
             "id",
@@ -1244,7 +1271,7 @@ fn imported_row(
     }
     if matches!(s.name, "audit_log" | "status_transitions") {
         if s.get(original, "imported_source").is_null() {
-            let snapshot: BTreeMap<_, _> = s.cols().into_iter().zip(original.iter()).collect();
+            let snapshot: BTreeMap<_, _> = s.cols().zip(original.iter()).collect();
             s.set(
                 &mut row,
                 "imported_source",
@@ -1256,7 +1283,7 @@ fn imported_row(
         s.set(&mut row, "transport", "imported".into());
     }
     for c in ["description", "content", "old_value", "new_value"] {
-        if s.cols().contains(&c)
+        if s.cols().any(|column| column == c)
             && let Some(body) = s.get(&row, c).as_str()
         {
             let rewritten = remap_markdown(body, maps, external)?;
@@ -1267,7 +1294,7 @@ fn imported_row(
 }
 
 fn insert_row(conn: &Connection, s: &Spec, row: &Row) -> Result<()> {
-    let placeholders = vec!["?"; row.len()].join(",");
+    let placeholders = crate::db::queries::placeholders(row.len());
     let values = row.iter().map(sql_value).collect::<Result<Vec<_>>>()?;
     conn.execute(
         &format!(
@@ -1281,10 +1308,33 @@ fn insert_row(conn: &Connection, s: &Spec, row: &Row) -> Result<()> {
 
 fn rebuild_derived(conn: &Connection, project: i64, maps: &IdMaps) -> Result<()> {
     for table in ["issues", "pages", "comments", "status_transitions"] {
-        for id in maps[table].values() {
-            conn.execute("UPDATE sync_seq SET value = value + 1 WHERE id = 1", [])?;
-            conn.execute(&format!("UPDATE {table} SET seq = (SELECT value FROM sync_seq WHERE id = 1) WHERE id = ?1"), [id])?;
+        let count = maps[table].len();
+        if count == 0 {
+            continue;
         }
+        let count = i64::try_from(count).map_err(|_| invalid("sequence count overflow"))?;
+        let start: i64 =
+            conn.query_row("SELECT value + 1 FROM sync_seq WHERE id = 1", [], |row| {
+                row.get(0)
+            })?;
+        conn.execute(
+            "UPDATE sync_seq SET value = value + ?1 WHERE id = 1",
+            [count],
+        )?;
+        conn.execute(
+            &format!(
+                "WITH ranked AS (
+                    SELECT id, ROW_NUMBER() OVER (ORDER BY id) AS row_number
+                    FROM {table}
+                )
+                UPDATE {table}
+                SET seq = ?1 + (
+                    SELECT row_number - 1 FROM ranked WHERE ranked.id = {table}.id
+                )
+                WHERE id IN (SELECT id FROM ranked)"
+            ),
+            [start],
+        )?;
     }
     conn.execute("INSERT INTO search_index(title,body,entity_type,entity_id,project_id) SELECT title,description,'issue',id,project_id FROM issues WHERE project_id = ?1 AND deleted_at IS NULL", [project])?;
     conn.execute("INSERT INTO search_index(title,body,entity_type,entity_id,project_id) SELECT title,content,'page',id,project_id FROM pages WHERE project_id = ?1 AND deleted_at IS NULL", [project])?;

@@ -208,6 +208,7 @@ fn insert_comment_row(
     conn: &Connection,
     parent: CommentParent,
     user_id: i64,
+    imported_author: Option<&str>,
     content: &str,
 ) -> Result<Comment, LificError> {
     let content = unescape_text(content);
@@ -236,9 +237,15 @@ fn insert_comment_row(
     }
 
     conn.execute(
-        "INSERT INTO comments (issue_id, page_id, user_id, content)
-         VALUES (?1, ?2, ?3, ?4)",
-        params![parent.issue_id(), parent.page_id(), user_id, content],
+        "INSERT INTO comments (issue_id, page_id, user_id, imported_author, content)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![
+            parent.issue_id(),
+            parent.page_id(),
+            user_id,
+            imported_author,
+            content
+        ],
     )?;
 
     let id = conn.last_insert_rowid();
@@ -256,9 +263,19 @@ pub fn create_imported_comment(
     conn: &Connection,
     parent: CommentParent,
     bot_id: i64,
+    imported_author: &str,
+    created_at: Option<&str>,
     content: &str,
 ) -> Result<Comment, LificError> {
-    insert_comment_row(conn, parent, bot_id, content)
+    let comment = insert_comment_row(conn, parent, bot_id, Some(imported_author), content)?;
+    if let Some(created_at) = created_at {
+        conn.execute(
+            "UPDATE comments SET created_at = ?1, updated_at = ?1 WHERE id = ?2",
+            params![created_at, comment.id],
+        )?;
+        return get_comment(conn, comment.id);
+    }
+    Ok(comment)
 }
 
 /// LIF-409: test-only handles on the unreconciled primitives, so a test can
@@ -273,7 +290,7 @@ pub(crate) fn create_comment(
     user_id: i64,
     content: &str,
 ) -> Result<Comment, LificError> {
-    insert_comment_row(conn, parent, user_id, content)
+    insert_comment_row(conn, parent, user_id, None, content)
 }
 
 /// See [`create_comment`].
@@ -1193,7 +1210,7 @@ pub fn create_comment_with_mentions(
 ) -> Result<Comment, LificError> {
     super::savepoint(conn, "create_comment_with_mentions", || {
         let candidates = mention_candidates(conn, project_id, member_scoped)?;
-        let comment = insert_comment_row(conn, parent, author.user_id, content)?;
+        let comment = insert_comment_row(conn, parent, author.user_id, None, content)?;
         sync_mentions(conn, comment.id, &comment.content, &candidates)?;
         super::attachments::sync_links(
             conn,

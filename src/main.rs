@@ -185,7 +185,17 @@ fn cli_error_message(error: &clap::Error) -> String {
         clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion => {
             error.to_string()
         }
-        _ => cli::ui::sanitize_terminal_line(&error.to_string()),
+        _ => error
+            .to_string()
+            .split_inclusive('\n')
+            .fold(String::new(), |mut output, line| {
+                let (line, newline) = line
+                    .strip_suffix('\n')
+                    .map_or((line, ""), |line| (line, "\n"));
+                output.push_str(&cli::ui::sanitize_terminal_line(line));
+                output.push_str(newline);
+                output
+            }),
     }
 }
 
@@ -1901,6 +1911,13 @@ mod cli_error_tests {
         let rendered = cli_error_message(&error);
 
         assert!(!rendered.contains('\u{202e}'));
-        assert!(!rendered.chars().any(char::is_control));
+        assert!(
+            rendered.chars().all(|ch| !ch.is_control() || ch == '\n'),
+            "only line breaks remain as controls: {rendered:?}"
+        );
+        assert!(
+            rendered.contains("\nUsage:"),
+            "usage remains multiline: {rendered:?}"
+        );
     }
 }

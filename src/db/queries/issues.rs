@@ -683,11 +683,12 @@ pub fn update_issue(conn: &Connection, id: i64, input: &UpdateIssue) -> Result<I
                 )?;
             }
         }
-        // LIF-409: re-scan the stored description (edited or not) and
-        // reconcile links, in the same savepoint as the edit itself. Read back
-        // from the row rather than from `input`, so an update that leaves the
-        // description alone still reconciles against what is actually stored.
-        if !matches!(input.attachments, AttachmentActor::Unattributed) {
+        // LIF-409: re-scan the stored description when it is edited and
+        // reconcile links in the same savepoint. Read back from the row rather
+        // than from `input`, so reconciliation uses the stored markdown.
+        if input.description.is_some()
+            && !matches!(input.attachments, AttachmentActor::Unattributed)
+        {
             let (project_id, description): (i64, String) = conn.query_row(
                 "SELECT project_id, description FROM issues WHERE id = ?1",
                 params![id],

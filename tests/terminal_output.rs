@@ -71,6 +71,7 @@ fn service_status_does_not_leak_subprocess_streams_into_json_or_stderr() {
         let mut command = cli(scratch.path(), &config);
         command
             .env("PATH", scratch.path())
+            .env("HOME", scratch.path())
             .args(["service", "status"]);
         if explicit_json {
             command.arg("--json");

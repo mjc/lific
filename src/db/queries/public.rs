@@ -288,9 +288,7 @@ fn child_bounds(
     if ids.is_empty() {
         return Ok(HashMap::new());
     }
-    let placeholders = std::iter::repeat_n("?", ids.len())
-        .collect::<Vec<_>>()
-        .join(",");
+    let placeholders = super::placeholders(ids.len());
     let (key, source, bound) = match entity_type {
         None => (
             "il.issue_id",
@@ -391,9 +389,7 @@ fn read_issue_rows(
     if ids.is_empty() {
         return Ok(Vec::new());
     }
-    let placeholders = std::iter::repeat_n("?", ids.len())
-        .collect::<Vec<_>>()
-        .join(",");
+    let placeholders = super::placeholders(ids.len());
     statement_issued();
     let mut stmt = conn.prepare(&format!(
         "SELECT i.id, p.identifier || '-' || i.sequence,
@@ -538,9 +534,7 @@ fn labels_for_issues(
     if ids.is_empty() {
         return Ok(out);
     }
-    let placeholders = std::iter::repeat_n("?", ids.len())
-        .collect::<Vec<_>>()
-        .join(",");
+    let placeholders = super::placeholders(ids.len());
     statement_issued();
     let mut stmt = conn.prepare(&format!(
         "SELECT il.issue_id, l.name
@@ -676,9 +670,7 @@ fn read_comment_rows(
     if ids.is_empty() {
         return Ok(Vec::new());
     }
-    let placeholders = std::iter::repeat_n("?", ids.len())
-        .collect::<Vec<_>>()
-        .join(",");
+    let placeholders = super::placeholders(ids.len());
     statement_issued();
     let mut stmt = conn.prepare(&format!(
         "SELECT c.id, c.content, c.created_at, c.updated_at
@@ -733,9 +725,7 @@ fn attachments_for(
     if entity_ids.is_empty() {
         return Ok(out);
     }
-    let placeholders = std::iter::repeat_n("?", entity_ids.len())
-        .collect::<Vec<_>>()
-        .join(",");
+    let placeholders = super::placeholders(entity_ids.len());
     statement_issued();
     let mut stmt = conn.prepare(&format!(
         "SELECT l.entity_id,

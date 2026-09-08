@@ -966,13 +966,10 @@ async fn send_activity_baseline(
     auth_user: &mut crate::db::models::AuthUser,
     client: &mut ClientState,
 ) -> SocketFlow {
-    let was_admin = auth_user.is_admin;
     if revalidate_session(socket, db, session_token, auth_user).await == SocketFlow::Close {
         return SocketFlow::Close;
     }
-    if was_admin != auth_user.is_admin {
-        client.invalidate_activity_baseline();
-    }
+    client.invalidate_activity_baseline();
     let now = Instant::now();
     let baseline = match client.cached_activity_baseline(now) {
         Some(event) => Ok(event),

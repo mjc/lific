@@ -117,6 +117,10 @@ const PUBLIC_READS_PER_MINUTE: usize = 240;
 /// a `Retry-After`, not a queue.
 const PUBLIC_CONCURRENCY: usize = 4;
 
+/// Public attachment bodies that may be streamed at once. Downloads get their
+/// own budget so a few slow readers cannot consume every public database slot.
+const PUBLIC_DOWNLOAD_CONCURRENCY: usize = 2;
+
 /// Bytes read from disk per chunk when streaming an attachment. The download
 /// is streamed rather than buffered because an imported attachment can be
 /// hundreds of megabytes and these callers are anonymous and concurrent; this
@@ -126,6 +130,8 @@ const DOWNLOAD_CHUNK_BYTES: usize = 64 * 1024;
 pub struct PublicReadLimiter(pub RateLimiter);
 
 pub struct PublicConcurrency(pub Arc<Semaphore>);
+
+pub struct PublicDownloadConcurrency(pub Arc<Semaphore>);
 
 /// Build the anonymous router.
 ///
@@ -147,6 +153,9 @@ pub fn router(db: DbPool, store: AttachmentStore, trusted_proxies: Arc<[IpNetwor
         Arc::new(PublicConcurrency(Arc::new(Semaphore::new(
             PUBLIC_CONCURRENCY,
         )))),
+        Arc::new(PublicDownloadConcurrency(Arc::new(Semaphore::new(
+            PUBLIC_DOWNLOAD_CONCURRENCY,
+        )))),
     )
 }
 
@@ -158,6 +167,7 @@ fn router_with_bounds(
     trusted_proxies: Arc<[IpNetwork]>,
     limiter: Arc<PublicReadLimiter>,
     concurrency: Arc<PublicConcurrency>,
+    download_concurrency: Arc<PublicDownloadConcurrency>,
 ) -> Router {
     Router::new()
         .route("/public/api/projects/{project}", get(get_project))
@@ -182,6 +192,7 @@ fn router_with_bounds(
         .layer(middleware::from_fn(no_store_headers))
         .layer(Extension(limiter))
         .layer(Extension(concurrency))
+        .layer(Extension(download_concurrency))
         .layer(Extension(trusted_proxies))
         .layer(Extension(store))
         .with_state(db)
@@ -265,33 +276,9 @@ async fn enforce_load_bounds(mut request: Request<Body>, next: Next) -> Response
         None => None,
     };
 
-    // The handler extracts what it needs and drops the request before it runs,
-    // so a permit parked only in the extensions would be released immediately.
-    // `held` stays in this frame across `next.run`, and the handler gets a
-    // clone of the same `Arc`: a streaming body can take ownership out of it,
-    // and anything else leaves it here to be dropped when this returns.
-    let held = permit.map(|permit| HeldPermit(Arc::new(std::sync::Mutex::new(Some(permit)))));
-    if let Some(held) = held.clone() {
-        request.extensions_mut().insert(held);
-    }
     let response = next.run(request).await;
-    drop(held);
+    drop(permit);
     response
-}
-
-/// The concurrency permit for the request in flight, offered to a handler that
-/// returns a streaming body so the permit outlives this middleware.
-///
-/// A handler that does not take it leaves the permit here, and it is released
-/// when the request extensions are dropped after the response is built, which
-/// is the right moment for a buffered body.
-#[derive(Clone)]
-struct HeldPermit(Arc<std::sync::Mutex<Option<OwnedSemaphorePermit>>>);
-
-impl HeldPermit {
-    fn take(&self) -> Option<OwnedSemaphorePermit> {
-        self.0.lock().ok().and_then(|mut slot| slot.take())
-    }
 }
 
 /// The rate-limit key: the client IP as [`ratelimit::client_ip`] resolves it,
@@ -438,7 +425,7 @@ async fn list_comments(
 async fn download_attachment(
     State(db): State<DbPool>,
     Extension(store): Extension<AttachmentStore>,
-    permit: Option<Extension<HeldPermit>>,
+    Extension(download_concurrency): Extension<Arc<PublicDownloadConcurrency>>,
     Path((project, id)): Path<(String, i64)>,
 ) -> Result<Response<Body>, LificError> {
     let blob = with_read(&db, |conn| q::get_public_attachment(conn, &project, id))?
@@ -463,11 +450,13 @@ async fn download_attachment(
     } else {
         format!("attachment; filename=\"{}\"", header_safe(&blob.filename))
     };
+    let download_permit = Arc::clone(&download_concurrency.0)
+        .try_acquire_owned()
+        .map_err(|_| LificError::Unavailable("public downloads are busy".into()))?;
 
-    let held = permit.and_then(|Extension(held)| held.take());
     let body = download_body(
         file,
-        held,
+        Some(download_permit),
         std::time::Duration::from_secs(15),
         std::time::Duration::from_secs(5 * 60),
     );
@@ -558,7 +547,9 @@ mod tests {
         store: AttachmentStore,
         /// The router's own semaphore, so a test can observe permits rather
         /// than infer them from status codes.
-        concurrency: Arc<PublicConcurrency>,
+        /// The router's download semaphore, so tests can observe streaming
+        /// permits rather than infer them from status codes.
+        download_concurrency: Arc<PublicDownloadConcurrency>,
     }
 
     /// The peer every fixture request appears to come from. Inside the trusted
@@ -598,6 +589,9 @@ mod tests {
         let concurrency = Arc::new(PublicConcurrency(Arc::new(Semaphore::new(
             PUBLIC_CONCURRENCY,
         ))));
+        let download_concurrency = Arc::new(PublicDownloadConcurrency(Arc::new(Semaphore::new(
+            PUBLIC_DOWNLOAD_CONCURRENCY,
+        ))));
         let app = router_with_bounds(
             db.clone(),
             store.clone(),
@@ -607,6 +601,7 @@ mod tests {
                 std::time::Duration::from_secs(60),
             ))),
             Arc::clone(&concurrency),
+            Arc::clone(&download_concurrency),
         )
         .layer(MockConnectInfo(peer()));
         Fixture {
@@ -614,7 +609,7 @@ mod tests {
             app,
             _store_guard: tmp,
             store,
-            concurrency,
+            download_concurrency,
         }
     }
 
@@ -1902,6 +1897,18 @@ mod tests {
         assert_eq!(semaphore.available_permits(), 1);
     }
 
+    #[tokio::test]
+    async fn slow_downloads_do_not_consume_metadata_capacity() {
+        let f = fixture();
+        f.seed_project("PUB", true);
+        let _held = Arc::clone(&f.download_concurrency.0)
+            .try_acquire_many_owned(PUBLIC_DOWNLOAD_CONCURRENCY as u32)
+            .expect("fixture has the complete download budget");
+
+        let response = f.get("/public/api/projects/PUB").await;
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
     /// An active producer retains its permit while the bounded channel is full.
     #[tokio::test]
     async fn a_stalled_large_download_holds_its_permit_until_production_ends() {
@@ -1930,16 +1937,16 @@ mod tests {
         assert_eq!(first.len(), DOWNLOAD_CHUNK_BYTES);
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         assert_eq!(
-            f.concurrency.0.available_permits(),
-            PUBLIC_CONCURRENCY - 1,
+            f.download_concurrency.0.available_permits(),
+            PUBLIC_DOWNLOAD_CONCURRENCY - 1,
             "the permit must still be held while the producer is blocked"
         );
 
         let remaining = body.collect().await.unwrap().to_bytes();
         assert_eq!([first.as_ref(), remaining.as_ref()].concat(), expected);
         assert_eq!(
-            f.concurrency.0.available_permits(),
-            PUBLIC_CONCURRENCY,
+            f.download_concurrency.0.available_permits(),
+            PUBLIC_DOWNLOAD_CONCURRENCY,
             "the permit is released once the body is finished"
         );
     }
@@ -1989,7 +1996,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_partly_read_download_hits_its_deadline_without_further_polling() {
-        let (mut body, semaphore) = test_download(DOWNLOAD_CHUNK_BYTES * 100, 5_000, 200);
+        let (mut body, semaphore) = test_download(DOWNLOAD_CHUNK_BYTES * 100, 5_000, 2_000);
         for _ in 0..2 {
             let frame = body.frame().await.unwrap().unwrap().into_data().unwrap();
             assert_eq!(frame.len(), DOWNLOAD_CHUNK_BYTES);
