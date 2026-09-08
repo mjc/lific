@@ -34,10 +34,12 @@
   import { fuzzyMatch } from "./fuzzy";
   import {
     LOCAL_HIT_SERVER_THRESHOLD,
+    capPerKind,
     dedupeByIdentifier,
     dedupeByKey,
     isStaleSearch,
     localScoreToPaletteScore,
+    paletteRowKey,
     preserveSelection,
     searchLocalDocsPerKind,
   } from "./paletteSearch";
@@ -520,15 +522,10 @@
     }));
   }
 
-  /** Stable identity for a result row, matching the `{#each}` key. */
-  function resultKey(r: PaletteResult): string {
-    return r.route + (r.identifier ?? r.title);
-  }
-
   function flatKey(it: FlatItem): string {
     if (it.t === "action") return `a:${it.a.id}`;
     if (it.t === "child") return `c:${it.c.title}`;
-    return `n:${resultKey(it.r)}`;
+    return `n:${paletteRowKey(it.r)}`;
   }
 
   /** Sort, cap per group, and publish. */
@@ -543,15 +540,8 @@
     // answer "LIF-445" with the same row, and the higher-scoring exact
     // reference is the one worth keeping. Two rows sharing a `{#each}` key
     // is a Svelte runtime error, so this is not optional.
-    const unique = dedupeByKey(merged, resultKey);
-
-    const counts = new Map<string, number>();
-    results = unique.filter((r) => {
-      const c = counts.get(r.kind) ?? 0;
-      if (c >= GROUP_CAP) return false;
-      counts.set(r.kind, c + 1);
-      return true;
-    });
+    const unique = dedupeByKey(merged, paletteRowKey);
+    results = capPerKind(unique, (r) => r.kind, GROUP_CAP);
 
     selectedIdx = keepSelection
       ? preserveSelection(previousKey, flatItems.map(flatKey), previousIdx)
@@ -680,7 +670,7 @@
     const gen = searchGen;
     const local = runLocal(q);
     if (!q.trim()) return;
-    void runRemote(q, gen, local < LOCAL_HIT_SERVER_THRESHOLD);
+    void runRemote(q, gen, local < LOCAL_HIT_SERVER_THRESHOLD).catch(() => {});
   }
 
   // The route can move under an open palette (a peek panel, a background
@@ -709,7 +699,7 @@
     if (!q.trim()) return;
     debounce = setTimeout(() => {
       debounce = null;
-      void runRemote(q, gen, local < LOCAL_HIT_SERVER_THRESHOLD);
+      void runRemote(q, gen, local < LOCAL_HIT_SERVER_THRESHOLD).catch(() => {});
     }, 120);
   }
 
@@ -962,7 +952,7 @@
             >
               {group.label}
             </div>
-            {#each group.entries as { r, flatIdx } (r.route + (r.identifier ?? r.title))}
+            {#each group.entries as { r, flatIdx } (paletteRowKey(r))}
               <button
                 class="w-full flex items-center gap-2.5 px-4 py-2 text-left
                        transition-colors

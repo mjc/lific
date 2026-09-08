@@ -345,6 +345,24 @@
                 project={projectIdentifier}
                 attachments={comment.attachments}
               />
+              {#if fileList(comment.attachments, comment.content).length > 0}
+                <ul class="mt-2 flex flex-col gap-1.5">
+                  {#each fileList(comment.attachments, comment.content) as file (file.id)}
+                    <li>
+                      <a
+                        class="text-body-sm text-[var(--accent)] hover:underline inline-flex items-center gap-2"
+                        href={publicAttachmentUrl(projectIdentifier, file.id)}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        <Paperclip size={13} />
+                        <span>{file.filename}</span>
+                        <span class="text-caption text-[var(--text-faint)]">({formatBytes(file.size_bytes)})</span>
+                      </a>
+                    </li>
+                  {/each}
+                </ul>
+              {/if}
             </div>
           {/each}
 

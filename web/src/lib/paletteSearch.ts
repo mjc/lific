@@ -321,6 +321,31 @@ export function dedupeByKey<T>(items: T[], keyOf: (item: T) => string): T[] {
   return out;
 }
 
+/** Stable identity used by every command-palette row and its keyed list. */
+export function paletteRowKey(row: {
+  route: string;
+  identifier?: string | null;
+  title: string;
+}): string {
+  return row.route + (row.identifier ?? row.title);
+}
+
+/** Keep at most the requested number of rows for each kind. */
+export function capPerKind<T>(
+  rows: T[],
+  kindOf: (row: T) => string,
+  cap: number,
+): T[] {
+  const counts = new Map<string, number>();
+  return rows.filter((row) => {
+    const kind = kindOf(row);
+    const count = counts.get(kind) ?? 0;
+    if (count >= cap) return false;
+    counts.set(kind, count + 1);
+    return true;
+  });
+}
+
 /**
  * Whether a response should be dropped on arrival. A search is issued
  * against a generation counter *and* a project; either moving on invalidates

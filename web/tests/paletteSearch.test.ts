@@ -10,6 +10,8 @@ import {
   boundedEditDistance,
   dedupeByIdentifier,
   dedupeByKey,
+  capPerKind,
+  paletteRowKey,
   isStaleSearch,
   localScoreToPaletteScore,
   matchQuality,
@@ -295,28 +297,19 @@ describe("dedupeByIdentifier", () => {
   });
 });
 
-// The palette's publish step, reproduced: sort by score, dedupe on the
-// `{#each}` key, then cap per kind. Kept in lockstep with
-// CommandPalette.svelte's `publish()` / `resultKey()`.
+// The palette's publish step: sort by score, dedupe on the shared row key,
+// then cap per kind. The implementation is shared with CommandPalette.svelte.
 interface Row {
   kind: "issue" | "page" | "project";
   title: string;
-  identifier?: string;
+  identifier?: string | null;
   route: string;
   score: number;
 }
 
-const rowKey = (r: Row) => r.route + (r.identifier ?? r.title);
-
 function publish(merged: Row[], groupCap = 8): Row[] {
   const sorted = [...merged].sort((a, b) => b.score - a.score);
-  const counts = new Map<string, number>();
-  return dedupeByKey(sorted, rowKey).filter((r) => {
-    const c = counts.get(r.kind) ?? 0;
-    if (c >= groupCap) return false;
-    counts.set(r.kind, c + 1);
-    return true;
-  });
+  return capPerKind(dedupeByKey(sorted, paletteRowKey), (r) => r.kind, groupCap);
 }
 
 describe("dedupeByKey", () => {
@@ -356,7 +349,17 @@ describe("merged result set", () => {
   test("the identifier fast path and the local hit never emit two rows", () => {
     const out = publish([exactRef, localSameIssue]);
     expect(out).toHaveLength(1);
-    expect(new Set(out.map(rowKey)).size).toBe(out.length);
+    expect(new Set(out.map(paletteRowKey)).size).toBe(out.length);
+  });
+
+  test("uses the title in a page key when its identifier is absent", () => {
+    const page = {
+      kind: "page" as const,
+      title: "Design",
+      route: "/LIF/pages/3",
+      score: 1,
+    };
+    expect(publish([page, { ...page, score: 0.5 }])).toHaveLength(1);
   });
 
   test("the exact reference is the row that survives", () => {
@@ -380,7 +383,7 @@ describe("merged result set", () => {
       { kind: "project", title: "Lific", identifier: "LIF", route: "/LIF/overview", score: 2.6 },
     ];
     const out = publish(merged);
-    expect(new Set(out.map(rowKey)).size).toBe(out.length);
+    expect(new Set(out.map(paletteRowKey)).size).toBe(out.length);
     expect(out).toHaveLength(4);
   });
 

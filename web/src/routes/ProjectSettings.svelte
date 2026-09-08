@@ -413,14 +413,18 @@
   // gate is the Lead gate, the one check legacy mode still enforces. Showing
   // the publish panel on `canManage` therefore offered a disclosure control to
   // people the server would refuse. Derived from the real answer instead:
-  // instance admin, a `lead` membership, or the project's own lead pointer
-  // (which a pre-LIF-195 project can have without a membership row).
+  // instance admin or a membership lead. Legacy mode also supports the
+  // project's lead pointer for pre-enforcement projects without membership rows.
   const canPublish = $derived(
     deriveCanPublish({
       role: projectRole.role,
       enforced: projectRole.enforced,
       isAdmin: projectRole.isAdmin,
-      isLead: project != null && currentUserId != null && project.lead_user_id === currentUserId,
+      isLead:
+        !projectRole.enforced &&
+        project != null &&
+        currentUserId != null &&
+        project.lead_user_id === currentUserId,
     }),
   );
 
@@ -770,7 +774,7 @@
         {#if canPublish}
           <PublishPanel
             {project}
-            onChange={(updated) => { project = updated; }}
+            onChange={(updated) => { project = updated; onProjectChange?.(); }}
           />
         {/if}
 

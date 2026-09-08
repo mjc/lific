@@ -39,7 +39,7 @@
     Palette, Lock, LogOut, Eye, EyeOff, KeyRound, FileCode2, Terminal,
     Rows3, Rows2, Type, Zap, ZapOff,
   } from "lucide-svelte";
-  import { getContext } from "svelte";
+  import { getContext, tick } from "svelte";
   import { copyToClipboard } from "../lib/clipboard";
 
   let { navigate }: { navigate: (path: string) => void } = $props();
@@ -100,6 +100,10 @@
 
   // Connect modal
   let connectTool = $state<ToolTemplate | null>(null);
+  const FOCUSABLE_SELECTOR =
+    'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])';
+  let modalEl = $state<HTMLDivElement | null>(null);
+  let restoreFocusEl = $state<HTMLElement | null>(null);
   let connectKey = $state<string | null>(null);
   let connecting = $state(false);
   let connectError = $state("");
@@ -409,8 +413,24 @@
     return "failed";
   }
 
+  function isSecureMcpOrigin(): boolean {
+    const { protocol, hostname } = window.location;
+    return (
+      protocol === "https:" ||
+      (protocol === "http:" &&
+        ["localhost", "127.0.0.1", "::1", "[::1]"].includes(hostname))
+    );
+  }
+
   // Open the modal and mint credentials in one step (no extra confirm).
   async function openConnect(template: ToolTemplate) {
+    if (!isSecureMcpOrigin()) {
+      toolsError =
+        "MCP connections require HTTPS; plain HTTP is allowed only on localhost or loopback.";
+      return;
+    }
+    restoreFocusEl =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
     connectTool = template;
     connectKey = null;
     connectError = "";
@@ -477,6 +497,8 @@
 
   function closeConnect() {
     if (connecting || reauthBusy) return;
+    const returnFocus = restoreFocusEl;
+    restoreFocusEl = null;
     connectTool = null;
     connectKey = null;
     connectError = "";
@@ -485,10 +507,41 @@
     reauthPassword = "";
     reauthBusy = false;
     autoReauthNote = "";
+    queueMicrotask(() => {
+      if (returnFocus?.isConnected) returnFocus.focus();
+    });
   }
 
+  function trapModalFocus(event: KeyboardEvent) {
+    if (event.key !== "Tab" || !modalEl) return;
+    const focusable = [...modalEl.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)];
+    if (focusable.length === 0) {
+      event.preventDefault();
+      modalEl.focus();
+      return;
+    }
+    const first = focusable[0]!;
+    const last = focusable[focusable.length - 1]!;
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
+
+  $effect(() => {
+    if (!connectTool || !modalEl) return;
+    void tick().then(() => {
+      if (!connectTool || !modalEl) return;
+      const first = modalEl.querySelector<HTMLElement>(FOCUSABLE_SELECTOR);
+      (first ?? modalEl).focus();
+    });
+  });
+
   function configText(): string {
-    if (!connectTool || !connectKey) return "";
+    if (!connectTool || !connectKey || !isSecureMcpOrigin()) return "";
     return connectTool.generateConfig(window.location.origin + "/mcp", connectKey);
   }
   // What's rendered in the config block. Masks the embedded key to match
@@ -980,11 +1033,13 @@
     <div
       class="w-full max-w-[620px] bg-[var(--surface)] border border-[var(--border)] rounded-xl shadow-2xl
              max-h-[85dvh] overflow-y-auto"
+      bind:this={modalEl}
       role="dialog"
       aria-modal="true"
       aria-label={`Connect ${connectTool.name}`}
       tabindex="-1"
       onclick={(e) => e.stopPropagation()}
+      onkeydown={trapModalFocus}
     >
       <!-- Header -->
       <div class="flex items-center gap-3 px-5 py-4 border-b border-[var(--border)]">
