@@ -460,8 +460,9 @@ pub fn update_page(conn: &Connection, id: i64, input: &UpdatePage) -> Result<Pag
             }
         }
         // LIF-409: re-scan the stored content and reconcile links inside the
-        // same savepoint when the body is being updated by an attributed actor.
-        if input.content.is_some() && !matches!(input.attachments, AttachmentActor::Unattributed) {
+        // same savepoint. Read back from the row so an update that leaves the
+        // content alone still reconciles against what is actually stored.
+        if !matches!(input.attachments, AttachmentActor::Unattributed) {
             let (project_id, content): (Option<i64>, String) = conn.query_row(
                 "SELECT project_id, content FROM pages WHERE id = ?1",
                 params![id],

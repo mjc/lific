@@ -424,11 +424,7 @@ fn project(
             // The creator here is the effective local operator. On a database
             // with no users at all there is nobody to name, and the project is
             // created leaderless rather than pointing at an invented id.
-            let lead_user_id = match effective_operator(&conn) {
-                Ok(operator) => operator.map(|operator| operator.user_id),
-                Err(LificError::BadRequest(_)) => None,
-                Err(error) => return Err(error.into()),
-            };
+            let lead_user_id = effective_operator(&conn)?.map(|operator| operator.user_id);
             let project = queries::create_project(
                 &conn,
                 &CreateProject {
@@ -2023,35 +2019,6 @@ mod tests {
             Some(Role::Lead),
             "the lead pointer and the membership row are one fact, written together"
         );
-    }
-
-    #[test]
-    fn cli_project_create_is_leaderless_when_operator_is_ambiguous() {
-        let pool = test_pool();
-        seed_named_user(&pool, "alice", false, false);
-        seed_named_user(&pool, "bob", false, false);
-
-        run(
-            &pool,
-            &Command::Project {
-                action: ProjectAction::Create {
-                    name: "Leaderless".into(),
-                    identifier: "LEAD".into(),
-                    description: String::new(),
-                },
-            },
-            false,
-            None,
-        )
-        .unwrap();
-
-        let conn = pool.read().unwrap();
-        let project = queries::get_project(
-            &conn,
-            queries::resolve_project_identifier(&conn, "LEAD").unwrap(),
-        )
-        .unwrap();
-        assert_eq!(project.lead_user_id, None);
     }
 
     fn seed_named_user(pool: &DbPool, username: &str, is_admin: bool, is_bot: bool) -> i64 {

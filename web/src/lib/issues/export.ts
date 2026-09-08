@@ -12,10 +12,6 @@ export async function selectedIssueExport(identifiers: string[]): Promise<Blob> 
     if (!response.ok) throw new Error(`Could not export ${identifier} (HTTP ${response.status}).`);
     if (!response.body) throw new Error(`No export returned for ${identifier}.`);
     if (parts.length) {
-      if (size + separator.byteLength > limit) {
-        await response.body.cancel();
-        throw new Error("Selected exports exceed 16 MiB. Select fewer issues and try again.");
-      }
       parts.push(separator);
       size += separator.byteLength;
     }

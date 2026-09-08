@@ -10,8 +10,8 @@
 //!   import resumes cleanly and a completed one never duplicates.
 //! - **Provenance.** Comments are attributed to a dedicated *import bot*
 //!   identity (created exactly like `lific connect` bots, owned by a human) so
-//!   the audit log shows the import as its own actor. The original author and
-//!   timestamp are preserved in the comment's structured fields.
+//!   the audit log shows the import as its own actor. The original author +
+//!   timestamp are preserved in a body prefix.
 //! - **Labels.** Missing labels are created, preserving the source's color
 //!   where the API provides one.
 //! - **Dry run.** Counting is separated from writing: a dry run reports how
@@ -78,6 +78,20 @@ pub struct NormalizedComment {
     pub created_at: Option<String>,
     /// Comment body markdown.
     pub body: String,
+}
+
+impl NormalizedComment {
+    /// Render the stored comment body with a provenance prefix so the original
+    /// author + time survive the import (the DB comment is authored by the
+    /// import bot). Shape: `Originally by @alice on 2024-01-02:\n\n<body>`.
+    pub fn body_with_attribution(&self) -> String {
+        let when = self
+            .created_at
+            .as_deref()
+            .map(|t| format!(" on {t}"))
+            .unwrap_or_default();
+        format!("_Originally by @{}{}_\n\n{}", self.author, when, self.body)
+    }
 }
 
 /// What a source produced after normalization but before any DB writes. Lets
@@ -268,9 +282,7 @@ pub fn apply_issue(
                     &conn,
                     queries::comments::CommentParent::Issue(created.id),
                     bot,
-                    &comment.author,
-                    comment.created_at.as_deref(),
-                    &comment.body,
+                    &comment.body_with_attribution(),
                 )?;
                 comments_created += 1;
             }
@@ -411,6 +423,31 @@ mod tests {
     }
 
     #[test]
+    fn attribution_prefix_includes_author_and_time() {
+        let c = NormalizedComment {
+            author: "octocat".into(),
+            created_at: Some("2024-01-02T03:04:05Z".into()),
+            body: "looks good".into(),
+        };
+        let out = c.body_with_attribution();
+        assert!(out.contains("@octocat"));
+        assert!(out.contains("2024-01-02T03:04:05Z"));
+        assert!(out.ends_with("looks good"));
+    }
+
+    #[test]
+    fn attribution_prefix_without_time() {
+        let c = NormalizedComment {
+            author: "bob".into(),
+            created_at: None,
+            body: "hi".into(),
+        };
+        let out = c.body_with_attribution();
+        assert!(out.contains("@bob"));
+        assert!(!out.contains(" on "));
+    }
+
+    #[test]
     fn resolve_owner_sole_human() {
         let pool = db::open_memory().unwrap();
         let id = seed_user(&pool, "solo", false);
@@ -510,16 +547,6 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM comments", [], |r| r.get(0))
             .unwrap();
         assert_eq!(comment_count, 1);
-        let imported: (Option<String>, String, String) = conn
-            .query_row(
-                "SELECT imported_author, content, created_at FROM comments",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .unwrap();
-        assert_eq!(imported.0.as_deref(), Some("octocat"));
-        assert_eq!(imported.1, "hi");
-        assert_eq!(imported.2, "2024-01-01");
     }
 
     #[test]

@@ -246,7 +246,6 @@
       } else if (hash === "" || hash.startsWith("#/")) {
         route = hash.slice(1) || "/";
       }
-      syncRealtimeSocket();
     }
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);

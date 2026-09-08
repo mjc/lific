@@ -478,17 +478,14 @@ fn project_archive_refuses_tar_traversal_links_devices_and_declared_expansion() 
     }
     raw_entry(&path, "manifest.json", b'0', MAX_METADATA + 1);
     assert!(stage(&path).err().unwrap().to_string().contains("64 MiB"));
-    #[cfg(not(windows))]
-    {
-        File::create(&path).unwrap().set_len(MAX_TOTAL + 1).unwrap();
-        assert!(
-            stage(&path)
-                .err()
-                .unwrap()
-                .to_string()
-                .contains("compressed archive")
-        );
-    }
+    File::create(&path).unwrap().set_len(MAX_TOTAL + 1).unwrap();
+    assert!(
+        stage(&path)
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("compressed archive")
+    );
 }
 
 #[test]
@@ -981,7 +978,7 @@ fn project_archive_column_types_match_every_static_schema_column() {
             .iter()
             .position(|t| t.name == s.name)
             .unwrap();
-        for (index, column) in s.cols().enumerate() {
+        for (index, column) in s.cols().into_iter().enumerate() {
             let wrong = match types[column].as_str() {
                 "INTEGER" | "REAL" => Value::String("not-a-number".into()),
                 "TEXT" => Value::from(123),

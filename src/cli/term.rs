@@ -513,7 +513,6 @@ mod tests {
             "src/cli/doctor.rs",
             "src/cli/login.rs",
             "src/cli/connect/mod.rs",
-            "src/cli/connect/writer.rs",
             "src/cli/bind.rs",
             "src/cli/git_hook.rs",
             "src/cli/service.rs",

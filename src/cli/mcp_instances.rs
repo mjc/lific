@@ -21,7 +21,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::path::Path;
 
-use futures_util::{StreamExt, stream::FuturesUnordered};
 use reqwest::StatusCode;
 use reqwest::header::{ACCEPT, CONTENT_TYPE};
 use serde::Deserialize;
@@ -39,8 +38,6 @@ use super::mcp_proxy::{
 const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 /// Largest single JSON-RPC line accepted from the client on stdin.
 const MAX_REQUEST_LINE_BYTES: usize = 1024 * 1024;
-/// Maximum number of backend calls that may be in flight at once.
-const MAX_IN_FLIGHT_REQUESTS: usize = 16;
 /// Largest instances config file.
 const MAX_CONFIG_BYTES: u64 = 256 * 1024;
 /// How many `tools/list` pages a backend may serve before discovery gives up.
@@ -333,10 +330,10 @@ fn check_plaintext_policy(spec: &InstanceSpec, has_credential: bool) -> Result<(
                 spec.alias
             ));
         }
-        crate::cli::ui::stderr_line(format_args!(
+        eprintln!(
             "warning: instance '{}' connects over unencrypted http to {host}",
             spec.alias
-        ));
+        );
     }
     Ok(())
 }
@@ -1191,10 +1188,7 @@ pub(crate) fn stamp_provenance(response: &mut Value, alias: &str) {
                 !item
                     .get("text")
                     .and_then(Value::as_str)
-                    .is_some_and(|text| {
-                        text.lines()
-                            .any(|line| line.trim_start().starts_with(PROVENANCE_PREFIX))
-                    })
+                    .is_some_and(|text| text.trim_start().starts_with(PROVENANCE_PREFIX))
             });
             content.push(serde_json::json!({
                 "type": "text",
@@ -1345,151 +1339,112 @@ where
 {
     let mut input = input;
     let mut output = output;
-    let mut pending = FuturesUnordered::new();
-    let mut input_done = false;
 
     loop {
-        if input_done {
-            let Some(outcome) = pending.next().await else {
-                break;
-            };
-            write_frame(&mut output, router, &outcome).await?;
-            continue;
-        }
-
-        // Stop accepting new calls at the bound, but keep draining completed
-        // responses. JSON-RPC correlates responses by id, so completion order
-        // is valid and a slow backend cannot hold up unrelated calls.
-        if pending.len() >= MAX_IN_FLIGHT_REQUESTS {
-            let outcome = pending
-                .next()
-                .await
-                .expect("a non-empty pending set must yield a response");
-            write_frame(&mut output, router, &outcome).await?;
-            continue;
-        }
-
-        tokio::select! {
-            biased;
-            Some(outcome) = pending.next(), if !pending.is_empty() => {
-                write_frame(&mut output, router, &outcome).await?;
+        let line = match read_frame(&mut input, MAX_REQUEST_LINE_BYTES).await? {
+            Frame::Eof => break,
+            Frame::Line(line) => line,
+            Frame::TooLong(seen) => {
+                write_frame(
+                    &mut output,
+                    router,
+                    &parse_error_response(&format!(
+                        "request line of at least {seen} bytes exceeds the \
+                         {MAX_REQUEST_LINE_BYTES} byte limit; it was discarded unread"
+                    )),
+                )
+                .await?;
+                continue;
             }
-            frame = read_frame(&mut input, MAX_REQUEST_LINE_BYTES) => {
-                match frame? {
-                    Frame::Eof => input_done = true,
-                    Frame::TooLong(seen) => {
-                        write_frame(
-                            &mut output,
-                            router,
-                            &parse_error_response(&format!(
-                                "request line of at least {seen} bytes exceeds the \\
-                                 {MAX_REQUEST_LINE_BYTES} byte limit; it was discarded unread"
-                            )),
-                        )
-                        .await?;
-                    }
-                    Frame::NotText => {
-                        write_frame(
-                            &mut output,
-                            router,
-                            &parse_error_response("request line was not valid UTF-8"),
-                        )
-                        .await?;
-                    }
-                    Frame::Line(line) => {
-                        if line.trim().is_empty() {
-                            continue;
-                        }
+            Frame::NotText => {
+                write_frame(
+                    &mut output,
+                    router,
+                    &parse_error_response("request line was not valid UTF-8"),
+                )
+                .await?;
+                continue;
+            }
+        };
 
-                        let message: Value = match serde_json::from_str(&line) {
-                            Ok(message) => message,
-                            Err(error) => {
-                                write_frame(
-                                    &mut output,
-                                    router,
-                                    &parse_error_response(&error.to_string()),
-                                )
-                                .await?;
-                                continue;
-                            }
-                        };
+        if line.trim().is_empty() {
+            continue;
+        }
 
-                        // No id means a notification. Nothing here is stateful
-                        // across backends, so notifications are dropped rather
-                        // than fanned out.
-                        let Some(id) = message.get("id").cloned() else {
-                            continue;
-                        };
+        let message: Value = match serde_json::from_str(&line) {
+            Ok(message) => message,
+            Err(error) => {
+                write_frame(
+                    &mut output,
+                    router,
+                    &parse_error_response(&error.to_string()),
+                )
+                .await?;
+                continue;
+            }
+        };
 
-                        let method = message
-                            .get("method")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default()
-                            .to_owned();
+        // No id means a notification. Nothing here is stateful across
+        // backends, so notifications are dropped rather than fanned out (which
+        // would multiply one client event into N server events).
+        let Some(id) = message.get("id").cloned() else {
+            continue;
+        };
 
-                        match method.as_str() {
-                            "initialize" => {
-                                let outcome = router.initialize_result(&id, &message);
-                                write_frame(&mut output, router, &outcome).await?;
-                            }
-                            "ping" => {
-                                let outcome = serde_json::json!({
-                                    "jsonrpc": "2.0", "id": id, "result": {},
-                                });
-                                write_frame(&mut output, router, &outcome).await?;
-                            }
-                            "tools/list" => {
-                                // The whole surface fits in one page, and it
-                                // is this process's surface, not a backend's.
-                                let outcome = if message
-                                    .get("params")
-                                    .and_then(|params| params.get("cursor"))
-                                    .is_some_and(|cursor| !cursor.is_null())
-                                {
-                                    error_response(
-                                        &id,
-                                        -32602,
-                                        "this proxy returns its whole tool surface in one page; no cursor is \\
-                                         valid here",
-                                    )
-                                } else {
-                                    serde_json::json!({
-                                        "jsonrpc": "2.0",
-                                        "id": id,
-                                        "result": { "tools": router.tools },
-                                    })
-                                };
-                                write_frame(&mut output, router, &outcome).await?;
-                            }
-                            "tools/call" => match router.plan(&message) {
-                                Ok(Route::Local) => {
-                                    let outcome = router.list_instances_result(&id);
-                                    write_frame(&mut output, router, &outcome).await?;
-                                }
-                                Ok(Route::Remote { alias, body }) => {
-                                    pending.push(forward(router, transport, id, alias, body));
-                                }
-                                // -32602, not a tool error: the call was
-                                // never made, and the client can distinguish
-                                // routing failure from backend refusal.
-                                Err(reason) => {
-                                    let outcome = error_response(&id, -32602, &reason);
-                                    write_frame(&mut output, router, &outcome).await?;
-                                }
-                            },
-                            other => {
-                                let message = unsupported_method(other).map_or_else(
-                                    || format!("unsupported method '{}'", tidy(other)),
-                                    str::to_owned,
-                                );
-                                let outcome = error_response(&id, -32601, &message);
-                                write_frame(&mut output, router, &outcome).await?;
-                            }
-                        }
-                    }
+        let method = message
+            .get("method")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+
+        let outcome = match method.as_str() {
+            "initialize" => router.initialize_result(&id, &message),
+            "ping" => serde_json::json!({
+                "jsonrpc": "2.0", "id": id, "result": {},
+            }),
+            "tools/list" => {
+                // The whole surface fits in one page, and it is this
+                // process's surface, not any backend's. A cursor could only
+                // have come from somewhere else.
+                if message
+                    .get("params")
+                    .and_then(|params| params.get("cursor"))
+                    .is_some_and(|cursor| !cursor.is_null())
+                {
+                    error_response(
+                        &id,
+                        -32602,
+                        "this proxy returns its whole tool surface in one page; no cursor is \
+                         valid here",
+                    )
+                } else {
+                    serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": { "tools": router.tools },
+                    })
                 }
             }
-        }
+            "tools/call" => match router.plan(&message) {
+                Ok(Route::Local) => router.list_instances_result(&id),
+                Ok(Route::Remote { alias, body }) => {
+                    forward(&mut output, router, transport, &id, &alias, body).await?;
+                    continue;
+                }
+                // -32602, not a tool error: the call was never made, and the
+                // client must be able to tell routing failure from a refusal
+                // by the tracker.
+                Err(reason) => error_response(&id, -32602, &reason),
+            },
+            other => {
+                let message = unsupported_method(other).map_or_else(
+                    || format!("unsupported method '{}'", tidy(other)),
+                    str::to_owned,
+                );
+                error_response(&id, -32601, &message)
+            }
+        };
+        write_frame(&mut output, router, &outcome).await?;
     }
 
     Ok(())
@@ -1504,12 +1459,20 @@ where
     write_line(output, &router.redactor.encode_scrubbed(payload)).await
 }
 
-/// Forward one planned call and return its stamped answer.
-async fn forward<T>(router: &Router, transport: &T, id: Value, alias: String, body: Value) -> Value
+/// Forward one planned call and write its stamped answer.
+async fn forward<W, T>(
+    output: &mut W,
+    router: &Router,
+    transport: &T,
+    id: &Value,
+    alias: &str,
+    body: Value,
+) -> std::io::Result<()>
 where
+    W: AsyncWrite + Unpin + Send,
     T: InstanceTransport,
 {
-    let mut outcome = match transport.call(&alias, encode(&body)).await {
+    let mut outcome = match transport.call(alias, encode(&body)).await {
         Ok(raw) => {
             // Scrub the wire bytes first: this is the only pass that can see a
             // secret sitting in a body that never parses as JSON at all.
@@ -1517,10 +1480,10 @@ where
             match serde_json::from_str::<Value>(&raw) {
                 Ok(mut value) => {
                     // Scrub again on the decoded document, which is where an
-                    // escaped `\\u0073ecret` finally becomes a matchable
+                    // escaped `\u0073ecret` finally becomes a matchable
                     // substring, and do it before anything reads the response.
                     router.redactor.scrub_value(&mut value);
-                    let validation = validate_envelope(&value, &id).and_then(|()| {
+                    let validation = validate_envelope(&value, id).and_then(|()| {
                         if let Some(result) = value.get("result") {
                             serde_json::from_value::<rmcp::model::CallToolResult>(result.clone())
                                 .map(|_| ())
@@ -1532,12 +1495,12 @@ where
                     match validation {
                         Ok(()) => value,
                         Err(reason) => {
-                            internal_error_response(&id, &ForwardError::unreachable(reason).message)
+                            internal_error_response(id, &ForwardError::unreachable(reason).message)
                         }
                     }
                 }
                 Err(error) => internal_error_response(
-                    &id,
+                    id,
                     &ForwardError::unreachable(format!("response was not JSON ({error})")).message,
                 ),
             }
@@ -1545,11 +1508,11 @@ where
         Err(error) => {
             // A failing backend produces a failing call, never a call
             // somewhere else. There is no retry and no second alias.
-            internal_error_response(&id, &error.message)
+            internal_error_response(id, &error.message)
         }
     };
-    stamp_provenance(&mut outcome, &alias);
-    outcome
+    stamp_provenance(&mut outcome, alias);
+    write_frame(output, router, &outcome).await
 }
 
 // startup

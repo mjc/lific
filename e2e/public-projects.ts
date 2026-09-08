@@ -419,20 +419,13 @@ async function main(): Promise<number> {
           const root = document.querySelector(".public-md");
           const tags: string[] = [];
           const attrs: { name: string; value: string; tag: string }[] = [];
-          const anchors: { href?: string; rel?: string }[] = [];
           for (const el of Array.from(root?.querySelectorAll("*") ?? [])) {
             tags.push(el.tagName.toLowerCase());
             for (const a of Array.from(el.attributes)) {
               attrs.push({ name: a.name.toLowerCase(), value: a.value, tag: el.tagName.toLowerCase() });
             }
-            if (el.tagName.toLowerCase() === "a") {
-              anchors.push({
-                href: el.getAttribute("href") ?? undefined,
-                rel: el.getAttribute("rel") ?? undefined,
-              });
-            }
           }
-          return { tags, attrs, anchors };
+          return { tags, attrs };
         });
 
         // 1. Nothing executes, and no attribute is an executable URL.
@@ -505,12 +498,12 @@ async function main(): Promise<number> {
           fail(scenario, "a single-quoted outbound link was stripped");
         }
         // Every surviving outbound link is de-fanged.
-        for (const link of dom.anchors) {
-          if (
-            /^https?:/i.test(link.href ?? "") &&
-            !link.rel?.split(/\s+/).some((token) => token.toLowerCase() === "noreferrer")
-          ) {
-            fail(scenario, `an outbound link kept its referrer: ${link.href}`);
+        for (const attr of dom.attrs) {
+          if (attr.tag === "a" && attr.name === "href" && /^https?:/i.test(attr.value)) {
+            const rel = dom.attrs.find(
+              (a) => a.tag === "a" && a.name === "rel" && a.value.includes("noreferrer"),
+            );
+            if (!rel) fail(scenario, `an outbound link kept its referrer: ${attr.value}`);
           }
         }
         if (!/Hostile body/.test(markup)) {

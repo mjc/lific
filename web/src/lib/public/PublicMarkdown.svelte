@@ -42,7 +42,7 @@
   });
 
   let rendered = $derived(
-    marked.parse(content, {
+    marked.parse(content.replace(/\\n/g, "\n"), {
       breaks: true,
       gfm: true,
     }) as string,

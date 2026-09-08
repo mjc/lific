@@ -181,22 +181,7 @@ async fn main() {
 }
 
 fn cli_error_message(error: &clap::Error) -> String {
-    match error.kind() {
-        clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion => {
-            error.to_string()
-        }
-        _ => error
-            .to_string()
-            .split_inclusive('\n')
-            .fold(String::new(), |mut output, line| {
-                let (line, newline) = line
-                    .strip_suffix('\n')
-                    .map_or((line, ""), |line| (line, "\n"));
-                output.push_str(&cli::ui::sanitize_terminal_line(line));
-                output.push_str(newline);
-                output
-            }),
-    }
+    error.to_string().terminal_block().to_string()
 }
 
 fn exit_cli_error(error: clap::Error) -> ! {
@@ -210,9 +195,18 @@ fn exit_cli_error(error: clap::Error) -> ! {
 }
 
 fn parse_cli() -> (Cli, clap::ArgMatches) {
+    let args = std::env::args_os().collect::<Vec<_>>();
     let matches = Cli::command()
-        .try_get_matches()
-        .unwrap_or_else(|error| exit_cli_error(error));
+        .try_get_matches_from(&args)
+        .unwrap_or_else(|error| {
+            let rendered = Cli::command()
+                .try_get_matches_from(args.iter().map(|arg| {
+                    std::ffi::OsString::from(arg.to_string_lossy().terminal_line().to_string())
+                }))
+                .err()
+                .unwrap_or(error);
+            exit_cli_error(rendered)
+        });
     let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|error| exit_cli_error(error));
     (cli, matches)
 }
