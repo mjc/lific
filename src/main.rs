@@ -199,14 +199,16 @@ fn exit_cli_error(error: clap::Error) -> ! {
     std::process::exit(error.exit_code());
 }
 
-fn parse_cli() -> Cli {
+fn parse_cli() -> (Cli, clap::ArgMatches) {
     let matches = Cli::command()
         .try_get_matches()
-        .unwrap_or_else(exit_cli_error);
-    Cli::from_arg_matches(&matches).unwrap_or_else(exit_cli_error)
+        .unwrap_or_else(|error| exit_cli_error(error));
+    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|error| exit_cli_error(error));
+    (cli, matches)
 }
 
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
+    let (cli, matches) = parse_cli();
 
     // Rust ignores SIGPIPE process-wide, which makes println!/stdout writes
     // PANIC when piped into a closed reader (`lific completion fish | head`,
@@ -324,7 +326,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     project_archive::import(&pool, &store, &archive, &user)?
                 }
             };
-            println!("{}", serde_json::to_string_pretty(&result)?);
+            println!("{}", cli::term::json_string(&result)?);
             return Ok(());
         }
         Command::Init {
@@ -639,7 +641,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     tracing_subscriber::EnvFilter::try_from_default_env()
                         .unwrap_or_else(|_| format!("lific={}", cfg.log.level).into()),
                 )
-                .with_writer(std::io::stderr)
+                .with_ansi(false)
+                .with_writer(crate::cli::term::sanitized_stderr())
                 .init();
 
             return cli::mcp_instances::run(&instances).await;
@@ -660,7 +663,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     tracing_subscriber::EnvFilter::try_from_default_env()
                         .unwrap_or_else(|_| format!("lific={}", cfg.log.level).into()),
                 )
-                .with_writer(std::io::stderr)
+                .with_ansi(false)
+                .with_writer(crate::cli::term::sanitized_stderr())
                 .init();
 
             let url = mcp_url
@@ -688,6 +692,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     tracing_subscriber::EnvFilter::try_from_default_env()
                         .unwrap_or_else(|_| format!("lific={}", cfg.log.level).into()),
                 )
+                .with_ansi(false)
                 .with_writer(crate::cli::term::sanitized_stderr())
                 .init();
 
@@ -1112,7 +1117,7 @@ async fn cmd_init(
             resolved.config.database.path.display()
         );
         if json {
-            eprintln!("warning: {msg}");
+            ui::stderr_line(format_args!("warning: {msg}"));
         } else {
             ui::warn(msg);
         }
