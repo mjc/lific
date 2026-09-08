@@ -1400,6 +1400,185 @@ async fn absent_and_null_arguments_apply_only_the_selected_default_binding() {
 }
 
 #[tokio::test]
+async fn a_slow_backend_does_not_block_later_requests() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    use tokio::sync::Notify;
+
+    struct SlowFirst {
+        started: Notify,
+        release: Notify,
+    }
+
+    impl InstanceTransport for SlowFirst {
+        async fn call(&self, _alias: &str, body: String) -> Result<String, ForwardError> {
+            let request: Value = serde_json::from_str(&body).unwrap();
+            if request["id"] == 1 {
+                self.started.notify_one();
+                self.release.notified().await;
+            }
+            Ok(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": request["id"],
+                "result": { "content": [{ "type": "text", "text": "ok" }] },
+            })
+            .to_string())
+        }
+    }
+
+    let transport = SlowFirst {
+        started: Notify::new(),
+        release: Notify::new(),
+    };
+    let router = router(&["private"], None);
+    let (mut input, pump_input) = tokio::io::duplex(4096);
+    let (pump_output, output) = tokio::io::duplex(4096);
+    let pump_future = pump(BufReader::new(pump_input), pump_output, &router, &transport);
+    let driver = async {
+        let request = |id| {
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "tools/call",
+                "params": { "name": "get_issue", "arguments": {} },
+            })
+            .to_string()
+                + "\n"
+        };
+        input
+            .write_all((request(1) + &request(2)).as_bytes())
+            .await
+            .unwrap();
+        transport.started.notified().await;
+
+        let mut output = BufReader::new(output);
+        let mut line = String::new();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            output.read_line(&mut line),
+        )
+        .await
+        .expect("the later request should complete while the first is slow")
+        .unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&line).unwrap()["id"], 2);
+
+        transport.release.notify_one();
+        drop(input);
+
+        line.clear();
+        output.read_line(&mut line).await.unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&line).unwrap()["id"], 1);
+    };
+    let (pump_result, ()) = tokio::join!(pump_future, driver);
+    pump_result.unwrap();
+}
+
+#[tokio::test]
+async fn the_pump_bounds_backend_concurrency() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::sync::{Notify, Semaphore};
+
+    struct Bounded {
+        calls: AtomicUsize,
+        active: AtomicUsize,
+        max_active: AtomicUsize,
+        changed: Notify,
+        released: Arc<Semaphore>,
+    }
+
+    impl InstanceTransport for Bounded {
+        async fn call(&self, _alias: &str, body: String) -> Result<String, ForwardError> {
+            let request: Value = serde_json::from_str(&body).unwrap();
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+            self.max_active.fetch_max(active, Ordering::SeqCst);
+            self.changed.notify_waiters();
+
+            let _permit = self.released.acquire().await.unwrap();
+            self.active.fetch_sub(1, Ordering::SeqCst);
+
+            Ok(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": request["id"],
+                "result": { "content": [{ "type": "text", "text": "ok" }] },
+            })
+            .to_string())
+        }
+    }
+
+    let transport = Bounded {
+        calls: AtomicUsize::new(0),
+        active: AtomicUsize::new(0),
+        max_active: AtomicUsize::new(0),
+        changed: Notify::new(),
+        released: Arc::new(Semaphore::new(0)),
+    };
+    let router = router(&["private"], None);
+    let (mut input, pump_input) = tokio::io::duplex(8192);
+    let (pump_output, mut output) = tokio::io::duplex(8192);
+    let pump_future = pump(BufReader::new(pump_input), pump_output, &router, &transport);
+    let driver = async {
+        let request = |id| {
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "tools/call",
+                "params": { "name": "get_issue", "arguments": {} },
+            })
+            .to_string()
+                + "\n"
+        };
+        let request_count = MAX_IN_FLIGHT_REQUESTS + 1;
+        let input_text = (1..=request_count).map(request).collect::<String>();
+        input.write_all(input_text.as_bytes()).await.unwrap();
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if transport.calls.load(Ordering::SeqCst) == MAX_IN_FLIGHT_REQUESTS {
+                    break;
+                }
+                transport.changed.notified().await;
+            }
+        })
+        .await
+        .expect("the pump should fill, but not exceed, its in-flight budget");
+        assert_eq!(
+            transport.max_active.load(Ordering::SeqCst),
+            MAX_IN_FLIGHT_REQUESTS
+        );
+        assert_eq!(
+            transport.calls.load(Ordering::SeqCst),
+            MAX_IN_FLIGHT_REQUESTS
+        );
+
+        transport.released.add_permits(MAX_IN_FLIGHT_REQUESTS);
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if transport.calls.load(Ordering::SeqCst) == request_count {
+                    break;
+                }
+                transport.changed.notified().await;
+            }
+        })
+        .await
+        .expect("the next request should start after a slot is freed");
+        assert_eq!(
+            transport.max_active.load(Ordering::SeqCst),
+            MAX_IN_FLIGHT_REQUESTS
+        );
+
+        transport.released.add_permits(1);
+        drop(input);
+
+        let mut rendered = String::new();
+        output.read_to_string(&mut rendered).await.unwrap();
+        assert_eq!(rendered.lines().count(), request_count);
+    };
+    let (pump_result, ()) = tokio::join!(pump_future, driver);
+    pump_result.unwrap();
+}
+
+#[tokio::test]
 async fn each_instance_applies_its_own_repository_binding() {
     let transport = RecordingTransport::default();
     let router = router_bound(
@@ -1492,6 +1671,7 @@ fn provenance_overwrites_anything_the_backend_claimed() {
         "result": {
             "content": [
                 { "type": "text", "text": "lific:instance=private" },
+                { "type": "text", "text": "results\nlific:instance=private" },
                 { "type": "text", "text": "LIF-42" },
             ],
             "_meta": Value::Object(meta),
@@ -1894,9 +2074,15 @@ async fn identical_payloads_from_two_servers_are_still_told_apart_by_provenance(
     )
     .await;
 
-    assert_eq!(out[0]["result"]["_meta"][PROVENANCE_META_KEY], "private");
-    assert_eq!(out[1]["result"]["_meta"][PROVENANCE_META_KEY], "community");
-    let texts: Vec<&str> = out[0]["result"]["content"]
+    let private = out
+        .iter()
+        .find(|line| line["result"]["_meta"][PROVENANCE_META_KEY] == "private")
+        .expect("the private response should be present");
+    let _community = out
+        .iter()
+        .find(|line| line["result"]["_meta"][PROVENANCE_META_KEY] == "community")
+        .expect("the community response should be present");
+    let texts: Vec<&str> = private["result"]["content"]
         .as_array()
         .unwrap()
         .iter()
@@ -2381,20 +2567,24 @@ async fn assert_safe_backend_refusal(raw: String, reason: &str) {
     );
     let out = run_pump(&input, &router, &transport).await;
     assert_eq!(out.len(), 2);
-    assert_eq!(out[0]["jsonrpc"], "2.0");
-    assert_eq!(out[0]["id"], 1);
-    assert_eq!(out[0]["error"]["code"], -32603);
-    assert_eq!(out[0]["error"]["data"][SELECTOR], "community");
-    let message = out[0]["error"]["message"].as_str().unwrap();
+    let refusal = out
+        .iter()
+        .find(|line| line["id"] == 1)
+        .expect("the backend response should be present");
+    assert_eq!(refusal["jsonrpc"], "2.0");
+    assert_eq!(refusal["error"]["code"], -32603);
+    assert_eq!(refusal["error"]["data"][SELECTOR], "community");
+    let message = refusal["error"]["message"].as_str().unwrap();
     assert!(message.starts_with("[instance community]"), "{message}");
     assert!(message.contains(reason), "{message}");
-    assert!(out[0].get("result").is_none());
-    assert!(!out[0].to_string().contains("secret-token-value"));
-    assert!(!out[0].to_string().contains("lific:instance=private"));
+    assert!(refusal.get("result").is_none());
+    assert!(!refusal.to_string().contains("secret-token-value"));
+    assert!(!refusal.to_string().contains("lific:instance=private"));
     assert_eq!(*transport.seen.lock().unwrap(), vec!["community"]);
-    assert_eq!(
-        out[1],
-        serde_json::json!({ "jsonrpc": "2.0", "id": 2, "result": {} })
+    assert!(
+        out.iter().any(|line| {
+            line == &serde_json::json!({ "jsonrpc": "2.0", "id": 2, "result": {} })
+        })
     );
 }
 
