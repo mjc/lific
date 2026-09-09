@@ -119,15 +119,21 @@ pub fn json_string<T: serde::Serialize>(value: &T) -> Result<String, serde_json:
                 output.push(ch);
                 in_string = false;
             }
-            ch if json_terminal_control(ch) => {
-                use std::fmt::Write;
-                write!(output, "\\u{:04x}", ch as u32).expect("String write cannot fail");
-            }
+            ch if json_terminal_control(ch) => escape_json_char(&mut output, ch),
             _ => output.push(ch),
         }
     }
 
     Ok(output)
+}
+
+fn escape_json_char(output: &mut String, ch: char) {
+    use std::fmt::Write;
+
+    let mut units = [0; 2];
+    for unit in ch.encode_utf16(&mut units) {
+        write!(output, "\\u{unit:04x}").expect("String write cannot fail");
+    }
 }
 
 fn json_terminal_control(ch: char) -> bool {
@@ -207,12 +213,14 @@ pub fn confirm_inner<R: std::io::BufRead, W: std::io::Write>(
 /// pass to supply the value without a prompt. Returns the trimmed input; errors
 /// on empty input or no-TTY.
 pub fn prompt_text(prompt: &str, bypass_flag: &str) -> Result<String, String> {
+    // Prompts are diagnostics/input guidance, never command data. Keep them
+    // off stdout so redirected or explicit JSON output remains parseable.
     prompt_text_inner(
         prompt,
         bypass_flag,
         stdin_is_tty(),
         &mut std::io::stdin().lock(),
-        &mut std::io::stdout(),
+        &mut std::io::stderr(),
     )
 }
 
