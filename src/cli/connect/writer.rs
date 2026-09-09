@@ -358,7 +358,7 @@ fn render_json(existing: &str, entry: &CompiledEntry) -> Result<String, WriteErr
     // Insert/replace only our own server entry, preserving siblings.
     top_map.insert(entry.name.clone(), entry.value.clone());
 
-    let mut out = crate::cli::term::json_string(&root)
+    let mut out = serde_json::to_string_pretty(&root)
         .map_err(|e| WriteError::new(format!("failed to serialize JSON: {e}")))?;
     out.push('\n');
     Ok(out)
@@ -369,7 +369,7 @@ fn manual_json_snippet(entry: &CompiledEntry) -> String {
     let snippet = serde_json::json!({
         entry.top_key.clone(): { entry.name.clone(): entry.value.clone() }
     });
-    crate::cli::term::json_string(&snippet).unwrap_or_default()
+    serde_json::to_string_pretty(&snippet).unwrap_or_default()
 }
 
 // ── TOML (Codex) ─────────────────────────────────────────────
@@ -660,7 +660,7 @@ mod tests {
         // Pre-existing config with another MCP server and unrelated top keys.
         std::fs::write(
             &path,
-            crate::cli::term::json_string(&serde_json::json!({
+            serde_json::to_string_pretty(&serde_json::json!({
                 "theme": "dark",
                 "mcp": {
                     "other": { "type": "remote", "url": "http://other" }
@@ -692,7 +692,7 @@ mod tests {
         let path = dir.join("opencode.json");
         std::fs::write(
             &path,
-            crate::cli::term::json_string(&serde_json::json!({
+            serde_json::to_string_pretty(&serde_json::json!({
                 "mcp": { "lific": { "type": "remote", "url": "http://stale" } }
             }))
             .unwrap(),
@@ -727,6 +727,18 @@ mod tests {
         assert!(snippet.contains("lific"));
         // File must be byte-for-byte unchanged.
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn manual_json_snippet_preserves_machine_values() {
+        let entry = find_client("opencode")
+            .unwrap()
+            .compile(&ServerConfig::remote("https://host/\u{202e}forged", "key"));
+        let snippet = manual_json_snippet(&entry);
+        let value: serde_json::Value = serde_json::from_str(&snippet).unwrap();
+
+        assert_eq!(value["mcp"]["lific"]["url"], "https://host/\u{202e}forged");
+        assert!(snippet.contains('\u{202e}'));
     }
 
     #[test]
