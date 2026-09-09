@@ -326,6 +326,7 @@ fn create_private_config(path: &std::path::Path, contents: &str) -> std::io::Res
 }
 
 use rmcp::ServiceExt;
+use std::io::Write;
 use tracing::info;
 
 #[tokio::main]
@@ -337,16 +338,39 @@ async fn main() {
 }
 
 fn cli_error_message(error: &clap::Error) -> String {
-    error.to_string().terminal_block().to_string()
+    match error.kind() {
+        clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion => {
+            safe_clap_help(error)
+        }
+        _ => format!(
+            "{}\n{}\n",
+            error.to_string().terminal_line(),
+            Cli::command().render_usage().terminal_block()
+        ),
+    }
+}
+
+/// Keep Clap's intentional help layout while removing controls from the
+/// process-derived program name. Clap renders that name directly into help,
+/// including for successful `--help`/`--version` requests.
+fn safe_clap_help(error: &clap::Error) -> String {
+    let mut rendered = error.to_string();
+    if let Some(program) = std::env::args_os().next() {
+        let program = program.to_string_lossy().into_owned();
+        let safe_program = program.clone().terminal_line().to_string();
+        rendered = rendered.replace(&program, &safe_program);
+    }
+    rendered.terminal_block().to_string()
 }
 
 fn exit_cli_error(error: clap::Error) -> ! {
     let message = cli_error_message(&error);
-    if error.use_stderr() {
-        eprint!("{message}");
+    let result = if error.use_stderr() {
+        std::io::stderr().write_all(message.as_bytes())
     } else {
-        print!("{message}");
-    }
+        std::io::stdout().write_all(message.as_bytes())
+    };
+    let _ = result;
     std::process::exit(error.exit_code());
 }
 
@@ -354,15 +378,7 @@ fn parse_cli() -> (Cli, clap::ArgMatches) {
     let args = std::env::args_os().collect::<Vec<_>>();
     let matches = Cli::command()
         .try_get_matches_from(&args)
-        .unwrap_or_else(|error| {
-            let rendered = Cli::command()
-                .try_get_matches_from(args.iter().map(|arg| {
-                    std::ffi::OsString::from(arg.to_string_lossy().terminal_line().to_string())
-                }))
-                .err()
-                .unwrap_or(error);
-            exit_cli_error(rendered)
-        });
+        .unwrap_or_else(|error| exit_cli_error(error));
     let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|error| exit_cli_error(error));
     (cli, matches)
 }

@@ -71,6 +71,136 @@ fn clap_output_cannot_render_terminal_controls_from_arguments_or_environment() {
     assert!(output.status.success(), "{output:?}");
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(!stdout.contains('\u{202e}'), "{stdout:?}");
+
+    let output = Command::new(binary).arg("--version").output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn clap_parse_failure_uses_original_arguments_without_forged_lines() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+    use std::os::unix::process::CommandExt;
+
+    let output = Command::new(env!("CARGO_BIN_EXE_lific"))
+        .arg0("lific\nFORGED STATUS")
+        .args([
+            OsString::from("--url"),
+            OsString::from_vec(vec![0xff]),
+            OsString::from("project"),
+            OsString::from("list"),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("\nFORGED STATUS"), "{stderr:?}");
+    assert!(!stderr.contains("FORGED STATUS\n"), "{stderr:?}");
+}
+
+#[test]
+fn import_help_hides_environment_values() {
+    let binary = env!("CARGO_BIN_EXE_lific");
+    let cases = vec![
+        (
+            "github",
+            vec![("GITHUB_TOKEN", "github-secret\u{1b}[2J")],
+            vec!["github-secret\u{1b}[2J", "FORGED JIRA STATUS"],
+        ),
+        (
+            "linear",
+            vec![("LINEAR_API_KEY", "linear-secret\u{202e}")],
+            vec!["linear-secret\u{202e}", "FORGED JIRA STATUS"],
+        ),
+        (
+            "jira",
+            vec![
+                ("JIRA_EMAIL", "jira@example.test\nFORGED JIRA STATUS"),
+                ("JIRA_API_TOKEN", "jira-token-secret"),
+            ],
+            vec![
+                "jira@example.test\nFORGED JIRA STATUS",
+                "jira-token-secret",
+                "FORGED JIRA STATUS",
+            ],
+        ),
+    ];
+
+    for (provider, variables, secrets) in cases {
+        let mut command = Command::new(binary);
+        for (variable, value) in variables {
+            command.env(variable, value);
+        }
+        let output = command
+            .args(["import", provider, "--help"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{provider}: {output:?}");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for secret in secrets {
+            assert!(!stdout.contains(secret), "{provider}: {stdout:?}");
+        }
+        assert!(stdout.contains("Usage:"), "{provider}: {stdout:?}");
+        assert!(stdout.contains("--"), "{provider}: {stdout:?}");
+    }
+}
+
+#[test]
+fn invalid_log_filter_is_reported_safely_before_tracing_starts() {
+    let scratch = tempfile::tempdir().unwrap();
+    let config = scratch.path().join("lific.toml");
+    std::fs::write(
+        &config,
+        "[log]\nlevel = \"not-a-level\\u001B[2J\\nFORGED LOG STATUS\"\n",
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_lific"))
+        .env_remove("RUST_LOG")
+        .args([
+            "--config",
+            config.to_str().unwrap(),
+            "mcp",
+            "--remote",
+            "--url",
+            "http://127.0.0.1:1",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains('\u{001b}'), "{stderr:?}");
+    assert!(!stderr.contains('\u{009b}'), "{stderr:?}");
+    assert!(!stderr.contains("\nFORGED LOG STATUS"), "{stderr:?}");
+    assert!(stderr.contains("not-a-level"), "{stderr:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn clap_early_output_ignores_closed_pipes() {
+    use std::fs::File;
+    use std::os::fd::{FromRawFd, RawFd};
+
+    unsafe fn closed_reader_pipe() -> File {
+        let mut fds = [0 as RawFd; 2];
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        assert_eq!(unsafe { libc::close(fds[0]) }, 0);
+        unsafe { File::from_raw_fd(fds[1]) }
+    }
+
+    for (args, expected_code) in [(["--help"], 0), (["not-a-command"], 2)] {
+        let output_fd = unsafe { closed_reader_pipe() };
+        let output = Command::new(env!("CARGO_BIN_EXE_lific"))
+            .args(args)
+            .stdout(Stdio::from(output_fd.try_clone().unwrap()))
+            .stderr(Stdio::from(output_fd))
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(expected_code), "{output:?}");
+    }
 }
 
 #[cfg(unix)]
@@ -86,6 +216,22 @@ fn clap_help_cannot_render_a_terminal_control_in_the_program_name() {
     assert!(output.status.success(), "{output:?}");
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(!stdout.contains('\u{202e}'), "{stdout:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn clap_help_preserves_layout_without_forged_program_name_lines() {
+    use std::os::unix::process::CommandExt;
+
+    let output = Command::new(env!("CARGO_BIN_EXE_lific"))
+        .arg0("lific\nFORGED_DIAGNOSTIC")
+        .arg("--help")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(!stdout.contains("\nFORGED_DIAGNOSTIC"), "{stdout:?}");
+    assert!(stdout.contains("\nUsage:"), "{stdout:?}");
 }
 
 #[cfg(target_os = "linux")]
