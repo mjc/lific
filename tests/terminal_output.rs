@@ -72,6 +72,19 @@ fn clap_output_cannot_render_terminal_controls_from_arguments_or_environment() {
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(!stdout.contains('\u{202e}'), "{stdout:?}");
 
+    let output = Command::new(binary)
+        .env("LIFIC_URL", "https://host/secret\nFORGED URL")
+        .env("LIFIC_API_KEY", "api-secret\t\u{009b}2J\u{202e}")
+        .arg("--help")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!stdout.contains("https://host/secret"), "{stdout:?}");
+    assert!(!stdout.contains("FORGED URL"), "{stdout:?}");
+    assert!(!stdout.contains("api-secret"), "{stdout:?}");
+    assert!(stdout.contains("Usage:"), "{stdout:?}");
+
     let output = Command::new(binary).arg("--version").output().unwrap();
     assert!(output.status.success(), "{output:?}");
 }
