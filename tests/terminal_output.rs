@@ -72,6 +72,19 @@ fn clap_output_cannot_render_terminal_controls_from_arguments_or_environment() {
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(!stdout.contains('\u{202e}'), "{stdout:?}");
 
+    let output = Command::new(binary)
+        .env("LIFIC_URL", "https://host/secret\nFORGED URL")
+        .env("LIFIC_API_KEY", "api-secret\t\u{009b}2J\u{202e}")
+        .arg("--help")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!stdout.contains("https://host/secret"), "{stdout:?}");
+    assert!(!stdout.contains("FORGED URL"), "{stdout:?}");
+    assert!(!stdout.contains("api-secret"), "{stdout:?}");
+    assert!(stdout.contains("Usage:"), "{stdout:?}");
+
     let output = Command::new(binary).arg("--version").output().unwrap();
     assert!(output.status.success(), "{output:?}");
 }
@@ -145,6 +158,37 @@ fn import_help_hides_environment_values() {
         assert!(stdout.contains("Usage:"), "{provider}: {stdout:?}");
         assert!(stdout.contains("--"), "{provider}: {stdout:?}");
     }
+}
+
+#[test]
+fn invalid_log_filter_is_reported_safely_before_tracing_starts() {
+    let scratch = tempfile::tempdir().unwrap();
+    let config = scratch.path().join("lific.toml");
+    std::fs::write(
+        &config,
+        "[log]\nlevel = \"not-a-level\\u001B[2J\\nFORGED LOG STATUS\"\n",
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_lific"))
+        .env("RUST_LOG", "lific=also-invalid\u{009b}2J")
+        .args([
+            "--config",
+            config.to_str().unwrap(),
+            "mcp",
+            "--remote",
+            "--url",
+            "http://127.0.0.1:1",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains('\u{001b}'), "{stderr:?}");
+    assert!(!stderr.contains('\u{009b}'), "{stderr:?}");
+    assert!(!stderr.contains("\nFORGED LOG STATUS"), "{stderr:?}");
+    assert!(stderr.contains("not-a-level"), "{stderr:?}");
 }
 
 #[cfg(unix)]
