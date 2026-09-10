@@ -77,6 +77,12 @@ pub fn messages(range: Option<&str>) -> Result<Vec<String>, LificError> {
 /// no shell ever sees it. A range git rejects surfaces git's own stderr,
 /// because git explains a bad revision far better than a wrapper can.
 fn messages_from_range(range: &str) -> Result<Vec<String>, LificError> {
+    if range.starts_with('-') {
+        return Err(LificError::BadRequest(
+            "the git revision range must not start with '-'".into(),
+        ));
+    }
+
     let output = Command::new("git")
         .args(["log", "--format=%B%x1e", range])
         .output()
@@ -575,6 +581,16 @@ mod tests {
             message.contains("no-such-ref"),
             "the refusal must carry git's own words: {message}"
         );
+    }
+
+    #[test]
+    fn an_option_shaped_range_is_rejected_before_git_runs() {
+        let error = messages_from_range("--output=/tmp/unexpected").expect_err("option rejected");
+
+        assert!(matches!(
+            error,
+            LificError::BadRequest(message)
+                if message == "the git revision range must not start with '-'"));
     }
 
     #[test]

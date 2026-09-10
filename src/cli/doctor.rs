@@ -311,8 +311,17 @@ async fn check_reachable_remote(
     credential_base: &str,
 ) -> Vec<Check> {
     let mut checks = vec![check_oauth_discovery(client, base).await];
+    let allow_stored_credential = stored_credential_allowed(base, credential_base);
     let (key, key_source) = match explicit_key {
         Some(key) => (Some(key.to_owned()), None),
+        None if !allow_stored_credential => {
+            checks.push(Check::new(
+                "credentials",
+                Status::Skipped,
+                "stored credentials skipped; authorized check requires a matching HTTPS origin",
+            ));
+            (None, None)
+        }
         None => match crate::cli::credentials::load_with_source(credential_base) {
             Ok(Some((key, source))) => (Some(key), Some(source)),
             Ok(None) => (None, None),
@@ -327,11 +336,29 @@ async fn check_reachable_remote(
         },
     };
     let mut mcp = check_mcp(client, base, key.as_deref()).await;
+    if explicit_key.is_none() && !allow_stored_credential {
+        mcp.detail = format!(
+            "{} (authorized check skipped; stored credentials require a matching HTTPS origin)",
+            mcp.detail
+        );
+    }
     if let Some(source) = key_source {
         mcp.detail = format!("{} (using {})", mcp.detail, source.label());
     }
     checks.push(mcp);
     checks
+}
+
+/// Stored credentials may only be sent to the exact HTTPS origin they belong
+/// to. In particular, a configured HTTPS public URL must never authorize a
+/// request to the separate plaintext URL used to probe a non-loopback bind.
+fn stored_credential_allowed(request_base: &str, credential_base: &str) -> bool {
+    let Ok(request_url) = reqwest::Url::parse(request_base) else {
+        return false;
+    };
+    request_url.scheme() == "https"
+        && crate::cli::credentials::origin_of(request_base)
+            == crate::cli::credentials::origin_of(credential_base)
 }
 
 fn skipped_local_checks(detail: &str) -> [Check; 2] {
@@ -1818,6 +1845,30 @@ mod tests {
         assert_eq!(status_of(&checks, "oauth_discovery"), Some(Status::Skipped));
         assert_eq!(status_of(&checks, "mcp"), Some(Status::Skipped));
         assert_eq!(status_of(&checks, "credentials"), None);
+    }
+
+    #[test]
+    fn stored_credentials_are_not_sent_to_a_non_loopback_plaintext_probe() {
+        assert!(!stored_credential_allowed(
+            "http://192.0.2.10:3998",
+            "https://lific.example.com"
+        ));
+    }
+
+    #[test]
+    fn stored_credentials_require_the_same_https_origin() {
+        assert!(stored_credential_allowed(
+            "https://lific.example.com/mcp",
+            "https://LIFIC.example.com/"
+        ));
+        assert!(!stored_credential_allowed(
+            "https://other.example.com",
+            "https://lific.example.com"
+        ));
+        assert!(!stored_credential_allowed(
+            "http://127.0.0.1:3998",
+            "http://127.0.0.1:3998"
+        ));
     }
 
     #[tokio::test]
