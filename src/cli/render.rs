@@ -23,6 +23,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::cli::ui::{terminal_block, terminal_line};
 use crate::db::models::{
     Comment, Folder, Issue, Label, Module, Page, Priority, Project, SearchResult, Status,
 };
@@ -58,7 +59,13 @@ macro_rules! w {
         $out.push('\n')
     };
     ($out:expr, $($arg:tt)+) => {{
-        let _ = writeln!($out, $($arg)+);
+        let _ = writeln!($out, "{}", terminal_line(format_args!($($arg)+)));
+    }};
+}
+
+macro_rules! wb {
+    ($out:expr, $($arg:tt)+) => {{
+        let _ = writeln!($out, "{}", terminal_block(format_args!($($arg)+)));
     }};
 }
 
@@ -106,6 +113,20 @@ fn first_line_suffix(text: &str) -> String {
     }
 }
 
+fn truncate_with_ellipsis(text: &str, limit: usize) -> String {
+    if text.len() <= limit {
+        return text.to_owned();
+    }
+
+    let end = text
+        .char_indices()
+        .take_while(|(index, _)| *index < limit)
+        .map(|(index, _)| index)
+        .last()
+        .unwrap_or(0);
+    format!("{}...", &text[..end])
+}
+
 // ── Issue ────────────────────────────────────────────────────
 
 pub fn issue_list(issues: &[Issue], module_name: ModuleName<'_>) -> String {
@@ -114,7 +135,8 @@ pub fn issue_list(issues: &[Issue], module_name: ModuleName<'_>) -> String {
         w!(out, "No issues found.");
         return out;
     }
-    w!(out, "{} issue(s):\n", issues.len());
+    w!(out, "{} issue(s):", issues.len());
+    w!(out);
     for issue in issues {
         let module = issue
             .module_id
@@ -163,7 +185,7 @@ pub fn issue_detail(issue: &Issue, module_name: ModuleName<'_>) -> String {
     }
     if !issue.description.is_empty() {
         w!(out);
-        w!(out, "{}", issue.description);
+        wb!(out, "{}", issue.description);
     }
     out
 }
@@ -190,7 +212,8 @@ pub fn project_list(projects: &[Project]) -> String {
         w!(out, "No projects.");
         return out;
     }
-    w!(out, "{} project(s):\n", projects.len());
+    w!(out, "{} project(s):", projects.len());
+    w!(out);
     for project in projects {
         w!(
             out,
@@ -208,7 +231,7 @@ pub fn project_detail(project: &Project) -> String {
     w!(out, "{} - {}", project.identifier, project.name);
     if !project.description.is_empty() {
         w!(out);
-        w!(out, "{}", project.description);
+        wb!(out, "{}", project.description);
     }
     out
 }
@@ -243,14 +266,15 @@ pub fn page_list(pages: &[Page]) -> String {
         w!(out, "No pages found.");
         return out;
     }
-    w!(out, "{} page(s):\n", pages.len());
+    w!(out, "{} page(s):", pages.len());
+    w!(out);
     for page in pages {
         let preview = if page.content.is_empty() {
             "(empty)".to_string()
         } else {
             let first_line = page.content.lines().next().unwrap_or("");
             if first_line.len() > 60 {
-                format!("{}...", &first_line[..60])
+                truncate_with_ellipsis(first_line, 60)
             } else {
                 first_line.to_string()
             }
@@ -275,7 +299,7 @@ pub fn page_detail(page: &Page) -> String {
     }
     if !page.content.is_empty() {
         w!(out);
-        w!(out, "{}", page.content);
+        wb!(out, "{}", page.content);
     }
     out
 }
@@ -300,7 +324,8 @@ pub fn search_results(results: &[SearchResult]) -> String {
         w!(out, "No results found.");
         return out;
     }
-    w!(out, "{} result(s):\n", results.len());
+    w!(out, "{} result(s):", results.len());
+    w!(out);
     for result in results {
         let identifier = result.identifier.as_deref().unwrap_or("?");
         w!(
@@ -313,11 +338,7 @@ pub fn search_results(results: &[SearchResult]) -> String {
         if !result.snippet.is_empty() {
             // Clean up snippet for terminal display
             let snippet = result.snippet.replace("**", "").replace('\n', " ");
-            let snippet = if snippet.len() > 80 {
-                format!("{}...", &snippet[..80])
-            } else {
-                snippet
-            };
+            let snippet = truncate_with_ellipsis(&snippet, 80);
             w!(out, "              {}", snippet);
         }
     }
@@ -360,7 +381,8 @@ pub fn comment_list(
         w!(out, "No comments on {}.", identifier);
         return out;
     }
-    w!(out, "{} comment(s) on {}:\n", comments.len(), identifier);
+    w!(out, "{} comment(s) on {}:", comments.len(), identifier);
+    w!(out);
     for comment in comments {
         w!(
             out,
@@ -398,7 +420,7 @@ pub fn comment_added(comment: &Comment, identifier: &str) -> String {
         identifier,
         comment.author
     );
-    w!(out, "  {}", comment.content);
+    wb!(out, "  {}", comment.content);
     out
 }
 
@@ -410,7 +432,8 @@ pub fn module_list(modules: &[Module], project: &str) -> String {
         w!(out, "No modules in {}.", project);
         return out;
     }
-    w!(out, "{} module(s) in {}:\n", modules.len(), project);
+    w!(out, "{} module(s) in {}:", modules.len(), project);
+    w!(out);
     for module in modules {
         w!(
             out,
@@ -455,7 +478,8 @@ pub fn label_list(labels: &[Label], project: &str) -> String {
         w!(out, "No labels in {}.", project);
         return out;
     }
-    w!(out, "{} label(s) in {}:\n", labels.len(), project);
+    w!(out, "{} label(s) in {}:", labels.len(), project);
+    w!(out);
     for label in labels {
         w!(out, "  {} ({})", label.name, label.color);
     }
@@ -488,7 +512,8 @@ pub fn folder_list(folders: &[Folder], project: &str) -> String {
         w!(out, "No folders in {}.", project);
         return out;
     }
-    w!(out, "{} folder(s) in {}:\n", folders.len(), project);
+    w!(out, "{} folder(s) in {}:", folders.len(), project);
+    w!(out);
     for folder in folders {
         w!(out, "  {}", folder.name);
     }
@@ -537,6 +562,8 @@ pub fn export_written(written: &[PathBuf], output: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+    use proptest::proptest;
 
     fn issue(identifier: &str, status: Status, priority: Priority) -> Issue {
         Issue {
@@ -577,6 +604,25 @@ mod tests {
             created_at: "2026-01-01 00:00:00".into(),
             updated_at: "2026-01-01 00:00:00".into(),
             seq: 1,
+        }
+    }
+
+    fn page(content: &str) -> Page {
+        Page {
+            id: 1,
+            project_id: Some(1),
+            sequence: Some(1),
+            identifier: "TST-DOC-1".into(),
+            folder_id: None,
+            title: "A page".into(),
+            content: content.into(),
+            sort_order: 0.0,
+            status: "active".into(),
+            pinned: false,
+            created_at: "2026-01-01T00:00:00Z".into(),
+            updated_at: "2026-01-01T00:00:00Z".into(),
+            seq: 1,
+            labels: Vec::new(),
         }
     }
 
@@ -676,5 +722,55 @@ mod tests {
             "TST-1 - Fix the bug\n  Status:   active\n  Priority: urgent\n  \
              Blocks:   TST-2\n  DupedBy:  TST-3\n\nDetails\n"
         );
+    }
+
+    #[test]
+    fn hostile_fields_cannot_forge_renderer_layout() {
+        let mut one = issue("TST-1", Status::Active, Priority::Urgent);
+        one.title = "title\nFORGED\x1b]8;;https://evil\x1b\\".into();
+        one.description = "first\nsecond\u{009b}2J\u{202e}".into();
+
+        let rendered = issue_detail(&one, &|_| None);
+        assert!(!rendered.contains("\nFORGED"));
+        assert!(rendered.contains("first\nsecond 2J "));
+        assert!(
+            rendered
+                .chars()
+                .all(|ch| { !crate::cli::ui::is_terminal_control(ch) || ch == '\n' || ch == '\t' })
+        );
+    }
+
+    #[test]
+    fn renderer_truncation_stays_on_utf8_boundaries() {
+        let page_output = page_list(&[page(&format!("{}é", "a".repeat(59)))]);
+        assert!(page_output.contains(&format!("{}...", "a".repeat(59))));
+
+        let search_output = search_results(&[SearchResult {
+            result_type: "issue".into(),
+            id: 1,
+            identifier: Some("TST-1".into()),
+            title: "A result".into(),
+            snippet: format!("{}é", "b".repeat(79)),
+            project_id: Some(1),
+            parent_page_id: None,
+        }]);
+        assert!(search_output.contains(&format!("{}...", "b".repeat(79))));
+    }
+
+    proptest! {
+        #[test]
+        fn actual_renderer_never_emits_terminal_controls(text in
+            proptest::collection::vec(any::<char>(), 0..256)
+                .prop_map(String::from_iter)
+        ) {
+            let mut one = issue("TST-1", Status::Active, Priority::Medium);
+            one.title = text.clone();
+            one.description = text;
+            let rendered = issue_detail(&one, &|_| None);
+            let safe = rendered.chars().all(|ch| {
+                !crate::cli::ui::is_terminal_control(ch) || ch == '\n' || ch == '\t'
+            });
+            prop_assert!(safe);
+        }
     }
 }
