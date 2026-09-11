@@ -63,7 +63,7 @@ pub fn run(
                     "is_admin": user.is_admin,
                     "is_bot": user.is_bot,
                 });
-                println!("{}", serde_json::to_string_pretty(&out)?);
+                println!("{}", term::json_string(&out)?);
             } else {
                 let role = if user.is_admin { " (admin)" } else { "" };
                 ui::step(format!(
@@ -91,7 +91,7 @@ pub fn run(
                         })
                     })
                     .collect();
-                println!("{}", serde_json::to_string_pretty(&out)?);
+                println!("{}", term::json_string(&out)?);
             } else if users.is_empty() {
                 println!("No users.");
             } else {
@@ -149,7 +149,7 @@ pub fn run(
                     "sessions_cleared": true,
                     "credentials_revoked": true,
                 });
-                println!("{}", serde_json::to_string_pretty(&out)?);
+                println!("{}", term::json_string(&out)?);
             } else {
                 ui::step(format!(
                     "Password updated for '{}' {}",
@@ -166,7 +166,7 @@ pub fn run(
             db::queries::users::set_admin(&conn, &username, true)?;
             if json {
                 let out = serde_json::json!({ "promoted": username });
-                println!("{}", serde_json::to_string_pretty(&out)?);
+                println!("{}", term::json_string(&out)?);
             } else {
                 ui::step(format!("Promoted '{username}' to admin."));
             }
@@ -176,7 +176,7 @@ pub fn run(
             db::queries::users::set_admin(&conn, &username, false)?;
             if json {
                 let out = serde_json::json!({ "demoted": username });
-                println!("{}", serde_json::to_string_pretty(&out)?);
+                println!("{}", term::json_string(&out)?);
             } else {
                 ui::step(format!("Demoted '{username}' from admin."));
             }

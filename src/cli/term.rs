@@ -39,6 +39,56 @@ pub fn wants_json_inner(json_flag: bool, stdout_tty: bool) -> bool {
     json_flag || !stdout_tty
 }
 
+/// Serialize terminal-visible JSON without changing its parsed value.
+///
+/// Serde escapes C0 controls, but leaves C1 and Unicode formatting controls
+/// literal. Escape those only while they are inside JSON strings; structural
+/// pretty-print whitespace remains valid JSON formatting.
+pub fn json_string<T: serde::Serialize>(value: &T) -> Result<String, serde_json::Error> {
+    let serialized = serde_json::to_string_pretty(value)?;
+    let mut output = String::with_capacity(serialized.len());
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for ch in serialized.chars() {
+        if !in_string {
+            output.push(ch);
+            in_string = ch == '"';
+            continue;
+        }
+
+        if escaped {
+            output.push(ch);
+            escaped = false;
+            continue;
+        }
+
+        match ch {
+            '\\' => {
+                output.push(ch);
+                escaped = true;
+            }
+            '"' => {
+                output.push(ch);
+                in_string = false;
+            }
+            ch if crate::cli::ui::is_terminal_control(ch) => escape_json_char(&mut output, ch),
+            _ => output.push(ch),
+        }
+    }
+
+    Ok(output)
+}
+
+fn escape_json_char(output: &mut String, ch: char) {
+    use std::fmt::Write as _;
+
+    let mut units = [0; 2];
+    for unit in ch.encode_utf16(&mut units) {
+        write!(output, "\\u{unit:04x}").expect("String write cannot fail");
+    }
+}
+
 /// Ask the user to confirm an action.
 ///
 /// If stdin is not a TTY we cannot prompt, so rather than hang forever we
@@ -127,6 +177,61 @@ pub fn prompt_text_inner<R: std::io::BufRead, W: std::io::Write>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+    use proptest::proptest;
+
+    fn assert_no_literal_terminal_controls_in_strings(encoded: &str) {
+        let mut in_string = false;
+        let mut escaped = false;
+        for ch in encoded.chars() {
+            if !in_string {
+                if ch == '"' {
+                    in_string = true;
+                }
+                continue;
+            }
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            match ch {
+                '\\' => escaped = true,
+                '"' => in_string = false,
+                _ => assert!(!crate::cli::ui::is_terminal_control(ch)),
+            }
+        }
+    }
+
+    #[test]
+    fn json_string_escapes_terminal_controls_losslessly() {
+        let value = serde_json::json!({
+            "text": "\u{001b}]52;c;clipboard\u{0007}\u{009b}2J\u{007f}\u{202e}\u{200b}\u{feff}"
+        });
+        let encoded = json_string(&value).unwrap();
+
+        assert!(encoded.contains("\\u009b"));
+        assert!(encoded.contains("\\u007f"));
+        assert!(encoded.contains("\\u202e"));
+        assert!(encoded.contains("\\ufeff"));
+        assert_no_literal_terminal_controls_in_strings(&encoded);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&encoded).unwrap(),
+            value
+        );
+    }
+
+    proptest! {
+        #[test]
+        fn json_string_round_trips_arbitrary_unicode(text in
+            proptest::collection::vec(any::<char>(), 0..256)
+                .prop_map(String::from_iter)
+        ) {
+            let value = serde_json::json!({"text": text});
+            let encoded = json_string(&value).unwrap();
+            prop_assert_eq!(serde_json::from_str::<serde_json::Value>(&encoded).unwrap(), value);
+            assert_no_literal_terminal_controls_in_strings(&encoded);
+        }
+    }
 
     #[test]
     fn wants_json_explicit_flag_always_wins() {

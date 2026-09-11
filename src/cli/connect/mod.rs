@@ -947,7 +947,7 @@ fn print_json(result: &ConnectResult) {
             "action": a.action,
         })),
     });
-    println!("{}", serde_json::to_string_pretty(&out).unwrap());
+    println!("{}", crate::cli::term::json_string(&out).unwrap());
 }
 
 fn print_human(result: &ConnectResult) {

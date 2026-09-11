@@ -126,7 +126,7 @@ impl Output<'_> {
     /// enrichment can be asserted against the HTTP backend's without capturing
     /// stdout.
     fn emit(self, value: serde_json::Value) {
-        println!("{}", serde_json::to_string_pretty(&value).unwrap());
+        println!("{}", crate::cli::term::json_string(&value).unwrap());
     }
 
     /// Serialization of our own models cannot fail.
@@ -202,7 +202,7 @@ fn export(
 // ── Helpers ──────────────────────────────────────────────────
 
 fn print_json<T: serde::Serialize>(val: &T) {
-    println!("{}", serde_json::to_string_pretty(val).unwrap());
+    println!("{}", crate::cli::term::json_string(val).unwrap());
 }
 
 fn page_folder_id(

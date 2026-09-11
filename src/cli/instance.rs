@@ -99,7 +99,7 @@ pub fn run(
             "login_message": settings.login_message,
             "users": { "total": total, "admins": admins },
         });
-        println!("{}", serde_json::to_string_pretty(&out)?);
+        println!("{}", term::json_string(&out)?);
     } else {
         println!("Instance");
         println!(

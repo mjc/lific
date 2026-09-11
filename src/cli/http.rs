@@ -32,7 +32,7 @@ use super::weblinks::{
 };
 use super::{
     Command, CommentAction, ExportAction, FolderAction, IssueAction, LabelAction, ModuleAction,
-    PageAction, ProjectAction, owned_labels, render,
+    PageAction, ProjectAction, owned_labels, render, term,
 };
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -65,7 +65,7 @@ pub async fn run(
     };
     let output = backend.execute(command, link_output).await?;
     if json_output {
-        println!("{}", serde_json::to_string_pretty(&output)?);
+        println!("{}", term::json_string(&output)?);
     } else {
         print!("{}", backend.human(command, &output).await);
     }
@@ -1512,7 +1512,7 @@ enum ExportShape {
 }
 
 fn pretty(value: &Value) -> String {
-    serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
+    term::json_string(value).unwrap_or_else(|_| value.to_string())
 }
 
 #[cfg(test)]

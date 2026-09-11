@@ -462,7 +462,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     project_archive::import(&pool, &store, &archive, &user)?
                 }
             };
-            println!("{}", serde_json::to_string_pretty(&result)?);
+            println!("{}", cli::term::json_string(&result)?);
             return Ok(());
         }
         Command::Init {
@@ -507,7 +507,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "attachment_count": m.attachment_count,
                     "attachment_bytes": m.attachment_bytes,
                 });
-                println!("{}", serde_json::to_string_pretty(&out_json)?);
+                println!("{}", cli::term::json_string(&out_json)?);
             } else {
                 use cli::ui;
                 ui::step(format!(
@@ -556,7 +556,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .as_ref()
                         .map(|p| p.display().to_string()),
                 });
-                println!("{}", serde_json::to_string_pretty(&out_json)?);
+                println!("{}", cli::term::json_string(&out_json)?);
             } else {
                 use cli::ui;
                 ui::intro("lific restore");
@@ -739,7 +739,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "path": target.display().to_string(),
                     "action": action.as_str(),
                 });
-                println!("{}", serde_json::to_string_pretty(&out)?);
+                println!("{}", cli::term::json_string(&out)?);
             } else {
                 println!("AGENTS.md {}: {}", action.as_str(), target.display());
             }
@@ -1429,7 +1429,7 @@ async fn cmd_init(
                 "error": service_error,
             },
         });
-        println!("{}", serde_json::to_string_pretty(&out)?);
+        println!("{}", cli::term::json_string(&out)?);
         return Ok(());
     }
 
@@ -1551,7 +1551,7 @@ fn cmd_service(
             let plan = cli::service::ServicePlan::for_config_file(config_path)?;
             let report = cli::service::install(mgr, &plan)?;
             if json {
-                println!("{}", serde_json::to_string_pretty(&report)?);
+                println!("{}", cli::term::json_string(&report)?);
             } else {
                 ui::intro("lific service install");
                 ui::step(format!(
@@ -1593,7 +1593,7 @@ fn cmd_service(
         ServiceAction::Status => {
             let s = cli::service::status(mgr)?;
             if json {
-                println!("{}", serde_json::to_string_pretty(&s)?);
+                println!("{}", cli::term::json_string(&s)?);
             } else if s.active {
                 ui::step(format!(
                     "Service is running ({}) — {}",
