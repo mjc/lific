@@ -120,8 +120,8 @@ fn truncate_with_ellipsis(text: &str, limit: usize) -> String {
 
     let end = text
         .char_indices()
-        .take_while(|(index, _)| *index < limit)
-        .map(|(index, _)| index)
+        .map(|(index, ch)| index + ch.len_utf8())
+        .take_while(|end| *end <= limit)
         .last()
         .unwrap_or(0);
     format!("{}...", &text[..end])
@@ -742,8 +742,22 @@ mod tests {
 
     #[test]
     fn renderer_truncation_stays_on_utf8_boundaries() {
+        let ascii_page_output = page_list(&[page(&"a".repeat(61))]);
+        assert!(ascii_page_output.contains(&format!("{}...", "a".repeat(60))));
+
         let page_output = page_list(&[page(&format!("{}é", "a".repeat(59)))]);
         assert!(page_output.contains(&format!("{}...", "a".repeat(59))));
+
+        let ascii_search_output = search_results(&[SearchResult {
+            result_type: "issue".into(),
+            id: 1,
+            identifier: Some("TST-1".into()),
+            title: "A result".into(),
+            snippet: "b".repeat(81),
+            project_id: Some(1),
+            parent_page_id: None,
+        }]);
+        assert!(ascii_search_output.contains(&format!("{}...", "b".repeat(80))));
 
         let search_output = search_results(&[SearchResult {
             result_type: "issue".into(),
