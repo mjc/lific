@@ -11,6 +11,7 @@ mod db;
 mod dump;
 mod error;
 mod export;
+mod first_boot;
 mod import;
 mod issue_refs;
 mod links;
@@ -86,6 +87,10 @@ fn is_crud_command(cmd: &Command) -> bool {
 ///   unit whose `start` would immediately fail the guard is refused up front.
 ///   `uninstall`/`stop`/`status`/`restart` must keep working on a host whose
 ///   database is gone, which is exactly when you need to stop the service.
+/// - `start --init-if-missing` opts out on purpose (LIF-468): a container's
+///   first boot has no earlier moment to run `init` in. Plain `lific start`
+///   is guarded exactly as before, and the flag's own guards in
+///   [`first_boot::decide`] are stricter than this one.
 fn needs_existing_database(cmd: &Command) -> bool {
     match cmd {
         Command::Init { .. }
@@ -101,16 +106,167 @@ fn needs_existing_database(cmd: &Command) -> bool {
         Command::Mcp {
             remote, instances, ..
         } => !remote && instances.is_none(),
+        Command::Start {
+            init_if_missing, ..
+        } => !init_if_missing,
         Command::Service { action } => matches!(action, cli::ServiceAction::Install),
         _ => true,
     }
 }
 
+/// The three operations the in-place rewrite needs from an open config file.
+/// A trait rather than `File` directly so a test can fail the write and prove
+/// the rollback puts the original bytes back.
+#[cfg(unix)]
+trait ConfigSink {
+    /// Write `bytes` starting at offset 0, leaving any trailing bytes alone.
+    fn write_at_start(&mut self, bytes: &[u8]) -> std::io::Result<()>;
+    fn truncate(&mut self, len: u64) -> std::io::Result<()>;
+    fn sync(&mut self) -> std::io::Result<()>;
+}
+
+#[cfg(unix)]
+impl ConfigSink for std::fs::File {
+    fn write_at_start(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        std::io::Seek::seek(self, std::io::SeekFrom::Start(0))?;
+        std::io::Write::write_all(self, bytes)
+    }
+
+    fn truncate(&mut self, len: u64) -> std::io::Result<()> {
+        self.set_len(len)
+    }
+
+    fn sync(&mut self) -> std::io::Result<()> {
+        self.sync_all()
+    }
+}
+
+/// Overwrite a config in place without ever passing through an empty file.
+///
+/// Truncate-then-write loses the old configuration outright if the write dies
+/// half way (ENOSPC, EIO). Instead the new bytes go down over the old ones and
+/// the file is shortened only once they are durable, so a failure leaves either
+/// the new config or, after the rollback, the original one.
+#[cfg(unix)]
+fn overwrite_config_bytes(
+    sink: &mut dyn ConfigSink,
+    original: &[u8],
+    contents: &[u8],
+) -> std::io::Result<()> {
+    match write_config_bytes(sink, original.len(), contents) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            // Every failure lands here, the shortening included: a truncate or
+            // its sync can fail on its own (EIO, or a filesystem that only
+            // discovers a quota problem at flush), and leaving the file as the
+            // new config plus a tail of the old one is not a config at all.
+            // Best effort: if the restore fails too the file is genuinely
+            // damaged and there is nothing left to try, so the caller still
+            // sees the original cause.
+            let _ = restore_config_bytes(sink, original);
+            Err(error)
+        }
+    }
+}
+
+/// The new bytes over the old ones, shortened only once they are durable.
+#[cfg(unix)]
+fn write_config_bytes(
+    sink: &mut dyn ConfigSink,
+    original_len: usize,
+    contents: &[u8],
+) -> std::io::Result<()> {
+    sink.write_at_start(contents)?;
+    ConfigSink::sync(sink)?;
+    if contents.len() < original_len {
+        sink.truncate(contents.len() as u64)?;
+        ConfigSink::sync(sink)?;
+    }
+    Ok(())
+}
+
+/// Put the file back the way it was found.
+#[cfg(unix)]
+fn restore_config_bytes(sink: &mut dyn ConfigSink, original: &[u8]) -> std::io::Result<()> {
+    sink.write_at_start(original)?;
+    sink.truncate(original.len() as u64)?;
+    ConfigSink::sync(sink)
+}
+
+/// Rewrite an existing config file through its own descriptor.
+///
+/// LIF-469: the fallback for a writable file inside an unwritable directory.
+/// It is not crash-atomic (a crash between the write and the truncate can
+/// leave trailing bytes of the old config), which is why it runs only when
+/// staging a replacement is impossible.
+///
+/// Unix only. Without `O_NOFOLLOW` the fallback would follow a symlink planted
+/// by whoever owns that directory, and truncating an attacker-chosen file is
+/// not a trade worth making for a convenience path, so elsewhere the atomic
+/// path is the only path.
+#[cfg(unix)]
+fn rewrite_config_in_place(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    let mut file = std::fs::OpenOptions::new()
+        // Read as well as write, so the original bytes come off the descriptor
+        // we already hold rather than off the path a second time.
+        .read(true)
+        .write(true)
+        .create(false)
+        // Refuse to follow a symlink: the whole point of this path is that
+        // something else owns the directory, so the name could be a trap
+        // pointing at a file we should not be writing to.
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{} is not a regular file", path.display()),
+        ));
+    }
+    // Best effort: the file may be owned by another uid, and chmod is not
+    // what makes this write correct.
+    match file.set_permissions(std::fs::Permissions::from_mode(0o600)) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {}
+        Err(error) => return Err(error),
+    }
+    let mut original = Vec::new();
+    std::io::Read::read_to_end(&mut file, &mut original)?;
+    overwrite_config_bytes(&mut file, &original, contents.as_bytes())
+}
+
+#[cfg(not(unix))]
+fn rewrite_config_in_place(path: &std::path::Path, _contents: &str) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        format!(
+            "cannot rewrite {} in place: no symlink-safe open on this platform",
+            path.display()
+        ),
+    ))
+}
+
 fn write_private_config(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
     let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-    let staging = tempfile::Builder::new()
+    let staging = match tempfile::Builder::new()
         .prefix(".lific-config-")
-        .tempdir_in(parent)?;
+        .tempdir_in(parent)
+    {
+        Ok(staging) => staging,
+        // LIF-469: a container can hand us a writable config file inside a
+        // directory we may not create entries in (Fly injects
+        // /etc/lific/lific.toml into a root-owned /etc/lific). Staging plus
+        // rename is impossible there, but rewriting the existing file is not.
+        Err(error)
+            if error.kind() == std::io::ErrorKind::PermissionDenied
+                && path.symlink_metadata().is_ok() =>
+        {
+            return rewrite_config_in_place(path, contents);
+        }
+        Err(error) => return Err(error),
+    };
     let temp = staging.path().join(path.file_name().unwrap_or_default());
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
@@ -252,6 +408,14 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .as_ref()
         .ok()
         .and_then(|resolved| resolved.path.clone());
+    // Provenance, kept for `start --init-if-missing` (LIF-468): the built-in
+    // default is the one source that may not be initialized from.
+    let resolved_config_source = resolution
+        .as_ref()
+        .ok()
+        .map_or(config::ConfigSource::BuiltInDefault, |resolved| {
+            resolved.source
+        });
     let mut cfg = match resolution {
         Ok(resolved) => resolved.config,
         Err(config::ConfigError::MissingExplicit { .. })
@@ -463,12 +627,24 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             return cli::member::run(&cfg, action, cli.json);
         }
 
-        Command::Start { port, host } => {
+        Command::Start {
+            port,
+            host,
+            init_if_missing,
+        } => {
             if let Some(p) = port {
                 cfg.server.port = p;
             }
             if let Some(h) = host {
                 cfg.server.host = h;
+            }
+
+            // LIF-468: container first boot. Guarded inside, and a no-op when
+            // the database is already there. Every other startup check,
+            // including the login-free/reachability refusals, still runs in
+            // `server::run` exactly as before.
+            if init_if_missing {
+                first_boot::run(&cfg, resolved_config_source, cli.db.is_some())?;
             }
 
             server::run(&cfg).await?;
@@ -1177,23 +1353,22 @@ async fn cmd_init(
         // database, not the config). On for login-free so the browser signs the
         // operator in; off for password mode.
         let conn = pool.write()?;
-        db::queries::settings::update(
-            &conn,
-            db::queries::settings::InstanceSettingsPatch {
-                web_auto_login: Some(mode.web_auto_login()),
-                ..Default::default()
-            },
-        )?;
-
-        let admin = if mode.passwordless() {
-            db::queries::users::create_passwordless_admin(&conn, &op_name)?
+        let password = if mode.passwordless() {
+            None
         } else {
-            let pw = match &password_flag {
+            Some(match &password_flag {
                 Some(p) => p.clone(),
                 None => prompt_password_for_auth_mode()?,
-            };
-            db::queries::users::create_first_admin_with_password(&conn, &op_name, &pw)?
+            })
         };
+        // Shared with `start --init-if-missing` (LIF-468) so both first-run
+        // paths agree on what a fresh instance looks like.
+        let admin = first_boot::create_first_admin(
+            &conn,
+            &op_name,
+            password.as_deref(),
+            mode.web_auto_login(),
+        )?;
         info!(operator = %admin.username, mode = mode.as_str(), "created first human admin");
         Some(admin)
     } else {
@@ -1890,7 +2065,6 @@ mod display_host_tests {
         assert_eq!(local_url(&cfg), "http://127.0.0.1:7777");
     }
 }
-
 /// LIF-469: `init --force` rewrites the config in place when the directory
 /// holding it refuses new entries, which is the shape a container gives us
 /// when it injects a config file into a root-owned directory.
@@ -2147,10 +2321,9 @@ mod write_private_config_tests {
         );
     }
 }
-
 #[cfg(test)]
 mod cli_error_tests {
-    use super::{cli_error_message, Cli};
+    use super::{Cli, cli_error_message};
     use clap::Parser;
 
     #[test]
