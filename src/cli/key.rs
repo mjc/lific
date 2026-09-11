@@ -36,7 +36,7 @@ pub fn run(
                     "key": key,
                     "user": assigned,
                 });
-                println!("{}", serde_json::to_string_pretty(&out)?);
+                println!("{}", crate::cli::term::json_string(&out)?);
             } else {
                 let title = if let Some(ref username) = assigned {
                     format!(
@@ -66,15 +66,15 @@ pub fn run(
                         })
                     })
                     .collect();
-                println!("{}", serde_json::to_string_pretty(&out)?);
+                println!("{}", crate::cli::term::json_string(&out)?);
             } else if keys.is_empty() {
-                println!("No API keys configured.");
+                ui::line("No API keys configured.");
             } else {
-                println!("{} API key(s):", keys.len());
+                ui::line(format!("{} API key(s):", keys.len()));
                 for k in &keys {
                     let status = if k.revoked { "REVOKED" } else { "active" };
                     let expiry = k.expires_at.as_deref().unwrap_or("never");
-                    println!(
+                    ui::line(format!(
                         "  {} | {} | created {} | expires {}{}",
                         k.name,
                         status,
@@ -85,7 +85,7 @@ pub fn run(
                         } else {
                             ""
                         }
-                    );
+                    ));
                 }
             }
         }
@@ -93,7 +93,7 @@ pub fn run(
             auth::revoke_api_key(&pool, &name)?;
             if json {
                 let out = serde_json::json!({ "revoked": name });
-                println!("{}", serde_json::to_string_pretty(&out)?);
+                println!("{}", crate::cli::term::json_string(&out)?);
             } else {
                 ui::step(format!("Revoked key '{name}'"));
             }
@@ -102,7 +102,7 @@ pub fn run(
             let key = auth::rotate_api_key(&pool, &name)?;
             if json {
                 let out = serde_json::json!({ "name": name, "key": key });
-                println!("{}", serde_json::to_string_pretty(&out)?);
+                println!("{}", crate::cli::term::json_string(&out)?);
             } else {
                 ui::note(
                     format!("Key '{name}' rotated — save it now, it will not be shown again"),
@@ -118,7 +118,7 @@ pub fn run(
             db::queries::users::assign_key_to_user(&conn, &name, u.id)?;
             if json {
                 let out = serde_json::json!({ "name": name, "user": user });
-                println!("{}", serde_json::to_string_pretty(&out)?);
+                println!("{}", crate::cli::term::json_string(&out)?);
             } else {
                 ui::step(format!("Assigned key '{name}' to user '{user}'"));
             }
