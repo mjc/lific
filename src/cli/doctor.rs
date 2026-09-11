@@ -264,6 +264,7 @@ async fn check_remote(cfg: &Config, key: Option<&str>) -> Vec<Check> {
 
     let Ok(client) = reqwest::Client::builder()
         .timeout(Duration::from_secs(3))
+        .redirect(reqwest::redirect::Policy::none())
         .build()
     else {
         checks.push(Check::new(
@@ -311,6 +312,12 @@ async fn check_reachable_remote(
     credential_base: &str,
 ) -> Vec<Check> {
     let mut checks = vec![check_oauth_discovery(client, base).await];
+    if explicit_key.is_some() && !is_https_url(base) {
+        let detail = "explicit key skipped; authorized check requires HTTPS";
+        checks.push(Check::new("credentials", Status::Skipped, detail));
+        checks.push(Check::new("mcp", Status::Skipped, detail));
+        return checks;
+    }
     let allow_stored_credential = stored_credential_allowed(base, credential_base);
     let (key, key_source) = match explicit_key {
         Some(key) => (Some(key.to_owned()), None),
@@ -349,14 +356,15 @@ async fn check_reachable_remote(
     checks
 }
 
+fn is_https_url(base: &str) -> bool {
+    reqwest::Url::parse(base).is_ok_and(|url| url.scheme() == "https")
+}
+
 /// Stored credentials may only be sent to the exact HTTPS origin they belong
 /// to. In particular, a configured HTTPS public URL must never authorize a
 /// request to the separate plaintext URL used to probe a non-loopback bind.
 fn stored_credential_allowed(request_base: &str, credential_base: &str) -> bool {
-    let Ok(request_url) = reqwest::Url::parse(request_base) else {
-        return false;
-    };
-    request_url.scheme() == "https"
+    is_https_url(request_base)
         && crate::cli::credentials::origin_of(request_base)
             == crate::cli::credentials::origin_of(credential_base)
 }
@@ -1805,11 +1813,12 @@ mod tests {
         let checks = check_remote(&config, Some("explicit-test-key")).await;
         assert_eq!(status_of(&checks, "server"), Some(Status::Warn));
         assert_eq!(status_of(&checks, "oauth_discovery"), Some(Status::Pass));
-        assert_eq!(status_of(&checks, "mcp"), Some(Status::Pass));
+        assert_eq!(status_of(&checks, "credentials"), Some(Status::Skipped));
+        assert_eq!(status_of(&checks, "mcp"), Some(Status::Skipped));
     }
 
     #[tokio::test]
-    async fn reachable_server_runs_mcp_when_discovery_fails() {
+    async fn reachable_server_skips_plaintext_mcp_when_discovery_fails() {
         let app = axum::Router::new()
             .route(
                 "/api/health",
@@ -1829,7 +1838,36 @@ mod tests {
 
         assert_eq!(status_of(&checks, "server"), Some(Status::Pass));
         assert_eq!(status_of(&checks, "oauth_discovery"), Some(Status::Fail));
-        assert_eq!(status_of(&checks, "mcp"), Some(Status::Pass));
+        assert_eq!(status_of(&checks, "credentials"), Some(Status::Skipped));
+        assert_eq!(status_of(&checks, "mcp"), Some(Status::Skipped));
+    }
+
+    #[tokio::test]
+    async fn doctor_does_not_follow_health_redirects() {
+        let app = axum::Router::new()
+            .route(
+                "/api/health",
+                axum::routing::get(|| async { axum::response::Redirect::temporary("/healthy") }),
+            )
+            .route(
+                "/healthy",
+                axum::routing::get(|| async { reqwest::StatusCode::OK }),
+            )
+            .route(
+                "/.well-known/oauth-protected-resource/mcp",
+                axum::routing::get(|| async {
+                    axum::Json(serde_json::json!({ "resource": "http://example.test/mcp" }))
+                }),
+            )
+            .route(
+                "/mcp",
+                axum::routing::post(|| async { initialize_response() }),
+            );
+        let base = serve_ephemeral(app).await;
+
+        let checks = check_remote(&config_at(&base), Some("explicit-test-key")).await;
+
+        assert_eq!(status_of(&checks, "server"), Some(Status::Warn));
     }
 
     #[tokio::test]
