@@ -30,7 +30,6 @@ mod storage;
 mod test_env;
 
 use clap::{CommandFactory, FromArgMatches};
-use cli::ui::TerminalDisplay;
 use cli::{BackendKind, Cli, Command, ServiceAction};
 use config::Config;
 
@@ -265,45 +264,41 @@ fn error_report(error: &(dyn std::error::Error + 'static)) -> String {
         if index != 0 {
             report.push_str("\ncaused by: ");
         }
-        report.push_str(&error.to_string().terminal_line().to_string());
+        report.push_str(&cli::ui::terminal_line(error));
         current = error.source();
     }
     report.push('\n');
     report
 }
 
-fn cli_error_message(error: &clap::Error) -> String {
-    let mut rendered = error.to_string();
-    for (_, value) in error.context() {
-        sanitize_clap_context(&mut rendered, value);
+fn cli_error_message(mut error: clap::Error) -> String {
+    let contexts = error
+        .context()
+        .filter_map(|(kind, value)| sanitize_clap_context(value).map(|value| (kind, value)))
+        .collect::<Vec<_>>();
+    for (kind, value) in contexts {
+        error.insert(kind, value);
     }
-    rendered.terminal_block().to_string()
+    cli::ui::terminal_block(error)
 }
 
-fn sanitize_clap_context(rendered: &mut String, value: &clap::error::ContextValue) {
+fn sanitize_clap_context(value: &clap::error::ContextValue) -> Option<clap::error::ContextValue> {
     match value {
-        clap::error::ContextValue::String(value) => replace_clap_context(rendered, value),
-        clap::error::ContextValue::Strings(values) => {
-            for value in values {
-                replace_clap_context(rendered, value);
-            }
-        }
+        clap::error::ContextValue::String(value) => Some(clap::error::ContextValue::String(
+            cli::ui::sanitize_terminal_line(value),
+        )),
+        clap::error::ContextValue::Strings(values) => Some(clap::error::ContextValue::Strings(
+            values
+                .iter()
+                .map(|value| cli::ui::sanitize_terminal_line(value))
+                .collect(),
+        )),
         clap::error::ContextValue::None
         | clap::error::ContextValue::Bool(_)
         | clap::error::ContextValue::StyledStr(_)
         | clap::error::ContextValue::StyledStrs(_)
-        | clap::error::ContextValue::Number(_) => {}
-        _ => {}
-    }
-}
-
-fn replace_clap_context(rendered: &mut String, value: &str) {
-    if value.is_empty() {
-        return;
-    }
-    let safe = value.terminal_line().to_string();
-    if safe != value {
-        *rendered = rendered.replace(value, &safe);
+        | clap::error::ContextValue::Number(_) => None,
+        _ => None,
     }
 }
 
@@ -315,14 +310,16 @@ fn cli_command() -> clap::Command {
 }
 
 fn exit_cli_error(error: clap::Error) -> ! {
-    let message = cli_error_message(&error);
-    let result = if error.use_stderr() {
+    let use_stderr = error.use_stderr();
+    let exit_code = error.exit_code();
+    let message = cli_error_message(error);
+    let result = if use_stderr {
         std::io::stderr().write_all(message.as_bytes())
     } else {
         std::io::stdout().write_all(message.as_bytes())
     };
     let _ = result;
-    std::process::exit(error.exit_code());
+    std::process::exit(exit_code);
 }
 
 fn parse_cli() -> (Cli, clap::ArgMatches) {
@@ -2321,7 +2318,7 @@ mod cli_error_tests {
             Ok(_) => panic!("invalid subcommand unexpectedly parsed"),
             Err(error) => error,
         };
-        let rendered = cli_error_message(&error);
+        let rendered = cli_error_message(error);
 
         assert!(!rendered.contains('\u{202e}'));
         assert!(

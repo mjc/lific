@@ -14,6 +14,23 @@ fn cli(directory: &Path, config: &Path) -> Command {
     command
 }
 
+#[cfg(unix)]
+fn help_output(argv0: &str, args: &[&str]) -> String {
+    use std::os::unix::process::CommandExt;
+
+    let output = Command::new(env!("CARGO_BIN_EXE_lific"))
+        .arg0(argv0)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{argv0:?} {args:?}: {output:?}");
+    assert!(output.stderr.is_empty(), "{argv0:?} {args:?}: {output:?}");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(!stdout.contains('\u{1b}'), "{argv0:?}: {stdout:?}");
+    assert!(!stdout.contains('\u{202e}'), "{argv0:?}: {stdout:?}");
+    stdout
+}
+
 #[test]
 fn init_database_warning_is_safe_in_explicit_and_automatic_json_modes() {
     for explicit_json in [false, true] {
@@ -257,26 +274,15 @@ fn clap_early_output_ignores_closed_pipes() {
 #[cfg(unix)]
 #[test]
 fn clap_help_cannot_render_a_terminal_control_in_the_program_name() {
-    use std::os::unix::process::CommandExt;
-
     for argv0 in [
         "lific\nFORGED_BARE",
         "./lific\tFORGED_RELATIVE",
         "/tmp/lific\u{1b}[2J\u{202e}FORGED_ABSOLUTE",
     ] {
         for args in [&["--help"][..], &["project", "--help"][..]] {
-            let output = Command::new(env!("CARGO_BIN_EXE_lific"))
-                .arg0(argv0)
-                .args(args)
-                .output()
-                .unwrap();
-            assert!(output.status.success(), "{argv0:?} {args:?}: {output:?}");
-            assert!(output.stderr.is_empty(), "{argv0:?} {args:?}: {output:?}");
-            let stdout = String::from_utf8(output.stdout).unwrap();
+            let stdout = help_output(argv0, args);
             assert!(stdout.contains("Usage: lific"), "{argv0:?}: {stdout:?}");
             assert!(!stdout.contains("FORGED_"), "{argv0:?}: {stdout:?}");
-            assert!(!stdout.contains('\u{1b}'), "{argv0:?}: {stdout:?}");
-            assert!(!stdout.contains('\u{202e}'), "{argv0:?}: {stdout:?}");
         }
     }
 }
@@ -314,15 +320,7 @@ fn clap_diagnostics_preserve_their_original_scope_and_layout() {
 #[cfg(unix)]
 #[test]
 fn clap_help_preserves_layout_without_forged_program_name_lines() {
-    use std::os::unix::process::CommandExt;
-
-    let output = Command::new(env!("CARGO_BIN_EXE_lific"))
-        .arg0("lific\nFORGED_DIAGNOSTIC")
-        .arg("--help")
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "{output:?}");
-    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stdout = help_output("lific\nFORGED_DIAGNOSTIC", &["--help"]);
     assert!(!stdout.contains("\nFORGED_DIAGNOSTIC"), "{stdout:?}");
     assert!(stdout.contains("\nUsage:"), "{stdout:?}");
 }

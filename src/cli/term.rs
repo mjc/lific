@@ -14,7 +14,7 @@
 
 use std::io::{self, IsTerminal, Write};
 
-use crate::cli::ui::TerminalDisplay;
+use crate::cli::ui::terminal_line;
 
 /// Build the filter without allowing a parse failure to print the configured
 /// directive before the sanitized tracing writer is installed.
@@ -225,7 +225,7 @@ pub fn confirm_inner<R: std::io::BufRead, W: std::io::Write>(
         ));
     }
 
-    let _ = write!(writer, "{} [y/N] ", prompt.terminal_line());
+    let _ = write!(writer, "{} [y/N] ", terminal_line(prompt));
     let _ = writer.flush();
 
     let mut line = String::new();
@@ -268,7 +268,7 @@ pub fn prompt_text_inner<R: std::io::BufRead, W: std::io::Write>(
             "interactive input required; re-run with {bypass_flag} to supply it non-interactively"
         ));
     }
-    let _ = write!(writer, "{} ", prompt.terminal_line());
+    let _ = write!(writer, "{} ", terminal_line(prompt));
     let _ = writer.flush();
 
     let mut line = String::new();
@@ -317,9 +317,9 @@ mod tests {
                 }
             }
             let expected = if let Some(body) = event.strip_suffix('\n') {
-                format!("{}\n", body.terminal_line())
+                format!("{}\n", terminal_line(body))
             } else {
-                event.terminal_line().to_string()
+                terminal_line(event)
             };
             prop_assert_eq!(String::from_utf8(output).unwrap(), expected);
         }

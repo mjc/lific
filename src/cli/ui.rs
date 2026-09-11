@@ -16,12 +16,12 @@
 //!   `warn`/`error` for problems, `note` for blocks the user must read (keys,
 //!   snippets, next steps), `intro`/`outro` bracketing every session.
 
-use std::fmt::{self, Display};
+use std::fmt::Display;
 
 /// Begin a command session: prints the `┌ <title>` header.
 pub fn intro(title: &str) {
     let _ = cliclack::intro(
-        console::style(format!(" {} ", title.terminal_line()))
+        console::style(format!(" {} ", terminal_line(title)))
             .on_cyan()
             .black()
             .to_string(),
@@ -30,54 +30,54 @@ pub fn intro(title: &str) {
 
 /// A completed step: `◇ <msg>`.
 pub fn step(msg: impl std::fmt::Display) {
-    let _ = cliclack::log::success(msg.terminal_line());
+    let _ = cliclack::log::success(terminal_line(msg));
 }
 
 /// A neutral informational line: `● <msg>`.
 pub fn info(msg: impl std::fmt::Display) {
-    let _ = cliclack::log::info(msg.terminal_line());
+    let _ = cliclack::log::info(terminal_line(msg));
 }
 
 /// A warning line: `▲ <msg>`.
 pub fn warn(msg: impl std::fmt::Display) {
-    let _ = cliclack::log::warning(msg.terminal_line());
+    let _ = cliclack::log::warning(terminal_line(msg));
 }
 
 /// An error line: `■ <msg>`.
 pub fn error(msg: impl std::fmt::Display) {
-    let _ = cliclack::log::error(msg.terminal_line());
+    let _ = cliclack::log::error(terminal_line(msg));
 }
 
 /// A skipped/dimmed line: `◌ <msg>` (rendered via a plain step with dim text).
 pub fn skipped(msg: impl std::fmt::Display) {
-    let _ = cliclack::log::step(console::style(msg.terminal_line()).dim().to_string());
+    let _ = cliclack::log::step(console::style(terminal_line(msg)).dim().to_string());
 }
 
 /// A boxed note block with a title — for content the user must actually read
 /// (API keys, manual snippets, next steps).
 pub fn note(title: impl std::fmt::Display, body: impl std::fmt::Display) {
-    let _ = cliclack::note(title.terminal_line(), body.terminal_block());
+    let _ = cliclack::note(terminal_line(title), terminal_block(body));
 }
 
 /// End the session on a success: `└ <msg>`.
 pub fn outro(msg: impl std::fmt::Display) {
-    let _ = cliclack::outro(msg.terminal_line());
+    let _ = cliclack::outro(terminal_line(msg));
 }
 
 /// End the session on a failure: `└ <msg>` in red.
 pub fn outro_cancel(msg: impl std::fmt::Display) {
-    let _ = cliclack::outro_cancel(msg.terminal_line());
+    let _ = cliclack::outro_cancel(terminal_line(msg));
 }
 
 /// A plain human-readable line for commands that intentionally do not use a
 /// cliclack session.
 pub fn line(msg: impl std::fmt::Display) {
-    println!("{}", msg.terminal_line());
+    println!("{}", terminal_line(msg));
 }
 
 /// A plain sanitized human-readable line for diagnostics that belong on stderr.
 pub fn stderr_line(msg: impl std::fmt::Display) {
-    eprintln!("{}", msg.terminal_line());
+    eprintln!("{}", terminal_line(msg));
 }
 
 /// Sanitize secondary text (paths, hints) for composition into a UI message.
@@ -86,20 +86,20 @@ pub fn stderr_line(msg: impl std::fmt::Display) {
 /// ANSI from a composable string would make the outer terminal sanitizer
 /// display escape bytes literally.
 pub fn dim(s: impl std::fmt::Display) -> String {
-    s.terminal_line().to_string()
+    terminal_line(s)
 }
 
 /// Sanitize a command for composition into a UI message.
 pub fn command(s: impl std::fmt::Display) -> String {
-    s.terminal_line().to_string()
+    terminal_line(s)
 }
 
 pub(crate) fn sanitize_terminal_line(s: &str) -> String {
-    s.terminal_line().to_string()
+    terminal_line(s)
 }
 
 pub(crate) fn sanitize_terminal_block(s: &str) -> String {
-    s.terminal_block().to_string()
+    terminal_block(s)
 }
 
 /// Whether a character can alter or obscure terminal output.
@@ -131,38 +131,12 @@ pub(crate) fn is_terminal_control(ch: char) -> bool {
         )
 }
 
-pub(crate) trait TerminalDisplay: Display + Sized {
-    fn terminal_line(self) -> impl Display {
-        Terminal {
-            value: self,
-            preserve_layout: false,
-        }
-    }
-
-    fn terminal_block(self) -> impl Display {
-        Terminal {
-            value: self,
-            preserve_layout: true,
-        }
-    }
+pub(crate) fn terminal_line(value: impl Display) -> String {
+    sanitize_terminal_text(&value.to_string(), false)
 }
 
-impl<T: Display> TerminalDisplay for T {}
-
-struct Terminal<T> {
-    value: T,
-    preserve_layout: bool,
-}
-
-impl<T: Display> Display for Terminal<T> {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let value = if formatter.alternate() {
-            format!("{:#}", self.value)
-        } else {
-            self.value.to_string()
-        };
-        formatter.pad(&sanitize_terminal_text(&value, self.preserve_layout))
-    }
+pub(crate) fn terminal_block(value: impl Display) -> String {
+    sanitize_terminal_text(&value.to_string(), true)
 }
 
 fn sanitize_terminal_text(input: &str, preserve_layout: bool) -> String {
@@ -180,15 +154,13 @@ fn sanitize_terminal_text(input: &str, preserve_layout: bool) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{TerminalDisplay, is_terminal_control};
+    use super::{is_terminal_control, terminal_block, terminal_line};
     use proptest::prelude::*;
 
     #[test]
     fn block_controls_are_neutralized_without_flattening_layout() {
         assert_eq!(
-            "name\x1b[2J\r\x07\u{85}\u{202e}\u{2066}\nnext\tline\x7f"
-                .terminal_block()
-                .to_string(),
+            terminal_block("name\x1b[2J\r\x07\u{85}\u{202e}\u{2066}\nnext\tline\x7f"),
             "name^[[2J     \nnext\tline "
         );
     }
@@ -196,30 +168,27 @@ mod tests {
     #[test]
     fn default_ignorable_controls_are_neutralized() {
         let controls = "\u{00ad}\u{061c}\u{06dd}\u{070f}\u{0890}\u{180e}\u{2061}\u{fff9}\u{e0061}";
-        assert_eq!(controls.terminal_line().to_string(), "         ");
+        assert_eq!(terminal_line(controls), "         ");
     }
 
     #[test]
     fn supplementary_unicode_format_controls_are_neutralized() {
         let controls = "\u{0600}\u{08e2}\u{110bd}\u{13430}\u{1bca0}\u{1d173}\u{e0001}\u{e0061}";
-        assert_eq!(controls.terminal_line().to_string(), "        ");
+        assert_eq!(terminal_line(controls), "        ");
     }
 
     #[test]
     fn line_controls_cannot_forge_another_status_line() {
         assert_eq!(
-            "title\n[ok]\tuser\u{061c}\u{200f}\u{2028}\u{206f}"
-                .terminal_line()
-                .to_string(),
+            terminal_line("title\n[ok]\tuser\u{061c}\u{200f}\u{2028}\u{206f}"),
             "title [ok] user    "
         );
     }
 
     #[test]
     fn line_values_neutralize_osc8_c1_csi_and_backspace() {
-        let rendered = "label\x1b]8;;https://evil\x1b\\click\x1b]8;;\x1b\\\u{009b}2J\u{0008}"
-            .terminal_line()
-            .to_string();
+        let rendered =
+            terminal_line("label\x1b]8;;https://evil\x1b\\click\x1b]8;;\x1b\\\u{009b}2J\u{0008}");
 
         assert_eq!(rendered, "label^[]8;;https://evil^[\\click^[]8;;^[\\ 2J ");
         assert!(!rendered.chars().any(char::is_control));
@@ -231,7 +200,7 @@ mod tests {
             input in proptest::collection::vec(any::<char>(), 0..256)
                 .prop_map(String::from_iter)
         ) {
-            let rendered = input.terminal_line().to_string();
+            let rendered = terminal_line(input);
             prop_assert!(rendered.chars().all(|ch| !is_terminal_control(ch)));
         }
 
@@ -240,7 +209,7 @@ mod tests {
             input in proptest::collection::vec(any::<char>(), 0..256)
                 .prop_map(String::from_iter)
         ) {
-            let rendered = input.terminal_block().to_string();
+            let rendered = terminal_block(input);
             let safe = rendered.chars().all(|ch| {
                 !is_terminal_control(ch) || ch == '\n' || ch == '\t'
             });

@@ -15,29 +15,11 @@ pub(crate) enum CommandKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DatabaseRequirement {
-    None,
-    Existing,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum BackendSupport {
-    LocalOnly,
-    LocalAndHttp,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SigpipePolicy {
-    Restore,
-    KeepIgnored,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CommandPlan {
     kind: CommandKind,
-    database: DatabaseRequirement,
-    backend: BackendSupport,
-    sigpipe: SigpipePolicy,
+    requires_existing_database: bool,
+    supports_http: bool,
+    restores_sigpipe: bool,
 }
 
 impl CommandPlan {
@@ -58,17 +40,17 @@ impl CommandPlan {
 
     #[must_use]
     pub(crate) const fn requires_existing_database(self) -> bool {
-        matches!(self.database, DatabaseRequirement::Existing)
+        self.requires_existing_database
     }
 
     #[must_use]
     pub(crate) const fn supports_http(self) -> bool {
-        matches!(self.backend, BackendSupport::LocalAndHttp)
+        self.supports_http
     }
 
     #[must_use]
     pub(crate) const fn restores_sigpipe(self) -> bool {
-        matches!(self.sigpipe, SigpipePolicy::Restore)
+        self.restores_sigpipe
     }
 }
 
@@ -76,9 +58,9 @@ impl CommandPlan {
 pub(crate) fn plan(command: &Command) -> CommandPlan {
     let data = CommandPlan {
         kind: CommandKind::Data,
-        database: DatabaseRequirement::Existing,
-        backend: BackendSupport::LocalAndHttp,
-        sigpipe: SigpipePolicy::Restore,
+        requires_existing_database: true,
+        supports_http: true,
+        restores_sigpipe: true,
     };
 
     match command {
@@ -95,15 +77,15 @@ pub(crate) fn plan(command: &Command) -> CommandPlan {
         | Command::GitHook { .. } => data,
         Command::Doctor { .. } => CommandPlan {
             kind: CommandKind::Doctor,
-            database: DatabaseRequirement::None,
-            backend: BackendSupport::LocalOnly,
-            sigpipe: SigpipePolicy::Restore,
+            requires_existing_database: false,
+            supports_http: false,
+            restores_sigpipe: true,
         },
         Command::Completion { .. } => CommandPlan {
             kind: CommandKind::Completion,
-            database: DatabaseRequirement::None,
-            backend: BackendSupport::LocalOnly,
-            sigpipe: SigpipePolicy::Restore,
+            requires_existing_database: false,
+            supports_http: false,
+            restores_sigpipe: true,
         },
         Command::Init { .. }
         | Command::Login { .. }
@@ -115,35 +97,23 @@ pub(crate) fn plan(command: &Command) -> CommandPlan {
             remote, instances, ..
         } => CommandPlan {
             kind: CommandKind::Other,
-            database: if *remote || instances.is_some() {
-                DatabaseRequirement::None
-            } else {
-                DatabaseRequirement::Existing
-            },
-            backend: BackendSupport::LocalOnly,
-            sigpipe: SigpipePolicy::KeepIgnored,
+            requires_existing_database: !(*remote || instances.is_some()),
+            supports_http: false,
+            restores_sigpipe: false,
         },
         Command::Start {
             init_if_missing, ..
         } => CommandPlan {
             kind: CommandKind::Other,
-            database: if *init_if_missing {
-                DatabaseRequirement::None
-            } else {
-                DatabaseRequirement::Existing
-            },
-            backend: BackendSupport::LocalOnly,
-            sigpipe: SigpipePolicy::KeepIgnored,
+            requires_existing_database: !init_if_missing,
+            supports_http: false,
+            restores_sigpipe: false,
         },
         Command::Service { action } => CommandPlan {
             kind: CommandKind::Other,
-            database: if matches!(action, ServiceAction::Install) {
-                DatabaseRequirement::Existing
-            } else {
-                DatabaseRequirement::None
-            },
-            backend: BackendSupport::LocalOnly,
-            sigpipe: SigpipePolicy::Restore,
+            requires_existing_database: matches!(action, ServiceAction::Install),
+            supports_http: false,
+            restores_sigpipe: true,
         },
         Command::ProjectArchive { .. }
         | Command::Dump { .. }
@@ -158,18 +128,18 @@ pub(crate) fn plan(command: &Command) -> CommandPlan {
 const fn no_database() -> CommandPlan {
     CommandPlan {
         kind: CommandKind::Other,
-        database: DatabaseRequirement::None,
-        backend: BackendSupport::LocalOnly,
-        sigpipe: SigpipePolicy::Restore,
+        requires_existing_database: false,
+        supports_http: false,
+        restores_sigpipe: true,
     }
 }
 
 const fn existing_local() -> CommandPlan {
     CommandPlan {
         kind: CommandKind::Other,
-        database: DatabaseRequirement::Existing,
-        backend: BackendSupport::LocalOnly,
-        sigpipe: SigpipePolicy::Restore,
+        requires_existing_database: true,
+        supports_http: false,
+        restores_sigpipe: true,
     }
 }
 

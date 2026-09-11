@@ -18,30 +18,15 @@
 //! the project archive locally) and deletes (both backends print the
 //! [`Deleted`] below).
 
-use std::fmt::{Display, Write as _};
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::cli::ui::TerminalDisplay;
+use crate::cli::ui::{terminal_block, terminal_line};
 use crate::db::models::{
     Comment, Folder, Issue, Label, Module, Page, Priority, Project, SearchResult, Status,
 };
-
-trait TerminalWrite {
-    fn line(&mut self, text: impl Display);
-    fn block(&mut self, text: impl Display);
-}
-
-impl TerminalWrite for String {
-    fn line(&mut self, text: impl Display) {
-        let _ = writeln!(self, "{}", text.terminal_line());
-    }
-
-    fn block(&mut self, text: impl Display) {
-        let _ = writeln!(self, "{}", text.terminal_block());
-    }
-}
 
 /// What a `delete` prints under `--json`.
 ///
@@ -73,8 +58,26 @@ macro_rules! w {
     ($out:expr) => {
         $out.push('\n')
     };
-    ($out:expr, $($arg:tt)+) => {{
-        let _ = writeln!($out, $($arg)+);
+    ($out:expr, $fmt:literal) => {{
+        let _ = writeln!($out, "{}", terminal_line(format_args!($fmt)));
+    }};
+    ($out:expr, $text:expr) => {{
+        let _ = writeln!($out, "{}", terminal_line($text));
+    }};
+    ($out:expr, $fmt:literal, $($arg:tt)+) => {{
+        let _ = writeln!($out, "{}", terminal_line(format_args!($fmt, $($arg)+)));
+    }};
+}
+
+macro_rules! wb {
+    ($out:expr, $fmt:literal) => {{
+        let _ = writeln!($out, "{}", terminal_block(format_args!($fmt)));
+    }};
+    ($out:expr, $text:expr) => {{
+        let _ = writeln!($out, "{}", terminal_block($text));
+    }};
+    ($out:expr, $fmt:literal, $($arg:tt)+) => {{
+        let _ = writeln!($out, "{}", terminal_block(format_args!($fmt, $($arg)+)));
     }};
 }
 
@@ -140,10 +143,10 @@ fn truncate_with_ellipsis(text: &str, limit: usize) -> String {
 pub fn issue_list(issues: &[Issue], module_name: ModuleName<'_>) -> String {
     let mut out = String::new();
     if issues.is_empty() {
-        out.line("No issues found.");
+        w!(out, "No issues found.");
         return out;
     }
-    out.line(format_args!("{} issue(s):", issues.len()));
+    w!(out, "{} issue(s):", issues.len());
     out.push('\n');
     for issue in issues {
         let module = issue
@@ -151,7 +154,8 @@ pub fn issue_list(issues: &[Issue], module_name: ModuleName<'_>) -> String {
             .and_then(module_name)
             .map(|name| format!(" ({name})"))
             .unwrap_or_default();
-        out.line(format_args!(
+        w!(
+            out,
             "  {:<8} {} | {} | {}{}{}",
             issue.identifier,
             fmt_status(issue.status),
@@ -159,64 +163,55 @@ pub fn issue_list(issues: &[Issue], module_name: ModuleName<'_>) -> String {
             issue.title,
             bracketed_labels(&issue.labels),
             module
-        ));
+        );
     }
     out
 }
 
 pub fn issue_detail(issue: &Issue, module_name: ModuleName<'_>) -> String {
     let mut out = String::new();
-    out.line(format_args!("{} - {}", issue.identifier, issue.title));
-    out.line(format_args!("  Status:   {}", issue.status));
-    out.line(format_args!("  Priority: {}", issue.priority));
+    w!(out, "{} - {}", issue.identifier, issue.title);
+    w!(out, "  Status:   {}", issue.status);
+    w!(out, "  Priority: {}", issue.priority);
     if !issue.labels.is_empty() {
-        out.line(format_args!("  Labels:   {}", issue.labels.join(", ")));
+        w!(out, "  Labels:   {}", issue.labels.join(", "));
     }
     if let Some(name) = issue.module_id.and_then(module_name) {
-        out.line(format_args!("  Module:   {name}"));
+        w!(out, "  Module:   {name}");
     }
     if !issue.blocks.is_empty() {
-        out.line(format_args!("  Blocks:   {}", issue.blocks.join(", ")));
+        w!(out, "  Blocks:   {}", issue.blocks.join(", "));
     }
     if !issue.blocked_by.is_empty() {
-        out.line(format_args!("  Blocked:  {}", issue.blocked_by.join(", ")));
+        w!(out, "  Blocked:  {}", issue.blocked_by.join(", "));
     }
     if !issue.relates_to.is_empty() {
-        out.line(format_args!("  Relates:  {}", issue.relates_to.join(", ")));
+        w!(out, "  Relates:  {}", issue.relates_to.join(", "));
     }
     if !issue.duplicates.is_empty() {
-        out.line(format_args!("  Dupes:    {}", issue.duplicates.join(", ")));
+        w!(out, "  Dupes:    {}", issue.duplicates.join(", "));
     }
     if !issue.duplicated_by.is_empty() {
-        out.line(format_args!(
-            "  DupedBy:  {}",
-            issue.duplicated_by.join(", ")
-        ));
+        w!(out, "  DupedBy:  {}", issue.duplicated_by.join(", "));
     }
     if !issue.description.is_empty() {
         out.push('\n');
-        out.block(&issue.description);
+        wb!(out, &issue.description);
     }
     out
 }
 
 pub fn issue_created(issue: &Issue) -> String {
     let mut out = String::new();
-    out.line(format_args!(
-        "Created {}: {}",
-        issue.identifier, issue.title
-    ));
+    w!(out, "Created {}: {}", issue.identifier, issue.title);
     out
 }
 
 pub fn issue_updated(issue: &Issue) -> String {
     let mut out = String::new();
-    out.line(format_args!(
-        "Updated {}: {}",
-        issue.identifier, issue.title
-    ));
-    out.line(format_args!("  Status:   {}", issue.status));
-    out.line(format_args!("  Priority: {}", issue.priority));
+    w!(out, "Updated {}: {}", issue.identifier, issue.title);
+    w!(out, "  Status:   {}", issue.status);
+    w!(out, "  Priority: {}", issue.priority);
     out
 }
 
@@ -225,47 +220,52 @@ pub fn issue_updated(issue: &Issue) -> String {
 pub fn project_list(projects: &[Project]) -> String {
     let mut out = String::new();
     if projects.is_empty() {
-        out.line("No projects.");
+        w!(out, "No projects.");
         return out;
     }
-    out.line(format_args!("{} project(s):", projects.len()));
+    w!(out, "{} project(s):", projects.len());
     out.push('\n');
     for project in projects {
-        out.line(format_args!(
+        w!(
+            out,
             "  {:<5} {}{}",
             project.identifier,
             project.name,
             first_line_suffix(&project.description)
-        ));
+        );
     }
     out
 }
 
 pub fn project_detail(project: &Project) -> String {
     let mut out = String::new();
-    out.line(format_args!("{} - {}", project.identifier, project.name));
+    w!(out, "{} - {}", project.identifier, project.name);
     if !project.description.is_empty() {
         out.push('\n');
-        out.block(&project.description);
+        wb!(out, &project.description);
     }
     out
 }
 
 pub fn project_created(project: &Project) -> String {
     let mut out = String::new();
-    out.line(format_args!(
+    w!(
+        out,
         "Created project {} ({})",
-        project.name, project.identifier
-    ));
+        project.name,
+        project.identifier
+    );
     out
 }
 
 pub fn project_updated(project: &Project) -> String {
     let mut out = String::new();
-    out.line(format_args!(
+    w!(
+        out,
         "Updated project {} ({})",
-        project.name, project.identifier
-    ));
+        project.name,
+        project.identifier
+    );
     out
 }
 
@@ -274,10 +274,10 @@ pub fn project_updated(project: &Project) -> String {
 pub fn page_list(pages: &[Page]) -> String {
     let mut out = String::new();
     if pages.is_empty() {
-        out.line("No pages found.");
+        w!(out, "No pages found.");
         return out;
     }
-    out.line(format_args!("{} page(s):", pages.len()));
+    w!(out, "{} page(s):", pages.len());
     out.push('\n');
     for page in pages {
         let preview = if page.content.is_empty() {
@@ -286,45 +286,40 @@ pub fn page_list(pages: &[Page]) -> String {
             let first_line = page.content.lines().next().unwrap_or("");
             truncate_with_ellipsis(first_line, 60)
         };
-        out.line(format_args!(
+        w!(
+            out,
             "  {:<12} {} - {}{}",
             page.identifier,
             page.title,
             preview,
             bracketed_labels(&page.labels)
-        ));
+        );
     }
     out
 }
 
 pub fn page_detail(page: &Page) -> String {
     let mut out = String::new();
-    out.line(format_args!("{} - {}", page.identifier, page.title));
+    w!(out, "{} - {}", page.identifier, page.title);
     if !page.labels.is_empty() {
-        out.line(format_args!("  Labels: {}", page.labels.join(", ")));
+        w!(out, "  Labels: {}", page.labels.join(", "));
     }
     if !page.content.is_empty() {
         out.push('\n');
-        out.block(&page.content);
+        wb!(out, &page.content);
     }
     out
 }
 
 pub fn page_created(page: &Page) -> String {
     let mut out = String::new();
-    out.line(format_args!(
-        "Created page {}: {}",
-        page.identifier, page.title
-    ));
+    w!(out, "Created page {}: {}", page.identifier, page.title);
     out
 }
 
 pub fn page_updated(page: &Page) -> String {
     let mut out = String::new();
-    out.line(format_args!(
-        "Updated page {}: {}",
-        page.identifier, page.title
-    ));
+    w!(out, "Updated page {}: {}", page.identifier, page.title);
     out
 }
 
@@ -333,22 +328,25 @@ pub fn page_updated(page: &Page) -> String {
 pub fn search_results(results: &[SearchResult]) -> String {
     let mut out = String::new();
     if results.is_empty() {
-        out.line("No results found.");
+        w!(out, "No results found.");
         return out;
     }
-    out.line(format_args!("{} result(s):", results.len()));
+    w!(out, "{} result(s):", results.len());
     out.push('\n');
     for result in results {
         let identifier = result.identifier.as_deref().unwrap_or("?");
-        out.line(format_args!(
+        w!(
+            out,
             "  {:<12} [{}] {}",
-            identifier, result.result_type, result.title
-        ));
+            identifier,
+            result.result_type,
+            result.title
+        );
         if !result.snippet.is_empty() {
             // Clean up snippet for terminal display
             let snippet = result.snippet.replace("**", "").replace('\n', " ");
             let snippet = truncate_with_ellipsis(&snippet, 80);
-            out.line(format_args!("              {snippet}"));
+            w!(out, "              {snippet}");
         }
     }
     out
@@ -387,22 +385,21 @@ pub fn comment_list(
 ) -> String {
     let mut out = String::new();
     if comments.is_empty() {
-        out.line(format_args!("No comments on {identifier}."));
+        w!(out, "No comments on {identifier}.");
         return out;
     }
-    out.line(format_args!(
-        "{} comment(s) on {}:",
-        comments.len(),
-        identifier
-    ));
+    w!(out, "{} comment(s) on {}:", comments.len(), identifier);
     out.push('\n');
     for comment in comments {
-        out.line(format_args!(
+        w!(
+            out,
             "  {} ({}) - {}:",
-            comment.author_display_name, comment.author, comment.created_at
-        ));
+            comment.author_display_name,
+            comment.author,
+            comment.created_at
+        );
         for line in comment.content.lines() {
-            out.line(format_args!("    {line}"));
+            w!(out, "    {line}");
         }
         out.push('\n');
     }
@@ -424,11 +421,13 @@ pub fn comment_list(
 
 pub fn comment_added(comment: &Comment, identifier: &str) -> String {
     let mut out = String::new();
-    out.line(format_args!(
+    w!(
+        out,
         "Added comment to {} by {}:",
-        identifier, comment.author
-    ));
-    out.block(format_args!("  {}", comment.content));
+        identifier,
+        comment.author
+    );
+    wb!(out, "  {}", comment.content);
     out
 }
 
@@ -437,43 +436,44 @@ pub fn comment_added(comment: &Comment, identifier: &str) -> String {
 pub fn module_list(modules: &[Module], project: &str) -> String {
     let mut out = String::new();
     if modules.is_empty() {
-        out.line(format_args!("No modules in {project}."));
+        w!(out, "No modules in {project}.");
         return out;
     }
-    out.line(format_args!("{} module(s) in {}:", modules.len(), project));
+    w!(out, "{} module(s) in {}:", modules.len(), project);
     out.push('\n');
     for module in modules {
-        out.line(format_args!(
+        w!(
+            out,
             "  {:<20} [{}]{}",
             module.name,
             module.status,
             first_line_suffix(&module.description)
-        ));
+        );
     }
     out
 }
 
 pub fn module_created(module: &Module, project: &str) -> String {
     let mut out = String::new();
-    out.line(format_args!(
+    w!(
+        out,
         "Created module '{}' [{}] in {}",
-        module.name, module.status, project
-    ));
+        module.name,
+        module.status,
+        project
+    );
     out
 }
 
 pub fn module_updated(module: &Module) -> String {
     let mut out = String::new();
-    out.line(format_args!(
-        "Updated module '{}' [{}]",
-        module.name, module.status
-    ));
+    w!(out, "Updated module '{}' [{}]", module.name, module.status);
     out
 }
 
 pub fn module_deleted(name: &str) -> String {
     let mut out = String::new();
-    out.line(format_args!("Deleted module '{name}'"));
+    w!(out, "Deleted module '{name}'");
     out
 }
 
@@ -482,38 +482,32 @@ pub fn module_deleted(name: &str) -> String {
 pub fn label_list(labels: &[Label], project: &str) -> String {
     let mut out = String::new();
     if labels.is_empty() {
-        out.line(format_args!("No labels in {project}."));
+        w!(out, "No labels in {project}.");
         return out;
     }
-    out.line(format_args!("{} label(s) in {}:", labels.len(), project));
+    w!(out, "{} label(s) in {}:", labels.len(), project);
     out.push('\n');
     for label in labels {
-        out.line(format_args!("  {} ({})", label.name, label.color));
+        w!(out, "  {} ({})", label.name, label.color);
     }
     out
 }
 
 pub fn label_created(label: &Label) -> String {
     let mut out = String::new();
-    out.line(format_args!(
-        "Created label '{}' ({})",
-        label.name, label.color
-    ));
+    w!(out, "Created label '{}' ({})", label.name, label.color);
     out
 }
 
 pub fn label_updated(label: &Label) -> String {
     let mut out = String::new();
-    out.line(format_args!(
-        "Updated label '{}' ({})",
-        label.name, label.color
-    ));
+    w!(out, "Updated label '{}' ({})", label.name, label.color);
     out
 }
 
 pub fn label_deleted(name: &str) -> String {
     let mut out = String::new();
-    out.line(format_args!("Deleted label '{name}'"));
+    w!(out, "Deleted label '{name}'");
     out
 }
 
@@ -522,35 +516,37 @@ pub fn label_deleted(name: &str) -> String {
 pub fn folder_list(folders: &[Folder], project: &str) -> String {
     let mut out = String::new();
     if folders.is_empty() {
-        out.line(format_args!("No folders in {project}."));
+        w!(out, "No folders in {project}.");
         return out;
     }
-    out.line(format_args!("{} folder(s) in {}:", folders.len(), project));
+    w!(out, "{} folder(s) in {}:", folders.len(), project);
     out.push('\n');
     for folder in folders {
-        out.line(format_args!("  {}", folder.name));
+        w!(out, "  {}", folder.name);
     }
     out
 }
 
 pub fn folder_created(folder: &Folder) -> String {
     let mut out = String::new();
-    out.line(format_args!("Created folder '{}'", folder.name));
+    w!(out, "Created folder '{}'", folder.name);
     out
 }
 
 pub fn folder_updated(previous_name: &str, folder: &Folder) -> String {
     let mut out = String::new();
-    out.line(format_args!(
+    w!(
+        out,
         "Renamed folder '{}' -> '{}'",
-        previous_name, folder.name
-    ));
+        previous_name,
+        folder.name
+    );
     out
 }
 
 pub fn folder_deleted(name: &str) -> String {
     let mut out = String::new();
-    out.line(format_args!("Deleted folder '{name}'"));
+    w!(out, "Deleted folder '{name}'");
     out
 }
 
@@ -558,13 +554,14 @@ pub fn folder_deleted(name: &str) -> String {
 
 pub fn export_written(written: &[PathBuf], output: &Path) -> String {
     let mut out = String::new();
-    out.line(format_args!(
+    w!(
+        out,
         "Exported {} file(s) to {}",
         written.len(),
         output.display()
-    ));
+    );
     for path in written {
-        out.line(format_args!("  {}", path.display()));
+        w!(out, "  {}", path.display());
     }
     out
 }

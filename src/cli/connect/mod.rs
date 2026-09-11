@@ -53,7 +53,7 @@ pub mod writer;
 use std::io::IsTerminal;
 use std::path::PathBuf;
 
-use crate::cli::ui::TerminalDisplay;
+use crate::cli::ui::terminal_line;
 use crate::config::Config;
 use crate::db::DbPool;
 
@@ -343,7 +343,7 @@ fn interactive_picker(detected: &[DetectedClient], target: &str) -> Result<Vec<S
 }
 
 fn picker_prompt(any_installed: bool, target: &str) -> String {
-    let target = target.terminal_line();
+    let target = terminal_line(target);
     if any_installed {
         format!("Which clients should connect to {target}?")
     } else {
