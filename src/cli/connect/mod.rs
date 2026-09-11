@@ -972,7 +972,10 @@ fn print_human(result: &ConnectResult) {
             (None, Some(err)) => {
                 ui::warn(format!("{} — skipped: {err}", o.display));
                 if let Some(snippet) = &o.manual_snippet {
-                    ui::note(format!("{} — merge this in manually", o.display), snippet);
+                    ui::note(
+                        format!("{} — merge this in manually", o.display),
+                        writer::terminal_contents(&o.format, snippet),
+                    );
                 }
             }
             (None, None) => {}
@@ -1002,7 +1005,10 @@ fn print_human(result: &ConnectResult) {
                 .as_ref()
                 .map(|p| p.display().to_string())
                 .unwrap_or_default();
-            ui::note(path, contents.trim_end());
+            ui::note(
+                path,
+                writer::terminal_contents(&o.format, contents).trim_end(),
+            );
         }
     }
 

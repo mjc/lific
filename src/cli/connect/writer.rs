@@ -9,12 +9,13 @@
 //! JSON: `serde_json` round-trip, pretty-printed with a trailing newline.
 //! TOML: `toml_edit` document round-trip — preserves the user's existing
 //!       formatting and comments, setting only `[mcp_servers.lific]`.
-//! YAML: `serde_yaml` round-trip (YAML comments are lost — this is called out
-//!       in the per-client notes surfaced to the user).
+//! YAML: `serde_yaml` round-trip for writes. Terminal previews retain source
+//! comments while escaping hostile scalar values for display.
 
-use std::path::Path;
+use std::{ops::Range, path::Path};
 
 use super::clients::{CompiledEntry, Format};
+use crate::cli::{term, ui};
 
 /// What a write did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,6 +40,299 @@ impl Action {
 pub struct Rendered {
     pub contents: String,
     pub action: Action,
+}
+
+/// Encode a would-be configuration for terminal presentation without changing
+/// the bytes used by the real writer. JSON uses the shared lossless encoder;
+/// TOML and YAML retain their source layout when possible and only rewrite
+/// parsed scalar tokens that cannot safely be shown literally.
+pub(crate) fn terminal_contents(format: &str, contents: &str) -> String {
+    match format {
+        "json" => serde_json::from_str::<serde_json::Value>(contents)
+            .ok()
+            .and_then(|value| term::json_string(&value).ok())
+            .unwrap_or_else(|| ui::terminal_block(contents)),
+        "toml" => terminal_toml(contents),
+        "yaml" => terminal_yaml(contents),
+        _ => ui::terminal_block(contents),
+    }
+}
+
+fn terminal_toml(contents: &str) -> String {
+    let Ok(document) = contents.parse::<toml_edit::ImDocument<String>>() else {
+        return ui::terminal_block(contents);
+    };
+
+    let mut replacements = Vec::new();
+    collect_toml_table(document.as_table(), &mut replacements);
+    apply_replacements(contents, replacements)
+}
+
+fn collect_toml_table(table: &toml_edit::Table, replacements: &mut Vec<Replacement>) {
+    for (key, item) in table.iter() {
+        if let Some((key, _)) = table.get_key_value(key) {
+            collect_toml_key(key, replacements);
+        }
+        collect_toml_item(item, replacements);
+    }
+}
+
+fn collect_toml_item(item: &toml_edit::Item, replacements: &mut Vec<Replacement>) {
+    match item {
+        toml_edit::Item::None => {}
+        toml_edit::Item::Value(value) => collect_toml_value(value, replacements),
+        toml_edit::Item::Table(table) => collect_toml_table(table, replacements),
+        toml_edit::Item::ArrayOfTables(tables) => {
+            for table in tables.iter() {
+                collect_toml_table(table, replacements);
+            }
+        }
+    }
+}
+
+fn collect_toml_value(value: &toml_edit::Value, replacements: &mut Vec<Replacement>) {
+    match value {
+        toml_edit::Value::String(string) => {
+            if has_terminal_controls(string.value())
+                && let Some(range) = string.span()
+            {
+                replacements.push(Replacement {
+                    range,
+                    text: toml_basic_string(string.value()),
+                });
+            }
+        }
+        toml_edit::Value::Array(array) => {
+            for value in array.iter() {
+                collect_toml_value(value, replacements);
+            }
+        }
+        toml_edit::Value::InlineTable(table) => {
+            for (key, value) in table.iter() {
+                if has_terminal_controls(key)
+                    && let Some((key, _)) = table.get_key_value(key)
+                    && let Some(repr) = key.as_repr()
+                    && let Some(range) = repr.span()
+                {
+                    replacements.push(Replacement {
+                        range,
+                        text: toml_basic_string(key),
+                    });
+                }
+                collect_toml_value(value, replacements);
+            }
+        }
+        toml_edit::Value::Integer(..)
+        | toml_edit::Value::Float(..)
+        | toml_edit::Value::Boolean(..)
+        | toml_edit::Value::Datetime(..) => {}
+    }
+}
+
+fn collect_toml_key(key: &toml_edit::Key, replacements: &mut Vec<Replacement>) {
+    if has_terminal_controls(key.get())
+        && let Some(repr) = key.as_repr()
+        && let Some(range) = repr.span()
+    {
+        replacements.push(Replacement {
+            range,
+            text: toml_basic_string(key.get()),
+        });
+    }
+}
+
+fn apply_replacements(contents: &str, mut replacements: Vec<Replacement>) -> String {
+    replacements.sort_by_key(|replacement| replacement.range.start);
+    let mut rendered = contents.to_owned();
+    for replacement in replacements.into_iter().rev() {
+        rendered.replace_range(replacement.range, &replacement.text);
+    }
+    ui::terminal_block(&rendered)
+}
+
+struct Replacement {
+    range: Range<usize>,
+    text: String,
+}
+
+fn has_terminal_controls(value: &str) -> bool {
+    value.chars().any(ui::is_terminal_control)
+}
+
+fn toml_basic_string(value: &str) -> String {
+    let mut rendered = String::with_capacity(value.len() + 2);
+    rendered.push('"');
+    for ch in value.chars() {
+        match ch {
+            '\\' => rendered.push_str("\\\\"),
+            '"' => rendered.push_str("\\\""),
+            '\u{08}' => rendered.push_str("\\b"),
+            '\t' => rendered.push_str("\\t"),
+            '\n' => rendered.push_str("\\n"),
+            '\u{0c}' => rendered.push_str("\\f"),
+            '\r' => rendered.push_str("\\r"),
+            ch if ui::is_terminal_control(ch) => push_unicode_escape(&mut rendered, ch),
+            ch => rendered.push(ch),
+        }
+    }
+    rendered.push('"');
+    rendered
+}
+
+fn push_unicode_escape(rendered: &mut String, ch: char) {
+    use std::fmt::Write as _;
+
+    let value = ch as u32;
+    if value <= 0xffff {
+        write!(rendered, "\\u{value:04x}").expect("String write cannot fail");
+    } else {
+        write!(rendered, "\\U{value:08x}").expect("String write cannot fail");
+    }
+}
+
+fn terminal_yaml(contents: &str) -> String {
+    let Ok(value) = serde_yaml::from_str::<serde_yaml::Value>(contents) else {
+        return ui::terminal_block(contents);
+    };
+    if !yaml_has_terminal_controls(&value) {
+        return ui::terminal_block(contents);
+    }
+
+    let mut rendered = preserved_yaml_comments(contents);
+    rendered.push_str(&render_yaml_value(&value, 0));
+    ui::terminal_block(rendered)
+}
+
+fn preserved_yaml_comments(contents: &str) -> String {
+    let mut comments = String::new();
+    for line in contents.lines() {
+        let Some(index) = yaml_comment_start(line) else {
+            continue;
+        };
+
+        comments.extend(line[..index].chars().take_while(|ch| ch.is_whitespace()));
+        comments.push_str(&line[index..]);
+        comments.push('\n');
+    }
+    comments
+}
+
+fn yaml_comment_start(line: &str) -> Option<usize> {
+    let mut quote = None;
+    let mut escaped = false;
+    for (index, ch) in line.char_indices() {
+        match quote {
+            Some('\'') if ch == '\'' => quote = None,
+            Some('"') => {
+                if escaped {
+                    escaped = false;
+                } else if ch == '\\' {
+                    escaped = true;
+                } else if ch == '"' {
+                    quote = None;
+                }
+            }
+            None if ch == '\'' || ch == '"' => quote = Some(ch),
+            None if ch == '#'
+                && line[..index]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|previous| previous.is_whitespace()) =>
+            {
+                return Some(index);
+            }
+            None if ch == '#' && index == 0 => return Some(index),
+            None => {}
+            Some(_) => unreachable!("YAML quote state is limited to single or double quotes"),
+        }
+    }
+    None
+}
+
+fn yaml_has_terminal_controls(value: &serde_yaml::Value) -> bool {
+    match value {
+        serde_yaml::Value::String(value) => has_terminal_controls(value),
+        serde_yaml::Value::Sequence(values) => values.iter().any(yaml_has_terminal_controls),
+        serde_yaml::Value::Mapping(values) => values.iter().any(|(key, value)| {
+            yaml_has_terminal_controls(key) || yaml_has_terminal_controls(value)
+        }),
+        serde_yaml::Value::Tagged(value) => yaml_has_terminal_controls(&value.value),
+        serde_yaml::Value::Null | serde_yaml::Value::Bool(_) | serde_yaml::Value::Number(_) => {
+            false
+        }
+    }
+}
+
+fn render_yaml_value(value: &serde_yaml::Value, indent: usize) -> String {
+    let padding = " ".repeat(indent);
+    match value {
+        serde_yaml::Value::Mapping(values) => values
+            .iter()
+            .map(|(key, value)| {
+                let key = yaml_scalar(key);
+                if yaml_is_scalar(value) {
+                    format!("{padding}{key}: {}\n", yaml_scalar(value))
+                } else {
+                    format!("{padding}{key}:\n{}", render_yaml_value(value, indent + 2))
+                }
+            })
+            .collect(),
+        serde_yaml::Value::Sequence(values) => values
+            .iter()
+            .map(|value| {
+                if yaml_is_scalar(value) {
+                    format!("{padding}- {}\n", yaml_scalar(value))
+                } else {
+                    format!("{padding}-\n{}", render_yaml_value(value, indent + 2))
+                }
+            })
+            .collect(),
+        _ => format!("{padding}{}\n", yaml_scalar(value)),
+    }
+}
+
+fn yaml_is_scalar(value: &serde_yaml::Value) -> bool {
+    matches!(
+        value,
+        serde_yaml::Value::Null
+            | serde_yaml::Value::Bool(_)
+            | serde_yaml::Value::Number(_)
+            | serde_yaml::Value::String(_)
+    )
+}
+
+fn yaml_scalar(value: &serde_yaml::Value) -> String {
+    match value {
+        serde_yaml::Value::String(value) => yaml_double_quoted(value),
+        _ => serde_yaml::to_string(value)
+            .unwrap_or_else(|_| "null\n".to_owned())
+            .trim_end()
+            .to_owned(),
+    }
+}
+
+fn yaml_double_quoted(value: &str) -> String {
+    let mut rendered = String::with_capacity(value.len() + 2);
+    rendered.push('"');
+    for ch in value.chars() {
+        match ch {
+            '\\' => rendered.push_str("\\\\"),
+            '"' => rendered.push_str("\\\""),
+            '\0' => rendered.push_str("\\0"),
+            '\u{07}' => rendered.push_str("\\a"),
+            '\u{08}' => rendered.push_str("\\b"),
+            '\t' => rendered.push_str("\\t"),
+            '\n' => rendered.push_str("\\n"),
+            '\u{0b}' => rendered.push_str("\\v"),
+            '\u{0c}' => rendered.push_str("\\f"),
+            '\r' => rendered.push_str("\\r"),
+            '\u{1b}' => rendered.push_str("\\e"),
+            ch if ui::is_terminal_control(ch) => push_unicode_escape(&mut rendered, ch),
+            ch => rendered.push(ch),
+        }
+    }
+    rendered.push('"');
+    rendered
 }
 
 /// Error from a writer that a caller should surface as a per-client failure
@@ -971,5 +1265,40 @@ mod tests {
         assert!(rendered.contents.contains("lific"));
         // Nothing was written.
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn terminal_toml_preview_preserves_values_keys_comments_and_layout() {
+        let original = format!(
+            "# keep this comment\nunrelated = \"existing\"\n\"key{}\" = 'literal{}'\ncommand = \"a{}b\"\n",
+            '\u{202e}', '\u{200d}', '\u{200d}'
+        );
+        let displayed = terminal_contents("toml", &original);
+
+        assert!(displayed.starts_with("# keep this comment\n"));
+        assert!(!displayed.contains('\u{202e}'));
+        assert!(!displayed.contains('\u{200d}'));
+        assert_eq!(
+            toml::from_str::<toml::Value>(&displayed).unwrap(),
+            toml::from_str::<toml::Value>(&original).unwrap()
+        );
+    }
+
+    #[test]
+    fn terminal_yaml_preview_uses_the_yaml_rendering_path_losslessly() {
+        let original = format!(
+            "# keep this comment\nunrelated: existing\ncommand: \"a{}b\"\nitems:\n  - literal{}\n  - basic\\u009b\n",
+            '\u{200d}', '\u{202e}',
+        );
+        let displayed = terminal_contents("yaml", &original);
+
+        assert!(displayed.contains("# keep this comment"));
+        assert!(!displayed.contains('\u{202e}'));
+        assert!(!displayed.contains('\u{200d}'));
+        assert!(!displayed.contains('\u{009b}'));
+        assert_eq!(
+            serde_yaml::from_str::<serde_yaml::Value>(&displayed).unwrap(),
+            serde_yaml::from_str::<serde_yaml::Value>(&original).unwrap()
+        );
     }
 }
