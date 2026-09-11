@@ -65,7 +65,7 @@ pub async fn run(
     };
     let output = backend.execute(command, link_output).await?;
     if json_output {
-        println!("{}", serde_json::to_string_pretty(&output)?);
+        println!("{}", crate::cli::term::json_string(&output)?);
     } else {
         print!("{}", backend.human(command, &output).await);
     }
@@ -153,10 +153,10 @@ impl HttpBackend {
                 .host_str()
                 .is_some_and(|host| !is_loopback_host(host))
         {
-            eprintln!(
+            crate::cli::ui::stderr_line(format_args!(
                 "warning: connecting over unencrypted http to {}",
                 parsed.host_str().unwrap_or_default()
-            );
+            ));
         }
         Ok(Self {
             client: Client::builder()
@@ -225,7 +225,10 @@ impl HttpBackend {
     async fn human(&self, command: &Command, value: &Value) -> String {
         match self.render(command, value).await {
             Some(text) => text,
-            None => format!("{}\n", pretty(value)),
+            None => format!(
+                "{}\n",
+                crate::cli::ui::sanitize_terminal_block(&pretty(value))
+            ),
         }
     }
 
@@ -496,9 +499,8 @@ impl HttpBackend {
                     status: models::Status::parse_opt(status.as_deref()).map_err(|e| anyhow!(e))?,
                     priority: models::Priority::parse_opt(priority.as_deref())
                         .map_err(|e| anyhow!(e))?,
-                    // LIF-145: module_id is tristate; the CLI only sets or
-                    // skips (no clear), so map Some(id) -> Some(Some(id)).
-                    module_id: module_id.map(Some),
+                    // LIF-145: the CLI only sets or skips (no clear).
+                    module_id: module_id.map(models::FieldUpdate::Set).unwrap_or_default(),
                     sort_order: None,
                     start_date: None,
                     target_date: None,
@@ -550,8 +552,8 @@ impl HttpBackend {
                     name: name.clone(),
                     identifier: None,
                     description: description.clone(),
-                    emoji: None,
-                    lead_user_id: None,
+                    emoji: models::FieldUpdate::Keep,
+                    lead_user_id: models::FieldUpdate::Keep,
                     // Ordinary CLI edits must not change publication.
                     is_public: None,
                 };
@@ -850,7 +852,7 @@ impl HttpBackend {
                 let body = models::UpdatePage {
                     title: title.clone(),
                     content: content.clone(),
-                    folder_id: folder_id.map(Some),
+                    folder_id: folder_id.map(models::FieldUpdate::Set).unwrap_or_default(),
                     sort_order: None,
                     status: None,
                     pinned: None,
@@ -1036,7 +1038,7 @@ impl HttpBackend {
                     name: new_name.clone(),
                     description: description.clone(),
                     status: status.clone(),
-                    emoji: None,
+                    emoji: models::FieldUpdate::Keep,
                 };
                 self.send_json(Method::PUT, &format!("/api/modules/{id}"), &body)
                     .await
@@ -1489,16 +1491,7 @@ async fn read_error_body(mut response: reqwest::Response) -> Result<String, reqw
 }
 
 fn sanitize_error_detail(detail: &str) -> String {
-    detail
-        .chars()
-        .map(|character| {
-            if character.is_ascii_control() {
-                ' '
-            } else {
-                character
-            }
-        })
-        .collect()
+    crate::cli::ui::sanitize_terminal_line(detail)
 }
 
 /// How the server delivers an export, and so how this backend turns it back
@@ -1512,7 +1505,7 @@ enum ExportShape {
 }
 
 fn pretty(value: &Value) -> String {
-    serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
+    crate::cli::term::json_string(value).unwrap_or_else(|_| value.to_string())
 }
 
 #[cfg(test)]
@@ -2917,7 +2910,7 @@ mod tests {
         let error = error.to_string();
 
         assert!(error.starts_with(
-            "HTTP backend request failed (400 Bad Request): invalid page identifier: TST-DOC- [31m"
+            "HTTP backend request failed (400 Bad Request): invalid page identifier: TST-DOC-^[[31m"
         ));
         assert!(!error.chars().any(|character| character.is_ascii_control()));
         fixture.server.abort();
@@ -3163,7 +3156,7 @@ mod tests {
             description: None,
             status: None,
             priority: None,
-            module_id: None,
+            module_id: models::FieldUpdate::Keep,
             sort_order: None,
             start_date: None,
             target_date: None,
@@ -3203,12 +3196,12 @@ mod tests {
     fn distinguishes_absent_cleared_and_assigned_module_ids() {
         let absent = serde_json::to_value(issue_update()).unwrap();
         let cleared = serde_json::to_value(models::UpdateIssue {
-            module_id: Some(None),
+            module_id: models::FieldUpdate::Clear,
             ..issue_update()
         })
         .unwrap();
         let assigned = serde_json::to_value(models::UpdateIssue {
-            module_id: Some(Some(7)),
+            module_id: models::FieldUpdate::Set(7),
             ..issue_update()
         })
         .unwrap();
@@ -3228,8 +3221,8 @@ mod tests {
             name: Some("Docs".into()),
             identifier: None,
             description: Some("Reference material".into()),
-            emoji: None,
-            lead_user_id: None,
+            emoji: models::FieldUpdate::Keep,
+            lead_user_id: models::FieldUpdate::Keep,
             is_public: None,
         })
         .unwrap();
@@ -3259,10 +3252,10 @@ mod tests {
     }
 
     #[test]
-    fn sanitizes_ascii_control_characters_in_error_details() {
+    fn sanitizes_terminal_controls_in_error_details() {
         assert_eq!(
-            sanitize_error_detail("access\u{1b}[31m denied\n\t"),
-            "access [31m denied  "
+            sanitize_error_detail("access\u{1b}[31m denied\n\t\u{202e}"),
+            "access^[[31m denied   "
         );
     }
 
@@ -3676,11 +3669,14 @@ mod tests {
                 &Command::Project {
                     action: ProjectAction::List,
                 },
-                &json!({"unexpected": true}),
+                &json!({"unexpected": "safe\u{1b}[2J\u{202e}"}),
             )
             .await;
 
-        assert_eq!(rendered, "{\n  \"unexpected\": true\n}\n");
+        assert_eq!(
+            rendered,
+            "{\n  \"unexpected\": \"safe\\u001b[2J\\u202e\"\n}\n"
+        );
     }
 
     #[test]

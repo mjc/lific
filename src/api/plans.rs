@@ -114,8 +114,8 @@ pub(super) async fn update_plan(
     authz::require_role(&db, &identity, project_id, Role::Maintainer)?;
     // LIF-407: re-anchoring to an issue in another project needs Maintainer
     // on that project too.
-    if let Some(Some(issue_id)) = input.issue_id {
-        require_issue_project_role(&db, &identity, issue_id)?;
+    if let FieldUpdate::Set(issue_id) = &input.issue_id {
+        require_issue_project_role(&db, &identity, *issue_id)?;
     }
     let plan = with_write(&db, |conn| plans::update_plan(conn, id, &input))?;
     realtime.send(RealtimeEvent::ProjectUpdated { project_id });
@@ -180,8 +180,11 @@ pub(super) struct UpdateStepRequest {
     pub description: Option<String>,
     pub done: Option<bool>,
     /// Tristate issue link: absent = no change, null = detach, id = attach.
-    #[serde(default, deserialize_with = "crate::db::models::deserialize_nullable")]
-    pub issue_id: Option<Option<i64>>,
+    #[serde(
+        default,
+        skip_serializing_if = "crate::db::models::FieldUpdate::is_keep"
+    )]
+    pub issue_id: crate::db::models::FieldUpdate<i64>,
     pub move_parent_step_id: Option<i64>,
     pub move_to_root: Option<bool>,
     pub move_position: Option<i64>,
@@ -209,8 +212,8 @@ pub(super) async fn update_step(
     // matching MCP's `update_plan_step`. Attaching an issue needs Maintainer
     // on the issue's project, and so does completing a step that already
     // references one — `set_step_done` closes that issue.
-    if let Some(Some(issue_id)) = input.issue_id {
-        require_issue_project_role(&db, &identity, issue_id)?;
+    if let FieldUpdate::Set(issue_id) = &input.issue_id {
+        require_issue_project_role(&db, &identity, *issue_id)?;
     }
     if input.done == Some(true) {
         let linked = with_read(&db, |conn| {
@@ -229,8 +232,10 @@ pub(super) async fn update_step(
         if let Some(ref d) = input.description {
             plans::set_step_description(conn, step_id, d)?;
         }
-        if let Some(issue) = input.issue_id {
-            plans::set_step_issue(conn, step_id, issue)?;
+        match &input.issue_id {
+            FieldUpdate::Keep => {}
+            FieldUpdate::Clear => plans::set_step_issue(conn, step_id, None)?,
+            FieldUpdate::Set(issue) => plans::set_step_issue(conn, step_id, Some(*issue))?,
         }
         let effect = input
             .done
@@ -335,6 +340,62 @@ mod tests {
         let plan_id = plan["id"].as_i64().unwrap();
         assert_eq!(plan["identifier"], "TST-PLAN-1");
         let step_id = plan["steps"][0]["id"].as_i64().unwrap();
+
+        // Every plan-level issue-link state must survive the HTTP boundary.
+        let plan = body_json(
+            json_put(
+                &app,
+                &format!("/api/plans/{plan_id}"),
+                serde_json::json!({"issue_id": issue_id}),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(plan["issue_id"], issue_id);
+        let plan = body_json(
+            json_put(
+                &app,
+                &format!("/api/plans/{plan_id}"),
+                serde_json::json!({}),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(plan["issue_id"], issue_id);
+        let plan = body_json(
+            json_put(
+                &app,
+                &format!("/api/plans/{plan_id}"),
+                serde_json::json!({"issue_id": null}),
+            )
+            .await,
+        )
+        .await;
+        assert!(plan["issue_id"].is_null());
+
+        // The same three states apply to a step's issue link.
+        let response = json_put(
+            &app,
+            &format!("/api/plans/{plan_id}/steps/{step_id}"),
+            serde_json::json!({"issue_id": null}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let response = json_put(
+            &app,
+            &format!("/api/plans/{plan_id}/steps/{step_id}"),
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(body_json(response).await["plan"]["steps"][0]["issue_id"].is_null());
+        let response = json_put(
+            &app,
+            &format!("/api/plans/{plan_id}/steps/{step_id}"),
+            serde_json::json!({"issue_id": issue_id}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
 
         // Mark the step done → issue should close, effect reported.
         let resp = app

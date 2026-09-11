@@ -53,6 +53,7 @@ pub mod writer;
 use std::io::IsTerminal;
 use std::path::PathBuf;
 
+use crate::cli::ui::TerminalDisplay;
 use crate::config::Config;
 use crate::db::DbPool;
 
@@ -316,12 +317,7 @@ fn interactive_picker(detected: &[DetectedClient], target: &str) -> Result<Vec<S
     let mut ordered: Vec<&DetectedClient> = detected.iter().filter(|c| c.detected).collect();
     ordered.extend(detected.iter().filter(|c| !c.detected));
 
-    let mut prompt = cliclack::multiselect(if any_installed {
-        format!("Which clients should connect to {target}?")
-    } else {
-        format!("No installed clients detected in this scope — pick any to configure for {target}:")
-    })
-    .required(true);
+    let mut prompt = cliclack::multiselect(picker_prompt(any_installed, target)).required(true);
     for c in &ordered {
         prompt = prompt.item(
             c.id.clone(),
@@ -344,6 +340,15 @@ fn interactive_picker(detected: &[DetectedClient], target: &str) -> Result<Vec<S
             format!("selection failed: {e}")
         }
     })
+}
+
+fn picker_prompt(any_installed: bool, target: &str) -> String {
+    let target = target.terminal_line();
+    if any_installed {
+        format!("Which clients should connect to {target}?")
+    } else {
+        format!("No installed clients detected in this scope — pick any to configure for {target}:")
+    }
 }
 
 // ── Transport selection (LIFIC-19) ───────────────────────────
@@ -643,10 +648,10 @@ pub fn run(
         match resolve_key_source(&args, pool) {
             Ok(src) => Some(src),
             Err(e) if args.stdio => {
-                eprintln!(
+                crate::cli::ui::stderr_line(format_args!(
                     "warning: skipping agent identity for stdio config ({e}); \
                      it will run as the operator until you reconnect with --user <name>."
-                );
+                ));
                 None
             }
             Err(e) => return Err(e),
@@ -947,7 +952,7 @@ fn print_json(result: &ConnectResult) {
             "action": a.action,
         })),
     });
-    println!("{}", serde_json::to_string_pretty(&out).unwrap());
+    println!("{}", crate::cli::term::json_string(&out).unwrap());
 }
 
 fn print_human(result: &ConnectResult) {
@@ -972,7 +977,10 @@ fn print_human(result: &ConnectResult) {
             (None, Some(err)) => {
                 ui::warn(format!("{} — skipped: {err}", o.display));
                 if let Some(snippet) = &o.manual_snippet {
-                    ui::note(format!("{} — merge this in manually", o.display), snippet);
+                    ui::note(
+                        format!("{} — merge this in manually", o.display),
+                        terminal_manual_snippet(snippet),
+                    );
                 }
             }
             (None, None) => {}
@@ -1034,6 +1042,13 @@ fn print_human(result: &ConnectResult) {
     ui::outro("Restart your client(s) to pick up the new MCP server.");
 }
 
+fn terminal_manual_snippet(snippet: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(snippet)
+        .ok()
+        .and_then(|value| crate::cli::term::json_string(&value).ok())
+        .unwrap_or_else(|| crate::cli::ui::sanitize_terminal_block(snippet))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1093,6 +1108,35 @@ mod tests {
         assert_eq!(target_url(&args, &cfg), "http://127.0.0.1:4000/mcp");
         args.stdio = true;
         assert!(target_url(&args, &cfg).ends_with("lific.db"));
+    }
+
+    #[test]
+    fn picker_prompt_neutralizes_control_sequences_in_target() {
+        let prompt = picker_prompt(true, "https://evil.test\x1b]8;;https://evil\x1b\\\u{202e}");
+        assert_eq!(
+            prompt,
+            "Which clients should connect to https://evil.test^[]8;;https://evil^[\\ ?"
+        );
+        assert!(!prompt.chars().any(char::is_control));
+    }
+
+    #[test]
+    fn terminal_manual_json_snippet_preserves_escaped_data() {
+        let snippet = r#"{
+  "mcp": {
+    "lific": {
+      "url": "https://host/\u202eforged"
+    }
+  }
+}"#;
+        let rendered = terminal_manual_snippet(snippet);
+
+        assert!(!rendered.contains('\u{202e}'));
+        let value: serde_json::Value = serde_json::from_str(snippet).unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&rendered).unwrap(),
+            value
+        );
     }
 
     fn base(dir: &std::path::Path) -> PathBase {

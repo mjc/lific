@@ -264,6 +264,7 @@ async fn check_remote(cfg: &Config, key: Option<&str>) -> Vec<Check> {
 
     let Ok(client) = reqwest::Client::builder()
         .timeout(Duration::from_secs(3))
+        .redirect(reqwest::redirect::Policy::none())
         .build()
     else {
         checks.push(Check::new(
@@ -311,8 +312,23 @@ async fn check_reachable_remote(
     credential_base: &str,
 ) -> Vec<Check> {
     let mut checks = vec![check_oauth_discovery(client, base).await];
+    if explicit_key.is_some() && !is_https_url(base) {
+        let detail = "explicit key skipped; authorized check requires HTTPS";
+        checks.push(Check::new("credentials", Status::Skipped, detail));
+        checks.push(Check::new("mcp", Status::Skipped, detail));
+        return checks;
+    }
+    let allow_stored_credential = stored_credential_allowed(base, credential_base);
     let (key, key_source) = match explicit_key {
         Some(key) => (Some(key.to_owned()), None),
+        None if !allow_stored_credential => {
+            checks.push(Check::new(
+                "credentials",
+                Status::Skipped,
+                "stored credentials skipped; authorized check requires a matching HTTPS origin",
+            ));
+            (None, None)
+        }
         None => match crate::cli::credentials::load_with_source(credential_base) {
             Ok(Some((key, source))) => (Some(key), Some(source)),
             Ok(None) => (None, None),
@@ -327,11 +343,30 @@ async fn check_reachable_remote(
         },
     };
     let mut mcp = check_mcp(client, base, key.as_deref()).await;
+    if explicit_key.is_none() && !allow_stored_credential {
+        mcp.detail = format!(
+            "{} (authorized check skipped; stored credentials require a matching HTTPS origin)",
+            mcp.detail
+        );
+    }
     if let Some(source) = key_source {
         mcp.detail = format!("{} (using {})", mcp.detail, source.label());
     }
     checks.push(mcp);
     checks
+}
+
+fn is_https_url(base: &str) -> bool {
+    reqwest::Url::parse(base).is_ok_and(|url| url.scheme() == "https")
+}
+
+/// Stored credentials may only be sent to the exact HTTPS origin they belong
+/// to. In particular, a configured HTTPS public URL must never authorize a
+/// request to the separate plaintext URL used to probe a non-loopback bind.
+fn stored_credential_allowed(request_base: &str, credential_base: &str) -> bool {
+    is_https_url(request_base)
+        && crate::cli::credentials::origin_of(request_base)
+            == crate::cli::credentials::origin_of(credential_base)
 }
 
 fn skipped_local_checks(detail: &str) -> [Check; 2] {
@@ -955,9 +990,15 @@ async fn check_public_url(client: &reqwest::Client, public_url: &str) -> Check {
 fn print_report(report: &Report, json: bool) {
     if json {
         // Machine output: stable shape for agents/scripts.
-        match serde_json::to_string_pretty(report) {
+        match crate::cli::term::json_string(report) {
             Ok(s) => println!("{s}"),
-            Err(e) => println!("{{\"error\":\"failed to serialize report: {e}\"}}"),
+            Err(e) => println!(
+                "{}",
+                crate::cli::term::json_string(&serde_json::json!({
+                    "error": format!("failed to serialize report: {e}"),
+                }))
+                .unwrap_or_default()
+            ),
         }
         return;
     }
@@ -1772,11 +1813,12 @@ mod tests {
         let checks = check_remote(&config, Some("explicit-test-key")).await;
         assert_eq!(status_of(&checks, "server"), Some(Status::Warn));
         assert_eq!(status_of(&checks, "oauth_discovery"), Some(Status::Pass));
-        assert_eq!(status_of(&checks, "mcp"), Some(Status::Pass));
+        assert_eq!(status_of(&checks, "credentials"), Some(Status::Skipped));
+        assert_eq!(status_of(&checks, "mcp"), Some(Status::Skipped));
     }
 
     #[tokio::test]
-    async fn reachable_server_runs_mcp_when_discovery_fails() {
+    async fn reachable_server_skips_plaintext_mcp_when_discovery_fails() {
         let app = axum::Router::new()
             .route(
                 "/api/health",
@@ -1796,7 +1838,36 @@ mod tests {
 
         assert_eq!(status_of(&checks, "server"), Some(Status::Pass));
         assert_eq!(status_of(&checks, "oauth_discovery"), Some(Status::Fail));
-        assert_eq!(status_of(&checks, "mcp"), Some(Status::Pass));
+        assert_eq!(status_of(&checks, "credentials"), Some(Status::Skipped));
+        assert_eq!(status_of(&checks, "mcp"), Some(Status::Skipped));
+    }
+
+    #[tokio::test]
+    async fn doctor_does_not_follow_health_redirects() {
+        let app = axum::Router::new()
+            .route(
+                "/api/health",
+                axum::routing::get(|| async { axum::response::Redirect::temporary("/healthy") }),
+            )
+            .route(
+                "/healthy",
+                axum::routing::get(|| async { reqwest::StatusCode::OK }),
+            )
+            .route(
+                "/.well-known/oauth-protected-resource/mcp",
+                axum::routing::get(|| async {
+                    axum::Json(serde_json::json!({ "resource": "http://example.test/mcp" }))
+                }),
+            )
+            .route(
+                "/mcp",
+                axum::routing::post(|| async { initialize_response() }),
+            );
+        let base = serve_ephemeral(app).await;
+
+        let checks = check_remote(&config_at(&base), Some("explicit-test-key")).await;
+
+        assert_eq!(status_of(&checks, "server"), Some(Status::Warn));
     }
 
     #[tokio::test]
@@ -1812,6 +1883,30 @@ mod tests {
         assert_eq!(status_of(&checks, "oauth_discovery"), Some(Status::Skipped));
         assert_eq!(status_of(&checks, "mcp"), Some(Status::Skipped));
         assert_eq!(status_of(&checks, "credentials"), None);
+    }
+
+    #[test]
+    fn stored_credentials_are_not_sent_to_a_non_loopback_plaintext_probe() {
+        assert!(!stored_credential_allowed(
+            "http://192.0.2.10:3998",
+            "https://lific.example.com"
+        ));
+    }
+
+    #[test]
+    fn stored_credentials_require_the_same_https_origin() {
+        assert!(stored_credential_allowed(
+            "https://lific.example.com/mcp",
+            "https://LIFIC.example.com/"
+        ));
+        assert!(!stored_credential_allowed(
+            "https://other.example.com",
+            "https://lific.example.com"
+        ));
+        assert!(!stored_credential_allowed(
+            "http://127.0.0.1:3998",
+            "http://127.0.0.1:3998"
+        ));
     }
 
     #[tokio::test]
