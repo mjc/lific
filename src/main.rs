@@ -355,7 +355,7 @@ fn error_report(error: &(dyn std::error::Error + 'static)) -> String {
 fn cli_error_message(error: &clap::Error) -> String {
     match error.kind() {
         clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion => {
-            error.to_string().terminal_block().to_string()
+            safe_clap_help(error)
         }
         _ => format!(
             "{}\n{}\n",
@@ -363,6 +363,19 @@ fn cli_error_message(error: &clap::Error) -> String {
             Cli::command().render_usage().terminal_block()
         ),
     }
+}
+
+/// Keep Clap's intentional help layout while removing controls from the
+/// process-derived program name. Clap renders that name directly into help,
+/// including for successful `--help`/`--version` requests.
+fn safe_clap_help(error: &clap::Error) -> String {
+    let mut rendered = error.to_string();
+    if let Some(program) = std::env::args_os().next() {
+        let program = program.to_string_lossy().into_owned();
+        let safe_program = program.clone().terminal_line().to_string();
+        rendered = rendered.replace(&program, &safe_program);
+    }
+    rendered.terminal_block().to_string()
 }
 
 fn exit_cli_error(error: clap::Error) -> ! {

@@ -15,6 +15,7 @@
 use std::path::Path;
 
 use super::clients::{CompiledEntry, Format};
+use crate::cli::{term, ui};
 
 /// What a write did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,6 +40,21 @@ impl Action {
 pub struct Rendered {
     pub contents: String,
     pub action: Action,
+}
+
+/// Encode rendered configuration for human terminal display without changing
+/// the configuration that will be written. JSON is parsed and re-serialized
+/// through the terminal-safe JSON encoder so its displayed value remains
+/// lossless; TOML/YAML stay text-native so comments and layout are preserved.
+pub(crate) fn terminal_contents(format: &str, contents: &str) -> String {
+    if format == "json"
+        && let Ok(value) = serde_json::from_str::<serde_json::Value>(contents)
+        && let Ok(encoded) = term::json_string(&value)
+    {
+        return encoded;
+    }
+
+    ui::sanitize_terminal_block(contents)
 }
 
 /// Error from a writer that a caller should surface as a per-client failure
@@ -608,6 +624,35 @@ mod tests {
         assert!(written.ends_with('\n'), "must end with a trailing newline");
         let v: serde_json::Value = serde_json::from_str(&written).unwrap();
         assert_eq!(v["mcp"]["lific"]["type"], "remote");
+    }
+
+    #[test]
+    fn terminal_json_encoding_preserves_values_and_escapes_controls() {
+        let mut value = serde_json::Map::new();
+        value.insert(
+            "key\u{009b}2J\u{202e}\u{200b}".to_owned(),
+            serde_json::json!("value\u{0001}\u{0085}\u{2066}\u{200d}"),
+        );
+        let contents = serde_json::to_string_pretty(&value).unwrap();
+
+        let displayed = terminal_contents("json", &contents);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&displayed).unwrap(),
+            serde_json::Value::Object(value)
+        );
+        assert!(!displayed.contains('\u{009b}'));
+        assert!(!displayed.contains('\u{202e}'));
+        assert!(!displayed.contains('\u{200b}'));
+        assert!(!displayed.contains('\u{200d}'));
+    }
+
+    #[test]
+    fn terminal_text_encoding_preserves_non_json_layout() {
+        let contents = "# keep this comment\nkey = \"value\u{009b}\"\n";
+        let displayed = terminal_contents("toml", contents);
+        assert!(displayed.starts_with("# keep this comment\n"));
+        assert!(displayed.contains("key = \"value"));
+        assert!(!displayed.contains('\u{009b}'));
     }
 
     #[cfg(unix)]

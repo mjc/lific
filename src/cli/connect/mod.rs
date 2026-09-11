@@ -1010,7 +1010,10 @@ fn print_human(result: &ConnectResult) {
                 .as_ref()
                 .map(|p| p.display().to_string())
                 .unwrap_or_default();
-            ui::note(path, contents.trim_end());
+            ui::note(
+                path,
+                writer::terminal_contents(&o.format, contents).trim_end(),
+            );
         }
     }
 

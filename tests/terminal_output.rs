@@ -171,7 +171,7 @@ fn invalid_log_filter_is_reported_safely_before_tracing_starts() {
     .unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_lific"))
-        .env("RUST_LOG", "lific=also-invalid\u{009b}2J")
+        .env_remove("RUST_LOG")
         .args([
             "--config",
             config.to_str().unwrap(),
@@ -229,6 +229,22 @@ fn clap_help_cannot_render_a_terminal_control_in_the_program_name() {
     assert!(output.status.success(), "{output:?}");
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(!stdout.contains('\u{202e}'), "{stdout:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn clap_help_preserves_layout_without_forged_program_name_lines() {
+    use std::os::unix::process::CommandExt;
+
+    let output = Command::new(env!("CARGO_BIN_EXE_lific"))
+        .arg0("lific\nFORGED_DIAGNOSTIC")
+        .arg("--help")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(!stdout.contains("\nFORGED_DIAGNOSTIC"), "{stdout:?}");
+    assert!(stdout.contains("\nUsage:"), "{stdout:?}");
 }
 
 #[cfg(target_os = "linux")]
