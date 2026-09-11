@@ -972,6 +972,8 @@ fn print_human(result: &ConnectResult) {
             (None, Some(err)) => {
                 ui::warn(format!("{} — skipped: {err}", o.display));
                 if let Some(snippet) = &o.manual_snippet {
+                    // Configuration snippets stay lossless here; the
+                    // format-aware preview slice owns their terminal encoding.
                     ui::note(format!("{} — merge this in manually", o.display), snippet);
                 }
             }
@@ -988,7 +990,7 @@ fn print_human(result: &ConnectResult) {
             } else {
                 key.clone()
             };
-            ui::note(format!("{} API key", o.display), body);
+            ui::note(format!("{} API key", o.display), ui::terminal_block(body));
         }
         // --oauth: the client's native auth command instead of a key.
         if let Some(hint) = &o.auth_hint {
@@ -1002,6 +1004,8 @@ fn print_human(result: &ConnectResult) {
                 .as_ref()
                 .map(|p| p.display().to_string())
                 .unwrap_or_default();
+            // Configuration contents stay lossless here; the format-aware
+            // preview slice owns their terminal encoding.
             ui::note(path, contents.trim_end());
         }
     }

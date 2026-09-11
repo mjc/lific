@@ -1453,7 +1453,9 @@ async fn cmd_init(
     if let Some(ref key) = new_key {
         ui::note(
             "Initial API key — save it now, it will not be shown again",
-            format!("{key}\n\nUse it as: Authorization: Bearer <key>"),
+            cli::ui::terminal_block(format_args!(
+                "{key}\n\nUse it as: Authorization: Bearer <key>"
+            )),
         );
     }
 
@@ -1495,12 +1497,12 @@ async fn cmd_init(
 
     ui::note(
         "Next steps",
-        format!(
+        cli::ui::terminal_block(format_args!(
             "1. Open {url} and create your account\n2. {}\n3. {}   {}",
             ui::command("lific user promote --username <you>"),
             ui::command("lific connect"),
             ui::dim("# wire up your AI tools"),
-        ),
+        )),
     );
 
     let mut outro_msg = format!("Verify anytime with {}", ui::command("lific doctor"));

@@ -414,10 +414,10 @@ pub fn run_login_with_flow<F: DeviceFlow>(
     ui::intro("lific login");
     ui::note(
         "To sign in, enter this code",
-        format!(
+        crate::cli::ui::terminal_block(format_args!(
             "{}\n\nat {}\nor open directly: {}",
             resp.user_code, resp.verification_uri, complete
-        ),
+        )),
     );
 
     let spinner = cliclack::spinner();
@@ -455,7 +455,10 @@ fn finish(args: &LoginArgs, base: &str, outcome: PollOutcome, json: bool) -> Res
                         .unwrap_or_default()
                     );
                 } else {
-                    crate::cli::ui::note("Approved. Token (not stored)", &token);
+                    crate::cli::ui::note(
+                        "Approved. Token (not stored)",
+                        crate::cli::ui::terminal_block(&token),
+                    );
                     crate::cli::ui::outro("Done");
                 }
                 return Ok(());

@@ -392,7 +392,7 @@ pub fn comment_list(
             comment.created_at
         );
         for line in comment.content.lines() {
-            w!(out, "    {line}");
+            wb!(out, "    {line}");
         }
         w!(out);
     }
@@ -659,6 +659,20 @@ mod tests {
     }
 
     #[test]
+    fn comment_content_keeps_nested_tabs_but_headers_cannot_add_rows() {
+        let mut nested = comment(1, "root\n\tchild\n\t\tgrand\x1b[2J\u{202e}");
+        nested.author_display_name = "Ada\nFORGED".into();
+        nested.author = "ada\rFORGED".into();
+        nested.created_at = "2026-01-01\nFORGED".into();
+
+        let rendered = comment_list(&[nested], "TST-1", CommentContinuation::End);
+
+        assert!(rendered.contains("    root\n    \tchild\n    \t\tgrand^[[2J \n"));
+        assert!(!rendered.contains("\nFORGED"));
+        assert!(!rendered.contains('\r'));
+    }
+
+    #[test]
     fn marks_statuses_and_priorities_with_indicators() {
         assert_eq!(fmt_status(Status::Active), "[~] active");
         assert_eq!(fmt_status(Status::Cancelled), "[-] cancelled");
@@ -769,6 +783,34 @@ mod tests {
             parent_page_id: None,
         }]);
         assert!(search_output.contains(&format!("{}...", "b".repeat(79))));
+
+        let two_byte = format!("{}éx", "a".repeat(58));
+        assert_eq!(two_byte.len(), 61);
+        assert_eq!(
+            truncate_with_ellipsis(&two_byte, 60),
+            format!("{}é...", "a".repeat(58))
+        );
+
+        let three_byte = format!("{}€x", "a".repeat(57));
+        assert_eq!(three_byte.len(), 61);
+        assert_eq!(
+            truncate_with_ellipsis(&three_byte, 60),
+            format!("{}€...", "a".repeat(57))
+        );
+
+        let four_byte = format!("{}🦀x", "a".repeat(56));
+        assert_eq!(four_byte.len(), 61);
+        assert_eq!(
+            truncate_with_ellipsis(&four_byte, 60),
+            format!("{}🦀...", "a".repeat(56))
+        );
+
+        let exact_eighty = format!("{}éx", "a".repeat(78));
+        assert_eq!(exact_eighty.len(), 81);
+        assert_eq!(
+            truncate_with_ellipsis(&exact_eighty, 80),
+            format!("{}é...", "a".repeat(78))
+        );
     }
 
     proptest! {
@@ -781,6 +823,38 @@ mod tests {
             one.title = text.clone();
             one.description = text;
             let rendered = issue_detail(&one, &|_| None);
+            let safe = rendered.chars().all(|ch| {
+                !crate::cli::ui::is_terminal_control(ch) || ch == '\n' || ch == '\t'
+            });
+            prop_assert!(safe);
+        }
+
+        #[test]
+        fn actual_page_renderer_never_emits_terminal_controls(text in
+            proptest::collection::vec(any::<char>(), 0..256)
+                .prop_map(String::from_iter)
+        ) {
+            let rendered = page_list(&[page(&text)]);
+            let safe = rendered.chars().all(|ch| {
+                !crate::cli::ui::is_terminal_control(ch) || ch == '\n' || ch == '\t'
+            });
+            prop_assert!(safe);
+        }
+
+        #[test]
+        fn actual_search_renderer_never_emits_terminal_controls(text in
+            proptest::collection::vec(any::<char>(), 0..256)
+                .prop_map(String::from_iter)
+        ) {
+            let rendered = search_results(&[SearchResult {
+                result_type: "issue".into(),
+                id: 1,
+                identifier: Some("TST-1".into()),
+                title: text.clone(),
+                snippet: text,
+                project_id: Some(1),
+                parent_page_id: None,
+            }]);
             let safe = rendered.chars().all(|ch| {
                 !crate::cli::ui::is_terminal_control(ch) || ch == '\n' || ch == '\t'
             });

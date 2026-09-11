@@ -16,12 +16,12 @@
 //!   `warn`/`error` for problems, `note` for blocks the user must read (keys,
 //!   snippets, next steps), `intro`/`outro` bracketing every session.
 
-use std::fmt::Display;
+use std::fmt::{self, Display};
 
 /// Begin a command session: prints the `┌ <title>` header.
 pub fn intro(title: &str) {
     let _ = cliclack::intro(
-        console::style(format!(" {} ", terminal_line(title)))
+        console::style(format_args!(" {} ", title.terminal_line()))
             .on_cyan()
             .black()
             .to_string(),
@@ -30,43 +30,48 @@ pub fn intro(title: &str) {
 
 /// A completed step: `◇ <msg>`.
 pub fn step(msg: impl std::fmt::Display) {
-    let _ = cliclack::log::success(terminal_line(msg));
+    let _ = cliclack::log::success(msg.terminal_line());
 }
 
 /// A neutral informational line: `● <msg>`.
 pub fn info(msg: impl std::fmt::Display) {
-    let _ = cliclack::log::info(terminal_line(msg));
+    let _ = cliclack::log::info(msg.terminal_line());
 }
 
 /// A warning line: `▲ <msg>`.
 pub fn warn(msg: impl std::fmt::Display) {
-    let _ = cliclack::log::warning(terminal_line(msg));
+    let _ = cliclack::log::warning(msg.terminal_line());
 }
 
 /// An error line: `■ <msg>`.
 pub fn error(msg: impl std::fmt::Display) {
-    let _ = cliclack::log::error(terminal_line(msg));
+    let _ = cliclack::log::error(msg.terminal_line());
 }
 
 /// A skipped/dimmed line: `◌ <msg>` (rendered via a plain step with dim text).
 pub fn skipped(msg: impl std::fmt::Display) {
-    let _ = cliclack::log::step(console::style(terminal_line(msg)).dim().to_string());
+    let _ = cliclack::log::step(console::style(msg.terminal_line()).dim().to_string());
 }
 
-/// A boxed note block with a title — for content the user must actually read
-/// (API keys, manual snippets, next steps).
+/// A boxed note block with a sanitized title.
+///
+/// Callers choose the body policy: prose and credentials use
+/// [`terminal_block`], while format-aware configuration previews remain
+/// lossless until their dedicated presentation slice handles them.
 pub fn note(title: impl std::fmt::Display, body: impl std::fmt::Display) {
-    let _ = cliclack::note(terminal_line(title), terminal_block(body));
+    // The body policy is selected by the caller. Configuration snippets stay
+    // byte-faithful until the format-aware preview slice handles them.
+    let _ = cliclack::note(title.terminal_line(), body);
 }
 
 /// End the session on a success: `└ <msg>`.
 pub fn outro(msg: impl std::fmt::Display) {
-    let _ = cliclack::outro(terminal_line(msg));
+    let _ = cliclack::outro(msg.terminal_line());
 }
 
 /// End the session on a failure: `└ <msg>` in red.
 pub fn outro_cancel(msg: impl std::fmt::Display) {
-    let _ = cliclack::outro_cancel(terminal_line(msg));
+    let _ = cliclack::outro_cancel(msg.terminal_line());
 }
 
 /// Sanitize secondary text (paths, hints) for composition into a UI message.
@@ -74,13 +79,13 @@ pub fn outro_cancel(msg: impl std::fmt::Display) {
 /// Styling is deliberately applied only by the final cliclack call. Returning
 /// ANSI from a composable string would make the outer terminal sanitizer
 /// display escape bytes literally.
-pub fn dim(s: impl std::fmt::Display) -> String {
-    terminal_line(s)
+pub fn dim(s: impl std::fmt::Display) -> impl Display {
+    s.terminal_line()
 }
 
 /// Sanitize a command for composition into a UI message.
-pub fn command(s: impl std::fmt::Display) -> String {
-    terminal_line(s)
+pub fn command(s: impl std::fmt::Display) -> impl Display {
+    s.terminal_line()
 }
 
 pub(crate) fn is_terminal_control(ch: char) -> bool {
@@ -111,36 +116,88 @@ pub(crate) fn is_terminal_control(ch: char) -> bool {
         )
 }
 
-pub(crate) fn terminal_line(value: impl Display) -> String {
-    sanitize_terminal_text(&value.to_string(), false)
+pub(crate) fn terminal_line(value: impl Display) -> impl Display {
+    value.terminal_line()
 }
 
-pub(crate) fn terminal_block(value: impl Display) -> String {
-    sanitize_terminal_text(&value.to_string(), true)
+pub(crate) fn terminal_block(value: impl Display) -> impl Display {
+    value.terminal_block()
 }
 
-fn sanitize_terminal_text(input: &str, preserve_layout: bool) -> String {
-    let mut output = String::with_capacity(input.len());
-    for ch in input.chars() {
-        match ch {
-            '\n' | '\t' if preserve_layout => output.push(ch),
-            '\x1b' => output.push_str("^["),
-            ch if is_terminal_control(ch) => output.push(' '),
-            _ => output.push(ch),
+pub(crate) trait TerminalDisplay: Display + Sized {
+    fn terminal_line(self) -> Terminal<Self> {
+        Terminal {
+            value: self,
+            preserve_layout: false,
         }
     }
-    output
+
+    fn terminal_block(self) -> Terminal<Self> {
+        Terminal {
+            value: self,
+            preserve_layout: true,
+        }
+    }
+}
+
+impl<T: Display> TerminalDisplay for T {}
+
+pub(crate) struct Terminal<T> {
+    value: T,
+    preserve_layout: bool,
+}
+
+impl<T: Display> Display for Terminal<T> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut writer = TerminalWriter {
+            formatter,
+            preserve_layout: self.preserve_layout,
+        };
+        if writer.formatter.alternate() {
+            fmt::write(&mut writer, format_args!("{:#}", &self.value))
+        } else {
+            fmt::write(&mut writer, format_args!("{}", &self.value))
+        }
+    }
+}
+
+struct TerminalWriter<'a, 'b> {
+    formatter: &'a mut fmt::Formatter<'b>,
+    preserve_layout: bool,
+}
+
+impl fmt::Write for TerminalWriter<'_, '_> {
+    fn write_str(&mut self, input: &str) -> fmt::Result {
+        let mut safe_start = 0;
+        for (index, ch) in input.char_indices() {
+            let replacement = match ch {
+                '\n' | '\t' if self.preserve_layout => None,
+                '\x1b' => Some("^["),
+                ch if is_terminal_control(ch) => Some(" "),
+                _ => None,
+            };
+            let Some(replacement) = replacement else {
+                continue;
+            };
+            self.formatter.write_str(&input[safe_start..index])?;
+            self.formatter.write_str(replacement)?;
+            safe_start = index + ch.len_utf8();
+        }
+        self.formatter.write_str(&input[safe_start..])
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{is_terminal_control, terminal_block, terminal_line};
+    use std::fmt::{self, Write as _};
+
+    use super::{TerminalDisplay, is_terminal_control, terminal_block, terminal_line};
     use proptest::prelude::*;
 
     #[test]
     fn block_controls_are_neutralized_without_flattening_layout() {
         assert_eq!(
-            terminal_block("name\x1b[2J\r\x07\u{85}\u{202e}\u{2066}\nnext\tline\x7f"),
+            terminal_block("name\x1b[2J\r\x07\u{85}\u{202e}\u{2066}\nnext\tline\x7f").to_string(),
             "name^[[2J     \nnext\tline "
         );
     }
@@ -148,9 +205,50 @@ mod tests {
     #[test]
     fn line_controls_cannot_forge_another_status_line() {
         assert_eq!(
-            terminal_line("title\n[ok]\tuser\u{061c}\u{200f}\u{2028}\u{206f}"),
+            terminal_line("title\n[ok]\tuser\u{061c}\u{200f}\u{2028}\u{206f}").to_string(),
             "title [ok] user    "
         );
+    }
+
+    #[test]
+    fn sanitization_preserves_safe_input_and_is_idempotent() {
+        let safe = "ordinary text\nwith\ttabs";
+        assert_eq!(terminal_block(safe).to_string(), safe);
+
+        let once = terminal_block("bad\x1b[2J\n\ttext").to_string();
+        assert_eq!(terminal_block(&once).to_string(), once);
+    }
+
+    struct Fragments;
+
+    impl fmt::Display for Fragments {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("prefix")?;
+            formatter.write_str("\t")?;
+            formatter.write_str("suffix")
+        }
+    }
+
+    #[test]
+    fn adapter_handles_fragmented_formatting() {
+        let mut output = String::new();
+        write!(&mut output, "{}", Fragments.terminal_block()).unwrap();
+        assert_eq!(output, "prefix\tsuffix");
+    }
+
+    struct FailingWriter;
+
+    impl fmt::Write for FailingWriter {
+        fn write_str(&mut self, _input: &str) -> fmt::Result {
+            Err(fmt::Error)
+        }
+    }
+
+    #[test]
+    fn adapter_propagates_destination_errors() {
+        let mut output = FailingWriter;
+        let error = write!(&mut output, "{}", "text".terminal_line());
+        assert!(error.is_err());
     }
 
     proptest! {
@@ -159,7 +257,7 @@ mod tests {
             input in proptest::collection::vec(any::<char>(), 0..256)
                 .prop_map(String::from_iter)
         ) {
-            let rendered = terminal_line(input);
+            let rendered = terminal_line(input).to_string();
             prop_assert!(rendered.chars().all(|ch| !is_terminal_control(ch)));
         }
 
@@ -168,7 +266,7 @@ mod tests {
             input in proptest::collection::vec(any::<char>(), 0..256)
                 .prop_map(String::from_iter)
         ) {
-            let rendered = terminal_block(input);
+            let rendered = terminal_block(input).to_string();
             let safe = rendered.chars().all(|ch| {
                 !is_terminal_control(ch) || ch == '\n' || ch == '\t'
             });

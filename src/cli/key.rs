@@ -55,7 +55,9 @@ pub fn run(
                 };
                 ui::note(
                     title,
-                    format!("{key}\n\nUse it as: Authorization: Bearer <key>"),
+                    ui::terminal_block(format_args!(
+                        "{key}\n\nUse it as: Authorization: Bearer <key>"
+                    )),
                 );
             }
         }
@@ -105,7 +107,7 @@ pub fn run(
             } else {
                 ui::note(
                     format!("Key '{name}' rotated — save it now, it will not be shown again"),
-                    &key,
+                    ui::terminal_block(&key),
                 );
             }
         }
