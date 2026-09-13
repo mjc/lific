@@ -33,6 +33,27 @@ use clap::{CommandFactory, FromArgMatches};
 use cli::{BackendKind, Cli, Command, ServiceAction};
 use config::Config;
 
+fn cli_command() -> clap::Command {
+    // Clap's command metadata intentionally accepts only `'static` strings.
+    // This is one short process-lifetime allocation for presentation metadata;
+    // the actual argv remains owned by Clap and is never rewritten.
+    let name: &'static str = Box::leak(displayed_program_name().into_boxed_str());
+    Cli::command().name(name)
+}
+
+fn displayed_program_name() -> String {
+    std::env::args_os()
+        .next()
+        .and_then(|program| {
+            std::path::Path::new(&program)
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
+        .map(cli::ui::terminal_line)
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "lific".to_owned())
+}
+
 // Commands that operate directly on the database (no server required)
 fn is_crud_command(cmd: &Command) -> bool {
     matches!(
@@ -332,7 +353,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Via `ArgMatches` rather than `Cli::parse()` so a value's source stays
     // answerable: `lific mcp --instances` rejects a typed `--url` but ignores
     // an exported `LIFIC_URL`. Behaviour is otherwise identical.
-    let matches = Cli::command().get_matches();
+    let matches = cli_command().get_matches();
     let cli = match Cli::from_arg_matches(&matches) {
         Ok(cli) => cli,
         Err(error) => error.exit(),
@@ -357,7 +378,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Shell completions must work with no lific.toml present and touch no DB,
     // so handle them before loading config or opening the database.
     if let Command::Completion { shell } = cli.command {
-        clap_complete::generate(shell, &mut Cli::command(), "lific", &mut std::io::stdout());
+        clap_complete::generate(shell, &mut cli_command(), "lific", &mut std::io::stdout());
         return Ok(());
     }
 
