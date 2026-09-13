@@ -1,18 +1,11 @@
 //! HTTP transport for data-oriented CLI commands.
 //!
-//! The SQL executor and this module intentionally share the `Command` enum:
+//! The SQL executor and this module intentionally share the `DataCommand` enum:
 //! command parsing and output selection stay transport-independent while each
 //! backend owns only identifier resolution and I/O.
 
 use std::{
-    borrow::Cow,
-    collections::HashMap,
-    fs,
-    io::Write,
-    net::IpAddr,
-    path::{Path, PathBuf},
-    sync::Mutex,
-    time::Duration,
+    borrow::Cow, collections::HashMap, fs, io::Write, net::IpAddr, path::Path, time::Duration,
 };
 
 use anyhow::{Result, anyhow, bail};
@@ -27,11 +20,12 @@ use crate::db::models;
 use crate::db::queries;
 use crate::links::IssueLinkContext;
 
+use super::output::CommandOutput;
 use super::weblinks::{
     IssueLinkOutput, ResourceKind, linked_comments, linked_modules, linked_resources,
 };
 use super::{
-    Command, CommentAction, ExportAction, FolderAction, IssueAction, LabelAction, ModuleAction,
+    CommentAction, DataCommand, ExportAction, FolderAction, IssueAction, LabelAction, ModuleAction,
     PageAction, ProjectAction, owned_labels, render,
 };
 
@@ -52,24 +46,18 @@ fn decode<T: DeserializeOwned>(value: &Value) -> Option<T> {
 }
 
 pub async fn run(
-    command: &Command,
+    command: &DataCommand,
     base_url: &str,
     api_key: Option<&str>,
     json_output: bool,
-) -> Result<()> {
+) -> Result<CommandOutput> {
     let backend = HttpBackend::new(base_url, api_key)?;
     let link_output = if json_output {
         IssueLinkOutput::Url
     } else {
         IssueLinkOutput::Markdown
     };
-    let output = backend.execute(command, link_output).await?;
-    if json_output {
-        println!("{}", serde_json::to_string_pretty(&output)?);
-    } else {
-        print!("{}", backend.human(command, &output).await);
-    }
-    Ok(())
+    backend.execute(command, link_output, !json_output).await
 }
 
 struct HttpBackend {
@@ -77,14 +65,6 @@ struct HttpBackend {
     base_url: String,
     link_context: IssueLinkContext,
     api_key: Option<String>,
-    /// What the last comment listing's paging headers said (LIF-421).
-    ///
-    /// A command is fetched and then rendered in two passes, and only the
-    /// fetch sees the response headers. Rather than thread a second return
-    /// value through every arm of a dispatch that has nothing to do with
-    /// comments, the one arm that has an answer leaves it here for the one
-    /// renderer that wants it, which then takes it.
-    comment_paging: Mutex<Option<CommentPaging>>,
 }
 
 /// The server's own answer about what lies past a comment page.
@@ -166,23 +146,28 @@ impl HttpBackend {
             base_url: base_url.to_owned(),
             link_context,
             api_key: api_key.map(str::to_owned),
-            comment_paging: Mutex::new(None),
         })
     }
 
-    async fn execute(&self, command: &Command, output: IssueLinkOutput) -> Result<Value> {
-        match command {
-            Command::Issue { action } => self.issue(action).await.map(|value| {
+    async fn execute(
+        &self,
+        command: &DataCommand,
+        output: IssueLinkOutput,
+        human: bool,
+    ) -> Result<CommandOutput> {
+        let mut paging = None;
+        let value = match command {
+            DataCommand::Issue { action } => self.issue(action).await.map(|value| {
                 linked_resources(value, &self.link_context, output, ResourceKind::Issue)
             }),
-            Command::Project { action } => self.project(action).await.map(|value| {
+            DataCommand::Project { action } => self.project(action).await.map(|value| {
                 linked_resources(value, &self.link_context, output, ResourceKind::Project)
             }),
-            Command::Page { action } => self.page(action).await.map(|value| {
+            DataCommand::Page { action } => self.page(action).await.map(|value| {
                 linked_resources(value, &self.link_context, output, ResourceKind::Page)
             }),
-            Command::Export { action } => self.export(action).await,
-            Command::Search {
+            DataCommand::Export { action } => self.export(action).await,
+            DataCommand::Search {
                 query,
                 project,
                 limit,
@@ -203,178 +188,67 @@ impl HttpBackend {
                     linked_resources(value, &self.link_context, output, ResourceKind::Search)
                 })
             }
-            Command::Comment { action } => self.comment(action).await.map(|(value, identifier)| {
-                linked_comments(value, &self.link_context, output, &identifier)
-            }),
-            Command::Module { action } => self.module(action).await.map(|(value, project)| {
+            DataCommand::Comment { action } => {
+                self.comment(action)
+                    .await
+                    .map(|(value, identifier, headers)| {
+                        paging = headers;
+                        linked_comments(value, &self.link_context, output, &identifier)
+                    })
+            }
+            DataCommand::Module { action } => self.module(action).await.map(|(value, project)| {
                 linked_modules(value, &self.link_context, output, &project)
             }),
-            Command::Label { action } => self.label(action).await,
-            Command::Folder { action } => self.folder(action).await,
-            Command::Bind { project, create } => self.bind_repo(project.as_deref(), *create).await,
-            Command::GitHook { range, dry_run } => self.git_hook(range.as_deref(), *dry_run).await,
-            _ => bail!("the HTTP backend does not support this command yet"),
-        }
-    }
-
-    /// Render a response the way the SQL backend renders it (LIF-373).
-    ///
-    /// Falls back to pretty JSON when the payload does not deserialize into
-    /// the model the command expects, so a CLI pointed at a server of another
-    /// version still prints something rather than failing at the last step.
-    async fn human(&self, command: &Command, value: &Value) -> String {
-        match self.render(command, value).await {
-            Some(text) => text,
-            None => format!("{}\n", pretty(value)),
-        }
-    }
-
-    async fn render(&self, command: &Command, value: &Value) -> Option<String> {
-        Some(match command {
-            Command::Issue { action } => match action {
-                IssueAction::List { .. } => {
-                    let issues: Vec<models::Issue> = decode(value)?;
-                    let names = self.module_names(&issues).await;
-                    render::issue_list(&issues, &|id| names.get(&id).cloned())
-                }
-                IssueAction::Get { .. } => {
-                    let issue: models::Issue = decode(value)?;
-                    let names = self.module_names(std::slice::from_ref(&issue)).await;
-                    render::issue_detail(&issue, &|id| names.get(&id).cloned())
-                }
-                IssueAction::Create { .. } => {
-                    let issue: models::Issue = decode(value)?;
-                    render::issue_created(&issue)
-                }
-                IssueAction::Update { .. } => {
-                    let issue: models::Issue = decode(value)?;
-                    render::issue_updated(&issue)
-                }
-            },
-            Command::Project { action } => match action {
-                ProjectAction::List => {
-                    let projects: Vec<models::Project> = decode(value)?;
-                    render::project_list(&projects)
-                }
-                ProjectAction::Get { .. } => {
-                    let project: models::Project = decode(value)?;
-                    render::project_detail(&project)
-                }
-                ProjectAction::Create { .. } => {
-                    let project: models::Project = decode(value)?;
-                    render::project_created(&project)
-                }
-                ProjectAction::Update { .. } => {
-                    let project: models::Project = decode(value)?;
-                    render::project_updated(&project)
-                }
-            },
-            Command::Page { action } => match action {
-                PageAction::List { .. } => {
-                    let pages: Vec<models::Page> = decode(value)?;
-                    render::page_list(&pages)
-                }
-                PageAction::Get { .. } => {
-                    let page: models::Page = decode(value)?;
-                    render::page_detail(&page)
-                }
-                PageAction::Create { .. } => {
-                    let page: models::Page = decode(value)?;
-                    render::page_created(&page)
-                }
-                PageAction::Update { .. } => {
-                    let page: models::Page = decode(value)?;
-                    render::page_updated(&page)
-                }
-            },
-            Command::Search { .. } => {
-                let results: Vec<models::SearchResult> = decode(value)?;
-                render::search_results(&results)
+            DataCommand::Label { action } => self.label(action).await,
+            DataCommand::Folder { action } => self.folder(action).await,
+            DataCommand::Bind { project, create } => {
+                self.bind_repo(project.as_deref(), *create).await
             }
-            Command::Comment { action } => match action {
-                CommentAction::List {
-                    identifier,
-                    limit,
-                    offset,
-                    order,
+            DataCommand::GitHook { range, dry_run } => {
+                self.git_hook(range.as_deref(), *dry_run).await
+            }
+        }?;
+        let mut result = CommandOutput::new(value);
+        if human {
+            match command {
+                DataCommand::Issue {
+                    action: IssueAction::List { .. },
                 } => {
-                    let comments: Vec<models::Comment> = decode(value)?;
-                    let (limit, offset) = queries::page(Some(*limit), Some(*offset));
-                    let continuation = self
-                        .comment_continuation(&comments, limit, offset, order)
-                        .await;
-                    render::comment_list(&comments, identifier, continuation)
+                    if let Some(issues) = decode::<Vec<models::Issue>>(&result.value) {
+                        result.module_names = self.module_names(&issues).await;
+                    }
                 }
-                CommentAction::Add { identifier, .. } => {
-                    let comment: models::Comment = decode(value)?;
-                    render::comment_added(&comment, identifier)
+                DataCommand::Issue {
+                    action: IssueAction::Get { .. },
+                } => {
+                    if let Some(issue) = decode::<models::Issue>(&result.value) {
+                        result.module_names = self.module_names(&[issue]).await;
+                    }
                 }
-            },
-            Command::Module { action } => match action {
-                ModuleAction::List { project } => {
-                    let modules: Vec<models::Module> = decode(value)?;
-                    render::module_list(&modules, project)
+                DataCommand::Comment {
+                    action:
+                        CommentAction::List {
+                            limit,
+                            offset,
+                            order,
+                            ..
+                        },
+                } => {
+                    if let Some(comments) = decode::<Vec<models::Comment>>(&result.value) {
+                        let (limit, offset) = queries::page(Some(*limit), Some(*offset));
+                        result.continuation = Some(match paging {
+                            Some(paging) => paging.continuation(),
+                            None => {
+                                self.comment_continuation(&comments, limit, offset, order)
+                                    .await
+                            }
+                        });
+                    }
                 }
-                ModuleAction::Create { project, .. } => {
-                    let module: models::Module = decode(value)?;
-                    render::module_created(&module, project)
-                }
-                ModuleAction::Update { .. } => {
-                    let module: models::Module = decode(value)?;
-                    render::module_updated(&module)
-                }
-                ModuleAction::Delete { name, .. } => render::module_deleted(name),
-            },
-            Command::Label { action } => match action {
-                LabelAction::List { project } => {
-                    let labels: Vec<models::Label> = decode(value)?;
-                    render::label_list(&labels, project)
-                }
-                LabelAction::Create { .. } => {
-                    let label: models::Label = decode(value)?;
-                    render::label_created(&label)
-                }
-                LabelAction::Update { .. } => {
-                    let label: models::Label = decode(value)?;
-                    render::label_updated(&label)
-                }
-                LabelAction::Delete { name, .. } => render::label_deleted(name),
-            },
-            Command::Folder { action } => match action {
-                FolderAction::List { project } => {
-                    let folders: Vec<models::Folder> = decode(value)?;
-                    render::folder_list(&folders, project)
-                }
-                FolderAction::Create { .. } => {
-                    let folder: models::Folder = decode(value)?;
-                    render::folder_created(&folder)
-                }
-                FolderAction::Update { name, .. } => {
-                    let folder: models::Folder = decode(value)?;
-                    render::folder_updated(name, &folder)
-                }
-                FolderAction::Delete { name, .. } => render::folder_deleted(name),
-            },
-            Command::Export { action } => {
-                let output = match action {
-                    ExportAction::Issue { output, .. }
-                    | ExportAction::Page { output, .. }
-                    | ExportAction::Project { output, .. } => output,
-                };
-                let written: Vec<PathBuf> = decode::<Vec<String>>(value)?
-                    .into_iter()
-                    .map(PathBuf::from)
-                    .collect();
-                render::export_written(&written, output)
+                _ => {}
             }
-            // The document `bind` produces is identical on both backends, so
-            // it renders through the same function the SQL executor calls.
-            Command::Bind { .. } => crate::cli::bind::human(value),
-            // Same document from both backends, so it renders through the same
-            // function the SQL executor calls.
-            Command::GitHook { .. } => crate::cli::git_hook::human(value),
-            _ => return None,
-        })
+        }
+        Ok(result)
     }
 
     /// Module names for a rendered issue list, keyed by id. The SQL backend
@@ -866,7 +740,10 @@ impl HttpBackend {
         }
     }
 
-    async fn comment(&self, action: &CommentAction) -> Result<(Value, String)> {
+    async fn comment(
+        &self,
+        action: &CommentAction,
+    ) -> Result<(Value, String, Option<CommentPaging>)> {
         match action {
             CommentAction::List {
                 identifier,
@@ -886,11 +763,11 @@ impl HttpBackend {
                 let (value, headers) = self
                     .get_json_with_headers(&format!("/api/issues/{}/comments", issue.id), &params)
                     .await?;
-                // LIF-421: the server answers the continuation question in
-                // headers. Remember what it said so the render pass can use it
-                // instead of paying for the probe request below.
-                self.remember_comment_paging(CommentPaging::from_headers(&headers));
-                Ok((value, issue.identifier))
+                Ok((
+                    value,
+                    issue.identifier,
+                    CommentPaging::from_headers(&headers),
+                ))
             }
             CommentAction::Add {
                 identifier,
@@ -911,26 +788,9 @@ impl HttpBackend {
                     },
                 )
                 .await
-                .map(|value| (value, issue.identifier))
+                .map(|value| (value, issue.identifier, None))
             }
         }
-    }
-
-    /// Store what the server's paging headers said about the page just
-    /// fetched, for the render pass that follows.
-    fn remember_comment_paging(&self, paging: Option<CommentPaging>) {
-        if let Ok(mut slot) = self.comment_paging.lock() {
-            *slot = paging;
-        }
-    }
-
-    /// Take it back out. Taking rather than reading: a remembered answer
-    /// belongs to exactly one page, and a stale one would be worse than none.
-    fn take_comment_paging(&self) -> Option<CommentPaging> {
-        self.comment_paging
-            .lock()
-            .ok()
-            .and_then(|mut slot| slot.take())
     }
 
     /// What lies past the comment page just fetched.
@@ -961,9 +821,6 @@ impl HttpBackend {
         order: &str,
     ) -> render::CommentContinuation {
         use render::CommentContinuation;
-        if let Some(paging) = self.take_comment_paging() {
-            return paging.continuation();
-        }
         if (comments.len() as i64) < limit {
             return CommentContinuation::End;
         }
@@ -1511,10 +1368,6 @@ enum ExportShape {
     Archive,
 }
 
-fn pretty(value: &Value) -> String {
-    serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use std::{
@@ -1545,7 +1398,7 @@ mod tests {
             with_client_ip_test_layers,
         },
         cli::{
-            Command, CommentAction, ExportAction, FolderAction, IssueAction, LabelAction,
+            CommentAction, DataCommand, ExportAction, FolderAction, IssueAction, LabelAction,
             ModuleAction, PageAction, ProjectAction, split_csv,
         },
         config::AuthConfig,
@@ -1889,17 +1742,18 @@ mod tests {
 
         let output = backend
             .execute(
-                &Command::Search {
+                &DataCommand::Search {
                     query: "term".into(),
                     project: None,
                     limit: Some(7),
                 },
                 IssueLinkOutput::Url,
+                true,
             )
             .await
             .unwrap();
 
-        assert_eq!(output, json!([{"id": 1}]));
+        assert_eq!(output.value, json!([{"id": 1}]));
         assert_eq!(
             captured.lock().await.as_ref(),
             Some(&(
@@ -1918,17 +1772,18 @@ mod tests {
 
         let output = backend
             .execute(
-                &Command::Issue {
+                &DataCommand::Issue {
                     action: IssueAction::Get {
                         identifier: "LIF-42".into(),
                     },
                 },
                 IssueLinkOutput::Url,
+                true,
             )
             .await
             .unwrap();
 
-        assert_eq!(output["web_url"], format!("{url}/LIF/issues/LIF-42"));
+        assert_eq!(output.value["web_url"], format!("{url}/LIF/issues/LIF-42"));
         server.abort();
     }
 
@@ -1940,7 +1795,7 @@ mod tests {
 
         let output = backend
             .execute(
-                &Command::Page {
+                &DataCommand::Page {
                     action: PageAction::List {
                         project: Some("LIF".into()),
                         folder: Some("Docs".into()),
@@ -1948,11 +1803,12 @@ mod tests {
                     },
                 },
                 IssueLinkOutput::Url,
+                true,
             )
             .await
             .unwrap();
 
-        assert_eq!(output, json!([{"id": 9, "title": "Release notes"}]));
+        assert_eq!(output.value, json!([{"id": 9, "title": "Release notes"}]));
         server.abort();
     }
 
@@ -1964,10 +1820,11 @@ mod tests {
 
         let error = backend
             .execute(
-                &Command::Project {
+                &DataCommand::Project {
                     action: ProjectAction::List,
                 },
                 IssueLinkOutput::Url,
+                true,
             )
             .await
             .unwrap_err();
@@ -2071,16 +1928,17 @@ mod tests {
 
         let reported = backend
             .execute(
-                &Command::Export {
+                &DataCommand::Export {
                     action: action(remote_dir.clone()),
                 },
                 IssueLinkOutput::Url,
+                true,
             )
             .await
             .unwrap();
         crate::cli::exec::run(
             &fixture.db,
-            &Command::Export {
+            &DataCommand::Export {
                 action: action(local_dir.clone()),
             },
             false,
@@ -2102,7 +1960,7 @@ mod tests {
 
         // The paths the command reports are exactly the files it wrote, which
         // is what `--json` prints and what the shared renderer lists.
-        let mut written: Vec<String> = decode::<Vec<String>>(&reported)
+        let mut written: Vec<String> = decode::<Vec<String>>(&reported.value)
             .expect("export reports an array of paths")
             .iter()
             .map(|path| relative(Path::new(path), &remote_dir))
@@ -2235,13 +2093,14 @@ mod tests {
 
         let reported = backend
             .execute(
-                &Command::Export {
+                &DataCommand::Export {
                     action: ExportAction::Project {
                         project: "TST".into(),
                         output: output_dir.clone(),
                     },
                 },
                 IssueLinkOutput::Url,
+                true,
             )
             .await
             .unwrap();
@@ -2257,7 +2116,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            reported,
+            reported.value,
             json!([
                 output_dir
                     .join("TST")
@@ -2288,7 +2147,7 @@ mod tests {
         for content in ["one", "two", "three"] {
             backend
                 .execute(
-                    &Command::Comment {
+                    &DataCommand::Comment {
                         action: CommentAction::Add {
                             identifier: issue.clone(),
                             content: content.into(),
@@ -2296,12 +2155,13 @@ mod tests {
                         },
                     },
                     IssueLinkOutput::Url,
+                    true,
                 )
                 .await
                 .unwrap();
         }
 
-        let listing = |limit: i64| Command::Comment {
+        let listing = |limit: i64| DataCommand::Comment {
             action: CommentAction::List {
                 identifier: issue.clone(),
                 limit,
@@ -2314,27 +2174,37 @@ mod tests {
         // is the row count actually returned.
         let command = listing(2);
         let value = backend
-            .execute(&command, IssueLinkOutput::Url)
+            .execute(&command, IssueLinkOutput::Url, true)
             .await
             .unwrap();
-        let rendered = backend.human(&command, &value).await;
+        let rendered = value.human(&command);
         assert!(
             rendered.contains("More comments available. Next page: --offset 2"),
             "{rendered}"
         );
 
+        let first_page = value;
+        let first_command = command;
+        let first_rendered = rendered;
+
         // The last page. Nothing was probed and nothing is claimed to be
         // unknown: the server said it was the end.
         let command = listing(50);
         let value = backend
-            .execute(&command, IssueLinkOutput::Url)
+            .execute(&command, IssueLinkOutput::Url, true)
             .await
             .unwrap();
-        let rendered = backend.human(&command, &value).await;
+        let rendered = value.human(&command);
         assert!(!rendered.contains("More comments"), "{rendered}");
         assert!(!rendered.contains("Could not check"), "{rendered}");
 
         fixture.server.abort();
+        let _ = fixture.server.await;
+        // Results retain their own metadata, even after a later fetch and
+        // with no server available. Rendering does not consume that metadata.
+        assert_eq!(first_page.human(&first_command), first_rendered);
+        assert_eq!(value.human(&command), rendered);
+        assert_eq!(first_page.human(&first_command), first_rendered);
     }
 
     /// A server too old to send the headers still gets a correct answer, from
@@ -2437,7 +2307,7 @@ mod tests {
         let issue = fixture.issue_identifier.clone();
         backend
             .execute(
-                &Command::Comment {
+                &DataCommand::Comment {
                     action: CommentAction::Add {
                         identifier: issue.clone(),
                         content: "A remark\nover two lines".into(),
@@ -2445,37 +2315,38 @@ mod tests {
                     },
                 },
                 IssueLinkOutput::Url,
+                true,
             )
             .await
             .unwrap();
 
         let commands = [
-            Command::Project {
+            DataCommand::Project {
                 action: ProjectAction::List,
             },
-            Command::Project {
+            DataCommand::Project {
                 action: ProjectAction::Get {
                     identifier: "TST".into(),
                 },
             },
-            Command::Page {
+            DataCommand::Page {
                 action: PageAction::List {
                     project: Some("TST".into()),
                     folder: None,
                     label: None,
                 },
             },
-            Command::Page {
+            DataCommand::Page {
                 action: PageAction::Get {
                     identifier: fixture.project_page_identifier.clone(),
                 },
             },
-            Command::Search {
+            DataCommand::Search {
                 query: "page".into(),
                 project: None,
                 limit: None,
             },
-            Command::Comment {
+            DataCommand::Comment {
                 action: CommentAction::List {
                     identifier: issue.clone(),
                     limit: queries::DEFAULT_PAGE_LIMIT,
@@ -2483,17 +2354,17 @@ mod tests {
                     order: "desc".into(),
                 },
             },
-            Command::Module {
+            DataCommand::Module {
                 action: ModuleAction::List {
                     project: "TST".into(),
                 },
             },
-            Command::Label {
+            DataCommand::Label {
                 action: LabelAction::List {
                     project: "TST".into(),
                 },
             },
-            Command::Folder {
+            DataCommand::Folder {
                 action: FolderAction::List {
                     project: "TST".into(),
                 },
@@ -2505,10 +2376,10 @@ mod tests {
         let mut remote = Vec::new();
         for command in &commands {
             let value = backend
-                .execute(command, IssueLinkOutput::Url)
+                .execute(command, IssueLinkOutput::Url, true)
                 .await
                 .unwrap();
-            remote.push(backend.human(command, &value).await);
+            remote.push(value.human(command));
         }
 
         let conn = fixture.db.read().unwrap();
@@ -2562,7 +2433,7 @@ mod tests {
             render::folder_list(&queries::list_folders(&conn, project_id).unwrap(), "TST"),
         ];
 
-        // `Command` is not `Debug`, so name the cases for the failure message.
+        // `DataCommand` is not `Debug`, so name the cases for the failure message.
         let names = [
             "project list",
             "project get",
@@ -2598,7 +2469,7 @@ mod tests {
         for content in ["oldest", "middle", "newest"] {
             backend
                 .execute(
-                    &Command::Comment {
+                    &DataCommand::Comment {
                         action: CommentAction::Add {
                             identifier: issue.clone(),
                             content: content.into(),
@@ -2606,12 +2477,13 @@ mod tests {
                         },
                     },
                     IssueLinkOutput::Url,
+                    true,
                 )
                 .await
                 .unwrap();
         }
 
-        let command = Command::Comment {
+        let command = DataCommand::Comment {
             action: CommentAction::List {
                 identifier: issue.clone(),
                 limit: 2,
@@ -2620,16 +2492,16 @@ mod tests {
             },
         };
         let value = backend
-            .execute(&command, IssueLinkOutput::Url)
+            .execute(&command, IssueLinkOutput::Url, true)
             .await
             .unwrap();
         // JSON output stays the plain comment array the server sent.
-        let rows = value.as_array().expect("a comment array");
+        let rows = value.value.as_array().expect("a comment array");
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0]["content"], "newest");
         assert_eq!(rows[1]["content"], "middle");
 
-        let human = backend.human(&command, &value).await;
+        let human = value.human(&command);
         assert!(human.starts_with("2 comment(s) on "), "got: {human}");
         assert!(!human.contains("oldest"), "got: {human}");
         assert!(
@@ -2638,7 +2510,7 @@ mod tests {
         );
 
         // Asking for that next page gets the remainder, with no hint past it.
-        let command = Command::Comment {
+        let command = DataCommand::Comment {
             action: CommentAction::List {
                 identifier: issue.clone(),
                 limit: 2,
@@ -2647,15 +2519,15 @@ mod tests {
             },
         };
         let value = backend
-            .execute(&command, IssueLinkOutput::Url)
+            .execute(&command, IssueLinkOutput::Url, true)
             .await
             .unwrap();
-        let human = backend.human(&command, &value).await;
+        let human = value.human(&command);
         assert!(human.contains("oldest"), "got: {human}");
         assert!(!human.contains("More comments available"), "got: {human}");
 
         // An explicit asc reaches the server intact and flips the page.
-        let command = Command::Comment {
+        let command = DataCommand::Comment {
             action: CommentAction::List {
                 identifier: issue,
                 limit: 1,
@@ -2664,10 +2536,10 @@ mod tests {
             },
         };
         let value = backend
-            .execute(&command, IssueLinkOutput::Url)
+            .execute(&command, IssueLinkOutput::Url, true)
             .await
             .unwrap();
-        assert_eq!(value.as_array().unwrap()[0]["content"], "oldest");
+        assert_eq!(value.value.as_array().unwrap()[0]["content"], "oldest");
 
         fixture.server.abort();
     }
@@ -2718,7 +2590,7 @@ mod tests {
     async fn a_failed_probe_reports_an_unknown_continuation() {
         let (url, server) = spawn_server(comment_probe_failure_router()).await;
         let backend = HttpBackend::new(&url, None).unwrap();
-        let command = Command::Comment {
+        let command = DataCommand::Comment {
             action: CommentAction::List {
                 identifier: "TST-1".into(),
                 limit: 1,
@@ -2730,14 +2602,14 @@ mod tests {
         // The command itself succeeds and the JSON is the page the server
         // sent, untouched by the probe's fate.
         let value = backend
-            .execute(&command, IssueLinkOutput::Url)
+            .execute(&command, IssueLinkOutput::Url, true)
             .await
             .expect("a failed probe must not fail the command");
-        let rows = value.as_array().expect("a comment array");
+        let rows = value.value.as_array().expect("a comment array");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["content"], "only row of a full page");
 
-        let human = backend.human(&command, &value).await;
+        let human = value.human(&command);
         assert!(
             human.contains(
                 "Could not check whether more comments exist. \
@@ -2777,23 +2649,24 @@ mod tests {
 
         let deleted = backend
             .execute(
-                &Command::Label {
+                &DataCommand::Label {
                     action: LabelAction::Delete {
                         project: "TST".into(),
                         name: "chore".into(),
                     },
                 },
                 IssueLinkOutput::Url,
+                true,
             )
             .await
             .unwrap();
 
         // The SQL backend prints exactly `render::Deleted::named(name)`.
         assert_eq!(
-            deleted,
+            deleted.value,
             serde_json::to_value(render::Deleted::named("chore")).unwrap()
         );
-        assert_eq!(deleted, json!({"deleted": true, "name": "chore"}));
+        assert_eq!(deleted.value, json!({"deleted": true, "name": "chore"}));
         fixture.server.abort();
     }
 
@@ -2810,13 +2683,14 @@ mod tests {
 
         let output = backend
             .execute(
-                &Command::Export {
+                &DataCommand::Export {
                     action: ExportAction::Issue {
                         identifier: "LIF-1".into(),
                         output: PathBuf::from(&output_dir),
                     },
                 },
                 IssueLinkOutput::Url,
+                true,
             )
             .await
             .unwrap();
@@ -2826,7 +2700,7 @@ mod tests {
             "export contents"
         );
         assert_eq!(
-            output,
+            output.value,
             json!([output_dir.join("report.txt").display().to_string()])
         );
         server.abort();
@@ -2839,18 +2713,19 @@ mod tests {
 
         let page = backend
             .execute(
-                &Command::Page {
+                &DataCommand::Page {
                     action: PageAction::Get {
                         identifier: fixture.project_page_identifier,
                     },
                 },
                 IssueLinkOutput::Url,
+                true,
             )
             .await
             .unwrap();
 
-        assert_eq!(page["title"], "Project page");
-        assert_eq!(page["identifier"], "TST-DOC-1");
+        assert_eq!(page.value["title"], "Project page");
+        assert_eq!(page.value["identifier"], "TST-DOC-1");
         fixture.server.abort();
     }
 
@@ -2861,18 +2736,19 @@ mod tests {
 
         let page = backend
             .execute(
-                &Command::Page {
+                &DataCommand::Page {
                     action: PageAction::Get {
                         identifier: fixture.workspace_page_identifier,
                     },
                 },
                 IssueLinkOutput::Url,
+                true,
             )
             .await
             .unwrap();
 
-        assert_eq!(page["title"], "Workspace page");
-        assert_eq!(page["identifier"], "DOC-1");
+        assert_eq!(page.value["title"], "Workspace page");
+        assert_eq!(page.value["identifier"], "DOC-1");
         fixture.server.abort();
     }
 
@@ -2883,18 +2759,19 @@ mod tests {
 
         let issue = backend
             .execute(
-                &Command::Issue {
+                &DataCommand::Issue {
                     action: IssueAction::Get {
                         identifier: fixture.issue_identifier,
                     },
                 },
                 IssueLinkOutput::Url,
+                true,
             )
             .await
             .unwrap();
 
-        assert_eq!(issue["title"], "Test issue");
-        assert_eq!(issue["identifier"], "TST-1");
+        assert_eq!(issue.value["title"], "Test issue");
+        assert_eq!(issue.value["identifier"], "TST-1");
         fixture.server.abort();
     }
 
@@ -2905,12 +2782,13 @@ mod tests {
 
         let error = backend
             .execute(
-                &Command::Page {
+                &DataCommand::Page {
                     action: PageAction::Get {
                         identifier: "TST-DOC-\u{1b}[31m".into(),
                     },
                 },
                 IssueLinkOutput::Url,
+                true,
             )
             .await
             .unwrap_err();
@@ -3341,26 +3219,6 @@ mod tests {
         assert_eq!(payload["labels"], json!(["ops", "ship"]));
     }
 
-    #[tokio::test]
-    async fn rejects_commands_outside_http_data_scope() {
-        let backend = HttpBackend::new("https://tracker.invalid", None).unwrap();
-        let error = backend
-            .execute(
-                &Command::Start {
-                    port: None,
-                    host: None,
-                    init_if_missing: false,
-                },
-                IssueLinkOutput::Url,
-            )
-            .await
-            .unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "the HTTP backend does not support this command yet"
-        );
-    }
-
     #[test]
     fn constructs_http_resource_results_with_links() {
         let context = IssueLinkContext::parse("https://tracker.example/lific").unwrap();
@@ -3530,7 +3388,7 @@ mod tests {
     async fn renders_issue_lists_identically_to_the_sql_backend() {
         let fixture = spawn_real_api_server().await;
         let backend = HttpBackend::new(&fixture.url, None).unwrap();
-        let command = Command::Issue {
+        let command = DataCommand::Issue {
             action: IssueAction::List {
                 project: "TST".into(),
                 status: None,
@@ -3581,10 +3439,10 @@ mod tests {
             .unwrap();
 
         let value = backend
-            .execute(&command, IssueLinkOutput::Url)
+            .execute(&command, IssueLinkOutput::Url, true)
             .await
             .unwrap();
-        let remote = backend.human(&command, &value).await;
+        let remote = value.human(&command);
 
         let pool = crate::db::open_memory().expect("test db");
         {
@@ -3667,18 +3525,12 @@ mod tests {
     /// A server that answers with a shape this binary does not know (an older
     /// or newer release) still prints its payload instead of failing at the
     /// last step.
-    #[tokio::test]
-    async fn falls_back_to_json_for_unrecognized_responses() {
-        let backend = HttpBackend::new("https://tracker.invalid", None).unwrap();
-
-        let rendered = backend
-            .human(
-                &Command::Project {
-                    action: ProjectAction::List,
-                },
-                &json!({"unexpected": true}),
-            )
-            .await;
+    #[test]
+    fn falls_back_to_json_for_unrecognized_responses() {
+        let result = super::CommandOutput::new(json!({"unexpected": true}));
+        let rendered = result.human(&DataCommand::Project {
+            action: ProjectAction::List,
+        });
 
         assert_eq!(rendered, "{\n  \"unexpected\": true\n}\n");
     }

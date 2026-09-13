@@ -4,6 +4,7 @@ use crate::db::queries;
 use crate::error::LificError;
 use crate::links::IssueLinkContext;
 
+use super::output::CommandOutput;
 use super::render;
 use super::weblinks::{self, IssueLinkOutput, ResourceKind};
 use super::*;
@@ -62,7 +63,7 @@ fn require_operator(conn: &rusqlite::Connection) -> Result<CommentActor, LificEr
 }
 
 /// Run a CLI CRUD command against the database.
-/// Returns Ok(()) on success, printing output to stdout.
+/// Returns owned data and display metadata; the caller owns output.
 ///
 /// `links` is the web UI this instance is reachable at, from
 /// `server.public_url`. It is `None` when that is unset, and then JSON output
@@ -71,41 +72,33 @@ fn require_operator(conn: &rusqlite::Connection) -> Result<CommentActor, LificEr
 /// links that go nowhere.
 pub fn run(
     pool: &DbPool,
-    command: &Command,
+    command: &DataCommand,
     json: bool,
     links: Option<&IssueLinkContext>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<CommandOutput, Box<dyn std::error::Error>> {
     let out = Output { json, links };
     match command {
-        Command::Issue { action } => issue(pool, action, out),
-        Command::Project { action } => project(pool, action, out),
-        Command::Page { action } => page(pool, action, out),
-        Command::Export { action } => export(pool, action, json),
-        Command::Search {
+        DataCommand::Issue { action } => issue(pool, action, out),
+        DataCommand::Project { action } => project(pool, action, out),
+        DataCommand::Page { action } => page(pool, action, out),
+        DataCommand::Export { action } => export(pool, action),
+        DataCommand::Search {
             query,
             project,
             limit,
         } => search(pool, query, project.as_deref(), *limit, out),
-        Command::Comment { action } => comment(pool, action, out),
-        Command::Module { action } => module(pool, action, out),
-        Command::Label { action } => label(pool, action, json),
-        Command::Folder { action } => folder(pool, action, json),
-        Command::Bind { project, create } => Ok(super::bind::run_sql(
+        DataCommand::Comment { action } => comment(pool, action, out),
+        DataCommand::Module { action } => module(pool, action, out),
+        DataCommand::Label { action } => label(pool, action),
+        DataCommand::Folder { action } => folder(pool, action),
+        DataCommand::Bind { project, create } => Ok(CommandOutput::new(super::bind::run_sql(
             pool,
             project.as_deref(),
             *create,
-            json,
-        )?),
-        Command::GitHook { range, dry_run } => Ok(super::git_hook::run_sql(
-            pool,
-            range.as_deref(),
-            *dry_run,
-            json,
-        )?),
-        _ => unreachable!(
-            "non-CRUD commands are dispatched by main.rs to their own modules \
-             (cli::instance, cli::key, cli::user, cli::member, server::run, ...)"
-        ),
+        )?)),
+        DataCommand::GitHook { range, dry_run } => Ok(CommandOutput::new(
+            super::git_hook::run_sql(pool, range.as_deref(), *dry_run)?,
+        )),
     }
 }
 
@@ -122,16 +115,8 @@ struct Output<'a> {
 }
 
 impl Output<'_> {
-    /// Serialize, enrich, print. Split from the three `enrich_*` helpers so the
-    /// enrichment can be asserted against the HTTP backend's without capturing
-    /// stdout.
-    fn emit(self, value: serde_json::Value) {
-        println!("{}", serde_json::to_string_pretty(&value).unwrap());
-    }
-
-    /// Serialization of our own models cannot fail.
     fn value<T: serde::Serialize>(value: &T) -> serde_json::Value {
-        serde_json::to_value(value).unwrap()
+        serde_json::to_value(value).expect("model serialization")
     }
 
     fn enrich_resources(self, value: serde_json::Value, kind: ResourceKind) -> serde_json::Value {
@@ -141,8 +126,13 @@ impl Output<'_> {
         }
     }
 
-    fn json_resources<T: serde::Serialize>(self, value: &T, kind: ResourceKind) {
-        self.emit(self.enrich_resources(Self::value(value), kind));
+    fn resources<T: serde::Serialize>(self, value: &T, kind: ResourceKind) -> CommandOutput {
+        let value = Self::value(value);
+        CommandOutput::new(if self.json {
+            self.enrich_resources(value, kind)
+        } else {
+            value
+        })
     }
 
     fn enrich_comments(self, value: serde_json::Value, identifier: &str) -> serde_json::Value {
@@ -154,8 +144,13 @@ impl Output<'_> {
         }
     }
 
-    fn json_comments<T: serde::Serialize>(self, value: &T, identifier: &str) {
-        self.emit(self.enrich_comments(Self::value(value), identifier));
+    fn comments<T: serde::Serialize>(self, value: &T, identifier: &str) -> CommandOutput {
+        let value = Self::value(value);
+        CommandOutput::new(if self.json {
+            self.enrich_comments(value, identifier)
+        } else {
+            value
+        })
     }
 
     fn enrich_modules(self, value: serde_json::Value, project: &str) -> serde_json::Value {
@@ -167,16 +162,20 @@ impl Output<'_> {
         }
     }
 
-    fn json_modules<T: serde::Serialize>(self, value: &T, project: &str) {
-        self.emit(self.enrich_modules(Self::value(value), project));
+    fn modules<T: serde::Serialize>(self, value: &T, project: &str) -> CommandOutput {
+        let value = Self::value(value);
+        CommandOutput::new(if self.json {
+            self.enrich_modules(value, project)
+        } else {
+            value
+        })
     }
 }
 
 fn export(
     pool: &DbPool,
     action: &ExportAction,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<CommandOutput, Box<dyn std::error::Error>> {
     let conn = pool.read()?;
     let (bundle, output) = match action {
         ExportAction::Issue { identifier, output } => {
@@ -191,19 +190,10 @@ fn export(
     };
 
     let written = crate::export::write_bundle_to_directory(&bundle, output)?;
-    if json {
-        print_json(&written);
-    } else {
-        print!("{}", render::export_written(&written, output));
-    }
-    Ok(())
+    Ok(CommandOutput::from_value(&written)?)
 }
 
 // ── Helpers ──────────────────────────────────────────────────
-
-fn print_json<T: serde::Serialize>(val: &T) {
-    println!("{}", serde_json::to_string_pretty(val).unwrap());
-}
 
 fn page_folder_id(
     conn: &rusqlite::Connection,
@@ -223,8 +213,7 @@ fn issue(
     pool: &DbPool,
     action: &IssueAction,
     out: Output<'_>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let json = out.json;
+) -> Result<CommandOutput, Box<dyn std::error::Error>> {
     match action {
         IssueAction::List {
             project,
@@ -257,12 +246,17 @@ fn issue(
                 },
             )?;
 
-            if json {
-                out.json_resources(&issues, ResourceKind::Issue);
-            } else {
-                let module_name = |id: i64| queries::get_module_name(&conn, id).ok();
-                print!("{}", render::issue_list(&issues, &module_name));
+            let mut result = out.resources(&issues, ResourceKind::Issue);
+            if !out.json {
+                for issue in &issues {
+                    if let Some(id) = issue.module_id
+                        && let Ok(name) = queries::get_module_name(&conn, id)
+                    {
+                        result.module_names.insert(id, name);
+                    }
+                }
             }
+            Ok(result)
         }
 
         IssueAction::Get { identifier } => {
@@ -270,12 +264,17 @@ fn issue(
             let id = queries::resolve_identifier(&conn, identifier)?;
             let issue = queries::get_issue(&conn, id)?;
 
-            if json {
-                out.json_resources(&issue, ResourceKind::Issue);
-            } else {
-                let module_name = |id: i64| queries::get_module_name(&conn, id).ok();
-                print!("{}", render::issue_detail(&issue, &module_name));
+            let mut result = out.resources(&issue, ResourceKind::Issue);
+            if !out.json {
+                for issue in std::slice::from_ref(&issue) {
+                    if let Some(id) = issue.module_id
+                        && let Ok(name) = queries::get_module_name(&conn, id)
+                    {
+                        result.module_names.insert(id, name);
+                    }
+                }
             }
+            Ok(result)
         }
 
         IssueAction::Create {
@@ -317,11 +316,7 @@ fn issue(
             )?;
             drop(conn);
 
-            if json {
-                out.json_resources(&issue, ResourceKind::Issue);
-            } else {
-                print!("{}", render::issue_created(&issue));
-            }
+            Ok(out.resources(&issue, ResourceKind::Issue))
         }
 
         IssueAction::Update {
@@ -366,14 +361,9 @@ fn issue(
             )?;
             drop(conn);
 
-            if json {
-                out.json_resources(&issue, ResourceKind::Issue);
-            } else {
-                print!("{}", render::issue_updated(&issue));
-            }
+            Ok(out.resources(&issue, ResourceKind::Issue))
         }
     }
-    Ok(())
 }
 
 // ── Project ──────────────────────────────────────────────────
@@ -382,18 +372,13 @@ fn project(
     pool: &DbPool,
     action: &ProjectAction,
     out: Output<'_>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let json = out.json;
+) -> Result<CommandOutput, Box<dyn std::error::Error>> {
     match action {
         ProjectAction::List => {
             let conn = pool.read()?;
             let projects = queries::list_projects(&conn)?;
 
-            if json {
-                out.json_resources(&projects, ResourceKind::Project);
-            } else {
-                print!("{}", render::project_list(&projects));
-            }
+            Ok(out.resources(&projects, ResourceKind::Project))
         }
 
         ProjectAction::Get { identifier } => {
@@ -401,11 +386,7 @@ fn project(
             let id = queries::resolve_project_identifier(&conn, identifier)?;
             let project = queries::get_project(&conn, id)?;
 
-            if json {
-                out.json_resources(&project, ResourceKind::Project);
-            } else {
-                print!("{}", render::project_detail(&project));
-            }
+            Ok(out.resources(&project, ResourceKind::Project))
         }
 
         ProjectAction::Create {
@@ -436,11 +417,7 @@ fn project(
             )?;
             drop(conn);
 
-            if json {
-                out.json_resources(&project, ResourceKind::Project);
-            } else {
-                print!("{}", render::project_created(&project));
-            }
+            Ok(out.resources(&project, ResourceKind::Project))
         }
 
         ProjectAction::Update {
@@ -461,14 +438,9 @@ fn project(
             )?;
             drop(conn);
 
-            if json {
-                out.json_resources(&project, ResourceKind::Project);
-            } else {
-                print!("{}", render::project_updated(&project));
-            }
+            Ok(out.resources(&project, ResourceKind::Project))
         }
     }
-    Ok(())
 }
 
 // ── Page ─────────────────────────────────────────────────────
@@ -477,8 +449,7 @@ fn page(
     pool: &DbPool,
     action: &PageAction,
     out: Output<'_>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let json = out.json;
+) -> Result<CommandOutput, Box<dyn std::error::Error>> {
     match action {
         PageAction::List {
             project,
@@ -508,11 +479,7 @@ fn page(
                 None,
             )?;
 
-            if json {
-                out.json_resources(&pages, ResourceKind::Page);
-            } else {
-                print!("{}", render::page_list(&pages));
-            }
+            Ok(out.resources(&pages, ResourceKind::Page))
         }
 
         PageAction::Get { identifier } => {
@@ -520,11 +487,7 @@ fn page(
             let id = queries::resolve_page_identifier(&conn, identifier)?;
             let page = queries::get_page(&conn, id)?;
 
-            if json {
-                out.json_resources(&page, ResourceKind::Page);
-            } else {
-                print!("{}", render::page_detail(&page));
-            }
+            Ok(out.resources(&page, ResourceKind::Page))
         }
 
         PageAction::Create {
@@ -564,11 +527,7 @@ fn page(
             )?;
             drop(conn);
 
-            if json {
-                out.json_resources(&page, ResourceKind::Page);
-            } else {
-                print!("{}", render::page_created(&page));
-            }
+            Ok(out.resources(&page, ResourceKind::Page))
         }
 
         PageAction::Update {
@@ -604,14 +563,9 @@ fn page(
             )?;
             drop(conn);
 
-            if json {
-                out.json_resources(&page, ResourceKind::Page);
-            } else {
-                print!("{}", render::page_updated(&page));
-            }
+            Ok(out.resources(&page, ResourceKind::Page))
         }
     }
-    Ok(())
 }
 
 // ── Search ───────────────────────────────────────────────────
@@ -622,8 +576,7 @@ fn search(
     project: Option<&str>,
     limit: Option<i64>,
     out: Output<'_>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let json = out.json;
+) -> Result<CommandOutput, Box<dyn std::error::Error>> {
     let conn = pool.read()?;
     let project_id = project
         .map(|ident| queries::resolve_project_identifier(&conn, ident))
@@ -639,12 +592,7 @@ fn search(
         },
     )?;
 
-    if json {
-        out.json_resources(&results, ResourceKind::Search);
-    } else {
-        print!("{}", render::search_results(&results));
-    }
-    Ok(())
+    Ok(out.resources(&results, ResourceKind::Search))
 }
 
 // ── Comment ──────────────────────────────────────────────────
@@ -684,8 +632,7 @@ fn comment(
     pool: &DbPool,
     action: &CommentAction,
     out: Output<'_>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let json = out.json;
+) -> Result<CommandOutput, Box<dyn std::error::Error>> {
     match action {
         CommentAction::List {
             identifier,
@@ -697,14 +644,9 @@ fn comment(
             let id = queries::resolve_identifier(&conn, identifier)?;
             let (comments, continuation) = comment_page(&conn, id, *limit, *offset, order)?;
 
-            if json {
-                out.json_comments(&comments, identifier);
-            } else {
-                print!(
-                    "{}",
-                    render::comment_list(&comments, identifier, continuation)
-                );
-            }
+            let mut result = out.comments(&comments, identifier);
+            result.continuation = Some(continuation);
+            Ok(result)
         }
 
         CommentAction::Add {
@@ -751,14 +693,9 @@ fn comment(
             )?;
             drop(conn);
 
-            if json {
-                out.json_comments(&comment, identifier);
-            } else {
-                print!("{}", render::comment_added(&comment, identifier));
-            }
+            Ok(out.comments(&comment, identifier))
         }
     }
-    Ok(())
 }
 
 // ── Module ───────────────────────────────────────────────────
@@ -767,19 +704,14 @@ fn module(
     pool: &DbPool,
     action: &ModuleAction,
     out: Output<'_>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let json = out.json;
+) -> Result<CommandOutput, Box<dyn std::error::Error>> {
     match action {
         ModuleAction::List { project } => {
             let conn = pool.read()?;
             let project_id = queries::resolve_project_identifier(&conn, project)?;
             let modules = queries::list_modules(&conn, project_id)?;
 
-            if json {
-                out.json_modules(&modules, project);
-            } else {
-                print!("{}", render::module_list(&modules, project));
-            }
+            Ok(out.modules(&modules, project))
         }
 
         ModuleAction::Create {
@@ -802,11 +734,7 @@ fn module(
             )?;
             drop(conn);
 
-            if json {
-                out.json_modules(&module, project);
-            } else {
-                print!("{}", render::module_created(&module, project));
-            }
+            Ok(out.modules(&module, project))
         }
 
         ModuleAction::Update {
@@ -831,11 +759,7 @@ fn module(
             )?;
             drop(conn);
 
-            if json {
-                out.json_modules(&module, project);
-            } else {
-                print!("{}", render::module_updated(&module));
-            }
+            Ok(out.modules(&module, project))
         }
 
         ModuleAction::Delete { project, name } => {
@@ -845,34 +769,21 @@ fn module(
             queries::delete_module(&conn, module_id)?;
             drop(conn);
 
-            if json {
-                print_json(&render::Deleted::named(name));
-            } else {
-                print!("{}", render::module_deleted(name));
-            }
+            Ok(CommandOutput::from_value(&render::Deleted::named(name))?)
         }
     }
-    Ok(())
 }
 
 // ── Label ────────────────────────────────────────────────────
 
-fn label(
-    pool: &DbPool,
-    action: &LabelAction,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn label(pool: &DbPool, action: &LabelAction) -> Result<CommandOutput, Box<dyn std::error::Error>> {
     match action {
         LabelAction::List { project } => {
             let conn = pool.read()?;
             let project_id = queries::resolve_project_identifier(&conn, project)?;
             let labels = queries::list_labels(&conn, project_id)?;
 
-            if json {
-                print_json(&labels);
-            } else {
-                print!("{}", render::label_list(&labels, project));
-            }
+            Ok(CommandOutput::from_value(&labels)?)
         }
 
         LabelAction::Create {
@@ -892,11 +803,7 @@ fn label(
             )?;
             drop(conn);
 
-            if json {
-                print_json(&label);
-            } else {
-                print!("{}", render::label_created(&label));
-            }
+            Ok(CommandOutput::from_value(&label)?)
         }
 
         LabelAction::Update {
@@ -918,11 +825,7 @@ fn label(
             )?;
             drop(conn);
 
-            if json {
-                print_json(&label);
-            } else {
-                print!("{}", render::label_updated(&label));
-            }
+            Ok(CommandOutput::from_value(&label)?)
         }
 
         LabelAction::Delete { project, name } => {
@@ -932,14 +835,9 @@ fn label(
             queries::delete_label(&conn, label_id)?;
             drop(conn);
 
-            if json {
-                print_json(&render::Deleted::named(name));
-            } else {
-                print!("{}", render::label_deleted(name));
-            }
+            Ok(CommandOutput::from_value(&render::Deleted::named(name))?)
         }
     }
-    Ok(())
 }
 
 // ── Folder ───────────────────────────────────────────────────
@@ -947,19 +845,14 @@ fn label(
 fn folder(
     pool: &DbPool,
     action: &FolderAction,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<CommandOutput, Box<dyn std::error::Error>> {
     match action {
         FolderAction::List { project } => {
             let conn = pool.read()?;
             let project_id = queries::resolve_project_identifier(&conn, project)?;
             let folders = queries::list_folders(&conn, project_id)?;
 
-            if json {
-                print_json(&folders);
-            } else {
-                print!("{}", render::folder_list(&folders, project));
-            }
+            Ok(CommandOutput::from_value(&folders)?)
         }
 
         FolderAction::Create { project, name } => {
@@ -975,11 +868,7 @@ fn folder(
             )?;
             drop(conn);
 
-            if json {
-                print_json(&folder);
-            } else {
-                print!("{}", render::folder_created(&folder));
-            }
+            Ok(CommandOutput::from_value(&folder)?)
         }
 
         FolderAction::Update {
@@ -999,11 +888,7 @@ fn folder(
             )?;
             drop(conn);
 
-            if json {
-                print_json(&folder);
-            } else {
-                print!("{}", render::folder_updated(name, &folder));
-            }
+            Ok(CommandOutput::from_value(&folder)?)
         }
 
         FolderAction::Delete { project, name } => {
@@ -1013,14 +898,9 @@ fn folder(
             queries::delete_folder(&conn, folder_id)?;
             drop(conn);
 
-            if json {
-                print_json(&render::Deleted::named(name));
-            } else {
-                print!("{}", render::folder_deleted(name));
-            }
+            Ok(CommandOutput::from_value(&render::Deleted::named(name))?)
         }
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -1080,7 +960,7 @@ mod tests {
     #[test]
     fn exec_project_create_and_list() {
         let pool = test_pool();
-        let cmd = Command::Project {
+        let cmd = DataCommand::Project {
             action: ProjectAction::Create {
                 name: "Test".into(),
                 identifier: "TST".into(),
@@ -1100,7 +980,7 @@ mod tests {
     fn exec_project_list_json() {
         let pool = test_pool();
         seed_project(&pool, "LIF");
-        let cmd = Command::Project {
+        let cmd = DataCommand::Project {
             action: ProjectAction::List,
         };
         // Should not panic
@@ -1112,7 +992,7 @@ mod tests {
         let pool = test_pool();
         seed_project(&pool, "TST");
 
-        let cmd = Command::Issue {
+        let cmd = DataCommand::Issue {
             action: IssueAction::Create {
                 project: "TST".into(),
                 title: "Fix the bug".into(),
@@ -1126,7 +1006,7 @@ mod tests {
         run(&pool, &cmd, false, None).unwrap();
 
         // Get it
-        let cmd = Command::Issue {
+        let cmd = DataCommand::Issue {
             action: IssueAction::Get {
                 identifier: "TST-1".into(),
             },
@@ -1140,7 +1020,7 @@ mod tests {
         seed_project(&pool, "TST");
         seed_issue(&pool, "TST", "Original");
 
-        let cmd = Command::Issue {
+        let cmd = DataCommand::Issue {
             action: IssueAction::Update {
                 identifier: "TST-1".into(),
                 title: Some("Updated".into()),
@@ -1191,7 +1071,7 @@ mod tests {
             .unwrap();
         }
 
-        let cmd = Command::Issue {
+        let cmd = DataCommand::Issue {
             action: IssueAction::List {
                 project: "TST".into(),
                 status: Some("active".into()),
@@ -1211,7 +1091,7 @@ mod tests {
         seed_project(&pool, "TST");
         seed_issue(&pool, "TST", "Implement authentication");
 
-        let cmd = Command::Search {
+        let cmd = DataCommand::Search {
             query: "auth".into(),
             project: Some("TST".into()),
             limit: None,
@@ -1224,7 +1104,7 @@ mod tests {
         let pool = test_pool();
         seed_project(&pool, "TST");
 
-        let cmd = Command::Page {
+        let cmd = DataCommand::Page {
             action: PageAction::Create {
                 title: "Design Doc".into(),
                 project: Some("TST".into()),
@@ -1235,7 +1115,7 @@ mod tests {
         };
         run(&pool, &cmd, false, None).unwrap();
 
-        let cmd = Command::Page {
+        let cmd = DataCommand::Page {
             action: PageAction::Get {
                 identifier: "TST-DOC-1".into(),
             },
@@ -1248,7 +1128,7 @@ mod tests {
         let pool = test_pool();
         run(
             &pool,
-            &Command::Page {
+            &DataCommand::Page {
                 action: PageAction::Create {
                     title: "Workspace doc".into(),
                     project: None,
@@ -1264,7 +1144,7 @@ mod tests {
 
         let error = run(
             &pool,
-            &Command::Page {
+            &DataCommand::Page {
                 action: PageAction::Update {
                     identifier: "DOC-1".into(),
                     title: None,
@@ -1292,7 +1172,7 @@ mod tests {
         // its own output directory.
         let tmp = guard.path().join("export");
 
-        let cmd = Command::Export {
+        let cmd = DataCommand::Export {
             action: ExportAction::Project {
                 project: "TST".into(),
                 output: tmp.clone(),
@@ -1313,7 +1193,7 @@ mod tests {
         seed_issue(&pool, "TST", "Test issue");
         seed_user(&pool);
 
-        let cmd = Command::Comment {
+        let cmd = DataCommand::Comment {
             action: CommentAction::Add {
                 identifier: "TST-1".into(),
                 content: "Looking into this".into(),
@@ -1322,7 +1202,7 @@ mod tests {
         };
         run(&pool, &cmd, false, None).unwrap();
 
-        let cmd = Command::Comment {
+        let cmd = DataCommand::Comment {
             action: CommentAction::List {
                 identifier: "TST-1".into(),
                 limit: queries::DEFAULT_PAGE_LIMIT,
@@ -1472,7 +1352,7 @@ mod tests {
         seed_project(&pool, "TST");
 
         // Create
-        let cmd = Command::Module {
+        let cmd = DataCommand::Module {
             action: ModuleAction::Create {
                 project: "TST".into(),
                 name: "Core".into(),
@@ -1483,7 +1363,7 @@ mod tests {
         run(&pool, &cmd, false, None).unwrap();
 
         // List
-        let cmd = Command::Module {
+        let cmd = DataCommand::Module {
             action: ModuleAction::List {
                 project: "TST".into(),
             },
@@ -1491,7 +1371,7 @@ mod tests {
         run(&pool, &cmd, false, None).unwrap();
 
         // Update
-        let cmd = Command::Module {
+        let cmd = DataCommand::Module {
             action: ModuleAction::Update {
                 project: "TST".into(),
                 name: "Core".into(),
@@ -1503,7 +1383,7 @@ mod tests {
         run(&pool, &cmd, false, None).unwrap();
 
         // Delete
-        let cmd = Command::Module {
+        let cmd = DataCommand::Module {
             action: ModuleAction::Delete {
                 project: "TST".into(),
                 name: "Core DB".into(),
@@ -1518,7 +1398,7 @@ mod tests {
         seed_project(&pool, "TST");
 
         // Create
-        let cmd = Command::Label {
+        let cmd = DataCommand::Label {
             action: LabelAction::Create {
                 project: "TST".into(),
                 name: "bug".into(),
@@ -1528,7 +1408,7 @@ mod tests {
         run(&pool, &cmd, false, None).unwrap();
 
         // List
-        let cmd = Command::Label {
+        let cmd = DataCommand::Label {
             action: LabelAction::List {
                 project: "TST".into(),
             },
@@ -1536,7 +1416,7 @@ mod tests {
         run(&pool, &cmd, false, None).unwrap();
 
         // Update
-        let cmd = Command::Label {
+        let cmd = DataCommand::Label {
             action: LabelAction::Update {
                 project: "TST".into(),
                 name: "bug".into(),
@@ -1547,7 +1427,7 @@ mod tests {
         run(&pool, &cmd, false, None).unwrap();
 
         // Delete
-        let cmd = Command::Label {
+        let cmd = DataCommand::Label {
             action: LabelAction::Delete {
                 project: "TST".into(),
                 name: "defect".into(),
@@ -1562,7 +1442,7 @@ mod tests {
         seed_project(&pool, "TST");
 
         // Create
-        let cmd = Command::Folder {
+        let cmd = DataCommand::Folder {
             action: FolderAction::Create {
                 project: "TST".into(),
                 name: "Docs".into(),
@@ -1571,7 +1451,7 @@ mod tests {
         run(&pool, &cmd, false, None).unwrap();
 
         // List
-        let cmd = Command::Folder {
+        let cmd = DataCommand::Folder {
             action: FolderAction::List {
                 project: "TST".into(),
             },
@@ -1579,7 +1459,7 @@ mod tests {
         run(&pool, &cmd, false, None).unwrap();
 
         // Update
-        let cmd = Command::Folder {
+        let cmd = DataCommand::Folder {
             action: FolderAction::Update {
                 project: "TST".into(),
                 name: "Docs".into(),
@@ -1589,7 +1469,7 @@ mod tests {
         run(&pool, &cmd, false, None).unwrap();
 
         // Delete
-        let cmd = Command::Folder {
+        let cmd = DataCommand::Folder {
             action: FolderAction::Delete {
                 project: "TST".into(),
                 name: "Documentation".into(),
@@ -1627,7 +1507,7 @@ mod tests {
             .unwrap();
         }
 
-        let cmd = Command::Issue {
+        let cmd = DataCommand::Issue {
             action: IssueAction::Create {
                 project: "TST".into(),
                 title: "Labeled issue".into(),
@@ -1654,13 +1534,19 @@ mod tests {
         seed_project(&pool, "TST");
         seed_issue(&pool, "TST", "JSON test");
 
-        // This should produce valid JSON — we just verify no panic
-        let cmd = Command::Issue {
+        let cmd = DataCommand::Issue {
             action: IssueAction::Get {
                 identifier: "TST-1".into(),
             },
         };
-        run(&pool, &cmd, true, None).unwrap();
+        let output = run(&pool, &cmd, true, None).unwrap();
+        drop(pool);
+        let mut bytes = Vec::new();
+        output.write(&cmd, true, &mut bytes).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(value["identifier"], "TST-1");
+        assert_eq!(value["title"], "JSON test");
+        assert!(output.human(&cmd).contains("JSON test"));
     }
 
     #[test]
@@ -1668,7 +1554,7 @@ mod tests {
         let pool = test_pool();
         seed_project(&pool, "TST");
 
-        let cmd = Command::Project {
+        let cmd = DataCommand::Project {
             action: ProjectAction::Get {
                 identifier: "TST".into(),
             },
@@ -1680,7 +1566,7 @@ mod tests {
     fn exec_not_found_errors() {
         let pool = test_pool();
 
-        let cmd = Command::Issue {
+        let cmd = DataCommand::Issue {
             action: IssueAction::Get {
                 identifier: "NOPE-1".into(),
             },
@@ -1731,7 +1617,7 @@ mod tests {
 
         run(
             &pool,
-            &Command::Issue {
+            &DataCommand::Issue {
                 action: IssueAction::Create {
                     project: "TST".into(),
                     title: "With an attachment".into(),
@@ -1761,7 +1647,7 @@ mod tests {
         // new one: re-scan on save, same as REST and MCP.
         run(
             &pool,
-            &Command::Issue {
+            &DataCommand::Issue {
                 action: IssueAction::Update {
                     identifier: "TST-1".into(),
                     title: None,
@@ -1785,7 +1671,7 @@ mod tests {
         // rather than reconciling against an empty body.
         run(
             &pool,
-            &Command::Issue {
+            &DataCommand::Issue {
                 action: IssueAction::Update {
                     identifier: "TST-1".into(),
                     title: Some("Renamed".into()),
@@ -1814,7 +1700,7 @@ mod tests {
 
         run(
             &pool,
-            &Command::Page {
+            &DataCommand::Page {
                 action: PageAction::Create {
                     title: "Design".into(),
                     project: Some("TST".into()),
@@ -1839,7 +1725,7 @@ mod tests {
 
         run(
             &pool,
-            &Command::Page {
+            &DataCommand::Page {
                 action: PageAction::Update {
                     identifier: "TST-DOC-1".into(),
                     title: None,
@@ -1872,7 +1758,7 @@ mod tests {
 
         run(
             &pool,
-            &Command::Comment {
+            &DataCommand::Comment {
                 action: CommentAction::Add {
                     identifier: "TST-1".into(),
                     content: format!("@testuser look at {}", body(shot)),
@@ -1955,7 +1841,7 @@ mod tests {
         // The same body through the CLI: linked.
         run(
             &pool,
-            &Command::Issue {
+            &DataCommand::Issue {
                 action: IssueAction::Create {
                     project: "TST".into(),
                     title: "operator".into(),
@@ -1991,7 +1877,7 @@ mod tests {
 
         run(
             &pool,
-            &Command::Project {
+            &DataCommand::Project {
                 action: ProjectAction::Create {
                     name: "Test".into(),
                     identifier: "TST".into(),
@@ -2106,7 +1992,7 @@ mod tests {
 
         run(
             &pool,
-            &Command::Project {
+            &DataCommand::Project {
                 action: ProjectAction::Create {
                     name: "Test".into(),
                     identifier: "TST".into(),
@@ -2142,7 +2028,7 @@ mod tests {
 
         let error = run(
             &pool,
-            &Command::Comment {
+            &DataCommand::Comment {
                 action: CommentAction::Add {
                     identifier: "TST-1".into(),
                     content: "orphan".into(),

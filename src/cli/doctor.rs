@@ -167,7 +167,7 @@ fn connect_host(host: &str) -> &str {
 fn connect_base(cfg: &Config) -> String {
     format!(
         "http://{}:{}",
-        crate::display_host(connect_host(&cfg.server.host)),
+        crate::config::display_host(connect_host(&cfg.server.host)),
         cfg.server.port
     )
 }

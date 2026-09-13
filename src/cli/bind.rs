@@ -207,23 +207,9 @@ pub fn conflict_json(projects: Vec<Value>, aliases: &[Alias]) -> Value {
 // ── SQL backend ──────────────────────────────────────────────
 
 /// Run `lific bind` against the local database.
-pub fn run_sql(
-    pool: &DbPool,
-    project: Option<&str>,
-    create: bool,
-    json: bool,
-) -> Result<(), LificError> {
+pub fn run_sql(pool: &DbPool, project: Option<&str>, create: bool) -> Result<Value, LificError> {
     let aliases = current_repo_aliases()?;
-    let value = resolve_or_bind(pool, &aliases, project, create)?;
-    if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string())
-        );
-    } else {
-        print!("{}", human(&value));
-    }
-    Ok(())
+    resolve_or_bind(pool, &aliases, project, create)
 }
 
 /// The whole SQL-side decision, with the identity injected.

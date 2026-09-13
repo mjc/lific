@@ -129,23 +129,9 @@ pub(crate) fn document(dry_run: bool, acted: Vec<String>, skipped: Vec<Value>) -
 // ── SQL backend ──────────────────────────────────────────────
 
 /// Run `lific git-hook` against the local database.
-pub fn run_sql(
-    pool: &DbPool,
-    range: Option<&str>,
-    dry_run: bool,
-    json: bool,
-) -> Result<(), LificError> {
+pub fn run_sql(pool: &DbPool, range: Option<&str>, dry_run: bool) -> Result<Value, LificError> {
     let messages = messages(range)?;
-    let value = close_referenced(pool, &messages, dry_run)?;
-    if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string())
-        );
-    } else {
-        print!("{}", human(&value));
-    }
-    Ok(())
+    close_referenced(pool, &messages, dry_run)
 }
 
 /// The whole SQL-side decision, with the messages injected — so it can be

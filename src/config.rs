@@ -1378,3 +1378,78 @@ mod instance_guard_tests {
         );
     }
 }
+
+/// Render a configured host for the authority half of a `host:port` URL.
+///
+/// `[server] host` is a bind address, so an IPv6 literal is written bare
+/// (`::1`, `::`, `fd00::5`). Dropped straight into a format string that also
+/// carries a port, that produces `http://::1:7777` — not a URL any client can
+/// parse, since the address's own colons swallow the port separator. RFC 3986
+/// requires IPv6 literals to be bracketed in an authority, so wrap them here.
+/// IPv4 addresses, hostnames, and already-bracketed input pass through
+/// untouched and borrow rather than allocate.
+pub(crate) fn display_host(host: &str) -> std::borrow::Cow<'_, str> {
+    if host.contains(':') && !host.starts_with('[') {
+        std::borrow::Cow::Owned(format!("[{host}]"))
+    } else {
+        std::borrow::Cow::Borrowed(host)
+    }
+}
+
+/// The locally dialable base URL for this instance (bind-any hosts map to
+/// loopback, same rule as the OAuth issuer derivation in `start`).
+pub(crate) fn local_url(cfg: &Config) -> String {
+    let host = match cfg.server.host.as_str() {
+        "0.0.0.0" | "::" | "[::]" => "127.0.0.1",
+        h => h,
+    };
+    format!("http://{}:{}", display_host(host), cfg.server.port)
+}
+
+#[cfg(test)]
+mod display_host_tests {
+    use super::{Config, display_host, local_url};
+
+    #[test]
+    fn leaves_ipv4_and_hostnames_untouched() {
+        assert_eq!(display_host("127.0.0.1"), "127.0.0.1");
+        assert_eq!(display_host("0.0.0.0"), "0.0.0.0");
+        assert_eq!(display_host("localhost"), "localhost");
+        assert_eq!(display_host("tracker.example"), "tracker.example");
+    }
+
+    #[test]
+    fn brackets_bare_ipv6_literals() {
+        assert_eq!(display_host("::1"), "[::1]");
+        assert_eq!(display_host("::"), "[::]");
+        assert_eq!(display_host("fd00::5"), "[fd00::5]");
+        assert_eq!(
+            display_host("2001:db8:85a3::8a2e:370:7334"),
+            "[2001:db8:85a3::8a2e:370:7334]"
+        );
+    }
+
+    #[test]
+    fn does_not_double_bracket_already_bracketed_hosts() {
+        assert_eq!(display_host("[::1]"), "[::1]");
+        assert_eq!(display_host("[::]"), "[::]");
+    }
+
+    #[test]
+    fn local_url_brackets_ipv6_loopback_host() {
+        let mut cfg = Config::default();
+        cfg.server.host = "::1".into();
+        cfg.server.port = 7777;
+
+        assert_eq!(local_url(&cfg), "http://[::1]:7777");
+    }
+
+    #[test]
+    fn local_url_maps_bind_any_ipv6_to_loopback() {
+        let mut cfg = Config::default();
+        cfg.server.host = "::".into();
+        cfg.server.port = 7777;
+
+        assert_eq!(local_url(&cfg), "http://127.0.0.1:7777");
+    }
+}
