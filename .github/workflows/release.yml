@@ -12,7 +12,7 @@ name: Release
 on:
   push:
     tags:
-      - 'v*.*.*'
+      - "v*.*.*"
 
 permissions:
   contents: write
@@ -28,7 +28,7 @@ jobs:
     outputs:
       version: ${{ steps.v.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Verify tag matches Cargo.toml version
         id: v
         run: |
@@ -80,26 +80,19 @@ jobs:
   test:
     needs: verify
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        shell: devenv shell -- bash -e {0}
     steps:
-      - uses: actions/checkout@v5
-      - uses: cachix/install-nix-action@v31
-      - uses: cachix/cachix-action@v16
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
+      - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
         with:
           name: devenv
       - name: Install devenv
         shell: bash
-        run: nix profile add nixpkgs#devenv
+        run: nix profile add "github:cachix/devenv/$(jq -r '.nodes.devenv.locked.rev' devenv.lock)#devenv"
       - name: Check formatting
-        shell: bash
         run: devenv build outputs.treefmtCheck
-      - name: Validate devenv and generated hooks
-        shell: bash
+      - name: Run the Devenv project test graph
         run: devenv test
-      - name: Run the complete check task
-        run: devenv tasks run lific:check
 
   build:
     needs: [verify, test]
@@ -115,6 +108,7 @@ jobs:
             os: ubuntu-latest
             name: lific-linux-aarch64
             cross: true
+            file_pattern: "ARM aarch64"
             profile: release-linux
             devenv: true
           - target: x86_64-apple-darwin
@@ -127,55 +121,32 @@ jobs:
             name: lific-macos-aarch64
             profile: release-darwin
             devenv: true
-          # MSVC rather than GNU: it is rustup's default host toolchain on
-          # Windows and carries no mingw runtime dependency. `cross` cannot
-          # target MSVC, so this builds natively on a Windows runner. `ext`
-          # is empty on every other entry and renders as nothing.
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
+          - target: x86_64-pc-windows-gnu
+            os: ubuntu-latest
             name: lific-windows-x86_64
             ext: .exe
-            devenv: false
+            cross: true
+            file_pattern: "PE32[+]"
+            profile: release-windows
+            devenv: true
 
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: cachix/install-nix-action@v31
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
         if: matrix.devenv
-      - uses: cachix/cachix-action@v16
+      - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
         if: matrix.devenv
         with:
           name: devenv
       - name: Install devenv
         if: matrix.devenv
         shell: bash
-        run: nix profile add nixpkgs#devenv
-      - uses: dtolnay/rust-toolchain@stable
-        if: ${{ !matrix.devenv }}
-        with:
-          targets: ${{ matrix.target }}
-
-      # Build the embedded web UI before cargo build, so rust-embed
-      # picks it up and bakes it into the release binary. Without this
-      # the binary would ship without a web frontend.
-      - uses: oven-sh/setup-bun@v2
-        if: ${{ !matrix.devenv }}
-      - name: Build web frontend on Windows
-        if: ${{ !matrix.devenv }}
-        run: |
-          cd web
-          bun install --frozen-lockfile
-          bun run build
-        shell: bash
-
+        run: nix profile add "github:cachix/devenv/$(jq -r '.nodes.devenv.locked.rev' devenv.lock)#devenv"
       - name: Build release with devenv
         if: matrix.devenv
         shell: bash
-        run: devenv --profile "${{ matrix.profile }}" shell -- devenv tasks run "lific:release:${{ matrix.target }}"
-
-      - name: Build Windows release
-        if: ${{ !matrix.devenv }}
-        run: cargo build --locked --profile release-dist --target ${{ matrix.target }}
+        run: devenv --profile "${{ matrix.profile }}" tasks run "lific:release:${{ matrix.target }}"
 
       - name: Rename binary
         run: cp target/${{ matrix.target }}/release-dist/lific${{ matrix.ext }} ${{ matrix.name }}${{ matrix.ext }}
@@ -189,7 +160,7 @@ jobs:
         if: matrix.cross
         run: |
           file ${{ matrix.name }}
-          file ${{ matrix.name }} | grep -q 'ARM aarch64'
+          file ${{ matrix.name }} | grep -q '${{ matrix.file_pattern }}'
         shell: bash
 
       - name: Smoke-test native artifact and embedded web UI
@@ -198,7 +169,7 @@ jobs:
         shell: bash
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ matrix.name }}
           path: ${{ matrix.name }}${{ matrix.ext }}
@@ -207,10 +178,10 @@ jobs:
     needs: [verify, build]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: binaries
           merge-multiple: true
@@ -268,18 +239,15 @@ jobs:
   publish:
     needs: [verify, release]
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        shell: devenv shell -- bash -e {0}
     steps:
-      - uses: actions/checkout@v5
-      - uses: cachix/install-nix-action@v31
-      - uses: cachix/cachix-action@v16
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
+      - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
         with:
           name: devenv
       - name: Install devenv
         shell: bash
-        run: nix profile add nixpkgs#devenv
+        run: nix profile add "github:cachix/devenv/$(jq -r '.nodes.devenv.locked.rev' devenv.lock)#devenv"
       # Build the web UI before publishing so the source tarball that
       # goes to crates.io contains a working dist/, not just a stub.
       # `cargo install lific` builds from source — without this, every
@@ -322,7 +290,7 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     permissions:
-      id-token: write   # required for `mcp-publisher login github-oidc`
+      id-token: write # required for `mcp-publisher login github-oidc`
       contents: read
     env:
       # Pin the publisher CLI + its linux/amd64 checksum rather than tracking
@@ -333,7 +301,7 @@ jobs:
       MCP_PUBLISHER_VERSION: v1.7.9
       MCP_PUBLISHER_SHA256: ab128162b0616090b47cf245afe0a23f3ef08936fdce19074f5ba0a4469281ac
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Install mcp-publisher (pinned + checksum-verified)
         run: |

@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 // Real Svelte components and browser focus/default actions. No backend or persistent server.
+// Run inside `devenv --profile e2e shell`: bun run context-menu.
 import { strict as assert } from "node:assert";
 import { resolve } from "node:path";
 import { chromium } from "playwright";
