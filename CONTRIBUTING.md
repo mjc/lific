@@ -13,28 +13,92 @@ If you want to discuss an idea before writing code, open an issue. If you have a
 
 ## Building
 
-The Rust binary compiles without the frontend. If `web/dist/` doesn't exist, create it before building; the binary embeds whatever is in that directory via `rust-embed`:
+The repository provides the development toolchain and project commands through
+[devenv](https://devenv.sh/). From a fresh checkout, approve it:
 
 ```bash
-mkdir -p web/dist     # only if web/dist/ doesn't exist
-cargo build           # debug
-cargo build --release
+devenv allow
 ```
 
-For a full build with the web UI (requires [Bun](https://bun.sh)):
+Enter the shell explicitly for an interactive session, or prefix individual
+commands with `devenv shell --`:
 
 ```bash
-cd web && bun install && bun run build && cd ..
-cargo build --release
+devenv shell
+devenv shell -- lific-check
+```
+
+Install every JavaScript workspace from its lockfile with:
+
+```bash
+lific-install
+```
+
+The Rust binary can compile without the frontend, but release binaries must
+embed a current `web/dist/` through `rust-embed`:
+
+```bash
+lific-web-build       # build web/dist
+cargo build           # debug binary
+lific-build-release   # locked release-dist binary
+```
+
+Run the local server and frontend development server in separate terminals:
+
+```bash
+lific-start
+lific-web-dev
 ```
 
 ## Tests
 
 ```bash
-cargo test
+lific-check
 ```
 
-The whole suite runs in seconds. Every new MCP tool and REST endpoint ships with tests. Conventions:
+`lific-check` installs locked JavaScript dependencies, then runs Rust format,
+Clippy, and all-target tests; Svelte checks and unit tests; the frontend build;
+and the docs build/link checks. The browser suites require a debug binary and
+fresh frontend assets:
+
+```bash
+devenv shell -- cargo build --locked
+devenv shell -- lific-web-build
+devenv shell -- lific-e2e
+```
+
+The checks exercise these behaviors:
+
+- Rust tests cover MCP tool behavior, REST boundaries, CLI parsing and help,
+  first boot and initialization on a real temporary filesystem, imports,
+  exports, issue references, rate limiting, retention, previews, caller
+  resolution, and error handling. Most use in-memory SQLite; `lific init`
+  tests use self-cleaning on-disk temporary directories because that command
+  creates files and opens a database by path.
+- MCP pre-init contract tests cover server and tool discovery rejection, ping
+  and ignored traffic, continued handshakes, broken-pipe termination, and EOF
+  termination.
+- Web unit tests cover frontend helpers and state transitions that do not need
+  a browser. `lific-web-check` also typechecks the Svelte app and Vite config.
+- `smoke` starts a real binary, seeds a project, and visits the core overview,
+  issue, page, board, settings, and navigation routes while checking rendered
+  content and browser errors.
+- `archives` runs two real server instances and exercises archive export/import,
+  stale downloads, permissions, oversized uploads, mobile export, and failure
+  handling across admin and regular-user sessions.
+- `public` checks public project, issue, and page rendering, pagination,
+  sanitization of hostile Markdown/HTML, attachment URL handling, anonymous
+  access, and that public pages never call credentialed private APIs.
+- `sidebar`, `mobile-nav`, and `context-menu` use focused browser fixtures to
+  cover responsive layout, keyboard/focus behavior, touch targets, project and
+  group recovery, ordering rollback, theme readability, route reveal, and
+  native modified-link behavior without requiring a full seeded application.
+  The native-link cases capture CDP events and browser state so Ctrl-click and
+  middle-click popup regressions retain useful failure evidence.
+- The release smoke check runs each native artifact's `--version` and `--help`,
+  starts it with a temporary config/database, and fetches the embedded HTML.
+
+Every new MCP tool and REST endpoint should ship with tests. Conventions:
 
 - All tests use in-memory SQLite via `crate::db::open_memory()`.
 - **Exception:** full-command tests of `lific init` (_`cmd_init`_) exercise the
@@ -48,12 +112,11 @@ The whole suite runs in seconds. Every new MCP tool and REST endpoint ships with
 
 ## What CI runs (run it before pushing)
 
-CI checks formatting and lints with warnings-as-errors, so `cargo test` passing is not enough. Reproduce the Rust checks locally with:
+CI checks formatting and lints with warnings-as-errors, so `cargo test`
+passing is not enough. Reproduce the Rust checks locally with:
 
 ```bash
-cargo fmt --all -- --check
-cargo clippy --all-targets -- -D warnings
-cargo test --all-targets
+devenv shell -- lific-rust-check
 ```
 
 If clippy complains, fix it. Don't `#[allow]` a lint without a comment explaining why.
@@ -65,6 +128,35 @@ pre-commit install
 ```
 
 Use `cargo fmt --all` to apply formatting fixes.
+
+## Release builds
+
+Pushing a version tag runs the release workflow. It builds the embedded web UI
+and produces locked `release-dist` artifacts for Linux x86_64 and aarch64,
+macOS x86_64 and aarch64, and Windows x86_64 (MSVC). Linux aarch64 uses the
+cross-build profile locally; the other targets build on their native GitHub
+Actions runners. The workflow verifies artifact existence, smoke-tests native
+artifacts, publishes SHA-256 checksums, and attaches all five binaries to the
+GitHub release.
+
+For a local Linux cross-build:
+
+```bash
+devenv --profile cross shell -- lific-build-release aarch64-unknown-linux-gnu
+```
+
+On macOS, `devenv` also provides both Apple Rust targets and the native
+Security, CoreFoundation, and SystemConfiguration frameworks used by the
+credential and SQLite stacks. Build the current Mac architecture normally;
+on Apple Silicon, build the Intel artifact with:
+
+```bash
+devenv shell -- lific-build-release
+devenv shell -- lific-build-release x86_64-apple-darwin
+```
+
+Platform signing, notarization, installers, and update channels are later
+phases of the release plan, not part of this MVP.
 
 ## Commit message style
 

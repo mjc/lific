@@ -1,0 +1,10 @@
+require_version: true
+
+inputs:
+  rust-overlay:
+    url: github:oxalica/rust-overlay
+    overlays:
+      - default
+    inputs:
+      nixpkgs:
+        follows: nixpkgs
