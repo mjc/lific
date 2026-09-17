@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
 // Real Layout, Settings, palette and MobileNav. Only HTTP is mocked; no copied
 // sidebar state or handlers. Vite and Chromium are owned by this finite process.
-// Run: bun run sidebar (in e2e). Screenshots: $E2E_SCREENSHOT_DIR or the OS temp directory.
+// Run inside `devenv --profile e2e shell`: bun run sidebar. Screenshots:
+// $E2E_SCREENSHOT_DIR or the OS temp directory.
 // This checks the client's per-session ordering contract, not server isolation.
 import { strict as assert } from "node:assert";
 import { resolve } from "node:path";

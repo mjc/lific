@@ -1,10 +1,57 @@
 {
   pkgs,
   config,
+  lib,
   ...
 }:
 let
-  repoRoot = config.git.root;
+  repoRoot = if config.git.root != null then config.git.root else builtins.toString ./.;
+  lificVersion = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).package.version;
+  lificSource = lib.cleanSourceWith {
+    src = ./.;
+    filter =
+      path: type:
+      lib.cleanSourceFilter path type
+      && !(lib.hasPrefix "${toString ./web/dist}" (toString path))
+      && !(lib.hasInfix "/node_modules/" (toString path));
+  };
+  webSource = lib.cleanSourceWith {
+    src = ./web;
+    filter =
+      path: type:
+      lib.cleanSourceFilter path type
+      && !(lib.hasPrefix "${toString ./web/dist}" (toString path))
+      && !(lib.hasInfix "/node_modules/" (toString path));
+  };
+  webBundle = pkgs.buildNpmPackage {
+    pname = "lific-web";
+    version = lificVersion;
+    # The browser bundle must be reproducible from source, never copied from
+    # a developer's checkout.
+    src = webSource;
+    npmDepsHash = "sha256-eunc7N/rWE4fPxquVGD6sR0GTwBJhIxO56zqnt+P5L4=";
+    npmBuildScript = "build";
+    installPhase = ''
+      runHook preInstall
+      mkdir -p "$out"
+      cp -R dist/. "$out/"
+      runHook postInstall
+    '';
+  };
+  lificPackage = pkgs.rustPlatform.buildRustPackage {
+    pname = "lific";
+    version = lificVersion;
+    src = lificSource;
+    cargoLock.lockFile = ./Cargo.lock;
+    # This is the derivation's private source copy. The checkout is never
+    # modified: every release package embeds the UI built by webBundle.
+    postPatch = ''
+      mkdir -p web
+      rm -rf web/dist
+      cp -R ${webBundle} web/dist
+    '';
+    doCheck = false;
+  };
   playwrightBrowsers = pkgs.playwright-driver.browsers.override {
     withChromium = true;
     withChromiumHeadlessShell = true;
@@ -24,6 +71,38 @@ let
     echo "devenv Chromium executable not found" >&2
     exit 1
   '';
+  chromiumRuntimePackages = with pkgs; [
+    alsa-lib
+    at-spi2-atk
+    atk
+    cairo
+    cups
+    dbus
+    expat
+    fontconfig
+    freetype
+    glib
+    gtk3
+    libdrm
+    libxkbcommon
+    libxshmfence
+    mesa
+    nspr
+    nss
+    pango
+    wayland
+    xorg.libX11
+    xorg.libXcomposite
+    xorg.libXdamage
+    xorg.libXext
+    xorg.libXfixes
+    xorg.libXi
+    xorg.libXrandr
+    xorg.libXrender
+    xorg.libXcursor
+    xorg.libXtst
+    xorg.libxcb
+  ];
 in
 {
   languages.rust = {
@@ -45,15 +124,63 @@ in
   profiles = {
     docs.module = {
       languages.javascript.directory = "${repoRoot}/site";
+      tasks = {
+        "lific:docs:build" = {
+          cwd = "${repoRoot}/site";
+          exec = "bun run build";
+        };
+        "lific:docs:check" = {
+          cwd = repoRoot;
+          exec = "bun scripts/check-docs.mjs";
+          after = [ "lific:docs:build" ];
+        };
+      };
     };
     e2e.module = {
       languages.javascript.directory = "${repoRoot}/e2e";
       packages = [ playwrightBrowsers ];
       env.PLAYWRIGHT_BROWSERS_PATH = "${playwrightBrowsers}";
       env.PLAYWRIGHT_EXECUTABLE_PATH = "${playwrightChromium}";
+      tasks = {
+        "lific:install:web" = {
+          cwd = "${repoRoot}/web";
+          exec = "bun install --frozen-lockfile";
+        };
+        "lific:web:check".after = [ "lific:install:web" ];
+        "lific:e2e" = {
+          cwd = "${repoRoot}/e2e";
+          exec = ''
+            bun run smoke
+            bun run archives
+            bun run public
+            bun run sidebar
+            bun run mobile-nav
+            bun run context-menu
+          '';
+          after = [
+            "lific:debug-build"
+            "lific:install:web"
+          ];
+        };
+      };
     };
     promo.module = {
       languages.javascript.directory = "${repoRoot}/promo";
+      packages = pkgs.lib.optionals pkgs.stdenv.isLinux chromiumRuntimePackages;
+      env.LD_LIBRARY_PATH = pkgs.lib.optionalString pkgs.stdenv.isLinux (
+        pkgs.lib.makeLibraryPath chromiumRuntimePackages
+      );
+      tasks = {
+        "lific:promo:check" = {
+          cwd = "${repoRoot}/promo";
+          exec = "bun run lint";
+        };
+        "lific:promo:render" = {
+          cwd = "${repoRoot}/promo";
+          exec = "bunx remotion render BoardLoop ${repoRoot}/site/public/board-loop.mp4";
+          after = [ "lific:promo:check" ];
+        };
+      };
     };
     release-linux.module = {
       languages.rust.targets = [
@@ -68,12 +195,49 @@ in
         cargo-zigbuild
         zig
       ];
+      tasks = {
+        "lific:release:x86_64-unknown-linux-gnu" = {
+          cwd = repoRoot;
+          exec = "cargo zigbuild --locked --profile release-dist --target x86_64-unknown-linux-gnu";
+          after = [ "lific:web:build" ];
+        };
+        "lific:release:aarch64-unknown-linux-gnu" = {
+          cwd = repoRoot;
+          exec = "cargo zigbuild --locked --profile release-dist --target aarch64-unknown-linux-gnu";
+          after = [ "lific:web:build" ];
+        };
+      };
     };
     release-darwin.module = {
       languages.rust.targets = [
         "x86_64-apple-darwin"
         "aarch64-apple-darwin"
       ];
+      tasks = {
+        "lific:release:x86_64-apple-darwin" = {
+          cwd = repoRoot;
+          exec = "cargo build --locked --profile release-dist --target x86_64-apple-darwin";
+          after = [ "lific:web:build" ];
+        };
+        "lific:release:aarch64-apple-darwin" = {
+          cwd = repoRoot;
+          exec = "cargo build --locked --profile release-dist --target aarch64-apple-darwin";
+          after = [ "lific:web:build" ];
+        };
+      };
+    };
+    release-windows.module = {
+      languages.rust.targets = [ "x86_64-pc-windows-gnu" ];
+      unsetEnvVars = [ "CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER" ];
+      packages = with pkgs; [
+        cargo-zigbuild
+        zig
+      ];
+      tasks."lific:release:x86_64-pc-windows-gnu" = {
+        cwd = repoRoot;
+        exec = "cargo zigbuild --locked --profile release-dist --target x86_64-pc-windows-gnu";
+        after = [ "lific:web:build" ];
+      };
     };
   };
 
@@ -82,12 +246,23 @@ in
     config.programs = {
       actionlint.enable = true;
       nixfmt.enable = true;
+      prettier.enable = true;
       rustfmt.enable = true;
       shfmt.enable = true;
     };
+    config.settings.excludes = [
+      "web/dist/*"
+      "site/.next/*"
+      "promo/out/*"
+      "target/*"
+    ];
   };
 
-  outputs.treefmtCheck = config.treefmt.config.build.check (pkgs.lib.cleanSource ./.);
+  outputs = {
+    lific = lificPackage;
+    web = webBundle;
+    treefmtCheck = config.treefmt.config.build.check (pkgs.lib.cleanSource ./.);
+  };
 
   packages = with pkgs; [
     curl
@@ -97,23 +272,11 @@ in
   env.CARGO_TERM_COLOR = "always";
   env.RUST_BACKTRACE = "1";
   unsetEnvVars = [ "RUSTC_WRAPPER" ];
-
   tasks = {
-    # The default shell installs web dependencies natively. This task remains
-    # only because the e2e profile must build the web project from a different
-    # JavaScript directory before it can launch browser tests.
-    "lific:install:web" = {
-      cwd = "${repoRoot}/web";
-      exec = "bun install --frozen-lockfile";
-      execIfModified = [
-        "package.json"
-        "bun.lock"
-      ];
-    };
-
     "lific:rust-test" = {
       cwd = repoRoot;
       exec = "cargo test --all-targets --locked";
+      after = [ "lific:web:build" ];
     };
     "lific:web:check" = {
       cwd = "${repoRoot}/web";
@@ -121,26 +284,22 @@ in
     };
     "lific:web:build" = {
       cwd = "${repoRoot}/web";
-      exec = "bun run build";
+      exec = ''
+        bun run build
+        # Vite clears dist before writing the bundle; keep the tracked checkout
+        # marker so the generated tree remains safe for native git hooks.
+        touch dist/.gitkeep
+      '';
       after = [ "lific:web:check" ];
-    };
-    "lific:docs:build" = {
-      cwd = "${repoRoot}/site";
-      exec = "bun run build";
-    };
-    "lific:docs:check" = {
-      cwd = repoRoot;
-      exec = "bun scripts/check-docs.mjs";
-      after = [ "lific:docs:build" ];
     };
     "lific:release-test" = {
       cwd = repoRoot;
       exec = "bash scripts/verify-release-binary.test.sh";
     };
     "lific:check" = {
+      before = [ "devenv:enterTest" ];
       after = [
         "lific:rust-test"
-        "lific:web:build"
         "lific:release-test"
       ];
     };
@@ -149,44 +308,9 @@ in
       exec = "cargo build --locked";
       after = [ "lific:web:build" ];
     };
-    "lific:e2e" = {
-      cwd = "${repoRoot}/e2e";
-      exec = ''
-        bun run smoke
-        bun run archives
-        bun run public
-        bun run sidebar
-        bun run mobile-nav
-        bun run context-menu
-      '';
-      after = [
-        "lific:debug-build"
-        "lific:install:web"
-      ];
-    };
-    "lific:release:x86_64-unknown-linux-gnu" = {
-      cwd = repoRoot;
-      exec = "cargo zigbuild --locked --profile release-dist --target x86_64-unknown-linux-gnu";
-      after = [ "lific:web:build" ];
-    };
-    "lific:release:aarch64-unknown-linux-gnu" = {
-      cwd = repoRoot;
-      exec = "cargo zigbuild --locked --profile release-dist --target aarch64-unknown-linux-gnu";
-      after = [ "lific:web:build" ];
-    };
-    "lific:release:x86_64-apple-darwin" = {
-      cwd = repoRoot;
-      exec = "cargo build --locked --profile release-dist --target x86_64-apple-darwin";
-      after = [ "lific:web:build" ];
-    };
-    "lific:release:aarch64-apple-darwin" = {
-      cwd = repoRoot;
-      exec = "cargo build --locked --profile release-dist --target aarch64-apple-darwin";
-      after = [ "lific:web:build" ];
-    };
   };
 
-  processes = {
+  processes = lib.mkIf (!config.devenv.isTesting) {
     backend = {
       exec = ''
         exec cargo run --locked -- \
@@ -247,11 +371,4 @@ in
       };
     };
   };
-
-  enterTest = ''
-    if [ "$(uname -s)" = Darwin ]; then
-      command -v xcrun >/dev/null
-      xcrun --find clang >/dev/null
-    fi
-  '';
 }
