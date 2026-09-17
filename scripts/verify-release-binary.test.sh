@@ -24,7 +24,20 @@ printf '%s\n' \
   'esac' >"$fake_binary"
 chmod +x "$fake_binary"
 
-port="$((35000 + RANDOM % 1000))"
+free_port() {
+  local candidate
+  for _ in {1..20}; do
+    candidate="$(bun -e 'const server = Bun.serve({ port: 0, fetch: () => new Response() }); console.log(server.port); server.stop();' 2>/dev/null)"
+    if [[ $candidate =~ ^[0-9]+$ ]]; then
+      printf '%s\n' "$candidate"
+      return
+    fi
+  done
+  echo "could not allocate a free verification port" >&2
+  exit 1
+}
+
+port="$(free_port)"
 PORT="$port" bun -e 'Bun.serve({ port: Number(process.env.PORT), fetch: () => new Response("<html>occupied</html>", { headers: { "content-type": "text/html" } }) });' &
 occupied_pid=$!
 
@@ -46,6 +59,7 @@ echo "occupied port with failing child is rejected"
 no_response_server="$scratch/no-response-server.ts"
 printf '%s\n' \
   'Bun.serve({ port: Number(process.env.PORT), fetch: () => new Promise(() => {}) });' \
+  'console.error("no-response fixture listening");' \
   >"$no_response_server"
 no_response_binary="$scratch/no-response-lific"
 printf '%s\n' \
@@ -58,7 +72,7 @@ printf '%s\n' \
   'esac' >"$no_response_binary"
 chmod +x "$no_response_binary"
 
-hang_port="$((36000 + RANDOM % 1000))"
+hang_port="$(free_port)"
 timeout_command=timeout
 if ! command -v "$timeout_command" >/dev/null 2>&1; then
   timeout_command=gtimeout
@@ -84,6 +98,11 @@ if [[ $status -eq 124 ]]; then
 fi
 if [[ $status -eq 0 ]]; then
   echo "verifier accepted a non-responding server" >&2
+  exit 1
+fi
+if ! grep -Fq "no-response fixture listening" "$scratch/no-response.log"; then
+  cat "$scratch/no-response.log" >&2
+  echo "non-responding fixture did not bind its port" >&2
   exit 1
 fi
 

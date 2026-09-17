@@ -35,7 +35,7 @@ devenv --profile promo tasks run lific:promo:check
 Render the video:
 
 ```console
-devenv tasks run lific:promo:render
+devenv --profile promo tasks run lific:promo:render
 ```
 
 ## Docs
