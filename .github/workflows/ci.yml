@@ -50,6 +50,26 @@ jobs:
       - name: Test
         run: cargo test --all-targets
 
+  macos:
+    strategy:
+      matrix:
+        target:
+          - x86_64-apple-darwin
+          - aarch64-apple-darwin
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: cachix/install-nix-action@v31
+      - uses: cachix/cachix-action@v16
+        with:
+          name: devenv
+      - name: Install devenv
+        shell: bash
+        run: nix profile add nixpkgs#devenv
+      - name: Build macOS release with devenv
+        shell: bash
+        run: devenv --profile release-darwin tasks run "lific:release:${{ matrix.target }}"
+
   smoke:
     runs-on: ubuntu-latest
     defaults:
