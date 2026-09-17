@@ -12,6 +12,9 @@ env:
 jobs:
   check:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: devenv shell -- bash -e {0}
     steps:
       - uses: actions/checkout@v5
       - uses: cachix/install-nix-action@v31
@@ -23,15 +26,11 @@ jobs:
         run: nix profile add nixpkgs#devenv
       - name: Check formatting
         shell: bash
-        env:
-          DEVENV_SKIP_TASKS: "1"
-        run: devenv tasks run lific:format-check
+        run: devenv build outputs.treefmtCheck
       - name: Validate devenv and generated hooks
+        shell: bash
         run: devenv test
       - name: Run the complete check task
-        shell: devenv shell -- bash -e {0}
-        env:
-          DEVENV_SKIP_TASKS: "1"
         run: devenv tasks run lific:check
 
   windows:
@@ -57,6 +56,9 @@ jobs:
 
   smoke:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: devenv --profile e2e shell -- bash -e {0}
     steps:
       - uses: actions/checkout@v5
       - uses: cachix/install-nix-action@v31
@@ -67,10 +69,7 @@ jobs:
         shell: bash
         run: nix profile add nixpkgs#devenv
       - name: Run the browser task graph
-        shell: bash
-        env:
-          DEVENV_SKIP_TASKS: "1"
-        run: devenv --profile e2e tasks run lific:e2e
+        run: devenv tasks run lific:e2e
       - name: Retain native-link browser traces on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -82,6 +81,9 @@ jobs:
 
   docs:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: devenv --profile docs shell -- bash -e {0}
     steps:
       - uses: actions/checkout@v5
       - uses: cachix/install-nix-action@v31
@@ -92,7 +94,4 @@ jobs:
         shell: bash
         run: nix profile add nixpkgs#devenv
       - name: Build and check documentation
-        shell: bash
-        env:
-          DEVENV_SKIP_TASKS: "1"
         run: devenv tasks run lific:docs:check

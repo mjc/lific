@@ -43,7 +43,7 @@ export default defineConfig({
     allowedHosts: process.env.VITE_ALLOWED_HOSTS?.split(",") ?? [],
     // If 5173 is taken, fail fast instead of switching ports (avoids "module load failed"
     // when the browser tab still points at the old URL).
-    port: 5173,
+    port: Number(process.env.VITE_PORT ?? 5173),
     strictPort: true,
     proxy: {
       "/api": {

@@ -20,20 +20,32 @@ cleanup() {
 }
 trap cleanup EXIT
 
-port="${LIFIC_VERIFY_PORT:-$((34567 + RANDOM % 1000))}"
-touch "$scratch/lific.toml"
+port="${LIFIC_VERIFY_PORT:-}"
 
-# An override is useful for CI and local debugging, but never let an existing
-# HTTP server make a failed artifact look healthy.
-if curl --connect-timeout 1 --max-time 2 --silent --output /dev/null "http://127.0.0.1:$port/"; then
-  echo "verification port $port is already serving HTTP" >&2
-  exit 1
+# An override is useful for CI and local debugging. For the automatic case,
+# retry a collision so an unrelated local server does not make this test flaky.
+if [[ -n $port ]]; then
+  if curl --connect-timeout 1 --max-time 2 --silent --output /dev/null "http://127.0.0.1:$port/"; then
+    echo "verification port $port is already serving HTTP" >&2
+    exit 1
+  fi
+else
+  for _ in {1..20}; do
+    candidate="$((34567 + RANDOM % 1000))"
+    if ! curl --connect-timeout 1 --max-time 2 --silent --output /dev/null "http://127.0.0.1:$candidate/"; then
+      port="$candidate"
+      break
+    fi
+  done
+  if [[ -z $port ]]; then
+    echo "could not find an available verification port" >&2
+    exit 1
+  fi
 fi
 
 LIFIC_INIT_ADMIN_NAME=Release \
   LIFIC_INIT_ADMIN_PASSWORD=release-smoke-password-123 \
   "$binary" \
-  --config "$scratch/lific.toml" \
   --db "$scratch/lific.db" \
   start --init-if-missing --host 127.0.0.1 --port "$port" \
   >"$scratch/server.log" 2>&1 &

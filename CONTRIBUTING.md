@@ -28,19 +28,22 @@ devenv shell
 devenv tasks run lific:check
 ```
 
-Install every JavaScript workspace from its lockfile with:
+Entering the default shell installs the web workspace from its lockfile through
+devenv's native Bun integration. The other JavaScript workspaces have profiles:
 
 ```bash
-devenv tasks run lific:install
+devenv --profile docs shell       # site/
+devenv --profile e2e shell        # e2e/
+devenv --profile promo shell      # promo/
 ```
 
 The Rust binary can compile without the frontend, but release binaries must
 embed a current `web/dist/` through `rust-embed`:
 
 ```bash
-devenv tasks run lific:web:build # build web/dist
 cargo build           # debug binary
-devenv tasks run lific:release # locked release-dist binary
+devenv --profile release-linux shell
+devenv tasks run lific:release:x86_64-unknown-linux-gnu # locked release-dist binary
 ```
 
 Start the backend and frontend together through devenv's native process manager:
@@ -62,10 +65,18 @@ access is needed.
 devenv tasks run lific:check
 ```
 
-The check task installs only the JavaScript dependencies required by each
-dependent task, then runs treefmt, Clippy, and all-target tests; Svelte checks
-and unit tests; the frontend build; and the docs build/link checks. The browser
-suites build their prerequisites through the devenv task graph:
+The check task runs all-target Rust tests, Svelte checks and unit tests, the
+frontend build, and the release smoke regression test. `devenv test` runs the
+native treefmt and Clippy hooks and validates the devenv environment; run the
+project check task separately. Documentation is checked in its profile:
+
+```bash
+devenv --profile docs shell
+devenv tasks run lific:docs:check
+```
+
+The browser suites use their profile's native Bun install and build the web
+prerequisite through the task graph:
 
 ```bash
 devenv --profile e2e shell
@@ -121,24 +132,22 @@ CI checks formatting and lints with warnings-as-errors, so `cargo test`
 passing is not enough. Reproduce the Rust checks locally with:
 
 ```bash
-devenv tasks run lific:rust-check
+devenv tasks run lific:rust-test
 ```
 
 If clippy complains, fix it. Don't `#[allow]` a lint without a comment explaining why.
 
-The devenv shell installs the repository's generated pre-commit hooks. They use
-the same pinned Rust toolchain as the check task; no separate installation is
-needed:
+The devenv shell installs the repository's generated pre-commit hooks. Treefmt
+and the native Clippy hook use the pinned toolchain; no separate installation
+is needed:
 
 ```bash
 devenv test
 ```
 
 `devenv test` also starts and stops the configured development processes, so it
-checks that the environment can launch the application. The task commands
-above are the complete source, frontend, and documentation checks.
-
-Use `treefmt` to apply formatting fixes across the configured languages.
+checks that the environment can launch the application. Use `treefmt` to apply
+formatting fixes across the configured languages.
 
 ## Release builds
 
@@ -153,19 +162,19 @@ to the GitHub release.
 For a local Linux cross-build:
 
 ```bash
-devenv tasks run lific:web:build
-lific-build-release aarch64-unknown-linux-gnu
+devenv --profile release-linux shell
+devenv tasks run lific:release:aarch64-unknown-linux-gnu
 ```
 
-On macOS, `devenv` also provides both Apple Rust targets and the versioned
-Apple SDK used by the credential and SQLite stacks. Build the current Mac
+On macOS, `devenv` also provides both Apple Rust targets and the Apple SDK
+used by the credential and SQLite stacks. Build the current Mac
 architecture normally;
 on Apple Silicon, build the Intel artifact with:
 
 ```bash
-devenv tasks run lific:web:build
-lific-build-release
-lific-build-release x86_64-apple-darwin
+devenv --profile release-darwin shell
+devenv tasks run lific:release:aarch64-apple-darwin
+devenv tasks run lific:release:x86_64-apple-darwin
 ```
 
 Platform signing, notarization, installers, and update channels are later
