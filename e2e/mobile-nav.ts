@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 // Real MobileNav and ContextMenu in Chromium, with a hash-router fixture.
 // Vite runs in-process and closes in finally. No database or background jobs.
+// Run inside `devenv --profile e2e shell`: bun run mobile-nav.
 import { strict as assert } from "node:assert";
 import { resolve } from "node:path";
 import { chromium } from "playwright";

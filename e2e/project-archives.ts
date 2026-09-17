@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// Scratch instances only. Build web/ and cargo build before running.
+// Scratch instances only. Run `devenv --profile e2e tasks run lific:e2e` first.
 import { chromium, type Browser, type Page } from "playwright";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
