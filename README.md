@@ -358,14 +358,14 @@ git clone https://github.com/VoidNullable/lific
 cd lific
 devenv allow
 devenv shell
+# inside the devenv shell:
 devenv tasks run lific:debug-build
 ```
 
 Release builds always build and embed the Svelte 5 web UI:
 
 ```bash
-devenv --profile release-linux shell
-devenv tasks run lific:release:x86_64-unknown-linux-gnu
+devenv --profile release-linux tasks run lific:release:x86_64-unknown-linux-gnu
 ```
 
 Use the `release-darwin` profile for macOS targets. SQLite is bundled via

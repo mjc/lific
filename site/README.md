@@ -8,8 +8,7 @@ server-side anything.
 Use the repository's `docs` profile for the site:
 
 ```bash
-devenv --profile docs shell
-devenv tasks run lific:docs:check
+devenv --profile docs tasks run lific:docs:check
 ```
 
 Content facts (the three numbers, install commands) mirror the root
@@ -18,6 +17,5 @@ Content facts (the three numbers, install commands) mirror the root
 `public/board-loop.mp4` is rendered from the Remotion project in `../promo`:
 
 ```bash
-devenv --profile promo shell
-devenv tasks run lific:promo:render
+devenv --profile promo tasks run lific:promo:render
 ```

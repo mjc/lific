@@ -48,6 +48,7 @@ in
     };
     e2e.module = {
       languages.javascript.directory = "${repoRoot}/e2e";
+      tasks."lific:web:check".after = [ "lific:install:web" ];
       packages = [ playwrightBrowsers ];
       env.PLAYWRIGHT_BROWSERS_PATH = "${playwrightBrowsers}";
       env.PLAYWRIGHT_EXECUTABLE_PATH = "${playwrightChromium}";
@@ -85,6 +86,12 @@ in
       rustfmt.enable = true;
       shfmt.enable = true;
     };
+    config.settings.excludes = [
+      "web/dist/*"
+      "site/.next/*"
+      "promo/out/*"
+      "target/*"
+    ];
   };
 
   outputs.treefmtCheck = config.treefmt.config.build.check (pkgs.lib.cleanSource ./.);
@@ -97,7 +104,6 @@ in
   env.CARGO_TERM_COLOR = "always";
   env.RUST_BACKTRACE = "1";
   unsetEnvVars = [ "RUSTC_WRAPPER" ];
-
   tasks = {
     # The default shell installs web dependencies natively. This task remains
     # only because the e2e profile must build the web project from a different
@@ -105,24 +111,33 @@ in
     "lific:install:web" = {
       cwd = "${repoRoot}/web";
       exec = "bun install --frozen-lockfile";
+      after = [ "devenv:enterShell" ];
     };
 
     "lific:rust-test" = {
       cwd = repoRoot;
       exec = "cargo test --all-targets --locked";
+      after = [ "lific:web:build" ];
     };
     "lific:web:check" = {
       cwd = "${repoRoot}/web";
       exec = "bun run check && bun test";
+      after = [ "devenv:enterShell" ];
     };
     "lific:web:build" = {
       cwd = "${repoRoot}/web";
-      exec = "bun run build";
+      exec = ''
+        bun run build
+        # Vite clears dist before writing the bundle; keep the tracked checkout
+        # marker so the generated tree remains safe for native git hooks.
+        touch dist/.gitkeep
+      '';
       after = [ "lific:web:check" ];
     };
     "lific:docs:build" = {
       cwd = "${repoRoot}/site";
       exec = "bun run build";
+      after = [ "devenv:enterShell" ];
     };
     "lific:docs:check" = {
       cwd = repoRoot;
@@ -132,6 +147,7 @@ in
     "lific:promo:check" = {
       cwd = "${repoRoot}/promo";
       exec = "bun run lint";
+      after = [ "devenv:enterShell" ];
     };
     "lific:promo:render" = {
       cwd = "${repoRoot}/promo";
@@ -143,11 +159,10 @@ in
       exec = "bash scripts/verify-release-binary.test.sh";
     };
     "lific:check" = {
+      before = [ "devenv:enterTest" ];
       after = [
         "lific:rust-test"
-        "lific:web:build"
         "lific:release-test"
-        "devenv:git-hooks:run"
       ];
     };
     "lific:debug-build" = {
