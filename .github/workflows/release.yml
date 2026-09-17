@@ -171,7 +171,7 @@ jobs:
       - name: Build release with devenv
         if: matrix.devenv
         shell: bash
-        run: devenv --profile "${{ matrix.profile }}" shell -- devenv tasks run "lific:release:${{ matrix.target }}"
+        run: devenv --profile "${{ matrix.profile }}" tasks run "lific:release:${{ matrix.target }}"
 
       - name: Build Windows release
         if: ${{ !matrix.devenv }}

@@ -133,6 +133,15 @@ in
       exec = "bun scripts/check-docs.mjs";
       after = [ "lific:docs:build" ];
     };
+    "lific:promo:check" = {
+      cwd = "${repoRoot}/promo";
+      exec = "bun run lint";
+    };
+    "lific:promo:render" = {
+      cwd = "${repoRoot}/promo";
+      exec = "bunx remotion render BoardLoop ${repoRoot}/site/public/board-loop.mp4";
+      after = [ "lific:promo:check" ];
+    };
     "lific:release-test" = {
       cwd = repoRoot;
       exec = "bash scripts/verify-release-binary.test.sh";
@@ -142,6 +151,7 @@ in
         "lific:rust-test"
         "lific:web:build"
         "lific:release-test"
+        "devenv:git-hooks:run"
       ];
     };
     "lific:debug-build" = {
@@ -247,11 +257,4 @@ in
       };
     };
   };
-
-  enterTest = ''
-    if [ "$(uname -s)" = Darwin ]; then
-      command -v xcrun >/dev/null
-      xcrun --find clang >/dev/null
-    fi
-  '';
 }

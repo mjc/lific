@@ -37,11 +37,11 @@ devenv --profile e2e shell        # e2e/
 devenv --profile promo shell      # promo/
 ```
 
-The Rust binary can compile without the frontend, but release binaries must
-embed a current `web/dist/` through `rust-embed`:
+Project build tasks always build the frontend before compiling the Rust binary,
+and release binaries must embed a current `web/dist/` through `rust-embed`:
 
 ```bash
-cargo build           # debug binary
+devenv tasks run lific:debug-build
 devenv --profile release-linux shell
 devenv tasks run lific:release:x86_64-unknown-linux-gnu # locked release-dist binary
 ```
@@ -65,10 +65,9 @@ access is needed.
 devenv tasks run lific:check
 ```
 
-The check task runs all-target Rust tests, Svelte checks and unit tests, the
-frontend build, and the release smoke regression test. `devenv test` runs the
-native treefmt and Clippy hooks and validates the devenv environment; run the
-project check task separately. Documentation is checked in its profile:
+The check task runs native treefmt and Clippy, all-target Rust tests, Svelte
+checks and unit tests, the frontend build, and the release smoke regression
+test. Documentation is checked in its profile:
 
 ```bash
 devenv --profile docs shell
@@ -81,6 +80,13 @@ prerequisite through the task graph:
 ```bash
 devenv --profile e2e shell
 devenv tasks run lific:e2e
+```
+
+The promo profile has the same task-graph entry point:
+
+```bash
+devenv --profile promo shell
+devenv tasks run lific:promo:check
 ```
 
 The checks exercise these behaviors:
@@ -128,26 +134,26 @@ Every new MCP tool and REST endpoint should ship with tests. Conventions:
 
 ## What CI runs (run it before pushing)
 
-CI checks formatting and lints with warnings-as-errors, so `cargo test`
-passing is not enough. Reproduce the Rust checks locally with:
+CI checks formatting and lints with warnings-as-errors. Reproduce the complete
+project check locally with:
 
 ```bash
-devenv tasks run lific:rust-test
+devenv tasks run lific:check
 ```
 
 If clippy complains, fix it. Don't `#[allow]` a lint without a comment explaining why.
 
 The devenv shell installs the repository's generated pre-commit hooks. Treefmt
 and the native Clippy hook use the pinned toolchain; no separate installation
-is needed:
+is needed. They are also part of `lific:check`:
 
 ```bash
-devenv test
+devenv tasks run lific:check
 ```
 
-`devenv test` also starts and stops the configured development processes, so it
-checks that the environment can launch the application. Use `treefmt` to apply
-formatting fixes across the configured languages.
+`devenv test` validates the devenv configuration and generated hooks. Use the
+native treefmt integration to apply formatting fixes across the configured
+languages.
 
 ## Release builds
 

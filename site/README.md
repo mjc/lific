@@ -5,10 +5,11 @@ Marketing/landing page for Lific, hosted at https://lific.dev.
 Next.js 16 (App Router) + Tailwind v4, managed with Bun. Fully static — no
 server-side anything.
 
+Use the repository's `docs` profile for the site:
+
 ```bash
-bun install
-bun run dev     # local dev on :3000
-bun run build   # production build
+devenv --profile docs shell
+devenv tasks run lific:docs:check
 ```
 
 Content facts (the three numbers, install commands) mirror the root
@@ -17,5 +18,6 @@ Content facts (the three numbers, install commands) mirror the root
 `public/board-loop.mp4` is rendered from the Remotion project in `../promo`:
 
 ```bash
-cd ../promo && bunx remotion render BoardLoop ../site/public/board-loop.mp4
+devenv --profile promo shell
+devenv tasks run lific:promo:render
 ```

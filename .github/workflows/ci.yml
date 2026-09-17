@@ -44,10 +44,6 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
 
-      - name: Ensure web/dist exists for rust-embed
-        run: mkdir -p web/dist
-        shell: bash
-
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
 
