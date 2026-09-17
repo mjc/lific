@@ -105,10 +105,6 @@ in
     "lific:install:web" = {
       cwd = "${repoRoot}/web";
       exec = "bun install --frozen-lockfile";
-      execIfModified = [
-        "package.json"
-        "bun.lock"
-      ];
     };
 
     "lific:rust-test" = {

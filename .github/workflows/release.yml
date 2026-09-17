@@ -91,7 +91,7 @@ jobs:
           name: devenv
       - name: Install devenv
         shell: bash
-        run: nix profile add nixpkgs#devenv
+        run: nix profile add "github:cachix/devenv/$(jq -r '.nodes.devenv.locked.rev' devenv.lock)#devenv"
       - name: Check formatting
         shell: bash
         run: devenv build outputs.treefmtCheck
@@ -149,7 +149,7 @@ jobs:
       - name: Install devenv
         if: matrix.devenv
         shell: bash
-        run: nix profile add nixpkgs#devenv
+        run: nix profile add "github:cachix/devenv/$(jq -r '.nodes.devenv.locked.rev' devenv.lock)#devenv"
       - uses: dtolnay/rust-toolchain@stable
         if: ${{ !matrix.devenv }}
         with:
@@ -279,7 +279,7 @@ jobs:
           name: devenv
       - name: Install devenv
         shell: bash
-        run: nix profile add nixpkgs#devenv
+        run: nix profile add "github:cachix/devenv/$(jq -r '.nodes.devenv.locked.rev' devenv.lock)#devenv"
       # Build the web UI before publishing so the source tarball that
       # goes to crates.io contains a working dist/, not just a stub.
       # `cargo install lific` builds from source — without this, every

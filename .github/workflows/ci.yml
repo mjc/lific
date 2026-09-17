@@ -23,7 +23,7 @@ jobs:
           name: devenv
       - name: Install devenv
         shell: bash
-        run: nix profile add nixpkgs#devenv
+        run: nix profile add "github:cachix/devenv/$(jq -r '.nodes.devenv.locked.rev' devenv.lock)#devenv"
       - name: Check formatting
         shell: bash
         run: devenv build outputs.treefmtCheck
@@ -65,7 +65,7 @@ jobs:
           name: devenv
       - name: Install devenv
         shell: bash
-        run: nix profile add nixpkgs#devenv
+        run: nix profile add "github:cachix/devenv/$(jq -r '.nodes.devenv.locked.rev' devenv.lock)#devenv"
       - name: Build macOS release with devenv
         shell: bash
         run: devenv --profile release-darwin tasks run "lific:release:${{ matrix.target }}"
@@ -83,7 +83,7 @@ jobs:
           name: devenv
       - name: Install devenv
         shell: bash
-        run: nix profile add nixpkgs#devenv
+        run: nix profile add "github:cachix/devenv/$(jq -r '.nodes.devenv.locked.rev' devenv.lock)#devenv"
       - name: Run the browser task graph
         run: devenv tasks run lific:e2e
       - name: Retain native-link browser traces on failure
@@ -108,6 +108,6 @@ jobs:
           name: devenv
       - name: Install devenv
         shell: bash
-        run: nix profile add nixpkgs#devenv
+        run: nix profile add "github:cachix/devenv/$(jq -r '.nodes.devenv.locked.rev' devenv.lock)#devenv"
       - name: Build and check documentation
         run: devenv tasks run lific:docs:check
