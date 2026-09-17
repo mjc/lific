@@ -13,28 +13,108 @@ If you want to discuss an idea before writing code, open an issue. If you have a
 
 ## Building
 
-The Rust binary compiles without the frontend. If `web/dist/` doesn't exist, create it before building; the binary embeds whatever is in that directory via `rust-embed`:
+The repository provides the development toolchain and project commands through
+[devenv](https://devenv.sh/). From a fresh checkout, approve it:
 
 ```bash
-mkdir -p web/dist     # only if web/dist/ doesn't exist
-cargo build           # debug
-cargo build --release
+devenv allow
 ```
 
-For a full build with the web UI (requires [Bun](https://bun.sh)):
+Enter the shell explicitly for an interactive session. Once `DEVENV_ROOT`
+points at this checkout, run project commands directly:
 
 ```bash
-cd web && bun install && bun run build && cd ..
-cargo build --release
+devenv shell
+devenv tasks run lific:check
 ```
+
+Entering the default shell installs the web workspace from its lockfile through
+devenv's native Bun integration. The other JavaScript workspaces have profiles:
+
+```bash
+devenv --profile docs shell       # site/
+devenv --profile e2e shell        # e2e/
+devenv --profile promo shell      # promo/
+```
+
+The Rust binary can compile without the frontend, but release binaries must
+embed a current `web/dist/` through `rust-embed`:
+
+```bash
+cargo build           # debug binary
+devenv --profile release-linux shell
+devenv tasks run lific:release:x86_64-unknown-linux-gnu # locked release-dist binary
+```
+
+Start the backend and frontend together through devenv's native process manager:
+
+```bash
+devenv up
+```
+
+The two processes are intentional: Vite provides frontend hot reload and API
+proxying during development, while the Rust process is the real server and
+embeds `web/dist` into release binaries. The backend restarts automatically
+when Rust source or Cargo configuration changes. Both bind to localhost by
+default; set `VITE_HOST` and `VITE_ALLOWED_HOSTS` explicitly when remote UI
+access is needed.
 
 ## Tests
 
 ```bash
-cargo test
+devenv tasks run lific:check
 ```
 
-The whole suite runs in seconds. Every new MCP tool and REST endpoint ships with tests. Conventions:
+The check task runs all-target Rust tests, Svelte checks and unit tests, the
+frontend build, and the release smoke regression test. `devenv test` runs the
+native treefmt and Clippy hooks and validates the devenv environment; run the
+project check task separately. Documentation is checked in its profile:
+
+```bash
+devenv --profile docs shell
+devenv tasks run lific:docs:check
+```
+
+The browser suites use their profile's native Bun install and build the web
+prerequisite through the task graph:
+
+```bash
+devenv --profile e2e shell
+devenv tasks run lific:e2e
+```
+
+The checks exercise these behaviors:
+
+- Rust tests cover MCP tool behavior, REST boundaries, CLI parsing and help,
+  first boot and initialization on a real temporary filesystem, imports,
+  exports, issue references, rate limiting, retention, previews, caller
+  resolution, and error handling. Most use in-memory SQLite; `lific init`
+  tests use self-cleaning on-disk temporary directories because that command
+  creates files and opens a database by path.
+- MCP pre-init contract tests cover server and tool discovery rejection, ping
+  and ignored traffic, continued handshakes, broken-pipe termination, and EOF
+  termination.
+- Web unit tests cover frontend helpers and state transitions that do not need
+  a browser. The web check task also typechecks the Svelte app and Vite config.
+- `smoke` starts a real binary, seeds a project, and visits the core overview,
+  issue, page, board, settings, and navigation routes while checking rendered
+  content and browser errors.
+- `archives` runs two real server instances and exercises archive export/import,
+  stale downloads, permissions, oversized uploads, mobile export, and failure
+  handling across admin and regular-user sessions.
+- `public` checks public project, issue, and page rendering, pagination,
+  sanitization of hostile Markdown/HTML, attachment URL handling, anonymous
+  access, and that public pages never call credentialed private APIs.
+- `sidebar`, `mobile-nav`, and `context-menu` use focused browser fixtures to
+  cover responsive layout, keyboard/focus behavior, touch targets, project and
+  group recovery, ordering rollback, theme readability, route reveal, and
+  native modified-link behavior without requiring a full seeded application.
+  The native-link cases capture CDP events and browser state so Ctrl-click and
+  middle-click popup regressions retain useful failure evidence.
+- The release smoke check runs each native artifact's `--version` and `--help`,
+  starts it with a temporary config/database, and fetches the embedded HTML.
+
+Every new MCP tool and REST endpoint should ship with tests. Conventions:
 
 - All tests use in-memory SQLite via `crate::db::open_memory()`.
 - **Exception:** full-command tests of `lific init` (_`cmd_init`_) exercise the
@@ -48,23 +128,57 @@ The whole suite runs in seconds. Every new MCP tool and REST endpoint ships with
 
 ## What CI runs (run it before pushing)
 
-CI checks formatting and lints with warnings-as-errors, so `cargo test` passing is not enough. Reproduce the Rust checks locally with:
+CI checks formatting and lints with warnings-as-errors, so `cargo test`
+passing is not enough. Reproduce the Rust checks locally with:
 
 ```bash
-cargo fmt --all -- --check
-cargo clippy --all-targets -- -D warnings
-cargo test --all-targets
+devenv tasks run lific:rust-test
 ```
 
 If clippy complains, fix it. Don't `#[allow]` a lint without a comment explaining why.
 
-To run the same formatting check before each commit, install the repository's `pre-commit` hook once:
+The devenv shell installs the repository's generated pre-commit hooks. Treefmt
+and the native Clippy hook use the pinned toolchain; no separate installation
+is needed:
 
 ```bash
-pre-commit install
+devenv test
 ```
 
-Use `cargo fmt --all` to apply formatting fixes.
+`devenv test` also starts and stops the configured development processes, so it
+checks that the environment can launch the application. Use `treefmt` to apply
+formatting fixes across the configured languages.
+
+## Release builds
+
+Pushing a version tag runs the release workflow. It builds the embedded web UI
+and produces locked `release-dist` artifacts for Linux x86_64 and aarch64,
+macOS x86_64 and aarch64, and Windows x86_64 (MSVC). Linux targets use the
+devenv-provided Zig linker locally; the other targets build on their native
+GitHub Actions runners. The workflow verifies artifact existence, smoke-tests
+native artifacts, publishes SHA-256 checksums, and attaches all five binaries
+to the GitHub release.
+
+For a local Linux cross-build:
+
+```bash
+devenv --profile release-linux shell
+devenv tasks run lific:release:aarch64-unknown-linux-gnu
+```
+
+On macOS, `devenv` also provides both Apple Rust targets and the Apple SDK
+used by the credential and SQLite stacks. Build the current Mac
+architecture normally;
+on Apple Silicon, build the Intel artifact with:
+
+```bash
+devenv --profile release-darwin shell
+devenv tasks run lific:release:aarch64-apple-darwin
+devenv tasks run lific:release:x86_64-apple-darwin
+```
+
+Platform signing, notarization, installers, and update channels are later
+phases of the release plan, not part of this MVP.
 
 ## Commit message style
 

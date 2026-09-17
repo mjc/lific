@@ -272,7 +272,7 @@ async function test(name: string, run: () => Promise<void>) {
 
 try {
   await server.listen(); base = server.resolvedUrls!.local[0];
-  browser = await chromium.launch({ headless: true });
+  browser = await chromium.launch({ headless: true, executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH });
 
   await test("separate disclosure and Overview links", async () => {
     const s = await session(); const { page, aside } = s;
@@ -637,7 +637,7 @@ try {
           await openPopup(link, gesture, async popup => {
             assert.equal(new URL(popup.url()).hash, href);
             assert.equal(new URL(page.url()).hash, "#/ONE/issues");
-            await popup.locator('aside a[title="Account settings"]').waitFor();
+            await popup.locator('aside a[title="Account settings"]').waitFor({ state: "attached" });
             await settle({ ...s, page: popup });
           });
         }
