@@ -182,7 +182,7 @@ async function main() {
   const uploaded = await fetch(`${a.base}/api/attachments`, { method: "POST", headers: { Authorization: `Bearer ${a.token}` }, body: form });
   assert(uploaded.ok, await uploaded.text());
 
-  browser = await chromium.launch();
+  browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH });
   const source = await signedPage(a.base, a.token);
   await source.goto(`${a.base}/ARC/overview`);
   const exportPanel = source.locator("section").filter({ has: source.getByRole("heading", { name: "Project archive", exact: true }) });

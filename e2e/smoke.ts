@@ -152,7 +152,7 @@ async function main(): Promise<number> {
     await waitForServer(`${base}/`, 30_000);
 
     // ---- browser -------------------------------------------------------
-    browser = await chromium.launch();
+    browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH });
     const context = await browser.newContext();
 
     // Sign in the way a person does. The login flow stores the bearer token
