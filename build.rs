@@ -28,8 +28,16 @@ fn main() {
 
     match (newest_mtime(dist), newest_mtime(src)) {
         (None, _) => {
+            if matches!(
+                std::env::var("PROFILE").as_deref(),
+                Ok("release" | "release-dist")
+            ) {
+                panic!(
+                    "web/dist is missing or empty; build the frontend first with `bun run build` in web/"
+                );
+            }
             println!(
-                "cargo:warning=web/dist is missing or empty; the binary will ship without the web UI (run `bun run build` in web/)"
+                "cargo:warning=web/dist is missing or empty; development builds use the frontend dev server (run `bun run build` for an embedded UI)"
             );
         }
         (Some(dist_mtime), Some(src_mtime)) if src_mtime > dist_mtime => {
@@ -47,6 +55,9 @@ fn newest_mtime(dir: &Path) -> Option<SystemTime> {
     let mut newest: Option<SystemTime> = None;
     let entries = std::fs::read_dir(dir).ok()?;
     for entry in entries.flatten() {
+        if entry.file_name() == ".gitkeep" {
+            continue;
+        }
         let path = entry.path();
         let candidate = if path.is_dir() {
             newest_mtime(&path)
@@ -60,4 +71,23 @@ fn newest_mtime(dir: &Path) -> Option<SystemTime> {
         }
     }
     newest
+}
+
+#[cfg(test)]
+mod tests {
+    use super::newest_mtime;
+
+    #[test]
+    fn checkout_placeholder_is_not_a_built_frontend() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".gitkeep"), "").unwrap();
+        assert_eq!(newest_mtime(dir.path()), None);
+
+        let bundle = dir.path().join("index.html");
+        std::fs::write(&bundle, "fixture frontend").unwrap();
+        assert_eq!(
+            newest_mtime(dir.path()),
+            Some(std::fs::metadata(bundle).unwrap().modified().unwrap())
+        );
+    }
 }
