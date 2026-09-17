@@ -13,6 +13,8 @@ use std::path::Path;
 use std::time::SystemTime;
 
 fn main() {
+    // The frontend must be built before this crate; never create web/dist here.
+    // Builds must not mutate the source tree.
     let dist = Path::new("web/dist");
 
     // The built bundle: changing it must trigger a re-embed.
