@@ -2,7 +2,7 @@
 set -euo pipefail
 
 binary="${1:?usage: verify-release-binary.sh PATH_TO_BINARY}"
-if [[ "$binary" != /* ]]; then
+if [[ $binary != /* ]]; then
   binary="./$binary"
 fi
 
@@ -12,7 +12,7 @@ fi
 scratch="$(mktemp -d)"
 server_pid=""
 cleanup() {
-  if [[ -n "$server_pid" ]]; then
+  if [[ -n $server_pid ]]; then
     kill "$server_pid" 2>/dev/null || true
     wait "$server_pid" 2>/dev/null || true
   fi
@@ -31,12 +31,12 @@ if curl --connect-timeout 1 --max-time 2 --silent --output /dev/null "http://127
 fi
 
 LIFIC_INIT_ADMIN_NAME=Release \
-LIFIC_INIT_ADMIN_PASSWORD=release-smoke-password-123 \
+  LIFIC_INIT_ADMIN_PASSWORD=release-smoke-password-123 \
   "$binary" \
-    --config "$scratch/lific.toml" \
-    --db "$scratch/lific.db" \
-    start --init-if-missing --host 127.0.0.1 --port "$port" \
-    >"$scratch/server.log" 2>&1 &
+  --config "$scratch/lific.toml" \
+  --db "$scratch/lific.db" \
+  start --init-if-missing --host 127.0.0.1 --port "$port" \
+  >"$scratch/server.log" 2>&1 &
 server_pid=$!
 
 started=false
@@ -58,7 +58,7 @@ for _ in {1..60}; do
   sleep 1
 done
 
-if [[ "$started" != true ]] || ! kill -0 "$server_pid" 2>/dev/null; then
+if [[ $started != true ]] || ! kill -0 "$server_pid" 2>/dev/null; then
   cat "$scratch/server.log" >&2
   exit 1
 fi

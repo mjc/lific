@@ -21,10 +21,17 @@ jobs:
       - name: Install devenv
         shell: bash
         run: nix profile add nixpkgs#devenv
+      - name: Check formatting
+        shell: bash
+        env:
+          DEVENV_SKIP_TASKS: "1"
+        run: devenv tasks run lific:format-check
       - name: Validate devenv and generated hooks
         run: devenv test
       - name: Run the complete check task
         shell: devenv shell -- bash -e {0}
+        env:
+          DEVENV_SKIP_TASKS: "1"
         run: devenv tasks run lific:check
 
   windows:
@@ -61,6 +68,8 @@ jobs:
         run: nix profile add nixpkgs#devenv
       - name: Run the browser task graph
         shell: bash
+        env:
+          DEVENV_SKIP_TASKS: "1"
         run: devenv --profile e2e tasks run lific:e2e
       - name: Retain native-link browser traces on failure
         if: failure()
@@ -84,4 +93,6 @@ jobs:
         run: nix profile add nixpkgs#devenv
       - name: Build and check documentation
         shell: bash
+        env:
+          DEVENV_SKIP_TASKS: "1"
         run: devenv tasks run lific:docs:check

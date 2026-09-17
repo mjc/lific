@@ -1,4 +1,10 @@
-{lib, pkgs, config, ...}: let
+{
+  lib,
+  pkgs,
+  config,
+  ...
+}:
+let
   repoRoot = config.git.root;
   darwinTargets = lib.optionals pkgs.stdenv.hostPlatform.isDarwin [
     "x86_64-apple-darwin"
@@ -23,7 +29,8 @@
     echo "devenv Chromium executable not found" >&2
     exit 1
   '';
-in {
+in
+{
   # The current Darwin SDK bundles CoreFoundation, Security, and the other
   # system frameworks. Legacy individual framework aliases were removed.
   apple.sdk = lib.mkIf pkgs.stdenv.hostPlatform.isDarwin pkgs.apple-sdk;
@@ -31,16 +38,33 @@ in {
   languages.rust = {
     enable = true;
     channel = "stable";
-    components = ["rustc" "cargo" "clippy" "rustfmt" "rust-analyzer" "rust-src"];
+    components = [
+      "rustc"
+      "cargo"
+      "clippy"
+      "rustfmt"
+      "rust-analyzer"
+      "rust-src"
+    ];
     targets = [
       "x86_64-unknown-linux-gnu"
       "aarch64-unknown-linux-gnu"
-    ] ++ darwinTargets;
+    ]
+    ++ darwinTargets;
   };
 
   languages.javascript = {
     enable = true;
     bun.enable = true;
+  };
+
+  treefmt = {
+    enable = true;
+    config.programs = {
+      nixfmt.enable = true;
+      rustfmt.enable = true;
+      shfmt.enable = true;
+    };
   };
 
   packages = with pkgs; [
@@ -114,22 +138,34 @@ in {
     "lific:install:web" = {
       cwd = "${repoRoot}/web";
       exec = "bun install --frozen-lockfile";
-      execIfModified = ["package.json" "bun.lock"];
+      execIfModified = [
+        "package.json"
+        "bun.lock"
+      ];
     };
     "lific:install:e2e" = {
       cwd = "${repoRoot}/e2e";
       exec = "bun install --frozen-lockfile";
-      execIfModified = ["package.json" "bun.lock"];
+      execIfModified = [
+        "package.json"
+        "bun.lock"
+      ];
     };
     "lific:install:site" = {
       cwd = "${repoRoot}/site";
       exec = "bun install --frozen-lockfile";
-      execIfModified = ["package.json" "bun.lock"];
+      execIfModified = [
+        "package.json"
+        "bun.lock"
+      ];
     };
     "lific:install:promo" = {
       cwd = "${repoRoot}/promo";
       exec = "bun install --frozen-lockfile";
-      execIfModified = ["package.json" "bun.lock"];
+      execIfModified = [
+        "package.json"
+        "bun.lock"
+      ];
     };
     "lific:install" = {
       after = [
@@ -143,7 +179,6 @@ in {
     "lific:rust-check" = {
       cwd = repoRoot;
       exec = ''
-        cargo fmt --all -- --check
         cargo clippy --all-targets --locked -- -D warnings
         cargo test --all-targets --locked
       '';
@@ -151,34 +186,44 @@ in {
     "lific:web:check" = {
       cwd = "${repoRoot}/web";
       exec = "bun run check && bun test";
-      after = ["lific:install:web"];
+      after = [ "lific:install:web" ];
     };
     "lific:web:build" = {
       cwd = "${repoRoot}/web";
       exec = "bun run build";
-      after = ["lific:web:check"];
+      after = [ "lific:web:check" ];
     };
     "lific:docs:build" = {
       cwd = "${repoRoot}/site";
       exec = "bun run build";
-      after = ["lific:install:site"];
+      after = [ "lific:install:site" ];
     };
     "lific:docs:check" = {
       cwd = repoRoot;
       exec = "bun scripts/check-docs.mjs";
-      after = ["lific:docs:build"];
+      after = [ "lific:docs:build" ];
+    };
+    "lific:format-check" = {
+      cwd = repoRoot;
+      exec = "treefmt --ci";
     };
     "lific:release-test" = {
       cwd = repoRoot;
       exec = "bash scripts/verify-release-binary.test.sh";
     };
     "lific:check" = {
-      after = ["lific:rust-check" "lific:web:build" "lific:docs:check" "lific:release-test"];
+      after = [
+        "lific:format-check"
+        "lific:rust-check"
+        "lific:web:build"
+        "lific:docs:check"
+        "lific:release-test"
+      ];
     };
     "lific:debug-build" = {
       cwd = repoRoot;
       exec = "cargo build --locked";
-      after = ["lific:web:build"];
+      after = [ "lific:web:build" ];
     };
     "lific:e2e" = {
       cwd = "${repoRoot}/e2e";
@@ -190,12 +235,15 @@ in {
         bun run mobile-nav
         bun run context-menu
       '';
-      after = ["lific:debug-build" "lific:install:e2e"];
+      after = [
+        "lific:debug-build"
+        "lific:install:e2e"
+      ];
     };
     "lific:release" = {
       cwd = repoRoot;
       exec = "lific-build-release";
-      after = ["lific:web:build"];
+      after = [ "lific:web:build" ];
     };
   };
 
@@ -220,18 +268,29 @@ in {
       };
       ready.period = 1;
       ready.timeout = 600;
-      after = ["lific:state"];
+      after = [ "lific:state" ];
       watch = {
-        paths = [./src ./Cargo.toml ./Cargo.lock];
-        extensions = ["rs" "toml" "lock"];
-        ignore = ["target"];
+        paths = [
+          ./src
+          ./Cargo.toml
+          ./Cargo.lock
+        ];
+        extensions = [
+          "rs"
+          "toml"
+          "lock"
+        ];
+        ignore = [ "target" ];
       };
     };
     frontend = {
       exec = "bun run dev";
       cwd = "${repoRoot}/web";
       env.VITE_API_TARGET = "http://127.0.0.1:${builtins.toString config.processes.backend.ports.http.value}";
-      after = ["lific:install:web" "devenv:processes:backend@ready"];
+      after = [
+        "lific:install:web"
+        "devenv:processes:backend@ready"
+      ];
       ready.http.get = {
         port = 5173;
         path = "/";
@@ -241,25 +300,19 @@ in {
   };
 
   profiles.e2e.module = {
-    packages = [playwrightBrowsers];
+    packages = [ playwrightBrowsers ];
     env.PLAYWRIGHT_BROWSERS_PATH = "${playwrightBrowsers}";
     env.PLAYWRIGHT_EXECUTABLE_PATH = "${playwrightChromium}";
   };
 
   git-hooks.hooks = {
-    cargo-fmt = {
-      enable = true;
-      entry = "cargo fmt --all -- --check";
-      language = "system";
-      pass_filenames = false;
-      types = ["rust"];
-    };
+    treefmt.enable = true;
     cargo-clippy = {
       enable = true;
       entry = "cargo clippy --all-targets --locked -- -D warnings";
       language = "system";
       pass_filenames = false;
-      types = ["rust"];
+      types = [ "rust" ];
     };
   };
 

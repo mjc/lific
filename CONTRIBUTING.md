@@ -63,10 +63,9 @@ devenv tasks run lific:check
 ```
 
 The check task installs only the JavaScript dependencies required by each
-dependent task, then runs Rust format,
-Clippy, and all-target tests; Svelte checks and unit tests; the frontend build;
-and the docs build/link checks. The browser suites build their prerequisites
-through the devenv task graph:
+dependent task, then runs treefmt, Clippy, and all-target tests; Svelte checks
+and unit tests; the frontend build; and the docs build/link checks. The browser
+suites build their prerequisites through the devenv task graph:
 
 ```bash
 devenv --profile e2e shell
@@ -139,7 +138,7 @@ devenv test
 checks that the environment can launch the application. The task commands
 above are the complete source, frontend, and documentation checks.
 
-Use `cargo fmt --all` to apply formatting fixes.
+Use `treefmt` to apply formatting fixes across the configured languages.
 
 ## Release builds
 

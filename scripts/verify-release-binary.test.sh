@@ -5,7 +5,7 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 scratch="$(mktemp -d)"
 occupied_pid=""
 cleanup() {
-  if [[ -n "$occupied_pid" ]]; then
+  if [[ -n $occupied_pid ]]; then
     kill "$occupied_pid" 2>/dev/null || true
     wait "$occupied_pid" 2>/dev/null || true
   fi
