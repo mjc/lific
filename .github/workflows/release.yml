@@ -83,23 +83,19 @@ jobs:
     needs: verify
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - uses: oven-sh/setup-bun@v2
-      - name: Check and build web frontend
-        run: |
-          bun install --frozen-lockfile
-          bun run check
-          bun test
-          bun run build
-        working-directory: web
-      - name: Format
-        run: cargo fmt --all -- --check
-      - name: Clippy
-        run: cargo clippy --all-targets --locked -- -D warnings
-      - name: Test
-        run: cargo test --all-targets --locked
+      - uses: actions/checkout@v5
+      - uses: cachix/install-nix-action@v31
+      - uses: cachix/cachix-action@v16
+        with:
+          name: devenv
+      - name: Install devenv
+        shell: bash
+        run: nix profile add nixpkgs#devenv
+      - name: Validate devenv and generated hooks
+        run: devenv test
+      - name: Run the complete check task
+        shell: devenv shell -- bash -e {0}
+        run: lific-check
 
   build:
     needs: [verify, test]
@@ -109,16 +105,20 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             name: lific-linux-x86_64
+            devenv: true
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
             name: lific-linux-aarch64
             cross: true
+            devenv: true
           - target: x86_64-apple-darwin
             os: macos-latest
             name: lific-macos-x86_64
+            devenv: true
           - target: aarch64-apple-darwin
             os: macos-latest
             name: lific-macos-aarch64
+            devenv: true
           # MSVC rather than GNU: it is rustup's default host toolchain on
           # Windows and carries no mingw runtime dependency. `cross` cannot
           # target MSVC, so this builds natively on a Windows runner. `ext`
@@ -127,11 +127,23 @@ jobs:
             os: windows-latest
             name: lific-windows-x86_64
             ext: .exe
+            devenv: false
 
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+      - uses: cachix/install-nix-action@v31
+        if: matrix.devenv
+      - uses: cachix/cachix-action@v16
+        if: matrix.devenv
+        with:
+          name: devenv
+      - name: Install devenv
+        if: matrix.devenv
+        shell: bash
+        run: nix profile add nixpkgs#devenv
       - uses: dtolnay/rust-toolchain@stable
+        if: ${{ !matrix.devenv }}
         with:
           targets: ${{ matrix.target }}
 
@@ -139,23 +151,26 @@ jobs:
       # picks it up and bakes it into the release binary. Without this
       # the binary would ship without a web frontend.
       - uses: oven-sh/setup-bun@v2
-      - name: Build web frontend
+        if: ${{ !matrix.devenv }}
+      - name: Install devenv-managed dependencies
+        if: matrix.devenv
+        shell: devenv shell -- bash -e {0}
+        run: lific-install
+      - name: Build web frontend on Windows
+        if: ${{ !matrix.devenv }}
         run: |
           cd web
           bun install --frozen-lockfile
           bun run build
         shell: bash
 
-      - name: Install cross
-        if: matrix.cross
-        run: cargo install cross --version 0.2.5 --locked
+      - name: Build release with devenv
+        if: matrix.devenv
+        shell: devenv shell -- bash -e {0}
+        run: lific-build-release ${{ matrix.target }}
 
-      - name: Build (cross)
-        if: matrix.cross
-        run: cross build --locked --profile release-dist --target ${{ matrix.target }}
-
-      - name: Build (native)
-        if: ${{ !matrix.cross }}
+      - name: Build Windows release
+        if: ${{ !matrix.devenv }}
         run: cargo build --locked --profile release-dist --target ${{ matrix.target }}
 
       - name: Rename binary

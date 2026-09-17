@@ -82,7 +82,7 @@ const deadline = setTimeout(() => { console.error("Mobile navigation test deadli
 let browser;
 try {
   await server.listen();
-  browser = await chromium.launch({ headless: true });
+  browser = await chromium.launch({ headless: true, executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH });
   const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
   page.setDefaultTimeout(8_000);
   const errors: string[] = [];
@@ -125,7 +125,8 @@ try {
   await page.goForward(); await depth(2);
   assert.equal(await projectPane.getAttribute("inert"), null);
   const popupReady = page.context().waitForEvent("page");
-  await projectPane.getByRole("link", { name: "Issues", exact: true }).click({ modifiers: ["Control"] });
+  const modifier = process.platform === "darwin" ? "Meta" : "Control";
+  await projectPane.getByRole("link", { name: "Issues", exact: true }).click({ modifiers: [modifier] });
   const popup = await popupReady;
   await popup.waitForLoadState();
   assert.equal(new URL(popup.url()).hash, "#/ONE/issues");

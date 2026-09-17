@@ -20,12 +20,12 @@ The repository provides the development toolchain and project commands through
 devenv allow
 ```
 
-Enter the shell explicitly for an interactive session, or prefix individual
-commands with `devenv shell --`:
+Enter the shell explicitly for an interactive session. Once `DEVENV_ROOT`
+points at this checkout, run project commands directly:
 
 ```bash
 devenv shell
-devenv shell -- lific-check
+lific-check
 ```
 
 Install every JavaScript workspace from its lockfile with:
@@ -43,11 +43,10 @@ cargo build           # debug binary
 lific-build-release   # locked release-dist binary
 ```
 
-Run the local server and frontend development server in separate terminals:
+Start the backend and frontend together through devenv's native process manager:
 
 ```bash
-lific-start
-lific-web-dev
+devenv up
 ```
 
 ## Tests
@@ -58,13 +57,12 @@ lific-check
 
 `lific-check` installs locked JavaScript dependencies, then runs Rust format,
 Clippy, and all-target tests; Svelte checks and unit tests; the frontend build;
-and the docs build/link checks. The browser suites require a debug binary and
-fresh frontend assets:
+and the docs build/link checks. The browser suites build their prerequisites
+through the devenv task graph:
 
 ```bash
-devenv shell -- cargo build --locked
-devenv shell -- lific-web-build
-devenv shell -- lific-e2e
+devenv --profile e2e shell
+devenv --profile e2e tasks run lific:e2e
 ```
 
 The checks exercise these behaviors:
@@ -116,15 +114,17 @@ CI checks formatting and lints with warnings-as-errors, so `cargo test`
 passing is not enough. Reproduce the Rust checks locally with:
 
 ```bash
-devenv shell -- lific-rust-check
+lific-rust-check
 ```
 
 If clippy complains, fix it. Don't `#[allow]` a lint without a comment explaining why.
 
-To run the same formatting check before each commit, install the repository's `pre-commit` hook once:
+The devenv shell installs the repository's generated pre-commit hooks. They use
+the same pinned Rust toolchain as the check task; no separate installation is
+needed:
 
 ```bash
-pre-commit install
+devenv test
 ```
 
 Use `cargo fmt --all` to apply formatting fixes.
@@ -133,26 +133,26 @@ Use `cargo fmt --all` to apply formatting fixes.
 
 Pushing a version tag runs the release workflow. It builds the embedded web UI
 and produces locked `release-dist` artifacts for Linux x86_64 and aarch64,
-macOS x86_64 and aarch64, and Windows x86_64 (MSVC). Linux aarch64 uses the
-cross-build profile locally; the other targets build on their native GitHub
-Actions runners. The workflow verifies artifact existence, smoke-tests native
-artifacts, publishes SHA-256 checksums, and attaches all five binaries to the
-GitHub release.
+macOS x86_64 and aarch64, and Windows x86_64 (MSVC). Linux targets use the
+devenv-provided Zig linker locally; the other targets build on their native
+GitHub Actions runners. The workflow verifies artifact existence, smoke-tests
+native artifacts, publishes SHA-256 checksums, and attaches all five binaries
+to the GitHub release.
 
 For a local Linux cross-build:
 
 ```bash
-devenv --profile cross shell -- lific-build-release aarch64-unknown-linux-gnu
+lific-build-release aarch64-unknown-linux-gnu
 ```
 
-On macOS, `devenv` also provides both Apple Rust targets and the native
-Security, CoreFoundation, and SystemConfiguration frameworks used by the
-credential and SQLite stacks. Build the current Mac architecture normally;
+On macOS, `devenv` also provides both Apple Rust targets and the versioned
+Apple SDK used by the credential and SQLite stacks. Build the current Mac
+architecture normally;
 on Apple Silicon, build the Intel artifact with:
 
 ```bash
-devenv shell -- lific-build-release
-devenv shell -- lific-build-release x86_64-apple-darwin
+lific-build-release
+lific-build-release x86_64-apple-darwin
 ```
 
 Platform signing, notarization, installers, and update channels are later

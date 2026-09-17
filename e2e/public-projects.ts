@@ -303,7 +303,7 @@ async function main(): Promise<number> {
     server.stderr?.on("data", (d: Buffer) => (serverLog += d.toString()));
     await waitForServer(`${base}/`, 30_000);
 
-    browser = await chromium.launch();
+    browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH });
 
     // ---- 1. desktop: the list, with no session -------------------------
     {

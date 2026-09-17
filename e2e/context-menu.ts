@@ -76,7 +76,7 @@ const deadline = setTimeout(() => { console.error("Context menu test deadline ex
 let browser;
 try {
   await server.listen();
-  browser = await chromium.launch({ headless: true });
+  browser = await chromium.launch({ headless: true, executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH });
   const context = await browser.newContext({ viewport: { width: 390, height: 844 }, reducedMotion: "reduce", colorScheme: "light" });
   const page = await context.newPage();
   page.setDefaultTimeout(8_000);
