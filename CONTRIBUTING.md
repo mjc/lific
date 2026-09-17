@@ -25,22 +25,22 @@ points at this checkout, run project commands directly:
 
 ```bash
 devenv shell
-lific-check
+devenv tasks run lific:check
 ```
 
 Install every JavaScript workspace from its lockfile with:
 
 ```bash
-lific-install
+devenv tasks run lific:install
 ```
 
 The Rust binary can compile without the frontend, but release binaries must
 embed a current `web/dist/` through `rust-embed`:
 
 ```bash
-lific-web-build       # build web/dist
+devenv tasks run lific:web:build # build web/dist
 cargo build           # debug binary
-lific-build-release   # locked release-dist binary
+devenv tasks run lific:release # locked release-dist binary
 ```
 
 Start the backend and frontend together through devenv's native process manager:
@@ -49,20 +49,28 @@ Start the backend and frontend together through devenv's native process manager:
 devenv up
 ```
 
+The two processes are intentional: Vite provides frontend hot reload and API
+proxying during development, while the Rust process is the real server and
+embeds `web/dist` into release binaries. The backend restarts automatically
+when Rust source or Cargo configuration changes. Both bind to localhost by
+default; set `VITE_HOST` and `VITE_ALLOWED_HOSTS` explicitly when remote UI
+access is needed.
+
 ## Tests
 
 ```bash
-lific-check
+devenv tasks run lific:check
 ```
 
-`lific-check` installs locked JavaScript dependencies, then runs Rust format,
+The check task installs only the JavaScript dependencies required by each
+dependent task, then runs Rust format,
 Clippy, and all-target tests; Svelte checks and unit tests; the frontend build;
 and the docs build/link checks. The browser suites build their prerequisites
 through the devenv task graph:
 
 ```bash
 devenv --profile e2e shell
-devenv --profile e2e tasks run lific:e2e
+devenv tasks run lific:e2e
 ```
 
 The checks exercise these behaviors:
@@ -77,7 +85,7 @@ The checks exercise these behaviors:
   and ignored traffic, continued handshakes, broken-pipe termination, and EOF
   termination.
 - Web unit tests cover frontend helpers and state transitions that do not need
-  a browser. `lific-web-check` also typechecks the Svelte app and Vite config.
+  a browser. The web check task also typechecks the Svelte app and Vite config.
 - `smoke` starts a real binary, seeds a project, and visits the core overview,
   issue, page, board, settings, and navigation routes while checking rendered
   content and browser errors.
@@ -114,7 +122,7 @@ CI checks formatting and lints with warnings-as-errors, so `cargo test`
 passing is not enough. Reproduce the Rust checks locally with:
 
 ```bash
-lific-rust-check
+devenv tasks run lific:rust-check
 ```
 
 If clippy complains, fix it. Don't `#[allow]` a lint without a comment explaining why.
@@ -126,6 +134,10 @@ needed:
 ```bash
 devenv test
 ```
+
+`devenv test` also starts and stops the configured development processes, so it
+checks that the environment can launch the application. The task commands
+above are the complete source, frontend, and documentation checks.
 
 Use `cargo fmt --all` to apply formatting fixes.
 
@@ -142,6 +154,7 @@ to the GitHub release.
 For a local Linux cross-build:
 
 ```bash
+devenv tasks run lific:web:build
 lific-build-release aarch64-unknown-linux-gnu
 ```
 
@@ -151,6 +164,7 @@ architecture normally;
 on Apple Silicon, build the Intel artifact with:
 
 ```bash
+devenv tasks run lific:web:build
 lific-build-release
 lific-build-release x86_64-apple-darwin
 ```

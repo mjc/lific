@@ -95,7 +95,7 @@ jobs:
         run: devenv test
       - name: Run the complete check task
         shell: devenv shell -- bash -e {0}
-        run: lific-check
+        run: devenv tasks run lific:check
 
   build:
     needs: [verify, test]
@@ -155,7 +155,12 @@ jobs:
       - name: Install devenv-managed dependencies
         if: matrix.devenv
         shell: devenv shell -- bash -e {0}
-        run: lific-install
+        run: devenv tasks run lific:install:web
+
+      - name: Build web frontend
+        if: matrix.devenv
+        shell: devenv shell -- bash -e {0}
+        run: devenv tasks run lific:web:build
       - name: Build web frontend on Windows
         if: ${{ !matrix.devenv }}
         run: |

@@ -35,8 +35,12 @@ in {
     targets = ["aarch64-unknown-linux-gnu"] ++ darwinTargets;
   };
 
+  languages.javascript = {
+    enable = true;
+    bun.enable = true;
+  };
+
   packages = with pkgs; [
-    bun
     cargo-zigbuild
     curl
     git
@@ -50,78 +54,6 @@ in {
   env.RUSTC_WRAPPER = "";
 
   scripts = {
-    lific-install = {
-      exec = ''
-        set -euo pipefail
-        root="''${DEVENV_ROOT:?enter the devenv shell first}"
-        for directory in web e2e site promo; do
-          (cd "$root/$directory" && bun install --frozen-lockfile)
-        done
-      '';
-      description = "Install all Bun workspace dependencies from lockfiles";
-    };
-
-    lific-rust-check = {
-      exec = ''
-        set -euo pipefail
-        cd "''${DEVENV_ROOT:?enter the devenv shell first}"
-        cargo fmt --all -- --check
-        cargo clippy --all-targets --locked -- -D warnings
-        cargo test --all-targets --locked
-      '';
-      description = "Run Rust formatting, lint, and test checks";
-    };
-
-    lific-web-check = {
-      exec = ''
-        set -euo pipefail
-        (cd "''${DEVENV_ROOT:?enter the devenv shell first}/web" && bun run check && bun test)
-      '';
-      description = "Run Svelte typechecks and frontend unit tests";
-    };
-
-    lific-web-build = {
-      exec = ''
-        set -euo pipefail
-        (cd "''${DEVENV_ROOT:?enter the devenv shell first}/web" && bun run build)
-      '';
-      description = "Build the frontend embedded by the Rust binary";
-    };
-
-    lific-docs-check = {
-      exec = ''
-        set -euo pipefail
-        root="''${DEVENV_ROOT:?enter the devenv shell first}"
-        (cd "$root/site" && bun run build)
-        (cd "$root" && bun scripts/check-docs.mjs)
-      '';
-      description = "Build the docs site and check navigation, links, and MCP count";
-    };
-
-    lific-e2e = {
-      exec = ''
-        set -euo pipefail
-        root="''${DEVENV_ROOT:?enter the devenv shell first}"
-        test -d "''${PLAYWRIGHT_BROWSERS_PATH:-/nonexistent}" || {
-          echo "enter the e2e profile before running browser tests" >&2
-          exit 1
-        }
-        test -x "$root/target/debug/lific" || {
-          echo "build target/debug/lific before running E2E tests" >&2
-          exit 1
-        }
-        test -f "$root/web/dist/index.html" || {
-          echo "run lific-web-build before running E2E tests" >&2
-          exit 1
-        }
-        (cd "$root/e2e" && bun run smoke)
-        (cd "$root/e2e" && bun run archives)
-        (cd "$root/e2e" && bun run public)
-        (cd "$root/e2e" && bun run sidebar && bun run mobile-nav && bun run context-menu)
-      '';
-      description = "Run browser smoke, archive, public, sidebar, mobile, and context-menu suites";
-    };
-
     lific-verify-release = {
       exec = ''
         root="''${DEVENV_ROOT:?enter the devenv shell first}"
@@ -141,7 +73,6 @@ in {
       exec = ''
         set -euo pipefail
         root="''${DEVENV_ROOT:?enter the devenv shell first}"
-        (cd "$root/web" && bun run build)
         target="''${1:-$(rustc -vV | sed -n 's/^host: //p')}"
         case "$target" in
           x86_64-unknown-linux-gnu|aarch64-unknown-linux-gnu)
@@ -165,85 +96,114 @@ in {
       '';
       description = "Build a locked release-dist binary with the frontend embedded";
     };
-
-    lific-start = {
-      exec = ''
-        set -euo pipefail
-        root="''${DEVENV_ROOT:?enter the devenv shell first}"
-        state="''${DEVENV_STATE:-$root/.devenv/state}"
-        instance="$state/lific"
-        config="$instance/lific.toml"
-        db="$instance/lific.db"
-        mkdir -p "$instance"
-        if [ ! -f "$config" ] || [ ! -f "$db" ]; then
-          cargo run --manifest-path "$root/Cargo.toml" --locked -- \
-            --config "$config" --db "$db" init --no-service \
-            --name "''${LIFIC_DEV_ADMIN_NAME:-Devenv}" \
-            --auth-mode passwords \
-            --password "''${LIFIC_DEV_ADMIN_PASSWORD:-devenv-local-password}"
-        fi
-        cd "$root"
-        cargo run --locked -- --config "$config" --db "$db" start \
-          --host 127.0.0.1 --port "''${LIFIC_DEV_PORT:-3456}" "$@"
-      '';
-      description = "Start the local Lific server";
-    };
-
-    lific-web-dev = {
-      exec = ''
-        set -euo pipefail
-        root="''${DEVENV_ROOT:?enter the devenv shell first}"
-        if [ ! -d "$root/web/node_modules" ]; then
-          (cd "$root/web" && bun install --frozen-lockfile)
-        fi
-        (cd "$root/web" && bun run dev)
-      '';
-      description = "Start the Vite development server";
-    };
   };
 
   tasks = {
-    "lific:install" = {exec = "lific-install";};
+    "lific:state" = {
+      cwd = repoRoot;
+      exec = ''
+        mkdir -p "$DEVENV_STATE/lific"
+        test -f "$DEVENV_STATE/lific/lific.toml" || : > "$DEVENV_STATE/lific/lific.toml"
+      '';
+      status = "test -f \"$DEVENV_STATE/lific/lific.toml\"";
+    };
+
+    "lific:install:web" = {
+      cwd = "${repoRoot}/web";
+      exec = "bun install --frozen-lockfile";
+      execIfModified = ["package.json" "bun.lock"];
+    };
+    "lific:install:e2e" = {
+      cwd = "${repoRoot}/e2e";
+      exec = "bun install --frozen-lockfile";
+      execIfModified = ["package.json" "bun.lock"];
+    };
+    "lific:install:site" = {
+      cwd = "${repoRoot}/site";
+      exec = "bun install --frozen-lockfile";
+      execIfModified = ["package.json" "bun.lock"];
+    };
+    "lific:install:promo" = {
+      cwd = "${repoRoot}/promo";
+      exec = "bun install --frozen-lockfile";
+      execIfModified = ["package.json" "bun.lock"];
+    };
+    "lific:install" = {
+      after = [
+        "lific:install:web"
+        "lific:install:e2e"
+        "lific:install:site"
+        "lific:install:promo"
+      ];
+    };
+
     "lific:rust-check" = {
-      exec = "lific-rust-check";
-      after = ["lific:install"];
+      cwd = repoRoot;
+      exec = ''
+        cargo fmt --all -- --check
+        cargo clippy --all-targets --locked -- -D warnings
+        cargo test --all-targets --locked
+      '';
     };
-    "lific:web-check" = {
-      exec = "lific-web-check";
-      after = ["lific:install"];
+    "lific:web:check" = {
+      cwd = "${repoRoot}/web";
+      exec = "bun run check && bun test";
+      after = ["lific:install:web"];
     };
-    "lific:web-build" = {
-      exec = "lific-web-build";
-      after = ["lific:web-check"];
+    "lific:web:build" = {
+      cwd = "${repoRoot}/web";
+      exec = "bun run build";
+      after = ["lific:web:check"];
     };
-    "lific:docs-check" = {
-      exec = "lific-docs-check";
-      after = ["lific:install"];
+    "lific:docs:build" = {
+      cwd = "${repoRoot}/site";
+      exec = "bun run build";
+      after = ["lific:install:site"];
+    };
+    "lific:docs:check" = {
+      cwd = repoRoot;
+      exec = "bun scripts/check-docs.mjs";
+      after = ["lific:docs:build"];
     };
     "lific:check" = {
-      exec = ":";
-      after = ["lific:rust-check" "lific:web-build" "lific:docs-check"];
+      after = ["lific:rust-check" "lific:web:build" "lific:docs:check"];
     };
     "lific:debug-build" = {
-      exec = ''
-        cd "''${DEVENV_ROOT:?enter the devenv shell first}"
-        cargo build --locked
-      '';
-      after = ["lific:web-build"];
+      cwd = repoRoot;
+      exec = "cargo build --locked";
+      after = ["lific:web:build"];
     };
     "lific:e2e" = {
-      exec = "lific-e2e";
-      after = ["lific:debug-build"];
+      cwd = "${repoRoot}/e2e";
+      exec = ''
+        bun run smoke
+        bun run archives
+        bun run public
+        bun run sidebar
+        bun run mobile-nav
+        bun run context-menu
+      '';
+      after = ["lific:debug-build" "lific:install:e2e"];
     };
     "lific:release" = {
+      cwd = repoRoot;
       exec = "lific-build-release";
-      after = ["lific:web-build"];
+      after = ["lific:web:build"];
     };
   };
 
   processes = {
     backend = {
-      exec = "lific-start";
+      exec = ''
+        exec env \
+          LIFIC_INIT_ADMIN_NAME="''${LIFIC_DEV_ADMIN_NAME:-Devenv}" \
+          LIFIC_INIT_ADMIN_PASSWORD="''${LIFIC_DEV_ADMIN_PASSWORD:-devenv-local-password}" \
+          cargo run --locked -- \
+            --config "$DEVENV_STATE/lific/lific.toml" \
+            --db "$DEVENV_STATE/lific/lific.db" \
+            start --init-if-missing --host 127.0.0.1 \
+            --port "''${LIFIC_DEV_PORT:-3456}"
+      '';
       cwd = repoRoot;
       ports.http.allocate = 3456;
       env.LIFIC_DEV_PORT = builtins.toString config.processes.backend.ports.http.value;
@@ -251,12 +211,25 @@ in {
         port = config.processes.backend.ports.http.value;
         path = "/api/health";
       };
+      ready.period = 1;
+      ready.timeout = 600;
+      after = ["lific:state"];
+      watch = {
+        paths = [./src ./Cargo.toml ./Cargo.lock];
+        extensions = ["rs" "toml" "lock"];
+        ignore = ["target"];
+      };
     };
     frontend = {
-      exec = "lific-web-dev";
-      cwd = repoRoot;
+      exec = "bun run dev";
+      cwd = "${repoRoot}/web";
       env.VITE_API_TARGET = "http://127.0.0.1:${builtins.toString config.processes.backend.ports.http.value}";
-      after = ["devenv:processes:backend@ready"];
+      after = ["lific:install:web" "devenv:processes:backend@ready"];
+      ready.http.get = {
+        port = 5173;
+        path = "/";
+      };
+      ready.timeout = 30;
     };
   };
 
