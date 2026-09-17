@@ -32,7 +32,10 @@ in {
     enable = true;
     channel = "stable";
     components = ["rustc" "cargo" "clippy" "rustfmt" "rust-analyzer" "rust-src"];
-    targets = ["aarch64-unknown-linux-gnu"] ++ darwinTargets;
+    targets = [
+      "x86_64-unknown-linux-gnu"
+      "aarch64-unknown-linux-gnu"
+    ] ++ darwinTargets;
   };
 
   languages.javascript = {
@@ -165,8 +168,12 @@ in {
       exec = "bun scripts/check-docs.mjs";
       after = ["lific:docs:build"];
     };
+    "lific:release-test" = {
+      cwd = repoRoot;
+      exec = "bash scripts/verify-release-binary.test.sh";
+    };
     "lific:check" = {
-      after = ["lific:rust-check" "lific:web:build" "lific:docs:check"];
+      after = ["lific:rust-check" "lific:web:build" "lific:docs:check" "lific:release-test"];
     };
     "lific:debug-build" = {
       cwd = repoRoot;

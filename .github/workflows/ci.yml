@@ -83,5 +83,5 @@ jobs:
         shell: bash
         run: nix profile add nixpkgs#devenv
       - name: Build and check documentation
-        shell: devenv shell -- bash -e {0}
-        run: lific-docs-check
+        shell: bash
+        run: devenv tasks run lific:docs-check
