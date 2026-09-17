@@ -730,6 +730,18 @@ mod tests {
     }
 
     #[test]
+    fn manual_json_snippet_preserves_machine_values() {
+        let entry = find_client("opencode")
+            .unwrap()
+            .compile(&ServerConfig::remote("https://host/\u{202e}forged", "key"));
+        let snippet = manual_json_snippet(&entry);
+        let value: serde_json::Value = serde_json::from_str(&snippet).unwrap();
+
+        assert_eq!(value["mcp"]["lific"]["url"], "https://host/\u{202e}forged");
+        assert!(snippet.contains('\u{202e}'));
+    }
+
+    #[test]
     fn toml_sets_only_our_table_and_preserves_comments() {
         let guard = tmp();
         let dir = guard.path().join("proj");

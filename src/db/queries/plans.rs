@@ -332,11 +332,20 @@ pub fn update_plan(conn: &Connection, id: i64, input: &UpdatePlan) -> Result<Pla
                 params![status, id],
             )?;
         }
-        if let Some(anchor) = input.issue_id {
-            conn.execute(
-                "UPDATE plans SET issue_id = ?1 WHERE id = ?2",
-                params![anchor, id],
-            )?;
+        match &input.issue_id {
+            FieldUpdate::Keep => {}
+            FieldUpdate::Clear => {
+                conn.execute(
+                    "UPDATE plans SET issue_id = NULL WHERE id = ?1",
+                    params![id],
+                )?;
+            }
+            FieldUpdate::Set(anchor) => {
+                conn.execute(
+                    "UPDATE plans SET issue_id = ?1 WHERE id = ?2",
+                    params![anchor, id],
+                )?;
+            }
         }
         Ok(())
     })?;
