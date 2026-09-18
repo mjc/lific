@@ -96,29 +96,6 @@ jobs:
       - name: Build and check documentation
         run: devenv tasks run lific:docs:check
 
-  windows:
-    # Keep native Windows compilation, Clippy, and tests as a CI gate while
-    # the release workflow transitions to a dedicated MSVC build.
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Ensure web/dist exists for rust-embed
-        run: mkdir -p web/dist
-        shell: bash
-
-      - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
-
-      - name: Test
-        run: cargo test --all-targets
-
   windows-msvc-cross-build:
     # This is the proposed release path: Linux owns the reproducible Devenv
     # build, while Windows executes the exact uploaded bytes below.
