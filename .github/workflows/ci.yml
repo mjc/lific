@@ -42,11 +42,42 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ runner.arch }}-check-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-${{ runner.arch }}-check-
+      - name: Run project, hook, and documentation checks
+        run: devenv tasks run lific:check devenv:git-hooks:run lific:docs:check
+
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
+      - name: Cache individual Devenv outputs
+        uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+        with:
+          # The store-path identity covers the locked environment and profile.
+          use-gha-cache: true
+          use-flakehub: false
+          diagnostic-endpoint: ""
+      - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
+        with:
+          name: devenv
+      - name: Install devenv
+        shell: bash
+        run: nix profile add "github:cachix/devenv/$(jq -r '.nodes.devenv.locked.rev' devenv.lock)#devenv"
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
           key: cargo-${{ runner.os }}-${{ runner.arch }}-e2e-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             cargo-${{ runner.os }}-${{ runner.arch }}-e2e-
-      - name: Run the shared project and browser task graph
-        run: devenv --profile e2e tasks run lific:check devenv:git-hooks:run lific:docs:check lific:e2e
+      - name: Run the browser task graph
+        run: devenv --profile e2e tasks run lific:e2e
       - name: Retain native-link browser traces on failure
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
