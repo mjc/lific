@@ -4,7 +4,7 @@
   ...
 }:
 let
-  repoRoot = config.git.root;
+  repoRoot = if config.git.root != null then config.git.root else builtins.toString ./.;
   playwrightBrowsers = pkgs.playwright-driver.browsers.override {
     withChromium = true;
     withChromiumHeadlessShell = true;
@@ -24,6 +24,38 @@ let
     echo "devenv Chromium executable not found" >&2
     exit 1
   '';
+  chromiumRuntimePackages = with pkgs; [
+    alsa-lib
+    at-spi2-atk
+    atk
+    cairo
+    cups
+    dbus
+    expat
+    fontconfig
+    freetype
+    glib
+    gtk3
+    libdrm
+    libxkbcommon
+    libxshmfence
+    mesa
+    nspr
+    nss
+    pango
+    wayland
+    xorg.libX11
+    xorg.libXcomposite
+    xorg.libXdamage
+    xorg.libXext
+    xorg.libXfixes
+    xorg.libXi
+    xorg.libXrandr
+    xorg.libXrender
+    xorg.libXcursor
+    xorg.libXtst
+    xorg.libxcb
+  ];
 in
 {
   languages.rust = {
@@ -55,6 +87,10 @@ in
     };
     promo.module = {
       languages.javascript.directory = "${repoRoot}/promo";
+      packages = pkgs.lib.optionals pkgs.stdenv.isLinux chromiumRuntimePackages;
+      env.LD_LIBRARY_PATH = pkgs.lib.optionalString pkgs.stdenv.isLinux (
+        pkgs.lib.makeLibraryPath chromiumRuntimePackages
+      );
     };
     release-linux.module = {
       languages.rust.targets = [
@@ -69,12 +105,36 @@ in
         cargo-zigbuild
         zig
       ];
+      tasks = {
+        "lific:release:x86_64-unknown-linux-gnu" = {
+          cwd = repoRoot;
+          exec = "cargo zigbuild --locked --profile release-dist --target x86_64-unknown-linux-gnu";
+          after = [ "lific:web:build" ];
+        };
+        "lific:release:aarch64-unknown-linux-gnu" = {
+          cwd = repoRoot;
+          exec = "cargo zigbuild --locked --profile release-dist --target aarch64-unknown-linux-gnu";
+          after = [ "lific:web:build" ];
+        };
+      };
     };
     release-darwin.module = {
       languages.rust.targets = [
         "x86_64-apple-darwin"
         "aarch64-apple-darwin"
       ];
+      tasks = {
+        "lific:release:x86_64-apple-darwin" = {
+          cwd = repoRoot;
+          exec = "cargo build --locked --profile release-dist --target x86_64-apple-darwin";
+          after = [ "lific:web:build" ];
+        };
+        "lific:release:aarch64-apple-darwin" = {
+          cwd = repoRoot;
+          exec = "cargo build --locked --profile release-dist --target aarch64-apple-darwin";
+          after = [ "lific:web:build" ];
+        };
+      };
     };
   };
 
@@ -104,14 +164,13 @@ in
   env.CARGO_TERM_COLOR = "always";
   env.RUST_BACKTRACE = "1";
   unsetEnvVars = [ "RUSTC_WRAPPER" ];
+  enterTest = "devenv tasks run lific:check --mode before";
   tasks = {
-    # The default shell installs web dependencies natively. This task remains
-    # only because the e2e profile must build the web project from a different
-    # JavaScript directory before it can launch browser tests.
+    # The e2e profile must build the web project from a different JavaScript
+    # directory before it can launch browser tests.
     "lific:install:web" = {
       cwd = "${repoRoot}/web";
       exec = "bun install --frozen-lockfile";
-      after = [ "devenv:enterShell" ];
     };
 
     "lific:rust-test" = {
@@ -122,7 +181,6 @@ in
     "lific:web:check" = {
       cwd = "${repoRoot}/web";
       exec = "bun run check && bun test";
-      after = [ "devenv:enterShell" ];
     };
     "lific:web:build" = {
       cwd = "${repoRoot}/web";
@@ -137,7 +195,6 @@ in
     "lific:docs:build" = {
       cwd = "${repoRoot}/site";
       exec = "bun run build";
-      after = [ "devenv:enterShell" ];
     };
     "lific:docs:check" = {
       cwd = repoRoot;
@@ -147,7 +204,6 @@ in
     "lific:promo:check" = {
       cwd = "${repoRoot}/promo";
       exec = "bun run lint";
-      after = [ "devenv:enterShell" ];
     };
     "lific:promo:render" = {
       cwd = "${repoRoot}/promo";
@@ -159,7 +215,6 @@ in
       exec = "bash scripts/verify-release-binary.test.sh";
     };
     "lific:check" = {
-      before = [ "devenv:enterTest" ];
       after = [
         "lific:rust-test"
         "lific:release-test"
@@ -184,26 +239,6 @@ in
         "lific:debug-build"
         "lific:install:web"
       ];
-    };
-    "lific:release:x86_64-unknown-linux-gnu" = {
-      cwd = repoRoot;
-      exec = "cargo zigbuild --locked --profile release-dist --target x86_64-unknown-linux-gnu";
-      after = [ "lific:web:build" ];
-    };
-    "lific:release:aarch64-unknown-linux-gnu" = {
-      cwd = repoRoot;
-      exec = "cargo zigbuild --locked --profile release-dist --target aarch64-unknown-linux-gnu";
-      after = [ "lific:web:build" ];
-    };
-    "lific:release:x86_64-apple-darwin" = {
-      cwd = repoRoot;
-      exec = "cargo build --locked --profile release-dist --target x86_64-apple-darwin";
-      after = [ "lific:web:build" ];
-    };
-    "lific:release:aarch64-apple-darwin" = {
-      cwd = repoRoot;
-      exec = "cargo build --locked --profile release-dist --target aarch64-apple-darwin";
-      after = [ "lific:web:build" ];
     };
   };
 

@@ -362,6 +362,10 @@ devenv shell
 devenv tasks run lific:debug-build
 ```
 
+To activate Devenv automatically when changing into the checkout, add the
+Devenv hook for your shell once (for zsh, `eval "$(devenv hook zsh)"`), then
+run `devenv allow` in this checkout.
+
 Release builds always build and embed the Svelte 5 web UI:
 
 ```bash
