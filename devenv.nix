@@ -204,20 +204,35 @@ in
           exec = lockedBunInstall "e2e";
           before = [ "devenv:enterShell" ];
         };
-        "lific:e2e" = {
+        # Backend suites share the debug binary; component suites only need
+        # Vite and Chromium. Keeping those groups separate lets the task graph
+        # run them concurrently without changing the test scripts.
+        "lific:e2e:app" = {
           cwd = "${repoRoot}/e2e";
           exec = ''
             bun run smoke
             bun run archives
             bun run public
-            bun run sidebar
-            bun run mobile-nav
-            bun run context-menu
           '';
           after = [
             "lific:debug-build"
             "lific:install:e2e"
           ];
+        };
+        "lific:e2e:components" = {
+          cwd = "${repoRoot}/e2e";
+          exec = ''
+            bun run sidebar
+            bun run mobile-nav
+            bun run context-menu
+          '';
+          after = [
+            "lific:web:build"
+            "lific:install:e2e"
+          ];
+        };
+        "lific:e2e" = {
+          after = [ "lific:e2e:app" "lific:e2e:components" ];
         };
       };
     };

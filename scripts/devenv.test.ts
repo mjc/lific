@@ -46,6 +46,22 @@ test("shell setup cannot select the project checks or rewrite formatting", () =>
   expect(config.tasks["lific:docs:check"].after).toContain("lific:docs:build");
 }, 360_000);
 
+test("e2e profile runs backend and component suites concurrently", () => {
+  const { tasks } = evaluate(["tasks"], false, "e2e");
+  expect(tasks["lific:e2e:app"].after).toEqual([
+    "lific:debug-build",
+    "lific:install:e2e",
+  ]);
+  expect(tasks["lific:e2e:components"].after).toEqual([
+    "lific:web:build",
+    "lific:install:e2e",
+  ]);
+  expect(tasks["lific:e2e"].after).toEqual([
+    "lific:e2e:app",
+    "lific:e2e:components",
+  ]);
+}, 360_000);
+
 test("docs profile omits Rust and source formatting tools", () => {
   const config = evaluate(
     [
