@@ -91,7 +91,7 @@ jobs:
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
           cmd-format: devenv --profile release-windows-msvc shell -- {0}
-          prefix-key: devenv-${{ hashFiles('devenv.lock') }}
+          prefix-key: devenv-deps-${{ hashFiles('devenv.lock') }}
           shared-key: release-x86_64-pc-windows-msvc-deps
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
       - name: Build the MSVC release with devenv
