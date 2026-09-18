@@ -24,13 +24,15 @@ jobs:
         with:
           persist-credentials: false
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
-      - name: Cache the Devenv toolchain
+      - name: Cache the Devenv browser toolchain
         uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7
         with:
           # Reuse tools across source edits, never cached task-success state.
           # Nix validates store paths when falling back to an older environment.
-          primary-key: nix-${{ runner.os }}-${{ runner.arch }}-base-${{ hashFiles('devenv.lock', 'devenv.yaml', '**/*.nix') }}
-          restore-prefixes-first-match: nix-${{ runner.os }}-${{ runner.arch }}-base-
+          primary-key: nix-${{ runner.os }}-${{ runner.arch }}-e2e-${{ hashFiles('devenv.lock', 'devenv.yaml', '**/*.nix') }}
+          restore-prefixes-first-match: |
+            nix-${{ runner.os }}-${{ runner.arch }}-e2e-
+            nix-${{ runner.os }}-${{ runner.arch }}-base-
           paths: ~/.cache/nix
       - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
         with:
@@ -40,42 +42,20 @@ jobs:
         run: nix profile add "github:cachix/devenv/$(jq -r '.nodes.devenv.locked.rev' devenv.lock)#devenv"
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
-          cmd-format: devenv shell -- {0}
+          cmd-format: devenv --profile e2e shell -- {0}
           prefix-key: devenv-${{ hashFiles('devenv.lock') }}
-          shared-key: linux-debug
-      - name: Run the Devenv project check graph
-        run: devenv tasks run lific:check
-
-  hooks:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+          shared-key: linux-debug-check
+      - name: Run project, hook, documentation, and browser checks
+        # One task graph shares the UI build and Cargo artifacts across checks.
+        run: devenv --profile e2e tasks run lific:check devenv:git-hooks:run lific:docs:check lific:e2e
+      - name: Retain native-link browser traces on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          persist-credentials: false
-      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
-      - name: Restore the shared Devenv toolchain
-        uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7
-        with:
-          primary-key: nix-${{ runner.os }}-${{ runner.arch }}-base-${{ hashFiles('devenv.lock', 'devenv.yaml', '**/*.nix') }}
-          restore-prefixes-first-match: nix-${{ runner.os }}-${{ runner.arch }}-base-
-          paths: ~/.cache/nix
-          # The check job writes this same environment; don't upload it twice.
-          save: false
-      - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
-        with:
-          name: devenv
-      - name: Install devenv
-        shell: bash
-        run: nix profile add "github:cachix/devenv/$(jq -r '.nodes.devenv.locked.rev' devenv.lock)#devenv"
-      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
-        with:
-          cmd-format: devenv shell -- {0}
-          prefix-key: devenv-${{ hashFiles('devenv.lock') }}
-          shared-key: linux-debug
-      - name: Run the Devenv hook graph
-        run: devenv tasks run devenv:git-hooks:run
-      - name: Build and check documentation
-        run: devenv tasks run lific:docs:check
+          name: native-link-traces
+          path: /tmp/lific-native-links-*/trace.zip
+          if-no-files-found: ignore
+          retention-days: 7
 
   windows:
     # Keep native Windows compilation, Clippy, and tests as a CI gate while
@@ -99,40 +79,3 @@ jobs:
 
       - name: Test
         run: cargo test --all-targets
-
-  smoke:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-        with:
-          persist-credentials: false
-      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
-      - name: Cache the Devenv browser toolchain
-        uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7
-        with:
-          primary-key: nix-${{ runner.os }}-${{ runner.arch }}-e2e-${{ hashFiles('devenv.lock', 'devenv.yaml', '**/*.nix') }}
-          restore-prefixes-first-match: |
-            nix-${{ runner.os }}-${{ runner.arch }}-e2e-
-            nix-${{ runner.os }}-${{ runner.arch }}-base-
-          paths: ~/.cache/nix
-      - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
-        with:
-          name: devenv
-      - name: Install devenv
-        shell: bash
-        run: nix profile add "github:cachix/devenv/$(jq -r '.nodes.devenv.locked.rev' devenv.lock)#devenv"
-      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
-        with:
-          cmd-format: devenv --profile e2e shell -- {0}
-          prefix-key: devenv-${{ hashFiles('devenv.lock') }}
-          shared-key: linux-debug
-      - name: Run the browser task graph
-        run: devenv --profile e2e tasks run lific:e2e
-      - name: Retain native-link browser traces on failure
-        if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: native-link-traces
-          path: /tmp/lific-native-links-*/trace.zip
-          if-no-files-found: ignore
-          retention-days: 7
