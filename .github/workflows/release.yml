@@ -12,7 +12,7 @@ name: Release
 on:
   push:
     tags:
-      - 'v*.*.*'
+      - "v*.*.*"
 
 permissions:
   contents: write
@@ -108,6 +108,7 @@ jobs:
             os: ubuntu-latest
             name: lific-linux-aarch64
             cross: true
+            file_pattern: "ARM aarch64"
             profile: release-linux
             devenv: true
           - target: x86_64-apple-darwin
@@ -120,15 +121,14 @@ jobs:
             name: lific-macos-aarch64
             profile: release-darwin
             devenv: true
-          # MSVC rather than GNU: it is rustup's default host toolchain on
-          # Windows and carries no mingw runtime dependency. `cross` cannot
-          # target MSVC, so this builds natively on a Windows runner. `ext`
-          # is empty on every other entry and renders as nothing.
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
+          - target: x86_64-pc-windows-gnu
+            os: ubuntu-latest
             name: lific-windows-x86_64
             ext: .exe
-            devenv: false
+            cross: true
+            file_pattern: "PE32[+]"
+            profile: release-windows
+            devenv: true
 
     runs-on: ${{ matrix.os }}
     steps:
@@ -143,34 +143,10 @@ jobs:
         if: matrix.devenv
         shell: bash
         run: nix profile add "github:cachix/devenv/$(jq -r '.nodes.devenv.locked.rev' devenv.lock)#devenv"
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
-        if: ${{ !matrix.devenv }}
-        with:
-          targets: ${{ matrix.target }}
-
-      # Build the embedded web UI before cargo build, so rust-embed
-      # picks it up and bakes it into the release binary. Without this
-      # the binary would ship without a web frontend.
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
-        if: ${{ !matrix.devenv }}
-        with:
-          bun-version: "1.4.2"
-      - name: Build web frontend on Windows
-        if: ${{ !matrix.devenv }}
-        run: |
-          cd web
-          bun install --frozen-lockfile
-          bun run build
-        shell: bash
-
       - name: Build release with devenv
         if: matrix.devenv
         shell: bash
         run: devenv --profile "${{ matrix.profile }}" tasks run "lific:release:${{ matrix.target }}"
-
-      - name: Build Windows release
-        if: ${{ !matrix.devenv }}
-        run: cargo build --locked --profile release-dist --target ${{ matrix.target }}
 
       - name: Rename binary
         run: cp target/${{ matrix.target }}/release-dist/lific${{ matrix.ext }} ${{ matrix.name }}${{ matrix.ext }}
@@ -184,7 +160,7 @@ jobs:
         if: matrix.cross
         run: |
           file ${{ matrix.name }}
-          file ${{ matrix.name }} | grep -q 'ARM aarch64'
+          file ${{ matrix.name }} | grep -q '${{ matrix.file_pattern }}'
         shell: bash
 
       - name: Smoke-test native artifact and embedded web UI
@@ -314,7 +290,7 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     permissions:
-      id-token: write   # required for `mcp-publisher login github-oidc`
+      id-token: write # required for `mcp-publisher login github-oidc`
       contents: read
     env:
       # Pin the publisher CLI + its linux/amd64 checksum rather than tracking
