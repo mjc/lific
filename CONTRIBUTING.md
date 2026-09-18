@@ -29,8 +29,12 @@ devenv shell
 devenv test
 ```
 
-Entering the default shell installs the web workspace from its lockfile through
-devenv's native Bun integration. The other JavaScript workspaces have profiles:
+Entering the default shell runs the web workspace's frozen Bun install task,
+not the test suite. The same task is a prerequisite of builds and checks.
+Formatting is explicit with `treefmt`; shell entry never reformats sources.
+The native Bun installer is disabled because it does not support frozen
+installs; there is only one installer per workspace, without a separate cache
+that can outlive `node_modules`. The other JavaScript workspaces have profiles:
 
 ```bash
 devenv --profile docs tasks run lific:docs:check
@@ -43,7 +47,7 @@ and release binaries must embed a current `web/dist/` through `rust-embed`:
 
 ```bash
 devenv tasks run lific:debug-build
-devenv --profile release-linux tasks run lific:release:x86_64-unknown-linux-gnu # locked release-dist binary
+devenv --profile release-linux tasks run lific:release:x86_64-unknown-linux-gnu # locked dist binary
 ```
 
 Start the backend and frontend together through devenv's native process manager:
@@ -73,7 +77,7 @@ regression test. Documentation is checked in its profile:
 devenv --profile docs tasks run lific:docs:check
 ```
 
-The browser suites use their profile's native Bun install and build the web
+The browser suites use their profile's frozen Bun install and build the web
 prerequisite through the task graph:
 
 ```bash
@@ -116,6 +120,26 @@ The checks exercise these behaviors:
   middle-click popup regressions retain useful failure evidence.
 - The release smoke check runs each native artifact's `--version` and `--help`,
   starts it with a temporary config/database, and fetches the embedded HTML.
+- `devenv test` also starts the actual backend and Vite processes through the
+  native process manager, waits for their readiness probes, checks the UI and
+  API proxy, then stops both. Its freshly allocated database is under
+  `DEVENV_RUNTIME`, separate from the persistent development database.
+- Environment regression checks verify shell/test task boundaries, formatter
+  ordering, compiler consistency, and the packaged source allowlists.
+
+The packaged frontend uses the same `web/bun.lock` as local builds and platform
+releases. After intentionally updating that lockfile, regenerate its Nix
+dependency manifest from inside the shell:
+
+```bash
+cd web
+bun2nix -o bun.nix
+```
+
+The test graph rejects a stale generated manifest. Nix package inputs are
+explicit source files, never local databases, dependency installs, or build
+caches. The package builds and embeds a fresh UI with the version from
+`Cargo.toml`; it never uses or removes the checkout's `web/dist`.
 
 Every new MCP tool and REST endpoint should ship with tests. Conventions:
 
@@ -155,7 +179,7 @@ project check task without the test lifecycle.
 ## Release builds
 
 Pushing a version tag runs the release workflow. It builds the embedded web UI
-and produces locked `release-dist` artifacts for Linux x86_64 and aarch64,
+and produces locked `dist` artifacts for Linux x86_64 and aarch64,
 macOS x86_64 and aarch64, and Windows x86_64 (MSVC). Linux targets use the
 devenv-provided Zig linker locally; the other targets build on their native
 GitHub Actions runners. The workflow verifies artifact existence, smoke-tests

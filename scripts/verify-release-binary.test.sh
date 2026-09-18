@@ -59,6 +59,7 @@ echo "occupied port with failing child is rejected"
 no_response_server="$scratch/no-response-server.ts"
 printf '%s\n' \
   'Bun.serve({ port: Number(process.env.PORT), fetch: () => new Promise(() => {}) });' \
+  'console.error("lific server started");' \
   'console.error("no-response fixture listening");' \
   >"$no_response_server"
 no_response_binary="$scratch/no-response-lific"

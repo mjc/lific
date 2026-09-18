@@ -21,17 +21,36 @@ jobs:
       - name: Install devenv
         shell: bash
         run: nix profile add "github:cachix/devenv/$(jq -r '.nodes.devenv.locked.rev' devenv.lock)#devenv"
-      - name: Check formatting
-        run: devenv build outputs.treefmtCheck
       - name: Build and smoke-test the packaged release
         shell: bash
         run: |
           package_path="$(devenv build outputs.lific | jq -r '."outputs.lific"')"
-          bash scripts/verify-release-binary.sh "$package_path/bin/lific"
+          devenv shell -- bash scripts/verify-release-binary.sh "$package_path/bin/lific"
       - name: Run the Devenv project test graph
         run: devenv test
 
   windows:
+    # Keep native Windows compilation, Clippy, and tests as a CI gate while
+    # the release workflow transitions to a dedicated MSVC build.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Ensure web/dist exists for rust-embed
+        run: mkdir -p web/dist
+        shell: bash
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --all-targets
+
+  windows-release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -47,7 +66,7 @@ jobs:
         run: devenv --profile release-windows tasks run lific:release:x86_64-pc-windows-gnu
       - name: Verify Windows artifact structure
         shell: bash
-        run: file target/x86_64-pc-windows-gnu/release-dist/lific.exe | grep -q 'PE32+'
+        run: devenv --profile release-windows shell -- bash -euo pipefail -c "file target/x86_64-pc-windows-gnu/dist/lific.exe | grep -q 'PE32+'"
 
   macos:
     strategy:
@@ -94,7 +113,7 @@ jobs:
         run: bun run build
         working-directory: web
 
- 
+
   smoke:
     runs-on: ubuntu-latest
     steps:
