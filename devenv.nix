@@ -300,6 +300,8 @@ in
       rustfmt.package = config.languages.rust.toolchainPackage;
       shfmt.enable = true;
     };
+    # Preserve the existing E2E style without a suite-wide formatting migration.
+    config.settings.formatter.prettier.excludes = [ "e2e/*.ts" ];
     config.settings.excludes = [
       "web/dist/*"
       "site/.next/*"
