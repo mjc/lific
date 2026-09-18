@@ -24,6 +24,14 @@ jobs:
         with:
           persist-credentials: false
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
+      - name: Cache the Devenv toolchain
+        uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7
+        with:
+          # Reuse tools across source edits, never cached task-success state.
+          # Nix validates store paths when falling back to an older environment.
+          primary-key: nix-${{ runner.os }}-${{ runner.arch }}-base-${{ hashFiles('devenv.lock', 'devenv.yaml', '**/*.nix') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-${{ runner.arch }}-base-
+          paths: ~/.cache/nix
       - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
         with:
           name: devenv
@@ -45,6 +53,14 @@ jobs:
         with:
           persist-credentials: false
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
+      - name: Restore the shared Devenv toolchain
+        uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ runner.arch }}-base-${{ hashFiles('devenv.lock', 'devenv.yaml', '**/*.nix') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-${{ runner.arch }}-base-
+          paths: ~/.cache/nix
+          # The check job writes this same environment; don't upload it twice.
+          save: false
       - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
         with:
           name: devenv
@@ -91,6 +107,14 @@ jobs:
         with:
           persist-credentials: false
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
+      - name: Cache the Devenv browser toolchain
+        uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ runner.arch }}-e2e-${{ hashFiles('devenv.lock', 'devenv.yaml', '**/*.nix') }}
+          restore-prefixes-first-match: |
+            nix-${{ runner.os }}-${{ runner.arch }}-e2e-
+            nix-${{ runner.os }}-${{ runner.arch }}-base-
+          paths: ~/.cache/nix
       - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
         with:
           name: devenv
