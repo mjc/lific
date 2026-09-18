@@ -93,6 +93,7 @@ jobs:
           cmd-format: devenv --profile release-windows-msvc shell -- {0}
           prefix-key: devenv-deps-${{ hashFiles('devenv.lock') }}
           shared-key: release-x86_64-pc-windows-msvc-deps
+          cache-targets: false
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
       - name: Build the MSVC release with devenv
         shell: bash
