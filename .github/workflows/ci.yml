@@ -71,7 +71,7 @@ jobs:
         with:
           cmd-format: devenv --profile e2e shell -- {0}
           prefix-key: devenv-deps-${{ hashFiles('devenv.lock') }}
-          shared-key: linux-debug-deps
+          shared-key: linux-e2e-deps
           # The project job owns the shared Rust cache on the default branch.
           save-if: false
       - name: Run the browser task graph
