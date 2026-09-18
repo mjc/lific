@@ -108,6 +108,7 @@ in
   languages.rust = {
     enable = true;
     channel = "stable";
+    version = "1.88.0";
   };
 
   languages.javascript = {
@@ -120,14 +121,20 @@ in
   };
 
   # devenv's JavaScript module supports one project directory per environment.
-  # Profiles keep the other lockfiles on the same native Bun install lifecycle.
+  # Each profile adds an explicit frozen install prerequisite so direct task
+  # invocations are reproducible without relying on shell entry.
   profiles = {
     docs.module = {
       languages.javascript.directory = "${repoRoot}/site";
       tasks = {
+        "lific:install:site" = {
+          cwd = "${repoRoot}/site";
+          exec = "bun install --frozen-lockfile";
+        };
         "lific:docs:build" = {
           cwd = "${repoRoot}/site";
           exec = "bun run build";
+          after = [ "lific:install:site" ];
         };
         "lific:docs:check" = {
           cwd = repoRoot;
@@ -142,11 +149,10 @@ in
       env.PLAYWRIGHT_BROWSERS_PATH = "${playwrightBrowsers}";
       env.PLAYWRIGHT_EXECUTABLE_PATH = "${playwrightChromium}";
       tasks = {
-        "lific:install:web" = {
-          cwd = "${repoRoot}/web";
+        "lific:install:e2e" = {
+          cwd = "${repoRoot}/e2e";
           exec = "bun install --frozen-lockfile";
         };
-        "lific:web:check".after = [ "lific:install:web" ];
         "lific:e2e" = {
           cwd = "${repoRoot}/e2e";
           exec = ''
@@ -159,7 +165,7 @@ in
           '';
           after = [
             "lific:debug-build"
-            "lific:install:web"
+            "lific:install:e2e"
           ];
         };
       };
@@ -171,9 +177,14 @@ in
         pkgs.lib.makeLibraryPath chromiumRuntimePackages
       );
       tasks = {
+        "lific:install:promo" = {
+          cwd = "${repoRoot}/promo";
+          exec = "bun install --frozen-lockfile";
+        };
         "lific:promo:check" = {
           cwd = "${repoRoot}/promo";
           exec = "bun run lint";
+          after = [ "lific:install:promo" ];
         };
         "lific:promo:render" = {
           cwd = "${repoRoot}/promo";
@@ -266,6 +277,7 @@ in
 
   packages = with pkgs; [
     curl
+    file
     git
   ];
 
@@ -273,6 +285,10 @@ in
   env.RUST_BACKTRACE = "1";
   unsetEnvVars = [ "RUSTC_WRAPPER" ];
   tasks = {
+    "lific:install:web" = {
+      cwd = "${repoRoot}/web";
+      exec = "bun install --frozen-lockfile";
+    };
     "lific:rust-test" = {
       cwd = repoRoot;
       exec = "cargo test --all-targets --locked";
@@ -281,6 +297,7 @@ in
     "lific:web:check" = {
       cwd = "${repoRoot}/web";
       exec = "bun run check && bun test";
+      after = [ "lific:install:web" ];
     };
     "lific:web:build" = {
       cwd = "${repoRoot}/web";
@@ -295,6 +312,24 @@ in
     "lific:release-test" = {
       cwd = repoRoot;
       exec = "bash scripts/verify-release-binary.test.sh";
+    };
+    "lific:publish" = {
+      cwd = repoRoot;
+      exec = ''
+        set -o pipefail
+        if out="$(cargo publish --locked --allow-dirty --no-verify 2>&1)"; then
+          echo "$out"
+        else
+          echo "$out"
+          if printf '%s\n' "$out" | grep -qiE 'crate version .* is already uploaded'; then
+            echo "::notice::Version already on crates.io; treating as success."
+          else
+            echo "::error::cargo publish failed."
+            exit 1
+          fi
+        fi
+      '';
+      after = [ "lific:web:build" ];
     };
     "lific:check" = {
       before = [ "devenv:enterTest" ];
@@ -334,6 +369,7 @@ in
       watch = {
         paths = [
           ./src
+          ./migrations
           ./Cargo.toml
           ./Cargo.lock
         ];
@@ -341,6 +377,7 @@ in
           "rs"
           "toml"
           "lock"
+          "sql"
         ];
         ignore = [ "target" ];
       };

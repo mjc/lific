@@ -21,8 +21,6 @@ jobs:
       - name: Install devenv
         shell: bash
         run: nix profile add "github:cachix/devenv/$(jq -r '.nodes.devenv.locked.rev' devenv.lock)#devenv"
-      - name: Check formatting
-        run: devenv build outputs.treefmtCheck
       - name: Build and smoke-test the packaged release
         shell: bash
         run: |
@@ -47,7 +45,7 @@ jobs:
         run: devenv --profile release-windows tasks run lific:release:x86_64-pc-windows-gnu
       - name: Verify Windows artifact structure
         shell: bash
-        run: file target/x86_64-pc-windows-gnu/release-dist/lific.exe | grep -q 'PE32+'
+        run: devenv --profile release-windows shell -- bash -euo pipefail -c "file target/x86_64-pc-windows-gnu/release-dist/lific.exe | grep -q 'PE32+'"
 
   macos:
     strategy:

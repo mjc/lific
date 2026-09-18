@@ -29,8 +29,10 @@ devenv shell
 devenv test
 ```
 
-Entering the default shell installs the web workspace from its lockfile through
-devenv's native Bun integration. The other JavaScript workspaces have profiles:
+Entering the default shell installs the web workspace through devenv's native
+Bun integration. Direct task invocations also run each workspace's frozen
+install prerequisite, so CI and clean task runs do not depend on shell-entry
+side effects. The other JavaScript workspaces have profiles:
 
 ```bash
 devenv --profile docs tasks run lific:docs:check
