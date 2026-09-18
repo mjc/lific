@@ -74,7 +74,7 @@ let
       ./README.md
     ];
     cargoLock.lockFile = ./Cargo.lock;
-    buildType = "release-dist";
+    buildType = "dist";
     # This is the derivation's private source copy. The checkout is never
     # modified: every release package embeds the UI built by webBundle.
     postPatch = ''
@@ -246,12 +246,12 @@ in
       tasks = {
         "lific:release:x86_64-unknown-linux-gnu" = {
           cwd = repoRoot;
-          exec = "cargo zigbuild --locked --profile release-dist --target x86_64-unknown-linux-gnu";
+          exec = "cargo zigbuild --locked --profile dist --target x86_64-unknown-linux-gnu";
           after = [ "lific:web:build" ];
         };
         "lific:release:aarch64-unknown-linux-gnu" = {
           cwd = repoRoot;
-          exec = "cargo zigbuild --locked --profile release-dist --target aarch64-unknown-linux-gnu";
+          exec = "cargo zigbuild --locked --profile dist --target aarch64-unknown-linux-gnu";
           after = [ "lific:web:build" ];
         };
       };
@@ -264,12 +264,12 @@ in
       tasks = {
         "lific:release:x86_64-apple-darwin" = {
           cwd = repoRoot;
-          exec = "cargo build --locked --profile release-dist --target x86_64-apple-darwin";
+          exec = "cargo build --locked --profile dist --target x86_64-apple-darwin";
           after = [ "lific:web:build" ];
         };
         "lific:release:aarch64-apple-darwin" = {
           cwd = repoRoot;
-          exec = "cargo build --locked --profile release-dist --target aarch64-apple-darwin";
+          exec = "cargo build --locked --profile dist --target aarch64-apple-darwin";
           after = [ "lific:web:build" ];
         };
       };
@@ -284,7 +284,7 @@ in
       packages = [ pkgs.cargo-zigbuild ];
       tasks."lific:release:x86_64-pc-windows-gnu" = {
         cwd = repoRoot;
-        exec = "cargo zigbuild --locked --profile release-dist --target x86_64-pc-windows-gnu";
+        exec = "cargo zigbuild --locked --profile dist --target x86_64-pc-windows-gnu";
         after = [ "lific:web:build" ];
       };
     };

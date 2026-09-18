@@ -45,7 +45,7 @@ jobs:
         run: devenv --profile release-windows tasks run lific:release:x86_64-pc-windows-gnu
       - name: Verify Windows artifact structure
         shell: bash
-        run: devenv --profile release-windows shell -- bash -euo pipefail -c "file target/x86_64-pc-windows-gnu/release-dist/lific.exe | grep -q 'PE32+'"
+        run: devenv --profile release-windows shell -- bash -euo pipefail -c "file target/x86_64-pc-windows-gnu/dist/lific.exe | grep -q 'PE32+'"
 
   macos:
     strategy:

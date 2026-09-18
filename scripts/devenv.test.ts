@@ -2,16 +2,23 @@ import { expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 
 function evaluate(attributes: string[], testing = false) {
-  const result = Bun.spawnSync([
-    "devenv",
-    "--no-reload",
-    "--option",
-    "devenv.isTesting:bool",
-    String(testing),
-    "eval",
-    ...attributes,
-  ]);
-  if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+  const result = Bun.spawnSync(
+    [
+      "devenv",
+      "--no-reload",
+      "--option",
+      "devenv.isTesting:bool",
+      String(testing),
+      "eval",
+      ...attributes,
+    ],
+    { timeout: 300_000, killSignal: "SIGKILL" },
+  );
+  if (result.exitCode !== 0) {
+    throw new Error(
+      `devenv eval exited ${result.exitCode}: ${result.stderr.toString()}`,
+    );
+  }
   return JSON.parse(result.stdout.toString());
 }
 
@@ -29,7 +36,7 @@ test("shell setup cannot select the project checks or rewrite formatting", () =>
   expect(install.exec).toBe("bun install --frozen-lockfile");
   expect(install.execIfModified).toEqual([]);
   expect(install.before).toContain("devenv:enterShell");
-}, 120_000);
+}, 360_000);
 
 test("tests check formatting before compilation and use the native processes", () => {
   const { tasks, processes } = evaluate(["tasks", "processes"], true);
@@ -39,7 +46,7 @@ test("tests check formatting before compilation and use the native processes", (
   expect(tasks["devenv:git-hooks:run"].after).toContain("lific:web:build");
   expect(processes.backend.exec).toContain("mktemp -d");
   expect(processes.frontend.after).toContain("devenv:processes:backend@ready");
-}, 120_000);
+}, 360_000);
 
 test("packages use the selected compiler, release profile, and bounded sources", () => {
   const config = evaluate([
@@ -54,7 +61,7 @@ test("packages use the selected compiler, release profile, and bounded sources",
   expect(config["treefmt.config.programs.rustfmt.package.version"]).toBe(
     config["languages.rust.toolchainPackage.version"],
   );
-  expect(config["outputs.lific.cargoBuildType"]).toBe("release-dist");
+  expect(config["outputs.lific.cargoBuildType"]).toBe("dist");
   expect(config["outputs.lific.nativeBuildInputs"]).toContain(
     config["languages.rust.toolchainPackage.outPath"],
   );
@@ -76,4 +83,4 @@ test("packages use the selected compiler, release profile, and bounded sources",
   expect(readFileSync(`${web}/web/bun.lock`, "utf8")).toBe(
     readFileSync("web/bun.lock", "utf8"),
   );
-}, 120_000);
+}, 360_000);

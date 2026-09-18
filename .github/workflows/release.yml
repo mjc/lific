@@ -147,7 +147,7 @@ jobs:
         run: devenv --profile "${{ matrix.profile }}" tasks run "lific:release:${{ matrix.target }}"
 
       - name: Rename binary
-        run: cp target/${{ matrix.target }}/release-dist/lific${{ matrix.ext }} ${{ matrix.name }}${{ matrix.ext }}
+        run: cp target/${{ matrix.target }}/dist/lific${{ matrix.ext }} ${{ matrix.name }}${{ matrix.ext }}
         shell: bash
 
       - name: Verify artifact exists

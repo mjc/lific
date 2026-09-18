@@ -47,7 +47,7 @@ and release binaries must embed a current `web/dist/` through `rust-embed`:
 
 ```bash
 devenv tasks run lific:debug-build
-devenv --profile release-linux tasks run lific:release:x86_64-unknown-linux-gnu # locked release-dist binary
+devenv --profile release-linux tasks run lific:release:x86_64-unknown-linux-gnu # locked dist binary
 ```
 
 Start the backend and frontend together through devenv's native process manager:
@@ -179,7 +179,7 @@ project check task without the test lifecycle.
 ## Release builds
 
 Pushing a version tag runs the release workflow. It builds the embedded web UI
-and produces locked `release-dist` artifacts for Linux x86_64 and aarch64,
+and produces locked `dist` artifacts for Linux x86_64 and aarch64,
 macOS x86_64 and aarch64, and Windows x86_64 (MSVC). Linux targets use the
 devenv-provided Zig linker locally; the other targets build on their native
 GitHub Actions runners. The workflow verifies artifact existence, smoke-tests

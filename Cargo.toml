@@ -163,8 +163,8 @@ opt-level = 3
 strip = true
 
 # For distribution builds (AUR, GitHub releases):
-# cargo build --profile release-dist
-[profile.release-dist]
+# cargo build --profile dist
+[profile.dist]
 inherits = "release"
 lto = true
 codegen-units = 1
