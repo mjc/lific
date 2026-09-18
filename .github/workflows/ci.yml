@@ -94,6 +94,7 @@ jobs:
           prefix-key: devenv-${{ hashFiles('devenv.lock') }}
           shared-key: release-x86_64-pc-windows-msvc
           cache-workspace-crates: true
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
       - name: Build the MSVC release with devenv
         shell: bash
         run: devenv --profile release-windows-msvc tasks run lific:release:x86_64-pc-windows-msvc
