@@ -332,20 +332,6 @@ in
         };
       };
     };
-    release-windows.module = {
-      languages.rust.targets = [ "x86_64-pc-windows-gnu" ];
-      unsetEnvVars = [ "CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER" ];
-      languages.zig = {
-        enable = true;
-        lsp.enable = false;
-      };
-      packages = [ pkgs.cargo-zigbuild ];
-      tasks."lific:release:x86_64-pc-windows-gnu" = {
-        cwd = repoRoot;
-        exec = "cargo zigbuild --locked --profile dist --target x86_64-pc-windows-gnu";
-        after = [ "lific:web:build" ];
-      };
-    };
     release-windows-msvc.module = {
       languages.rust.targets = [ "x86_64-pc-windows-msvc" ];
       unsetEnvVars = [ "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER" ];
