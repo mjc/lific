@@ -24,14 +24,13 @@ jobs:
         with:
           persist-credentials: false
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
-      - name: Cache the Devenv toolchain
-        uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7
+      - name: Cache individual Devenv outputs
+        uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
         with:
-          # Reuse tools across source edits, never cached task-success state.
-          # Nix validates store paths when falling back to an older environment.
-          primary-key: nix-${{ runner.os }}-${{ runner.arch }}-base-${{ hashFiles('devenv.lock', 'devenv.yaml', '**/*.nix') }}
-          restore-prefixes-first-match: nix-${{ runner.os }}-${{ runner.arch }}-base-
-          paths: ~/.cache/nix
+          # Reuse immutable outputs directly instead of uploading the whole Nix store.
+          use-gha-cache: true
+          use-flakehub: false
+          diagnostic-endpoint: ""
       - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
         with:
           name: devenv
@@ -44,6 +43,8 @@ jobs:
           prefix-key: devenv-${{ hashFiles('devenv.lock') }}
           shared-key: linux-debug-check
           cache-workspace-crates: true
+          # Seed the shared cache from master; PRs only restore it.
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
       - name: Run project, hook, and documentation checks
         run: devenv tasks run lific:check devenv:git-hooks:run lific:docs:check
 
@@ -54,14 +55,13 @@ jobs:
         with:
           persist-credentials: false
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
-      - name: Cache the Devenv browser toolchain
-        uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7
+      - name: Cache individual Devenv outputs
+        uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
         with:
-          primary-key: nix-${{ runner.os }}-${{ runner.arch }}-e2e-${{ hashFiles('devenv.lock', 'devenv.yaml', '**/*.nix') }}
-          restore-prefixes-first-match: |
-            nix-${{ runner.os }}-${{ runner.arch }}-e2e-
-            nix-${{ runner.os }}-${{ runner.arch }}-base-
-          paths: ~/.cache/nix
+          # The store-path identity covers the locked environment and profile.
+          use-gha-cache: true
+          use-flakehub: false
+          diagnostic-endpoint: ""
       - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
         with:
           name: devenv
@@ -74,7 +74,7 @@ jobs:
           prefix-key: devenv-${{ hashFiles('devenv.lock') }}
           shared-key: linux-debug-check
           cache-workspace-crates: true
-          # check writes the superset after Rust tests, Clippy, and hooks.
+          # The project job owns the shared Rust cache on the default branch.
           save-if: false
       - name: Run the browser task graph
         run: devenv --profile e2e tasks run lific:e2e
