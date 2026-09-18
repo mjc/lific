@@ -28,10 +28,7 @@ fn main() {
 
     match (newest_mtime(dist), newest_mtime(src)) {
         (None, _) => {
-            if matches!(
-                std::env::var("PROFILE").as_deref(),
-                Ok("release" | "release-dist")
-            ) {
+            if matches!(std::env::var("PROFILE").as_deref(), Ok("release" | "dist")) {
                 panic!(
                     "web/dist is missing or empty; build the frontend first with `devenv tasks run lific:web:build`"
                 );
