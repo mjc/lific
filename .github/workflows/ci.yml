@@ -40,7 +40,7 @@ jobs:
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
           cmd-format: devenv shell -- {0}
-          prefix-key: devenv-${{ hashFiles('devenv.lock') }}
+          prefix-key: devenv-deps-${{ hashFiles('devenv.lock') }}
           shared-key: linux-debug-deps
           # Seed the shared cache from master; PRs only restore it.
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
@@ -70,7 +70,7 @@ jobs:
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
           cmd-format: devenv --profile e2e shell -- {0}
-          prefix-key: devenv-${{ hashFiles('devenv.lock') }}
+          prefix-key: devenv-deps-${{ hashFiles('devenv.lock') }}
           shared-key: linux-debug-deps
           # The project job owns the shared Rust cache on the default branch.
           save-if: false
