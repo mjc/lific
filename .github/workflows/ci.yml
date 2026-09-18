@@ -17,6 +17,25 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
+      - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
+        with:
+          name: devenv
+      - name: Install devenv
+        shell: bash
+        run: nix profile add "github:cachix/devenv/$(jq -r '.nodes.devenv.locked.rev' devenv.lock)#devenv"
+      - name: Build and smoke-test the packaged release
+        shell: bash
+        run: |
+          package_path="$(devenv build outputs.lific | jq -r '."outputs.lific"')"
+          devenv shell -- bash scripts/verify-release-binary.sh "$package_path/bin/lific"
+
   check:
     runs-on: ubuntu-latest
     steps:
@@ -35,11 +54,6 @@ jobs:
           cmd-format: devenv shell -- {0}
           prefix-key: devenv-${{ hashFiles('devenv.lock') }}
           shared-key: linux-debug
-      - name: Build and smoke-test the packaged release
-        shell: bash
-        run: |
-          package_path="$(devenv build outputs.lific | jq -r '."outputs.lific"')"
-          devenv shell -- bash scripts/verify-release-binary.sh "$package_path/bin/lific"
       - name: Run the Devenv project test graph
         run: devenv test
 
