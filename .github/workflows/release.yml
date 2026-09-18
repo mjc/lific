@@ -89,8 +89,6 @@ jobs:
       - name: Install devenv
         shell: bash
         run: nix profile add "github:cachix/devenv/$(jq -r '.nodes.devenv.locked.rev' devenv.lock)#devenv"
-      - name: Check formatting
-        run: devenv build outputs.treefmtCheck
       - name: Run the Devenv project test graph
         run: devenv test
 
@@ -121,9 +119,17 @@ jobs:
             name: lific-macos-aarch64
             profile: release-darwin
             devenv: true
+          # MSVC rather than GNU: it is rustup's default host toolchain on
+          # Windows and carries no mingw runtime dependency. `cross` cannot
+          # target MSVC, so this builds natively on a Windows runner. `ext`
+          # is empty on every other entry and renders as nothing.
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            name: lific-windows-x86_64
+            ext: .exe
           - target: x86_64-pc-windows-gnu
             os: ubuntu-latest
-            name: lific-windows-x86_64
+            name: lific-windows-gnu-x86_64
             ext: .exe
             cross: true
             file_pattern: "PE32[+]"
@@ -143,13 +149,35 @@ jobs:
         if: matrix.devenv
         shell: bash
         run: nix profile add "github:cachix/devenv/$(jq -r '.nodes.devenv.locked.rev' devenv.lock)#devenv"
+      - uses: dtolnay/rust-toolchain@stable
+        if: ${{ !matrix.devenv }}
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        if: ${{ !matrix.devenv }}
+      - uses: oven-sh/setup-bun@v2
+        if: ${{ !matrix.devenv }}
+      - name: Build web frontend
+        if: ${{ !matrix.devenv }}
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+        working-directory: web
       - name: Build release with devenv
         if: matrix.devenv
         shell: bash
         run: devenv --profile "${{ matrix.profile }}" tasks run "lific:release:${{ matrix.target }}"
+      - name: Build (native)
+        if: ${{ !matrix.devenv }}
+        run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Rename binary
-        run: cp target/${{ matrix.target }}/release-dist/lific${{ matrix.ext }} ${{ matrix.name }}${{ matrix.ext }}
+      - name: Rename devenv binary
+        if: matrix.devenv
+        run: cp target/${{ matrix.target }}/dist/lific${{ matrix.ext }} ${{ matrix.name }}${{ matrix.ext }}
+        shell: bash
+      - name: Rename native binary
+        if: ${{ !matrix.devenv }}
+        run: cp target/${{ matrix.target }}/release/lific${{ matrix.ext }} ${{ matrix.name }}${{ matrix.ext }}
         shell: bash
 
       - name: Verify artifact exists
@@ -159,13 +187,13 @@ jobs:
       - name: Verify cross artifact structure
         if: matrix.cross
         run: |
-          file ${{ matrix.name }}
-          file ${{ matrix.name }} | grep -q '${{ matrix.file_pattern }}'
+          devenv --profile "${{ matrix.profile }}" shell -- bash -euo pipefail -c \
+            "file '${{ matrix.name }}${{ matrix.ext }}' | tee /dev/stderr | grep -q '${{ matrix.file_pattern }}'"
         shell: bash
 
       - name: Smoke-test native artifact and embedded web UI
-        if: ${{ !matrix.cross }}
-        run: bash scripts/verify-release-binary.sh ${{ matrix.name }}${{ matrix.ext }}
+        if: ${{ matrix.devenv && !matrix.cross }}
+        run: devenv --profile "${{ matrix.profile }}" shell -- bash scripts/verify-release-binary.sh ${{ matrix.name }}${{ matrix.ext }}
         shell: bash
 
       - name: Upload artifact
@@ -223,6 +251,7 @@ jobs:
             binaries/lific-linux-aarch64 \
             binaries/lific-macos-x86_64 \
             binaries/lific-macos-aarch64 \
+            binaries/lific-windows-gnu-x86_64.exe \
             binaries/lific-windows-x86_64.exe \
             binaries/sha256sums.txt
 
@@ -248,29 +277,10 @@ jobs:
       - name: Install devenv
         shell: bash
         run: nix profile add "github:cachix/devenv/$(jq -r '.nodes.devenv.locked.rev' devenv.lock)#devenv"
-      # Build the web UI before publishing so the source tarball that
-      # goes to crates.io contains a working dist/, not just a stub.
-      # `cargo install lific` builds from source — without this, every
-      # crates.io install would produce a UI-less binary.
-      - name: Build web frontend
-        run: devenv tasks run lific:web:build
-      # Tolerate exactly one failure mode — the version already being on
-      # crates.io (idempotent re-run of the workflow) — and fail the job on
-      # everything else.
-      - name: Publish to crates.io
-        run: |
-          set -o pipefail
-          if out="$(cargo publish --locked --allow-dirty --no-verify 2>&1)"; then
-            echo "$out"
-          else
-            echo "$out"
-            if printf '%s\n' "$out" | grep -qiE 'crate version .* is already uploaded'; then
-              echo "::notice::Version already on crates.io; treating as success."
-            else
-              echo "::error::cargo publish failed."
-              exit 1
-            fi
-          fi
+      # The Devenv publish task builds web/dist first so the source tarball
+      # contains the embedded UI, then publishes with the locked toolchain.
+      - name: Publish to crates.io through devenv
+        run: devenv tasks run lific:publish
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
