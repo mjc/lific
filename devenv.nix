@@ -399,6 +399,11 @@ in
       exec = "bun run check && bun test";
       after = [ "lific:install:web" ] ++ lib.optionals config.devenv.isTesting [ "devenv:treefmt:run" ];
     };
+    "lific:community-proxy:check" = {
+      cwd = repoRoot;
+      exec = "bun test ./deploy/community-redirect/worker.test.mjs";
+      after = [ "lific:install:web" ];
+    };
     "lific:web:build" = {
       cwd = "${repoRoot}/web";
       exec = ''
@@ -441,6 +446,7 @@ in
         "lific:rust-test"
         "lific:release-test"
         "lific:web:lock-check"
+        "lific:community-proxy:check"
         "lific:devenv-test"
       ];
     };
