@@ -88,13 +88,14 @@ jobs:
       - name: Install devenv
         shell: bash
         run: nix profile add "github:cachix/devenv/$(jq -r '.nodes.devenv.locked.rev' devenv.lock)#devenv"
-      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+      - uses: actions/cache@6849a6489940f00c2f30c0fb92c6274307ccb58a # v4.3.0
         with:
-          cmd-format: devenv --profile release-windows-msvc shell -- {0}
-          prefix-key: devenv-deps-${{ hashFiles('devenv.lock') }}
-          shared-key: release-x86_64-pc-windows-msvc-deps
-          cache-targets: false
-          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ runner.arch }}-msvc-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-${{ runner.arch }}-msvc-
       - name: Build the MSVC release with devenv
         shell: bash
         run: devenv --profile release-windows-msvc tasks run lific:release:x86_64-pc-windows-msvc
