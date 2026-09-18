@@ -322,11 +322,13 @@ in
     enable = true;
     config.programs = {
       actionlint.enable = true;
-      nixfmt.enable = true;
-      prettier.enable = true;
+      # Enable the source formatters in the optional formatting baseline, not
+      # as part of the Devenv migration.
+      # nixfmt.enable = true;
+      # prettier.enable = true;
       rustfmt.enable = true;
       rustfmt.package = config.languages.rust.toolchainPackage;
-      shfmt.enable = true;
+      # shfmt.enable = true;
     };
     config.settings.excludes = [
       "web/dist/*"

@@ -34,6 +34,8 @@ redundant_clone = "deny"
 unchecked_duration_subtraction = "deny"
 unnecessary_struct_initialization = "deny"
 unnecessary_wraps = "deny"
+# Defer format-string interpolation cleanup to the dedicated formatting pass.
+uninlined_format_args = "allow"
 useless_let_if_seq = "deny"
 unused_async = "deny"
 
