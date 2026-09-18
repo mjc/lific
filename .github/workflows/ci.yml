@@ -25,7 +25,7 @@ jobs:
         shell: bash
         run: |
           package_path="$(devenv build outputs.lific | jq -r '."outputs.lific"')"
-          bash scripts/verify-release-binary.sh "$package_path/bin/lific"
+          devenv shell -- bash scripts/verify-release-binary.sh "$package_path/bin/lific"
       - name: Run the Devenv project test graph
         run: devenv test
 

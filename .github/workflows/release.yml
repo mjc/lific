@@ -158,12 +158,12 @@ jobs:
         if: matrix.cross
         run: |
           devenv --profile "${{ matrix.profile }}" shell -- bash -euo pipefail -c \
-            "file '${{ matrix.name }}' | tee /dev/stderr | grep -q '${{ matrix.file_pattern }}'"
+            "file '${{ matrix.name }}${{ matrix.ext }}' | tee /dev/stderr | grep -q '${{ matrix.file_pattern }}'"
         shell: bash
 
       - name: Smoke-test native artifact and embedded web UI
         if: ${{ !matrix.cross }}
-        run: bash scripts/verify-release-binary.sh ${{ matrix.name }}${{ matrix.ext }}
+        run: devenv --profile "${{ matrix.profile }}" shell -- bash scripts/verify-release-binary.sh ${{ matrix.name }}${{ matrix.ext }}
         shell: bash
 
       - name: Upload artifact
