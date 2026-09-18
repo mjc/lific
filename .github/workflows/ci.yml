@@ -42,7 +42,6 @@ jobs:
           cmd-format: devenv shell -- {0}
           prefix-key: devenv-${{ hashFiles('devenv.lock') }}
           shared-key: linux-debug-check
-          cache-workspace-crates: true
           # Seed the shared cache from master; PRs only restore it.
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
       - name: Run project, hook, and documentation checks
@@ -73,7 +72,6 @@ jobs:
           cmd-format: devenv --profile e2e shell -- {0}
           prefix-key: devenv-${{ hashFiles('devenv.lock') }}
           shared-key: linux-debug-check
-          cache-workspace-crates: true
           # The project job owns the shared Rust cache on the default branch.
           save-if: false
       - name: Run the browser task graph
