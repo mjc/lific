@@ -134,6 +134,34 @@ let
     xorg.libXtst
     xorg.libxcb
   ];
+  lockedBunInstall = workspace: ''
+    lock="${config.devenv.state}/locks/lific-${workspace}-bun-install"
+    mkdir -p "$(dirname "$lock")"
+    deadline=$((SECONDS + 300))
+    while ! mkdir "$lock" 2>/dev/null; do
+      owner=""
+      if [[ -f "$lock/pid" ]]; then
+        owner="$(<"$lock/pid")"
+      fi
+      if [[ -n "$owner" ]] && ! kill -0 "$owner" 2>/dev/null; then
+        rm -f "$lock/pid"
+        rmdir "$lock" 2>/dev/null || true
+        continue
+      fi
+      if (( SECONDS >= deadline )); then
+        echo "timed out waiting for the ${workspace} Bun install lock" >&2
+        exit 1
+      fi
+      sleep 1
+    done
+    printf '%s\n' "$$" > "$lock/pid"
+    cleanup() {
+      rm -f "$lock/pid"
+      rmdir "$lock" 2>/dev/null || true
+    }
+    trap cleanup EXIT INT TERM
+    bun install --frozen-lockfile
+  '';
 in
 {
   languages.rust = {
@@ -162,7 +190,7 @@ in
       tasks = {
         "lific:install:site" = {
           cwd = "${repoRoot}/site";
-          exec = "bun install --frozen-lockfile";
+          exec = lockedBunInstall "site";
           before = [ "devenv:enterShell" ];
         };
         "lific:docs:build" = {
@@ -185,7 +213,7 @@ in
       tasks = {
         "lific:install:e2e" = {
           cwd = "${repoRoot}/e2e";
-          exec = "bun install --frozen-lockfile";
+          exec = lockedBunInstall "e2e";
           before = [ "devenv:enterShell" ];
         };
         "lific:e2e" = {
@@ -214,7 +242,7 @@ in
       tasks = {
         "lific:install:promo" = {
           cwd = "${repoRoot}/promo";
-          exec = "bun install --frozen-lockfile";
+          exec = lockedBunInstall "promo";
           before = [ "devenv:enterShell" ];
         };
         "lific:promo:check" = {
@@ -343,7 +371,7 @@ in
     };
     "lific:install:web" = {
       cwd = "${repoRoot}/web";
-      exec = "bun install --frozen-lockfile";
+      exec = lockedBunInstall "web";
       before = lib.optionals (config.languages.javascript.directory == "${repoRoot}/web") [
         "devenv:enterShell"
       ];
@@ -453,6 +481,7 @@ in
           ./migrations
           ./Cargo.toml
           ./Cargo.lock
+          ./build.rs
         ];
         extensions = [
           "rs"
