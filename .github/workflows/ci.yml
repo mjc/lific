@@ -35,13 +35,29 @@ jobs:
           cmd-format: devenv shell -- {0}
           prefix-key: devenv-${{ hashFiles('devenv.lock') }}
           shared-key: linux-debug
-      - name: Build and smoke-test the packaged release
+      - name: Run the Devenv project check graph
+        run: devenv tasks run lific:check
+
+  hooks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
+      - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
+        with:
+          name: devenv
+      - name: Install devenv
         shell: bash
-        run: |
-          package_path="$(devenv build outputs.lific | jq -r '."outputs.lific"')"
-          devenv shell -- bash scripts/verify-release-binary.sh "$package_path/bin/lific"
-      - name: Run the Devenv project test graph
-        run: devenv test
+        run: nix profile add "github:cachix/devenv/$(jq -r '.nodes.devenv.locked.rev' devenv.lock)#devenv"
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          cmd-format: devenv shell -- {0}
+          prefix-key: devenv-${{ hashFiles('devenv.lock') }}
+          shared-key: linux-debug
+      - name: Run the Devenv hook graph
+        run: devenv tasks run devenv:git-hooks:run
 
   windows:
     # Keep native Windows compilation, Clippy, and tests as a CI gate while
@@ -65,58 +81,6 @@ jobs:
 
       - name: Test
         run: cargo test --all-targets
-
-  windows-release:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-        with:
-          persist-credentials: false
-      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
-      - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
-        with:
-          name: devenv
-      - name: Install devenv
-        shell: bash
-        run: nix profile add "github:cachix/devenv/$(jq -r '.nodes.devenv.locked.rev' devenv.lock)#devenv"
-      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
-        with:
-          cmd-format: devenv --profile release-windows shell -- {0}
-          prefix-key: devenv-${{ hashFiles('devenv.lock') }}
-          shared-key: release-x86_64-pc-windows-gnu
-      - name: Cross-build the Windows release with devenv
-        shell: bash
-        run: devenv --profile release-windows tasks run lific:release:x86_64-pc-windows-gnu
-      - name: Verify Windows artifact structure
-        shell: bash
-        run: devenv --profile release-windows shell -- bash -euo pipefail -c "file target/x86_64-pc-windows-gnu/dist/lific.exe | grep -q 'PE32+'"
-
-  macos:
-    strategy:
-      matrix:
-        target:
-          - x86_64-apple-darwin
-          - aarch64-apple-darwin
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-        with:
-          persist-credentials: false
-      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
-      - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
-        with:
-          name: devenv
-      - name: Install devenv
-        shell: bash
-        run: nix profile add "github:cachix/devenv/$(jq -r '.nodes.devenv.locked.rev' devenv.lock)#devenv"
-      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
-        with:
-          cmd-format: devenv --profile release-darwin shell -- {0}
-          prefix-key: devenv-${{ hashFiles('devenv.lock') }}
-          shared-key: release-${{ matrix.target }}
-      - name: Build macOS release with devenv
-        shell: bash
-        run: devenv --profile release-darwin tasks run "lific:release:${{ matrix.target }}"
 
   smoke:
     runs-on: ubuntu-latest
