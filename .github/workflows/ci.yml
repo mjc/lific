@@ -42,7 +42,7 @@ jobs:
         with:
           cmd-format: devenv shell -- {0}
           prefix-key: devenv-${{ hashFiles('devenv.lock') }}
-          shared-key: linux-debug
+          shared-key: linux-debug-check
       - name: Run project, hook, and documentation checks
         run: devenv tasks run lific:check devenv:git-hooks:run lific:docs:check
 
@@ -184,7 +184,10 @@ jobs:
         with:
           cmd-format: devenv --profile e2e shell -- {0}
           prefix-key: devenv-${{ hashFiles('devenv.lock') }}
-          shared-key: linux-debug
+          shared-key: linux-debug-check
+          # The check job saves the superset of build, test, and Clippy deps.
+          # A faster smoke job must not win the immutable-cache write race.
+          save-if: false
       - name: Run the browser task graph
         run: devenv --profile e2e tasks run lific:e2e
       - name: Retain native-link browser traces on failure
