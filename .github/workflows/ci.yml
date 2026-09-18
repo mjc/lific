@@ -58,6 +58,8 @@ jobs:
           shared-key: linux-debug
       - name: Run the Devenv hook graph
         run: devenv tasks run devenv:git-hooks:run
+      - name: Build and check documentation
+        run: devenv tasks run lific:docs:check
 
   windows:
     # Keep native Windows compilation, Clippy, and tests as a CI gate while
@@ -110,19 +112,3 @@ jobs:
           path: /tmp/lific-native-links-*/trace.zip
           if-no-files-found: ignore
           retention-days: 7
-
-  docs:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-        with:
-          persist-credentials: false
-      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
-      - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
-        with:
-          name: devenv
-      - name: Install devenv
-        shell: bash
-        run: nix profile add "github:cachix/devenv/$(jq -r '.nodes.devenv.locked.rev' devenv.lock)#devenv"
-      - name: Build and check documentation
-        run: devenv --profile docs tasks run lific:docs:check
