@@ -38,6 +38,7 @@ test("shell setup cannot select the project checks or rewrite formatting", () =>
   expect(install.exec).toContain("bun install --frozen-lockfile");
   expect(install.execIfModified).toEqual([]);
   expect(install.before).toContain("devenv:enterShell");
+  expect(config.tasks["lific:web:lock-update"].exec).toBe("bun2nix -o bun.nix");
 }, 360_000);
 
 test("tests check formatting before compilation and use the native processes", () => {

@@ -129,11 +129,10 @@ The checks exercise these behaviors:
 
 The packaged frontend uses the same `web/bun.lock` as local builds and platform
 releases. After intentionally updating that lockfile, regenerate its Nix
-dependency manifest from inside the shell:
+dependency manifest through the pinned Devenv tool:
 
 ```bash
-cd web
-bun2nix -o bun.nix
+devenv tasks run lific:web:lock-update
 ```
 
 The test graph rejects a stale generated manifest. Nix package inputs are

@@ -383,6 +383,10 @@ in
         diff -u bun.nix "$generated"
       '';
     };
+    "lific:web:lock-update" = {
+      cwd = "${repoRoot}/web";
+      exec = "bun2nix -o bun.nix";
+    };
     "lific:rust-test" = {
       cwd = repoRoot;
       exec = "cargo test --all-targets --locked";
