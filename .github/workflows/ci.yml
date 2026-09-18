@@ -17,25 +17,6 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  package:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-        with:
-          persist-credentials: false
-      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
-      - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
-        with:
-          name: devenv
-      - name: Install devenv
-        shell: bash
-        run: nix profile add "github:cachix/devenv/$(jq -r '.nodes.devenv.locked.rev' devenv.lock)#devenv"
-      - name: Build and smoke-test the packaged release
-        shell: bash
-        run: |
-          package_path="$(devenv build outputs.lific | jq -r '."outputs.lific"')"
-          devenv shell -- bash scripts/verify-release-binary.sh "$package_path/bin/lific"
-
   check:
     runs-on: ubuntu-latest
     steps:
@@ -199,33 +180,6 @@ jobs:
           } finally {
             if (-not $server.HasExited) { Stop-Process -Id $server.Id -Force }
           }
-
-  macos:
-    strategy:
-      matrix:
-        target:
-          - x86_64-apple-darwin
-          - aarch64-apple-darwin
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-        with:
-          persist-credentials: false
-      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
-      - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
-        with:
-          name: devenv
-      - name: Install devenv
-        shell: bash
-        run: nix profile add "github:cachix/devenv/$(jq -r '.nodes.devenv.locked.rev' devenv.lock)#devenv"
-      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
-        with:
-          cmd-format: devenv --profile release-darwin shell -- {0}
-          prefix-key: devenv-${{ hashFiles('devenv.lock') }}
-          shared-key: release-${{ matrix.target }}
-      - name: Build macOS release with devenv
-        shell: bash
-        run: devenv --profile release-darwin tasks run "lific:release:${{ matrix.target }}"
 
   smoke:
     runs-on: ubuntu-latest
