@@ -76,25 +76,26 @@ jobs:
       - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
         with:
           name: devenv
-      - name: Cache individual MSVC toolchain outputs
-        uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+      - name: Restore the MSVC toolchain
+        uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7
         with:
-          # Keep outputs in GitHub's cache and reuse public nixpkgs binaries
-          # directly, without another archive of the whole Nix store.
-          # Store-path identities allow unchanged outputs to survive input updates.
-          use-gha-cache: true
-          use-flakehub: false
-          diagnostic-endpoint: ""
+          primary-key: devenv-tools-${{ runner.os }}-${{ runner.arch }}-msvc-${{ hashFiles('devenv.lock', 'devenv.yaml', 'devenv.nix') }}
+          restore-prefixes-first-match: devenv-tools-${{ runner.os }}-${{ runner.arch }}-msvc-
+          paths: ~/.cache/nix
+          gc-max-store-size: 0
       - name: Install devenv
         shell: bash
         run: nix profile add "github:cachix/devenv/$(jq -r '.nodes.devenv.locked.rev' devenv.lock)#devenv"
+      - name: Prepare the MSVC environment
+        run: devenv --profile release-windows-msvc shell -- true
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
           cmd-format: devenv --profile release-windows-msvc shell -- {0}
-          prefix-key: devenv-${{ hashFiles('devenv.lock') }}
+          prefix-key: devenv-rust-${{ hashFiles('devenv.lock', 'devenv.yaml', 'devenv.nix', 'Cargo.lock', 'Cargo.toml', '.cargo/config.toml') }}
           shared-key: release-x86_64-pc-windows-msvc
+          add-rust-environment-hash-key: false
+          cache-bin: false
           cache-workspace-crates: true
-          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
       - name: Build the MSVC release with devenv
         shell: bash
         run: devenv --profile release-windows-msvc tasks run lific:release:x86_64-pc-windows-msvc
