@@ -49,8 +49,9 @@
 //!    → 200 + JSON containing `resource`. Skipped when the server is unreachable.
 //! 6. **mcp** — `POST {base}/mcp` JSON-RPC `initialize`. No key → expect 401 with
 //!    a `WWW-Authenticate` header (auth enforced, discovery advertised) = pass.
-//!    With a key → expect 200 + a `serverInfo` result = pass; wrong key = fail.
-//!    Skipped when the server is unreachable.
+//!    With an explicit key and HTTPS `public_url`, use that URL for the request;
+//!    otherwise use `base` and require it to use HTTPS. Expect 200 + a
+//!    `serverInfo` result = pass; wrong key = fail. Skipped when unreachable.
 //! 7. **public_url** — only when `server.public_url` is set. `GET
 //!    {public_url}/.well-known/oauth-protected-resource/mcp` reachable = pass;
 //!    unreachable = warn (may be firewalled from this vantage point).
@@ -312,7 +313,12 @@ async fn check_reachable_remote(
     credential_base: &str,
 ) -> Vec<Check> {
     let mut checks = vec![check_oauth_discovery(client, base).await];
-    if explicit_key.is_some() && !is_https_url(base) {
+    let mcp_base = if explicit_key.is_some() && is_https_url(credential_base) {
+        credential_base
+    } else {
+        base
+    };
+    if explicit_key.is_some() && !is_https_url(mcp_base) {
         let detail = "explicit key skipped; authorized check requires HTTPS";
         checks.push(Check::new("credentials", Status::Skipped, detail));
         checks.push(Check::new("mcp", Status::Skipped, detail));
@@ -342,7 +348,7 @@ async fn check_reachable_remote(
             }
         },
     };
-    let mut mcp = check_mcp(client, base, key.as_deref()).await;
+    let mut mcp = check_mcp(client, mcp_base, key.as_deref()).await;
     if explicit_key.is_none() && !allow_stored_credential {
         mcp.detail = format!(
             "{} (authorized check skipped; stored credentials require a matching HTTPS origin)",
@@ -1840,6 +1846,34 @@ mod tests {
         assert_eq!(status_of(&checks, "oauth_discovery"), Some(Status::Fail));
         assert_eq!(status_of(&checks, "credentials"), Some(Status::Skipped));
         assert_eq!(status_of(&checks, "mcp"), Some(Status::Skipped));
+    }
+
+    #[tokio::test]
+    async fn explicit_key_uses_https_public_url_for_mcp_probe() {
+        let app = axum::Router::new()
+            .route(
+                "/api/health",
+                axum::routing::get(|| async { reqwest::StatusCode::OK }),
+            )
+            .route(
+                "/.well-known/oauth-protected-resource/mcp",
+                axum::routing::get(|| async {
+                    axum::Json(serde_json::json!({ "resource": "http://example.test/mcp" }))
+                }),
+            )
+            .route(
+                "/mcp",
+                axum::routing::post(|| async { initialize_response() }),
+            );
+        let base = serve_ephemeral(app).await;
+        let mut config = config_at(&base);
+        config.server.public_url = Some(base.replacen("http://", "https://", 1));
+
+        let checks = check_remote(&config, Some("explicit-test-key")).await;
+
+        assert_eq!(status_of(&checks, "server"), Some(Status::Pass));
+        assert_eq!(status_of(&checks, "oauth_discovery"), Some(Status::Pass));
+        assert_eq!(status_of(&checks, "mcp"), Some(Status::Fail));
     }
 
     #[tokio::test]
