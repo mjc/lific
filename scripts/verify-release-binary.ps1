@@ -58,7 +58,8 @@ allow_signup = false
         if ($server.HasExited) { throw "lific exited with code $($server.ExitCode)`n$(Get-Content $stderr -Raw)" }
         # A bind log from this process prevents an unrelated listener from
         # satisfying readiness if it claimed the port after our allocation.
-        if ((Get-Content $stdout -Raw) -match "lific server started") {
+        $startupOutput = (Get-Content $stdout -Raw) + (Get-Content $stderr -Raw)
+        if ($startupOutput -match "lific server started") {
             try {
                 $health = Invoke-WebRequest "http://127.0.0.1:$port/api/health" -TimeoutSec 2
                 if ($health.StatusCode -eq 200) { $ready = $true; break }
