@@ -1927,7 +1927,7 @@ mod tests {
         assert!(validate_api_key(&pool, &manager, &old).is_err());
         assert!(validate_api_key(&pool, &manager, &replacement).is_ok());
 
-        // Reaching the original expiry still retires the replacement.
+        // Moving the preserved expiry into the past still retires the replacement.
         pool.write()
             .unwrap()
             .execute(
