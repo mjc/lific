@@ -115,11 +115,19 @@ fn api_key_from_entropy(entropy: zeroize::Zeroizing<[u8; API_KEY_ENTROPY_BYTES]>
 fn build_api_key_token(entropy: &[u8; API_KEY_ENTROPY_BYTES]) -> String {
     use base64::Engine as _;
 
+    let mut encoded = zeroize::Zeroizing::new([0u8; API_KEY_PAYLOAD_CHARS]);
+    let encoded_len = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode_slice(entropy, &mut encoded[..])
+        .expect("fixed API key payload buffer fits its encoded entropy");
+
     let mut token = String::with_capacity(
         API_KEY_PREFIX.len() + API_KEY_PAYLOAD_CHARS + 1 + API_KEY_CHECKSUM_CHARS,
     );
     token.push_str(API_KEY_PREFIX);
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode_string(entropy, &mut token);
+    token.push_str(
+        std::str::from_utf8(&encoded[..encoded_len])
+            .expect("URL-safe base64 output is valid UTF-8"),
+    );
     let checksum = blake3::hash(token.as_bytes()).to_hex();
     token.push('.');
     token.push_str(&checksum[..API_KEY_CHECKSUM_CHARS]);
