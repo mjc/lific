@@ -481,6 +481,19 @@ pub fn rotate_api_key_bound(
                 other => other.into(),
             })?;
 
+        if let Some(expiry) = previous_expires_at.as_deref() {
+            let still_live = tx.query_row(
+                "SELECT COALESCE(datetime(?1) > datetime('now'), 0)",
+                params![expiry],
+                |row| row.get::<_, bool>(0),
+            )?;
+            if !still_live {
+                return Err(crate::error::LificError::BadRequest(format!(
+                    "key '{name}' has expired or an invalid expiry and cannot be rotated. Revoke it, then create a replacement with a new expiry and the same owner if needed."
+                )));
+            }
+        }
+
         // Delete old key entirely (not just revoke) so the name can be reused.
         // This clears every row for the name, so `insert`'s active-name and
         // owner checks see a free name: rotation is explicitly allowed to
@@ -1937,6 +1950,35 @@ mod tests {
             )
             .unwrap();
         assert!(validate_api_key(&pool, &manager, &replacement).is_err());
+    }
+
+    #[test]
+    fn rotating_an_expired_key_refuses_without_changing_the_old_row() {
+        let pool = test_db();
+        let manager = create_key_manager();
+        let owner_id = seed_key_owner(&pool, "expired-rotation-owner");
+        let old = create_api_key_with_expiry(
+            &pool,
+            &manager,
+            "expired-rotation",
+            Some("2000-01-01T00:00:00Z"),
+            Some(owner_id),
+        )
+        .unwrap();
+        let before = key_rows(&pool, "expired-rotation");
+
+        let error = rotate_api_key(&pool, &manager, "expired-rotation")
+            .expect_err("an expired key must not be replaced with another expired key");
+
+        match error {
+            crate::error::LificError::BadRequest(message) => {
+                assert!(message.contains("expired"), "{message}");
+                assert!(message.contains("new expiry"), "{message}");
+            }
+            other => panic!("expected an actionable rotation error, got {other:?}"),
+        }
+        assert_eq!(key_rows(&pool, "expired-rotation"), before);
+        assert!(validate_api_key(&pool, &manager, &old).is_err());
     }
 
     #[test]

@@ -278,7 +278,7 @@ lific key list
 
 Prefer per-tool **bot identities** (what `lific connect` mints when you have a user account) over unbound keys: a bot inherits its owner's project access and shows up in the audit log by name.
 
-API-key verifier upgrades are a coordinated data-format change. The first successful use of an indexed legacy key rewrites its Argon2 verifier as `sha256:v1`; older Lific binaries cannot authenticate that rewritten row. Upgrade every server, CLI, and long-lived stdio process that shares the database together, and do not roll back to a binary that only understands Argon2 after any key has migrated. Active legacy rows without an indexed ID are revoked during upgrade. `lific key list` marks those rows `UNSUPPORTED FORMAT` / `unsupported_format`; rotate before reuse only for integrations that still need credentials. Rotation preserves the key's existing expiry and owner.
+API-key verifier upgrades are a coordinated data-format change. The first successful use of an indexed legacy key rewrites its Argon2 verifier as `sha256:v1`; keys created or rotated by the new binary are also stored as `sha256:v1`. Older Lific binaries cannot authenticate those rows. Upgrade every server, CLI, and long-lived stdio process that shares the database together, and do not roll back to a binary that only understands Argon2 after any key has been created, rotated, or migrated. Active legacy rows without an indexed ID are revoked during upgrade. `lific key list` marks those rows `UNSUPPORTED FORMAT` / `unsupported_format`; rotate before reuse only for integrations that still need credentials. Rotation preserves the key's existing expiry and owner.
 
 ## Configuration
 
