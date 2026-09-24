@@ -1110,9 +1110,9 @@ impl Sha256ApiKeyVerifier {
         }
 
         let mut bytes = [0u8; 32];
-        for (index, pair) in encoded.as_bytes().chunks_exact(2).enumerate() {
-            let high = hex_nibble(*pair.first()?)?;
-            let low = hex_nibble(*pair.get(1)?)?;
+        for (index, [high, low]) in encoded.as_bytes().as_chunks::<2>().0.iter().enumerate() {
+            let high = hex_nibble(*high)?;
+            let low = hex_nibble(*low)?;
             bytes[index] = (high << 4) | low;
         }
         Some(Self(bytes))
