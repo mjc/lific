@@ -69,7 +69,7 @@ pub fn run(
                             "revoked": k.revoked,
                             "created_at": k.created_at,
                             "expires_at": k.expires_at,
-                            "needs_rotation": k.needs_rotation,
+                            "unsupported_format": k.unsupported_format,
                         })
                     })
                     .collect();
@@ -87,7 +87,11 @@ pub fn run(
                         status,
                         k.created_at,
                         expiry,
-                        if k.needs_rotation { " | ROTATE" } else { "" }
+                        if k.unsupported_format {
+                            " | UNSUPPORTED FORMAT (rotate before reuse)"
+                        } else {
+                            ""
+                        }
                     );
                 }
             }

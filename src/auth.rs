@@ -410,7 +410,7 @@ pub fn list_api_keys(db: &DbPool) -> Result<Vec<ApiKeyInfo>, crate::error::Lific
             created_at: row.get(2)?,
             expires_at: row.get(3)?,
             revoked: row.get(4)?,
-            needs_rotation: row.get(5)?,
+            unsupported_format: row.get(5)?,
         })
     })?;
     rows.collect::<Result<Vec<_>, _>>()
@@ -464,14 +464,15 @@ pub fn rotate_api_key_bound(
     // to tell that from a rotation that had not started.
     let prepared = PreparedApiKey::generate(manager)?;
     db.transaction(|tx| {
-        // Capture the user binding before deleting so it can be re-applied.
-        // If multiple rows share the name (revoked leftovers), prefer the
-        // binding of an active row.
-        let previous_user_id: Option<i64> = tx
+        // Capture the owner and expiry before deleting so rotation preserves
+        // both security properties by default. If multiple rows share the
+        // name (revoked leftovers), prefer the most recent active row.
+        let (previous_user_id, previous_expires_at): (Option<i64>, Option<String>) = tx
             .query_row(
-                "SELECT user_id FROM api_keys WHERE name = ?1 ORDER BY revoked ASC, id DESC LIMIT 1",
+                "SELECT user_id, expires_at FROM api_keys WHERE name = ?1 \
+                 ORDER BY revoked ASC, id DESC LIMIT 1",
                 params![name],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .map_err(|e| match e {
                 rusqlite::Error::QueryReturnedNoRows => {
@@ -486,7 +487,12 @@ pub fn rotate_api_key_bound(
         // replace a live key, which is the whole point of it.
         tx.execute("DELETE FROM api_keys WHERE name = ?1", params![name])?;
 
-        prepared.insert(tx, name, None, user_id.or(previous_user_id))
+        prepared.insert(
+            tx,
+            name,
+            previous_expires_at.as_deref(),
+            user_id.or(previous_user_id),
+        )
     })
 }
 
@@ -503,7 +509,9 @@ pub fn has_any_keys(db: &DbPool) -> bool {
     }
 }
 
-pub(crate) fn unindexed_api_key_count(db: &DbPool) -> Result<i64, crate::error::LificError> {
+pub(crate) fn unsupported_api_key_format_count(
+    db: &DbPool,
+) -> Result<i64, crate::error::LificError> {
     let conn = db.read()?;
     Ok(conn.query_row(
         "SELECT count(*) FROM api_keys WHERE key_id IS NULL",
@@ -543,9 +551,9 @@ pub struct ApiKeyInfo {
     pub created_at: String,
     pub expires_at: Option<String>,
     pub revoked: bool,
-    /// This credential predates the indexed verifier format and is revoked
-    /// at migration. Operators should rotate its client to a newly issued key.
-    pub needs_rotation: bool,
+    /// This credential uses a format that the current server cannot verify.
+    /// Rotate it before reuse if its integration still needs a credential.
+    pub unsupported_format: bool,
 }
 
 /// LIF-267: parse the `lific_token` session cookie a browser sends on same-site
@@ -1539,8 +1547,8 @@ mod tests {
             list_api_keys(&pool)
                 .unwrap()
                 .iter()
-                .all(|key| key.needs_rotation),
-            "legacy NULL-ID keys must be identifiable for operator rotation"
+                .all(|key| key.unsupported_format),
+            "legacy NULL-ID keys must be identifiable as unsupported"
         );
     }
 
@@ -1861,6 +1869,74 @@ mod tests {
         assert_eq!(rows[0].user_id, Some(bot), "the binding carried over");
         assert!(validate_api_key(&pool, &manager, &old).is_err());
         assert!(validate_api_key(&pool, &manager, &fresh).is_ok());
+    }
+
+    #[test]
+    fn rotating_a_migrated_unindexed_key_preserves_owner_and_expiry() {
+        let pool = test_db();
+        let manager = create_key_manager();
+        let owner_id = seed_key_owner(&pool, "expiring-owner");
+        let expires_at = rfc3339_from_now(3);
+        let old = create_api_key_with_expiry(
+            &pool,
+            &manager,
+            "expiring-legacy",
+            Some(&expires_at),
+            Some(owner_id),
+        )
+        .unwrap();
+
+        // Turn this row into an unindexed legacy key and re-run migration 053
+        // to exercise the same quarantine step as a real database upgrade.
+        {
+            let conn = pool.write().unwrap();
+            conn.execute(
+                "UPDATE api_keys SET key_id = NULL WHERE name = 'expiring-legacy'",
+                [],
+            )
+            .unwrap();
+            conn.execute("DELETE FROM _migrations WHERE version = 53", [])
+                .unwrap();
+        }
+        crate::db::migrate::run(&pool.write().unwrap()).unwrap();
+        let (quarantined, quarantined_expiry): (bool, Option<String>) = pool
+            .read()
+            .unwrap()
+            .query_row(
+                "SELECT revoked, expires_at FROM api_keys WHERE name = 'expiring-legacy'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert!(quarantined, "migration 053 must revoke the unindexed key");
+        assert_eq!(quarantined_expiry.as_deref(), Some(expires_at.as_str()));
+        assert!(validate_api_key(&pool, &manager, &old).is_err());
+
+        let replacement = rotate_api_key(&pool, &manager, "expiring-legacy").unwrap();
+        let (stored_owner, stored_expiry): (Option<i64>, Option<String>) = pool
+            .read()
+            .unwrap()
+            .query_row(
+                "SELECT user_id, expires_at FROM api_keys WHERE name = 'expiring-legacy'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(stored_owner, Some(owner_id));
+        assert_eq!(stored_expiry.as_deref(), Some(expires_at.as_str()));
+        assert!(validate_api_key(&pool, &manager, &old).is_err());
+        assert!(validate_api_key(&pool, &manager, &replacement).is_ok());
+
+        // Reaching the original expiry still retires the replacement.
+        pool.write()
+            .unwrap()
+            .execute(
+                "UPDATE api_keys SET expires_at = '2000-01-01T00:00:00Z' \
+                 WHERE name = 'expiring-legacy'",
+                [],
+            )
+            .unwrap();
+        assert!(validate_api_key(&pool, &manager, &replacement).is_err());
     }
 
     #[test]
@@ -2582,7 +2658,7 @@ mod tests {
         let extracted_id = api_key_id(&key);
         assert_eq!(extracted_id, key_id);
         drop(conn);
-        assert!(!list_api_keys(&pool).unwrap()[0].needs_rotation);
+        assert!(!list_api_keys(&pool).unwrap()[0].unsupported_format);
     }
 
     #[test]

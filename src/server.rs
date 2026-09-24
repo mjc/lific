@@ -540,11 +540,11 @@ pub async fn run(cfg: &Config) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let pool = db::open(&cfg.database.path)?;
-    let unindexed_keys = auth::unindexed_api_key_count(&pool)?;
-    if unindexed_keys > 0 {
+    let unsupported_key_formats = auth::unsupported_api_key_format_count(&pool)?;
+    if unsupported_key_formats > 0 {
         warn!(
-            unindexed_keys,
-            "API keys without indexed IDs cannot authenticate. Check `lific key list`, rotate affected keys with `lific key rotate --name NAME`, and update the clients using them."
+            unsupported_key_formats,
+            "API key records with an unsupported format cannot authenticate. Check `lific key list`; rotate before reuse only for integrations that still need credentials."
         );
     }
     info!(path = %cfg.database.path.display(), "database ready");
