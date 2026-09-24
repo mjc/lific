@@ -469,7 +469,7 @@ fn mint_for_tool(
     source: &KeySource,
     spec: &ClientSpec,
     pool: &DbPool,
-    manager: &api_keys_simplified::ApiKeyManagerV0,
+    manager: &crate::auth::ApiKeyManager,
 ) -> Result<String, String> {
     match source {
         KeySource::Provided(k) => Ok(k.clone()),
@@ -511,7 +511,7 @@ fn mint_for_tool(
 /// unbound key and, on the rotate path, preserves any existing binding.
 fn mint_or_rotate(
     pool: &DbPool,
-    manager: &api_keys_simplified::ApiKeyManagerV0,
+    manager: &crate::auth::ApiKeyManager,
     name: &str,
     user_id: Option<i64>,
 ) -> Result<String, String> {
@@ -662,10 +662,7 @@ pub fn run(
     let key_origin = key_source.as_ref().map(|s| s.origin());
 
     let manager = if needs_minting {
-        Some(
-            crate::auth::create_key_manager()
-                .map_err(|e| format!("key manager init failed: {e}"))?,
-        )
+        Some(crate::auth::create_key_manager())
     } else {
         None
     };
@@ -712,7 +709,7 @@ fn write_all_clients(
     pool: &DbPool,
     base: &PathBase,
     key_source: Option<&KeySource>,
-    manager: Option<&api_keys_simplified::ApiKeyManagerV0>,
+    manager: Option<&crate::auth::ApiKeyManager>,
 ) -> Vec<ClientOutcome> {
     let mut outcomes = Vec::new();
     for id in selected {
