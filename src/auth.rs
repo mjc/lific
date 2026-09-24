@@ -5,7 +5,7 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 use tracing::{info, warn};
 
 use rand::{RngCore, rngs::OsRng};
@@ -107,20 +107,31 @@ pub struct PreparedApiKey {
     key_id: String,
 }
 
-fn api_key_from_entropy(entropy: [u8; 24]) -> String {
-    let payload =
-        base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, entropy);
-    let unsigned = format!("lific_sk-live-{payload}");
-    let checksum = blake3::hash(unsigned.as_bytes()).to_hex();
-    format!("{unsigned}.{}", &checksum[..20])
+#[cfg(test)]
+fn api_key_from_entropy(entropy: zeroize::Zeroizing<[u8; API_KEY_ENTROPY_BYTES]>) -> String {
+    build_api_key_token(&entropy)
+}
+
+fn build_api_key_token(entropy: &[u8; API_KEY_ENTROPY_BYTES]) -> String {
+    use base64::Engine as _;
+
+    let mut token = String::with_capacity(
+        API_KEY_PREFIX.len() + API_KEY_PAYLOAD_CHARS + 1 + API_KEY_CHECKSUM_CHARS,
+    );
+    token.push_str(API_KEY_PREFIX);
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode_string(entropy, &mut token);
+    let checksum = blake3::hash(token.as_bytes()).to_hex();
+    token.push('.');
+    token.push_str(&checksum[..API_KEY_CHECKSUM_CHARS]);
+    token
 }
 
 pub(crate) fn generate_api_key_token() -> Result<String, crate::error::LificError> {
-    let mut entropy = [0u8; 24];
+    let mut entropy = zeroize::Zeroizing::new([0u8; API_KEY_ENTROPY_BYTES]);
     OsRng
-        .try_fill_bytes(&mut entropy)
+        .try_fill_bytes(&mut entropy[..])
         .map_err(|e| crate::error::LificError::Internal(format!("key generation failed: {e}")))?;
-    Ok(api_key_from_entropy(entropy))
+    Ok(build_api_key_token(&entropy))
 }
 
 impl PreparedApiKey {
@@ -178,7 +189,7 @@ impl PreparedApiKey {
     /// cannot leave behind an orphan key that resolves as the operator.
     pub fn insert(
         self,
-        conn: &rusqlite::Connection,
+        conn: &rusqlite::Transaction<'_>,
         name: &str,
         expires_at: Option<&str>,
         user_id: Option<i64>,
@@ -381,7 +392,8 @@ pub fn require_fresh_admin(user: &crate::db::models::User) -> Result<(), crate::
 pub fn list_api_keys(db: &DbPool) -> Result<Vec<ApiKeyInfo>, crate::error::LificError> {
     let conn = db.read()?;
     let mut stmt = conn.prepare(
-        "SELECT id, name, created_at, expires_at, revoked FROM api_keys ORDER BY created_at",
+        "SELECT id, name, created_at, expires_at, revoked, key_id IS NULL \
+         FROM api_keys ORDER BY created_at",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok(ApiKeyInfo {
@@ -390,6 +402,7 @@ pub fn list_api_keys(db: &DbPool) -> Result<Vec<ApiKeyInfo>, crate::error::Lific
             created_at: row.get(2)?,
             expires_at: row.get(3)?,
             revoked: row.get(4)?,
+            needs_rotation: row.get(5)?,
         })
     })?;
     rows.collect::<Result<Vec<_>, _>>()
@@ -522,6 +535,9 @@ pub struct ApiKeyInfo {
     pub created_at: String,
     pub expires_at: Option<String>,
     pub revoked: bool,
+    /// This credential predates the indexed verifier format and is revoked
+    /// at migration. Operators should rotate its client to a newly issued key.
+    pub needs_rotation: bool,
 }
 
 /// LIF-267: parse the `lific_token` session cookie a browser sends on same-site
@@ -997,7 +1013,8 @@ pub async fn require_api_key(
     // checksum/lookup/verifier logic lives in one place (see
     // `validate_api_key` just below `ApiKeyRow`).
     let auth_user = match validate_api_key(&auth.db, &auth.manager, &token) {
-        Ok(user) => user,
+        Ok(ApiKeyIdentity::Bound(user)) => Some(user),
+        Ok(ApiKeyIdentity::UnboundOperator) => None,
         Err(ApiKeyReject::BadChecksum) => {
             warn!("rejected API key with invalid checksum");
             return (
@@ -1073,6 +1090,13 @@ struct ApiKeyRow {
     user_id: Option<i64>,
 }
 
+/// Successful key authentication has exactly two identity outcomes. A
+/// missing or unreadable bound user must never turn into operator authority.
+enum ApiKeyIdentity {
+    Bound(AuthUser),
+    UnboundOperator,
+}
+
 /// Why an API key failed to authenticate. Maps to both the HTTP response and
 /// the stdio-resolver error, so both callers share one decision.
 #[derive(Debug, Clone, Copy)]
@@ -1092,10 +1116,15 @@ enum ApiKeyReject {
 }
 
 const API_KEY_PREFIX: &str = "lific_sk-live-";
+const API_KEY_ENTROPY_BYTES: usize = 24;
+const API_KEY_PAYLOAD_CHARS: usize = 32;
+const API_KEY_CHECKSUM_CHARS: usize = 20;
+const API_KEY_ID_HEX_CHARS: usize = 32;
+const SHA256_DIGEST_BYTES: usize = 32;
 const SHA256_VERIFIER_PREFIX: &str = "sha256:v1:";
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct Sha256ApiKeyVerifier([u8; 32]);
+#[derive(Clone, Copy, Debug)]
+struct Sha256ApiKeyVerifier([u8; SHA256_DIGEST_BYTES]);
 
 impl Sha256ApiKeyVerifier {
     fn for_token(token: &str) -> Self {
@@ -1105,11 +1134,11 @@ impl Sha256ApiKeyVerifier {
 
     fn parse_tagged(verifier: &str) -> Option<Self> {
         let encoded = verifier.strip_prefix(SHA256_VERIFIER_PREFIX)?;
-        if encoded.len() != 64 {
+        if encoded.len() != SHA256_DIGEST_BYTES * 2 {
             return None;
         }
 
-        let mut bytes = [0u8; 32];
+        let mut bytes = [0u8; SHA256_DIGEST_BYTES];
         for (index, [high, low]) in encoded.as_bytes().as_chunks::<2>().0.iter().enumerate() {
             let high = hex_nibble(*high)?;
             let low = hex_nibble(*low)?;
@@ -1119,7 +1148,15 @@ impl Sha256ApiKeyVerifier {
     }
 
     fn encode(self) -> String {
-        format!("{SHA256_VERIFIER_PREFIX}{}", hex_encode(&self.0))
+        use std::fmt::Write as _;
+
+        let mut encoded =
+            String::with_capacity(SHA256_VERIFIER_PREFIX.len() + SHA256_DIGEST_BYTES * 2);
+        encoded.push_str(SHA256_VERIFIER_PREFIX);
+        for byte in self.0 {
+            write!(&mut encoded, "{byte:02x}").expect("writing to a String cannot fail");
+        }
+        encoded
     }
 
     fn matches(self, presented: Self) -> bool {
@@ -1156,7 +1193,7 @@ impl<'a> StoredApiKeyVerifier<'a> {
 }
 
 pub(crate) fn api_key_id(token: &str) -> String {
-    blake3::hash(token.as_bytes()).to_hex()[..32].to_owned()
+    blake3::hash(token.as_bytes()).to_hex()[..API_KEY_ID_HEX_CHARS].to_owned()
 }
 
 fn valid_api_key_checksum(token: &str) -> bool {
@@ -1169,19 +1206,26 @@ fn valid_api_key_checksum(token: &str) -> bool {
     let Some(payload) = unsigned.strip_prefix(API_KEY_PREFIX) else {
         return false;
     };
-    if payload.len() != 32 || checksum.len() != 20 {
+    if payload.len() != API_KEY_PAYLOAD_CHARS || checksum.len() != API_KEY_CHECKSUM_CHARS {
         return false;
     }
-    let Ok(decoded) =
-        base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, payload)
-    else {
+    let mut decoded = zeroize::Zeroizing::new([0u8; API_KEY_ENTROPY_BYTES]);
+    let Ok(decoded_len) = base64::Engine::decode_slice(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+        payload,
+        &mut *decoded,
+    ) else {
         return false;
     };
-    if decoded.len() != 24 {
+    if decoded_len != decoded.len() {
         return false;
     }
     let expected = blake3::hash(unsigned.as_bytes()).to_hex();
-    bool::from(checksum.as_bytes().ct_eq(expected[..20].as_bytes()))
+    bool::from(
+        checksum
+            .as_bytes()
+            .ct_eq(expected[..API_KEY_CHECKSUM_CHARS].as_bytes()),
+    )
 }
 
 fn verify_legacy_argon2(verifier: &str, token: &str) -> bool {
@@ -1245,37 +1289,51 @@ fn migrate_api_key_verifier(
 /// copy of that logic (LIF-18 review:
 /// previously duplicated between `require_api_key` and `resolve_api_key_user`).
 ///
-/// Returns `Ok(Some(user))` for a valid bound key, `Ok(None)` for a valid but
-/// unbound key (the caller falls that back to the operator), and
-/// `Err(reject)` when the key does not authenticate.
+/// Returns a distinct bound-user or explicitly-unbound-operator identity.
+/// Bound-user resolution failures are rejections and cannot acquire operator
+/// authority through the unbound-key fallback.
 fn validate_api_key(
+    db: &DbPool,
+    manager: &ApiKeyManager,
+    token: &str,
+) -> Result<ApiKeyIdentity, ApiKeyReject> {
+    validate_api_key_after_legacy_lookup(db, manager, token, || {})
+}
+
+fn validate_api_key_after_legacy_lookup(
     db: &DbPool,
     _manager: &ApiKeyManager,
     token: &str,
-) -> Result<Option<AuthUser>, ApiKeyReject> {
+    after_legacy_lookup: impl FnOnce(),
+) -> Result<ApiKeyIdentity, ApiKeyReject> {
     if !valid_api_key_checksum(token) {
         return Err(ApiKeyReject::BadChecksum);
     }
 
-    // Compute deterministic key ID (BLAKE3, ~microseconds) for O(1) DB lookup.
-    let key_id = api_key_id(token);
+    // Keep the 64-byte hex digest on the stack and borrow its indexed prefix;
+    // only credential creation needs an owned key ID string.
+    let key_id_hex = blake3::hash(token.as_bytes()).to_hex();
+    let key_id = &key_id_hex[..API_KEY_ID_HEX_CHARS];
 
     // Look up the single matching key by key_id (indexed query).
     let key_row: Option<ApiKeyRow> = {
         let conn = db.read().map_err(|_| ApiKeyReject::Db)?;
-        conn.query_row(
-            "SELECT id, key_hash, user_id FROM api_keys WHERE key_id = ?1 AND revoked = 0 \
-             AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))",
-            params![key_id],
-            |row| {
+        let mut statement = conn
+            .prepare_cached(
+                "SELECT id, key_hash, user_id FROM api_keys WHERE key_id = ?1 AND revoked = 0 \
+                 AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))",
+            )
+            .map_err(|_| ApiKeyReject::Db)?;
+        statement
+            .query_row(params![key_id], |row| {
                 Ok(ApiKeyRow {
                     id: row.get(0)?,
                     hash: row.get(1)?,
                     user_id: row.get(2)?,
                 })
-            },
-        )
-        .ok()
+            })
+            .optional()
+            .map_err(|_| ApiKeyReject::Db)?
     };
 
     let Some(key) = key_row else {
@@ -1286,18 +1344,17 @@ fn validate_api_key(
     let verified = match StoredApiKeyVerifier::parse(&key.hash) {
         StoredApiKeyVerifier::Sha256(stored) => stored.matches(presented_verifier),
         StoredApiKeyVerifier::LegacyArgon2(stored) => {
+            after_legacy_lookup();
             verify_legacy_argon2(stored, token)
-                && migrate_api_key_verifier(db, &key, &key_id, presented_verifier)?
+                && migrate_api_key_verifier(db, &key, key_id, presented_verifier)?
         }
         StoredApiKeyVerifier::Unsupported => false,
     };
 
     if verified {
-        // Resolve the user if the key has a user_id. A valid-but-unbound
-        // key (legacy, or a fresh-install unassigned key) is Ok(None) — the
-        // caller falls back to the operator.
-        let auth_user = match key.user_id {
-            None => None,
+        // Only an explicitly unbound row is allowed to use operator identity.
+        let identity = match key.user_id {
+            None => ApiKeyIdentity::UnboundOperator,
             Some(uid) => {
                 let conn = db.read().map_err(|_| ApiKeyReject::Db)?;
                 match crate::db::queries::users::get_user_by_id(&conn, uid) {
@@ -1308,7 +1365,7 @@ fn validate_api_key(
                     // the unbound-key operator fallback (first admin) and
                     // turn deactivation into a promotion.
                     Ok(u) => match crate::db::queries::users::credential_is_live(&conn, &u) {
-                        Ok(true) => Some(crate::db::models::AuthUser {
+                        Ok(true) => ApiKeyIdentity::Bound(crate::db::models::AuthUser {
                             id: u.id,
                             username: u.username,
                             display_name: u.display_name,
@@ -1317,13 +1374,14 @@ fn validate_api_key(
                         Ok(false) => return Err(ApiKeyReject::Inactive),
                         Err(_) => return Err(ApiKeyReject::Db),
                     },
-                    // Unchanged: a binding to a user row that no longer
-                    // exists stays unresolved.
-                    Err(_) => None,
+                    Err(crate::error::LificError::NotFound(_)) => {
+                        return Err(ApiKeyReject::Inactive);
+                    }
+                    Err(_) => return Err(ApiKeyReject::Db),
                 }
             }
         };
-        Ok(auth_user)
+        Ok(identity)
     } else {
         Err(ApiKeyReject::HashMismatch)
     }
@@ -1334,8 +1392,8 @@ fn validate_api_key(
 ///
 /// Returns `Some(user)` when the key is valid AND bound to a user; `Ok(None)`
 /// for a valid-but-unbound key (the stdio session then falls back to the
-/// operator). An invalid/unrecognized key is an error so the caller can warn
-/// loudly and still degrade to the operator fallback.
+/// operator). An invalid/unrecognized key is an error so the stdio entrypoint
+/// fails closed for every invalid or unresolved bound credential.
 pub fn resolve_api_key_user(
     db: &DbPool,
     manager: &ApiKeyManager,
@@ -1344,20 +1402,24 @@ pub fn resolve_api_key_user(
     // Reuse the shared validator (same checksum/lookup/migration logic the
     // HTTP middleware runs). Mapping the typed rejection to a human string
     // keeps the stdio resolver vendoring nothing of its own.
-    validate_api_key(db, manager, token).map_err(|reject| match reject {
-        ApiKeyReject::Db => "database error".to_string(),
-        ApiKeyReject::BadChecksum => "invalid API key checksum".to_string(),
-        ApiKeyReject::NotFound => "invalid API key".to_string(),
-        ApiKeyReject::HashMismatch => "API key hash verification failed".to_string(),
-        ApiKeyReject::Inactive => "this account is deactivated".to_string(),
-    })
+    validate_api_key(db, manager, token)
+        .map(|identity| match identity {
+            ApiKeyIdentity::Bound(user) => Some(user),
+            ApiKeyIdentity::UnboundOperator => None,
+        })
+        .map_err(|reject| match reject {
+            ApiKeyReject::Db => "database error".to_string(),
+            ApiKeyReject::BadChecksum => "invalid API key checksum".to_string(),
+            ApiKeyReject::NotFound => "invalid API key".to_string(),
+            ApiKeyReject::HashMismatch => "API key hash verification failed".to_string(),
+            ApiKeyReject::Inactive => "this account is deactivated".to_string(),
+        })
 }
 
 /// LIFIC-18: resolve the `LIFIC_TOKEN` a stdio agent carries into its bound
 /// user. `Ok(None)` when the token is absent, empty, or valid-but-unbound —
 /// the session runs as the operator. `Err` when a token was present but
-/// invalid (checksum/DB/hash failure), so the stdio entrypoint can emit a
-/// distinct warning while still degrading to the operator fallback.
+/// invalid (checksum/DB/hash failure), so the stdio entrypoint refuses startup.
 pub fn resolve_stdio_token(
     db: &DbPool,
     manager: &ApiKeyManager,
@@ -1464,6 +1526,13 @@ mod tests {
         assert!(
             validate_api_key(&pool, &manager, &dead).is_err(),
             "the legacy scan must reject an expired ISO 8601 key"
+        );
+        assert!(
+            list_api_keys(&pool)
+                .unwrap()
+                .iter()
+                .all(|key| key.needs_rotation),
+            "legacy NULL-ID keys must be identifiable for operator rotation"
         );
     }
 
@@ -2091,19 +2160,68 @@ mod tests {
     }
 
     #[test]
+    fn frozen_api_keys_simplified_fixture_authenticates_and_migrates() {
+        // Captured from api-keys-simplified 0.5.1 using its production
+        // generator and hasher. The URL-safe payload intentionally contains
+        // both '-' and '_'; the token, key ID and PHC string are literals so
+        // this checks compatibility independently of the replacement code.
+        const TOKEN: &str = "lific_sk-live-TY1TKv-aiI_vJ4EEgynJSWVfSwSslWmd.06683245479937ccf2c2";
+        const KEY_ID: &str = "e22226ab313dd9ed013416613b288479";
+        const PHC: &str = "$argon2id$v=19$m=47104,t=1,p=1$XXa5ZqfG0RlHjcsy7JPaKccVx6nScXOHV9eg5kWgGYs$TB7HmiOHyDzJiT/43Qvt2hJzVAKfYHu4hchm02Rb0rk";
+
+        let pool = test_db();
+        let manager = create_key_manager();
+        assert_eq!(api_key_id(TOKEN), KEY_ID);
+        assert!(valid_api_key_checksum(TOKEN));
+        pool.write()
+            .unwrap()
+            .execute(
+                "INSERT INTO api_keys(name, key_hash, key_id) VALUES ('frozen-legacy', ?1, ?2)",
+                params![PHC, KEY_ID],
+            )
+            .unwrap();
+
+        assert!(matches!(
+            validate_api_key(&pool, &manager, TOKEN),
+            Ok(ApiKeyIdentity::UnboundOperator)
+        ));
+        let conn = pool.read().unwrap();
+        let verifier: String = conn
+            .query_row(
+                "SELECT key_hash FROM api_keys WHERE name = 'frozen-legacy'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(verifier, Sha256ApiKeyVerifier::for_token(TOKEN).encode());
+    }
+
+    #[test]
     fn concurrent_legacy_authentications_both_succeed_during_migration() {
         use argon2::password_hash::{PasswordHasher, SaltString};
         use std::sync::{Arc, Barrier};
 
-        let pool = Arc::new(test_db());
+        // Use independent pools over a file-backed WAL database. The normal
+        // in-memory test database uses SQLite shared-cache mode, whose
+        // table-level locks make an unrelated reader race with this writer
+        // fail with SQLITE_LOCKED (busy_timeout does not apply). Separate
+        // pools also model the server and CLI racing across processes.
+        let directory = tempfile::tempdir().unwrap();
+        let database_path = directory.path().join("auth-race.db");
+        let setup_pool = db::open(&database_path).unwrap();
+        let auth_pools = [
+            Arc::new(db::open(&database_path).unwrap()),
+            Arc::new(db::open(&database_path).unwrap()),
+        ];
         let manager = create_key_manager();
-        let key = create_api_key(&pool, &manager, "legacy-race", None).unwrap();
+        let key = create_api_key(&setup_pool, &manager, "legacy-race", None).unwrap();
         let salt = SaltString::encode_b64(b"lific-race-salt-001").unwrap();
         let legacy = argon2::Argon2::default()
             .hash_password(key.as_bytes(), &salt)
             .unwrap()
             .to_string();
-        pool.write()
+        setup_pool
+            .write()
             .unwrap()
             .execute(
                 "UPDATE api_keys SET key_hash = ?1 WHERE name = 'legacy-race'",
@@ -2111,24 +2229,27 @@ mod tests {
             )
             .unwrap();
 
-        let barrier = Arc::new(Barrier::new(3));
-        let workers = (0..2)
-            .map(|_| {
-                let pool = Arc::clone(&pool);
-                let barrier = Arc::clone(&barrier);
+        let loaded_legacy_row = Arc::new(Barrier::new(2));
+        // Collect handles before joining so both requests reach the
+        // after-lookup barrier and actually race their migrations.
+        #[allow(clippy::needless_collect)]
+        let workers = auth_pools
+            .into_iter()
+            .map(|pool| {
+                let loaded_legacy_row = Arc::clone(&loaded_legacy_row);
                 let key = key.clone();
                 std::thread::spawn(move || {
-                    barrier.wait();
-                    validate_api_key(&pool, &manager, &key)
+                    validate_api_key_after_legacy_lookup(&pool, &manager, &key, || {
+                        loaded_legacy_row.wait();
+                    })
                 })
             })
             .collect::<Vec<_>>();
-        barrier.wait();
 
         for worker in workers {
             assert!(worker.join().unwrap().is_ok());
         }
-        let conn = pool.read().unwrap();
+        let conn = setup_pool.read().unwrap();
         let verifier: String = conn
             .query_row(
                 "SELECT key_hash FROM api_keys WHERE name = 'legacy-race'",
@@ -2144,15 +2265,20 @@ mod tests {
         use argon2::password_hash::{PasswordHasher, SaltString};
         use std::sync::{Arc, Barrier};
 
-        let pool = Arc::new(test_db());
+        let directory = tempfile::tempdir().unwrap();
+        let database_path = directory.path().join("auth-revoke-race.db");
+        let setup_pool = db::open(&database_path).unwrap();
+        let pool = Arc::new(db::open(&database_path).unwrap());
+        let revoke_pool = db::open(&database_path).unwrap();
         let manager = create_key_manager();
-        let key = create_api_key(&pool, &manager, "legacy-revoke-race", None).unwrap();
+        let key = create_api_key(&setup_pool, &manager, "legacy-revoke-race", None).unwrap();
         let salt = SaltString::encode_b64(b"lific-revoke-race01").unwrap();
         let legacy = argon2::Argon2::default()
             .hash_password(key.as_bytes(), &salt)
             .unwrap()
             .to_string();
-        pool.write()
+        setup_pool
+            .write()
             .unwrap()
             .execute(
                 "UPDATE api_keys SET key_hash = ?1 WHERE name = 'legacy-revoke-race'",
@@ -2160,25 +2286,32 @@ mod tests {
             )
             .unwrap();
 
-        let barrier = Arc::new(Barrier::new(3));
+        let loaded_legacy_row = Arc::new(Barrier::new(2));
+        let (loaded_tx, loaded_rx) = std::sync::mpsc::channel();
+        let resume = Arc::new(Barrier::new(2));
         let auth_pool = Arc::clone(&pool);
-        let auth_barrier = Arc::clone(&barrier);
+        let auth_loaded_legacy_row = Arc::clone(&loaded_legacy_row);
+        let auth_resume = Arc::clone(&resume);
         let auth_key = key.clone();
         let auth = std::thread::spawn(move || {
-            auth_barrier.wait();
-            validate_api_key(&auth_pool, &manager, &auth_key)
+            validate_api_key_after_legacy_lookup(&auth_pool, &manager, &auth_key, || {
+                loaded_tx.send(()).unwrap();
+                auth_loaded_legacy_row.wait();
+                auth_resume.wait();
+            })
         });
-        let revoke_pool = Arc::clone(&pool);
-        let revoke_barrier = Arc::clone(&barrier);
-        let revoke = std::thread::spawn(move || {
-            revoke_barrier.wait();
-            revoke_api_key(&revoke_pool, "legacy-revoke-race")
-        });
-        barrier.wait();
-        let _auth_result = auth.join().unwrap();
-        revoke.join().unwrap().unwrap();
+        loaded_rx.recv().unwrap();
+        // The auth request has copied the old verifier and is paused before
+        // doing Argon2 or attempting its compare-and-swap migration.
+        revoke_api_key(&revoke_pool, "legacy-revoke-race").unwrap();
+        loaded_legacy_row.wait();
+        resume.wait();
+        assert!(matches!(
+            auth.join().unwrap(),
+            Err(ApiKeyReject::HashMismatch)
+        ));
 
-        let conn = pool.read().unwrap();
+        let conn = setup_pool.read().unwrap();
         let revoked: bool = conn
             .query_row(
                 "SELECT revoked FROM api_keys WHERE name = 'legacy-revoke-race'",
@@ -2187,7 +2320,7 @@ mod tests {
             )
             .unwrap();
         assert!(revoked, "migration must never undo a concurrent revocation");
-        assert!(validate_api_key(&pool, &manager, &key).is_err());
+        assert!(validate_api_key(&setup_pool, &manager, &key).is_err());
     }
 
     #[test]
@@ -2440,6 +2573,8 @@ mod tests {
         // Extracting key_id from the plaintext should match
         let extracted_id = api_key_id(&key);
         assert_eq!(extracted_id, key_id);
+        drop(conn);
+        assert!(!list_api_keys(&pool).unwrap()[0].needs_rotation);
     }
 
     #[test]
@@ -2472,7 +2607,7 @@ mod tests {
         let pool = test_db();
         let manager = create_key_manager();
         let legacy_key = create_api_key(&pool, &manager, "legacy", None).unwrap();
-        let attacker_key = api_key_from_entropy([7; 24]);
+        let attacker_key = api_key_from_entropy(zeroize::Zeroizing::new([7; 24]));
         let salt = SaltString::encode_b64(b"lific-null-ids-001").unwrap();
         let legacy = argon2::Argon2::default()
             .hash_password(legacy_key.as_bytes(), &salt)
@@ -2500,6 +2635,7 @@ mod tests {
     #[test]
     fn concurrent_attacker_keys_cause_no_argon2_work_across_null_key_ids() {
         use argon2::password_hash::{PasswordHasher, SaltString};
+        use std::sync::{Arc, Barrier};
 
         let pool = test_db();
         let manager = create_key_manager();
@@ -2521,22 +2657,33 @@ mod tests {
         }
         drop(conn);
 
-        let attacker_key = api_key_from_entropy([9; 24]);
+        let attacker_key = api_key_from_entropy(zeroize::Zeroizing::new([9; 24]));
         assert!(valid_api_key_checksum(&attacker_key));
+        let start = Arc::new(Barrier::new(8));
         let argon2_calls = std::thread::scope(|scope| {
-            (0..8)
+            // All workers must be spawned before the start barrier can open.
+            #[allow(clippy::needless_collect)]
+            let workers = (0..8)
                 .map(|_| {
-                    scope.spawn(|| {
+                    let start = Arc::clone(&start);
+                    let pool = &pool;
+                    let manager = &manager;
+                    let attacker_key = &attacker_key;
+                    scope.spawn(move || {
+                        start.wait();
                         API_KEY_ARGON2_VERIFY_CALLS.with(|calls| calls.set(0));
                         for _ in 0..25 {
                             assert!(matches!(
-                                validate_api_key(&pool, &manager, &attacker_key),
+                                validate_api_key(pool, manager, attacker_key),
                                 Err(ApiKeyReject::NotFound)
                             ));
                         }
                         API_KEY_ARGON2_VERIFY_CALLS.with(std::cell::Cell::get)
                     })
                 })
+                .collect::<Vec<_>>();
+            workers
+                .into_iter()
                 .map(|worker| worker.join().expect("auth worker"))
                 .sum::<usize>()
         });
@@ -2853,6 +3000,73 @@ mod tests {
         let (status, body) = echo_with_bearer(&pool, &key).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
         assert_ne!(body, "none", "never falls back to the operator");
+    }
+
+    #[tokio::test]
+    async fn bound_api_key_with_missing_user_never_becomes_operator_identity() {
+        let pool = test_db();
+        let manager = create_key_manager();
+        let user_id = seed_key_owner(&pool, "dangling-owner");
+        let key = create_api_key(&pool, &manager, "dangling-key", Some(user_id)).unwrap();
+
+        // Simulate a damaged/externally edited database while keeping the
+        // credential's non-NULL binding. Normal foreign-key enforcement
+        // prevents producing this state through application writes.
+        {
+            let conn = pool.write().unwrap();
+            conn.execute_batch("PRAGMA foreign_keys = OFF").unwrap();
+            conn.execute(
+                "UPDATE api_keys SET user_id = ?1 WHERE name = 'dangling-key'",
+                params![i64::MAX],
+            )
+            .unwrap();
+            conn.execute_batch("PRAGMA foreign_keys = ON").unwrap();
+        }
+
+        assert!(resolve_api_key_user(&pool, &manager, &key).is_err());
+        let (status, _) = echo_with_bearer(&pool, &key).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn stdio_bound_api_key_with_missing_user_never_becomes_operator_identity() {
+        let _guard = lock_lific_token_env_blocking();
+        let pool = test_db();
+        let manager = create_key_manager();
+        let user_id = seed_key_owner(&pool, "stdio-dangling-owner");
+        let key = create_api_key(&pool, &manager, "stdio-dangling-key", Some(user_id)).unwrap();
+        {
+            let conn = pool.write().unwrap();
+            conn.execute_batch("PRAGMA foreign_keys = OFF").unwrap();
+            conn.execute(
+                "UPDATE api_keys SET user_id = ?1 WHERE name = 'stdio-dangling-key'",
+                params![i64::MAX],
+            )
+            .unwrap();
+            conn.execute_batch("PRAGMA foreign_keys = ON").unwrap();
+        }
+
+        // SAFETY: guarded by the crate-wide LIFIC_TOKEN lock.
+        unsafe { std::env::set_var("LIFIC_TOKEN", &key) };
+        let result = resolve_stdio_token(&pool, &manager);
+        unsafe { std::env::remove_var("LIFIC_TOKEN") };
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn api_key_lookup_database_errors_are_not_reported_as_invalid_keys() {
+        let pool = test_db();
+        let manager = create_key_manager();
+        let key = create_api_key(&pool, &manager, "db-error", None).unwrap();
+        pool.write()
+            .unwrap()
+            .execute_batch("ALTER TABLE api_keys RENAME COLUMN key_id TO old_key_id")
+            .unwrap();
+
+        assert!(matches!(
+            validate_api_key(&pool, &manager, &key),
+            Err(ApiKeyReject::Db)
+        ));
     }
 
     /// An ownerless bot (`owner_id IS NULL`) inherits nothing, so nothing

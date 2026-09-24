@@ -1805,6 +1805,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "urlencoding",
+ "zeroize",
  "zip",
 ]
 

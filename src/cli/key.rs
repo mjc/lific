@@ -69,6 +69,7 @@ pub fn run(
                             "revoked": k.revoked,
                             "created_at": k.created_at,
                             "expires_at": k.expires_at,
+                            "needs_rotation": k.needs_rotation,
                         })
                     })
                     .collect();
@@ -81,8 +82,12 @@ pub fn run(
                     let status = if k.revoked { "REVOKED" } else { "active" };
                     let expiry = k.expires_at.as_deref().unwrap_or("never");
                     println!(
-                        "  {} | {} | created {} | expires {}",
-                        k.name, status, k.created_at, expiry
+                        "  {} | {} | created {} | expires {}{}",
+                        k.name,
+                        status,
+                        k.created_at,
+                        expiry,
+                        if k.needs_rotation { " | ROTATE" } else { "" }
                     );
                 }
             }
