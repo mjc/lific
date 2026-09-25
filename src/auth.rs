@@ -1351,9 +1351,10 @@ fn load_active_api_key(db: &DbPool, key_id: &str) -> Result<Option<ApiKeyRow>, A
     statement
         .query_row(params![key_id], |row| {
             let verifier = match row.get_ref(1)? {
-                rusqlite::types::ValueRef::Text(bytes) => std::str::from_utf8(bytes)
-                    .map(StoredApiKeyVerifier::parse)
-                    .unwrap_or(StoredApiKeyVerifier::Unsupported),
+                rusqlite::types::ValueRef::Text(bytes) => std::str::from_utf8(bytes).map_or(
+                    StoredApiKeyVerifier::Unsupported,
+                    StoredApiKeyVerifier::parse,
+                ),
                 _ => StoredApiKeyVerifier::Unsupported,
             };
             Ok(ApiKeyRow {
