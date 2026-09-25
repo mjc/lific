@@ -2620,7 +2620,7 @@ impl LificMcp {
             // (unassign module), non-empty = resolve + set.
             let module_id = match &input.module {
                 Some(name) if name.is_empty() => models::FieldUpdate::Clear,
-                Some(name) => models::FieldUpdate::Set(queries::resolve_module_name(
+                Some(name) => models::FieldUpdate::Set(names::module_id(
                     conn,
                     previous_issue.project_id,
                     name,
@@ -3337,7 +3337,7 @@ impl LificMcp {
                             "page has no project for folder resolution".into(),
                         )
                     })?;
-                    models::FieldUpdate::Set(queries::resolve_folder_name(conn, pid, name)?)
+                    models::FieldUpdate::Set(names::folder_id(conn, pid, name)?)
                 }
                 None => models::FieldUpdate::Keep,
             };
