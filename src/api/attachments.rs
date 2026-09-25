@@ -698,8 +698,11 @@ pub(super) async fn attachment_thumbnail(
 /// description; omitting the key entirely leaves it alone.
 #[derive(Debug, Default, serde::Deserialize)]
 pub(super) struct UpdateAttachmentBody {
-    #[serde(default, deserialize_with = "crate::db::models::deserialize_nullable")]
-    alt_text: Option<Option<String>>,
+    #[serde(
+        default,
+        skip_serializing_if = "crate::db::models::FieldUpdate::is_keep"
+    )]
+    alt_text: crate::db::models::FieldUpdate<String>,
 }
 
 /// Longest alt text we store. Screen readers stop being useful long before
@@ -722,17 +725,16 @@ pub(super) async fn update_attachment(
     let attachment = with_read(&db, |conn| q::get_attachment(conn, id))?;
     authorize_delete(&db, &identity, &user, &attachment)?;
 
-    let Some(alt_text) = body.alt_text else {
-        // Nothing to change; echo the current row rather than 400, so a
-        // client that PATCHes an unchanged form is a no-op.
-        return Ok(axum::Json(attachment));
+    let normalized = match body.alt_text {
+        FieldUpdate::Keep => return Ok(axum::Json(attachment)),
+        FieldUpdate::Clear => None,
+        // Normalize so there is one representation of "no alt text": trim,
+        // and fold the empty string onto NULL.
+        FieldUpdate::Set(alt_text) => {
+            let text = alt_text.trim().to_string();
+            (!text.is_empty()).then_some(text)
+        }
     };
-
-    // Normalize so there is one representation of "no alt text": trim, and
-    // fold the empty string onto NULL.
-    let normalized = alt_text
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
     if let Some(text) = normalized.as_deref()
         && text.chars().count() > MAX_ALT_TEXT
     {

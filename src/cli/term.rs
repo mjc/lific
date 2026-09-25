@@ -12,7 +12,133 @@
 //!    A confirmation prompt that blocks forever in CI is a hang; instead we
 //!    error and name the flag that bypasses the prompt non-interactively.
 
-use std::io::IsTerminal;
+use std::io::{self, IsTerminal, Write};
+
+use crate::cli::ui::TerminalDisplay;
+
+/// A tracing writer that makes every formatted event safe for a terminal.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct SanitizedStderr;
+
+pub(crate) fn sanitized_stderr() -> SanitizedStderr {
+    SanitizedStderr
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for SanitizedStderr {
+    type Writer = SanitizedWriter<io::Stderr>;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        SanitizedWriter {
+            inner: io::stderr(),
+            pending: Vec::new(),
+            truncated: false,
+        }
+    }
+}
+
+const MAX_PENDING_BYTES: usize = 64 * 1024;
+const TRUNCATION_MARKER: &[u8] = b" ... [truncated]\n";
+
+pub(crate) struct SanitizedWriter<W: Write> {
+    inner: W,
+    pending: Vec<u8>,
+    truncated: bool,
+}
+
+impl<W: Write> Write for SanitizedWriter<W> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if self.truncated {
+            return Ok(bytes.len());
+        }
+
+        let remaining = MAX_PENDING_BYTES.saturating_sub(self.pending.len());
+        let take = bytes.len().min(remaining);
+        self.pending.extend_from_slice(&bytes[..take]);
+        if take < bytes.len() {
+            self.pending
+                .truncate(MAX_PENDING_BYTES.saturating_sub(TRUNCATION_MARKER.len()));
+            self.pending.extend_from_slice(TRUNCATION_MARKER);
+            self.truncated = true;
+        }
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        if !self.pending.is_empty() {
+            let line = std::mem::take(&mut self.pending);
+            let text = String::from_utf8_lossy(&line);
+            let has_trailing_newline = text.ends_with('\n');
+            let text = text.strip_suffix('\n').unwrap_or(&text);
+            let mut safe = crate::cli::ui::sanitize_terminal_line(text);
+            if has_trailing_newline {
+                safe.push('\n');
+            }
+            self.inner.write_all(safe.as_bytes())?;
+        }
+        self.inner.flush()
+    }
+}
+// tracing drops its per-event writer without flushing it. Publish the complete
+// event here so embedded newlines and split UTF-8 cannot escape sanitization.
+impl<W: Write> Drop for SanitizedWriter<W> {
+    fn drop(&mut self) {
+        let _ = self.flush();
+    }
+}
+
+/// Serialize JSON for terminal-visible stdout without changing its parsed value.
+///
+/// Serde escapes C0 controls, but leaves C1 and Unicode formatting controls
+/// literal. Escape those only while they are inside JSON strings; structural
+/// pretty-print whitespace remains valid JSON formatting.
+pub fn json_string<T: serde::Serialize>(value: &T) -> Result<String, serde_json::Error> {
+    let serialized = serde_json::to_string_pretty(value)?;
+    let mut output = String::with_capacity(serialized.len());
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for ch in serialized.chars() {
+        if !in_string {
+            output.push(ch);
+            in_string = ch == '"';
+            continue;
+        }
+
+        if escaped {
+            output.push(ch);
+            escaped = false;
+            continue;
+        }
+
+        match ch {
+            '\\' => {
+                output.push(ch);
+                escaped = true;
+            }
+            '"' => {
+                output.push(ch);
+                in_string = false;
+            }
+            ch if json_terminal_control(ch) => escape_json_char(&mut output, ch),
+            _ => output.push(ch),
+        }
+    }
+
+    Ok(output)
+}
+
+fn escape_json_char(output: &mut String, ch: char) {
+    use std::fmt::Write;
+
+    let mut units = [0; 2];
+    for unit in ch.encode_utf16(&mut units) {
+        write!(output, "\\u{unit:04x}").expect("String write cannot fail");
+    }
+}
+
+fn json_terminal_control(ch: char) -> bool {
+    crate::cli::ui::is_terminal_control(ch)
+}
 
 /// Whether stdout is connected to an interactive terminal.
 pub fn stdout_is_tty() -> bool {
@@ -69,7 +195,7 @@ pub fn confirm_inner<R: std::io::BufRead, W: std::io::Write>(
         ));
     }
 
-    let _ = write!(writer, "{prompt} [y/N] ");
+    let _ = write!(writer, "{} [y/N] ", prompt.terminal_line());
     let _ = writer.flush();
 
     let mut line = String::new();
@@ -87,12 +213,14 @@ pub fn confirm_inner<R: std::io::BufRead, W: std::io::Write>(
 /// pass to supply the value without a prompt. Returns the trimmed input; errors
 /// on empty input or no-TTY.
 pub fn prompt_text(prompt: &str, bypass_flag: &str) -> Result<String, String> {
+    // Prompts are diagnostics/input guidance, never command data. Keep them
+    // off stdout so redirected or explicit JSON output remains parseable.
     prompt_text_inner(
         prompt,
         bypass_flag,
         stdin_is_tty(),
         &mut std::io::stdin().lock(),
-        &mut std::io::stdout(),
+        &mut std::io::stderr(),
     )
 }
 
@@ -110,7 +238,7 @@ pub fn prompt_text_inner<R: std::io::BufRead, W: std::io::Write>(
             "interactive input required; re-run with {bypass_flag} to supply it non-interactively"
         ));
     }
-    let _ = write!(writer, "{prompt} ");
+    let _ = write!(writer, "{} ", prompt.terminal_line());
     let _ = writer.flush();
 
     let mut line = String::new();
@@ -127,6 +255,139 @@ pub fn prompt_text_inner<R: std::io::BufRead, W: std::io::Write>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn tracing_writer_preserves_chunked_unicode_and_publishes_once(
+            text in proptest::collection::vec(any::<char>(), 0..256)
+                .prop_map(String::from_iter),
+            chunk_size in 1usize..16,
+            explicit_flush in any::<bool>(),
+            trailing_newline in any::<bool>(),
+        ) {
+            let mut event = text;
+            // The formatter owns the final newline, not the untrusted field.
+            if trailing_newline {
+                event.push('\n');
+            }
+            let mut output = Vec::new();
+            {
+                let mut writer = SanitizedWriter {
+                    inner: &mut output,
+                    pending: Vec::new(),
+                    truncated: false,
+                };
+                for chunk in event.as_bytes().chunks(chunk_size) {
+                    writer.write_all(chunk).unwrap();
+                }
+                if explicit_flush {
+                    writer.flush().unwrap();
+                    writer.flush().unwrap();
+                }
+            }
+            let expected = if let Some(body) = event.strip_suffix('\n') {
+                format!("{}\n", body.terminal_line())
+            } else {
+                event.terminal_line().to_string()
+            };
+            prop_assert_eq!(String::from_utf8(output).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn tracing_writer_propagates_explicit_flush_errors() {
+        let mut writer = SanitizedWriter {
+            inner: &mut [][..],
+            pending: Vec::new(),
+            truncated: false,
+        };
+        writer.write_all(b"event").unwrap();
+        assert_eq!(writer.flush().unwrap_err().kind(), io::ErrorKind::WriteZero);
+    }
+
+    #[test]
+    fn tracing_writer_bounds_large_events() {
+        let mut output = Vec::new();
+        let mut writer = SanitizedWriter {
+            inner: &mut output,
+            pending: Vec::new(),
+            truncated: false,
+        };
+
+        writer
+            .write_all(&vec![b'x'; MAX_PENDING_BYTES * 2])
+            .unwrap();
+        assert_eq!(writer.pending.len(), MAX_PENDING_BYTES);
+        assert!(writer.truncated);
+        writer.flush().unwrap();
+
+        drop(writer);
+        assert!(output.ends_with(TRUNCATION_MARKER));
+    }
+
+    fn assert_json_strings_contain_no_terminal_controls(encoded: &str) {
+        let mut in_string = false;
+        let mut escaped = false;
+        for ch in encoded.chars() {
+            if !in_string {
+                if ch == '"' {
+                    in_string = true;
+                }
+                continue;
+            }
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            match ch {
+                '\\' => escaped = true,
+                '"' => in_string = false,
+                _ => assert!(!json_terminal_control(ch), "literal control {ch:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn json_string_escapes_terminal_controls_losslessly() {
+        let value = serde_json::json!({
+            "text": "\u{001b}]52;c;clipboard\u{0007}\u{009b}2J\u{007f}\u{202e}\u{200b}\u{feff}\u{00ad}\u{180e}\u{2061}\u{fff9}"
+        });
+        let encoded = json_string(&value).unwrap();
+
+        assert!(encoded.contains("\\u009b"));
+        assert!(encoded.contains("\\u007f"));
+        assert!(encoded.contains("\\u202e"));
+        assert!(encoded.contains("\\ufeff"));
+        assert!(encoded.contains("\\u00ad"));
+        assert!(encoded.contains("\\u180e"));
+        assert!(encoded.contains("\\u2061"));
+        assert!(encoded.contains("\\ufff9"));
+
+        let without_layout = encoded.replace('\n', "");
+        assert!(!without_layout.chars().any(json_terminal_control));
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&encoded).unwrap(),
+            value
+        );
+    }
+
+    proptest! {
+        #[test]
+        fn json_string_round_trips_arbitrary_text_without_literal_controls(
+            text in proptest::collection::vec(any::<char>(), 0..256)
+                .prop_map(String::from_iter)
+        ) {
+            let value = serde_json::json!({"text": text});
+            let encoded = json_string(&value).unwrap();
+
+            prop_assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&encoded).unwrap(),
+                value
+            );
+            assert_json_strings_contain_no_terminal_controls(&encoded);
+        }
+    }
 
     #[test]
     fn wants_json_explicit_flag_always_wins() {
@@ -169,6 +430,117 @@ mod tests {
         let mut out: Vec<u8> = Vec::new();
         let ok = confirm_inner("Proceed?", "--yes", true, &mut input, &mut out).unwrap();
         assert!(ok);
+    }
+
+    #[test]
+    fn prompts_neutralize_terminal_controls() {
+        let mut input: &[u8] = b"y\n";
+        let mut out: Vec<u8> = Vec::new();
+        confirm_inner(
+            "Delete \u{001b}]52;c;clipboard\u{0007}?",
+            "--yes",
+            true,
+            &mut input,
+            &mut out,
+        )
+        .unwrap();
+        let rendered = String::from_utf8(out).unwrap();
+        assert_eq!(rendered, "Delete ^[]52;c;clipboard ? [y/N] ");
+        assert!(
+            rendered
+                .lines()
+                .all(|line| !line.chars().any(char::is_control))
+        );
+    }
+
+    #[test]
+    fn tracing_subscriber_publishes_sanitized_events_without_explicit_flush() {
+        use std::io::{Read, Seek};
+
+        let mut output = tempfile::tempfile().unwrap();
+        let capture = output.try_clone().unwrap();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_target(false)
+            .with_level(false)
+            .with_writer(move || SanitizedWriter {
+                inner: capture.try_clone().unwrap(),
+                pending: Vec::new(),
+                truncated: false,
+            })
+            .finish();
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!("path: café\nforged\x1b]52;c;clipboard\x07\u{009b}2J\u{202e}");
+            tracing::warn!("still logging");
+        });
+
+        output.rewind().unwrap();
+        let mut rendered = String::new();
+        output.read_to_string(&mut rendered).unwrap();
+        assert_eq!(
+            rendered,
+            "path: café forged\\x1b]52;c;clipboard\\x07\\u{9b}2J \nstill logging\n"
+        );
+    }
+
+    #[test]
+    fn tracing_writer_neutralizes_control_sequences() {
+        use std::io::Write;
+
+        let mut writer = SanitizedWriter {
+            inner: Vec::new(),
+            pending: Vec::new(),
+            truncated: false,
+        };
+        writer
+            .write_all("path: evil\nforged\x1b]8;;https://evil\x1b\\\u{009b}2J\n".as_bytes())
+            .unwrap();
+        writer.flush().unwrap();
+        let rendered = String::from_utf8(std::mem::take(&mut writer.inner)).unwrap();
+        assert_eq!(rendered, "path: evil forged^[]8;;https://evil^[\\ 2J\n");
+        assert!(
+            rendered
+                .lines()
+                .all(|line| !line.chars().any(char::is_control))
+        );
+    }
+
+    #[test]
+    fn cli_json_sinks_do_not_bypass_terminal_encoder() {
+        for path in [
+            "src/main.rs",
+            "src/cli/exec.rs",
+            "src/cli/http.rs",
+            "src/cli/instance.rs",
+            "src/cli/member.rs",
+            "src/cli/user.rs",
+            "src/cli/key.rs",
+            "src/cli/import.rs",
+            "src/cli/doctor.rs",
+            "src/cli/login.rs",
+            "src/cli/connect/mod.rs",
+            "src/cli/bind.rs",
+            "src/cli/git_hook.rs",
+            "src/cli/service.rs",
+        ] {
+            let source = std::fs::read_to_string(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(path),
+            )
+            .unwrap();
+            for forbidden in [
+                "serde_json::to_string_pretty",
+                "serde_json::to_string(",
+                "serde_json::to_writer",
+                "serde_json::to_vec",
+            ] {
+                assert!(
+                    !source.contains(forbidden),
+                    "{path} must use term::json_string for terminal JSON"
+                );
+            }
+        }
     }
 
     #[test]

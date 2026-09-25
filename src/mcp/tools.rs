@@ -1092,14 +1092,13 @@ fn emoji_for_create(emoji: &Option<String>) -> Option<String> {
     emoji.as_ref().filter(|s| !s.is_empty()).cloned()
 }
 
-/// LIF-145 sentinel for an update's tristate `Option<Option<String>>` icon
-/// field: omitted (None) = leave unchanged, empty string = clear to NULL,
-/// non-empty = set.
-fn emoji_for_update(emoji: &Option<String>) -> Option<Option<String>> {
+/// An update's tri-state icon field: omitted leaves it unchanged, an empty
+/// string clears it to NULL, and a non-empty string sets it.
+fn emoji_for_update(emoji: &Option<String>) -> models::FieldUpdate<String> {
     match emoji {
-        None => None,
-        Some(s) if s.is_empty() => Some(None),
-        Some(s) => Some(Some(s.clone())),
+        None => models::FieldUpdate::Keep,
+        Some(s) if s.is_empty() => models::FieldUpdate::Clear,
+        Some(s) => models::FieldUpdate::Set(s.clone()),
     }
 }
 
@@ -2620,13 +2619,13 @@ impl LificMcp {
             // LIF-145 sentinel: field omitted (None) = skip, empty string = clear
             // (unassign module), non-empty = resolve + set.
             let module_id = match &input.module {
-                Some(name) if name.is_empty() => Some(None),
-                Some(name) => Some(Some(names::module_id(
+                Some(name) if name.is_empty() => models::FieldUpdate::Clear,
+                Some(name) => models::FieldUpdate::Set(names::module_id(
                     conn,
                     previous_issue.project_id,
                     name,
-                )?)),
-                None => None,
+                )?),
+                None => models::FieldUpdate::Keep,
             };
             if evidence.is_some() && previous_issue.status == models::Status::Done {
                 return Err(crate::error::LificError::BadRequest(format!(
@@ -2818,7 +2817,9 @@ impl LificMcp {
                                     input.set_priority.as_deref(),
                                 )
                                 .map_err(crate::error::LificError::BadRequest)?,
-                                module_id: set_module_id.map(Some),
+                                module_id: set_module_id
+                                    .map(models::FieldUpdate::Set)
+                                    .unwrap_or_default(),
                                 ..Default::default()
                             },
                         )
@@ -3328,7 +3329,7 @@ impl LificMcp {
             // LIF-145 sentinel: field omitted (None) = skip, empty string = clear
             // (move page to root), non-empty = resolve folder + set.
             let folder_id = match &input.folder {
-                Some(name) if name.is_empty() => Some(None),
+                Some(name) if name.is_empty() => models::FieldUpdate::Clear,
                 Some(name) => {
                     let page = queries::get_page(conn, id)?;
                     let pid = page.project_id.ok_or_else(|| {
@@ -3336,9 +3337,9 @@ impl LificMcp {
                             "page has no project for folder resolution".into(),
                         )
                     })?;
-                    Some(Some(names::folder_id(conn, pid, name)?))
+                    models::FieldUpdate::Set(names::folder_id(conn, pid, name)?)
                 }
-                None => None,
+                None => models::FieldUpdate::Keep,
             };
             // LIF-369/LIF-409: resolved before the write it authorizes,
             // against the page's project as it stands inside this transaction.
@@ -4647,9 +4648,11 @@ impl LificMcp {
                 // ── Plan-level update ──
                 None => {
                     let anchor = match (&input.anchor_issue, input.clear_anchor) {
-                        (Some(ident), _) => Some(Some(queries::resolve_identifier(conn, ident)?)),
-                        (None, Some(true)) => Some(None),
-                        _ => None,
+                        (Some(ident), _) => {
+                            models::FieldUpdate::Set(queries::resolve_identifier(conn, ident)?)
+                        }
+                        (None, Some(true)) => models::FieldUpdate::Clear,
+                        _ => models::FieldUpdate::Keep,
                     };
                     queries::plans::update_plan(
                         conn,
@@ -4664,123 +4667,148 @@ impl LificMcp {
                 }
                 // ── Step-level update ──
                 Some(step_id) => {
-                    queries::plans::assert_step_in_plan(conn, plan_id, step_id)?;
-                    if input.delete.unwrap_or(false) {
-                        queries::plans::delete_step(conn, step_id)?;
-                        notes.push(format!("Deleted step #{step_id} (and its subtree)"));
-                    } else {
-                        if let Some(ref t) = input.title {
-                            queries::plans::set_step_title(conn, step_id, t)?;
-                            notes.push(format!("Renamed step #{step_id}"));
-                        }
-                        if let Some(ref ident) = input.attach_issue {
-                            let iid = queries::resolve_identifier(conn, ident)?;
-                            let issue = queries::get_issue(conn, iid)?;
-                            queries::plans::set_step_issue(conn, step_id, Some(iid))?;
-                            notes.push(
-                                try_render(|output| {
+                    queries::savepoint(conn, "update_plan_step", || {
+                        queries::plans::assert_step_in_plan(conn, plan_id, step_id)?;
+                        if input.delete.unwrap_or(false) {
+                            queries::plans::delete_step(conn, step_id)?;
+                            notes.push(format!("Deleted step #{step_id} (and its subtree)"));
+                        } else {
+                            if let Some(ref t) = input.title {
+                                queries::plans::set_step_title(conn, step_id, t)?;
+                                notes.push(format!("Renamed step #{step_id}"));
+                            }
+                            if input.attach_issue.is_some() && input.detach_issue == Some(true) {
+                                return Err(crate::error::LificError::BadRequest(
+                                    "attach_issue and detach_issue are mutually exclusive".into(),
+                                ));
+                            }
+                            let issue_update = match (&input.attach_issue, input.detach_issue) {
+                                (Some(ident), _) => models::FieldUpdate::Set(
+                                    queries::resolve_identifier(conn, ident)?,
+                                ),
+                                (None, Some(true)) => models::FieldUpdate::Clear,
+                                _ => models::FieldUpdate::Keep,
+                            };
+                            match issue_update {
+                                models::FieldUpdate::Keep => {}
+                                models::FieldUpdate::Clear => {
+                                    queries::plans::set_step_issue(conn, step_id, None)?;
+                                    notes.push(format!("Detached issue from step #{step_id}"));
+                                }
+                                models::FieldUpdate::Set(iid) => {
+                                    let issue = queries::get_issue(conn, iid)?;
+                                    queries::plans::set_step_issue(conn, step_id, Some(iid))?;
+                                    notes.push(
+                                        try_render(|output| {
+                                            write!(
+                                                output,
+                                                "Attached {} to step #{step_id}",
+                                                issue_reference(
+                                                    context.as_deref(),
+                                                    &issue.identifier,
+                                                )
+                                            )
+                                        })
+                                        .map_err(
+                                            |error| {
+                                                crate::error::LificError::Internal(format!(
+                                                    "failed to format plan-step response: {error}"
+                                                ))
+                                            },
+                                        )?,
+                                    );
+                                }
+                            }
+                            if let Some(done) = input.done {
+                                let effect = queries::plans::set_step_done(conn, step_id, done)?;
+                                enum IssueEffect<'a> {
+                                    MarkedDone(&'a str),
+                                    AlreadyDone(&'a str),
+                                    None,
+                                }
+                                let issue_effect = match effect.issue_identifier.as_deref() {
+                                    Some(identifier) if effect.issue_status_changed => {
+                                        let issue_id =
+                                            queries::resolve_identifier(conn, identifier)?;
+                                        let issue = queries::get_issue(conn, issue_id)?;
+                                        events.push(crate::realtime::RealtimeEvent::IssueUpdated {
+                                            project_id: issue.project_id,
+                                            issue_id: issue.id,
+                                        });
+                                        IssueEffect::MarkedDone(identifier)
+                                    }
+                                    Some(identifier) if done => {
+                                        IssueEffect::AlreadyDone(identifier)
+                                    }
+                                    _ => IssueEffect::None,
+                                };
+                                let message = try_render(|output| {
                                     write!(
                                         output,
-                                        "Attached {} to step #{step_id}",
-                                        issue_reference(context.as_deref(), &issue.identifier,)
-                                    )
+                                        "Step #{step_id} {}",
+                                        if done { "marked done" } else { "reopened" }
+                                    )?;
+                                    match issue_effect {
+                                        IssueEffect::MarkedDone(identifier) => write!(
+                                            output,
+                                            " → {} marked done",
+                                            issue_reference(context.as_deref(), identifier)
+                                        ),
+                                        IssueEffect::AlreadyDone(identifier) => write!(
+                                            output,
+                                            " (linked {} already done)",
+                                            issue_reference(context.as_deref(), identifier)
+                                        ),
+                                        IssueEffect::None => Ok(()),
+                                    }
                                 })
                                 .map_err(|error| {
                                     crate::error::LificError::Internal(format!(
                                         "failed to format plan-step response: {error}"
                                     ))
-                                })?,
-                            );
-                        }
-                        if input.detach_issue.unwrap_or(false) {
-                            queries::plans::set_step_issue(conn, step_id, None)?;
-                            notes.push(format!("Detached issue from step #{step_id}"));
-                        }
-                        if let Some(done) = input.done {
-                            let effect = queries::plans::set_step_done(conn, step_id, done)?;
-                            enum IssueEffect<'a> {
-                                MarkedDone(&'a str),
-                                AlreadyDone(&'a str),
-                                None,
+                                })?;
+                                notes.push(message);
                             }
-                            let issue_effect = match effect.issue_identifier.as_deref() {
-                                Some(identifier) if effect.issue_status_changed => {
-                                    let issue_id = queries::resolve_identifier(conn, identifier)?;
-                                    let issue = queries::get_issue(conn, issue_id)?;
-                                    events.push(crate::realtime::RealtimeEvent::IssueUpdated {
-                                        project_id: issue.project_id,
-                                        issue_id: issue.id,
-                                    });
-                                    IssueEffect::MarkedDone(identifier)
-                                }
-                                Some(identifier) if done => IssueEffect::AlreadyDone(identifier),
-                                _ => IssueEffect::None,
-                            };
-                            let message = try_render(|output| {
-                                write!(
-                                    output,
-                                    "Step #{step_id} {}",
-                                    if done { "marked done" } else { "reopened" }
+                            if let Some(ref child_title) = input.add_child_title {
+                                let child_issue = match &input.add_child_issue {
+                                    Some(ident) => Some(queries::resolve_identifier(conn, ident)?),
+                                    None => None,
+                                };
+                                let child_id = queries::plans::add_step(
+                                    conn,
+                                    plan_id,
+                                    Some(step_id),
+                                    child_title,
+                                    input.add_child_description.as_deref().unwrap_or(""),
+                                    child_issue,
                                 )?;
-                                match issue_effect {
-                                    IssueEffect::MarkedDone(identifier) => write!(
-                                        output,
-                                        " → {} marked done",
-                                        issue_reference(context.as_deref(), identifier)
-                                    ),
-                                    IssueEffect::AlreadyDone(identifier) => write!(
-                                        output,
-                                        " (linked {} already done)",
-                                        issue_reference(context.as_deref(), identifier)
-                                    ),
-                                    IssueEffect::None => Ok(()),
-                                }
-                            })
-                            .map_err(|error| {
-                                crate::error::LificError::Internal(format!(
-                                    "failed to format plan-step response: {error}"
-                                ))
-                            })?;
-                            notes.push(message);
+                                notes.push(format!("Added child step #{child_id}"));
+                            }
+                            if input.move_to_root.unwrap_or(false)
+                                || input.move_parent_step_id.is_some()
+                                || input.move_position.is_some()
+                            {
+                                let new_parent = if input.move_to_root.unwrap_or(false) {
+                                    None
+                                } else if let Some(p) = input.move_parent_step_id {
+                                    Some(p)
+                                } else {
+                                    queries::plans::step_parent(conn, step_id)?
+                                };
+                                queries::plans::move_step(
+                                    conn,
+                                    step_id,
+                                    new_parent,
+                                    input.move_position,
+                                )?;
+                                notes.push(format!("Moved step #{step_id}"));
+                            }
+                            if notes.is_empty() {
+                                notes.push("No changes specified".into());
+                            }
                         }
-                        if let Some(ref child_title) = input.add_child_title {
-                            let child_issue = match &input.add_child_issue {
-                                Some(ident) => Some(queries::resolve_identifier(conn, ident)?),
-                                None => None,
-                            };
-                            let child_id = queries::plans::add_step(
-                                conn,
-                                plan_id,
-                                Some(step_id),
-                                child_title,
-                                input.add_child_description.as_deref().unwrap_or(""),
-                                child_issue,
-                            )?;
-                            notes.push(format!("Added child step #{child_id}"));
-                        }
-                        if input.move_to_root.unwrap_or(false)
-                            || input.move_parent_step_id.is_some()
-                            || input.move_position.is_some()
-                        {
-                            let new_parent = if input.move_to_root.unwrap_or(false) {
-                                None
-                            } else if let Some(p) = input.move_parent_step_id {
-                                Some(p)
-                            } else {
-                                queries::plans::step_parent(conn, step_id)?
-                            };
-                            queries::plans::move_step(
-                                conn,
-                                step_id,
-                                new_parent,
-                                input.move_position,
-                            )?;
-                            notes.push(format!("Moved step #{step_id}"));
-                        }
-                        if notes.is_empty() {
-                            notes.push("No changes specified".into());
-                        }
-                    }
+                        Ok(())
+                    })?;
                 }
             }
 
@@ -11942,6 +11970,44 @@ mod tests {
             "got: {output}"
         );
         assert!(!output.contains("/PLN-01"), "got: {output}");
+    }
+
+    #[test]
+    fn failed_plan_step_update_rolls_back_title_change() {
+        let (m, _guard) = mcp();
+        seed_project(&m, "Plans", "PLN");
+        seed_issue(&m, "PLN", "Real work");
+        let created = m.create_plan(Parameters(CreatePlanInput {
+            project: Some("PLN".into()),
+            title: "Plan".into(),
+            anchor_issue: None,
+            steps: Some(vec![PlanStepInput {
+                title: "original title".into(),
+                ..Default::default()
+            }]),
+        }));
+        let step_id = created
+            .split('#')
+            .nth(1)
+            .and_then(|value| value.split(|c: char| !c.is_ascii_digit()).next())
+            .and_then(|value| value.parse().ok())
+            .expect("step id in output");
+
+        let output = m.update_plan_step(Parameters(UpdatePlanStepInput {
+            plan: "PLN-PLAN-1".into(),
+            step_id: Some(step_id),
+            title: Some("should roll back".into()),
+            attach_issue: Some("PLN-1".into()),
+            detach_issue: Some(true),
+            ..Default::default()
+        }));
+
+        assert!(output.contains("attach_issue and detach_issue are mutually exclusive"));
+        let plan = m.get_plan(Parameters(GetPlanInput {
+            plan: "PLN-PLAN-1".into(),
+        }));
+        assert!(plan.contains("original title"), "got: {plan}");
+        assert!(!plan.contains("should roll back"), "got: {plan}");
     }
 
     #[test]

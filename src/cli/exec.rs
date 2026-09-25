@@ -126,7 +126,7 @@ impl Output<'_> {
     /// enrichment can be asserted against the HTTP backend's without capturing
     /// stdout.
     fn emit(self, value: serde_json::Value) {
-        println!("{}", serde_json::to_string_pretty(&value).unwrap());
+        println!("{}", term::json_string(&value).unwrap());
     }
 
     /// Serialization of our own models cannot fail.
@@ -195,7 +195,7 @@ fn export(
 
     let written = crate::export::write_bundle_to_directory(&bundle, output)?;
     if json {
-        print_json(&written);
+        print_json(&written)?;
     } else {
         print!("{}", render::export_written(&written, output));
     }
@@ -204,8 +204,9 @@ fn export(
 
 // ── Helpers ──────────────────────────────────────────────────
 
-fn print_json<T: serde::Serialize>(val: &T) {
-    println!("{}", serde_json::to_string_pretty(val).unwrap());
+fn print_json<T: serde::Serialize>(val: &T) -> Result<(), serde_json::Error> {
+    println!("{}", term::json_string(val)?);
+    Ok(())
 }
 
 fn page_folder_id(
@@ -357,9 +358,8 @@ fn issue(
                     description: description.clone(),
                     status: Status::parse_opt(status.as_deref())?,
                     priority: Priority::parse_opt(priority.as_deref())?,
-                    // LIF-145: module_id is now tristate; the CLI only sets or
-                    // skips (no clear), so map Some(id) -> Some(Some(id)).
-                    module_id: module_id.map(Some),
+                    // The CLI only sets or skips (no clear).
+                    module_id: module_id.map(FieldUpdate::Set).unwrap_or_default(),
                     labels: label_list,
                     // LIF-409: see `issue create`. An edit that drops a
                     // reference drops its link, same as every other backend.
@@ -588,7 +588,8 @@ fn page(
                 .as_deref()
                 .map(|name| page_folder_id(&conn, id, name))
                 .transpose()?
-                .map(Some);
+                .map(FieldUpdate::Set)
+                .unwrap_or_default();
 
             let label_list = owned_labels(labels.as_deref());
 
@@ -849,7 +850,7 @@ fn module(
             drop(conn);
 
             if json {
-                print_json(&render::Deleted::named(name));
+                print_json(&render::Deleted::named(name))?;
             } else {
                 print!("{}", render::module_deleted(name));
             }
@@ -872,7 +873,7 @@ fn label(
             let labels = queries::list_labels(&conn, project_id)?;
 
             if json {
-                print_json(&labels);
+                print_json(&labels)?;
             } else {
                 print!("{}", render::label_list(&labels, project));
             }
@@ -896,7 +897,7 @@ fn label(
             drop(conn);
 
             if json {
-                print_json(&label);
+                print_json(&label)?;
             } else {
                 print!("{}", render::label_created(&label));
             }
@@ -922,7 +923,7 @@ fn label(
             drop(conn);
 
             if json {
-                print_json(&label);
+                print_json(&label)?;
             } else {
                 print!("{}", render::label_updated(&label));
             }
@@ -936,7 +937,7 @@ fn label(
             drop(conn);
 
             if json {
-                print_json(&render::Deleted::named(name));
+                print_json(&render::Deleted::named(name))?;
             } else {
                 print!("{}", render::label_deleted(name));
             }
@@ -959,7 +960,7 @@ fn folder(
             let folders = queries::list_folders(&conn, project_id)?;
 
             if json {
-                print_json(&folders);
+                print_json(&folders)?;
             } else {
                 print!("{}", render::folder_list(&folders, project));
             }
@@ -979,7 +980,7 @@ fn folder(
             drop(conn);
 
             if json {
-                print_json(&folder);
+                print_json(&folder)?;
             } else {
                 print!("{}", render::folder_created(&folder));
             }
@@ -1003,7 +1004,7 @@ fn folder(
             drop(conn);
 
             if json {
-                print_json(&folder);
+                print_json(&folder)?;
             } else {
                 print!("{}", render::folder_updated(name, &folder));
             }
@@ -1017,7 +1018,7 @@ fn folder(
             drop(conn);
 
             if json {
-                print_json(&render::Deleted::named(name));
+                print_json(&render::Deleted::named(name))?;
             } else {
                 print!("{}", render::folder_deleted(name));
             }
