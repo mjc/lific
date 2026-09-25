@@ -53,10 +53,10 @@ pub mod writer;
 use std::io::IsTerminal;
 use std::path::PathBuf;
 
-use rusqlite::OptionalExtension;
 use crate::cli::ui::TerminalDisplay;
 use crate::config::Config;
 use crate::db::DbPool;
+use rusqlite::OptionalExtension;
 
 use clients::{ClientSpec, OauthSupport, Os, PathBase, Scope, ServerConfig};
 

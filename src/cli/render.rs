@@ -766,6 +766,7 @@ mod tests {
             content: "comment\rforged\tline".into(),
             created_at: String::new(),
             updated_at: String::new(),
+            kind: Default::default(),
         };
 
         for rendered in [
