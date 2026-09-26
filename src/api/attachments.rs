@@ -325,7 +325,7 @@ impl<'a> AttachmentUpload<'a> {
 }
 
 #[derive(Debug)]
-struct ValidatedAttachmentUpload<'a> {
+pub(crate) struct ValidatedAttachmentUpload<'a> {
     bytes: UploadBytes,
     filename: SanitizedFilename<'a>,
     mime: ValidatedMime,
@@ -336,17 +336,25 @@ struct ValidatedAttachmentUpload<'a> {
     actor: crate::actor::ActorCtx,
 }
 
-/// Validate and persist an upload shared by the REST and MCP transports.
+/// Authorize the optional link and validate an upload before persistence.
+pub(crate) fn validate_upload<'a>(
+    db: &DbPool,
+    identity: &Option<crate::resolve_caller::ResolvedIdentity>,
+    upload: AttachmentUpload<'a>,
+) -> Result<ValidatedAttachmentUpload<'a>, LificError> {
+    if let Some(link) = upload.link {
+        authorize_link(db, identity, link.entity, link.entity_id)?;
+    }
+    upload.validate()
+}
+
+/// Persist an upload that has passed authorization and validation.
 pub(crate) fn store_upload(
     db: &DbPool,
     store: &AttachmentStore,
     identity: &Option<crate::resolve_caller::ResolvedIdentity>,
-    upload: AttachmentUpload,
+    upload: ValidatedAttachmentUpload<'_>,
 ) -> Result<(Attachment, Option<RealtimeEvent>), LificError> {
-    if let Some(link) = upload.link {
-        authorize_link(db, identity, link.entity, link.entity_id)?;
-    }
-    let upload = upload.validate()?;
     let sha = AttachmentStore::hash_bytes(upload.bytes.as_slice());
 
     let (attachment, event) = store
@@ -495,9 +503,8 @@ pub(super) async fn upload_attachment(
     let bytes =
         file_bytes.ok_or_else(|| LificError::BadRequest("no 'file' field in upload".into()))?;
     let link = link.map(|(entity, entity_id)| AttachmentLink::new(entity, entity_id));
-    let (attachment, event) = store_upload(
+    let upload = validate_upload(
         &db,
-        &store,
         &identity,
         AttachmentUpload::new(
             bytes,
@@ -509,6 +516,7 @@ pub(super) async fn upload_attachment(
             config.max_bytes,
         ),
     )?;
+    let (attachment, event) = store_upload(&db, &store, &identity, upload)?;
     if let Some(event) = event {
         realtime.send(event);
     }
