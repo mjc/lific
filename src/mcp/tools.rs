@@ -4909,7 +4909,7 @@ impl LificMcp {
             ));
         }
 
-        let filename = crate::api::attachments::sanitize_filename(&input.filename);
+        let filename = input.filename.as_str();
         let link = match (entity, input.comment_id) {
             (Some(ident), _) => Some(self.resolve_attachment_entity(ident)?),
             (None, Some(comment_id)) => Some((models::AttachmentEntity::Comment, comment_id)),
@@ -4918,7 +4918,7 @@ impl LificMcp {
         .map(|(entity, entity_id)| crate::api::attachments::AttachmentLink::new(entity, entity_id));
         let identity = super::current_identity(&self.db);
         let uploader = self.read(resolve_attachment_uploader_conn)?;
-        let declared_mime = declared_mime_for_filename(&filename).map(str::to_owned);
+        let declared_mime = declared_mime_for_filename(filename);
         let (attachment, event) = crate::api::attachments::store_upload(
             &self.db,
             &self.store,
@@ -5224,15 +5224,21 @@ fn attachment_markdown(filename: &str, mime: &str, id: i64) -> String {
 /// from magic bytes (SVG and plain text). Anything with a real signature is
 /// decided by the bytes regardless of what this returns.
 fn declared_mime_for_filename(filename: &str) -> Option<&'static str> {
-    let extension = filename.rsplit_once('.')?.1.to_ascii_lowercase();
-    match extension.as_str() {
-        "svg" => Some("image/svg+xml"),
-        "txt" | "log" | "md" | "csv" | "json" => Some("text/plain"),
-        // Legacy HWP shares the OLE signature with other formats, so the
-        // name has to vouch for it, exactly as the REST upload requires.
-        "hwp" => Some("application/x-hwp"),
-        _ => None,
+    let extension = filename.rsplit_once('.')?.1;
+    if extension.eq_ignore_ascii_case("svg") {
+        return Some("image/svg+xml");
     }
+    if ["txt", "log", "md", "csv", "json"]
+        .iter()
+        .any(|plain| extension.eq_ignore_ascii_case(plain))
+    {
+        return Some("text/plain");
+    }
+    // Legacy HWP shares the OLE signature with other formats, so the
+    // name has to vouch for it, exactly as the REST upload requires.
+    extension
+        .eq_ignore_ascii_case("hwp")
+        .then_some("application/x-hwp")
 }
 
 /// The user an MCP upload is attributed to: the request's authenticated agent,
