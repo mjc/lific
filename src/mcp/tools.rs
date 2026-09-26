@@ -4919,26 +4919,22 @@ impl LificMcp {
         let identity = super::current_identity(&self.db);
         let uploader = self.read(resolve_attachment_uploader_conn)?;
         let declared_mime = declared_mime_for_filename(filename);
-        let upload = crate::api::attachments::validate_upload(
-            &self.db,
-            &identity,
-            crate::api::attachments::AttachmentUpload::new(
-                bytes,
-                filename,
-                declared_mime,
-                link,
-                crate::api::attachments::AttachmentUploader::new(uploader),
-                crate::actor::ActorCtx {
-                    user_id: Some(uploader),
-                    transport: crate::actor::Transport::Mcp,
-                },
-                crate::api::AttachmentConfig::default().max_bytes,
-            ),
+        let upload = crate::api::attachments::AttachmentUpload::new(
+            bytes,
+            filename,
+            declared_mime,
+            link,
+            crate::api::attachments::AttachmentUploader::new(uploader),
+            crate::actor::ActorCtx {
+                user_id: Some(uploader),
+                transport: crate::actor::Transport::Mcp,
+            },
+            crate::api::AttachmentConfig::default().max_bytes,
         )
+        .validate(&self.db, &identity)
         .map_err(sanitize_error)?;
         let (attachment, event) =
-            crate::api::attachments::store_upload(&self.db, &self.store, &identity, upload)
-                .map_err(sanitize_error)?;
+            crate::api::attachments::store_upload(&self.store, upload).map_err(sanitize_error)?;
         event.into_iter().for_each(|event| self.emit(event));
 
         let snippet = attachment_markdown(&attachment.filename, &attachment.mime, attachment.id);

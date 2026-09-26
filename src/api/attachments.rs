@@ -294,7 +294,14 @@ impl<'a> AttachmentUpload<'a> {
         }
     }
 
-    fn validate(self) -> Result<ValidatedAttachmentUpload<'a>, LificError> {
+    pub(crate) fn validate(
+        self,
+        db: &'a DbPool,
+        identity: &'a Option<crate::resolve_caller::ResolvedIdentity>,
+    ) -> Result<ValidatedAttachmentUpload<'a>, LificError> {
+        if let Some(link) = self.link {
+            authorize_link(db, identity, link.entity, link.entity_id)?;
+        }
         let Self {
             bytes,
             filename,
@@ -320,11 +327,12 @@ impl<'a> AttachmentUpload<'a> {
             link,
             uploader,
             actor,
+            db,
+            identity,
         })
     }
 }
 
-#[derive(Debug)]
 pub(crate) struct ValidatedAttachmentUpload<'a> {
     bytes: UploadBytes,
     filename: SanitizedFilename<'a>,
@@ -334,27 +342,17 @@ pub(crate) struct ValidatedAttachmentUpload<'a> {
     link: Option<AttachmentLink>,
     uploader: AttachmentUploader,
     actor: crate::actor::ActorCtx,
-}
-
-/// Authorize the optional link and validate an upload before persistence.
-pub(crate) fn validate_upload<'a>(
-    db: &DbPool,
-    identity: &Option<crate::resolve_caller::ResolvedIdentity>,
-    upload: AttachmentUpload<'a>,
-) -> Result<ValidatedAttachmentUpload<'a>, LificError> {
-    if let Some(link) = upload.link {
-        authorize_link(db, identity, link.entity, link.entity_id)?;
-    }
-    upload.validate()
+    db: &'a DbPool,
+    identity: &'a Option<crate::resolve_caller::ResolvedIdentity>,
 }
 
 /// Persist an upload that has passed authorization and validation.
 pub(crate) fn store_upload(
-    db: &DbPool,
     store: &AttachmentStore,
-    identity: &Option<crate::resolve_caller::ResolvedIdentity>,
     upload: ValidatedAttachmentUpload<'_>,
 ) -> Result<(Attachment, Option<RealtimeEvent>), LificError> {
+    let db = upload.db;
+    let identity = upload.identity;
     let sha = AttachmentStore::hash_bytes(upload.bytes.as_slice());
 
     let (attachment, event) = store
@@ -503,20 +501,17 @@ pub(super) async fn upload_attachment(
     let bytes =
         file_bytes.ok_or_else(|| LificError::BadRequest("no 'file' field in upload".into()))?;
     let link = link.map(|(entity, entity_id)| AttachmentLink::new(entity, entity_id));
-    let upload = validate_upload(
-        &db,
-        &identity,
-        AttachmentUpload::new(
-            bytes,
-            filename.as_str(),
-            declared_mime.as_deref(),
-            link,
-            AttachmentUploader::new(user.id),
-            crate::actor::current(),
-            config.max_bytes,
-        ),
-    )?;
-    let (attachment, event) = store_upload(&db, &store, &identity, upload)?;
+    let upload = AttachmentUpload::new(
+        bytes,
+        filename.as_str(),
+        declared_mime.as_deref(),
+        link,
+        AttachmentUploader::new(user.id),
+        crate::actor::current(),
+        config.max_bytes,
+    )
+    .validate(&db, &identity)?;
+    let (attachment, event) = store_upload(&store, upload)?;
     if let Some(event) = event {
         realtime.send(event);
     }
