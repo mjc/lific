@@ -441,9 +441,8 @@ impl AttachmentStore {
     /// on.
     ///
     /// `Ok(None)` means the store is busy. Errors are real failures.
-    /// Everything not on a request path (CLI, MCP, background sweeps) uses the
-    /// blocking [`Self::with_lock`], because there is nothing to be gained by
-    /// failing those and something to lose.
+    /// REST and MCP uploads use this nonblocking path. CLI operations and
+    /// background sweeps use the blocking [`Self::with_lock`].
     pub(crate) fn try_with_lock<T>(
         &self,
         operation: impl FnOnce(&Self) -> Result<T, LificError>,
@@ -471,31 +470,6 @@ impl AttachmentStore {
         }
         // `file` owns the lock for the rest of this scope; dropping it, even
         // while a panic unwinds, releases it.
-        let result = operation(self);
-        let _ = FileExt::unlock(&file);
-        result.map(Some)
-    }
-
-    /// String-error counterpart to [`Self::try_with_lock`] for MCP tools.
-    pub(crate) fn try_with_string_lock<T>(
-        &self,
-        operation: impl FnOnce(&Self) -> Result<T, String>,
-    ) -> Result<Option<T>, String> {
-        let _guard = match self.operation_lock.try_lock() {
-            Ok(guard) => guard,
-            Err(std::sync::TryLockError::WouldBlock) => return Ok(None),
-            Err(std::sync::TryLockError::Poisoned(_)) => {
-                return Err("attachment store lock poisoned".to_string());
-            }
-        };
-        let file = self
-            .open_lock_file()
-            .map_err(|error| format!("lock attachment store: {error}"))?;
-        match file.try_lock_exclusive() {
-            Ok(()) => {}
-            Err(error) if lock_is_busy(&error) => return Ok(None),
-            Err(error) => return Err(format!("lock attachment store: {error}")),
-        }
         let result = operation(self);
         let _ = FileExt::unlock(&file);
         result.map(Some)
@@ -1634,13 +1608,6 @@ mod tests {
 
         let busy = requester.try_with_lock(|_| Ok(())).unwrap();
         assert!(busy.is_none(), "a busy store must not block the caller");
-        assert!(
-            requester
-                .try_with_string_lock(|_| Ok(()))
-                .unwrap()
-                .is_none(),
-            "the MCP string-error path must not block either"
-        );
         assert!(matches!(
             AttachmentStore::busy_error(),
             LificError::Unavailable(_)
@@ -1653,7 +1620,6 @@ mod tests {
             Some(7),
             "and must proceed once the store is free"
         );
-        assert_eq!(requester.try_with_string_lock(|_| Ok(8)).unwrap(), Some(8));
     }
 
     #[test]

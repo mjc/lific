@@ -4893,16 +4893,14 @@ impl LificMcp {
             return Err("pass entity or comment_id, not both".into());
         }
 
-        // Decode before anything else: a malformed payload is the caller's
-        // mistake and costs nothing to reject.
+        // Decode before resolving the optional target: malformed input costs
+        // nothing to reject and cannot mutate state.
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(input.content_base64.trim())
             .map_err(|error| format!("content_base64 is not valid base64: {error}"))?;
         if bytes.is_empty() {
             return Err("empty file".into());
         }
-        // The cap is REST's cap, read from the same type `server.rs` injects
-        // into the upload route, so the two transports can never drift.
         let max_bytes = crate::api::AttachmentConfig::default().max_bytes;
         if bytes.len() > max_bytes {
             return Err(format!(
@@ -4911,74 +4909,38 @@ impl LificMcp {
             ));
         }
 
-        let filename = crate::api::attachments::sanitize_filename(&input.filename);
-        // MCP carries no content-type header, so the extension stands in as
-        // the "declared" type for the signature-less formats. Everything with
-        // real magic bytes is still decided by the bytes, and the allowlist
-        // check below is REST's.
-        let mime =
-            crate::storage::sniff_and_validate(&bytes, declared_mime_for_filename(&filename))
-                .map_err(sanitize_error)?;
-        if !crate::storage::ALLOWED_MIMES.contains(&mime.as_str()) {
-            return Err(format!("rejected: '{mime}' is not an allowed file type"));
-        }
-
-        // Resolve and authorize the link target before a single byte lands,
-        // so a refused link leaves no orphan blob behind (REST's LIF-405
-        // ordering).
+        let filename = input.filename.as_str();
         let link = match (entity, input.comment_id) {
             (Some(ident), _) => Some(self.resolve_attachment_entity(ident)?),
             (None, Some(comment_id)) => Some((models::AttachmentEntity::Comment, comment_id)),
             (None, None) => None,
-        };
-        let identity = super::current_identity(&self.db);
-        if let Some((entity, entity_id)) = link {
-            crate::api::attachments::authorize_link(&self.db, &identity, entity, entity_id)
-                .map_err(sanitize_error)?;
         }
-
-        let size = bytes.len() as i64;
-        let sha = crate::storage::AttachmentStore::hash_bytes(&bytes);
-        let (attachment, event) = self
-            .store
-            .try_with_string_lock(|store| {
-                self.transaction(|conn| {
-                    let uploader = resolve_attachment_uploader_conn(conn)?;
-                    let attachment = queries::attachments::create_attachment(
-                        conn,
-                        &sha,
-                        &filename,
-                        &mime,
-                        size,
-                        Some(uploader),
-                    )?;
-                    store.write_unlocked(&bytes)?;
-                    let event = match link {
-                        Some((entity, entity_id)) => {
-                            // The gate above ran on a read connection before the blob
-                            // was stored. Re-run it here, on the connection that
-                            // inserts the link and inside this transaction, so the
-                            // decision and the row it authorizes commit together.
-                            crate::api::attachments::authorize_link_conn(
-                                conn, &identity, entity, entity_id,
-                            )?;
-                            queries::attachments::link_attachment(
-                                conn,
-                                attachment.id,
-                                entity,
-                                entity_id,
-                            )?;
-                            crate::api::attachments::linked_entity_event(conn, entity, entity_id)?
-                        }
-                        None => None,
-                    };
-                    Ok((attachment, event))
-                })
-            })?
+        .map(|(entity, entity_id)| crate::api::attachments::AttachmentLink::new(entity, entity_id));
+        let caller = self.read(|conn| {
+            crate::resolve_caller::resolve_caller_conn(
+                conn,
+                super::current_auth_user(),
+                crate::actor::Transport::Mcp,
+            )?
             .ok_or_else(|| {
-                "attachment storage is busy (a backup or restore is running); retry shortly"
-                    .to_string()
-            })?;
+                crate::error::LificError::Forbidden(
+                    "no admin user exists to attribute the upload to.".into(),
+                )
+            })
+        })?;
+        let identity = Some(caller);
+        let declared_mime = declared_mime_for_filename(filename);
+        let upload = crate::api::attachments::AttachmentUpload::new(
+            bytes,
+            filename,
+            declared_mime,
+            link,
+            crate::api::AttachmentConfig::default().max_bytes,
+        )
+        .validate(&self.db, &identity)
+        .map_err(sanitize_error)?;
+        let (attachment, event) =
+            crate::api::attachments::store_upload(&self.store, upload).map_err(sanitize_error)?;
         event.into_iter().for_each(|event| self.emit(event));
 
         let snippet = attachment_markdown(&attachment.filename, &attachment.mime, attachment.id);
@@ -5027,14 +4989,11 @@ impl LificMcp {
     ) -> Result<Vec<rmcp::model::Content>, String> {
         use rmcp::model::Content;
 
-        let attachment =
-            self.read(|conn| queries::attachments::get_attachment(conn, input.attachment_id))?;
-        // Exactly REST's read gate: Viewer on any project the attachment is
-        // linked into, or uploader/admin while it is still unlinked.
-        crate::api::attachments::authorize_read(
+        let identity = super::current_identity(&self.db);
+        let attachment = crate::api::attachments::load_authorized_attachment(
             &self.db,
-            &super::current_identity(&self.db),
-            &attachment,
+            &identity,
+            input.attachment_id,
         )
         .map_err(sanitize_error)?;
         let bytes = self
@@ -5266,34 +5225,17 @@ fn attachment_markdown(filename: &str, mime: &str, id: i64) -> String {
 /// from magic bytes (SVG and plain text). Anything with a real signature is
 /// decided by the bytes regardless of what this returns.
 fn declared_mime_for_filename(filename: &str) -> Option<&'static str> {
-    let extension = filename.rsplit_once('.')?.1.to_ascii_lowercase();
-    match extension.as_str() {
-        "svg" => Some("image/svg+xml"),
-        "txt" | "log" | "md" | "csv" | "json" => Some("text/plain"),
-        // Legacy HWP shares the OLE signature with other formats, so the
-        // name has to vouch for it, exactly as the REST upload requires.
-        "hwp" => Some("application/x-hwp"),
-        _ => None,
+    let extension = filename.rsplit_once('.')?.1;
+    if extension.eq_ignore_ascii_case("svg") {
+        return Some("image/svg+xml");
     }
-}
-
-/// The user an MCP upload is attributed to: the request's authenticated agent,
-/// or the fallback identity `resolve_caller` picks for a credential-less
-/// session (the same resolution comment mutations use).
-fn resolve_attachment_uploader_conn(
-    conn: &rusqlite::Connection,
-) -> Result<i64, crate::error::LificError> {
-    crate::resolve_caller::resolve_caller_conn(
-        conn,
-        super::current_auth_user(),
-        crate::actor::Transport::Mcp,
-    )?
-    .map(|identity| identity.user.id)
-    .ok_or_else(|| {
-        crate::error::LificError::Forbidden(
-            "no admin user exists to attribute the upload to.".into(),
-        )
-    })
+    if ["txt", "log", "md", "csv", "json"]
+        .iter()
+        .any(|plain| extension.eq_ignore_ascii_case(plain))
+    {
+        return Some("text/plain");
+    }
+    None
 }
 
 /// Slice a text attachment by line for `get_attachment`. Mirrors the paging
@@ -12644,6 +12586,20 @@ mod tests {
             "{receipt}"
         );
 
+        let (owner, actor): (Option<i64>, (Option<i64>, String)) = m
+            .read(|conn| {
+                let attachment = queries::attachments::get_attachment(conn, id)?;
+                let actor = conn.query_row(
+                    "SELECT user_id, transport FROM _actor_state WHERE id = 1",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?;
+                Ok((attachment.uploader_id, actor))
+            })
+            .unwrap();
+        assert!(owner.is_some());
+        assert_eq!(actor, (owner, "mcp".into()));
+
         // The link is real: the entity listing shows it.
         let listed = m.list_attachments(Parameters(ListAttachmentsInput {
             entity: Some("ATT-1".into()),
@@ -12655,6 +12611,29 @@ mod tests {
             "{listed}"
         );
         assert!(listed.trim_end().ends_with("| ATT-1"), "{listed}");
+    }
+
+    #[test]
+    fn upload_attachment_records_derived_image_metadata() {
+        let (m, _tmp, _guard, _identity) = mcp_with_attachments();
+        let bytes = crate::storage::fixtures::png_image(1200, 300);
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+
+        let receipt = m.upload_attachment(Parameters(UploadAttachmentInput {
+            filename: "wide.png".into(),
+            content_base64: encoded,
+            entity: None,
+            comment_id: None,
+        }));
+        let id = attachment_id_from(&receipt);
+        let attachment = m
+            .read(|conn| queries::attachments::get_attachment(conn, id))
+            .expect("stored attachment");
+
+        assert_eq!(attachment.width, Some(1200));
+        assert_eq!(attachment.height, Some(300));
+        assert!(attachment.has_thumbnail);
+        assert!(m.store.read_thumb(&attachment.sha256).unwrap().is_some());
     }
 
     /// REST accepts a legacy HWP file when its name ends in `.hwp`; MCP has no
