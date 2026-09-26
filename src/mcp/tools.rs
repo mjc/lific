@@ -4916,19 +4916,25 @@ impl LificMcp {
             (None, None) => None,
         }
         .map(|(entity, entity_id)| crate::api::attachments::AttachmentLink::new(entity, entity_id));
-        let identity = super::current_identity(&self.db);
-        let uploader = self.read(resolve_attachment_uploader_conn)?;
+        let caller = self.read(|conn| {
+            crate::resolve_caller::resolve_caller_conn(
+                conn,
+                super::current_auth_user(),
+                crate::actor::Transport::Mcp,
+            )?
+            .ok_or_else(|| {
+                crate::error::LificError::Forbidden(
+                    "no admin user exists to attribute the upload to.".into(),
+                )
+            })
+        })?;
+        let identity = Some(caller);
         let declared_mime = declared_mime_for_filename(filename);
         let upload = crate::api::attachments::AttachmentUpload::new(
             bytes,
             filename,
             declared_mime,
             link,
-            crate::api::attachments::AttachmentUploader::new(uploader),
-            crate::actor::ActorCtx {
-                user_id: Some(uploader),
-                transport: crate::actor::Transport::Mcp,
-            },
             crate::api::AttachmentConfig::default().max_bytes,
         )
         .validate(&self.db, &identity)
@@ -5237,25 +5243,6 @@ fn declared_mime_for_filename(filename: &str) -> Option<&'static str> {
     extension
         .eq_ignore_ascii_case("hwp")
         .then_some("application/x-hwp")
-}
-
-/// The user an MCP upload is attributed to: the request's authenticated agent,
-/// or the fallback identity `resolve_caller` picks for a credential-less
-/// session (the same resolution comment mutations use).
-fn resolve_attachment_uploader_conn(
-    conn: &rusqlite::Connection,
-) -> Result<i64, crate::error::LificError> {
-    crate::resolve_caller::resolve_caller_conn(
-        conn,
-        super::current_auth_user(),
-        crate::actor::Transport::Mcp,
-    )?
-    .map(|identity| identity.user.id)
-    .ok_or_else(|| {
-        crate::error::LificError::Forbidden(
-            "no admin user exists to attribute the upload to.".into(),
-        )
-    })
 }
 
 /// Slice a text attachment by line for `get_attachment`. Mirrors the paging
@@ -12605,6 +12592,20 @@ mod tests {
             receipt.ends_with(&format!("![shot.png](/api/attachments/{id})")),
             "{receipt}"
         );
+
+        let (owner, actor): (Option<i64>, (Option<i64>, String)) = m
+            .read(|conn| {
+                let attachment = queries::attachments::get_attachment(conn, id)?;
+                let actor = conn.query_row(
+                    "SELECT user_id, transport FROM _actor_state WHERE id = 1",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?;
+                Ok((attachment.uploader_id, actor))
+            })
+            .unwrap();
+        assert!(owner.is_some());
+        assert_eq!(actor, (owner, "mcp".into()));
 
         // The link is real: the entity listing shows it.
         let listed = m.list_attachments(Parameters(ListAttachmentsInput {

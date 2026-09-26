@@ -441,9 +441,8 @@ impl AttachmentStore {
     /// on.
     ///
     /// `Ok(None)` means the store is busy. Errors are real failures.
-    /// Everything not on a request path (CLI, MCP, background sweeps) uses the
-    /// blocking [`Self::with_lock`], because there is nothing to be gained by
-    /// failing those and something to lose.
+    /// REST and MCP uploads use this nonblocking path. CLI operations and
+    /// background sweeps use the blocking [`Self::with_lock`].
     pub(crate) fn try_with_lock<T>(
         &self,
         operation: impl FnOnce(&Self) -> Result<T, LificError>,

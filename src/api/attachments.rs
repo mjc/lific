@@ -87,20 +87,6 @@ impl AttachmentLink {
     }
 }
 
-/// The authenticated user who owns an upload.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct AttachmentUploader(i64);
-
-impl AttachmentUploader {
-    pub(crate) const fn new(user_id: i64) -> Self {
-        Self(user_id)
-    }
-
-    const fn id(self) -> i64 {
-        self.0
-    }
-}
-
 const HWP_MIME: &str = "application/x-hwp";
 const HWP_DECLARATIONS: &[&str] = &[
     HWP_MIME,
@@ -157,8 +143,8 @@ impl<'a> SanitizedFilename<'a> {
             .next()
             .unwrap_or(filename)
             .trim();
-        let value = if base == filename && is_safe_filename(base) {
-            Cow::Borrowed(filename)
+        let value = if is_safe_filename(base) {
+            Cow::Borrowed(base)
         } else {
             Cow::Owned(sanitize_filename(filename))
         };
@@ -232,19 +218,22 @@ fn is_safe_filename(filename: &str) -> bool {
             .all(|(index, character)| index < 255 && !character.is_control())
 }
 
-#[derive(Debug, Default)]
-struct DerivedAttachmentMetadata {
-    dimensions: Option<(u32, u32)>,
-    thumbnail: Option<Vec<u8>>,
+#[derive(Debug)]
+enum DerivedAttachmentMetadata {
+    None,
+    Raster {
+        dimensions: (u32, u32),
+        thumbnail: Option<Vec<u8>>,
+    },
 }
 
 impl DerivedAttachmentMetadata {
     fn derive(bytes: &[u8], mime: &ValidatedMime) -> Self {
         if !storage::is_raster_mime(mime.as_str()) {
-            return Self::default();
+            return Self::None;
         }
         let Some(dimensions) = storage::image_dimensions(bytes) else {
-            return Self::default();
+            return Self::None;
         };
         let thumbnail = match storage::generate_thumbnail(bytes) {
             Ok(thumb) => thumb,
@@ -253,9 +242,16 @@ impl DerivedAttachmentMetadata {
                 None
             }
         };
-        Self {
-            dimensions: Some(dimensions),
+        Self::Raster {
+            dimensions,
             thumbnail,
+        }
+    }
+
+    fn thumbnail(&self) -> Option<&[u8]> {
+        match self {
+            Self::None => None,
+            Self::Raster { thumbnail, .. } => thumbnail.as_deref(),
         }
     }
 }
@@ -268,8 +264,6 @@ pub(crate) struct AttachmentUpload<'a> {
     filename: &'a str,
     declared_mime: Option<&'a str>,
     link: Option<AttachmentLink>,
-    uploader: AttachmentUploader,
-    actor: crate::actor::ActorCtx,
     max_bytes: usize,
 }
 
@@ -279,8 +273,6 @@ impl<'a> AttachmentUpload<'a> {
         filename: &'a str,
         declared_mime: Option<&'a str>,
         link: Option<AttachmentLink>,
-        uploader: AttachmentUploader,
-        actor: crate::actor::ActorCtx,
         max_bytes: usize,
     ) -> Self {
         Self {
@@ -288,8 +280,6 @@ impl<'a> AttachmentUpload<'a> {
             filename,
             declared_mime,
             link,
-            uploader,
-            actor,
             max_bytes,
         }
     }
@@ -299,6 +289,9 @@ impl<'a> AttachmentUpload<'a> {
         db: &'a DbPool,
         identity: &'a Option<crate::resolve_caller::ResolvedIdentity>,
     ) -> Result<ValidatedAttachmentUpload<'a>, LificError> {
+        let caller = identity
+            .as_ref()
+            .ok_or_else(|| LificError::Forbidden("authentication required".into()))?;
         if let Some(link) = self.link {
             authorize_link(db, identity, link.entity, link.entity_id)?;
         }
@@ -307,26 +300,19 @@ impl<'a> AttachmentUpload<'a> {
             filename,
             declared_mime,
             link,
-            uploader,
-            actor,
             max_bytes,
         } = self;
         let bytes = UploadBytes::new(bytes, max_bytes)?;
         let filename = SanitizedFilename::new(filename);
         let mime = ValidatedMime::sniff(bytes.as_slice(), &filename, declared_mime)?;
-        let DerivedAttachmentMetadata {
-            dimensions,
-            thumbnail,
-        } = DerivedAttachmentMetadata::derive(bytes.as_slice(), &mime);
+        let metadata = DerivedAttachmentMetadata::derive(bytes.as_slice(), &mime);
         Ok(ValidatedAttachmentUpload {
             bytes,
             filename,
             mime,
-            dimensions,
-            thumbnail,
+            metadata,
             link,
-            uploader,
-            actor,
+            caller,
             db,
             identity,
         })
@@ -337,11 +323,9 @@ pub(crate) struct ValidatedAttachmentUpload<'a> {
     bytes: UploadBytes,
     filename: SanitizedFilename<'a>,
     mime: ValidatedMime,
-    dimensions: Option<(u32, u32)>,
-    thumbnail: Option<Vec<u8>>,
+    metadata: DerivedAttachmentMetadata,
     link: Option<AttachmentLink>,
-    uploader: AttachmentUploader,
-    actor: crate::actor::ActorCtx,
+    caller: &'a crate::resolve_caller::ResolvedIdentity,
     db: &'a DbPool,
     identity: &'a Option<crate::resolve_caller::ResolvedIdentity>,
 }
@@ -354,29 +338,40 @@ pub(crate) fn store_upload(
     let db = upload.db;
     let identity = upload.identity;
     let sha = AttachmentStore::hash_bytes(upload.bytes.as_slice());
+    let thumbnail = upload.metadata.thumbnail();
 
     let (attachment, event) = store
         .try_with_lock(|store| {
             let blob_existed = store.blob_exists(&sha)?;
-            let thumb_existed = upload.thumbnail.is_some() && store.thumb_exists(&sha)?;
+            let thumb_existed = thumbnail.is_some() && store.thumb_exists(&sha)?;
             let result = db.transaction(|conn| {
-                crate::actor::stamp(conn, &upload.actor);
+                crate::actor::stamp(
+                    conn,
+                    &crate::actor::ActorCtx {
+                        user_id: Some(upload.caller.user.id),
+                        transport: upload.caller.transport,
+                    },
+                );
                 let mut attachment = q::create_attachment(
                     conn,
                     &sha,
                     upload.filename.as_str(),
                     upload.mime.as_str(),
                     upload.bytes.size(),
-                    Some(upload.uploader.id()),
+                    Some(upload.caller.user.id),
                 )?;
                 store.write_unlocked(upload.bytes.as_slice())?;
-                if let Some(thumbnail) = upload.thumbnail.as_deref()
+                if let Some(thumbnail) = thumbnail
                     && let Err(error) = store.write_thumb(&sha, thumbnail)
                 {
                     tracing::warn!(error = %error, "failed to cache attachment thumbnail");
                 }
-                if let Some((width, height)) = upload.dimensions {
-                    q::set_dimensions(conn, attachment.id, i64::from(width), i64::from(height))?;
+                if let DerivedAttachmentMetadata::Raster {
+                    dimensions: (width, height),
+                    ..
+                } = &upload.metadata
+                {
+                    q::set_dimensions(conn, attachment.id, i64::from(*width), i64::from(*height))?;
                     attachment = q::get_attachment(conn, attachment.id)?;
                 }
                 if q::is_extractable(upload.mime.as_str(), upload.bytes.size())
@@ -402,7 +397,7 @@ pub(crate) fn store_upload(
                     &sha,
                     blob_existed,
                     thumb_existed,
-                    upload.thumbnail.is_some(),
+                    thumbnail.is_some(),
                 );
             }
             result
@@ -506,8 +501,6 @@ pub(super) async fn upload_attachment(
         filename.as_str(),
         declared_mime.as_deref(),
         link,
-        AttachmentUploader::new(user.id),
-        crate::actor::current(),
         config.max_bytes,
     )
     .validate(&db, &identity)?;
@@ -1623,6 +1616,12 @@ mod tests {
         assert_eq!(sanitize_filename("C:\\Windows\\evil.exe"), "evil.exe");
         assert_eq!(sanitize_filename("nam\u{0007}e.png"), "name.png");
         assert_eq!(sanitize_filename("   "), "upload");
+    }
+
+    #[test]
+    fn safe_filename_borrows_the_path_tail() {
+        let filename = SanitizedFilename::new("../reports/summary.txt");
+        assert!(matches!(filename.value, Cow::Borrowed("summary.txt")));
     }
 
     #[test]
@@ -2869,6 +2868,38 @@ mod media_tests {
                     transport: crate::actor::Transport::Web,
                 },
             )))
+    }
+
+    #[tokio::test]
+    async fn upload_owner_and_audit_actor_use_the_resolved_caller() {
+        let db = crate::db::open_memory().unwrap();
+        let user_id = {
+            let conn = db.write().unwrap();
+            conn.execute(
+                "INSERT INTO users (username, email, password_hash, display_name, is_admin, is_bot)
+                 VALUES ('uploader', 'uploader@example.test', 'x', 'Uploader', 1, 0)",
+                [],
+            )
+            .unwrap();
+            conn.last_insert_rowid()
+        };
+        let (store, _tmp) = crate::api::test_helpers::test_attachment_store();
+        let app = app_with_store(db.clone(), store, user_id, "uploader", "Uploader");
+
+        let response = upload(&app, "note.txt", "text/plain", b"hello", None).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let id = parse_json(response).await["id"].as_i64().unwrap();
+        let conn = db.read().unwrap();
+        let attachment = crate::db::queries::attachments::get_attachment(&conn, id).unwrap();
+        let actor: (Option<i64>, String) = conn
+            .query_row(
+                "SELECT user_id, transport FROM _actor_state WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(attachment.uploader_id, Some(user_id));
+        assert_eq!(actor, (Some(user_id), "web".into()));
     }
 
     /// A tiny but structurally valid WebM header the sniffer accepts.
