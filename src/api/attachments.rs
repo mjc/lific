@@ -706,12 +706,7 @@ pub(super) async fn download_attachment(
     headers: axum::http::HeaderMap,
     Path(id): Path<i64>,
 ) -> Result<Response, LificError> {
-    let attachment = with_read(&db, |conn| q::get_attachment(conn, id))?;
-
-    // Authorize: the caller must be able to view SOME project this attachment
-    // is linked into (Viewer), or be the uploader / an admin for a still-
-    // unlinked attachment.
-    authorize_read(&db, &identity, &attachment)?;
+    let attachment = load_authorized_attachment(&db, &identity, id)?;
 
     let bytes = store.read(&attachment.sha256)?;
     let total = bytes.len() as u64;
@@ -883,8 +878,7 @@ pub(super) async fn attachment_thumbnail(
     Extension(store): Extension<AttachmentStore>,
     Path(id): Path<i64>,
 ) -> Result<Response, LificError> {
-    let attachment = with_read(&db, |conn| q::get_attachment(conn, id))?;
-    authorize_read(&db, &identity, &attachment)?;
+    let attachment = load_authorized_attachment(&db, &identity, id)?;
 
     if !storage::is_raster_mime(&attachment.mime) {
         return Err(LificError::NotFound(
@@ -1082,8 +1076,7 @@ pub(super) async fn attachment_links(
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
     Path(id): Path<i64>,
 ) -> Result<axum::Json<AttachmentLinks>, LificError> {
-    let attachment = with_read(&db, |conn| q::get_attachment(conn, id))?;
-    authorize_read(&db, &identity, &attachment)?;
+    let attachment = load_authorized_attachment(&db, &identity, id)?;
 
     let entities = visible_links(&db, &identity, id)?;
 
@@ -1217,8 +1210,7 @@ pub(super) async fn attachment_preview(
     Extension(store): Extension<AttachmentStore>,
     Path(id): Path<i64>,
 ) -> Result<axum::Json<crate::preview::Preview>, LificError> {
-    let attachment = with_read(&db, |conn| q::get_attachment(conn, id))?;
-    authorize_read(&db, &identity, &attachment)?;
+    let attachment = load_authorized_attachment(&db, &identity, id)?;
 
     let bytes = store.read(&attachment.sha256)?;
     Ok(axum::Json(crate::preview::preview_bytes(&bytes)?))
@@ -1392,7 +1384,7 @@ pub(crate) fn authorize_link_conn(
 /// attachment. When enforcement is off, `require_role(.., Viewer)` is an
 /// unconditional allow (legacy mode), so this reduces to today's open read
 /// behavior — matching every other GET while the flag is off.
-pub(crate) fn authorize_read(
+fn authorize_read(
     db: &DbPool,
     identity: &Option<crate::resolve_caller::ResolvedIdentity>,
     attachment: &Attachment,
@@ -1423,6 +1415,17 @@ pub(crate) fn authorize_read(
             LificError::Forbidden("not authorized to read this attachment".into())
         }))
     }
+}
+
+/// Load attachment metadata and apply the shared read gate before returning it.
+pub(crate) fn load_authorized_attachment(
+    db: &DbPool,
+    identity: &Option<crate::resolve_caller::ResolvedIdentity>,
+    id: i64,
+) -> Result<Attachment, LificError> {
+    let attachment = with_read(db, |conn| q::get_attachment(conn, id))?;
+    authorize_read(db, identity, &attachment)?;
+    Ok(attachment)
 }
 
 /// Delete gate: uploader, admin, or Maintainer on any owning project.

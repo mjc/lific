@@ -4989,14 +4989,11 @@ impl LificMcp {
     ) -> Result<Vec<rmcp::model::Content>, String> {
         use rmcp::model::Content;
 
-        let attachment =
-            self.read(|conn| queries::attachments::get_attachment(conn, input.attachment_id))?;
-        // Exactly REST's read gate: Viewer on any project the attachment is
-        // linked into, or uploader/admin while it is still unlinked.
-        crate::api::attachments::authorize_read(
+        let identity = super::current_identity(&self.db);
+        let attachment = crate::api::attachments::load_authorized_attachment(
             &self.db,
-            &super::current_identity(&self.db),
-            &attachment,
+            &identity,
+            input.attachment_id,
         )
         .map_err(sanitize_error)?;
         let bytes = self
@@ -5238,11 +5235,7 @@ fn declared_mime_for_filename(filename: &str) -> Option<&'static str> {
     {
         return Some("text/plain");
     }
-    // Legacy HWP shares the OLE signature with other formats, so the
-    // name has to vouch for it, exactly as the REST upload requires.
-    extension
-        .eq_ignore_ascii_case("hwp")
-        .then_some("application/x-hwp")
+    None
 }
 
 /// Slice a text attachment by line for `get_attachment`. Mirrors the paging
