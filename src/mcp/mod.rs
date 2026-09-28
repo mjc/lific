@@ -6,10 +6,8 @@ pub(crate) mod tools;
 mod waits;
 
 #[cfg(test)]
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::sync::Arc;
-#[cfg(test)]
-use std::sync::Mutex;
 
 use rmcp::{
     ServerHandler,
@@ -22,22 +20,6 @@ use crate::db::models::AuthUser;
 use crate::links::IssueLinkContext;
 use crate::realtime::{RealtimeEvent, RealtimeHub};
 use crate::storage::AttachmentStore;
-
-/// Direct-call tests still use process-wide context; production HTTP requests
-/// carry their context through rmcp's request extensions instead.
-#[cfg(test)]
-static MCP_HANDLER_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
-/// Per-request user identity storage.
-/// Protected from races by MCP_HANDLER_LOCK ensuring serial access.
-/// Uses unwrap_or_else to recover from poison (e.g. if a handler panics).
-#[cfg(test)]
-static MCP_REQUEST_USER: Mutex<Option<AuthUser>> = Mutex::new(None);
-
-/// Per-request external origin used for structured resource links.
-/// Protected by [`MCP_HANDLER_LOCK`] for the same reason as the identity state.
-#[cfg(test)]
-static MCP_REQUEST_ISSUE_LINKS: Mutex<Option<Arc<IssueLinkContext>>> = Mutex::new(None);
 
 enum RequestData {
     Scoped {
@@ -89,13 +71,35 @@ impl std::ops::Deref for IssueLinkContextRef {
 }
 
 #[cfg(test)]
-tokio::task_local! {
-    static TEST_REQUEST_ISSUE_LINKS: Option<Arc<IssueLinkContext>>;
+thread_local! {
+    // Synchronous direct-call tests run on one test thread. Async requests use
+    // REQUEST_DATA instead, so no identity crosses between worker threads.
+    static DIRECT_TEST_USER: RefCell<Option<AuthUser>> = const { RefCell::new(None) };
+    static TEST_ISSUE_LINK_CONTEXT_READS: Cell<usize> = const { Cell::new(0) };
 }
 
 #[cfg(test)]
-thread_local! {
-    static TEST_ISSUE_LINK_CONTEXT_READS: Cell<usize> = const { Cell::new(0) };
+pub(crate) struct DirectTestUserGuard {
+    previous: Option<AuthUser>,
+    _not_send: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+
+#[cfg(test)]
+impl Drop for DirectTestUserGuard {
+    fn drop(&mut self) {
+        DIRECT_TEST_USER.with(|current| {
+            current.replace(self.previous.take());
+        });
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn direct_test_user(user: Option<AuthUser>) -> DirectTestUserGuard {
+    let previous = DIRECT_TEST_USER.with(|current| current.replace(user));
+    DirectTestUserGuard {
+        previous,
+        _not_send: std::marker::PhantomData,
+    }
 }
 
 /// Scope an MCP caller's context to the task that actually executes the tool.
@@ -122,23 +126,6 @@ where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = R>,
 {
-    #[cfg(test)]
-    {
-        let _guard = MCP_HANDLER_LOCK.lock().await;
-        let test_issue_links = issue_links.clone().map(Arc::new);
-        *MCP_REQUEST_USER.lock().unwrap_or_else(|e| e.into_inner()) = user.clone();
-        *MCP_REQUEST_ISSUE_LINKS
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = test_issue_links.clone();
-        let _clear = RequestGlobalGuard;
-        TEST_REQUEST_ISSUE_LINKS
-            .scope(
-                test_issue_links,
-                scope_request_context(user, issue_links, f()),
-            )
-            .await
-    }
-    #[cfg(not(test))]
     scope_request_context(user, issue_links, f()).await
 }
 
@@ -176,23 +163,6 @@ where
         .await
 }
 
-/// Drops the per-request globals on scope exit (panic-safe). Declared after the
-/// globals are set in [`with_request_context`], so it runs before the handler
-/// lock is released.
-#[cfg(test)]
-struct RequestGlobalGuard;
-#[cfg(test)]
-impl Drop for RequestGlobalGuard {
-    fn drop(&mut self) {
-        *MCP_REQUEST_USER
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
-        *MCP_REQUEST_ISSUE_LINKS
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
-    }
-}
-
 /// Get the authenticated user for the current MCP request, if any.
 pub(crate) fn current_auth_user() -> Option<AuthUser> {
     if let Ok(user) = REQUEST_DATA.try_with(|context| match context {
@@ -202,10 +172,7 @@ pub(crate) fn current_auth_user() -> Option<AuthUser> {
         return user;
     }
     #[cfg(test)]
-    return MCP_REQUEST_USER
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone();
+    return DIRECT_TEST_USER.with(|current| current.borrow().clone());
     #[cfg(not(test))]
     None
 }
@@ -292,14 +259,7 @@ pub(crate) fn current_issue_link_context() -> Option<IssueLinkContextRef> {
         return links;
     }
     #[cfg(test)]
-    {
-        TEST_ISSUE_LINK_CONTEXT_READS.set(TEST_ISSUE_LINK_CONTEXT_READS.get() + 1);
-        TEST_REQUEST_ISSUE_LINKS
-            .try_with(Clone::clone)
-            .unwrap_or(None)
-            .map(IssueLinkContextRef::Scoped)
-    }
-    #[cfg(not(test))]
+    TEST_ISSUE_LINK_CONTEXT_READS.set(TEST_ISSUE_LINK_CONTEXT_READS.get() + 1);
     None
 }
 
@@ -919,27 +879,18 @@ mod tests {
             "OAuth-token-backed MCP session must resolve current_auth_user() to the bound user"
         );
 
-        // The global must be cleared after the request completes so it
-        // never leaks into an unrelated subsequent request.
+        // The request identity must not leak into an unrelated task.
         assert!(current_auth_user().is_none());
     }
 
     #[tokio::test]
     async fn with_request_context_scopes_issue_link_origin() {
         let context = IssueLinkContext::parse("https://tracker.example/base");
-        let (seen, global_seen) = with_request_context(None, context, || async {
-            let scoped = current_issue_link_context()
+        let seen = with_request_context(None, context, || async {
+            current_issue_link_context()
                 .expect("request origin should be visible")
                 .issue_markdown("LIF-1")
-                .to_string();
-            let global = MCP_REQUEST_ISSUE_LINKS
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .clone()
-                .expect("production request context should also be populated")
-                .issue_markdown("LIF-1")
-                .to_string();
-            (scoped, global)
+                .to_string()
         })
         .await;
 
@@ -947,14 +898,7 @@ mod tests {
             seen,
             "[LIF-1](https://tracker.example/base/LIF/issues/LIF-1)"
         );
-        assert_eq!(global_seen, seen);
         assert!(current_issue_link_context().is_none());
-        assert!(
-            MCP_REQUEST_ISSUE_LINKS
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .is_none()
-        );
     }
 
     // End-to-end: a credential-less MCP request resolves to the first admin
@@ -1296,7 +1240,6 @@ mod tests {
 
     #[tokio::test]
     async fn a_stdio_tool_call_resolves_as_the_agent_the_token_names() {
-        let _sguard = crate::mcp::tools::acquire_test_guard();
         let pool = crate::db::open_memory().expect("test db");
         let (owner, bot, token) = connected_agent(&pool);
         let server = server_for(&pool, Some(StdioAuth::new(token)));
@@ -1317,7 +1260,6 @@ mod tests {
     /// working after its credential is revoked.
     #[tokio::test]
     async fn revoking_the_token_stops_the_very_next_tool_call() {
-        let _sguard = crate::mcp::tools::acquire_test_guard();
         let pool = crate::db::open_memory().expect("test db");
         let (_owner, _bot, token) = connected_agent(&pool);
         let server = server_for(&pool, Some(StdioAuth::new(token)));
@@ -1370,7 +1312,6 @@ mod tests {
     /// the tool's own result comes back untouched.
     #[tokio::test]
     async fn a_live_credential_dispatches_the_tool_through_the_central_seam() {
-        let _sguard = crate::mcp::tools::acquire_test_guard();
         let pool = crate::db::open_memory().expect("test db");
         let (_owner, _bot, token) = connected_agent(&pool);
         let server = server_for(&pool, Some(StdioAuth::new(token)));
@@ -1386,7 +1327,6 @@ mod tests {
     /// keys, so the same seam catches it.
     #[tokio::test]
     async fn an_account_lockdown_stops_the_agents_next_tool_call() {
-        let _sguard = crate::mcp::tools::acquire_test_guard();
         let pool = crate::db::open_memory().expect("test db");
         let (owner, _bot, token) = connected_agent(&pool);
         let server = server_for(&pool, Some(StdioAuth::new(token)));
@@ -1401,7 +1341,6 @@ mod tests {
 
     #[tokio::test]
     async fn deactivating_the_owner_stops_the_agents_next_tool_call() {
-        let _sguard = crate::mcp::tools::acquire_test_guard();
         let pool = crate::db::open_memory().expect("test db");
         let (owner, _bot, token) = connected_agent(&pool);
         let server = server_for(&pool, Some(StdioAuth::new(token)));
@@ -1419,7 +1358,6 @@ mod tests {
 
     #[tokio::test]
     async fn an_unbound_key_still_resolves_to_the_operator() {
-        let _sguard = crate::mcp::tools::acquire_test_guard();
         let pool = crate::db::open_memory().expect("test db");
         let admin = seed_user(&pool, "operator", true);
         let token = crate::auth::create_api_key(&pool, "default", None).unwrap();
@@ -1435,7 +1373,6 @@ mod tests {
 
     #[tokio::test]
     async fn a_tokenless_stdio_session_keeps_operator_behavior() {
-        let _sguard = crate::mcp::tools::acquire_test_guard();
         let pool = crate::db::open_memory().expect("test db");
         let admin = seed_user(&pool, "operator", true);
         let server = server_for(&pool, None);
@@ -1451,13 +1388,10 @@ mod tests {
         assert_eq!(identity.transport, crate::actor::Transport::Mcp);
     }
 
-    /// The HTTP transport is already wrapped in `with_request_context` by
-    /// `server.rs`, which holds `MCP_HANDLER_LOCK` for the whole request. If
-    /// the seam took that lock again the request would deadlock, so an
-    /// HTTP-shaped server must pass straight through.
+    /// An HTTP-shaped server passes through the stdio authentication seam
+    /// without changing the request's scoped identity.
     #[tokio::test]
-    async fn the_http_transport_seam_does_not_retake_the_handler_lock() {
-        let _sguard = crate::mcp::tools::acquire_test_guard();
+    async fn the_http_transport_seam_preserves_scoped_identity() {
         let pool = crate::db::open_memory().expect("test db");
         let server = LificMcp::new(pool.clone());
         let user = seed_user(&pool, "http-caller", true);
