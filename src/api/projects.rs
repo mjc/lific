@@ -2,9 +2,8 @@ use axum::{
     Extension,
     extract::{Json, Path, Query, State},
 };
-use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex, OnceLock, Weak};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use std::collections::HashSet;
+use std::sync::Mutex;
 
 use crate::authz;
 use crate::db::{DbPool, models::*};
@@ -358,50 +357,42 @@ pub(super) struct GithubImportRequest {
     dry_run: bool,
 }
 
-// Keep a small global ceiling while allowing unrelated projects to import in
-// parallel. The per-project gate below is the important isolation boundary:
-// one expensive import cannot make another import for the same project race
-// its writes or consume unbounded resources.
+// Reserve at most four process-local imports, with only one per project. A
+// fixed array enforces both limits without a per-project semaphore registry.
 const GITHUB_IMPORT_GLOBAL_LIMIT: usize = 4;
-static GITHUB_IMPORT_SLOTS: OnceLock<Arc<Semaphore>> = OnceLock::new();
-static GITHUB_IMPORT_PROJECT_SLOTS: OnceLock<Mutex<HashMap<i64, Weak<Semaphore>>>> =
-    OnceLock::new();
+static GITHUB_IMPORT_SLOTS: Mutex<[Option<i64>; GITHUB_IMPORT_GLOBAL_LIMIT]> =
+    Mutex::new([None; GITHUB_IMPORT_GLOBAL_LIMIT]);
 
-fn github_import_permits(
-    project_id: i64,
-) -> Result<(OwnedSemaphorePermit, OwnedSemaphorePermit), LificError> {
-    let project_slot = {
-        let slots = GITHUB_IMPORT_PROJECT_SLOTS.get_or_init(|| Mutex::new(HashMap::new()));
-        let mut slots = slots
+struct GithubImportSlot(i64);
+
+impl Drop for GithubImportSlot {
+    fn drop(&mut self) {
+        let mut slots = GITHUB_IMPORT_SLOTS
             .lock()
-            .map_err(|_| LificError::Internal("GitHub import gate poisoned".into()))?;
-        slots.retain(|_, slot| slot.strong_count() > 0);
-        match slots.entry(project_id) {
-            std::collections::hash_map::Entry::Occupied(mut entry) => {
-                if let Some(slot) = entry.get().upgrade() {
-                    slot
-                } else {
-                    let slot = Arc::new(Semaphore::new(1));
-                    entry.insert(Arc::downgrade(&slot));
-                    slot
-                }
-            }
-            std::collections::hash_map::Entry::Vacant(entry) => {
-                let slot = Arc::new(Semaphore::new(1));
-                entry.insert(Arc::downgrade(&slot));
-                slot
-            }
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(slot) = slots.iter_mut().find(|slot| **slot == Some(self.0)) {
+            *slot = None;
         }
-    };
-    let project_permit = project_slot.try_acquire_owned().map_err(|_| {
-        LificError::Conflict("a GitHub import is already running for this project".into())
-    })?;
-    let global_permit = GITHUB_IMPORT_SLOTS
-        .get_or_init(|| Arc::new(Semaphore::new(GITHUB_IMPORT_GLOBAL_LIMIT)))
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| LificError::Conflict("too many GitHub imports are already running".into()))?;
-    Ok((global_permit, project_permit))
+    }
+}
+
+fn github_import_slot(project_id: i64) -> Result<GithubImportSlot, LificError> {
+    let mut slots = GITHUB_IMPORT_SLOTS
+        .lock()
+        .map_err(|_| LificError::Internal("GitHub import gate poisoned".into()))?;
+    if slots.contains(&Some(project_id)) {
+        return Err(LificError::Conflict(
+            "a GitHub import is already running for this project".into(),
+        ));
+    }
+    let slot = slots
+        .iter_mut()
+        .find(|slot| slot.is_none())
+        .ok_or_else(|| {
+            LificError::Conflict("too many GitHub imports are already running".into())
+        })?;
+    *slot = Some(project_id);
+    Ok(GithubImportSlot(project_id))
 }
 
 fn default_import_state() -> String {
@@ -434,11 +425,11 @@ pub(super) async fn import_github(
     Json(req): Json<GithubImportRequest>,
 ) -> Result<Json<crate::import::ImportSummary>, LificError> {
     require_project_lead(&db, &identity, project_id)?;
-    // Move both permits into the blocking closure. `spawn_blocking` cannot
+    // Move the slot into the blocking closure. `spawn_blocking` cannot
     // stop a running blocking task when this request is cancelled; keeping
-    // the permits in that closure prevents a cancelled request from releasing
+    // the slot in that closure prevents a cancelled request from releasing
     // admission while its network/DB work is still running.
-    let (global_permit, project_permit) = github_import_permits(project_id)?;
+    let slot = github_import_slot(project_id)?;
 
     // Resolve the import-bot owner from the authenticated user (the bot is
     // owned by whoever ran the import), so audit provenance is correct. On a
@@ -448,8 +439,7 @@ pub(super) async fn import_github(
 
     let db2 = db.clone();
     let summary = tokio::task::spawn_blocking(move || {
-        let _global_permit = global_permit;
-        let _project_permit = project_permit;
+        let _slot = slot;
         run_github_import_blocking(&db2, project_id, owner_id, &req)
     })
     .await
@@ -524,7 +514,7 @@ pub(super) fn import_github_with(
 
 #[cfg(test)]
 mod tests {
-    use super::{GithubImportRequest, github_import_permits, import_github_with};
+    use super::{GithubImportRequest, github_import_slot, import_github_with};
     use crate::api::test_helpers::*;
     use crate::db::models::*;
     use axum::Extension;
@@ -535,29 +525,45 @@ mod tests {
     #[tokio::test]
     async fn github_import_gate_is_per_project_and_survives_task_abort() {
         let project_id = i64::MIN + 1;
-        let (global, project) = github_import_permits(project_id).unwrap();
+        let slot = github_import_slot(project_id).unwrap();
         let (started_tx, started_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let (finished_tx, finished_rx) = std::sync::mpsc::channel();
         let task = tokio::task::spawn_blocking(move || {
             // A blocking task keeps running after JoinHandle::abort(). The
-            // permits must therefore live in this closure, not in the request
+            // slot must therefore live in this closure, not in the request
             // future that spawned it.
-            let _global = global;
-            let _project = project;
+            let _slot = slot;
             started_tx.send(()).unwrap();
             release_rx.recv().unwrap();
+            drop(_slot);
+            finished_tx.send(()).unwrap();
         });
         started_rx.recv().unwrap();
         task.abort();
         assert!(
-            github_import_permits(project_id).is_err(),
+            matches!(
+                github_import_slot(project_id),
+                Err(crate::error::LificError::Conflict(message))
+                    if message == "a GitHub import is already running for this project"
+            ),
             "same project must remain closed while aborted blocking work runs"
         );
 
         // A different project is admitted while the first one is occupied.
-        let (_other_global, _other_project) = github_import_permits(project_id + 1).unwrap();
+        let other = github_import_slot(project_id + 1).unwrap();
+        let third = github_import_slot(project_id + 2).unwrap();
+        let fourth = github_import_slot(project_id + 3).unwrap();
+        assert!(matches!(
+            github_import_slot(project_id + 4),
+            Err(crate::error::LificError::Conflict(message))
+                if message == "too many GitHub imports are already running"
+        ));
+        drop((other, third, fourth));
         release_tx.send(()).unwrap();
+        finished_rx.recv().unwrap();
         let _ = task.await;
+        drop(github_import_slot(project_id).unwrap());
     }
 
     #[tokio::test]
