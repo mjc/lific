@@ -207,7 +207,7 @@ echo "a hostile working directory and its lific.toml are not inherited"
 # 5. A server that binds and then never answers must fail inside the budget.
 no_response_server="$scratch/no-response-server.ts"
 printf '%s\n' \
-  'Bun.serve({ port: Number(process.env.PORT), fetch: () => new Promise(() => {}) });' \
+  'Bun.serve({ hostname: "127.0.0.1", port: Number(process.env.PORT), fetch: () => new Promise(() => {}) });' \
   'console.error("lific server started");' \
   'console.error("no-response fixture listening");' \
   >"$no_response_server"
