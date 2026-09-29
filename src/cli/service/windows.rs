@@ -161,6 +161,8 @@ impl Names {
 pub enum Outcome {
     /// Another supervisor already holds the lock; this one did nothing.
     AlreadyRunning,
+    /// The installed entry changed before this logon start could begin.
+    StartCancelled,
     /// A stop request arrived.
     Stopped,
     /// The server exited with status 0, which is not a failure to restart.
@@ -181,6 +183,7 @@ pub fn install(exe: &Path, config: &Path) -> Result<(), String> {
     let _control = sys::control_lock(&names)?;
     sys::stop_supervisor(&names, STOP_TIMEOUT)?;
     sys::write_run_value(RUN_VALUE, &command)?;
+    drop(_control);
     sys::start_supervisor(exe, config, &names, true)
 }
 
@@ -226,6 +229,7 @@ pub fn restart() -> Result<(), String> {
     let names = Names::service();
     let _control = sys::control_lock(&names)?;
     sys::stop_supervisor(&names, STOP_TIMEOUT)?;
+    drop(_control);
     sys::start_supervisor(&exe, &config, &names, true)
 }
 
@@ -248,7 +252,8 @@ pub fn supervise_service(config: &Path) -> Result<Outcome, String> {
         .parent()
         .ok_or_else(|| format!("config path {} has no parent directory", config.display()))?;
     let config = config.to_path_buf();
-    sys::supervise(
+    let installed_command = run_command(&exe, &config)?;
+    sys::supervise_registered(
         || {
             let mut command = std::process::Command::new(&exe);
             command.arg("--config").arg(&config).arg("start");
@@ -258,6 +263,8 @@ pub fn supervise_service(config: &Path) -> Result<Outcome, String> {
         &workdir.join(LOG_FILE),
         &Names::service(),
         RestartBudget::new(RESTART_LIMIT, RESTART_WINDOW),
+        RUN_VALUE,
+        &installed_command,
     )
 }
 
@@ -779,12 +786,55 @@ mod sys {
     /// The supervisor loop. `make_child` builds the server command; the loop
     /// adds its environment, stdio and flags.
     pub fn supervise(
+        make_child: impl FnMut() -> Command,
+        workdir: &Path,
+        log_path: &Path,
+        names: &Names,
+        budget: RestartBudget,
+    ) -> Result<Outcome, String> {
+        supervise_inner(make_child, workdir, log_path, names, budget, None)
+    }
+
+    /// Run only while this exact startup command remains installed. The
+    /// control mutex stays held until the supervisor owns its service mutex,
+    /// so uninstall either observes and stops it or removes the entry before
+    /// this start can proceed.
+    pub fn supervise_registered(
+        make_child: impl FnMut() -> Command,
+        workdir: &Path,
+        log_path: &Path,
+        names: &Names,
+        budget: RestartBudget,
+        entry_name: &str,
+        expected_command: &str,
+    ) -> Result<Outcome, String> {
+        supervise_inner(
+            make_child,
+            workdir,
+            log_path,
+            names,
+            budget,
+            Some((entry_name, expected_command)),
+        )
+    }
+
+    fn supervise_inner(
         mut make_child: impl FnMut() -> Command,
         workdir: &Path,
         log_path: &Path,
         names: &Names,
         mut budget: RestartBudget,
+        registered: Option<(&str, &str)>,
     ) -> Result<Outcome, String> {
+        let startup_guard = if let Some((entry_name, expected_command)) = registered {
+            let guard = control_lock(names)?;
+            if read_run_value(entry_name)?.as_deref() != Some(expected_command) {
+                return Ok(Outcome::StartCancelled);
+            }
+            Some(guard)
+        } else {
+            None
+        };
         let Some(_lock) = acquire_mutex(&names.mutex, Duration::ZERO)? else {
             return Ok(Outcome::AlreadyRunning);
         };
@@ -795,8 +845,15 @@ mod sys {
         let job = Job::kill_on_close()?;
         let mut log = open_log(log_path)?;
         log_line(&mut log, "supervisor started");
+        drop(startup_guard);
 
         loop {
+            if stop.wait(Duration::ZERO) {
+                log_line(&mut log, "stop requested before server start");
+                ready.reset();
+                log_line(&mut log, "stopped");
+                return Ok(Outcome::Stopped);
+            }
             if !budget.allow(Instant::now()) {
                 log_line(
                     &mut log,
@@ -830,8 +887,9 @@ mod sys {
                     continue;
                 }
             };
-            if let Err(e) = job.assign(&child) {
+            if let Err(e) = assign_or_kill(&mut child, |child| job.assign(child)) {
                 log_line(&mut log, &e);
+                return Err(e);
             }
             log_line(&mut log, &format!("server started (pid {})", child.id()));
 
@@ -872,6 +930,29 @@ mod sys {
                 return Ok(Outcome::Stopped);
             }
         }
+    }
+
+    pub(super) fn assign_or_kill(
+        child: &mut Child,
+        assign: impl FnOnce(&Child) -> Result<(), String>,
+    ) -> Result<(), String> {
+        if let Err(error) = assign(child) {
+            let cleanup_error = child
+                .kill()
+                .err()
+                .filter(|e| e.kind() != std::io::ErrorKind::InvalidInput)
+                .map(|e| format!("; cannot terminate the uncontained server: {e}"));
+            let reap_error = child
+                .wait()
+                .err()
+                .map(|e| format!("; cannot reap the uncontained server: {e}"));
+            return Err(format!(
+                "{error}{}{}",
+                cleanup_error.unwrap_or_default(),
+                reap_error.unwrap_or_default()
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -1156,6 +1237,67 @@ mod tests {
             .unwrap()
             .unwrap();
             assert_eq!(outcome, Outcome::AlreadyRunning);
+        }
+
+        #[test]
+        fn pending_start_is_cancelled_if_uninstall_removes_its_entry() {
+            use std::sync::Arc;
+            use std::sync::atomic::{AtomicBool, Ordering};
+
+            let dir = tempfile::tempdir().unwrap();
+            let names = Names::with_base(&unique("pending"));
+            let entry_name = unique("pending-entry");
+            let expected_command = "installed startup command";
+            let control = sys::control_lock(&names).unwrap();
+            sys::write_run_value(&entry_name, expected_command).unwrap();
+
+            let child_factory_called = Arc::new(AtomicBool::new(false));
+            let child_factory_called_by_thread = Arc::clone(&child_factory_called);
+            let thread_names = names.clone();
+            let workdir = dir.path().to_path_buf();
+            let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+            let supervisor = std::thread::spawn(move || {
+                ready_tx.send(()).unwrap();
+                sys::supervise_registered(
+                    || {
+                        child_factory_called_by_thread.store(true, Ordering::SeqCst);
+                        cmd_exit(0)
+                    },
+                    &workdir,
+                    &workdir.join(LOG_FILE),
+                    &thread_names,
+                    RestartBudget::new(5, Duration::from_secs(60)),
+                    &entry_name,
+                    expected_command,
+                )
+            });
+
+            // Keep the gate locked until after the entry is removed, matching
+            // uninstall's serialized registry update. The pending start can
+            // only continue after the deletion is visible.
+            ready_rx.recv().unwrap();
+            sys::delete_run_value(&entry_name).unwrap();
+            drop(control);
+
+            assert_eq!(supervisor.join().unwrap().unwrap(), Outcome::StartCancelled);
+            assert!(!child_factory_called.load(Ordering::SeqCst));
+            assert!(!sys::mutex_held(&names.mutex));
+        }
+
+        #[test]
+        fn failed_job_assignment_terminates_and_reaps_the_server() {
+            let mut child = Command::new("cmd.exe")
+                .args(["/C", "ping -n 60 127.0.0.1 >NUL"])
+                .spawn()
+                .unwrap();
+
+            let error = sys::assign_or_kill(&mut child, |_| {
+                Err("simulated job assignment failure".into())
+            })
+            .unwrap_err();
+
+            assert!(error.contains("simulated job assignment failure"));
+            assert!(child.try_wait().unwrap().is_some(), "server was not reaped");
         }
     }
 }
