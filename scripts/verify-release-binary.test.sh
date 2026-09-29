@@ -24,7 +24,7 @@ trap cleanup EXIT
 free_port() {
   local candidate
   for _ in {1..20}; do
-    candidate="$(bun -e 'const server = Bun.serve({ port: 0, fetch: () => new Response() }); console.log(server.port); server.stop();' 2>/dev/null)"
+    candidate="$(bun -e 'const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response() }); console.log(server.port); server.stop();' 2>/dev/null)"
     if [[ $candidate =~ ^[0-9]+$ ]]; then
       printf '%s\n' "$candidate"
       return
@@ -212,8 +212,10 @@ printf '%s\n' \
   'console.error("no-response fixture listening");' \
   >"$no_response_server"
 
+no_response_port="$(free_port)"
 status="$(run_verifier "$scratch" "$fixture_binary" \
-  FIXTURE_SERVER="$no_response_server" LIFIC_VERIFY_STARTUP_TIMEOUT=3)"
+  FIXTURE_SERVER="$no_response_server" LIFIC_VERIFY_PORT="$no_response_port" \
+  LIFIC_VERIFY_STARTUP_TIMEOUT=3)"
 if [[ $status -eq 124 ]]; then
   fail "verifier hung on a non-responding server"
 fi
