@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   FUZZY_MIN_TERM,
+  mapInBatches,
   LOCAL_HIT_SERVER_THRESHOLD,
   LOCAL_SCORE_CEIL,
   LOCAL_SCORE_FLOOR,
@@ -73,6 +74,41 @@ describe("project catalog freshness", () => {
     expect(projectCatalogChanged(cached, [{ ...cached[0], identifier: "LIF2" }, cached[1]])).toBe(
       true,
     );
+  });
+});
+
+describe("bounded lookups", () => {
+  test("maps batches in input order without exceeding the configured size", async () => {
+    let active = 0;
+    let peak = 0;
+    const results = await mapInBatches([1, 2, 3, 4, 5], 2, async (value) => {
+      active++;
+      peak = Math.max(peak, active);
+      await Promise.resolve();
+      active--;
+      return value * 10;
+    });
+
+    expect(peak).toBe(2);
+    expect(results).toEqual([10, 20, 30, 40, 50]);
+  });
+
+  test("does not start another batch after cancellation", async () => {
+    const controller = new AbortController();
+    const visited: number[] = [];
+    const results = await mapInBatches(
+      [1, 2, 3, 4],
+      2,
+      async (value) => {
+        visited.push(value);
+        if (value === 1) controller.abort();
+        return value;
+      },
+      controller.signal,
+    );
+
+    expect(visited).toEqual([1, 2]);
+    expect(results).toEqual([1, 2]);
   });
 });
 
