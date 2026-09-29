@@ -11,7 +11,6 @@ use std::{
     io::Write,
     net::IpAddr,
     path::{Path, PathBuf},
-    sync::Mutex,
     time::Duration,
 };
 
@@ -65,7 +64,7 @@ pub async fn run(
     };
     let output = backend.execute(command, link_output).await?;
     if json_output {
-        println!("{}", serde_json::to_string_pretty(&output)?);
+        println!("{}", serde_json::to_string_pretty(&output.value)?);
     } else {
         print!("{}", backend.human(command, &output).await);
     }
@@ -77,14 +76,12 @@ struct HttpBackend {
     base_url: String,
     link_context: IssueLinkContext,
     api_key: Option<String>,
-    /// What the last comment listing's paging headers said (LIF-421).
-    ///
-    /// A command is fetched and then rendered in two passes, and only the
-    /// fetch sees the response headers. Rather than thread a second return
-    /// value through every arm of a dispatch that has nothing to do with
-    /// comments, the one arm that has an answer leaves it here for the one
-    /// renderer that wants it, which then takes it.
-    comment_paging: Mutex<Option<CommentPaging>>,
+}
+
+#[derive(Debug)]
+struct CommandOutput {
+    value: Value,
+    comment_paging: Option<CommentPaging>,
 }
 
 /// The server's own answer about what lies past a comment page.
@@ -166,12 +163,12 @@ impl HttpBackend {
             base_url: base_url.to_owned(),
             link_context,
             api_key: api_key.map(str::to_owned),
-            comment_paging: Mutex::new(None),
         })
     }
 
-    async fn execute(&self, command: &Command, output: IssueLinkOutput) -> Result<Value> {
-        match command {
+    async fn execute(&self, command: &Command, output: IssueLinkOutput) -> Result<CommandOutput> {
+        let mut comment_paging = None;
+        let value = match command {
             Command::Issue { action } => self.issue(action).await.map(|value| {
                 linked_resources(value, &self.link_context, output, ResourceKind::Issue)
             }),
@@ -203,9 +200,14 @@ impl HttpBackend {
                     linked_resources(value, &self.link_context, output, ResourceKind::Search)
                 })
             }
-            Command::Comment { action } => self.comment(action).await.map(|(value, identifier)| {
-                linked_comments(value, &self.link_context, output, &identifier)
-            }),
+            Command::Comment { action } => {
+                self.comment(action)
+                    .await
+                    .map(|(value, identifier, paging)| {
+                        comment_paging = paging;
+                        linked_comments(value, &self.link_context, output, &identifier)
+                    })
+            }
             Command::Module { action } => self.module(action).await.map(|(value, project)| {
                 linked_modules(value, &self.link_context, output, &project)
             }),
@@ -214,7 +216,11 @@ impl HttpBackend {
             Command::Bind { project, create } => self.bind_repo(project.as_deref(), *create).await,
             Command::GitHook { range, dry_run } => self.git_hook(range.as_deref(), *dry_run).await,
             _ => bail!("the HTTP backend does not support this command yet"),
-        }
+        }?;
+        Ok(CommandOutput {
+            value,
+            comment_paging,
+        })
     }
 
     /// Render a response the way the SQL backend renders it (LIF-373).
@@ -222,14 +228,15 @@ impl HttpBackend {
     /// Falls back to pretty JSON when the payload does not deserialize into
     /// the model the command expects, so a CLI pointed at a server of another
     /// version still prints something rather than failing at the last step.
-    async fn human(&self, command: &Command, value: &Value) -> String {
-        match self.render(command, value).await {
+    async fn human(&self, command: &Command, output: &CommandOutput) -> String {
+        match self.render(command, output).await {
             Some(text) => text,
-            None => format!("{}\n", pretty(value)),
+            None => format!("{}\n", pretty(&output.value)),
         }
     }
 
-    async fn render(&self, command: &Command, value: &Value) -> Option<String> {
+    async fn render(&self, command: &Command, output: &CommandOutput) -> Option<String> {
+        let value = &output.value;
         Some(match command {
             Command::Issue { action } => match action {
                 IssueAction::List { .. } => {
@@ -301,7 +308,13 @@ impl HttpBackend {
                     let comments: Vec<models::Comment> = decode(value)?;
                     let (limit, offset) = queries::page(Some(*limit), Some(*offset));
                     let continuation = self
-                        .comment_continuation(&comments, limit, offset, order)
+                        .comment_continuation(
+                            &comments,
+                            limit,
+                            offset,
+                            order,
+                            output.comment_paging,
+                        )
                         .await;
                     render::comment_list(&comments, identifier, continuation)
                 }
@@ -866,7 +879,10 @@ impl HttpBackend {
         }
     }
 
-    async fn comment(&self, action: &CommentAction) -> Result<(Value, String)> {
+    async fn comment(
+        &self,
+        action: &CommentAction,
+    ) -> Result<(Value, String, Option<CommentPaging>)> {
         match action {
             CommentAction::List {
                 identifier,
@@ -886,11 +902,12 @@ impl HttpBackend {
                 let (value, headers) = self
                     .get_json_with_headers(&format!("/api/issues/{}/comments", issue.id), &params)
                     .await?;
-                // LIF-421: the server answers the continuation question in
-                // headers. Remember what it said so the render pass can use it
-                // instead of paying for the probe request below.
-                self.remember_comment_paging(CommentPaging::from_headers(&headers));
-                Ok((value, issue.identifier))
+                // Pass the server's continuation answer to the render pass.
+                Ok((
+                    value,
+                    issue.identifier,
+                    CommentPaging::from_headers(&headers),
+                ))
             }
             CommentAction::Add {
                 identifier,
@@ -911,26 +928,9 @@ impl HttpBackend {
                     },
                 )
                 .await
-                .map(|value| (value, issue.identifier))
+                .map(|value| (value, issue.identifier, None))
             }
         }
-    }
-
-    /// Store what the server's paging headers said about the page just
-    /// fetched, for the render pass that follows.
-    fn remember_comment_paging(&self, paging: Option<CommentPaging>) {
-        if let Ok(mut slot) = self.comment_paging.lock() {
-            *slot = paging;
-        }
-    }
-
-    /// Take it back out. Taking rather than reading: a remembered answer
-    /// belongs to exactly one page, and a stale one would be worse than none.
-    fn take_comment_paging(&self) -> Option<CommentPaging> {
-        self.comment_paging
-            .lock()
-            .ok()
-            .and_then(|mut slot| slot.take())
     }
 
     /// What lies past the comment page just fetched.
@@ -959,9 +959,10 @@ impl HttpBackend {
         limit: i64,
         offset: i64,
         order: &str,
+        paging: Option<CommentPaging>,
     ) -> render::CommentContinuation {
         use render::CommentContinuation;
-        if let Some(paging) = self.take_comment_paging() {
+        if let Some(paging) = paging {
             return paging.continuation();
         }
         if (comments.len() as i64) < limit {
@@ -1899,7 +1900,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(output, json!([{"id": 1}]));
+        assert_eq!(output.value, json!([{"id": 1}]));
         assert_eq!(
             captured.lock().await.as_ref(),
             Some(&(
@@ -1928,7 +1929,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(output["web_url"], format!("{url}/LIF/issues/LIF-42"));
+        assert_eq!(output.value["web_url"], format!("{url}/LIF/issues/LIF-42"));
         server.abort();
     }
 
@@ -1952,7 +1953,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(output, json!([{"id": 9, "title": "Release notes"}]));
+        assert_eq!(output.value, json!([{"id": 9, "title": "Release notes"}]));
         server.abort();
     }
 
@@ -2102,7 +2103,7 @@ mod tests {
 
         // The paths the command reports are exactly the files it wrote, which
         // is what `--json` prints and what the shared renderer lists.
-        let mut written: Vec<String> = decode::<Vec<String>>(&reported)
+        let mut written: Vec<String> = decode::<Vec<String>>(&reported.value)
             .expect("export reports an array of paths")
             .iter()
             .map(|path| relative(Path::new(path), &remote_dir))
@@ -2257,7 +2258,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            reported,
+            reported.value,
             json!([
                 output_dir
                     .join("TST")
@@ -2310,14 +2311,15 @@ mod tests {
             },
         };
 
-        // A full page: the header says more remains, and the offset it names
-        // is the row count actually returned.
-        let command = listing(2);
-        let value = backend
-            .execute(&command, IssueLinkOutput::Url)
-            .await
-            .unwrap();
-        let rendered = backend.human(&command, &value).await;
+        // Fetch both pages before rendering either: each result must retain
+        // its own continuation, even when another request finishes first.
+        let full_command = listing(2);
+        let last_command = listing(50);
+        let (full, last) = tokio::join!(
+            backend.execute(&full_command, IssueLinkOutput::Url),
+            backend.execute(&last_command, IssueLinkOutput::Url),
+        );
+        let rendered = backend.human(&full_command, &full.unwrap()).await;
         assert!(
             rendered.contains("More comments available. Next page: --offset 2"),
             "{rendered}"
@@ -2325,12 +2327,7 @@ mod tests {
 
         // The last page. Nothing was probed and nothing is claimed to be
         // unknown: the server said it was the end.
-        let command = listing(50);
-        let value = backend
-            .execute(&command, IssueLinkOutput::Url)
-            .await
-            .unwrap();
-        let rendered = backend.human(&command, &value).await;
+        let rendered = backend.human(&last_command, &last.unwrap()).await;
         assert!(!rendered.contains("More comments"), "{rendered}");
         assert!(!rendered.contains("Could not check"), "{rendered}");
 
@@ -2624,7 +2621,7 @@ mod tests {
             .await
             .unwrap();
         // JSON output stays the plain comment array the server sent.
-        let rows = value.as_array().expect("a comment array");
+        let rows = value.value.as_array().expect("a comment array");
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0]["content"], "newest");
         assert_eq!(rows[1]["content"], "middle");
@@ -2667,7 +2664,7 @@ mod tests {
             .execute(&command, IssueLinkOutput::Url)
             .await
             .unwrap();
-        assert_eq!(value.as_array().unwrap()[0]["content"], "oldest");
+        assert_eq!(value.value.as_array().unwrap()[0]["content"], "oldest");
 
         fixture.server.abort();
     }
@@ -2733,7 +2730,7 @@ mod tests {
             .execute(&command, IssueLinkOutput::Url)
             .await
             .expect("a failed probe must not fail the command");
-        let rows = value.as_array().expect("a comment array");
+        let rows = value.value.as_array().expect("a comment array");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["content"], "only row of a full page");
 
@@ -2790,10 +2787,10 @@ mod tests {
 
         // The SQL backend prints exactly `render::Deleted::named(name)`.
         assert_eq!(
-            deleted,
+            deleted.value,
             serde_json::to_value(render::Deleted::named("chore")).unwrap()
         );
-        assert_eq!(deleted, json!({"deleted": true, "name": "chore"}));
+        assert_eq!(deleted.value, json!({"deleted": true, "name": "chore"}));
         fixture.server.abort();
     }
 
@@ -2826,7 +2823,7 @@ mod tests {
             "export contents"
         );
         assert_eq!(
-            output,
+            output.value,
             json!([output_dir.join("report.txt").display().to_string()])
         );
         server.abort();
@@ -2849,8 +2846,8 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(page["title"], "Project page");
-        assert_eq!(page["identifier"], "TST-DOC-1");
+        assert_eq!(page.value["title"], "Project page");
+        assert_eq!(page.value["identifier"], "TST-DOC-1");
         fixture.server.abort();
     }
 
@@ -2871,8 +2868,8 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(page["title"], "Workspace page");
-        assert_eq!(page["identifier"], "DOC-1");
+        assert_eq!(page.value["title"], "Workspace page");
+        assert_eq!(page.value["identifier"], "DOC-1");
         fixture.server.abort();
     }
 
@@ -2893,8 +2890,8 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(issue["title"], "Test issue");
-        assert_eq!(issue["identifier"], "TST-1");
+        assert_eq!(issue.value["title"], "Test issue");
+        assert_eq!(issue.value["identifier"], "TST-1");
         fixture.server.abort();
     }
 
@@ -3678,7 +3675,10 @@ mod tests {
                 &Command::Project {
                     action: ProjectAction::List,
                 },
-                &json!({"unexpected": true}),
+                &super::CommandOutput {
+                    value: json!({"unexpected": true}),
+                    comment_paging: None,
+                },
             )
             .await;
 
