@@ -626,7 +626,21 @@ impl ServerHandler for LificMcp {
             let workers = tokio::runtime::Handle::current().metrics().num_workers();
             let allowed_concurrency = workers.saturating_sub(1).clamp(1, 4);
             let permits_per_tool = 4_usize.div_ceil(allowed_concurrency) as u32;
-            let _permit = MCP_TOOL_PERMITS
+            #[cfg(test)]
+            let test_permits = context
+                .extensions
+                .get_mut::<axum::http::request::Parts>()
+                .and_then(|parts| {
+                    parts
+                        .extensions
+                        .get::<Arc<tokio::sync::Semaphore>>()
+                        .cloned()
+                });
+            #[cfg(test)]
+            let permits = test_permits.as_deref().unwrap_or(&MCP_TOOL_PERMITS);
+            #[cfg(not(test))]
+            let permits = &MCP_TOOL_PERMITS;
+            let _permit = permits
                 .acquire_many(permits_per_tool)
                 .await
                 .expect("MCP tool semaphore is never closed");

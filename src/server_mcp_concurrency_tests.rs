@@ -107,6 +107,9 @@ async fn http_mcp_tools_overlap_without_crossing_identity_or_audit_actor() {
         .each_ref()
         .map(|user| auth::create_api_key(&pool, &user.username, Some(user.id)).unwrap());
     let barrier = Arc::new(tokio::sync::Barrier::new(2));
+    // Keep this barrier test's admission queue separate from other tests that
+    // use the process-wide semaphore while exercising the same acquisition.
+    let permits = Arc::new(tokio::sync::Semaphore::new(4));
     let mut cfg = Config::default();
     cfg.auth.required = true;
     let scratch = tempfile::tempdir().unwrap();
@@ -117,7 +120,8 @@ async fn http_mcp_tools_overlap_without_crossing_identity_or_audit_actor() {
         Arc::from([]),
         storage::AttachmentStore::new(scratch.path().join("attachments")),
     )
-    .layer(axum::Extension(barrier.clone()));
+    .layer(axum::Extension(barrier.clone()))
+    .layer(axum::Extension(permits.clone()));
     let authenticated = tokens.map(|token| Client {
         app: app.clone(),
         path: "/mcp".into(),
@@ -132,7 +136,8 @@ async fn http_mcp_tools_overlap_without_crossing_identity_or_audit_actor() {
             None,
             realtime::RealtimeHub::new(),
         )
-        .layer(axum::Extension(barrier.clone())),
+        .layer(axum::Extension(barrier.clone()))
+        .layer(axum::Extension(permits.clone())),
         path: format!("/mcp/{}", user.username),
         token: None,
     });
