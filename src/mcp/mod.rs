@@ -5,9 +5,9 @@ pub(crate) mod schemas;
 pub(crate) mod tools;
 mod waits;
 
+use std::borrow::Cow;
 #[cfg(test)]
 use std::cell::Cell;
-use std::borrow::Cow;
 use std::sync::Arc;
 #[cfg(test)]
 use std::sync::Mutex;
@@ -15,7 +15,7 @@ use std::sync::Mutex;
 use rmcp::{
     ServerHandler,
     handler::server::router::tool::ToolRouter,
-    model::{ProtocolVersion, ServerCapabilities, ServerInfo},
+    model::{ProtocolVersion, ServerCapabilities, ServerConfig},
     transport::streamable_http_server::tower::StreamableHttpServerConfig,
 };
 
@@ -284,7 +284,7 @@ impl StdioAuthFailed {
          restart the MCP server.";
 
     fn into_tool_result(self) -> rmcp::model::CallToolResult {
-        rmcp::model::CallToolResult::error(vec![rmcp::model::Content::text(Self::MESSAGE)])
+        rmcp::model::CallToolResult::error(vec![rmcp::model::ContentBlock::text(Self::MESSAGE)])
     }
 }
 
@@ -639,16 +639,13 @@ impl LificMcp {
 
 impl ServerHandler for LificMcp {
     fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
-        Cow::Borrowed(&[
-            ProtocolVersion::V_2025_03_26,
-            ProtocolVersion::V_2026_07_28,
-        ])
+        Cow::Borrowed(&[ProtocolVersion::V_2025_03_26, ProtocolVersion::V_2026_07_28])
     }
 
-    fn get_info(&self) -> ServerInfo {
+    fn get_info(&self) -> ServerConfig {
         // Pin to 2025-03-26: rmcp defaults to 2025-06-18 which many clients
         // (including Zed) skipped, going straight from 2025-03-26 to 2025-11-25.
-        let info = ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+        let info = ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_protocol_version(ProtocolVersion::V_2025_03_26)
             // Identify as lific, not rmcp's build-env default — this name is
             // what connected clients (and `lific doctor`) display.
@@ -674,11 +671,11 @@ impl ServerHandler for LificMcp {
     ) -> impl std::future::Future<Output = Result<rmcp::model::ListToolsResult, rmcp::ErrorData>>
     + rmcp::service::MaybeSendFuture
     + '_ {
-        std::future::ready(Ok(
-            rmcp::model::ListToolsResult::with_all_items(self.tool_router.list_all())
-                .with_ttl_ms(3_600_000)
-                .with_cache_scope(rmcp::model::CacheScope::Public),
-        ))
+        std::future::ready(Ok(rmcp::model::ListToolsResult::with_all_items(
+            self.tool_router.list_all(),
+        )
+        .with_ttl_ms(3_600_000)
+        .with_cache_scope(rmcp::model::CacheScope::Public)))
     }
 
     /// The one place every MCP tool call passes through, whatever the
@@ -730,32 +727,33 @@ impl ServerHandler for LificMcp {
                 }
                 None => dispatch().await,
             };
-            result.map_err(|error| {
-                let top_level = self.tool_router.get(&tool).map(|tool| {
-                    tool.input_schema
-                        .get("properties")
-                        .and_then(serde_json::Value::as_object)
-                        .map(|properties| properties.keys().cloned().collect::<Vec<_>>())
-                        .unwrap_or_default()
-                });
-                arguments::explain_unknown_parameter(&tool, top_level.as_deref(), error)
-            })
-            .map(|response| match response {
-                rmcp::model::CallToolResponse::Complete(mut result) => {
-                    let mut meta = result.meta.unwrap_or_default();
-                    meta.insert(
-                        "io.modelcontextprotocol/serverInfo".into(),
-                        serde_json::to_value(rmcp::model::Implementation::new(
-                            "lific",
-                            env!("CARGO_PKG_VERSION"),
-                        ))
-                        .expect("MCP server info serialization cannot fail"),
-                    );
-                    result.meta = Some(meta);
-                    rmcp::model::CallToolResponse::Complete(result)
-                }
-                response => response,
-            })
+            result
+                .map_err(|error| {
+                    let top_level = self.tool_router.get(&tool).map(|tool| {
+                        tool.input_schema
+                            .get("properties")
+                            .and_then(serde_json::Value::as_object)
+                            .map(|properties| properties.keys().cloned().collect::<Vec<_>>())
+                            .unwrap_or_default()
+                    });
+                    arguments::explain_unknown_parameter(&tool, top_level.as_deref(), error)
+                })
+                .map(|response| match response {
+                    rmcp::model::CallToolResponse::Complete(mut result) => {
+                        let mut meta = result.meta.unwrap_or_default();
+                        meta.insert(
+                            "io.modelcontextprotocol/serverInfo".into(),
+                            serde_json::to_value(rmcp::model::Implementation::new(
+                                "lific",
+                                env!("CARGO_PKG_VERSION"),
+                            ))
+                            .expect("MCP server info serialization cannot fail"),
+                        );
+                        result.meta = Some(meta);
+                        rmcp::model::CallToolResponse::Complete(result)
+                    }
+                    response => response,
+                })
         }
     }
 
@@ -834,10 +832,7 @@ mod tests {
 
         assert_eq!(
             server.supported_protocol_versions().as_ref(),
-            &[
-                ProtocolVersion::V_2025_03_26,
-                ProtocolVersion::V_2026_07_28,
-            ]
+            &[ProtocolVersion::V_2025_03_26, ProtocolVersion::V_2026_07_28,]
         );
     }
 
@@ -1319,7 +1314,7 @@ mod tests {
     /// real `ToolRouter::call` produces.
     type ToolBody = std::pin::Pin<
         Box<
-            dyn std::future::Future<Output = Result<rmcp::model::CallToolResult, rmcp::ErrorData>>
+            dyn std::future::Future<Output = Result<rmcp::model::CallToolResponse, rmcp::ErrorData>>
                 + Send,
         >,
     >;
@@ -1346,12 +1341,21 @@ mod tests {
                     [],
                 )
                 .unwrap();
-                Ok(rmcp::model::CallToolResult::success(vec![
-                    rmcp::model::Content::text("ran"),
-                ]))
+                Ok(rmcp::model::CallToolResponse::Complete(
+                    rmcp::model::CallToolResult::success(vec![rmcp::model::ContentBlock::text(
+                        "ran",
+                    )]),
+                ))
             }) as ToolBody
         };
         (body, ran)
+    }
+
+    fn completed_result(response: rmcp::model::CallToolResponse) -> rmcp::model::CallToolResult {
+        match response {
+            rmcp::model::CallToolResponse::Complete(result) => result,
+            _ => panic!("expected a complete tool response"),
+        }
     }
 
     #[tokio::test]
@@ -1393,6 +1397,7 @@ mod tests {
             .dispatch_tool(body)
             .await
             .expect("a dead credential is a tool failure, not a protocol failure");
+        let result = completed_result(result);
 
         assert_eq!(
             result.is_error,
@@ -1436,7 +1441,7 @@ mod tests {
         let server = server_for(&pool, Some(StdioAuth::new(token)));
 
         let (body, ran) = mutating_tool(&pool);
-        let result = server.dispatch_tool(body).await.expect("dispatches");
+        let result = completed_result(server.dispatch_tool(body).await.expect("dispatches"));
 
         assert_eq!(result.is_error, Some(false));
         assert!(ran.load(std::sync::atomic::Ordering::SeqCst));

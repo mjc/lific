@@ -60,8 +60,8 @@ serde_json = "1"
 serde_yaml = "0.9"
 
 # MCP
-rmcp = { version = "~3.1.2", features = ["server", "transport-io", "transport-streamable-http-server", "macros"] }
-rmcp-macros = "~3.1.2"
+rmcp = { version = "~3.5.0", features = ["server", "transport-io", "transport-streamable-http-server", "macros"] }
+rmcp-macros = "~3.5.0"
 schemars = "1"
 anyhow = "1"
 

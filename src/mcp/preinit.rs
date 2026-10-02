@@ -98,7 +98,7 @@ where
                                             "Method not found",
                                             None,
                                         ),
-                                        req.id,
+                                        Some(req.id),
                                     ))
                                     .await
                                 {

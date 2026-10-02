@@ -1860,8 +1860,7 @@ mod tests {
     #[tokio::test]
     async fn mcp_server_discovery_advertises_july_protocol() {
         let pool = crate::db::open_memory().unwrap();
-        let manager = crate::auth::create_key_manager().unwrap();
-        let key = crate::auth::create_api_key(&pool, &manager, "doctor-discovery", None).unwrap();
+        let key = crate::auth::create_api_key(&pool, "doctor-discovery", None).unwrap();
         let app = build_test_app(pool, "http://127.0.0.1");
         let base = serve_ephemeral(app).await;
 
@@ -1907,8 +1906,7 @@ mod tests {
     #[tokio::test]
     async fn mcp_tools_call_uses_july_complete_result_type() {
         let pool = crate::db::open_memory().unwrap();
-        let manager = crate::auth::create_key_manager().unwrap();
-        let key = crate::auth::create_api_key(&pool, &manager, "doctor-result-type", None).unwrap();
+        let key = crate::auth::create_api_key(&pool, "doctor-result-type", None).unwrap();
         let app = build_test_app(pool, "http://127.0.0.1");
         let base = serve_ephemeral(app).await;
         let body = serde_json::json!({
@@ -1949,8 +1947,7 @@ mod tests {
         assert_eq!(body["result"]["resultType"], "complete", "body: {body}");
         assert!(body["result"]["content"].is_array(), "body: {body}");
         assert_eq!(
-            body["result"]["_meta"]["io.modelcontextprotocol/serverInfo"]["name"],
-            "lific",
+            body["result"]["_meta"]["io.modelcontextprotocol/serverInfo"]["name"], "lific",
             "body: {body}"
         );
     }
@@ -1958,8 +1955,7 @@ mod tests {
     #[tokio::test]
     async fn mcp_tools_list_includes_july_cache_metadata() {
         let pool = crate::db::open_memory().unwrap();
-        let manager = crate::auth::create_key_manager().unwrap();
-        let key = crate::auth::create_api_key(&pool, &manager, "doctor-tools-cache", None).unwrap();
+        let key = crate::auth::create_api_key(&pool, "doctor-tools-cache", None).unwrap();
         let app = build_test_app(pool, "http://127.0.0.1");
         let base = serve_ephemeral(app).await;
         let body = serde_json::json!({
