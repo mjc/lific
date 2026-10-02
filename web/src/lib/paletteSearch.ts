@@ -104,6 +104,26 @@ export const EXACT_REF_SCORE = 3;
  *  number found in every other project, and everything else besides. */
 export const CURRENT_PROJECT_REF_SCORE = 4;
 
+/** Keep cross-project identifier lookups from fanning out across the whole
+ * catalog at once while preserving catalog order in the returned results. */
+export async function mapInBatches<T, R>(
+  items: readonly T[],
+  batchSize: number,
+  map: (item: T) => Promise<R>,
+  signal?: AbortSignal,
+): Promise<R[]> {
+  if (!Number.isInteger(batchSize) || batchSize < 1) {
+    throw new RangeError("batchSize must be a positive integer");
+  }
+
+  const results: R[] = [];
+  for (let start = 0; start < items.length && !signal?.aborted; start += batchSize) {
+    const batch = await Promise.all(items.slice(start, start + batchSize).map(map));
+    results.push(...batch);
+  }
+  return results;
+}
+
 /** A query that names one issue or page by number. `project` is null when
  *  the query leaves it implied ("34", "#34", "doc 3"), which the palette
  *  reads as "in the project I am in". */

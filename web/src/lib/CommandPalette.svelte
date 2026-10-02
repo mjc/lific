@@ -40,6 +40,7 @@
     CURRENT_PROJECT_REF_SCORE,
     EXACT_REF_SCORE,
     LOCAL_HIT_SERVER_THRESHOLD,
+    mapInBatches,
     dedupeByIdentifier,
     dedupeByKey,
     isStaleSearch,
@@ -347,6 +348,7 @@
   let results = $state<PaletteResult[]>([]);
   let searching = $state(false);
   let searchGen = 0;
+  let remoteController: AbortController | null = null;
 
   // Universal actions, available from every view. Context actions
   // (registered by the current route) list first since they're the more
@@ -489,7 +491,7 @@
   }
 
   /** Identifier fast-paths. Returns results for exact-shape queries. */
-  async function identifierHits(q: string): Promise<PaletteResult[]> {
+  async function identifierHits(q: string, signal?: AbortSignal): Promise<PaletteResult[]> {
     const ref = parseRefQuery(q);
     if (!ref) return [];
 
@@ -516,7 +518,7 @@
     if (ref.project !== null) {
       const project = projectByIdent(ref.project);
       if (!project) return [];
-      const res = await resolveIssue(refIdentifier(project.identifier, ref));
+      const res = await resolveIssue(refIdentifier(project.identifier, ref), signal);
       return res.ok ? [issueResult(project, res.data, EXACT_REF_SCORE)] : [];
     }
 
@@ -524,11 +526,14 @@
     // leads (and scores above the rest), so Enter means "#n here".
     const current = activeProject();
     const others = catalog.projects.filter((p) => p.id !== current?.id);
-    const probes = await Promise.all(
-      (current ? [current, ...others] : others).map(async (p) => {
-        const res = await resolveIssue(refIdentifier(p.identifier, ref));
+    const probes = await mapInBatches(
+      current ? [current, ...others] : others,
+      4,
+      async (p) => {
+        const res = await resolveIssue(refIdentifier(p.identifier, ref), signal);
         return res.ok ? issueResult(p, res.data, refScore(ref, p)) : null;
-      }),
+      },
+      signal,
     );
     return probes.filter((h): h is PaletteResult => h !== null);
   }
@@ -805,14 +810,17 @@
     const issued = { gen, projectIdent: activeProjectIdent };
 
     searching = true;
+    const controller = new AbortController();
+    remoteController = controller;
     let idHits: PaletteResult[] = [];
     let fts: Awaited<ReturnType<typeof searchApi>> | null = null;
     try {
       [idHits, fts] = await Promise.all([
-        identifierHits(trimmed),
+        identifierHits(trimmed, controller.signal),
         wantFts ? searchApi(trimmed) : Promise.resolve(null),
       ]);
     } finally {
+      if (remoteController === controller) remoteController = null;
       if (gen === searchGen) searching = false;
     }
 
@@ -886,6 +894,8 @@
    *  stale answer cannot land after the query, mode or project moved on. */
   function cancelSearch() {
     searchGen++;
+    remoteController?.abort();
+    remoteController = null;
     if (debounce) {
       clearTimeout(debounce);
       debounce = null;
