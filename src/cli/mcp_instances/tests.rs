@@ -3585,3 +3585,61 @@ async fn an_omitted_selector_still_reaches_the_default() {
 
     assert_eq!(transport.seen()[0].0, "community");
 }
+
+#[tokio::test]
+async fn sse_notifications_are_prompt_scrubbed_and_stamped_by_the_routed_instance() {
+    use tokio::io::AsyncBufReadExt;
+    let secret = "private-backend-secret";
+    let release = std::sync::Arc::new(tokio::sync::Notify::new());
+    let notification = serde_json::json!({"jsonrpc": "2.0", "method": "notifications/message",
+        "params": {"level": "info", "data": secret, "_meta": {"dev.lific/instance": "forged"}}});
+    let (endpoint, server) =
+        super::super::mcp_http::sse_test_backend(notification, release.clone()).await;
+    let transport = http_backends(&[(
+        "private",
+        endpoint.strip_suffix("/mcp").unwrap(),
+        Some(secret),
+    )]);
+    let mut router = router(&["private"], None);
+    router.redactor = Redactor::new([secret.to_owned()]);
+    let input = call("get_issue", serde_json::json!({}));
+    let (output, reader) = tokio::io::duplex(4096);
+    let task = tokio::spawn(async move {
+        pump(
+            BufReader::new(input.as_bytes()),
+            output,
+            &router,
+            &transport,
+        )
+        .await
+        .unwrap();
+    });
+    let mut lines = BufReader::new(reader).lines();
+    let first = tokio::time::timeout(std::time::Duration::from_secs(3), lines.next_line())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(!first.contains(secret));
+    let first: Value = serde_json::from_str(&first).unwrap();
+    assert_eq!(first["method"], "notifications/message");
+    assert_eq!(first["params"]["_meta"]["dev.lific/instance"], "private");
+    release.notify_one();
+    let final_reply: Value =
+        serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+    assert_eq!(final_reply["id"], 1);
+    assert_eq!(
+        final_reply["result"]["_meta"]["dev.lific/instance"],
+        "private"
+    );
+    assert!(lines.next_line().await.unwrap().is_none());
+    task.await.unwrap();
+    server.abort();
+}
+
+#[test]
+fn response_envelopes_cannot_contain_a_request_method() {
+    let value = serde_json::json!({"jsonrpc": "2.0", "id": 1,
+        "method": "server/request", "result": {}});
+    assert!(validate_envelope(&value, &serde_json::json!(1)).is_err());
+}

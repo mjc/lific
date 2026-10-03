@@ -496,6 +496,15 @@ pub(crate) trait InstanceTransport: Sync {
         alias: &str,
         body: String,
     ) -> impl std::future::Future<Output = Result<String, ForwardError>> + Send;
+
+    fn call_with_notifications<S: super::mcp_http::NotificationSink>(
+        &self,
+        alias: &str,
+        body: String,
+        _notifications: &mut S,
+    ) -> impl std::future::Future<Output = Result<String, ForwardError>> + Send {
+        async move { self.call(alias, body).await }
+    }
 }
 
 struct HttpBackend {
@@ -513,6 +522,15 @@ pub(crate) struct HttpBackends {
 
 impl HttpBackends {
     async fn post(backend: &HttpBackend, body: String) -> Result<String, ForwardError> {
+        Self::post_with_notifications(backend, body, &mut super::mcp_http::IgnoreNotifications)
+            .await
+    }
+
+    async fn post_with_notifications<S: super::mcp_http::NotificationSink>(
+        backend: &HttpBackend,
+        body: String,
+        notifications: &mut S,
+    ) -> Result<String, ForwardError> {
         // Backend discovery established a legacy session. Strip only July's
         // protocol metadata when translating a front-end July call; retain
         // custom tool metadata and use the backend's negotiated session.
@@ -530,13 +548,14 @@ impl HttpBackends {
             }
         }
         let body = encode(&value);
-        super::mcp_http::post(
+        super::mcp_http::post_with_notifications(
             &backend.client,
             &backend.endpoint,
             backend.credential.as_deref(),
             &backend.session,
             body,
             MAX_RESPONSE_BYTES,
+            notifications,
         )
         .await
     }
@@ -550,6 +569,21 @@ async fn read_capped(response: reqwest::Response) -> Result<String, ForwardError
 }
 
 impl InstanceTransport for HttpBackends {
+    async fn call_with_notifications<S: super::mcp_http::NotificationSink>(
+        &self,
+        alias: &str,
+        body: String,
+        notifications: &mut S,
+    ) -> Result<String, ForwardError> {
+        let backend = self.backends.get(alias).ok_or_else(|| {
+            ForwardError::unreachable(format!(
+                "no backend is configured for instance '{}'",
+                tidy(alias)
+            ))
+        })?;
+        Self::post_with_notifications(backend, body, notifications).await
+    }
+
     async fn call(&self, alias: &str, body: String) -> Result<String, ForwardError> {
         // Unreachable through the pump, which validates the alias first. Kept
         // as an error rather than a panic because "no backend" must never
@@ -584,6 +618,10 @@ pub(crate) fn validate_envelope(response: &Value, expected_id: &Value) -> Result
             ));
         }
         None => return Err("response is missing the jsonrpc member".to_owned()),
+    }
+
+    if envelope.contains_key("method") {
+        return Err("response must not contain a request method".to_owned());
     }
 
     let Some(id) = envelope.get("id") else {
@@ -1558,6 +1596,37 @@ where
     write_line(output, &router.redactor.encode_scrubbed(payload)).await
 }
 
+struct InstanceNotifications<'a, W> {
+    output: &'a mut W,
+    router: &'a Router,
+    alias: &'a str,
+}
+
+impl<W: AsyncWrite + Unpin + Send> super::mcp_http::NotificationSink
+    for InstanceNotifications<'_, W>
+{
+    async fn send(&mut self, mut notification: Value) -> Result<(), ForwardError> {
+        self.router.redactor.scrub_value(&mut notification);
+        let params = notification
+            .as_object_mut()
+            .expect("validated notification")
+            .entry("params")
+            .or_insert_with(|| serde_json::json!({}));
+        let meta = params
+            .as_object_mut()
+            .expect("validated notification params")
+            .entry("_meta")
+            .or_insert_with(|| serde_json::json!({}));
+        if !meta.is_object() {
+            *meta = serde_json::json!({});
+        }
+        meta[PROVENANCE_META_KEY] = Value::String(self.alias.to_owned());
+        write_frame(self.output, self.router, &notification)
+            .await
+            .map_err(ForwardError::unreachable)
+    }
+}
+
 /// Forward one planned call and write its stamped answer.
 async fn forward<W, T>(
     output: &mut W,
@@ -1571,7 +1640,18 @@ where
     W: AsyncWrite + Unpin + Send,
     T: InstanceTransport,
 {
-    let mut outcome = match transport.call(alias, encode(&body)).await {
+    let mut outcome = match transport
+        .call_with_notifications(
+            alias,
+            encode(&body),
+            &mut InstanceNotifications {
+                output,
+                router,
+                alias,
+            },
+        )
+        .await
+    {
         Ok(raw) => {
             // Scrub the wire bytes first: this is the only pass that can see a
             // secret sitting in a body that never parses as JSON at all.

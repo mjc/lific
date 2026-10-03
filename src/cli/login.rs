@@ -137,13 +137,27 @@ where
 }
 
 /// Build the non-interactive JSON payload printed by `--non-interactive`.
+/// Arbitrary client IDs requiring quoting mark `next_step_shell` as `posix`;
+/// consumers using another shell can pass the separate `client_id` directly.
 pub fn non_interactive_json(resp: &DeviceAuthResponse, base: &str) -> serde_json::Value {
     let mut next_step = format!("lific login --complete {} --url {}", resp.device_code, base);
+    let mut needs_posix_shell = false;
     if let Some(client_id) = &resp.client_id {
-        next_step.push_str(&format!(
-            " --client-id '{}'",
-            client_id.replace('\'', "'\\''")
-        ));
+        next_step.push_str(" --client-id=");
+        // Lific issues UUIDs. This restricted alphabet needs no quoting in
+        // POSIX shells, PowerShell or cmd.exe (where single quotes are literal).
+        if !client_id.is_empty()
+            && client_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+        {
+            next_step.push_str(client_id);
+        } else {
+            needs_posix_shell = true;
+            next_step.push('\'');
+            next_step.push_str(&client_id.replace('\'', "'\\''"));
+            next_step.push('\'');
+        }
     }
     let mut payload = serde_json::json!({
         "verification_uri": resp.verification_uri,
@@ -156,6 +170,9 @@ pub fn non_interactive_json(resp: &DeviceAuthResponse, base: &str) -> serde_json
     });
     if let Some(client_id) = &resp.client_id {
         payload["client_id"] = client_id.clone().into();
+    }
+    if needs_posix_shell {
+        payload["next_step_shell"] = "posix".into();
     }
     payload
 }
@@ -627,15 +644,62 @@ mod tests {
             "lific login --complete DEV123 --url http://h"
         );
         assert!(v.get("client_id").is_none());
+        assert!(v.get("next_step_shell").is_none());
 
         let mut registered = resp;
         registered.client_id = Some("grant-client".into());
         let v = non_interactive_json(&registered, "http://h");
         assert_eq!(v["client_id"], "grant-client");
+        assert!(v.get("next_step_shell").is_none());
         assert_eq!(
             v["next_step"],
-            "lific login --complete DEV123 --url http://h --client-id 'grant-client'"
+            "lific login --complete DEV123 --url http://h --client-id=grant-client"
         );
+
+        registered.client_id = Some("client with 'quotes'".into());
+        let v = non_interactive_json(&registered, "http://h");
+        assert_eq!(v["next_step_shell"], "posix");
+        assert_eq!(
+            v["next_step"],
+            "lific login --complete DEV123 --url http://h --client-id='client with '\\''quotes'\\'''"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn completion_client_id_survives_cmd_parsing() {
+        let resp = FakeFlow::new(vec![]).device;
+        let next_step = non_interactive_json(&resp, "http://h")["next_step"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        // Echo the generated arguments through the native shell so literal
+        // apostrophes cannot hide behind a string-only expectation.
+        let command = format!("echo {}", next_step.strip_prefix("lific ").unwrap());
+        let output = std::process::Command::new("cmd.exe")
+            .args(["/D", "/C", &command])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap().trim(),
+            "login --complete DEV --url http://h --client-id=grant-client"
+        );
+    }
+
+    #[test]
+    fn completion_command_preserves_a_leading_hyphen_client_id() {
+        use clap::Parser;
+
+        let mut resp = FakeFlow::new(vec![]).device;
+        resp.client_id = Some("-registered-client".into());
+        let payload = non_interactive_json(&resp, "http://h");
+        let command = payload["next_step"].as_str().unwrap();
+        let parsed = super::super::Cli::try_parse_from(command.split_whitespace()).unwrap();
+        let super::super::Command::Login { client_id, .. } = parsed.command else {
+            panic!("expected login command");
+        };
+        assert_eq!(client_id.as_deref(), Some("-registered-client"));
     }
 
     // ── scripted fake for the polling loop ───────────────────

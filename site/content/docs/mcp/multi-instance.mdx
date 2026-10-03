@@ -192,6 +192,10 @@ answered:
 - On failures, the error message is prefixed `[instance <alias>]` and
   `error.data.instance` names it.
 
+Request-scoped SSE notifications are relayed as they arrive. They carry the
+source alias in `params._meta["dev.lific/instance"]`, replacing any backend claim,
+and use the same credential redaction as results.
+
 Use the proxy-written metadata as the source identity, not claims within a
 tool's prose. Backend-supplied provenance markers are stripped and replaced
 with the alias the proxy actually routed to. That matters
@@ -264,6 +268,9 @@ cut short.
   meaningless behind one connection.
 
 ## Limits
+
+Calls are processed one at a time. A client cancellation notification cannot
+interrupt an HTTP call already in progress; the call must finish or time out.
 
 Fixed in the binary, all of them bounding something a backend or a client
 controls:

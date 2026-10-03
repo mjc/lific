@@ -24,6 +24,30 @@ pub(super) fn valid_request(message: &Value) -> bool {
             .is_none_or(|id| id.is_string() || id.as_i64().is_some() || id.as_u64().is_some())
 }
 
+/// Receives validated request-scoped notifications as they arrive.
+pub(crate) trait NotificationSink: Send {
+    fn send(
+        &mut self,
+        notification: Value,
+    ) -> impl std::future::Future<Output = Result<(), ForwardError>> + Send;
+}
+
+pub(super) struct IgnoreNotifications;
+impl NotificationSink for IgnoreNotifications {
+    async fn send(&mut self, _notification: Value) -> Result<(), ForwardError> {
+        Ok(())
+    }
+}
+
+pub(super) struct NotificationWriter<'a, W>(pub &'a mut W);
+impl<W: tokio::io::AsyncWrite + Unpin + Send> NotificationSink for NotificationWriter<'_, W> {
+    async fn send(&mut self, notification: Value) -> Result<(), ForwardError> {
+        super::mcp_proxy::write_line(self.0, &notification.to_string())
+            .await
+            .map_err(ForwardError::unreachable)
+    }
+}
+
 pub(super) async fn post(
     client: &reqwest::Client,
     endpoint: &str,
@@ -31,6 +55,27 @@ pub(super) async fn post(
     session: &Mutex<Session>,
     body: String,
     max_bytes: usize,
+) -> Result<String, ForwardError> {
+    post_with_notifications(
+        client,
+        endpoint,
+        credential,
+        session,
+        body,
+        max_bytes,
+        &mut IgnoreNotifications,
+    )
+    .await
+}
+
+pub(super) async fn post_with_notifications<S: NotificationSink>(
+    client: &reqwest::Client,
+    endpoint: &str,
+    credential: Option<&str>,
+    session: &Mutex<Session>,
+    body: String,
+    max_bytes: usize,
+    notifications: &mut S,
 ) -> Result<String, ForwardError> {
     let message: Value = serde_json::from_str(&body).map_err(ForwardError::unreachable)?;
     let method = message["method"].as_str().unwrap_or_default();
@@ -101,6 +146,7 @@ pub(super) async fn post(
             && value["error"]["code"].as_i64().is_some()
             && value["error"]["message"].is_string()
             && value.get("result").is_none()
+            && value.get("method").is_none()
             && (value.get("id").is_none()
                 || value["id"].is_null()
                 || value.get("id") == message.get("id"))
@@ -175,17 +221,22 @@ pub(super) async fn post(
                 continue;
             };
             let value: Value = serde_json::from_str(&data).map_err(ForwardError::unreachable)?;
-            if value.get("id") == message.get("id") {
+            if value.get("id") == message.get("id") && value.get("method").is_none() {
                 reply = Some(data);
                 break;
             }
-            // Lific exposes no server-to-client requests; request-scoped
-            // progress notifications do not replace the final response.
             if value.get("id").is_some() {
                 return Err(ForwardError::unreachable(
                     "SSE response has an unexpected request id",
                 ));
             }
+            if !valid_request(&value)
+                || value.get("result").is_some()
+                || value.get("error").is_some()
+            {
+                return Err(ForwardError::unreachable("invalid SSE notification"));
+            }
+            notifications.send(value).await?;
         }
         reply.ok_or_else(|| ForwardError::unreachable("SSE stream ended without a response"))?
     } else {
@@ -223,6 +274,45 @@ pub(super) async fn read_capped(
         buffer.extend_from_slice(&chunk);
     }
     String::from_utf8(buffer).map_err(|_| ForwardError::unreachable("response was not UTF-8"))
+}
+
+#[cfg(test)]
+pub(super) async fn sse_test_backend(
+    notification: Value,
+    release: std::sync::Arc<tokio::sync::Notify>,
+) -> (String, tokio::task::JoinHandle<()>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}/mcp", listener.local_addr().unwrap());
+    let router = axum::Router::new().route(
+        "/mcp",
+        axum::routing::post(move || {
+            let notification = notification.clone();
+            let release = release.clone();
+            async move {
+                let first = futures_util::stream::once(async move {
+                    Ok::<_, std::io::Error>(format!("data: {notification}\n\n"))
+                });
+                let last = futures_util::stream::once(async move {
+                    release.notified().await;
+                    Ok::<_, std::io::Error>(format!(
+                        "data: {}\n\n",
+                        serde_json::json!({
+                            "jsonrpc": "2.0", "id": 1,
+                            "result": {"content": [{"type": "text", "text": "done"}]},
+                        })
+                    ))
+                });
+                axum::response::Response::builder()
+                    .header("content-type", "text/event-stream")
+                    .body(axum::body::Body::from_stream(first.chain(last)))
+                    .unwrap()
+            }
+        }),
+    );
+    let task = tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    (endpoint, task)
 }
 
 #[cfg(test)]

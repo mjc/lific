@@ -96,6 +96,17 @@ trait Forwarder {
         &self,
         body: String,
     ) -> impl std::future::Future<Output = Result<String, ForwardError>> + Send;
+
+    fn forward_with_notifications<S: super::mcp_http::NotificationSink>(
+        &self,
+        body: String,
+        _notifications: &mut S,
+    ) -> impl std::future::Future<Output = Result<String, ForwardError>> + Send
+    where
+        Self: Sync,
+    {
+        async move { self.forward(body).await }
+    }
 }
 
 /// The real forwarder: one POST per request against `{url}/mcp`.
@@ -107,6 +118,23 @@ struct HttpForwarder {
 }
 
 impl Forwarder for HttpForwarder {
+    async fn forward_with_notifications<S: super::mcp_http::NotificationSink>(
+        &self,
+        body: String,
+        notifications: &mut S,
+    ) -> Result<String, ForwardError> {
+        super::mcp_http::post_with_notifications(
+            &self.client,
+            &self.endpoint,
+            self.credential.as_deref(),
+            &self.session,
+            body,
+            4 * 1024 * 1024,
+            notifications,
+        )
+        .await
+    }
+
     async fn forward(&self, body: String) -> Result<String, ForwardError> {
         super::mcp_http::post(
             &self.client,
@@ -411,7 +439,13 @@ where
             .is_some_and(|method| matches!(method, "initialize" | "server/discover"));
         let request = inject_bound_project(&message, bound).unwrap_or(line);
 
-        let outcome = match forwarder.forward(request).await {
+        let outcome = match forwarder
+            .forward_with_notifications(
+                request,
+                &mut super::mcp_http::NotificationWriter(&mut output),
+            )
+            .await
+        {
             // Validate before relaying: a body that is not JSON is a broken
             // remote, and the client deserves an error carrying its own id
             // rather than a garbage frame.
@@ -506,6 +540,73 @@ pub async fn run(url: String, credential: Option<String>) -> Result<(), Box<dyn 
 mod tests {
     use super::*;
     use std::sync::Mutex;
+
+    #[tokio::test]
+    async fn sse_notifications_reach_stdio_before_the_final_reply() {
+        let release = std::sync::Arc::new(tokio::sync::Notify::new());
+        let notification = serde_json::json!({"jsonrpc": "2.0",
+            "method": "notifications/progress", "params": {"progressToken": "p", "progress": 1}});
+        let (endpoint, server) =
+            super::super::mcp_http::sse_test_backend(notification.clone(), release.clone()).await;
+        let forwarder = HttpForwarder {
+            client: reqwest::Client::new(),
+            endpoint,
+            credential: None,
+            session: Mutex::default(),
+        };
+        let input = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"get_issue\"}}\n";
+        let (output, reader) = tokio::io::duplex(4096);
+        let task = tokio::spawn(async move {
+            pump(&input[..], output, &forwarder, None).await.unwrap();
+        });
+        let mut lines = BufReader::new(reader).lines();
+        let first = tokio::time::timeout(std::time::Duration::from_secs(3), lines.next_line())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&first).unwrap(), notification);
+        release.notify_one();
+        let final_reply: Value =
+            serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+        assert_eq!(final_reply["id"], 1);
+        assert!(lines.next_line().await.unwrap().is_none());
+        task.await.unwrap();
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn malformed_sse_frames_are_not_relayed() {
+        for frame in [
+            serde_json::json!({"jsonrpc": "2.0", "method": "notifications/progress", "params": []}),
+            serde_json::json!({"jsonrpc": "2.0", "method": "notifications/progress", "result": {}}),
+            serde_json::json!({"jsonrpc": "1.0", "method": "notifications/progress"}),
+            serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "server/request", "result": {}}),
+        ] {
+            let release = std::sync::Arc::new(tokio::sync::Notify::new());
+            release.notify_one();
+            let (endpoint, server) = super::super::mcp_http::sse_test_backend(frame, release).await;
+            let forwarder = HttpForwarder {
+                client: reqwest::Client::new(),
+                endpoint,
+                credential: None,
+                session: Mutex::default(),
+            };
+            let input = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"get_issue\"}}\n";
+            let mut output = Vec::new();
+            pump(&input[..], &mut output, &forwarder, None)
+                .await
+                .unwrap();
+            let lines: Vec<Value> = std::str::from_utf8(&output)
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            assert_eq!(lines.len(), 1);
+            assert_eq!(lines[0]["error"]["code"], -32603);
+            server.abort();
+        }
+    }
 
     type Reply = Box<dyn Fn(&str) -> Result<String, ForwardError> + Send + Sync>;
 
