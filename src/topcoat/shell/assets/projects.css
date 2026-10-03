@@ -42,7 +42,7 @@
 .tc-projects__group-toggle::-webkit-details-marker { display: none; }
 .tc-projects__group-toggle:hover { background: var(--tc-bg-subtle); }
 .tc-projects__group-toggle:focus-visible { outline: 2px solid var(--tc-accent); outline-offset: -2px; }
-.tc-projects__group-actions { position: absolute; z-index: 20; right: 0; top: 100%; width: 12.5rem; padding: .5rem; background: var(--tc-surface); border: 1px solid var(--tc-border); border-radius: .5rem; box-shadow: 0 .5rem 1.5rem rgb(0 0 0 / 12%); }
+.tc-projects__group-actions { position: absolute; z-index: 20; right: 0; top: 100%; width: 12.5rem; max-width: calc(var(--tc-sidebar-width, 14.375rem) - 1rem); padding: .5rem; background: var(--tc-surface); border: 1px solid var(--tc-border); border-radius: .5rem; box-shadow: 0 .5rem 1.5rem rgb(0 0 0 / 12%); }
 .tc-projects__group-actions .tc-projects__rename { width: 100%; }
 .tc-projects__group-actions input { width: 100%; min-height: 1.75rem; }
 @media (hover: hover) and (pointer: fine) {

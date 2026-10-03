@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const {chromium} = require('../../../e2e/node_modules/playwright');
+const {startFixture} = require('../acceptance/server.js');
 
 test('compact group actions retain native keyboard access, drafts, focus, and catalog commands', async () => {
   assert.ok(process.env.PLAYWRIGHT_EXECUTABLE_PATH, 'Use the repository e2e Chromium environment.');
@@ -70,4 +71,44 @@ test('compact group actions retain native keyboard access, drafts, focus, and ca
     await page.keyboard.press('Escape');
     assert.equal(await otherMenu.evaluate(el => el.open), true, 'Destroy removes delegated dismissal listeners.');
   } finally {await browser.close();}
+});
+
+test('group actions fit the real shell at minimum sidebar widths and larger text', async () => {
+  assert.ok(process.env.PLAYWRIGHT_EXECUTABLE_PATH, 'Use the repository e2e Chromium environment.');
+  const fixture = await startFixture();
+  try {
+    const response = await fixture.api('/project-groups', {method: 'POST', body: {name: 'Frontend'}});
+    assert.equal(response.ok, true);
+    for (const width of [180, 190]) for (const fontScale of ['md', 'lg']) {
+      const context = await fixture.browser.newContext({viewport: {width: 1440, height: 900}});
+      await context.addCookies([{name: 'lific_token', value: fixture.token, url: fixture.origin, httpOnly: true}]);
+      await context.addInitScript(({origin, token, width, fontScale}) => {
+        if (location.origin !== origin) return;
+        localStorage.setItem('lific_token', token);
+        localStorage.setItem('lific:sidebar:width', String(width));
+        localStorage.setItem('lific_font_scale', fontScale);
+      }, {origin: fixture.origin, token: fixture.token, width, fontScale});
+      const page = await context.newPage();
+      // Source-level regression: run owned presentation assets in the executable shell.
+      // Final screenshot evidence uses the rebuilt binary without interception.
+      for (const extension of ['css', 'js']) await page.route(`**/__topcoat-projects.${extension}`, route => route.fulfill({
+        contentType: extension === 'css' ? 'text/css' : 'text/javascript',
+        body: fs.readFileSync(path.join(__dirname, `../shell/assets/projects.${extension}`), 'utf8'),
+      }));
+      await page.goto(fixture.url('/'), {waitUntil: 'networkidle'});
+      const menu = page.locator('.tc-shell__desktop .tc-projects__group-menu');
+      const originalScrollWidth = await page.locator('.tc-shell__desktop').evaluate(sidebar => sidebar.scrollWidth);
+      await menu.locator('summary[aria-label="Actions for group Frontend"]').click();
+      const geometry = await menu.locator('.tc-projects__group-actions').evaluate(popup => {
+        const sidebar = popup.closest('.tc-shell__desktop');
+        return {popup: popup.getBoundingClientRect().toJSON(), sidebar: sidebar.getBoundingClientRect().toJSON(),
+          scrollWidth: sidebar.scrollWidth, clientWidth: sidebar.clientWidth};
+      });
+      assert.ok(geometry.popup.x >= geometry.sidebar.x, `${width}px ${fontScale}: popup left remains inside sidebar.`);
+      assert.ok(geometry.popup.right <= geometry.sidebar.right, `${width}px ${fontScale}: popup right remains inside sidebar.`);
+      assert.ok(geometry.scrollWidth <= Math.max(originalScrollWidth, geometry.clientWidth),
+        `${width}px ${fontScale}: popup does not add horizontal scrolling (${originalScrollWidth} before, ${geometry.scrollWidth} after; client ${geometry.clientWidth}).`);
+      await context.close();
+    }
+  } finally {await fixture.close();}
 });
