@@ -339,7 +339,7 @@ mod topcoat_spike {
                         return Err(topcoat::router::error::redirect_permanent(&destination).into());
                     }
                     Some(public_route) => super::topcoat_frontend::public::screen(cx, public_route)
-                        .ok_or_else(|| topcoat::router::error::not_found())?,
+                        .ok_or_else(topcoat::router::error::not_found)?,
                     None => return Err(topcoat::router::error::not_found().into()),
                 }
             }
