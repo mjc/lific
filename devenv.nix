@@ -315,7 +315,7 @@ in
     };
     topcoat-e2e.module = {
       languages.javascript.directory = "${repoRoot}/e2e";
-      packages = [ playwrightBrowsers ];
+      packages = [ playwrightBrowsers pkgs.ffmpeg ];
       env.PLAYWRIGHT_BROWSERS_PATH = "${playwrightBrowsers}";
       env.PLAYWRIGHT_EXECUTABLE_PATH = "${playwrightChromium}";
       outputs = lib.mkForce {
