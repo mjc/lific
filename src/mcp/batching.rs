@@ -636,18 +636,18 @@ impl SessionManager for Sessions {
         message: ClientJsonRpcMessage,
     ) -> Result<ServerJsonRpcMessage, Self::Error> {
         let result = self.local.initialize_session(id, message).await?;
-        if let JsonRpcMessage::Response(response) = &result {
-            if let rmcp::model::ServerResult::InitializeResult(result) = &response.result {
-                let sessions = self.local.sessions.read().await;
-                let mut march = self.march.lock().await;
-                march.retain(|id| sessions.contains_key(id));
-                self.batch_requests
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .retain(|(id, _), _| sessions.contains_key(id));
-                if result.protocol_version.as_str() == MARCH {
-                    march.insert(id.clone());
-                }
+        if let JsonRpcMessage::Response(response) = &result
+            && let rmcp::model::ServerResult::InitializeResult(result) = &response.result
+        {
+            let sessions = self.local.sessions.read().await;
+            let mut march = self.march.lock().await;
+            march.retain(|id| sessions.contains_key(id));
+            self.batch_requests
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .retain(|(id, _), _| sessions.contains_key(id));
+            if result.protocol_version.as_str() == MARCH {
+                march.insert(id.clone());
             }
         }
         Ok(result)
