@@ -11,10 +11,7 @@
 
 use std::{net::SocketAddr, sync::Arc};
 
-#[cfg(any(feature = "vite-frontend", test))]
 use axum::http::StatusCode;
-#[cfg(feature = "vite-frontend")]
-use axum::routing::get;
 use axum::{
     Router,
     body::Body,
@@ -28,8 +25,6 @@ use rmcp::transport::streamable_http_server::{
     session::local::LocalSessionManager,
     tower::{StreamableHttpServerConfig, StreamableHttpService},
 };
-#[cfg(feature = "vite-frontend")]
-use rust_embed::Embed;
 use tower_http::compression::Compression;
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tracing::{info, warn};
@@ -39,76 +34,9 @@ use crate::{
     actor, api, auth, backup, db, links, mcp, oauth, ratelimit, realtime, resolve_caller, storage,
 };
 
-#[cfg(feature = "topcoat-spike")]
 #[path = "topcoat/mod.rs"]
 mod topcoat_frontend;
-
-#[cfg(all(feature = "topcoat-spike", feature = "vite-frontend"))]
-compile_error!("use --no-default-features with topcoat-spike to omit the Vite frontend");
-
-/// Embedded frontend assets compiled from web/dist/.
-/// Falls back gracefully if dist/ doesn't exist (e.g. dev builds without frontend).
-#[cfg(feature = "vite-frontend")]
-#[derive(Embed)]
-#[folder = "web/dist/"]
-#[allow(dead_code)]
-struct WebAssets;
-
-/// Serve an embedded static file, or fall back to index.html for SPA routing.
-#[cfg(feature = "vite-frontend")]
-async fn serve_frontend(uri: axum::http::Uri) -> impl IntoResponse {
-    let path = uri.path().trim_start_matches('/');
-
-    // Try the exact path first (e.g. assets/index-abc.js)
-    if let Some(file) = WebAssets::get(path) {
-        let mime = mime_guess::from_path(path)
-            .first_or_octet_stream()
-            .to_string();
-        // Vite emits content-hashed filenames under assets/ (e.g.
-        // index-xkSiPCqs.js), so those are safe to cache forever — a new
-        // build changes the hash and thus the URL. Everything else
-        // (index.html, favicon) stays uncached so a redeploy is picked up
-        // immediately.
-        let cache_control = if path.starts_with("assets/") {
-            "public, max-age=31536000, immutable"
-        } else {
-            "no-cache"
-        };
-        return (
-            StatusCode::OK,
-            [
-                (header::CONTENT_TYPE, mime),
-                (header::CACHE_CONTROL, cache_control.to_string()),
-            ],
-            file.data.to_vec(),
-        )
-            .into_response();
-    }
-
-    // SPA fallback: serve index.html for all unmatched routes. Same
-    // no-cache as the exact-file branch above: this IS index.html, so a
-    // cached copy pins the browser to the previous build's asset URLs and a
-    // redeploy is invisible until a hard refresh.
-    match WebAssets::get("index.html") {
-        Some(file) => (
-            StatusCode::OK,
-            [
-                (header::CONTENT_TYPE, "text/html".to_string()),
-                (header::CACHE_CONTROL, "no-cache".to_string()),
-            ],
-            file.data.to_vec(),
-        )
-            .into_response(),
-        None => (
-            StatusCode::NOT_FOUND,
-            "Frontend not built. Run: cd web && bun run build",
-        )
-            .into_response(),
-    }
-}
-
-#[cfg(feature = "topcoat-spike")]
-mod topcoat_spike {
+mod topcoat_app {
     #[cfg(test)]
     use topcoat::view::attributes;
     use topcoat::{
@@ -140,7 +68,7 @@ mod topcoat_spike {
                     <meta charset="utf-8">
                     <meta name="viewport" content="width=device-width, initial-scale=1">
                     <title>(title)</title>
-                    <link rel="stylesheet" href="/__topcoat-spike.css">
+                    <link rel="stylesheet" href="/__topcoat-app.css">
                     <link rel="stylesheet" href=(super::topcoat_frontend::shell::STYLESHEET_PATH)>
                     <link rel="stylesheet" href=(super::topcoat_frontend::shell::mobile::STYLESHEET_PATH)>
                     <link rel="stylesheet" href=(super::topcoat_frontend::shell::projects::STYLESHEET_PATH)>
@@ -193,20 +121,6 @@ mod topcoat_spike {
                     (slot)
                 </body>
             </html>
-        })
-    }
-
-    #[page("/__topcoat-spike")]
-    async fn home() -> Result<impl View> {
-        Ok(view! {
-            <main id="main-content">
-                <section class="topcoat-scaffold">
-                    <h1>"Topcoat migration spike"</h1>
-                    <p>
-                        "The feature-gated application scaffold is mounted behind the existing Axum routes."
-                    </p>
-                </section>
-            </main>
         })
     }
 
@@ -375,11 +289,11 @@ mod topcoat_spike {
         })
     }
 
-    #[route(GET "/__topcoat-spike.css")]
+    #[route(GET "/__topcoat-app.css")]
     async fn stylesheet() -> Result<Response> {
         let css = format!(
             "{}\n{}\n{}",
-            include_str!("topcoat/assets/spike.css"),
+            include_str!("topcoat/assets/base.css"),
             super::topcoat_frontend::controls::STYLESHEET,
             super::topcoat_frontend::shell::STYLESHEET
         );
@@ -888,36 +802,19 @@ mod topcoat_spike {
     }
 }
 
-#[cfg(all(test, feature = "topcoat-spike"))]
-mod topcoat_spike_tests {
-    use super::topcoat_spike;
+#[cfg(test)]
+mod topcoat_app_tests {
+    use super::topcoat_app;
     use axum::{body::Body, http::Request};
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
     #[tokio::test]
-    async fn topcoat_spike_route_renders_its_server_page() {
-        let response = topcoat::router::tower::TowerService::new(topcoat_spike::router())
-            .oneshot(
-                Request::builder()
-                    .uri("/__topcoat-spike")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        let body = response.into_body().collect().await.unwrap().to_bytes();
-        let body = String::from_utf8_lossy(&body);
-        assert!(body.contains("Topcoat migration spike"));
-    }
-
-    #[tokio::test]
     async fn topcoat_scaffold_page_uses_the_shared_document_layout() {
-        let response = topcoat::router::tower::TowerService::new(topcoat_spike::router())
+        let response = topcoat::router::tower::TowerService::new(topcoat_app::router())
             .oneshot(
                 Request::builder()
-                    .uri("/__topcoat-spike")
+                    .uri("/login")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -926,7 +823,7 @@ mod topcoat_spike_tests {
 
         let body = response.into_body().collect().await.unwrap().to_bytes();
         let body = String::from_utf8_lossy(&body);
-        assert!(body.contains("/__topcoat-spike.css"));
+        assert!(body.contains("/__topcoat-app.css"));
         assert!(body.contains("/__topcoat-attachments.css"));
         assert!(body.contains("/__topcoat-attachments.js"));
         assert!(body.contains("/__topcoat-dashboard.css"));
@@ -961,7 +858,7 @@ mod topcoat_spike_tests {
 
     #[tokio::test]
     async fn topcoat_shell_routes_keep_private_public_and_auth_chrome_scoped() {
-        let router = topcoat::router::tower::TowerService::new(topcoat_spike::router());
+        let router = topcoat::router::tower::TowerService::new(topcoat_app::router());
         for (path, layout, expected, title) in [
             (
                 "/LIF/issues?assignee=me",
@@ -1020,7 +917,7 @@ mod topcoat_spike_tests {
 
     #[tokio::test]
     async fn topcoat_shell_redirects_legacy_public_issue_urls() {
-        let response = topcoat::router::tower::TowerService::new(topcoat_spike::router())
+        let response = topcoat::router::tower::TowerService::new(topcoat_app::router())
             .oneshot(
                 Request::builder()
                     .uri("/public/LIF/LIF-42?tab=comments")
@@ -1044,7 +941,7 @@ mod topcoat_spike_tests {
 
     #[tokio::test]
     async fn topcoat_public_issue_routes_mount_the_read_only_public_screens() {
-        let router = topcoat::router::tower::TowerService::new(topcoat_spike::router());
+        let router = topcoat::router::tower::TowerService::new(topcoat_app::router());
         for (path, kind) in [
             ("/public/LIF/issues", "issues"),
             ("/public/LIF/board", "board"),
@@ -1076,7 +973,7 @@ mod topcoat_spike_tests {
 
     #[tokio::test]
     async fn topcoat_private_issue_and_page_routes_mount_their_feature_slices() {
-        let router = topcoat::router::tower::TowerService::new(topcoat_spike::router());
+        let router = topcoat::router::tower::TowerService::new(topcoat_app::router());
         for (path, expected) in [
             (
                 "/LIF/issues/new?status=active&module=7",
@@ -1138,7 +1035,7 @@ mod topcoat_spike_tests {
 
     #[tokio::test]
     async fn topcoat_dashboard_mascot_is_served_without_vite() {
-        let response = topcoat::router::tower::TowerService::new(topcoat_spike::router())
+        let response = topcoat::router::tower::TowerService::new(topcoat_app::router())
             .oneshot(
                 Request::builder()
                     .uri("/__topcoat-dashboard-mascot.png")
@@ -1160,7 +1057,7 @@ mod topcoat_spike_tests {
 
     #[tokio::test]
     async fn topcoat_project_overview_and_settings_alias_share_one_composed_screen() {
-        let router = topcoat::router::tower::TowerService::new(topcoat_spike::router());
+        let router = topcoat::router::tower::TowerService::new(topcoat_app::router());
         for path in ["/LIF/overview", "/LIF/settings"] {
             let response = router
                 .clone()
@@ -1182,7 +1079,7 @@ mod topcoat_spike_tests {
 
     #[tokio::test]
     async fn topcoat_project_setup_routes_mount_create_and_archive_import_modes() {
-        let router = topcoat::router::tower::TowerService::new(topcoat_spike::router());
+        let router = topcoat::router::tower::TowerService::new(topcoat_app::router());
         for (path, mode) in [("/projects/new", "new"), ("/projects/import", "archive")] {
             let response = router
                 .clone()
@@ -1200,7 +1097,7 @@ mod topcoat_spike_tests {
 
     #[tokio::test]
     async fn topcoat_files_plans_and_modules_routes_mount_their_feature_slices() {
-        let router = topcoat::router::tower::TowerService::new(topcoat_spike::router());
+        let router = topcoat::router::tower::TowerService::new(topcoat_app::router());
         for (path, marker) in [
             ("/LIF/files", "data-topcoat-files=\"\""),
             ("/LIF/plans", "data-topcoat-plans=\"list\""),
@@ -1220,7 +1117,7 @@ mod topcoat_spike_tests {
 
     #[tokio::test]
     async fn topcoat_activity_insights_graph_and_public_routes_mount_isolated_screens() {
-        let router = topcoat::router::tower::TowerService::new(topcoat_spike::router());
+        let router = topcoat::router::tower::TowerService::new(topcoat_app::router());
         for (path, marker) in [
             ("/LIF/activity", "data-topcoat-analytics=\"activity\""),
             ("/LIF/insights", "data-topcoat-analytics=\"insights\""),
@@ -1258,7 +1155,7 @@ mod topcoat_spike_tests {
 
     #[tokio::test]
     async fn topcoat_shell_and_sync_assets_are_discovered_without_vite() {
-        let router = topcoat::router::tower::TowerService::new(topcoat_spike::router());
+        let router = topcoat::router::tower::TowerService::new(topcoat_app::router());
         for (path, content_type, expected) in [
             (
                 "/__topcoat-shell.css",
@@ -1474,36 +1371,8 @@ mod topcoat_spike_tests {
     }
 
     #[tokio::test]
-    async fn topcoat_scaffold_stylesheet_serves_css_content_type_and_body() {
-        let response = topcoat::router::tower::TowerService::new(topcoat_spike::router())
-            .oneshot(
-                Request::builder()
-                    .uri("/__topcoat-spike.css")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(
-            response
-                .headers()
-                .get(axum::http::header::CONTENT_TYPE)
-                .unwrap(),
-            "text/css; charset=utf-8"
-        );
-        let body = response.into_body().collect().await.unwrap().to_bytes();
-        let body = String::from_utf8_lossy(&body);
-        assert!(body.contains("body {\n  margin: 0;\n}"));
-        assert!(body.contains(".tc-shell"));
-        assert!(!body.contains("max-width: 72rem"));
-        assert!(body.contains(".tc-button"));
-        assert!(body.contains("--tc-accent"));
-    }
-
-    #[tokio::test]
     async fn topcoat_preferences_script_serves_as_a_javascript_module() {
-        let response = topcoat::router::tower::TowerService::new(topcoat_spike::router())
+        let response = topcoat::router::tower::TowerService::new(topcoat_app::router())
             .oneshot(
                 Request::builder()
                     .uri("/__topcoat-preferences.js")
@@ -1528,7 +1397,7 @@ mod topcoat_spike_tests {
 
     #[tokio::test]
     async fn topcoat_runtime_script_serves_as_a_javascript_module() {
-        let response = topcoat::router::tower::TowerService::new(topcoat_spike::router())
+        let response = topcoat::router::tower::TowerService::new(topcoat_app::router())
             .oneshot(
                 Request::builder()
                     .uri("/__topcoat-runtime.js")
@@ -1558,7 +1427,7 @@ mod topcoat_spike_tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let app = axum::Router::new().fallback_service(topcoat::router::tower::TowerService::new(
-            topcoat_spike::router(),
+            topcoat_app::router(),
         ));
         let server = tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
@@ -1974,12 +1843,11 @@ pub(crate) fn build_app_with_store(
     // published projects are reachable through it (the flag is checked in the
     // SQL of every read), and only with `GET`.
     let app = app.merge(api::public::router(pool, attachment_store, trusted_proxies));
-    #[cfg(feature = "topcoat-spike")]
-    let app = app.fallback_service(topcoat::router::tower::TowerService::new(
-        topcoat_spike::router(),
-    ));
-    #[cfg(feature = "vite-frontend")]
-    let app = app.fallback(get(serve_frontend));
+    let app = app
+        .route("/assets/{*path}", any(|| async { StatusCode::NOT_FOUND }))
+        .fallback_service(topcoat::router::tower::TowerService::new(
+            topcoat_app::router(),
+        ));
 
     with_compression(
         app
@@ -2898,60 +2766,6 @@ mod compression_tests {
     }
 }
 
-#[cfg(all(test, feature = "vite-frontend"))]
-mod frontend_security_headers_tests {
-    use super::*;
-    use tower::ServiceExt;
-
-    #[tokio::test]
-    async fn frontend_responses_cannot_be_framed_or_mime_sniffed() {
-        let app = Router::new()
-            .fallback(get(serve_frontend))
-            .layer(middleware::from_fn(add_security_headers));
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/public/PUB")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let headers = response.headers();
-
-        assert_eq!(
-            headers
-                .get(header::X_FRAME_OPTIONS)
-                .and_then(|v| v.to_str().ok()),
-            Some("DENY")
-        );
-        assert_eq!(
-            headers
-                .get(header::X_CONTENT_TYPE_OPTIONS)
-                .and_then(|v| v.to_str().ok()),
-            Some("nosniff")
-        );
-        assert_eq!(
-            headers
-                .get(header::CONTENT_SECURITY_POLICY)
-                .and_then(|v| v.to_str().ok()),
-            Some("frame-ancestors 'none'; base-uri 'self'; object-src 'none'")
-        );
-        assert_eq!(
-            headers
-                .get(header::REFERRER_POLICY)
-                .and_then(|v| v.to_str().ok()),
-            Some("no-referrer")
-        );
-        assert_eq!(
-            headers
-                .get("cross-origin-resource-policy")
-                .and_then(|v| v.to_str().ok()),
-            Some("same-origin")
-        );
-    }
-}
-
 /// LIF-465: the anonymous project view through the router `lific start`
 /// builds. `api::public`'s own tests prove the handlers and the SQL; only the
 /// assembled app can prove that mounting it did not put it behind the auth
@@ -3259,17 +3073,54 @@ mod public_surface_tests {
         assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
-    #[cfg(feature = "topcoat-spike")]
     #[tokio::test]
-    async fn topcoat_spike_fallback_preserves_axum_health_route() {
+    async fn production_frontend_serves_topcoat_routes_and_keeps_api_boundaries() {
         let d = deploy();
+        for path in [
+            "/login",
+            "/",
+            "/LIF/issues",
+            "/LIF/issues/LIF-1",
+            "/LIF/pages",
+            "/LIF/plans",
+            "/public/PUB/issues",
+        ] {
+            let response = anonymous(&d.app, "GET", path).await;
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+            if path == "/login" {
+                assert_eq!(
+                    response.headers().get(header::X_FRAME_OPTIONS).unwrap(),
+                    "DENY"
+                );
+                assert_eq!(
+                    response
+                        .headers()
+                        .get(header::X_CONTENT_TYPE_OPTIONS)
+                        .unwrap(),
+                    "nosniff"
+                );
+                assert_eq!(
+                    response
+                        .headers()
+                        .get(header::CONTENT_SECURITY_POLICY)
+                        .unwrap(),
+                    "frame-ancestors 'none'; base-uri 'self'; object-src 'none'"
+                );
+            }
+            let body = body_string(response).await;
+            assert!(body.contains("class=\"tc-shell\""), "{path}: {body}");
+            assert!(body.contains("/__topcoat-runtime.js"), "{path}: {body}");
+        }
+
         let health = anonymous(&d.app, "GET", "/api/health").await;
         assert_eq!(health.status(), StatusCode::OK);
         assert_eq!(body_string(health).await, "ok");
 
-        let page = anonymous(&d.app, "GET", "/__topcoat-spike").await;
-        assert_eq!(page.status(), StatusCode::OK);
-        assert!(body_string(page).await.contains("Topcoat migration spike"));
+        let private_api = anonymous(&d.app, "GET", "/api/projects").await;
+        assert_eq!(private_api.status(), StatusCode::UNAUTHORIZED);
+
+        let retired_bundle = anonymous(&d.app, "GET", "/assets/index-retired.js").await;
+        assert_eq!(retired_bundle.status(), StatusCode::NOT_FOUND);
     }
 }
 
