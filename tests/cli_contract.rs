@@ -147,6 +147,42 @@ fn version_contract_is_stdout_only() {
         .stderr(predicate::str::is_empty());
 }
 
+#[cfg(unix)]
+#[test]
+fn startup_contract_works_with_a_small_stack() {
+    use std::os::unix::process::CommandExt;
+
+    for args in [
+        &["--version"][..],
+        &["--help"][..],
+        &["completion", "bash"][..],
+    ] {
+        let mut process = std::process::Command::new(assert_cmd::cargo::cargo_bin!("lific"));
+        // SAFETY: the child only calls the async-signal-safe setrlimit syscall
+        // before exec. Its stack limit cannot affect the parent test process.
+        unsafe {
+            process.pre_exec(|| {
+                let limit = libc::rlimit {
+                    rlim_cur: 768 * 1024,
+                    rlim_max: 768 * 1024,
+                };
+                if libc::setrlimit(libc::RLIMIT_STACK, &limit) == 0 {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::last_os_error())
+                }
+            });
+        }
+        let mut command = assert_cmd::Command::from_std(process);
+        configure_command(&mut command);
+        command
+            .args(args)
+            .assert()
+            .success()
+            .stderr(predicate::str::is_empty());
+    }
+}
+
 #[test]
 fn completion_contract_is_stdout_only_and_contains_the_program_name() {
     for shell in ["bash", "zsh", "fish", "powershell", "elvish"] {

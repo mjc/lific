@@ -413,10 +413,9 @@ use rmcp::ServiceExt;
 use tracing::info;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    build_runtime()?.block_on(async_main())
-}
-
-async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
+    // Clap's generated argument builders need substantial debug-build stack.
+    // Parse before polling the command future so their frames do not overlap
+    // with the async dispatcher's temporaries on Windows's smaller stack.
     // Via `ArgMatches` rather than `Cli::parse()` so a value's source stays
     // answerable: `lific mcp --instances` rejects a typed `--url` but ignores
     // an exported `LIFIC_URL`. Behaviour is otherwise identical.
@@ -449,6 +448,10 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    build_runtime()?.block_on(async_main(cli, matches))
+}
+
+async fn async_main(cli: Cli, matches: clap::ArgMatches) -> Result<(), Box<dyn std::error::Error>> {
     // Resolve config once. Normal commands fail closed on a selected config
     // error; doctor receives the same typed result and reports the failure
     // while continuing independent diagnostics.
