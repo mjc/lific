@@ -49,13 +49,23 @@ class TestNode {
   querySelectorAll(selector) {
     const found = [];
     const visit = node => { for (const child of node.children) {
-      if (selector === 'input' && child.tagName === 'input'
-        || selector === 'button, input' && ['button', 'input'].includes(child.tagName)
-        || selector === 'button, input, a' && ['button', 'input', 'a'].includes(child.tagName)) found.push(child);
+      if (selector.split(',').some(tag => tag.trim() === child.tagName)) found.push(child);
       visit(child);
     } };
     visit(this);
     return found;
+  }
+  querySelector(selector) {
+    const visit = node => {
+      for (const child of node.children) {
+        if (selector.startsWith('.') && child.classList.contains(selector.slice(1))
+          || child.matches(selector)) return child;
+        const nested = visit(child);
+        if (nested) return nested;
+      }
+      return null;
+    };
+    return visit(this);
   }
 }
 
@@ -373,6 +383,19 @@ test('public scope renders no private tree and rejects mutations before the adap
   assert.equal(root.children.length, 0);
   await assert.rejects(app.controller.deleteGroup(1), /unavailable/);
   assert.equal(called, false);
+  app.destroy();
+});
+
+test('the create menu stays open and retains summary focus through a catalog refresh', () => {
+  const root = testRoot();
+  const app = attach(root, {current: () => catalog(1, [], [])});
+  const summary = findNode(root, node => node.tagName === 'summary');
+  const menu = findNode(root, node => node.className === 'tc-projects__create-menu');
+  menu.open = true;
+  summary.focus();
+  app.controller.accept(catalog(2, [], [{id: 1, name: 'New project', identifier: 'NEW'}]));
+  assert.equal(root.querySelector('.tc-projects__create-menu').open, true);
+  assert.equal(root.ownerDocument.activeElement === findNode(root, node => node.tagName === 'summary'), true);
   app.destroy();
 });
 

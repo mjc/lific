@@ -249,7 +249,7 @@
 
   function restoreFocus(root, descriptor) {
     if (!descriptor) return;
-    const target = [...root.querySelectorAll('button, input, a')].find(node => {
+    const target = [...root.querySelectorAll('button, input, a, summary')].find(node => {
       const group = node.closest?.('[data-group-id]');
       return node.tagName === descriptor.tagName && node.dataset?.action === descriptor.action
         && node.dataset?.delta === descriptor.delta && node.dataset?.projectId === descriptor.projectId
@@ -303,6 +303,7 @@
 
   function render(root, controller, options = {}) {
     const focus = focusedControl(root);
+    const createOpen = root.querySelector('.tc-projects__create-menu')?.open ?? false;
     if (controller.scope === 'public') {
       root.replaceChildren();
       return;
@@ -315,18 +316,33 @@
     tree.setAttribute('aria-label', 'Projects');
     tree.setAttribute('aria-busy', String(controller.pending));
     const title = element(document, 'h2', 'tc-projects__heading', 'Projects');
-    tree.append(title);
+    const titleRow = element(document, 'div', 'tc-projects__title-row');
+    const createMenu = element(document, 'details', 'tc-projects__create-menu');
+    createMenu.open = createOpen;
+    const createToggle = element(document, 'summary', 'tc-projects__create-toggle', '+');
+    createToggle.setAttribute('aria-label', 'New project or group');
+    createMenu.append(createToggle);
+    titleRow.append(title, createMenu);
+    tree.append(titleRow);
     const create = element(document, 'form', 'tc-projects__create');
     const createName = element(document, 'input', 'tc-projects__input');
     createName.name = 'group-name';
     createName.type = 'text';
     createName.maxLength = 80;
     createName.required = true;
+    createName.placeholder = 'Group name';
     createName.setAttribute('aria-label', 'New group name');
     const createButton = element(document, 'button', 'tc-projects__action', 'Create group');
     createButton.type = 'submit';
     create.append(createName, createButton);
-    tree.append(create);
+    const createContent = element(document, 'div', 'tc-projects__create-content');
+    for (const [label, href] of [['New project', '/projects/new'], ['Import project', '/projects/import']]) {
+      const destination = element(document, 'a', 'tc-projects__menu-link', label);
+      destination.href = document.defaultView?.LificTopcoatRouting?.href(href) ?? href;
+      createContent.append(destination);
+    }
+    createContent.append(create);
+    createMenu.append(createContent);
     const error = element(document, 'p', 'tc-projects__error', controller.error ?? '');
     error.setAttribute('role', 'status');
     error.hidden = !controller.error;
@@ -383,7 +399,7 @@
     }
     const ungrouped = element(document, 'section', 'tc-projects__group tc-projects__group--ungrouped');
     ungrouped.dataset.groupId = '';
-    ungrouped.append(element(document, 'h3', 'tc-projects__group-name', 'Ungrouped'));
+    if (snapshot.groups.length) ungrouped.append(element(document, 'h3', 'tc-projects__group-name', 'Ungrouped'));
     const list = element(document, 'div', 'tc-projects__project-list');
     for (const row of visibleProjects(snapshot).filter(row => row.groupId === null)) {
       const project = byId(snapshot.projects, row.projectId);

@@ -1,9 +1,39 @@
+@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=DM+Sans:ital,opsz,wght@0,9..40,300..700;1,9..40,300..700&display=swap");
+
 :root {
   color-scheme: light dark;
-  font-family: system-ui, sans-serif;
+  font-family: "DM Sans", -apple-system, BlinkMacSystemFont, sans-serif;
   line-height: 1.5;
+  --tc-font-display: "Space Grotesk", "DM Sans", sans-serif;
+  /* Existing route styles consume the Svelte token names. */
+  --bg: var(--tc-bg);
+  --bg-subtle: var(--tc-bg-subtle);
+  --surface: var(--tc-surface);
+  --chrome: var(--tc-chrome);
+  --text: var(--tc-text);
+  --text-muted: var(--tc-muted);
+  --text-faint: var(--tc-faint);
+  --border: var(--tc-border);
+  --accent: var(--tc-accent);
+  --accent-text: var(--tc-accent-text);
+  --accent-subtle: var(--tc-accent-subtle);
+  --error: var(--tc-danger);
+  --warn: var(--tc-warn);
+  --success: var(--tc-success);
 }
 
-body {
-  margin: 0;
+*, *::before, *::after { box-sizing: border-box; }
+body { margin: 0; }
+button, input, select, textarea { font-family: inherit; }
+
+/* Lucide geometry shared with the pinned Svelte frontend. */
+:root {
+  --tc-icon-search: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2224%22%20height%3D%2224%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%222%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%20aria-hidden%3D%22true%22%3E%3Cpath%20d%3D%22m21%2021-4.34-4.34%22%2F%3E%3Ccircle%20cx%3D%2211%22%20cy%3D%2211%22%20r%3D%228%22%2F%3E%3C%2Fsvg%3E");
+  --tc-icon-panel-left-close: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2224%22%20height%3D%2224%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%222%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%20aria-hidden%3D%22true%22%3E%3Crect%20width%3D%2218%22%20height%3D%2218%22%20x%3D%223%22%20y%3D%223%22%20rx%3D%222%22%2F%3E%3Cpath%20d%3D%22M9%203v18%22%2F%3E%3Cpath%20d%3D%22m16%2015-3-3%203-3%22%2F%3E%3C%2Fsvg%3E");
+  --tc-icon-house: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2224%22%20height%3D%2224%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%222%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%20aria-hidden%3D%22true%22%3E%3Cpath%20d%3D%22M15%2021v-8a1%201%200%200%200-1-1h-4a1%201%200%200%200-1%201v8%22%2F%3E%3Cpath%20d%3D%22M3%2010a2%202%200%200%201%20.709-1.528l7-6a2%202%200%200%201%202.582%200l7%206A2%202%200%200%201%2021%2010v9a2%202%200%200%201-2%202H5a2%202%200%200%201-2-2z%22%2F%3E%3C%2Fsvg%3E");
+  --tc-icon-menu: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2224%22%20height%3D%2224%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%222%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%20aria-hidden%3D%22true%22%3E%3Cpath%20d%3D%22M4%205h16%22%2F%3E%3Cpath%20d%3D%22M4%2012h16%22%2F%3E%3Cpath%20d%3D%22M4%2019h16%22%2F%3E%3C%2Fsvg%3E");
+  --tc-icon-chevron-right: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2224%22%20height%3D%2224%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%222%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%20aria-hidden%3D%22true%22%3E%3Cpath%20d%3D%22m9%2018%206-6-6-6%22%2F%3E%3C%2Fsvg%3E");
+  --tc-icon-plus: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2224%22%20height%3D%2224%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%222%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%20aria-hidden%3D%22true%22%3E%3Cpath%20d%3D%22M5%2012h14%22%2F%3E%3Cpath%20d%3D%22M12%205v14%22%2F%3E%3C%2Fsvg%3E");
 }
+
+h1, h2, h3 { font-family: var(--tc-font-display); line-height: 1.2; }

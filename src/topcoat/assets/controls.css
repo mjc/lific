@@ -4,13 +4,22 @@
   color-scheme: light;
   --tc-bg: #eef4f1;
   --tc-surface: #f7faf9;
+  --tc-chrome: #fafcfb;
+  --tc-bg-subtle: #e1eae6;
+  --tc-faint: #586a60;
+  --tc-accent-subtle-light: #ece8f8;
+  --tc-accent-subtle-dark: #231e3a;
+  --tc-accent-subtle: var(--tc-accent-subtle-light);
+  --tc-warn: #ea580c;
+  --tc-shadow-recess: rgb(18 30 25 / 7%);
+  --tc-btn-success: #22c55e;
   --tc-text: #18201d;
   --tc-muted: #495a53;
-  --tc-border: #73867c;
+  --tc-border: #d0dcd6;
   --tc-accent-light: #5746a0;
   --tc-accent-hover-light: #4a3b8a;
   --tc-accent-dark: #9287d7;
-  --tc-accent-hover-dark: #a69ae7;
+  --tc-accent-hover-dark: #7566c0;
   --tc-accent: var(--tc-accent-light);
   --tc-accent-hover: var(--tc-accent-hover-light);
   --tc-accent-text: #fff;
@@ -19,20 +28,20 @@
   --tc-danger-text: #fff;
   --tc-error-bg: #fef2f2;
   --tc-focus: var(--tc-accent);
-  --tc-success: #1f7a4d;
-  --tc-success-bg: #e0f3e7;
+  --tc-success: #15a046;
+  --tc-success-bg: #f0fdf4;
   --tc-backdrop: rgb(13 17 16 / 55%);
-  --tc-font: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
-  --tc-text-sm: 0.875rem;
-  --tc-text-base: 1rem;
-  --tc-text-heading: 1.25rem;
+  --tc-font: "DM Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+  --tc-text-sm: 0.8125rem;
+  --tc-text-base: 0.9375rem;
+  --tc-text-heading: 1.125rem;
   --tc-space-1: 0.25rem;
   --tc-space-2: 0.5rem;
   --tc-space-3: 0.75rem;
   --tc-space-4: 1rem;
   --tc-space-6: 1.5rem;
   --tc-radius: 0.375rem;
-  --tc-control-height: 2.75rem;
+  --tc-control-height: 2rem;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -40,9 +49,16 @@
     color-scheme: dark;
     --tc-bg: #0d1110;
     --tc-surface: #252c29;
+    --tc-chrome: #1c221f;
+    --tc-bg-subtle: #171c1a;
+    --tc-faint: #8a978f;
+    --tc-accent-subtle: var(--tc-accent-subtle-dark);
+    --tc-warn: #fb923c;
+    --tc-shadow-recess: rgb(0 0 0 / 17%);
+    --tc-btn-success: #3bb266;
     --tc-text: #e3e8e6;
     --tc-muted: #9ea9a3;
-    --tc-border: #8a978f;
+    --tc-border: #3d4842;
     --tc-accent: var(--tc-accent-dark);
     --tc-accent-hover: var(--tc-accent-hover-dark);
     --tc-accent-text: #141210;
@@ -50,8 +66,8 @@
     --tc-danger-hover: #fca5a5;
     --tc-danger-text: #141210;
     --tc-error-bg: #2a1515;
-    --tc-success: #5cd192;
-    --tc-success-bg: #123822;
+    --tc-success: #4ade80;
+    --tc-success-bg: #142a1b;
   }
 }
 
@@ -59,9 +75,16 @@
   color-scheme: dark;
   --tc-bg: #0d1110;
   --tc-surface: #252c29;
+  --tc-chrome: #1c221f;
+  --tc-bg-subtle: #171c1a;
+  --tc-faint: #8a978f;
+  --tc-accent-subtle: var(--tc-accent-subtle-dark);
+  --tc-warn: #fb923c;
+  --tc-shadow-recess: rgb(0 0 0 / 17%);
+  --tc-btn-success: #3bb266;
   --tc-text: #e3e8e6;
   --tc-muted: #9ea9a3;
-  --tc-border: #8a978f;
+  --tc-border: #3d4842;
   --tc-accent: var(--tc-accent-dark);
   --tc-accent-hover: var(--tc-accent-hover-dark);
   --tc-accent-text: #141210;
@@ -69,50 +92,62 @@
   --tc-danger-hover: #fca5a5;
   --tc-danger-text: #141210;
   --tc-error-bg: #2a1515;
-  --tc-success: #5cd192;
-  --tc-success-bg: #123822;
+  --tc-success: #4ade80;
+  --tc-success-bg: #142a1b;
 }
 
 [data-accent="indigo"] {
+  --tc-accent-subtle-light: #ece8f8;
+  --tc-accent-subtle-dark: #231e3a;
   --tc-accent-light: #5746a0;
   --tc-accent-hover-light: #4a3b8a;
   --tc-accent-dark: #9287d7;
-  --tc-accent-hover-dark: #a69ae7;
+  --tc-accent-hover-dark: #7566c0;
 }
 
 [data-accent="teal"] {
+  --tc-accent-subtle-light: #dff5f2;
+  --tc-accent-subtle-dark: #123330;
   --tc-accent-light: #0a6e64;
   --tc-accent-hover-light: #085850;
   --tc-accent-dark: #4dd9c7;
-  --tc-accent-hover-dark: #67e3d3;
+  --tc-accent-hover-dark: #34b8a7;
 }
 
 [data-accent="rose"] {
+  --tc-accent-subtle-light: #fbe3e9;
+  --tc-accent-subtle-dark: #3a1420;
   --tc-accent-light: #b91c47;
   --tc-accent-hover-light: #9c1339;
   --tc-accent-dark: #f27a9c;
-  --tc-accent-hover-dark: #f697b2;
+  --tc-accent-hover-dark: #e85c85;
 }
 
 [data-accent="amber"] {
+  --tc-accent-subtle-light: #faf0da;
+  --tc-accent-subtle-dark: #3a2a0c;
   --tc-accent-light: #966008;
   --tc-accent-hover-light: #7a4d06;
   --tc-accent-dark: #e0a530;
-  --tc-accent-hover-dark: #edbc57;
+  --tc-accent-hover-dark: #cf9020;
 }
 
 [data-accent="green"] {
+  --tc-accent-subtle-light: #e0f3e7;
+  --tc-accent-subtle-dark: #123822;
   --tc-accent-light: #1f7a4d;
   --tc-accent-hover-light: #185f3c;
   --tc-accent-dark: #5cd192;
-  --tc-accent-hover-dark: #7dddab;
+  --tc-accent-hover-dark: #3fb877;
 }
 
 [data-accent="violet"] {
+  --tc-accent-subtle-light: #f0e5fb;
+  --tc-accent-subtle-dark: #2b1f42;
   --tc-accent-light: #7526c9;
   --tc-accent-hover-light: #611fa8;
   --tc-accent-dark: #b48af0;
-  --tc-accent-hover-dark: #c8a9f6;
+  --tc-accent-hover-dark: #9c6de8;
 }
 
 [data-density="comfortable"] {
@@ -120,7 +155,7 @@
   --tc-space-3: 0.75rem;
   --tc-space-4: 1rem;
   --tc-space-6: 1.5rem;
-  --tc-control-height: 2.75rem;
+  --tc-control-height: 2rem;
 }
 
 [data-density="compact"] {
@@ -128,18 +163,20 @@
   --tc-space-3: 0.5rem;
   --tc-space-4: 0.75rem;
   --tc-space-6: 1rem;
-  --tc-control-height: 2.25rem;
+  --tc-control-height: 1.75rem;
 }
 
 :root,
 [data-font-scale="normal"] { font-size: 100%; }
-[data-font-scale="small"] { font-size: 87.5%; }
+[data-font-scale="small"] { font-size: 93.75%; }
 [data-font-scale="large"] { font-size: 112.5%; }
 
 body {
   background: var(--tc-bg);
   color: var(--tc-text);
   font-family: var(--tc-font);
+  font-size: 0.875rem;
+  line-height: 1.6;
 }
 
 .tc-button,
@@ -189,7 +226,9 @@ body {
   gap: var(--tc-space-2);
   justify-content: center;
   min-height: var(--tc-control-height);
-  padding: var(--tc-space-2) var(--tc-space-4);
+  padding: 0.375rem 0.75rem;
+  font-size: 0.8125rem;
+  text-decoration: none;
 }
 
 .tc-button:hover:enabled {

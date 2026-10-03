@@ -56,12 +56,15 @@ test('headless home and overview render private work and respond to keyboard, li
     try {
       await t.test('home preserves safe titles, group project order, pinned/recent numeric links and quick actions', async () => {
         await mount('home');
-        assert.equal(await page.getByRole('heading', {name: 'My active issues (2)'}).count(), 1);
+        assert.equal(await page.getByRole('heading', {name: /^My active issues\s*2$/}).count(), 1);
         assert.equal(await page.getByRole('link', {name: 'Pinned <i>page</i>'}).getAttribute('href'), '/LIF/pages/9');
         assert.equal(await page.getByRole('link', {name: 'Recent page · LIF'}).getAttribute('href'), '/LIF/pages/4');
         assert.equal(await page.getByRole('link', {name: 'New issue'}).getAttribute('href'), '/LIF/issues/new');
-        const projects = page.getByRole('heading', {name: 'Projects', exact: true}).locator('..');
-        assert.deepEqual(await projects.locator('a').allTextContents(), ['Lific <b>project</b> · LIF', 'Semantic · SEM']);
+        const work = page.locator('.tc-dashboard__main .tc-dashboard__card');
+        assert.equal(await work.locator('.tc-dashboard__project-name').textContent(), 'Lific <b>project</b>');
+        assert.equal(await work.locator('.tc-dashboard__project-count').textContent(), '2');
+        assert.equal(await work.locator('h2 a').getAttribute('href'), '/LIF/overview');
+        assert.deepEqual(await work.locator('.tc-dashboard__issue-title').allTextContents(), ['Issue <script>bad</script>', 'Issue <script>bad</script>']);
         assert.equal(await page.locator('[data-dashboard-content] b, [data-dashboard-content] i, [data-dashboard-content] script').count(), 0);
         await page.setViewportSize({width: 375, height: 812});
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
