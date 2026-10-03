@@ -49,6 +49,12 @@ jobs:
           cache-workspace-crates: true
       - name: Run Topcoat browser tests
         run: devenv --profile e2e tasks run lific:e2e
+      - name: Run translated frontend unit tests
+        if: always()
+        run: devenv --profile topcoat tasks run lific:topcoat:main-test
+      - name: Run translated frontend browser tests
+        if: always()
+        run: devenv --profile e2e tasks run lific:topcoat:main-e2e
 
   check:
     runs-on: ubuntu-latest

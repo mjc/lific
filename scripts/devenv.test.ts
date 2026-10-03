@@ -49,6 +49,7 @@ test("shell setup cannot select the project checks or rewrite formatting", () =>
   expect(config.tasks["lific:debug-build"].after).toEqual([]);
   expect(config.tasks["lific:rust-test"].exec).toBe("cargo test --all-targets --locked");
   expect(config.tasks["lific:check"].after).toContain("lific:topcoat:test");
+  expect(config.tasks["lific:topcoat:main-test"].exec).toBe("node src/topcoat/tests/main/run.js unit");
   expect(config.tasks["lific:install:site"].before).toEqual([]);
   expect(config.tasks["lific:docs:check"].after).toContain("lific:docs:build");
 }, 360_000);
@@ -66,6 +67,11 @@ test("e2e profile runs the production frontend without a development bundler", (
   expect(tasks["lific:e2e"].exec).toContain("src/topcoat/public/assets/public.browser.test.js");
   expect(tasks["lific:e2e"].exec).toContain("src/topcoat/acceptance/*.browser.test.js");
   expect(tasks["lific:e2e"].exec).not.toContain("topcoat-spike");
+  expect(tasks["lific:topcoat:main-e2e"].exec).toBe("node src/topcoat/tests/main/run.js browser");
+  expect(tasks["lific:topcoat:main-e2e"].after).toEqual([
+    "lific:install:e2e",
+    "lific:debug-build",
+  ]);
   expect(Object.keys(processes)).toEqual(["backend"]);
 }, 360_000);
 

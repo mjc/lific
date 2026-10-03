@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
-const {spawn} = require('node:child_process');
+const {spawn, execFileSync} = require('node:child_process');
 const {once} = require('node:events');
 const {pathToFileURL} = require('node:url');
 
@@ -16,7 +16,8 @@ const listen = server => new Promise((resolve, reject) => {
   });
 });
 
-async function startFixture({binary = path.join(root, 'target/debug/lific')} = {}) {
+async function startFixture({binary = process.env.LIFIC_BIN || path.join(root, 'target/debug/lific'), seed = true} = {}) {
+  binary = path.resolve(binary);
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'lific-acceptance-'));
   const prefix = '/app';
   const credentials = {identity: 'acceptance-admin', password: 'acceptance-password-123'};
@@ -99,7 +100,8 @@ async function startFixture({binary = path.join(root, 'target/debug/lific')} = {
     const origin = `http://127.0.0.1:${proxyPort}`;
     const url = route => `${origin}${prefix}${route}`;
     const config = path.join(scratch, 'lific.toml');
-    fs.writeFileSync(config, `[server]\nhost = "127.0.0.1"\nport = ${upstreamPort}\npublic_url = "${origin}${prefix}"\ntrusted_proxies = ["127.0.0.1"]\n[database]\npath = "${path.join(scratch, 'lific.db')}"\n[backup]\nenabled = false\n[auth]\nrequired = true\nallow_signup = false\n`, {mode: 0o600});
+    const database = path.join(scratch, 'lific.db');
+    fs.writeFileSync(config, `[server]\nhost = "127.0.0.1"\nport = ${upstreamPort}\npublic_url = "${origin}${prefix}"\ntrusted_proxies = ["127.0.0.1"]\n[database]\npath = "${database}"\n[backup]\nenabled = false\n[auth]\nrequired = true\nallow_signup = false\n`, {mode: 0o600});
     const env = {...process.env, LIFIC_INIT_ADMIN_NAME: 'Acceptance Admin', LIFIC_INIT_ADMIN_PASSWORD: credentials.password};
     delete env.LIFIC_API_KEY;
     server = spawn(path.resolve(binary), ['--config', config, 'start', '--init-if-missing'],
@@ -135,11 +137,16 @@ async function startFixture({binary = path.join(root, 'target/debug/lific')} = {
     const login = await create('/auth/login', credentials);
     token = login.token;
     assert.match(token, /^lific_sess_/);
-    const project = await create('/projects', {name: 'Acceptance project', identifier: 'ACC', description: 'Real executable smoke checks'});
-    const issue = await create('/issues', {project_id: project.id, title: 'Acceptance issue', description: '# Issue body\nLive smoke content'});
-    const page = await create('/pages', {project_id: project.id, title: 'Acceptance page', content: '# Page body\nLive page content'});
-    const module = await create('/modules', {project_id: project.id, name: 'Acceptance module', description: 'Live module content'});
-    const plan = await create('/plans', {project_id: project.id, title: 'Acceptance plan', steps: [{title: 'Live step', issue_id: issue.id}]});
+    let project, issue, page, module, plan;
+    if (seed) {
+      project = await create('/projects', {name: 'Acceptance project', identifier: 'ACC', description: 'Real executable smoke checks'});
+      issue = await create('/issues', {project_id: project.id, title: 'Acceptance issue', description: '# Issue body\nLive smoke content'});
+      page = await create('/pages', {project_id: project.id, title: 'Acceptance page', content: '# Page body\nLive page content'});
+      module = await create('/modules', {project_id: project.id, name: 'Acceptance module', description: 'Live module content'});
+      plan = await create('/plans', {project_id: project.id, title: 'Acceptance plan', steps: [{title: 'Live step', issue_id: issue.id}]});
+    }
+    const cli = args => execFileSync(binary, ['--config', config, '--db', database, ...args],
+      {cwd: scratch, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10000});
     const {chromium} = await import(pathToFileURL(path.join(root, 'e2e/node_modules/playwright/index.mjs')).href);
     browser = await chromium.launch({headless: true, executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH});
     const newPage = async ({authenticated = true} = {}) => {
@@ -150,7 +157,8 @@ async function startFixture({binary = path.join(root, 'target/debug/lific')} = {
       }
       return context.newPage();
     };
-    return {browser, origin, prefix, url, credentials, token, project, issue, page, module, plan, api, newPage, requests, close};
+    return {browser, origin, prefix, url, credentials, token, project, issue, page, module, plan,
+      api, newPage, requests, scratch, config, database, cli, close};
   } catch (error) {
     await close();
     throw error;

@@ -172,6 +172,11 @@ let
       "lific:topcoat:e2e" = {
         after = [ "lific:e2e" ];
       };
+      "lific:topcoat:main-e2e" = {
+        cwd = repoRoot;
+        exec = "node src/topcoat/tests/main/run.js browser";
+        after = [ "lific:install:e2e" "lific:debug-build" ];
+      };
       "lific:e2e" = {
         cwd = repoRoot;
         exec = ''
@@ -443,6 +448,10 @@ in
         node --test src/topcoat/public/assets/public.test.js
         node --test src/topcoat/public/assets/public.media-worker.test.js
       '';
+    };
+    "lific:topcoat:main-test" = {
+      cwd = repoRoot;
+      exec = "node src/topcoat/tests/main/run.js unit";
     };
     "lific:topcoat:install-cli" = {
       cwd = repoRoot;
