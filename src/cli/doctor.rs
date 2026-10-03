@@ -786,26 +786,29 @@ fn check_oauth_discovery_body(body: serde_json::Value) -> Check {
 
 // ── Check 6: MCP round-trip ──────────────────────────────────────────────
 
-/// The JSON-RPC `initialize` request body. Pin this probe to the current
-/// Streamable HTTP contract so it exercises stateless 2026 behavior.
-fn initialize_body() -> serde_json::Value {
+/// The JSON-RPC `server/discover` request body for the July 2026 contract.
+fn discovery_body() -> serde_json::Value {
     serde_json::json!({
         "jsonrpc": "2.0",
         "id": 1,
-        "method": "initialize",
+        "method": "server/discover",
         "params": {
-            "protocolVersion": "2026-07-28",
-            "capabilities": {},
-            "clientInfo": { "name": "lific-doctor", "version": env!("CARGO_PKG_VERSION") }
+            "_meta": {
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientInfo": {
+                    "name": "lific-doctor",
+                    "version": env!("CARGO_PKG_VERSION")
+                },
+                "io.modelcontextprotocol/clientCapabilities": {}
+            }
         }
     })
 }
 
-/// `POST {base}/mcp` an `initialize`. Without a key we expect a 401 carrying a
-/// `WWW-Authenticate` header (auth enforced, discovery advertised). With a key
-/// we expect a 200 whose JSON-RPC result contains `serverInfo`.
+/// Probe the current stateless protocol. Without a key we expect a 401 carrying
+/// `WWW-Authenticate`; with a key we expect server discovery to advertise July.
 async fn check_mcp(client: &reqwest::Client, base: &str, key: Option<&str>) -> Check {
-    let response = match send_mcp_initialize(client, base, key).await {
+    let response = match send_mcp_discover(client, base, key).await {
         Ok(response) => response,
         Err(error) => {
             return Check::new("mcp", Status::Fail, format!("request failed: {error}"));
@@ -818,7 +821,7 @@ async fn check_mcp(client: &reqwest::Client, base: &str, key: Option<&str>) -> C
     }
 }
 
-async fn send_mcp_initialize(
+async fn send_mcp_discover(
     client: &reqwest::Client,
     base: &str,
     key: Option<&str>,
@@ -828,7 +831,9 @@ async fn send_mcp_initialize(
         .post(&url)
         .header("Accept", "application/json, text/event-stream")
         .header("Content-Type", "application/json")
-        .json(&initialize_body());
+        .header("MCP-Protocol-Version", "2026-07-28")
+        .header("Mcp-Method", "server/discover")
+        .json(&discovery_body());
     if let Some(k) = key {
         req = req.bearer_auth(k);
     }
@@ -880,7 +885,7 @@ async fn check_mcp_authorized_response(response: reqwest::Response) -> Check {
         return Check::new(
             "mcp",
             Status::Fail,
-            format!("initialize returned HTTP {}", status.as_u16()),
+            format!("server/discover returned HTTP {}", status.as_u16()),
         );
     }
 
@@ -888,7 +893,7 @@ async fn check_mcp_authorized_response(response: reqwest::Response) -> Check {
         return Check::new(
             "mcp",
             Status::Fail,
-            "July 2026 initialize unexpectedly returned a legacy session id",
+            "July 2026 server/discover unexpectedly returned a legacy session id",
         );
     }
 
@@ -905,27 +910,27 @@ async fn check_mcp_authorized_response(response: reqwest::Response) -> Check {
 
 fn check_mcp_json_response(body: serde_json::Value) -> Check {
     if body
-        .get("result")
-        .and_then(|result| result.get("serverInfo"))
-        .is_some()
+        .pointer("/result/supportedVersions")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|versions| versions.iter().any(|v| v == "2026-07-28"))
     {
-        let name = body
-            .pointer("/result/serverInfo/name")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("lific");
         Check::new(
             "mcp",
             Status::Pass,
-            format!("authorized initialize succeeded (serverInfo: {name})"),
+            "authorized server/discover supports 2026-07-28",
         )
     } else if let Some(error) = body.get("error") {
         Check::new(
             "mcp",
             Status::Fail,
-            format!("initialize returned a JSON-RPC error: {error}"),
+            format!("server/discover returned a JSON-RPC error: {error}"),
         )
     } else {
-        Check::new("mcp", Status::Fail, "200 but result had no serverInfo")
+        Check::new(
+            "mcp",
+            Status::Fail,
+            "200 but server/discover did not advertise 2026-07-28",
+        )
     }
 }
 
@@ -1846,7 +1851,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mcp_with_real_key_completes_initialize() {
+    async fn mcp_with_real_key_completes_server_discovery() {
         let pool = crate::db::open_memory().unwrap();
         let key = crate::auth::create_api_key(&pool, "doctor-test", None).unwrap();
         let app = build_test_app(pool, "http://127.0.0.1");
@@ -1854,7 +1859,7 @@ mod tests {
 
         let c = check_mcp(&test_client(), &base, Some(&key)).await;
         assert_eq!(c.status, Status::Pass, "detail: {}", c.detail);
-        assert!(c.detail.contains("serverInfo"), "detail: {}", c.detail);
+        assert!(c.detail.contains("2026-07-28"), "detail: {}", c.detail);
     }
 
     #[tokio::test]
