@@ -1,6 +1,7 @@
 (() => {
   'use strict';
 
+  const routeHref = (route, win = globalThis) => route.startsWith('/') && !route.startsWith('//') ? (win.LificTopcoatRouting?.href(route) ?? route) : route;
   const $ = (root, selector) => root.querySelector(selector);
   const text = (doc, tag, value, className) => {
     const node = doc.createElement(tag);
@@ -15,7 +16,7 @@
   const pageUrl = (project, id) => `/public/${encodeURIComponent(project)}/pages/${id}`;
   const STATUSES = ['backlog', 'todo', 'active', 'done', 'cancelled'];
   const PRIORITIES = ['urgent', 'high', 'medium', 'low', 'none'];
-  function publicHref(value, project) {
+  function publicHref(value, project, win = globalThis) {
     if (/^https?:\/\//i.test(value)) return value;
     if (/^#(?:comment-[1-9]\d*|att[1-9]\d*-L[1-9]\d*(?:-[1-9]\d*)?)$/.test(value)) return value;
     const route = value.startsWith('#/') ? value.slice(1) : value;
@@ -23,7 +24,7 @@
     if (!match || match[1].toUpperCase() !== project.toUpperCase()) return null;
     const path = match[2] || '/issues';
     if (!/^\/(?:issues|board|pages)$/.test(path) && !/^\/issues\/[A-Za-z][A-Za-z0-9_-]*-\d+$/.test(path) && !/^\/pages\/\d+$/.test(path)) return null;
-    return `/public/${encodeURIComponent(project)}${path}${match[3] || ''}`;
+    return routeHref(`/public/${encodeURIComponent(project)}${path}${match[3] || ''}`, win);
   }
   function attachmentTarget(value) {
     const match = String(value || '').match(/^#?att([1-9]\d*)-L([1-9]\d*)(?:-([1-9]\d*))?$/);
@@ -60,7 +61,7 @@
         href = match[2] === 'DOC-' ? `/public/${project}/pages` : issueUrl(project, `${match[1]}-${match[3]}`);
         if (match[4] && !match[2]) href += `?comment=${match[4]}`;
       }
-      if (href) { const link = text(doc, 'a', match[0]); link.href = href; parent.append(link); }
+      if (href) { const link = text(doc, 'a', match[0]); link.href = routeHref(href, doc.defaultView); parent.append(link); }
       else parent.append(doc.createTextNode(match[0]));
       cursor = pattern.lastIndex;
     }
@@ -93,7 +94,7 @@
     for (const link of fragment.querySelectorAll('a')) {
       const value = link.getAttribute('href') || '';
       const attachment = value.match(/^\/(?:api\/)?attachments\/(\d+)(?:\/thumbnail)?\/?$/);
-      const safe = publicHref(value, project);
+      const safe = publicHref(value, project, win);
       if (attachment) {link.href = '#download'; link.dataset.publicDownload = attachment[1];}
       else if (safe) {link.href = safe; link.rel = 'nofollow noopener';}
       else link.replaceWith(...link.childNodes);
@@ -269,7 +270,7 @@
         for (const raw of group.rows) {
           const issue = publicIssue(raw), li = this.doc.createElement('li'); li.dataset.publicRow = '';
           if (group.label) li.dataset.publicGroup = group.label;
-          const link = this.doc.createElement('a'); link.href = issueUrl(this.project, issue.identifier); link.textContent = `${issue.identifier} · ${issue.title}`; link.dataset.publicIssue = issue.identifier;
+          const link = this.doc.createElement('a'); link.href = routeHref(issueUrl(this.project, issue.identifier), this.win); link.textContent = `${issue.identifier} · ${issue.title}`; link.dataset.publicIssue = issue.identifier;
           li.append(link, text(this.doc, 'span', [issue.status, issue.priority].filter(Boolean).join(' · '), 'tc-public__meta'));
           if (b.density === 'comfortable' && raw.preview) li.append(text(this.doc, 'p', raw.preview, 'tc-public__preview'));
           list.append(li);
@@ -291,7 +292,7 @@
           column.dataset.publicLane = status; column.dataset.collapsed = String(collapsed);
           column.append(this.collapseButton(`${status} column`, 'collapsedColumns', status), text(this.doc, 'span', ` (${items.length})`));
           if (!collapsed) for (const raw of items) {
-            const issue = publicIssue(raw), card = text(this.doc, 'a', `${issue.identifier} · ${issue.title}`, 'tc-public__card'); card.href = issueUrl(this.project, issue.identifier);
+            const issue = publicIssue(raw), card = text(this.doc, 'a', `${issue.identifier} · ${issue.title}`, 'tc-public__card'); card.href = routeHref(issueUrl(this.project, issue.identifier), this.win);
             if (b.density === 'comfortable' && raw.preview) card.append(text(this.doc, 'p', raw.preview, 'tc-public__preview'));
             column.append(card);
           }
@@ -309,7 +310,7 @@
       const list = text(this.doc, 'ul', undefined, 'tc-public__list');
       for (const page of rows) { const li = this.doc.createElement('li'); const link = this.doc.createElement('a');
         li.dataset.publicRow = '';
-        link.href = pageUrl(this.project, page.id); link.textContent = page.title || 'Untitled page'; li.append(link);
+        link.href = routeHref(pageUrl(this.project, page.id), this.win); link.textContent = page.title || 'Untitled page'; li.append(link);
         if (page.pinned) li.append(text(this.doc, 'span', 'Pinned', 'tc-public__meta'));
         if (page.folder_id != null) li.append(text(this.doc, 'span', this.folders.find(folder => folder.id === page.folder_id)?.name || 'Folder', 'tc-public__meta'));
         if (page.status) li.append(text(this.doc, 'span', page.status, 'tc-public__meta'));
@@ -342,7 +343,7 @@
         if (this.kind === 'board') this.selectControl(controls, 'Swimlanes', 'laneBy', [['none', 'None'], ['module', 'Module'], ['priority', 'Priority']]);
         if (this.kind === 'issues') this.selectControl(controls, 'Group by', 'group', [['', 'None'], ['status', 'Status'], ['priority', 'Priority'], ['module_id', 'Module']]);
         const layouts = text(this.doc, 'nav'); layouts.setAttribute('aria-label', 'Issue layout');
-        for (const [label, path] of [['List', 'issues'], ['Board', 'board']]) {const link = text(this.doc, 'a', label); link.href = `/public/${this.project}/${path}`; if (this.kind === path) link.setAttribute('aria-current', 'page'); layouts.append(link);}
+        for (const [label, path] of [['List', 'issues'], ['Board', 'board']]) {const link = text(this.doc, 'a', label); link.href = routeHref(`/public/${this.project}/${path}`, this.win); if (this.kind === path) link.setAttribute('aria-current', 'page'); layouts.append(link);}
         controls.append(layouts);
       }
       if (this.kind === 'board') for (const status of STATUSES) {const button = text(this.doc, 'button', status); button.type = 'button'; button.dataset.publicColumn = status; button.setAttribute('aria-label', `${this.browse.hiddenStatuses.has(status) ? 'Show' : 'Hide'} ${status} column`); button.setAttribute('aria-pressed', String(!this.browse.hiddenStatuses.has(status))); controls.append(button);}
@@ -509,15 +510,16 @@
       const workers = this.win.navigator?.serviceWorker;
       if (!this.win.isSecureContext || !workers) return this.attachmentBlob(attachment, generation);
       try {
-        const registration = await workers.register('/__topcoat-public-media.js', {scope:'/public/', updateViaCache:'none'});
-        const expected = new URL('/__topcoat-public-media.js', this.win.location.href).href;
+        const worker = routeHref('/__topcoat-public-media.js', this.win), scope = routeHref('/public/', this.win);
+        const registration = await workers.register(worker, {scope, updateViaCache:'none'});
+        const expected = new URL(worker, this.win.location.href).href;
         if (workers.controller?.scriptURL !== expected) await new Promise((resolve, reject) => {
           const timer = this.win.setTimeout(() => {workers.removeEventListener('controllerchange', changed); reject(new Error('Public media transport unavailable.'));}, 10000);
           const changed = () => {if (workers.controller?.scriptURL === expected) {this.win.clearTimeout(timer); workers.removeEventListener('controllerchange', changed); resolve();}};
           workers.addEventListener('controllerchange', changed); changed();
         });
-        if (!this.current(generation) || registration.scope !== new URL('/public/', this.win.location.href).href) return null;
-        return `/public/${encodeURIComponent(this.project)}/_media/${attachment.id}`;
+        if (!this.current(generation) || registration.scope !== new URL(scope, this.win.location.href).href) return null;
+        return routeHref(`/public/${encodeURIComponent(this.project)}/_media/${attachment.id}`, this.win);
       } catch (error) {
         if (!this.current(generation)) return null;
         // Older browsers retain the bounded local-Blob preview and download
@@ -672,9 +674,11 @@
     }
     async followDeepLink(generation = this.generation) {
       const query = new URLSearchParams(this.win.location.search || '');
-      const comment = query.get('comment') || this.win.location.hash.match(/comment-(\d+)/)?.[1];
-      const lineTarget = attachmentTarget(query.get('att') || this.win.location.hash);
-      const attachment = lineTarget?.id || query.get('att')?.match(/(?:att)?(\d+)/)?.[1] || this.win.location.hash.match(/(?:att|attachment-)(\d+)(?:-L\d+-\d+)?/)?.[1];
+      const fragment = /^#(?:comment-[1-9]\d*|(?:attachment-|att)[1-9]\d*(?:-L[1-9]\d*(?:-[1-9]\d*)?)?)$/.test(this.win.location.hash || '') ? this.win.location.hash : '';
+      const comment = fragment ? fragment.match(/^#comment-([1-9]\d*)$/)?.[1] : query.get('comment');
+      const reference = fragment || query.get('att') || '';
+      const lineTarget = attachmentTarget(reference);
+      const attachment = lineTarget?.id || reference.match(/^#?(?:att|attachment-)?([1-9]\d*)(?:-L[1-9]\d*(?:-[1-9]\d*)?)?$/)?.[1];
       const targetVisible = () => (!comment || this.doc.getElementById(`comment-${comment}`))
         && (!attachment || this.doc.getElementById(`attachment-${attachment}`) || this.doc.getElementById(`comment-attachment-${attachment}`));
       while ((comment || attachment) && !targetVisible() && this.hasOlder && this.current(generation)) {

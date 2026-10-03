@@ -1,6 +1,40 @@
 /* Keep existing #/ bookmarks while new navigation uses direct URLs. Load
  * this before the session bridge so public hash links stay anonymous. */
 (() => {
+  const initial = new URL(location.href);
+  const configuredBase = document.body?.dataset.lificBasePath;
+  const inferredBase = initial.hash.startsWith('#/') ? initial.pathname.replace(/\/$/, '') : '';
+  const basePath = (configuredBase ?? inferredBase).replace(/\/$/, '');
+  const path = pathname => basePath && (pathname === basePath || pathname.startsWith(`${basePath}/`))
+    ? pathname.slice(basePath.length) || '/' : pathname;
+  // href accepts logical routes; path accepts external browser pathnames.
+  const href = route => `${basePath}${route}`;
+  const currentPath = () => location.hash.startsWith('#/') ? location.hash.slice(1) : path(location.pathname);
+  window.LificTopcoatRouting = Object.freeze({basePath, path, href, currentPath});
+
+  // A detail link opened in a fresh tab needs its list underneath it. Keep
+  // real navigation history and unrelated state belonging to other adapters.
+  const history = window.history;
+  const canGoBack = typeof window.navigation?.canGoBack === 'boolean'
+    ? window.navigation.canGoBack : !history || history.length > 1;
+  if (!canGoBack) {
+    const route = currentPath().split(/[?#]/)[0];
+    const detail = route.match(/^\/([A-Za-z][A-Za-z0-9_-]*)\/(issues|pages|modules|plans)\/([^/]+)$/);
+    const valid = detail && (detail[2] === 'issues'
+      ? /^[A-Za-z][A-Za-z0-9_]*-[0-9]+$/.test(detail[3]) : /^\d+$/.test(detail[3]));
+    if (valid) {
+      let section = detail[2];
+      if (section === 'issues') {
+        try {
+          if (localStorage.getItem(`lific:list:layout:${detail[1]}`) === 'board') section = 'board';
+        } catch { /* Stored layout preferences are optional. */ }
+      }
+      const entry = location.href;
+      const state = history.state;
+      history.replaceState(state, '', href(`/${detail[1]}/${section}`));
+      history.pushState(state, '', entry);
+    }
+  }
   function restoreRoute() {
     if (!location.hash.startsWith('#/')) return;
     const route = location.hash.slice(1);
@@ -10,7 +44,7 @@
     const path = queryStart < 0 ? pathAndQuery : pathAndQuery.slice(0, queryStart);
     // Assign URL components rather than resolving an untrusted //host link.
     const destination = new URL(location.href);
-    destination.pathname = path;
+    destination.pathname = href(path);
     destination.search = queryStart < 0 ? '' : pathAndQuery.slice(queryStart);
     destination.hash = fragmentStart < 0 ? '' : route.slice(fragmentStart);
     const publicProject = path.match(/^\/public\/([A-Za-z][A-Za-z0-9_-]*)(?:\/|$)/)?.[1];
@@ -22,9 +56,15 @@
   }
   restoreRoute();
   window.addEventListener('hashchange', restoreRoute);
+  const loadedRoute = `${location.pathname}${location.search}`;
+  window.addEventListener('popstate', () => {
+    // Synthesized list entries share the detail document until traversed.
+    // Reload that entry so its URL and server-rendered content agree.
+    if (`${location.pathname}${location.search}` !== loadedRoute) location.reload();
+  });
 
   const shell = document.querySelector('.tc-shell');
-  // Auth and standalone experiment screens have no docked navigation.
+  // Auth screens have no docked navigation.
   if (!shell || shell.dataset.layout === 'auth') return;
   const toggle = shell.querySelector('[data-sidebar-toggle]');
   const handle = shell.querySelector('[data-sidebar-resize]');

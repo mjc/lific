@@ -402,7 +402,8 @@
 
   function projectLink(document, project, activeIdentifier) {
     const link = element(document, 'a', 'tc-projects__project');
-    link.href = `/${encodeURIComponent(project.identifier)}/overview`;
+    const href = `/${encodeURIComponent(project.identifier)}/overview`;
+    link.href = document.defaultView?.LificTopcoatRouting?.href(href) ?? href;
     link.dataset.projectId = String(project.id);
     link.draggable = true;
     if (project.identifier.toUpperCase() === activeIdentifier?.toUpperCase()) {

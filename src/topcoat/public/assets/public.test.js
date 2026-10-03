@@ -33,3 +33,21 @@ test('public search matches abbreviated words and ranks exact names over preview
  assert.ok(publicUi.searchScore('alpha','Alpha')>publicUi.searchScore('alpha','Long alpha explanation'));
  assert.equal(publicUi.searchScore('missing','Alpha'),0);
 });
+
+test('public navigation retains prefixes and scope while leaving external and fragment links intact',()=>{
+ const win={LificTopcoatRouting:{href:route=>`/app${route}`,path:route=>route.replace(/^\/app(?=\/|$)/,'')||'/'}};
+ assert.equal(publicUi.publicHref('/ENG/pages/22','ENG',win),'/app/public/ENG/pages/22');
+ assert.equal(publicUi.publicHref('/ENG/issues/ENG-2?comment=91','ENG',win),'/app/public/ENG/issues/ENG-2?comment=91');
+ assert.equal(publicUi.publicHref('#comment-91','ENG',win),'#comment-91');
+ assert.equal(publicUi.publicHref('https://example.test/docs','ENG',win),'https://example.test/docs');
+ assert.equal(publicUi.publicHref('/OTHER/issues/OTHER-1','ENG',win),null);
+});
+
+test('public fragment navigation overrides both cold-load query target kinds',async()=>{
+ const selected=[];const app=Object.create(publicUi.PublicController.prototype);
+ Object.assign(app,{win:{location:{search:'?comment=9&att=att31-L1',hash:'#comment-10'}},doc:{getElementById:id=>({id,scrollIntoView(){selected.push(id);},classList:{add(){}}})},hasOlder:false,current:()=>true});
+ await app.followDeepLink(1);assert.deepEqual(selected,['comment-10']);
+ selected.length=0;app.win.location.hash='#att32-L2';let target;
+ app.preview=async(row,lines)=>{target=lines;};await app.followDeepLink(1);
+ assert.deepEqual(selected,['attachment-32']);assert.deepEqual(target,{id:32,start:2,end:2});
+});

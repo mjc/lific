@@ -548,7 +548,7 @@
       for (const entity of entities) {
         const href = entityHref(this.projectName, entity);
         if (!href) continue;
-        const link = this.doc.createElement('a'); link.href = href; link.textContent = entity.entity_type === 'comment' ? `${entity.identifier || 'Comment'} (comment)` : entity.identifier || entity.title;
+        const link = this.doc.createElement('a'); link.href = this.win.LificTopcoatRouting?.href(href) ?? `${this.doc.body?.dataset.lificBasePath ?? ''}${href}`; link.textContent = entity.entity_type === 'comment' ? `${entity.identifier || 'Comment'} (comment)` : entity.identifier || entity.title;
         link.title = `${entity.title} · ${entity.entity_type}`; section.append(link);
       }
       if (data?.duplicates?.length) {
@@ -567,7 +567,7 @@
               const href = entityHref(this.projectName, entity);
               if (!href) continue;
               const usage = this.doc.createElement('li');
-              const link = this.doc.createElement('a'); link.href = href;
+              const link = this.doc.createElement('a'); link.href = this.win.LificTopcoatRouting?.href(href) ?? `${this.doc.body?.dataset.lificBasePath ?? ''}${href}`;
               link.textContent = entity.identifier || entity.title;
               usage.append(link); usages.append(usage);
             }

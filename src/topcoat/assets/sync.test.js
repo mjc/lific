@@ -2,7 +2,7 @@ const {test} = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
-const context = {globalThis:{}, console,AbortController};
+const context = {globalThis:{}, console,AbortController,URL};
 vm.runInNewContext(fs.readFileSync(`${__dirname}/sync.js`, 'utf8'),context);
 const {createClient} = context.globalThis.LificSync;
 const tick = () => new Promise(resolve => setImmediate(resolve));
@@ -177,4 +177,17 @@ test('one leader socket serves two tabs and promotes its follower after teardown
     assert.equal(b.sockets.length,1);b.sockets[0].readyState=1;b.sockets[0].emit('open');
     assert.equal(b.client.state.leader,true);
     assert.ok(b.sockets[0].frames.some(frame=>frame.type==='resume'&&frame.cursor===9));b.client.dispose();
+});
+
+test('browser websocket URLs retain the trusted mount and same origin for both transports',()=>{
+ const {websocketUrl}=context.globalThis.LificSync;
+ for(const [href,base,expected] of [
+  ['https://lific.test/app/LIF/issues','/app','wss://lific.test/app/api/events/ws'],
+  ['http://lific.test:8080/LIF/issues','','ws://lific.test:8080/api/events/ws'],
+ ]) {
+  const win={location:new URL(href),document:{body:{dataset:{lificBasePath:base}}}};
+  assert.equal(websocketUrl(win),expected);
+  win.LificTopcoatRouting={href:path=>`${base}${path}`};
+  assert.equal(websocketUrl(win),expected);
+ }
 });

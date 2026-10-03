@@ -40,3 +40,17 @@ test('route generations reject results from an earlier activation of the same is
   assert.equal(routeMatches({issue_id:4,generation:2},{issue_id:5,generation:2}), false);
   assert.equal(routeMatches(null,{issue_id:4,generation:2}), false);
 });
+
+test('detail back links use the logical project path for private and public mounts',()=>{
+ const {IssueDetailController}=require('./route.js');
+ const savedEvent=globalThis.CustomEvent;globalThis.CustomEvent=class {};
+ globalThis.LificTopcoatRouting={href:path=>`/ENG${path}`};
+ try{
+  for(const publicScope of [false,true]){
+   const back={},app=Object.create(IssueDetailController.prototype);
+   Object.assign(app,{root:{querySelector:selector=>selector==='[data-detail-back]'?back:null,setAttribute(){},dispatchEvent(){}},projectIdentifier:'ENG',publicScope,loading:{},errorNode:{},content:{}});
+   app.render({identifier:'ENG-7',title:'Issue'},[],[]);
+   assert.equal(back.href,publicScope?'/ENG/public/ENG/issues':'/ENG/ENG/issues');
+  }
+ }finally{delete globalThis.LificTopcoatRouting;globalThis.CustomEvent=savedEvent;}
+});

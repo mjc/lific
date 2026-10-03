@@ -1,5 +1,13 @@
 # Changelog
 
+## v3.0.0 (unreleased)
+
+The browser application now uses Topcoat and ships from the Lific executable. The Svelte/Vite workspace and its separate asset build have been removed. REST, MCP, OAuth, WebSocket, and public API routes keep their existing server contracts.
+
+Topcoat is pinned to version 0.9.0. Updating it requires an explicit dependency change and review of route parity, browser behavior, and release artifact checks.
+
+The Rust crate and MCP Registry package metadata now identify this release as 3.0.0.
+
 ## v2.11.1 (2026-10-13)
 
 A web UI fix for issue previews.

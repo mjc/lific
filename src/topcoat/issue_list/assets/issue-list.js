@@ -273,7 +273,8 @@
   const identity=env.identity(),parts=[],separator=new TextEncoder().encode('\n\n---\n\n');let size=0;
   for(const row of rows){
    if(env.identity()!==identity)throw new Error('Account changed. Export cancelled.');
-   const response=await env.fetch(`/api/export/issues/${encodeURIComponent(row.identifier)}`,{headers:env.headers(),signal:env.signal});
+   const path=`/api/export/issues/${encodeURIComponent(row.identifier)}`;
+   const response=await env.fetch(env.href?.(path)??globalThis.LificTopcoatRouting?.href(path)??path,{headers:env.headers(),signal:env.signal});
    if(env.identity()!==identity){await response.body?.cancel();throw new Error('Account changed. Export cancelled.');}
    if(!response.ok)throw new Error(`Could not export ${row.identifier} (HTTP ${response.status}).`);
    if(!response.body)throw new Error(`No export returned for ${row.identifier}.`);
@@ -287,17 +288,19 @@
  function attach(root,env={}) {
   const doc=root.ownerDocument,win=doc.defaultView,session=env.session||win.lificSession;
   const api=env.api||createApi(session),sync=env.sync||win.lificSync;
+  const routeHref=path=>win.LificTopcoatRouting?.href(path)??path;
+  const logicalPath=path=>win.LificTopcoatRouting?.path(path)??path;
   let publicScope=session.state.publicProject!==null;
   const storage=()=>{try{return win.localStorage;}catch{return undefined;}};
   const sessionStorage=()=>{try{return win.sessionStorage;}catch{return undefined;}};
   const route=()=>win.location.hash.startsWith('#/')?new URL(win.location.hash.slice(1),win.location.origin):new URL(win.location.href);
-  const node=(tag,text,attrs={})=>{const element=doc.createElement(tag);if(text!==undefined)element.textContent=text;for(const [key,value]of Object.entries(attrs))element.setAttribute(key,value);return element;};
+  const node=(tag,text,attrs={})=>{const element=doc.createElement(tag);if(text!==undefined)element.textContent=text;for(const [key,value]of Object.entries(attrs))element.setAttribute(key,key==='href'&&String(value).startsWith('/')&&!String(value).startsWith('//')?routeHref(value):value);return element;};
   const button=(text,action,attrs={})=>node('button',text,{type:'button','data-action':action,...attrs});
   const field=(label,name,values,value)=>{const wrapper=node('label',label),select=node('select',undefined,{'data-config':name,'aria-label':label});for(const [key,text]of values)select.append(node('option',text,{value:key}));select.value=value;wrapper.append(select);return wrapper;};
   const form=root.querySelector('[data-issues-controls]'),content=root.querySelector('[data-issues-content]'),feedback=root.querySelector('[data-issues-feedback]'),bulk=root.querySelector('[data-issues-bulk]'),peek=root.querySelector('[data-issues-peek]');
   let controller,peekGeneration=0,peekController=null,focusIndex=-1,creationDraft='',activeIdentity;
   function href(row){const project=controller.state.projects.find(p=>p.id===row.project_id);return `${publicScope?'/public':''}/${encodeURIComponent(project?.identifier||row.identifier.replace(/-\d+$/,''))}/issues/${encodeURIComponent(row.identifier)}`;}
-  function navigate(href){win.dispatchEvent(new win.CustomEvent('lific:navigate',{detail:{href,history:'push'}}));}
+  function navigate(href){href=logicalPath(href);win.dispatchEvent(new win.CustomEvent('lific:navigate',{detail:{href,history:'push'}}));}
   function retainFocus(render){const active=doc.activeElement,key=active?.dataset?.focusKey,selection=active?.selectionStart===null?null:[active?.selectionStart,active?.selectionEnd,active?.selectionDirection];render();if(key){const next=[...root.querySelectorAll('[data-focus-key]')].find(n=>n.dataset.focusKey===key);if(next){next.focus({preventScroll:true});if(selection&&typeof selection[0]==='number'&&next.setSelectionRange)next.setSelectionRange(...selection);}else root.querySelector('[data-search]')?.focus({preventScroll:true});}}
   function render(state) {
    retainFocus(()=>{
@@ -353,7 +356,7 @@
    peek.addEventListener('close',()=>{peekGeneration++;peekController?.abort();returnFocus?.isConnected&&returnFocus.focus();},{once:true});
    try{const issue=await api.issue(id,{signal:peekController.signal});if(term!==peekGeneration)return;peek.replaceChildren(node('h2',`${issue.identifier} ${issue.title}`),node('p',`${issue.status} · ${issue.priority}`),node('pre',issue.description,{class:'tc-issues__peek-description'}),node('a','Open issue',{href:href(issue),'data-detail':''}),button('Close peek','close-peek'));}catch(error){if(term===peekGeneration)peek.replaceChildren(node('p',error.message,{role:'alert'}),button('Close peek','close-peek'));}
   }
-  async function exportRows(){if(controller.state.busy||!controller.state.canExport)return;const term=controller.generation;controller.state.busy=true;controller.publish();try{const blob=await exportSelected(controller.state.rows.filter(i=>controller.state.selected.has(i.id)),{publicScope,identity:controller.env.identity,fetch:win.fetch.bind(win),headers:()=>{const token=storage()?.getItem('lific_token');return token?{Authorization:`Bearer ${token}`}:{}}});if(!controller.valid(term))return;const link=node('a',undefined,{href:win.URL.createObjectURL(blob),download:`${controller.key()}-selected-issues.md`});doc.body.append(link);link.click();link.remove();win.setTimeout(()=>win.URL.revokeObjectURL(link.href),1000);}catch(error){if(controller.valid(term))controller.state.error=error.message;}finally{if(controller.valid(term)){controller.state.busy=false;controller.publish();}}}
+  async function exportRows(){if(controller.state.busy||!controller.state.canExport)return;const term=controller.generation;controller.state.busy=true;controller.publish();try{const blob=await exportSelected(controller.state.rows.filter(i=>controller.state.selected.has(i.id)),{publicScope,identity:controller.env.identity,fetch:win.fetch.bind(win),href:routeHref,headers:()=>{const token=storage()?.getItem('lific_token');return token?{Authorization:`Bearer ${token}`}:{}}});if(!controller.valid(term))return;const link=node('a',undefined,{href:win.URL.createObjectURL(blob),download:`${controller.key()}-selected-issues.md`});doc.body.append(link);link.click();link.remove();win.setTimeout(()=>win.URL.revokeObjectURL(link.href),1000);}catch(error){if(controller.valid(term))controller.state.error=error.message;}finally{if(controller.valid(term)){controller.state.busy=false;controller.publish();}}}
   function click(event){const b=event.target.closest('[data-action]');if(!b||!root.contains(b))return;const action=b.dataset.action;
    if(action==='select-all')controller.selectAll();else if(action==='clear-selection')controller.clear();else if(action==='clear-filters')controller.change({...controller.state.config,filterStatus:'',filterPriority:'',filterLabel:'',filterModule:'',searchQuery:''});
    else if(action==='subtab'){controller.state.subTab=b.dataset.tab;if(controller.state.projects.length===1)storageWrite(storage(),`lific:subtab:issues:${controller.state.projects[0].id}`,b.dataset.tab);controller.prune();controller.publish();}

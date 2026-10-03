@@ -178,7 +178,7 @@
       const current = () => !disposed && requestGeneration === currentRequest &&
         identity === currentIdentity && privateIdentity(session) === currentIdentity;
       const adapter = createCatalogAdapter(session, () => ++generation, current);
-      const route = win.location?.pathname ?? '/';
+      const route = win.LificTopcoatRouting?.currentPath() ?? win.location?.pathname ?? '/';
       const activeIdentifier = route.match(/^\/public\/([A-Za-z][A-Za-z0-9_-]*)\/(?:issues|pages)(?:\/|$)/i)?.[1] ??
         route.match(/^\/([A-Za-z][A-Za-z0-9_-]*)\/(?:overview|issues|graph|modules|pages|files|plans|activity|insights|board|settings)(?:\/|$)/i)?.[1] ?? null;
       projectApp = projects.attach(projectRoot, adapter, {
@@ -204,13 +204,13 @@
       if (typeof detail?.href !== 'string' || !detail.href.startsWith('/') || detail.href.startsWith('//') ||
           !['push', 'replace'].includes(detail.history)) return;
       let destination;
-      try { destination = new URL(detail.href, win.location.href); }
+      try { destination = new URL(win.LificTopcoatRouting?.href(detail.href) ?? detail.href, win.location.href); }
       catch { return; }
       if (destination.origin !== win.location.origin) return;
       const publicProject = session.state.publicProject ??
-        win.location.pathname.match(/^\/public\/([A-Za-z][A-Za-z0-9_-]*)(?:\/|$)/i)?.[1] ?? null;
+        (win.LificTopcoatRouting?.currentPath() ?? win.location.pathname).match(/^\/public\/([A-Za-z][A-Za-z0-9_-]*)(?:\/|$)/i)?.[1] ?? null;
       if (publicProject) {
-        const path = destination.pathname.match(/^\/public\/([A-Za-z][A-Za-z0-9_-]*)(?:\/|$)/i);
+        const path = (win.LificTopcoatRouting?.path(destination.pathname) ?? destination.pathname).match(/^\/public\/([A-Za-z][A-Za-z0-9_-]*)(?:\/|$)/i);
         if (!path || path[1].toLowerCase() !== publicProject.toLowerCase()) return;
       }
       win.location[detail.history === 'replace' ? 'replace' : 'assign'](destination.href);

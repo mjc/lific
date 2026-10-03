@@ -117,7 +117,7 @@
     let audience = null;
     function route() {
       const value = win.location.hash.startsWith('#/')
-        ? win.location.hash.slice(1) : `${win.location.pathname}${win.location.search}`;
+        ? win.location.hash.slice(1) : `${win.LificTopcoatRouting?.path(win.location.pathname) ?? win.location.pathname}${win.location.search}`;
       return {key: value.split('#')[0], path: value.split(/[?#]/)[0]};
     }
     function render(state) {
@@ -137,7 +137,7 @@
         list.replaceChildren(...state.rows.map(row => {
           const item = doc.createElement('li');
           const link = doc.createElement('a');
-          link.setAttribute('href', row.href);
+          link.setAttribute('href', win.LificTopcoatRouting?.href(row.href) ?? row.href);
           const label = row.identifier ? `${row.identifier}: ${row.label}` : row.label;
           link.setAttribute('title', label);
           link.setAttribute('aria-label', label);
@@ -164,7 +164,7 @@
       }
       const path = route().path.toLowerCase();
       for (const link of list.querySelectorAll('a')) {
-        const href = link.getAttribute('href').toLowerCase();
+        const href = (win.LificTopcoatRouting?.path(link.getAttribute('href')) ?? link.getAttribute('href')).toLowerCase();
         if (path === href || path.startsWith(`${href}/`)) link.setAttribute('aria-current', 'page');
         else link.removeAttribute('aria-current');
       }

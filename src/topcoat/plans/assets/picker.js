@@ -1,5 +1,6 @@
 (() => {
   'use strict';
+  const routeHref=path=>globalThis.LificTopcoatRouting?.href(path)??path;
   const escapeHtml=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
   function identifierShape(query,project) {
     const compact=String(query).trim();
@@ -86,7 +87,7 @@
       try {
         const issue=await request(`/issues/resolve/${encodeURIComponent(identifier)}`);if(!alive||turn!==epoch)return;
         content.innerHTML=`<h2>${escapeHtml(issue.identifier)} · ${escapeHtml(issue.title)}</h2><p>${escapeHtml(issue.status)} · ${escapeHtml(issue.priority||'none')}</p><article data-peek-markdown></article>
-          <a href="/${encodeURIComponent(issue.identifier.replace(/-\d+$/,''))}/issues/${encodeURIComponent(issue.identifier)}">Open issue</a>`;
+          <a href="${routeHref(`/${encodeURIComponent(issue.identifier.replace(/-\d+$/,''))}/issues/${encodeURIComponent(issue.identifier)}`)}">Open issue</a>`;
         const description=content.querySelector('[data-peek-markdown]');
         if(globalThis.lificIssueEditor?.renderMarkdown)globalThis.lificIssueEditor.renderMarkdown(description,issue.description||'');else description.textContent=issue.description||'';
         references=bindReferences(description,{root:dialog,request,onPeek:next=>{identifier=next;void load();}});

@@ -312,3 +312,26 @@ test('switching private accounts clears the old mobile catalog with a newer gene
   assert.equal(mobileCatalogs.at(-1).generation, 21);
   app.dispose();
 });
+
+test('prefixed private and public navigation uses logical project routes and retains the mount', () => {
+  const f = fixture({id: 12});
+  f.win.location.href = 'https://lific.test/app/LIF/issues';
+  f.win.location.pathname = '/app/LIF/issues';
+  f.win.LificTopcoatRouting = {
+    currentPath: () => f.win.location.pathname.slice(4),
+    path: path => path.startsWith('/app/') ? path.slice(4) : path,
+    href: path => `/app${path}`,
+  };
+  let active;
+  mount({window: f.win, document: f.doc, session: f.session,
+    projects: {attach(root, adapter, options) {active = options.activeIdentifier;return {destroy() {}};}},
+    recents: {attach() {return {dispose() {}};}}});
+  assert.equal(active, 'LIF');
+  f.win.emit('lific:navigate', {href: '/LIF/pages', history: 'push'});
+  assert.equal(f.win.assigned, 'https://lific.test/app/LIF/pages');
+  f.session.state.publicProject = 'LIF';
+  f.win.emit('lific:navigate', {href: '/public/LIF/pages', history: 'replace'});
+  assert.equal(f.win.replaced, 'https://lific.test/app/public/LIF/pages');
+  f.win.emit('lific:navigate', {href: '/public/OTHER/pages', history: 'push'});
+  assert.equal(f.win.assigned, 'https://lific.test/app/LIF/pages');
+});

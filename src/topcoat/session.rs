@@ -31,7 +31,7 @@ impl Scope {
         Self::Public(project.to_uppercase())
     }
 
-    /// Accept the path after `/api`, matching the existing Svelte boundary.
+    /// Accept the path after `/api`, matching the established REST contract.
     /// Public writes and unsupported reads never fall through to private API.
     pub(crate) fn resolve(&self, method: &Method, path: &str) -> ResolvedRequest {
         if !path.starts_with('/') || path.starts_with("//") {
@@ -178,6 +178,23 @@ impl RoleInputs {
     }
 }
 
+/// A proxy prefix is a path made from ordinary URL segments, never a URL.
+/// Returning the normalized borrowed path keeps browser and response URLs equal.
+pub(crate) fn forwarded_prefix(value: &str) -> Option<&str> {
+    let prefix = value.trim_end_matches('/');
+    (prefix.starts_with('/')
+        && !prefix.is_empty()
+        && prefix[1..].split('/').all(|segment| {
+            !segment.is_empty()
+                && segment != "."
+                && segment != ".."
+                && segment.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~')
+                })
+        }))
+    .then_some(prefix)
+}
+
 /// Static data attributes are supported by Topcoat 0.9. Browser state is
 /// initialized after load, so tokens never enter server-generated markup.
 pub(crate) fn bootstrap_attributes(cx: &Cx, scope: &Scope, require_session: bool) -> Attributes {
@@ -216,9 +233,12 @@ pub(crate) const BROWSER_SCRIPT: &str = r#"
     const refused = () => ({ok:false, status:403, error:"This isn't available in the public view."});
     const audienceChanged = () => ({ok:false, status:null, code:'audience_changed', error:'The view changed. Please try again.'});
 
+    const routeHref = path => window.LificTopcoatRouting?.href(path) ?? path;
+    const currentRoute = () => window.LificTopcoatRouting?.currentPath() ?? (location.hash.startsWith('#/') ? location.hash.slice(1) : location.pathname);
+
     function resolve(path, method='GET') {
         if (!path.startsWith('/') || path.startsWith('//')) return {kind:'refused'};
-        if (state.publicProject === null) return {kind:'private',url:`/api${path}`};
+        if (state.publicProject === null) return {kind:'private',url:routeHref(`/api${path}`)};
         if (method !== 'GET') return {kind:'refused'};
         const [pathname,search=''] = path.split('?');
         const query = new URLSearchParams(search);
@@ -226,7 +246,7 @@ pub(crate) const BROWSER_SCRIPT: &str = r#"
         if (/^\/projects\/\d+\/my-role$/.test(pathname)) return {kind:'synthetic',status:200,body:{role:null,enforced:true,is_admin:false}};
         if (/^\/(issues|pages)\/\d+\/activity$/.test(pathname)) return {kind:'synthetic',status:200,body:{items:[],has_more:false}};
         if (/^\/projects\/\d+\/(mention-candidates|views)$/.test(pathname)) return {kind:'synthetic',status:200,body:[]};
-        const base = `/public/api/projects/${encodeURIComponent(state.publicProject)}`;
+        const base = routeHref(`/public/api/projects/${encodeURIComponent(state.publicProject)}`);
         const suffix = search ? `?${search}` : '';
         let match;
         if (pathname === '/projects') return {kind:'public',url:base,wrapProject:path === '/projects'};
@@ -252,11 +272,11 @@ pub(crate) const BROWSER_SCRIPT: &str = r#"
         };
     }
 
-    function scopedRoute(route) {
-        if (state.publicProject === null || route.startsWith('/public/') || route === '/login' || route === '/signup') return route;
-        const normalized = route.startsWith('/') ? route : `/${route}`;
+    function scopedRoute(logical) {
+        if (state.publicProject === null || logical.startsWith('/public/') || logical === '/login' || logical === '/signup') return routeHref(logical);
+        const normalized = logical.startsWith('/') ? logical : `/${logical}`;
         const overview = normalized.match(/^\/([A-Za-z][A-Za-z0-9_-]*)\/(overview|settings)$/);
-        return overview ? `/public/${overview[1]}/issues` : `/public${normalized}`;
+        return routeHref(overview ? `/public/${overview[1]}/issues` : `/public${normalized}`);
     }
 
     function notify() {
@@ -294,9 +314,9 @@ pub(crate) const BROWSER_SCRIPT: &str = r#"
     }
 
     function redirectAnonymous() {
-        const route = location.hash.startsWith('#/') ? location.hash.slice(1) : location.pathname;
+        const route = currentRoute();
         if (state.publicProject === null && !stored() && document.body?.dataset.lificRequireSession !== 'false' && route !== '/login' && route !== '/signup') {
-            location.replace('/login');
+            location.replace(routeHref('/login'));
         }
     }
 
@@ -416,7 +436,7 @@ pub(crate) const BROWSER_SCRIPT: &str = r#"
     });
     window.addEventListener('lific:account-refresh', () => { void refreshAccount(); });
     function routeScope() {
-        const route = location.hash.startsWith('#/') ? location.hash.slice(1) : location.pathname;
+        const route = currentRoute();
         const match = route.match(/^\/public\/([^/]+)/);
         return match ? decodeURIComponent(match[1]) : null;
     }
@@ -659,6 +679,30 @@ mod tests {
         assert!(affordances.edit && affordances.manage && affordances.comment);
         assert!(!affordances.publish && !affordances.admin);
         assert!(legacy.affordances(&Scope::Private, true).publish);
+    }
+
+    #[test]
+    fn forwarded_prefix_accepts_paths_and_refuses_url_or_traversal_inputs() {
+        assert_eq!(forwarded_prefix("/app/"), Some("/app"));
+        assert_eq!(forwarded_prefix("/team/lific"), Some("/team/lific"));
+        for invalid in [
+            "",
+            "/",
+            "app",
+            "//evil.test",
+            "/app//nested",
+            "/app/../other",
+            "/app/./other",
+            "/app?token=1",
+            "/app#fragment",
+            "/app%2fother",
+            "/app\\other",
+            "/app, /other",
+            "/app\"",
+            "https://evil.test",
+        ] {
+            assert_eq!(forwarded_prefix(invalid), None, "{invalid}");
+        }
     }
 
     #[tokio::test]

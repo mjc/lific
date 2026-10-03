@@ -121,7 +121,8 @@
   root.addEventListener('lific:navigate', event => {
     const destination = new URL(event.detail.href, root.location.href);
     const reducedMotion = root.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    if (!shouldFade(root.location.pathname, destination.pathname, reducedMotion)) return;
+    const logicalPath = path => root.LificTopcoatRouting?.path(path) ?? path;
+    if (!shouldFade(logicalPath(root.location.pathname), logicalPath(destination.pathname), reducedMotion)) return;
     const main = root.document.querySelector('.tc-shell__main');
     if (!main) return;
     main.classList.remove('tc-route-fade');

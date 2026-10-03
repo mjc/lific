@@ -15,13 +15,14 @@ function wave(bytes=12*1024*1024){
  const data=Buffer.alloc(bytes+44,128);data.write('RIFF');data.writeUInt32LE(bytes+36,4);data.write('WAVEfmt ',8);data.writeUInt32LE(16,16);data.writeUInt16LE(1,20);data.writeUInt16LE(1,22);data.writeUInt32LE(48000,24);data.writeUInt32LE(48000,28);data.writeUInt16LE(1,32);data.writeUInt16LE(8,34);data.write('data',36);data.writeUInt32LE(bytes,40);return data;
 }
 
-async function fixture(media=wave(),mime='audio/wav',projectPath='ENG'){
+async function fixture(media=wave(),mime='audio/wav',projectPath='ENG',basePath=''){
  const calls=[];
  const server=http.createServer((request,response)=>{
   const call={url:request.url,method:request.method,headers:request.headers,bytes:0};calls.push(call);
   const send=(body,type='text/html',status=200,headers={})=>{response.writeHead(status,{'Content-Type':type,...headers});response.end(body);};
-  if(request.url==='/__topcoat-public-media.js')return send(vendor('public.media-worker.js'),'text/javascript');
-  if(request.url==='/public/api/projects/ENG/attachments/31'){
+  const route=request.url.startsWith(`${basePath}/`)?request.url.slice(basePath.length):request.url;
+  if(route==='/__topcoat-public-media.js')return send(vendor('public.media-worker.js'),'text/javascript');
+  if(route==='/public/api/projects/ENG/attachments/31'){
    const range=request.headers.range?.match(/^bytes=(\d+)-(\d*)$/);
    const start=range?Number(range[1]):0,end=range&&range[2]?Math.min(Number(range[2]),media.length-1):media.length-1;
    if(start>=media.length)return send('',mime,416,{'Content-Range':`bytes */${media.length}`});
@@ -29,7 +30,7 @@ async function fixture(media=wave(),mime='audio/wav',projectPath='ENG'){
    let offset=start;const transfer=()=>{const next=Math.min(offset+65536,end+1);response.write(media.subarray(offset,next));call.bytes+=next-offset;offset=next;if(offset>end){clearInterval(timer);response.end();}};
    const timer=setInterval(transfer,15);response.on('close',()=>clearInterval(timer));transfer();return;
   }
-  if(/^\/public\/ENG\/issues\//i.test(request.url||''))return send('<main id="mount"></main>');
+  if(/^\/public\/ENG\/issues\//i.test(route||''))return send(`<body data-lific-base-path="${basePath}"><main id="mount"></main></body>`);
   send('unproxied','text/plain',404);
  });
  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
@@ -38,11 +39,12 @@ async function fixture(media=wave(),mime='audio/wav',projectPath='ENG'){
  const browser=await chromium.launch({headless:true,executablePath:process.env.PLAYWRIGHT_EXECUTABLE_PATH});
  const context=await browser.newContext();await context.addCookies([{name:'private_session',value:'must-not-travel',url:origin}]);
  const page=await context.newPage();page.setDefaultTimeout(10000);const errors=[];page.on('pageerror',error=>errors.push(error.message));
- await page.goto(`${origin}/public/${projectPath}/issues/ENG-1`);
- await page.evaluate(({js,attachments,vendors,mime,size})=>{
+ await page.goto(`${origin}${basePath}/public/${projectPath}/issues/ENG-1`);
+ await page.evaluate(({js,attachments,vendors,mime,size,basePath})=>{
   localStorage.setItem('lific_token','private-bearer-must-not-travel');window.transportCalls=[];
+  window.LificTopcoatRouting={href:path=>`${basePath}${path}`,path:path=>path.startsWith(`${basePath}/`)?path.slice(basePath.length):path};
   const nativeFetch=window.fetch;window.fetch=(url,options={})=>{transportCalls.push([String(url),options.credentials,Array.from(new Headers(options.headers).entries())]);return nativeFetch(url,options);};
-  window.lificSession={state:{publicProject:'ENG',user:null},resolve(path,method='GET'){return method==='GET'?{kind:'public',url:`/public/api/projects/ENG${path}`}:{kind:'refused'};},request:async(path)=>{
+  window.lificSession={state:{publicProject:'ENG',user:null},resolve(path,method='GET'){return method==='GET'?{kind:'public',url:`${basePath}/public/api/projects/ENG${path}`}:{kind:'refused'};},request:async(path)=>{
    if(path==='/projects')return {ok:true,data:[{id:7,identifier:'ENG'}]};
    if(path==='/projects/7/index')return {ok:true,data:{issues:[],pages:[]}};
    if(path==='/issues/resolve/ENG-1')return {ok:true,data:{id:11}};
@@ -53,13 +55,12 @@ async function fixture(media=wave(),mime='audio/wav',projectPath='ENG'){
   }};
   document.querySelector('#mount').innerHTML='<section data-topcoat-public="issue-detail" data-public-project="ENG" data-public-identifier="ENG-1" aria-busy="true"><p data-public-status></p><div data-public-error hidden></div><section data-public-content hidden></section></section>';
   (0,eval)(vendors+'\n'+attachments+js);
- },{js:asset('public.js'),attachments,vendors:vendor('vendor.marked.js')+vendor('vendor.dompurify.js')+vendor('vendor.mermaid.js'),mime,size:media.length});
+ },{js:asset('public.js'),attachments,vendors:vendor('vendor.marked.js')+vendor('vendor.dompurify.js')+vendor('vendor.mermaid.js'),mime,size:media.length,basePath});
  await page.waitForFunction(()=>document.querySelector('[data-topcoat-public]').getAttribute('aria-busy')==='false');
  return {page,calls,errors,origin,async close(){await browser.close();server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}};
 }
 
-test('public Markdown nests child lists inside their parent items like legacy marked',{skip},async()=>{
- const {marked}=await import(path.resolve(__dirname,'../../../../web/node_modules/marked/lib/marked.esm.js'));
+test('public Markdown nests child lists inside their parent items like vendored marked',{skip},async()=>{
  const sources=[
   '- Parent\n  - Child',
   '- Parent\n  - Child\n    1. Grandchild\n    2. Grandchild two\n  - Child two\n- Sibling\n\nAfter list.',
@@ -78,15 +79,14 @@ test('public Markdown nests child lists inside their parent items like legacy ma
   '| Name | Count |\n| --- | --- |\n| Widget | 2 |\nParagraph immediately after the table.\n\n| Name | Count |\n| --- | --- |\n# Heading after an empty table\n- Following item',
  ];
  const f=await fixture();try{
-  const cases=sources.map(source=>({source,legacy:marked.parse(source,{breaks:true,gfm:true})}));
-  const results=await f.page.evaluate(cases=>{
+  const results=await f.page.evaluate(sources=>{
    const tree=node=>({tag:node.tagName.toLowerCase(),start:node.getAttribute('start'),language:node.localName==='code'?node.className:null,text:Array.from(node.childNodes).filter(child=>child.nodeType===Node.TEXT_NODE).map(child=>child.textContent.trim()).filter(Boolean).join(' '),children:Array.from(node.children).map(tree)});
-   return cases.map(({source,legacy})=>{
+   return sources.map(source=>{
     const actual=document.createElement('article'),expected=document.createElement('article');
-    LificTopcoatPublic.renderMarkdown(document,actual,source,'ENG');expected.innerHTML=DOMPurify.sanitize(legacy);
+    LificTopcoatPublic.renderMarkdown(document,actual,source,'ENG');expected.innerHTML=DOMPurify.sanitize(marked.parse(source,{breaks:true,gfm:true}));
     return {source,actual:tree(actual),expected:tree(expected)};
    });
-  },cases);
+  },sources);
   for(const {source,actual,expected} of results)assert.deepEqual(actual,expected,source);
   assert.deepEqual(f.errors,[]);
  }finally{await f.close();}
@@ -243,4 +243,22 @@ test('public video larger than 10 MiB plays and seeks without downloading its pa
    assert.deepEqual(f.errors,[]);
   }finally{await f.close();}
  }finally{fs.rmSync(directory,{recursive:true,force:true});}
+});
+
+test('prefixed public media registers within the mount and streams anonymous ranges',{skip},async()=>{
+ const f=await fixture(wave(),'audio/wav','ENG','/app');try{
+  await f.page.locator('[data-public-preview="31"]').click();
+  await f.page.waitForFunction(()=>document.querySelector('audio')?.readyState>=1);
+  assert.equal(await f.page.locator('audio').evaluate(audio=>audio.src),`${f.origin}/app/public/ENG/_media/31`);
+  const registration=await f.page.evaluate(async()=>{
+   const registration=await navigator.serviceWorker.getRegistration();
+   return {scope:registration.scope,script:registration.active.scriptURL};
+  });
+  assert.deepEqual(registration,{scope:`${f.origin}/app/public/`,script:`${f.origin}/app/__topcoat-public-media.js`});
+  const mediaCalls=f.calls.filter(call=>call.url==='/app/public/api/projects/ENG/attachments/31');
+  assert.ok(mediaCalls.length>0);
+  assert.ok(mediaCalls.every(call=>call.headers.range&&!call.headers.cookie&&!call.headers.authorization));
+  assert.equal(f.calls.some(call=>call.url.startsWith('/public/')),false);
+  assert.deepEqual(f.errors,[]);
+ }finally{await f.close();}
 });

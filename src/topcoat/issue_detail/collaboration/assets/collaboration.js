@@ -125,7 +125,10 @@
 
   async function refreshAttachments(root, current = null) {
     const rows = await read(`/attachments?entity_type=issue&entity_id=${root.dataset.issueId}`);
-    if (root.isConnected && (current === null || current === root._collabGeneration)) renderAttachments(root, rows);
+    if (root.isConnected && (current === null || current === root._collabGeneration)) {
+      renderAttachments(root, rows);
+      await resolveAttachmentTarget(root,current);
+    }
   }
 
   async function fetchCommentPage(root, current, before) {
@@ -174,8 +177,14 @@
     if(!before)await resolveCommentHash(root,current);
   }
 
+  const targetFragment = location => /^#(?:comment-[1-9][0-9]*|att[1-9][0-9]*(?:-L[1-9][0-9]*(?:-[1-9][0-9]*)?)?)$/.test(location?.hash||'') ? location.hash : '';
+  const attachmentReference = location => targetFragment(location)?.slice(1) || new URLSearchParams(location?.search||'').get('att') || location?.hash?.slice(1) || '';
+
   async function resolveCommentHash(root,current=null) {
-    const match=globalThis.location?.hash?.match(/^#comment-([1-9][0-9]*)$/)||globalThis.location?.hash?.match(/[?&]comment=([1-9][0-9]*)/);
+    const location=globalThis.location;
+    const query=new URLSearchParams(location?.search||'').get('comment');
+    const fragment=targetFragment(location);
+    const match=fragment ? fragment.match(/^#comment-([1-9][0-9]*)$/) : (/^[1-9][0-9]*$/.test(query||'')?[null,query]:null)||location?.hash?.match(/[?&]comment=([1-9][0-9]*)(?:&|$)/);
     if(!match)return false;
     const targetId=match[1];if(root._commentTargetDone===targetId)return false;if(root._commentTargetPromise&&root._commentTargetId===targetId)return root._commentTargetPromise;
     const id=Number(targetId),promise=(async()=>{let budget=10;
@@ -186,6 +195,31 @@
     })();
     root._commentTargetId=targetId;root._commentTargetPromise=promise;
     try{return await promise;}finally{root._commentTargetDone=targetId;if(root._commentTargetPromise===promise){root._commentTargetPromise=null;root._commentTargetId=null;}}
+  }
+
+  async function resolveAttachmentTarget(root,current=null) {
+    const location=globalThis.location;
+    const reference=String(attachmentReference(location));
+    const match=reference.match(/^att([1-9][0-9]*)(?:-L([1-9][0-9]*)(?:-([1-9][0-9]*))?)?$/);
+    if(!match)return false;
+    const card=root.querySelector(`[data-attachment-id="${match[1]}"]`);
+    if(!card)return false;
+    card.classList.add('tc-attachment--target');card.scrollIntoView?.({block:'center'});
+    if(!match[2]||!['text','diff','csv','json'].includes(card.dataset.attachmentKind))return true;
+    const result=await root._attachmentClient.text(Number(match[1]));
+    const activeReference=String(attachmentReference(globalThis.location));
+    if(!root.isConnected||(current!==null&&current!==root._collabGeneration)||reference!==activeReference)return false;
+    const output=card.querySelector('[data-attachment-content]');output.replaceChildren();output.hidden=false;
+    if(!result.ok){output.textContent=result.error;return false;}
+    const start=Math.min(Number(match[2]),Number(match[3]||match[2])),end=Math.max(Number(match[2]),Number(match[3]||match[2]));
+    const lines=String(result.text).split('\n');let first;
+    lines.forEach((text,index)=>{
+      const line=card.ownerDocument.createElement('span');line.dataset.line=String(index+1);
+      line.textContent=text+(index<lines.length-1?'\n':'');
+      if(index+1>=start&&index+1<=end){line.setAttribute('data-selected','true');first||=line;}
+      output.append(line);
+    });
+    first?.scrollIntoView?.({block:'center'});return true;
   }
 
   async function refresh(root) {
@@ -431,7 +465,7 @@
       user.hidden=dateMode; from.hidden=!dateMode; until.hidden=!dateMode;
     }
     function onFileChange(event){const input=event.target.closest('[data-comment-files]');if(input&&input.files?.length){void uploadCommentFiles(input.dataset.commentFiles,input.files);input.value='';}}
-    function onHashChange(){const hash=globalThis.location?.hash||'';if(root._commentLastHash!==undefined&&root._commentLastHash!==hash)root._commentTargetDone=null;root._commentLastHash=hash;void resolveCommentHash(root,root._collabGeneration);}
+    function onHashChange(){const hash=globalThis.location?.hash||'';if(root._commentLastHash!==undefined&&root._commentLastHash!==hash)root._commentTargetDone=null;root._commentLastHash=hash;void resolveCommentHash(root,root._collabGeneration);void resolveAttachmentTarget(root,root._collabGeneration);}
     root.addEventListener('submit',onSubmit); root.addEventListener('click',onClick); root.addEventListener('input',onInput); root.addEventListener('click',onMention);
     root.addEventListener('change',onWaitKind);root.addEventListener('change',onFileChange);root.addEventListener('keydown',onKeydown); window.addEventListener('lific:issue-detail-applied',onApplied); window.addEventListener('lific:issue-detail-conflict',onConflict); window.addEventListener('lific:account-change',onScope); window.addEventListener('lific:scope-change',onScope);
     window.addEventListener('lific:issue-detail-error',onError);window.addEventListener('hashchange',onHashChange);
@@ -463,6 +497,6 @@
     void refresh(root);
     return root._issueCollaboration;
   }
-  globalThis.LificTopcoatIssueCollaboration={mount,commentMarkup,decorateCommentReferences,renderRelations,renderWaits,renderActivity};
+  globalThis.LificTopcoatIssueCollaboration={mount,commentMarkup,decorateCommentReferences,renderRelations,renderWaits,renderActivity,resolveCommentHash,resolveAttachmentTarget};
   if (typeof document !== 'undefined') for (const root of document.querySelectorAll('[data-topcoat-collaboration]')) if (Number(root.dataset.issueId)) mount(root);
 })();

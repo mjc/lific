@@ -10,8 +10,9 @@ test('headless modules preserve metadata, project issue scope, assignment, and l
     const page=await browser.newPage();page.setDefaultTimeout(5000);const errors=[];page.on('pageerror',error=>errors.push(error.message));
     async function mount({mode='detail',viewer=false,enforced=true,projectLead=null}={}){
       await page.route('http://modules.test/**',route=>route.fulfill({contentType:'text/html',body:`<!doctype html><section data-topcoat-modules="${mode}" data-project-identifier="ENG" data-module-id="2"><p data-modules-status role="status"></p><div data-modules-error role="alert" hidden></div><div data-modules-content></div></section>`}));
-      await page.goto(`http://modules.test/ENG/modules${mode==='detail'?'/2':''}`);
+      await page.goto(`http://modules.test/app/ENG/modules${mode==='detail'?'/2':''}`);
       await page.evaluate(({viewer,enforced,projectLead})=>{
+        window.LificTopcoatRouting={href:route=>`/app${route}`,currentPath:()=>location.pathname.slice(4)};
         window.calls=[];window.destinations=[];window.failure=null;window.role=viewer?'viewer':'maintainer';window.holdWrite=false;window.enforced=enforced;window.projectLead=projectLead;
         window.module={id:2,project_id:3,name:'Engine',description:'Description **markdown**',emoji:'🚀',status:'active',created_at:'yesterday',updated_at:'today'};
         window.issues=[{id:7,project_id:3,module_id:2,identifier:'ENG-7',title:'Engine bug',status:'done'},
@@ -56,9 +57,9 @@ test('headless modules preserve metadata, project issue scope, assignment, and l
         assert.ok(await page.evaluate(()=>calls.some(call=>call.url==='/issues?project_id=3&module_id=2&limit=500&workable=true')));
         assert.equal(await page.locator('[data-module-issue-list]').getByText('Foreign issue').count(),0);
         assert.ok(await page.evaluate(()=>calls.some(call=>call.url==='/issues?project_id=3&module_id=2&limit=500')));
-        assert.equal(await page.getByRole('link',{name:'New issue in module'}).getAttribute('href'),'/ENG/issues/new?module=2');
+        assert.equal(await page.getByRole('link',{name:'New issue in module'}).getAttribute('href'),'/app/ENG/issues/new?module=2');
         await page.getByLabel('Search module issues').fill('cancelled');assert.equal(await page.locator('[data-module-issue-list] li').count(),1);
-        assert.equal(await page.locator('[data-module-issue-list] a').getAttribute('href'),'/ENG/issues/ENG-8');
+        assert.equal(await page.locator('[data-module-issue-list] a').getAttribute('href'),'/app/ENG/issues/ENG-8');
         await page.evaluate(()=>{document.activeElement.blur();dispatchEvent(new PageTransitionEvent('pagehide',{persisted:true}));module.name='Restored module';dispatchEvent(new PageTransitionEvent('pageshow',{persisted:true}));});
         await page.waitForFunction(()=>document.querySelector('[data-module-name]').value==='Restored module');
         assert.equal(await page.evaluate(()=>document.querySelector('[data-topcoat-modules]')._modules.disposed),false);
@@ -66,14 +67,14 @@ test('headless modules preserve metadata, project issue scope, assignment, and l
       await t.test('module description identifiers link to lists and issue references support previews',async()=>{
         await mount();await page.evaluate(async()=>{module.description='ENG-7 and *ENG-DOC-3* with ENG-PLAN-2, `ENG-8`, and [ENG-9](https://example.test/)';await document.querySelector('[data-topcoat-modules]')._modules.load();});
         const body=page.locator('[data-module-description]'),issue=body.getByRole('link',{name:'ENG-7',exact:true});
-        assert.equal(await issue.count(),1);assert.equal(await issue.getAttribute('href'),'/ENG/issues/ENG-7');
-        assert.equal(await body.getByRole('link',{name:'ENG-DOC-3',exact:true}).getAttribute('href'),'/ENG/pages');
-        assert.equal(await body.getByRole('link',{name:'ENG-PLAN-2',exact:true}).getAttribute('href'),'/ENG/plans');
+        assert.equal(await issue.count(),1);assert.equal(await issue.getAttribute('href'),'/app/ENG/issues/ENG-7');
+        assert.equal(await body.getByRole('link',{name:'ENG-DOC-3',exact:true}).getAttribute('href'),'/app/ENG/pages');
+        assert.equal(await body.getByRole('link',{name:'ENG-PLAN-2',exact:true}).getAttribute('href'),'/app/ENG/plans');
         assert.equal(await body.locator('code a, a a').count(),0);
         await issue.focus();await page.locator('[data-reference-preview]').waitFor();assert.match(await page.locator('[data-reference-preview]').textContent(),/ENG-7.*Engine bug/);
         await issue.click({modifiers:['Shift']});await page.getByRole('heading',{name:'ENG-7 · Engine bug'}).waitFor();
         await page.keyboard.press('e');assert.equal(await page.locator('[data-module-description-form]').count(),0);
-        await page.getByRole('button',{name:'Close peek'}).click();await issue.click();await page.waitForURL('http://modules.test/ENG/issues/ENG-7');
+        await page.getByRole('button',{name:'Close peek'}).click();await issue.click();await page.waitForURL('http://modules.test/app/ENG/issues/ENG-7');
       });
       await t.test('stored Lucide icons render on module lists and detail with a safe fallback',async()=>{
         await mount({mode:'list'});await page.evaluate(async()=>{module.emoji='lucide:Rocket';await document.querySelector('[data-topcoat-modules]')._modules.load();});

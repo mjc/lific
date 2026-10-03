@@ -122,7 +122,8 @@
       const identifier = `${project}-${marker || ''}${number}`;
       const link = document.createElement('a');
       const route = `/${project}/${marker === 'DOC-' ? 'pages' : marker === 'PLAN-' ? 'plans' : `issues/${identifier}`}${comment && !marker ? `?comment=${comment}` : ''}`;
-      link.setAttribute('href', globalThis.lificSession?.state?.publicProject != null ? `/public${route}` : route);
+      const logical = globalThis.lificSession?.state?.publicProject != null ? `/public${route}` : route;
+      link.setAttribute('href', globalThis.LificTopcoatRouting?.href(logical) ?? logical);
       link.className = 'identifier-link'; link.textContent = match[0];
       if (!marker) link.setAttribute('data-issue-ident', identifier);
       parent.append(link); offset = pattern.lastIndex;
@@ -147,7 +148,9 @@
             }
           }
         } else {
-          try {url = new URL(rawUrl, document.baseURI);} catch {url = null;}
+          const target = rawUrl.startsWith('/') && !rawUrl.startsWith('//')
+            ? globalThis.LificTopcoatRouting?.href(rawUrl) ?? rawUrl : rawUrl;
+          try {url = new URL(target, document.baseURI);} catch {url = null;}
         }
         const validLink = url && ['http:', 'https:', 'mailto:'].includes(url.protocol);
         const validMedia = url && ['http:', 'https:'].includes(url.protocol);

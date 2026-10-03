@@ -11,20 +11,23 @@ const catalog = {generation: 1, projects: [
   {id: 1, identifier: 'ONE', name: 'One', emoji: '1'},
   {id: 2, identifier: 'TWO', name: 'Two', emoji: null},
 ], groups: [{id: 1, name: 'Work', sort_order: 0, project_ids: [1, 2]}]};
-function fixture(publicProject = '') {
+function fixture(publicProject = '', basePath = '') {
   const data = JSON.stringify(catalog).replaceAll('"', '&quot;');
   return `<!doctype html><html><head><meta name="viewport" content="width=device-width"><style>
     :root{--tc-surface:#fff;--tc-bg:#eee;--tc-text:#222;--tc-muted:#555;--tc-radius:.375rem;--tc-border:#aaa;--tc-focus:#5746a0;--tc-accent:#5746a0;--tc-accent-text:#fff;--tc-font:system-ui} body{margin:0}
-    ${css}</style></head><body style="overflow:auto"><main id="background"><button id="open" class="tc-mobile-trigger" data-mobile-open="" aria-label="Open navigation" aria-controls="tc-mobile-navigation" aria-expanded="false">Navigation</button><button id="outside">Outside</button></main><aside id="already-inert" inert>Existing inert content</aside>
+    ${css}</style></head><body data-lific-base-path="${basePath}" style="overflow:auto"><main id="background"><button id="open" class="tc-mobile-trigger" data-mobile-open="" aria-label="Open navigation" aria-controls="tc-mobile-navigation" aria-expanded="false">Navigation</button><button id="outside">Outside</button></main><aside id="already-inert" inert>Existing inert content</aside>
     <div class="tc-mobile" id="tc-mobile-navigation" data-mobile-navigation data-mobile-catalog="${data}" ${publicProject ? `data-mobile-public-project="${publicProject}"` : ''} data-mobile-active-project="ONE" data-mobile-active-page="issues" data-open="false" data-level="root" role="dialog" aria-label="Navigation" aria-modal="true" aria-hidden="true" inert tabindex="-1">
       <div class="tc-mobile__pane tc-mobile__root" data-mobile-root inert aria-hidden="true"><header class="tc-mobile__header"><span>Lific</span><button data-mobile-close>Close</button></header><nav class="tc-mobile__scroll" aria-label="Projects">${publicProject ? '' : '<a href="/" data-mobile-destination>Home</a>'}<h2>Projects</h2><div data-mobile-project-list></div><p data-mobile-empty hidden>No projects available.</p>${publicProject ? '' : '<a href="/projects/new" data-mobile-destination>New project</a>'}</nav><footer class="tc-mobile__footer">${publicProject ? 'Read only' : '<a href="/settings" data-mobile-destination>Settings</a>'}</footer></div>
       <div class="tc-mobile__pane tc-mobile__project" data-mobile-project inert aria-hidden="true"><header class="tc-mobile__header"><button data-mobile-back>Projects</button><button data-mobile-close>Close</button></header><div class="tc-mobile__project-heading"><h2 data-mobile-project-name>Project</h2><p data-mobile-project-identifier></p></div><nav class="tc-mobile__scroll" data-mobile-destinations aria-label="Project destinations"></nav><p data-mobile-unavailable hidden>This project is no longer available.</p></div>
     </div><script>
       if (!history.state) history.replaceState({unrelated:{value:42}}, '', location.href);
+      const basePath=${JSON.stringify(basePath)};
+      window.LificTopcoatRouting={href:route=>basePath+route,path:pathname=>basePath&&pathname.startsWith(basePath+'/')?pathname.slice(basePath.length):pathname};
+      for(const link of document.querySelectorAll('a[href]'))link.setAttribute('href',LificTopcoatRouting.href(link.getAttribute('href')));
       window.navigationRequests=[];
       window.addEventListener('lific:navigate', event=>{
         window.navigationRequests.push({...event.detail, baseDepth:history.state?.lificMobileNav?.depth});
-        history[event.detail.history==='replace'?'replaceState':'pushState']({...history.state,fixtureRoute:event.detail.href}, '', event.detail.href);
+        history[event.detail.history==='replace'?'replaceState':'pushState']({...history.state,fixtureRoute:event.detail.href}, '', basePath+event.detail.href);
         window.lificMobileNavigation.routeChanged();
       });
     </script><script src="/mobile.js"></script></body></html>`;
@@ -33,7 +36,7 @@ function fixture(publicProject = '') {
 test('mobile browser history, modal behavior, catalog and public scope', {timeout: 90000}, async t => {
   const server = createServer((request, response) => {
     if (request.url === '/mobile.js') { response.setHeader('Content-Type', 'text/javascript'); response.end(script); }
-    else { response.setHeader('Content-Type', 'text/html'); response.end(fixture(request.url.startsWith('/public/') ? 'ONE' : '')); }
+    else { response.setHeader('Content-Type', 'text/html'); const basePath=request.url.match(/^\/(ONE|settings)\/(?:ONE|TWO|public)\//)?.[1];const prefix=basePath?`/${basePath}`:'';const route=request.url.slice(prefix.length);response.end(fixture(route.startsWith('/public/') ? 'ONE' : '',prefix)); }
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const origin = `http://127.0.0.1:${server.address().port}`;
@@ -259,6 +262,24 @@ test('mobile browser history, modal behavior, catalog and public scope', {timeou
       await depth(p, 0); await visible(p, false);
       assert.equal(await p.locator('#background').evaluate(element => element.inert), false);
       await p.close();
+    });
+    await t.test('prefixed drawer links retain the mount and emit logical navigation requests', async () => {
+      for(const prefix of ['/ONE','/settings']) {
+        const p=await page(`${prefix}/ONE/issues`);
+        if(prefix==='/settings')await p.evaluate(()=>{delete window.LificTopcoatRouting;});
+        await p.locator('#open').click();await depth(p,1);
+        await p.locator('[data-mobile-project-trigger="TWO"]').click();await depth(p,2);
+        const link=p.locator('[data-mobile-slug="issues"]');
+        assert.equal(await link.getAttribute('href'),`${prefix}/TWO/issues`);
+        await link.click();await p.waitForFunction(prefix=>location.pathname===`${prefix}/TWO/issues`,prefix);
+        assert.deepEqual(await p.evaluate(()=>navigationRequests),[{href:'/TWO/issues',history:'push',baseDepth:0}]);
+        await p.close();
+      }
+      const p=await page('/ONE/public/ONE/issues');await p.locator('#open').click();await depth(p,1);
+      await p.locator('[data-mobile-project-trigger="ONE"]').click();await depth(p,2);
+      assert.equal(await p.locator('[data-mobile-slug="pages"]').getAttribute('href'),'/ONE/public/ONE/pages');
+      await p.locator('[data-mobile-slug="pages"]').click();await p.waitForFunction(()=>location.pathname==='/ONE/public/ONE/pages');
+      assert.deepEqual(await p.evaluate(()=>navigationRequests),[{href:'/public/ONE/pages',history:'push',baseDepth:0}]);await p.close();
     });
     assert.deepEqual(errors, []);
   } finally {

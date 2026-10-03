@@ -1,6 +1,7 @@
 (() => {
   'use strict';
 
+  const routeHref = (route, win = globalThis) => route.startsWith('/') && !route.startsWith('//') ? (win.LificTopcoatRouting?.href(route) ?? route) : route;
   const STATUS = new Set(['draft', 'active', 'complete', 'archived']);
   const el = (doc, tag, text, className) => {
     const node = doc.createElement(tag);
@@ -25,7 +26,7 @@
         const attachment = url.match(/^\/(?:api\/)?attachments\/(\d+)(?:\/(?:preview|thumbnail))?$/);
         if (attachment) return `<a href="#attachment-${attachment[1]}" data-page-attachment-link="${attachment[1]}">${label}</a>`;
         const safe = url.startsWith('/') || /^https?:\/\//i.test(url);
-        return safe ? `<a href="${url}" rel="nofollow noopener">${label}</a>` : label;
+        return safe ? `<a href="${routeHref(url)}" rel="nofollow noopener">${label}</a>` : label;
       })
       ;
     mentions.forEach((username, index) => {
@@ -124,6 +125,7 @@
       listen(win, 'lific:realtime', event => this.realtime(event.detail));
       listen(win, 'focus', () => { if (!this.editing && !this.commentEditing) void this.load(); });
       listen(win, 'pagehide', () => this.dispose());
+      if(root.dataset.topcoatPages==='detail')listen(win,'hashchange',()=>{void this.followDeepLink(this.generation);});
       void this.load();
     }
     current(generation) { return !this.disposed && generation === this.generation && this.audience === identity(this.session); }
@@ -291,8 +293,8 @@
       if (ordinary.length) target.append(el(this.doc,'h2','Pages'),appendRows(ordinary));
       this.renderFolderTree();
     }
-    detailHref(id) { return `${this.public ? `/public/${encodeURIComponent(this.projectName)}` : `/${encodeURIComponent(this.projectName)}`}/pages/${id}`; }
-    listHref() { return `${this.public ? `/public/${encodeURIComponent(this.projectName)}` : `/${encodeURIComponent(this.projectName)}`}/pages`; }
+    detailHref(id) { return routeHref(`${this.public ? `/public/${encodeURIComponent(this.projectName)}` : `/${encodeURIComponent(this.projectName)}`}/pages/${id}`, this.win); }
+    listHref() { return routeHref(`${this.public ? `/public/${encodeURIComponent(this.projectName)}` : `/${encodeURIComponent(this.projectName)}`}/pages`, this.win); }
     renderFolderTree() {
       const target=byId(this.root,'[data-pages-folder-tree]');if(!target)return;target.replaceChildren();
       const add=(parent,depth)=>{for(const folder of this.folders.filter(item=>(item.parent_id??null)===parent).sort((a,b)=>a.name.localeCompare(b.name))){
@@ -397,6 +399,7 @@
         this.wireMentionInput(byId(this.root, '[data-page-comment-form] textarea[name="content"]'));
         if(!this.public&&this.attachmentClient){if(this.canEdit)this.composer('page');if(this.canComment)this.composer('comment');}
         this.renderLabels(page.labels || [], labels);
+        content.hidden = false;
         await this.followDeepLink(generation);
         if (!this.current(generation)) return;
         content.hidden = false; status.textContent = ''; this.root.setAttribute('aria-busy', 'false');
@@ -754,7 +757,7 @@
       else if (!this.editing && !this.commentEditing) void this.load();
     }
     retryButton(callback) { const button = el(this.doc, 'button', 'Try again', 'tc-button'); button.type='button'; button.addEventListener('click', callback); return button; }
-    navigate(href) { this.win.dispatchEvent(new this.win.CustomEvent('lific:navigate', {detail:{href,history:'push'}})); }
+    navigate(href) { this.win.dispatchEvent(new this.win.CustomEvent('lific:navigate', {detail:{href:this.win.LificTopcoatRouting?.path(href) ?? href,history:'push'}})); }
     showError(error) {
       const node = byId(this.root, this.root.dataset.topcoatPages === 'list' ? '[data-pages-error]' : '[data-page-error]');
       node.hidden = false; node.replaceChildren(el(this.doc, 'p', error.message));
@@ -772,15 +775,29 @@
       const name=el(this.doc,'button',attachment.filename,'tc-button');name.type='button';name.addEventListener('click',()=>void this.downloadAttachment(attachment.id,name));
       const preview=el(this.doc,'button','View','tc-button');preview.type='button';preview.addEventListener('click',()=>void this.viewAttachment(attachment));row.append(name,preview);return row;
     }
-    async viewAttachment(attachment) {
+    async viewAttachment(attachment,lines=null) {
       const viewer=byId(this.root,'[data-page-attachment-viewer]');const status=byId(this.root,'[data-page-attachment-status]');
       const generation=++this.previewGeneration;
-      const isCurrent=()=>generation===this.previewGeneration;
+      const routeGeneration=this.generation;
+      const isCurrent=()=>generation===this.previewGeneration&&this.current(routeGeneration);
       viewer.hidden=false;viewer.replaceChildren();status.textContent='';
       if(/^text\//i.test(attachment.mime||'')||/^(application\/(json|xml)|application\/x-yaml)$/i.test(attachment.mime||'')){
         const result=await this.attachmentClient.text(attachment.id);
         if(!isCurrent())return;
-        if(result.ok){const pre=el(this.doc,'pre');pre.textContent=result.text;viewer.append(pre);return;}
+        if(result.ok){
+          const pre=el(this.doc,'pre');
+          if(!lines)pre.textContent=result.text;
+          else {
+            const text=String(result.text).split('\n');let first;
+            text.forEach((value,index)=>{
+              const line=el(this.doc,'span',value+(index<text.length-1?'\n':''));line.dataset.line=String(index+1);
+              if(index+1>=lines.start&&index+1<=lines.end){line.setAttribute('data-selected','true');first||=line;}
+              pre.append(line);
+            });
+            viewer.append(pre);first?.scrollIntoView?.({block:'center'});return;
+          }
+          viewer.append(pre);return;
+        }
         status.textContent=`Could not preview ${attachment.filename}: ${result.error}`;return;
       }
       if(/^image\//i.test(attachment.mime||'')&&attachment.mime!=='image/svg+xml'){
@@ -823,12 +840,18 @@
     }
     async followDeepLink(generation) {
       const location=this.win.location;const params=new URLSearchParams(location.search||'');
-      const commentId=(params.get('comment')||location.hash.match(/comment-(\d+)/)?.[1]);
+      const fragment=/^#(?:comment-[1-9][0-9]*|(?:attachment-|att)[1-9][0-9]*(?:-L[1-9][0-9]*(?:-[1-9][0-9]*)?)?)$/.test(location.hash||'') ? location.hash : '';
+      const commentId=fragment ? fragment.match(/^#comment-([1-9][0-9]*)$/)?.[1] : params.get('comment');
       if(commentId){while(this.current(generation)&&!this.comments.some(comment=>String(comment.id)===String(commentId))&&this.hasOlderComments){if(!await this.loadOlderComments())break;}
         this.doc.getElementById(`comment-${commentId}`)?.scrollIntoView({block:'center'});}
-      const attachmentRef=(params.get('att')||location.hash.match(/(?:attachment-|att)(\d+)(?:-L\d+-\d+)?/)?.[1]);
-      const attachmentId=String(attachmentRef||'').match(/(?:att)?(\d+)/)?.[1];
-      if(attachmentId){const row=this.doc.getElementById(`attachment-${attachmentId}`)||this.doc.getElementById(`comment-attachment-${attachmentId}`);row?.scrollIntoView({block:'center'});row?.classList.add('tc-page-attachment--target');}
+      const attachmentRef=fragment ? fragment.slice(1) : params.get('att')||location.hash.slice(1);
+      const target=String(attachmentRef||'').match(/^(?:attachment-|att)?([1-9][0-9]*)(?:-L([1-9][0-9]*)(?:-([1-9][0-9]*))?)?$/);
+      if(target){
+        const attachmentId=target[1],row=this.doc.getElementById(`attachment-${attachmentId}`)||this.doc.getElementById(`comment-attachment-${attachmentId}`);
+        row?.scrollIntoView({block:'center'});row?.classList.add('tc-page-attachment--target');
+        const attachment=[...this.attachments,...[...this.commentAttachments.values()].flat()].find(item=>String(item.id)===attachmentId);
+        if(attachment&&target[2]&&this.current(generation))await this.viewAttachment(attachment,{start:Math.min(Number(target[2]),Number(target[3]||target[2])),end:Math.max(Number(target[2]),Number(target[3]||target[2]))});
+      }
     }
     dispose() { if (this.disposed) return; this.disposed = true; this.generation++; this.win.clearTimeout(this.timer); this.listeners.forEach(remove => remove());this.uploads.forEach(task=>task.abort());this.composers.forEach(composer=>composer.dispose());this.composers.clear();this.objectUrls.forEach(url=>this.win.URL.revokeObjectURL(url)); }
   }

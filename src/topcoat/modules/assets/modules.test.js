@@ -44,3 +44,14 @@ test('module icons render installed Lucide names and aliases while escaping lite
   assert.equal(moduleIcon('🚀'),'🚀');assert.equal(moduleIcon('<script>'),'&lt;script&gt;');
   assert.equal(moduleIcon('lucide:MissingIcon'),moduleIcon(null));assert.equal(moduleIcon('lucide:__proto__'),moduleIcon(null));
 });
+
+test('modules list links retain the deployment mount when it matches the project identifier',()=>{
+ const {Controller}=require('./modules.js');
+ globalThis.LificTopcoatRouting={href:path=>`/ENG${path}`};
+ try{
+  const app=Object.create(Controller.prototype),content={querySelectorAll:()=>[],querySelector:()=>null};
+  Object.assign(app,{content,identifier:'ENG',tab:'active',role:null,project:null,issues:[],modules:[{id:2,identifier:'ENG-PLAN-2',name:'Engine',title:'Engine',status:'active'}]});
+  app.renderList();assert.match(content.innerHTML,/href="\/ENG\/ENG\/modules\/2"/);
+  const list={querySelectorAll:()=>[]};content.querySelector=()=>list;app.issues=[{id:7,identifier:'ENG-7',title:'Issue',status:'active'}];app.blocked=new Map();app.workable=new Set();app.query='';app.renderIssues();assert.match(list.innerHTML,/href="\/ENG\/ENG\/issues\/ENG-7"/);
+ }finally{delete globalThis.LificTopcoatRouting;}
+});

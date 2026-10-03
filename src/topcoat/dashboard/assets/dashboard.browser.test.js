@@ -19,9 +19,9 @@ test('headless home and overview render private work and respond to keyboard, li
         <p data-dashboard-status role="status" aria-live="polite">Loading your dashboard…</p>
         <div data-dashboard-errors role="status" aria-live="polite"></div>
         <div data-dashboard-content><h1>Loading</h1></div></section></body></html>`;
-    async function mount(mode, identifier = '') {
+    async function mount(mode, identifier = '', basePath = '') {
       await page.route('http://lific.test/**', route => route.fulfill({contentType: 'text/html', body: frame(mode, identifier)}));
-      await page.goto(`http://lific.test/${identifier ? `${identifier}/overview` : ''}`);
+      await page.goto(`http://lific.test${basePath}/${identifier ? `${identifier}/overview` : ''}`);
       await page.evaluate(() => {
         window.requests = [];
         window.revoked = false;
@@ -49,6 +49,7 @@ test('headless home and overview render private work and respond to keyboard, li
         window.lificSync = {state: {activityBaseline: 12}, setActiveProject(id) {window.activeProject = id;}};
         localStorage.setItem('lific_recents', JSON.stringify([{type: 'page', project: 'LIF', routeId: '4', title: 'Recent page', ts: 1}]));
       });
+      await page.evaluate(basePath => {document.body.dataset.lificBasePath = basePath;window.LificTopcoatRouting = {href: route => `${basePath}${route}`};if(basePath==='/settings')delete window.LificTopcoatRouting;}, basePath);
       await page.addScriptTag({content: script});
       await page.waitForFunction(() => lificDashboard.controller.state.status === 'ready');
     }
@@ -164,6 +165,14 @@ test('headless home and overview render private work and respond to keyboard, li
         assert.equal(await page.locator('.tc-dashboard__skeleton').count(), 1);
         await page.evaluate(async () => {resolveProjects(await originalRequest('/projects')); lificSession.request = originalRequest;});
         await page.getByRole('progressbar').waitFor();
+      });
+      await t.test('dashboard links retain prefixes that match project and settings routes', async () => {
+        for (const prefix of ['/LIF', '/settings']) {
+          await mount('home', '', prefix);
+          assert.equal(await page.getByRole('link', {name: 'Pinned <i>page</i>'}).getAttribute('href'), `${prefix}/LIF/pages/9`);
+          assert.equal(await page.getByRole('link', {name: 'New issue'}).getAttribute('href'), `${prefix}/LIF/issues/new`);
+          assert.ok((await page.locator('[data-dashboard-content] a').evaluateAll(links => links.map(link => link.getAttribute('href')))).every(href => href.startsWith(`${prefix}/`)));
+        }
       });
       assert.deepEqual(errors, []);
     } finally {await browser.close();}

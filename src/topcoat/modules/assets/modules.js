@@ -1,5 +1,7 @@
 (() => {
   'use strict';
+  const routeHref=path=>globalThis.LificTopcoatRouting?.href(path)??path;
+  const currentRoute=()=>globalThis.LificTopcoatRouting?.currentPath()??location.pathname;
   const escapeHtml=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
   const editable=role=>!!role&&(role.is_admin||!role.enforced||['lead','maintainer'].includes(role.role));
   const metadataEditable=(role,project,user)=>!!role&&(role.is_admin||role.role==='lead'||role.enforced&&role.role==='maintainer'||!role.enforced&&project?.lead_user_id!=null&&Number(project.lead_user_id)===Number(user?.id));
@@ -21,7 +23,7 @@
   const saveTab=(project,tab)=>{try{localStorage.setItem(`lific:subtab:modules:${project}`,tab);}catch{}};
 
   class Controller {
-    constructor(root,{session=globalThis.lificSession,sync=globalThis.lificSync,navigate=path=>location.assign(path)}={}){
+    constructor(root,{session=globalThis.lificSession,sync=globalThis.lificSync,navigate=path=>location.assign(routeHref(path))}={}){
       this.root=root;this.session=session;this.sync=sync;this.navigate=navigate;this.mode=root.dataset.topcoatModules;
       this.identifier=root.dataset.projectIdentifier;this.id=Number(root.dataset.moduleId);
       this.content=root.querySelector('[data-modules-content]');this.status=root.querySelector('[data-modules-status]');this.error=root.querySelector('[data-modules-error]');
@@ -82,7 +84,7 @@
       if(!refresh){this.role=null;this.content.replaceChildren();this.project=null;this.module=null;this.issues=[];this.blocked=new Map();this.workable=new Set();}
       this.status.textContent='Loading modules…';this.error.hidden=true;this.root.setAttribute('aria-busy','true');
       try {
-        if(this.session?.state?.publicProject||location.pathname.startsWith('/public/'))throw new Error('Modules are not available in public projects.');
+        if(this.session?.state?.publicProject||currentRoute().startsWith('/public/'))throw new Error('Modules are not available in public projects.');
         if(this.mode==='detail'&&(!Number.isSafeInteger(this.id)||this.id<=0))throw new Error('Invalid module ID.');
         const projects=await this.request('/projects');if(!this.current(turn))return;
         const project=projects.find(item=>item.identifier.toLowerCase()===this.identifier.toLowerCase());
@@ -135,7 +137,7 @@
           <progress max="${assigned.length||1}" value="${done}"></progress><span>${done}/${assigned.length} assigned issues done</span></section>
         ${edit?'<form data-module-create><label>Module name<input name="name" required maxlength="200"></label><label>Icon or emoji<input name="emoji" placeholder="Emoji or lucide:Layers"></label><button type="submit">Create module</button></form>':''}
         ${rows.length?STATUSES.concat(['other']).map(status=>{const group=rows.filter(row=>status==='other'?!STATUSES.includes(row.status):row.status===status).sort((a,b)=>a.name.localeCompare(b.name));
-          return group.length?`<section><h2>${escapeHtml(status)}</h2><ul>${group.map(module=>{const counts=moduleProgress(this.issues,module.id);return `<li><a href="/${encodeURIComponent(this.identifier)}/modules/${module.id}"><span data-module-icon>${moduleIcon(module.emoji)}</span> ${escapeHtml(module.name)}</a>
+          return group.length?`<section><h2>${escapeHtml(status)}</h2><ul>${group.map(module=>{const counts=moduleProgress(this.issues,module.id);return `<li><a href="${routeHref(`/${encodeURIComponent(this.identifier)}/modules/${module.id}`)}"><span data-module-icon>${moduleIcon(module.emoji)}</span> ${escapeHtml(module.name)}</a>
             <p>${escapeHtml(module.description?.split('\n').find(line=>line.trim()&&!line.startsWith('#'))||'')}</p><progress max="${counts.total||1}" value="${counts.done}"></progress><span>${counts.done}/${counts.total} issues done</span></li>`;}).join('')}</ul></section>`:'';}).join(''):
           `<p>${this.modules.length?'No modules in this view.':'No modules yet.'}</p>`}`;
       this.content.querySelectorAll('[data-module-tab]').forEach(button=>button.addEventListener('click',()=>{this.tab=button.dataset.moduleTab;saveTab(this.identifier,this.tab);this.renderList();}));
@@ -147,13 +149,13 @@
       const focused=descriptionForm?.contains(document.activeElement)?document.activeElement:null;
       descriptionForm?.remove();
       const module=this.module,edit=this.metadataEditable(),editIssues=editable(this.role),counts=moduleProgress(this.issues,this.id);
-      this.content.innerHTML=`<nav aria-label="Breadcrumb"><a href="/${encodeURIComponent(this.identifier)}/modules">Modules</a> / ${escapeHtml(module.name)}</nav>
+      this.content.innerHTML=`<nav aria-label="Breadcrumb"><a href="${routeHref(`/${encodeURIComponent(this.identifier)}/modules`)}">Modules</a> / ${escapeHtml(module.name)}</nav>
         <header class="tc-module-heading"><span data-module-icon>${moduleIcon(module.emoji)}</span>${edit?`<label>Module name<input data-module-name value="${escapeHtml(module.name)}"></label>`:`<h1>${escapeHtml(module.name)}</h1>`}
           <label>Status<select aria-label="Module status" data-module-status ${edit?'':'disabled'}>${STATUSES.map(status=>`<option ${module.status===status?'selected':''}>${status}</option>`).join('')}</select></label>
           ${edit?`<label>Icon or emoji<input data-module-emoji value="${escapeHtml(module.emoji||'')}" placeholder="Emoji or lucide:Layers"></label><button type="button" data-module-delete>Delete module</button>`:''}</header>
         <section aria-label="Module progress"><progress max="${counts.total||1}" value="${counts.done}"></progress><span data-module-progress>${counts.done}/${counts.total} issues done</span></section>
         <section><h2>Description</h2><article data-module-description></article>${edit?'<button type="button" data-module-edit-description>Edit description</button>':''}</section>
-        <section><header class="tc-module-heading"><h2>Issues (${this.issues.length})</h2>${editIssues?`<a href="/${encodeURIComponent(this.identifier)}/issues/new?module=${this.id}">New issue in module</a><button type="button" data-module-assign>Assign issue</button>`:''}</header>
+        <section><header class="tc-module-heading"><h2>Issues (${this.issues.length})</h2>${editIssues?`<a href="${routeHref(`/${encodeURIComponent(this.identifier)}/issues/new?module=${this.id}`)}">New issue in module</a><button type="button" data-module-assign>Assign issue</button>`:''}</header>
           <label>Search module issues<input type="search" data-module-search value="${escapeHtml(this.query)}"></label><div data-module-issue-list></div></section>
         <p>Created ${escapeHtml(module.created_at)} · Updated ${escapeHtml(module.updated_at)}</p>`;
       const description=this.content.querySelector('[data-module-description]');
@@ -176,7 +178,7 @@
     renderIssues(){
       const list=this.content.querySelector('[data-module-issue-list]'),query=this.query.toLowerCase().trim(),edit=editable(this.role);
       const rows=this.issues.filter(issue=>`${issue.identifier} ${issue.title}`.toLowerCase().includes(query));
-      list.innerHTML=rows.length?`<ul>${rows.map(issue=>`<li><a href="/${encodeURIComponent(this.identifier)}/issues/${encodeURIComponent(issue.identifier)}">${escapeHtml(issue.identifier)} · ${escapeHtml(issue.title)}</a>
+      list.innerHTML=rows.length?`<ul>${rows.map(issue=>`<li><a href="${routeHref(`/${encodeURIComponent(this.identifier)}/issues/${encodeURIComponent(issue.identifier)}`)}">${escapeHtml(issue.identifier)} · ${escapeHtml(issue.title)}</a>
         <span>${escapeHtml(issue.status)} · ${escapeHtml(issue.priority||'none')}</span><small>${escapeHtml(issueState(issue.id,this.blocked,this.workable))}</small>
         ${edit?`<button type="button" data-module-detach="${issue.id}">Remove from module</button>`:''}</li>`).join('')}</ul>`:`<p>${this.issues.length?'No matching issues.':'No issues in this module.'}</p>`;
       list.querySelectorAll('[data-module-detach]').forEach(button=>button.addEventListener('click',()=>void this.mutate(`/issues/${button.dataset.moduleDetach}`,'PUT',{module_id:null},{assignment:true})));

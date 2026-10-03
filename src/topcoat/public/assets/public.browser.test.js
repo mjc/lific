@@ -16,15 +16,16 @@ test('headless public routes use only public reads, render scrubbed DTOs, and ex
   const pageRow={id:22,title:'Public page',status:'active',content:'# Public page body\n\n*visible* <img src=x onerror=bad()> ![chart](/attachments/31)',private_owner_id:987};
   const comments=[{id:91,author:'writer',author_display_name:'Writer',content:'Public comment **visible** ![comment chart](/attachments/31)',created_at:'2026-01-02T00:00:00Z',user_id:800}];
   const requests=[];const transports=[];
-  const mount=async(kind,identifier='')=>{
+  const mount=async(kind,identifier='',basePath='')=>{
    await page.setContent(shell);await page.locator('#mount').evaluate((root,{kind,identifier})=>root.innerHTML=`<main class="tc-public" data-topcoat-public="${kind}" data-public-project="ENG" data-public-identifier="${identifier}" aria-busy="true" aria-readonly="true"><header><a href="/public/ENG/issues">ENG</a><h1>${kind}</h1></header><p data-public-status></p><div data-public-error hidden></div><section data-public-content hidden></section></main>`,{kind,identifier});
-   await page.evaluate(({js,attachments})=>{
+   await page.evaluate(({js,attachments,basePath})=>{
+    window.LificTopcoatRouting={href:route=>`${basePath}${route}`};
     Object.defineProperty(window,'localStorage',{configurable:true,value:{getItem(){return null;},setItem(){},removeItem(){}}});
     window.publicRequests=[];window.publicFetches=[];
     const project='ENG';
     window.lificSession={state:{publicProject:project,user:null},resolve(path,method='GET'){
       const allowed=method==='GET'&&(/^\/(projects|issues|pages|attachments|modules|folders)(\/|\?|$)/.test(path));
-      return allowed?{kind:'public',url:`/public/api/projects/${project}${path==='/projects'?'':path}`}:{kind:'refused'};
+      return allowed?{kind:'public',url:`${basePath}/public/api/projects/${project}${path==='/projects'?'':path}`}:{kind:'refused'};
     },request:async(path,options={})=>{
       window.publicRequests.push([path,options.method||'GET',options.credentials||'omit',options.headers||null,options.body||null]);
       const method=options.method||'GET';if(method!=='GET'||options.body||options.headers?.Authorization||options.headers?.Cookie)return {ok:false,status:403,error:'public write refused'};
@@ -41,7 +42,7 @@ test('headless public routes use only public reads, render scrubbed DTOs, and ex
     }};
     window.fetch=async(url,options={})=>{window.publicFetches.push([String(url),options.credentials,options.headers&&Array.from(new Headers(options.headers).entries())]);return String(url).includes('/thumbnail')?new Response(new Uint8Array([137,80,78,71]),{status:200,headers:{'Content-Type':'image/png','Content-Length':'4'}}):new Response('file bytes',{status:200,headers:{'Content-Type':'image/png','Content-Length':'10'}});};
     eval(attachments+js);
-   },{js,attachments});
+   },{js,attachments,basePath});
    await page.waitForFunction(()=>document.querySelector('[data-topcoat-public]').getAttribute('aria-busy')==='false');
   };
   await mount('issues');
@@ -60,6 +61,17 @@ test('headless public routes use only public reads, render scrubbed DTOs, and ex
   assert.equal(await page.locator('[data-public-lane="active"] a').innerText(),'ENG-1 · Public title');
   assert.equal(await page.locator('form,textarea,input[type=file]').count(),0);
 
+  await mount('issues','','/app');
+  assert.equal(await page.getByRole('link',{name:'ENG-1 · Public title'}).getAttribute('href'),'/app/public/ENG/issues/ENG-1');
+  await mount('pages','','/app');
+  assert.equal(await page.getByRole('link',{name:'Public page',exact:true}).getAttribute('href'),'/app/public/ENG/pages/22');
+  const prefixedMarkdown=await page.evaluate(()=>{
+    const output=document.createElement('article');
+    LificTopcoatPublic.renderMarkdown(document,output,'[Page](/ENG/pages/22) [Outside](https://example.test/docs) ENG-2 #91','ENG');
+    return [...output.querySelectorAll('a')].map(link=>link.getAttribute('href'));
+  });
+  assert.deepEqual(prefixedMarkdown,['/app/public/ENG/pages/22','https://example.test/docs','/app/public/ENG/issues/ENG-2','#comment-91']);
+  await mount('board');
   await page.setContent(shell);
   await page.locator('#mount').evaluate(root=>root.innerHTML='<main class="tc-public" data-topcoat-public="issue-detail" data-public-project="ENG" data-public-identifier="ENG-1" aria-busy="true"><p data-public-status></p><div data-public-error hidden></div><section data-public-content hidden></section></main>');
   await page.evaluate(()=>{location.hash='#comment-70';});

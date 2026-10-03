@@ -118,6 +118,39 @@ test('settings edits made during the reauthentication replay are sent before cle
   assert.equal(app.state.pendingAction,null);
 });
 
+test('normal settings autosave serializes requests and coalesces later edits without hiding them',async()=>{
+  const releases=[];let stored={instance_name:'Lific',login_message:''};
+  const {app,calls}=setup(async(path,options)=>new Promise(resolve=>releases.push(()=>{
+    stored={...stored,...JSON.parse(options.body)};resolve(ok({...stored}));
+  })));
+  app.state.settings={...stored};
+  const first=app.saveSettings({instance_name:'First'});
+  const second=app.saveSettings({login_message:'Later'});
+  const third=app.saveSettings({instance_name:'Latest'});
+  assert.equal(calls.length,1);
+  assert.equal(app.state.settings.instance_name,'Latest');
+  releases.shift()();await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(calls.length,2);
+  assert.deepEqual(JSON.parse(calls[1].body),{login_message:'Later',instance_name:'Latest'});
+  assert.equal(app.state.settings.instance_name,'Latest');
+  releases.shift()();await Promise.all([first,second,third]);
+  assert.equal(app.state.settings.login_message,'Later');
+  assert.equal(app.state.settings.instance_name,'Latest');
+});
+
+test('ordinary autosave rejection restores stored settings and discards unsent edits',async()=>{
+  let reject;
+  const {app,calls}=setup(()=>new Promise(resolve=>{reject=()=>resolve({ok:false,status:500,error:'Rejected'});}));
+  app.state.settings={instance_name:'Stored',login_message:''};
+  const first=app.saveSettings({instance_name:'Draft'});
+  const second=app.saveSettings({login_message:'Queued'});
+  reject();await Promise.all([first,second]);
+  assert.equal(calls.length,1);
+  assert.equal(app.state.settings.instance_name,'Stored');
+  assert.equal(app.state.settings.login_message,'');
+  assert.equal(app.state.sectionError,'Rejected');
+});
+
 test('tool setup returns each supported clients configuration and guidance',()=>{
   const setup=identity.toolSetup('codex','https://lific.test','one-time-key','linux');
   assert.match(setup.config,/transport\.bearer_token_env_var = "LIFIC_API_KEY"/);
@@ -181,4 +214,10 @@ test('appearance uses the existing local preference keys and font-size values',(
   assert.equal(ctx.appearance().fontScale,'large');
   ctx.saveAppearance('fontScale','small');
   assert.equal(stored.get('lific_font_scale'),'sm');
+});
+
+test('client configuration keeps the deployment prefix in its MCP endpoint',()=>{
+ context.LificTopcoatRouting={href:route=>`/app${route}`};
+ try{assert.equal(JSON.parse(identity.toolSetup('custom','https://lific.test','key').config).url,'https://lific.test/app/mcp');}
+ finally{delete context.LificTopcoatRouting;}
 });

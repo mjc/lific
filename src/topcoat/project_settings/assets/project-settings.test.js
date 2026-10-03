@@ -458,3 +458,66 @@ test("refresh queued during a refused mutation does not leave an unusable passwo
   assert.equal(controller.pending, null);
   assert.match(controller.state.error, /Submit the action again/);
 });
+
+test('repository bindings preserve conflicts and use canonical records for successful add and removal', async () => {
+  const record = {binding: {id: 7, project_id: 4}, identities: [{kind: 'remote', value: 'v1:github.com/acme/app'}]};
+  let refuse = true;
+  const {controller, calls} = setup(async (_path, options) => refuse
+    ? {ok: false, status: 409, error: 'Alias is already bound'}
+    : success(options.method === 'DELETE' ? {deleted: true} : record));
+  await controller.binding('add', {kind: 'remote', value: ' v1:github.com/acme/app '});
+  assert.deepEqual(controller.state.bindings, []);
+  assert.equal(controller.state.error, 'Alias is already bound');
+  refuse = false;
+  await controller.binding('add', {kind: 'remote', value: ' v1:github.com/acme/app '});
+  assert.deepEqual(controller.state.bindings, [record]);
+  assert.deepEqual(calls.at(-1), {path: '/repos/bind', method: 'POST', body: {project: 'LIF', aliases: [{kind: 'remote', value: 'v1:github.com/acme/app'}]}});
+  await controller.binding('remove', {id: 7});
+  assert.deepEqual(controller.state.bindings, []);
+  assert.deepEqual(calls.at(-1), {path: '/repos/bindings/7', method: 'DELETE', body: undefined});
+});
+
+test('viewer binding writes and stale responses cannot change repository state', async () => {
+  let release;
+  const {controller, calls, changeAccount} = setup(() => new Promise(resolve => {release = resolve;}));
+  controller.state.role = {role: 'viewer', enforced: true, is_admin: false};
+  await controller.binding('add', {kind: 'remote', value: 'v1:github.com/acme/app'});
+  assert.equal(calls.length, 0);
+  controller.state.role = {role: 'lead', enforced: true, is_admin: false};
+  const pending = controller.binding('add', {kind: 'remote', value: 'v1:github.com/acme/app'});
+  changeAccount();release(success({binding: {id: 7}, identities: []}));await pending;
+  assert.deepEqual(controller.state.bindings, []);
+});
+
+test('root binding preserves the canonical first-parent root commit alias', async () => {
+  const alias = {kind: 'root', value: 'v1:0123456789abcdef0123456789abcdef01234567'};
+  const record = {binding: {id: 7, project_id: 4}, identities: [alias]};
+  const {controller, calls} = setup(async () => success(record));
+  await controller.binding('add', {...alias, value: ` ${alias.value} `});
+  assert.deepEqual(calls.at(-1), {path: '/repos/bind', method: 'POST', body: {project: 'LIF', aliases: [alias]}});
+  assert.deepEqual(controller.state.bindings, [record]);
+});
+
+test('binding writes require a lead or admin even when general role enforcement is off', async () => {
+  const alias = {kind: 'remote', value: 'v1:github.com/acme/app'};
+  const record = {binding: {id: 7, project_id: 4}, identities: [alias]};
+  const {controller, calls} = setup(async () => success(record));
+  controller.env.userId = () => 2;
+  for (const role of ['viewer', 'maintainer', null]) {
+    controller.state.role = {role, enforced: false, is_admin: false};
+    assert.equal(await controller.binding('add', alias), false);
+    assert.equal(await controller.binding('remove', {id: 7}), false);
+  }
+  assert.equal(calls.length, 0);
+  for (const role of [
+    {role: 'lead', enforced: false, is_admin: false},
+    {role: 'viewer', enforced: false, is_admin: true},
+  ]) {
+    controller.state.role = role;
+    assert.equal(await controller.binding('add', alias), true);
+  }
+  controller.state.role = {role: 'viewer', enforced: false, is_admin: false};
+  controller.env.userId = () => 1;
+  assert.equal(await controller.binding('add', alias), true);
+  assert.equal(calls.length, 3);
+});

@@ -11,16 +11,18 @@ test('headless pages keep scope, permissions, markdown safety, explicit saves an
  const frame=`<!doctype html><html><head><style>${css}</style></head><body><main id="mount"></main></body></html>`;
  const list=`<section class="tc-pages" data-topcoat-pages="list" data-project-identifier="ENG" data-page-scope="private" aria-busy="true"><header><h1>Pages</h1><button data-page-create hidden>New page</button><details data-page-create-presets hidden><summary>New page as</summary><button data-page-create-preset="draft">Draft</button><button data-page-create-preset="active">Active</button><button data-page-create-preset="complete">Complete</button></details></header><p data-pages-status></p><div data-pages-error hidden></div><form data-pages-filters><input data-pages-search type="search"><select data-pages-status-filter><option value="__active" selected>Active</option><option value="">All</option><option>active</option><option>draft</option><option>complete</option><option>archived</option></select><select data-pages-folder><option value="">All</option></select><select data-pages-label-filter><option value="">All labels</option></select><button data-pages-folder-create hidden>New folder</button></form><nav data-pages-tabs><button data-pages-tab="browse" aria-current="page">Browse</button><button data-pages-tab="recent">Recent</button><button data-pages-tab="drafts">Drafts</button><button data-pages-tab="archived">Archived</button></nav><ul data-pages-folder-tree></ul><div data-pages-content></div><dialog data-pages-create-dialog><form data-pages-create-form><input name="title" required><select name="status"><option value="draft">Draft</option><option value="active">Active</option><option value="complete">Complete</option></select><select name="folder_id"></select><button value="cancel">Cancel</button><button type="submit">Create</button></form></dialog><dialog data-pages-peek-dialog><h2 data-pages-peek-title></h2><article data-pages-peek-content></article><a data-pages-peek-open>Open page</a><button data-pages-peek-close>Close</button></dialog></section>`;
  const detail=`<section class="tc-pages tc-page-detail" data-topcoat-pages="detail" data-project-identifier="ENG" data-page-id="1" data-page-scope="private" aria-busy="true"><p data-page-status-message></p><div data-page-error hidden></div><article data-page-content hidden><nav><a href="/ENG/pages">Pages</a><span data-page-folder-crumb></span></nav><input data-page-title><div><select data-page-lifecycle><option value="draft">Draft</option><option value="active">Active</option></select><button data-page-pin hidden></button><button data-page-export>Export Markdown</button><button data-page-delete hidden>Delete</button></div><label data-page-folder-control hidden>Folder <select data-page-folder></select></label><div data-page-labels></div><section data-page-editor><button data-page-edit hidden>Edit</button><button data-page-preview hidden>Edit Markdown</button><button data-page-save disabled>Save</button><button data-page-cancel hidden>Cancel</button><textarea data-page-body hidden></textarea><article data-page-preview-content></article><p data-page-save-status></p></section><section data-page-attachments><ul data-page-attachment-list></ul><label data-page-attachment-upload hidden><input data-page-files type="file" multiple></label><p data-page-attachment-status></p><div data-page-attachment-viewer hidden></div></section><section data-page-comments><ol data-page-comment-list></ol><button data-page-comments-older hidden>Load older comments</button><form data-page-comment-form><textarea name="content" required></textarea><input data-page-comment-files type="file" multiple><button type="submit">Comment</button></form></section><section><ol data-page-activity></ol></section></article></section>`;
- const setup=async(mode,publicMode=false,pageContent=null,roleValue=null,rowCount=1,targetHash='',skipReadyWait=false,pageProjectId=7,failThumbnail=false,delayAttachmentList=false,failOlderComments=false,delayImagePreview=false)=>{
-  await page.setContent(frame);await page.locator('#mount').evaluate((el,{html,publicMode})=>el.innerHTML=publicMode?html.replace('data-page-scope="private"','data-page-scope="public"'):html,{html:mode==='list'?list:detail,publicMode});
+ await page.route('http://pages.test/**',route=>route.fulfill({contentType:'text/html',body:frame}));
+ const setup=async(mode,publicMode=false,pageContent=null,roleValue=null,rowCount=1,targetHash='',skipReadyWait=false,pageProjectId=7,failThumbnail=false,delayAttachmentList=false,failOlderComments=false,delayImagePreview=false,basePath='')=>{
+  await page.goto(`http://pages.test${basePath}/ENG/pages`);await page.setContent(frame);await page.locator('#mount').evaluate((el,{html,publicMode})=>el.innerHTML=publicMode?html.replace('data-page-scope="private"','data-page-scope="public"'):html,{html:mode==='list'?list:detail,publicMode});
   await page.addScriptTag({content:fs.readFileSync(`${__dirname}/../../attachments/assets/attachments.js`,'utf8')});
-  await page.evaluate(({publicMode,pageContent,roleValue,rowCount,pageProjectId,failThumbnail,delayAttachmentList,failOlderComments,delayImagePreview})=>{
+  await page.evaluate(({publicMode,pageContent,roleValue,rowCount,pageProjectId,failThumbnail,delayAttachmentList,failOlderComments,delayImagePreview,basePath})=>{
+   window.LificTopcoatRouting={href:route=>`${basePath}${route}`,path:pathname=>basePath&&pathname.startsWith(`${basePath}/`)?pathname.slice(basePath.length):pathname};
    window.rows=Array.from({length:rowCount},(_,index)=>({id:index+1,project_id:index===0?pageProjectId:7,identifier:`ENG-PG-${index+1}`,folder_id:2,title:index===0?'Page one':`Page ${index+1}`,content:index===0?(pageContent||'# Start\n\n<script>bad()</script>'):'Preview needle',preview:index===0?'Start':'Preview needle',status:['active','draft','archived'][index%3],pinned:index===0,labels:['docs']}));
-   window.comments=[{id:9,page_id:1,user_id:3,author:'riley',author_display_name:'Riley',content:'Read **this** @riley',created_at:'2026-10-01T00:00:00Z'}];window.writes=[];window.failPageSave=false;window.delayComment=false;window.role=roleValue||{role:'maintainer',enforced:true,is_admin:false};
-   window.lificSession={state:{publicProject:publicMode?'ENG':null,user:{id:3,is_admin:false}},request:async(path,options={})=>{
+   window.comments=[{id:9,page_id:1,user_id:3,author:'riley',author_display_name:'Riley',content:'Read **this** @riley',created_at:'2026-10-01T00:00:00Z'}];window.writes=[];window.failPageSave=false;window.failCommentSave=false;window.delayComment=false;window.role=roleValue||{role:'maintainer',enforced:true,is_admin:false};
+   window.lificSession={state:{publicProject:publicMode?'ENG':null,user:{id:3,is_admin:Boolean(roleValue?.accountAdmin)},role},request:async(path,options={})=>{
     writes.push([path,options.method||'GET',options.body]);
     if(path==='/projects')return {ok:true,data:[{id:7,identifier:'ENG'},{id:8,identifier:'OPS'}]};
-    if(path==='/auth/me')return {ok:true,data:{is_admin:false}};
+    if(path==='/auth/me')return {ok:true,data:lificSession.state.user};
     if(path.endsWith('/my-role'))return {ok:true,data:role};
     if(path==='/projects/7/mention-candidates')return {ok:true,data:[{user_id:3,username:'riley',display_name:'Riley'}]};
     if(path==='/projects/7/index')return {ok:true,data:{pages:rows.map(({id,project_id,identifier,folder_id,title,status,pinned,labels,content})=>({id,project_id,identifier,folder_id,title,status,pinned,labels,preview:content.slice(0,200)}))}};
@@ -34,19 +36,22 @@ test('headless pages keep scope, permissions, markdown safety, explicit saves an
     if(path==='/labels'&&options.method==='POST')return {ok:true,data:{name:JSON.parse(options.body).name}};
     if(path.startsWith('/pages/1/comments?')){const params=new URLSearchParams(path.split('?')[1]);if(params.has('before_id')&&window.failOlderComments)return {ok:false,status:500,error:'Could not load older comments.'};return {ok:true,data:[...comments].reverse(),headers:new Headers({'x-comment-has-more':window.failOlderComments?'true':'false'})};}
     if(path==='/pages/1/activity?limit=100')return {ok:true,data:{items:[{action:'updated',created_at:'Today'}]}};
+    const workspaceDenied=rows[0].project_id===null&&role.enforced&&!lificSession.state.user.is_admin;
+    if((path==='/pages/1'||path.startsWith('/pages/1/comments'))&&workspaceDenied)return {ok:false,status:403,error:'Only an admin can access workspace-level pages'};
+    if(path==='/pages/1'&&options.method==='PUT'&&role.enforced&&!lificSession.state.user.is_admin&&!['maintainer','lead'].includes(role.role))return {ok:false,status:403,error:'Page editing requires maintainer access'};
     if(path==='/pages/1'&&options.method==='PUT'){if(window.failPageSave)return {ok:false,status:500,error:'Server rejected the edit'};const patch=JSON.parse(options.body);if(window.delayPageSave)await new Promise(resolve=>window.releasePageSave=()=>{rows[0]={...rows[0],...patch};resolve();});else rows[0]={...rows[0],...patch};return {ok:true,data:rows[0]};}
     if(path==='/pages/1'&&window.lificSession.state.publicProject&&window.blockPublicDetail)return {ok:false,status:404,error:'No public page'};
     if(path==='/pages/1')return {ok:true,data:rows[0]};
-    if(path==='/pages/1/comments'&&options.method==='POST'){const comment={id:10,page_id:1,user_id:3,author:'riley',content:JSON.parse(options.body).content,created_at:'2026-10-02T00:00:00Z'};if(window.delayComment)await new Promise(resolve=>window.releaseComment=()=>{comments.push(comment);resolve();});else comments.push(comment);return {ok:true,data:comment};}
+    if(path==='/pages/1/comments'&&options.method==='POST'){if(window.failCommentSave)return {ok:false,status:403,error:'Commenting is no longer permitted'};const comment={id:10,page_id:1,user_id:3,author:'riley',content:JSON.parse(options.body).content,created_at:'2026-10-02T00:00:00Z'};if(window.delayComment)await new Promise(resolve=>window.releaseComment=()=>{comments.push(comment);resolve();});else comments.push(comment);return {ok:true,data:comment};}
     if(path.startsWith('/comments/')&&options.method==='PUT'){const id=Number(path.split('/')[2]);const submitted=JSON.parse(options.body).content;const save=()=>{const index=comments.findIndex(item=>item.id===id);const comment={...comments[index],content:submitted};comments[index]=comment;return comment;};if(window.delayCommentUpdate)return new Promise(resolve=>window.releaseCommentUpdate=()=>resolve({ok:true,data:save()}));return {ok:true,data:save()};}
     return {ok:false,status:404,error:`Unexpected ${options.method||'GET'} ${path}`};
    }};
    window.attachmentEvents=[];window.exportEvents=[];window.delayPageAttachmentList=delayAttachmentList;window.releaseAttachmentLists=[];window.failThumbnail=failThumbnail;window.failOlderComments=failOlderComments;window.delayImagePreview=delayImagePreview;window.delayCommentUpdate=false;window.LificTopcoatAttachments={createComposer:window.LificTopcoatAttachments?.createComposer,createClient:({session,win})=>({audience:()=>session.state.publicProject?'public:'+session.state.publicProject:'private:'+session.state.user.id,list:target=>{const path=`/attachments?${new URLSearchParams(target)}`;if(target.entity_type==='page'&&window.delayPageAttachmentList)return new Promise(resolve=>releaseAttachmentLists.push(()=>session.request(path).then(resolve)));return session.request(path);},streamDownload:async(id,{variant,open})=>{attachmentEvents.push([id,variant]);if(id===8&&window.delayImagePreview){await new Promise(resolve=>window.releaseImagePreview=resolve);window.delayImagePreview=false;}if(variant==='thumbnail'&&(id===12||window.failThumbnail))return {ok:false,error:'Thumbnail unavailable'};const destination=await open({filename:id===12?'notes.txt':'sample.webp',contentType:id===12?'text/plain':'image/webp'});await destination.write(new Uint8Array([1,2,3]));await destination.close();return {ok:true,filename:'sample.webp',contentType:'image/webp'};},text:async id=>({ok:true,text:`Text attachment ${id}`}),upload:(file,options)=>{attachmentEvents.push(['upload',file.name,options.target]);return {result:Promise.resolve({ok:true,data:{id:9,filename:file.name,mime:file.type}}),abort(){}};}} )};window.fetch=async url=>{exportEvents.push(url);return new Response('metadata\ntitle: Page one',{status:200,headers:{'Content-Disposition':'attachment; filename="ENG-PG-1.zip"'}})};
    window.addEventListener('lific:navigate',event=>window.navigatedTo=event.detail.href);
    window.confirm=()=>true;window.prompt=()=> 'Research';window.scrollTargets=[];Element.prototype.scrollIntoView=function(){window.scrollTargets.push(this.id);};
-  },{publicMode,pageContent,roleValue,rowCount,pageProjectId,failThumbnail,delayAttachmentList,failOlderComments,delayImagePreview});
+  },{publicMode,pageContent,roleValue,rowCount,pageProjectId,failThumbnail,delayAttachmentList,failOlderComments,delayImagePreview,basePath});
   if(targetHash)await page.evaluate(hash=>history.replaceState({},'',hash),targetHash);
-  await page.evaluate(()=>{window.lificSession.resolve=(path,method='GET')=>({kind:window.lificSession.state.publicProject?'public':'private',url:`/api${path}`});});
+  await page.evaluate(()=>{window.lificSession.resolve=(path,method='GET')=>({kind:window.lificSession.state.publicProject?'public':'private',url:`${window.LificTopcoatRouting.href('/api')}${path}`});});
   await page.addScriptTag({content:js});if(!skipReadyWait)await page.waitForFunction(()=>document.querySelector('[data-topcoat-pages]').getAttribute('aria-busy')==='false');
  };
  try{
@@ -120,6 +125,66 @@ test('headless pages keep scope, permissions, markdown safety, explicit saves an
   await t.test('page detail derives permissions and breadcrumbs from the page project',async()=>{
    await setup('detail',false,null,null,1,'',false,8);assert.equal(await page.locator('nav a').getAttribute('href'),'/OPS/pages');
    assert.ok(await page.evaluate(()=>writes.some(([path])=>path==='/projects/8/my-role')));
+  });
+  await t.test('project viewer can comment independently of page editing and refused comment writes retain the draft',async()=>{
+   await setup('detail',false,null,{role:'viewer',enforced:true,is_admin:false});
+   assert.equal(await page.locator('[data-page-edit]').isVisible(),false);
+   assert.equal(await page.locator('[data-page-title]').isDisabled(),true);
+   assert.equal(await page.locator('[data-page-lifecycle]').isDisabled(),true);
+   assert.equal(await page.locator('[data-page-delete]').isVisible(),false);
+   assert.equal(await page.locator('[data-page-attachment-upload]').isVisible(),false);
+   assert.equal(await page.locator('[data-page-comment-form]').isVisible(),true);
+   await page.locator('[data-page-title]').dispatchEvent('change');
+   assert.equal(await page.evaluate(()=>writes.filter(([path,method])=>path==='/pages/1'&&method==='PUT').length),0);
+   const composer=page.locator('[data-page-comment-form] textarea[name="content"]');await composer.fill('Viewer comment');
+   await page.locator('[data-page-comment-form] button[type="submit"]').click();await page.locator('#comment-10').waitFor();
+   assert.equal(await composer.inputValue(),'');
+   assert.equal(await page.evaluate(()=>comments.at(-1).content),'Viewer comment');
+   await composer.fill('Preserved after role loss');await page.evaluate(()=>window.failCommentSave=true);
+   await page.locator('[data-page-comment-form] button[type="submit"]').click();await page.getByText('Commenting is no longer permitted',{exact:true}).waitFor();
+   assert.equal(await composer.inputValue(),'Preserved after role loss');
+   assert.equal(await page.locator('[data-page-content]').isVisible(),true);
+   assert.equal(await page.locator('[data-page-comment-form]').isVisible(),true);
+   assert.equal(await page.locator('[data-page-edit]').isVisible(),false);
+   await page.evaluate(()=>window.failCommentSave=false);await page.locator('[data-page-comment-form] button[type="submit"]').click();
+   await page.waitForFunction(()=>comments.at(-1).content==='Preserved after role loss');
+   assert.equal(await composer.inputValue(),'');
+  });
+  await t.test('workspace administrator edits and comments without inheriting an unrelated project role',async()=>{
+   await setup('detail',false,null,{role:'viewer',enforced:true,is_admin:false,accountAdmin:true},1,'',false,null);
+   assert.equal(await page.locator('[data-page-edit]').isVisible(),true);
+   assert.equal(await page.locator('[data-page-title]').isDisabled(),false);
+   assert.equal(await page.locator('[data-page-comment-form]').isVisible(),true);
+   assert.equal(await page.locator('[data-page-folder-control]').isVisible(),false);
+   assert.equal(await page.locator('[data-page-pin]').isVisible(),false);
+   assert.equal(await page.evaluate(()=>writes.some(([path])=>path.endsWith('/my-role'))),false);
+   const composer=page.locator('[data-page-comment-form] textarea[name="content"]');await composer.fill('Workspace comment draft');
+   await page.locator('[data-page-edit]').click();await page.locator('[data-page-body]').fill('Saved workspace content');
+   await page.getByRole('button',{name:'Save',exact:true}).click();await page.waitForFunction(()=>rows[0].content==='Saved workspace content');
+   assert.equal(await composer.inputValue(),'Workspace comment draft');
+   await page.locator('[data-page-edit]').click();await page.locator('[data-page-body]').fill('Workspace refused draft');await page.evaluate(()=>window.failPageSave=true);
+   await page.getByRole('button',{name:'Save',exact:true}).click();await page.getByText('Server rejected the edit',{exact:true}).waitFor();
+   assert.equal(await page.locator('[data-page-body]').inputValue(),'Workspace refused draft');
+   assert.equal(await composer.inputValue(),'Workspace comment draft');
+   await page.locator('[data-page-comment-form] button[type="submit"]').click();await page.locator('#comment-10').waitFor();
+   assert.equal(await page.evaluate(()=>comments.at(-1).content),'Workspace comment draft');
+   assert.equal(await page.locator('[data-page-body]').inputValue(),'Workspace refused draft');
+  });
+  await t.test('enforced workspace access rejects nonadmins and unenforced workspace pages remain editable and commentable',async()=>{
+   await setup('detail',false,null,{role:'maintainer',enforced:true,is_admin:false},1,'',false,null);
+   await page.getByText('Only an admin can access workspace-level pages',{exact:true}).waitFor();
+   assert.equal(await page.locator('[data-page-content]').isVisible(),false);
+   assert.equal(await page.locator('[data-page-edit]').isVisible(),false);
+   assert.equal(await page.locator('[data-page-comment-form]').isVisible(),false);
+   assert.equal(await page.evaluate(()=>writes.some(([,method])=>method==='PUT'||method==='POST')),false);
+   await setup('detail',false,null,{role:null,enforced:false,is_admin:false},1,'',false,null);
+   assert.equal(await page.locator('[data-page-edit]').isVisible(),true);
+   assert.equal(await page.locator('[data-page-comment-form]').isVisible(),true);
+   await page.locator('[data-page-edit]').click();await page.locator('[data-page-body]').fill('Unenforced workspace edit');
+   await page.getByRole('button',{name:'Save',exact:true}).click();await page.waitForFunction(()=>rows[0].content==='Unenforced workspace edit');
+   await page.locator('[data-page-comment-form] textarea[name="content"]').fill('Unenforced workspace comment');
+   await page.locator('[data-page-comment-form] button[type="submit"]').click();await page.locator('#comment-10').waitFor();
+   assert.equal(await page.evaluate(()=>comments.at(-1).content),'Unenforced workspace comment');
   });
   await t.test('page attachment previews fetch thumbnail image bytes and uploads stay page scoped',async()=>{
    await setup('detail',false,'![sample](/attachments/8)',null,1,'#att8-L1-2');await page.locator('[data-page-preview-content] img').waitFor();
@@ -230,6 +295,23 @@ test('headless pages keep scope, permissions, markdown safety, explicit saves an
    const reopened=page.getByRole('textbox',{name:'Edit comment'});await reopened.fill('Replacement editor draft');
    await page.evaluate(()=>window.releaseCommentUpdate());await page.waitForTimeout(50);
    assert.equal(await reopened.inputValue(),'Replacement editor draft');
+  });
+  await t.test('prefixed page routes keep breadcrumbs, Markdown links, list links and exports under the mount',async()=>{
+   await setup('detail',false,'[Linked page](/ENG/pages/2) [External](https://example.test/docs)',null,1,'',false,7,false,false,false,false,'/app');
+   assert.equal(await page.locator('nav a').getAttribute('href'),'/app/ENG/pages');
+   assert.equal(await page.getByRole('link',{name:'Linked page',exact:true}).getAttribute('href'),'/app/ENG/pages/2');
+   assert.equal(await page.getByRole('link',{name:'External',exact:true}).getAttribute('href'),'https://example.test/docs');
+   await page.locator('[data-page-export]').click();await page.waitForFunction(()=>exportEvents.length>0);
+   assert.equal(await page.evaluate(()=>exportEvents[0]),'/app/api/export/pages/ENG-PG-1');
+   await setup('list',false,null,null,1,'',false,7,false,false,false,false,'/app');
+   assert.equal(await page.getByRole('link',{name:'Page one',exact:true}).getAttribute('href'),'/app/ENG/pages/1');
+  });
+  await t.test('new page fragment navigation overrides the initial query target',async()=>{
+   await setup('detail',false,null,null,1,'?comment=9&att=att12-L2');
+   await page.evaluate(()=>{window.scrollTargets=[];location.hash='att12-L1';});
+   await page.waitForFunction(()=>document.querySelector('[data-page-attachment-viewer] [data-line="1"][data-selected]'));
+   assert.equal(await page.locator('[data-page-attachment-viewer] [data-selected]').count(),1);
+   assert.equal(await page.evaluate(()=>scrollTargets.includes('comment-9')),false);
   });
   await t.test('public page render remains read-only and never sends writes',async()=>{
    await setup('detail',true);assert.equal(await page.locator('[data-page-edit]:visible').count(),0);assert.equal(await page.locator('[data-page-comment-form]').isVisible(),false);

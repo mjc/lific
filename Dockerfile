@@ -34,30 +34,17 @@
 #   docker exec <container> lific --db /data/lific.db user create \
 #     --username <name> --email <address> --password <password> --admin
 
-# Stage 1: web UI, embedded into the binary via rust-embed.
-# vite reads ../Cargo.toml for the version, so it's copied alongside.
-FROM oven/bun:1 AS web
-WORKDIR /src/web
-COPY web/package.json web/bun.lock ./
-RUN bun install --frozen-lockfile
-COPY Cargo.toml /src/Cargo.toml
-COPY web/ ./
-RUN bun run build
-
-# Stage 2: the binary. rustls + bundled SQLite, so no OpenSSL or sqlite dev
-# packages are needed; the stock slim image's C toolchain is enough. The
-# Debian release here MUST match the distroless runtime below, or the binary
-# links a newer glibc than the runtime ships.
+# Topcoat renders and embeds its assets directly from the Rust source tree.
+# The Debian release must match the runtime's glibc.
 FROM rust:1-slim-trixie AS build
 WORKDIR /src
 COPY . .
-COPY --from=web /src/web/dist ./web/dist
 RUN cargo build --release --locked
 # Pre-create the data dir with the runtime UID; distroless has no shell to
 # mkdir/chown with, and a VOLUME dir created at run time would be root-owned.
 RUN mkdir /data && chown 65532:65532 /data
 
-# Stage 3: runtime. distroless/cc = glibc + CA certs + nothing else.
+# Runtime. distroless/cc = glibc + CA certs + nothing else.
 FROM gcr.io/distroless/cc-debian13:nonroot
 COPY --from=build /src/target/release/lific /usr/local/bin/lific
 COPY --from=build --chown=65532:65532 /data /data

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Smoke-test a release binary: it starts on its own, serves the API, and
-# actually carries the built web UI inside it.
+# carries the Topcoat runtime and frontend assets inside it.
 #
 # A partial bundle can return index.html while its missing assets also return
 # HTML through the SPA fallback. Check the bundles as well as the document,
@@ -42,7 +42,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Everything below runs here, so a binary that reads web/dist, migrations, or a
+# Everything below runs here, so a binary that reads frontend assets, migrations, or a
 # lific.toml out of the caller's working directory fails instead of passing on
 # borrowed files.
 cd "$scratch"
@@ -179,17 +179,24 @@ if ! grep -qi '<html' "$scratch/index.html"; then
   exit 1
 fi
 
-# The shell only proves the frontend shipped if the bundles it names are
-# really in the binary, so collect the root-relative asset URLs it points at.
-# Vite writes exactly these: /assets/<name>-<hash>.js and .css.
-assets="$(grep -Eo '/assets/[A-Za-z0-9._~%+-]+\.(js|css)' "$scratch/index.html" | sort -u || true)"
-js_assets="$(printf '%s\n' "$assets" | grep -E '\.js$' | head -n 3 || true)"
-css_assets="$(printf '%s\n' "$assets" | grep -E '\.css$' | head -n 3 || true)"
-
-if [[ -z ${js_assets//[[:space:]]/} || -z ${css_assets//[[:space:]]/} ]]; then
-  echo "the web root names no /assets JavaScript and stylesheet pair, so this" >&2
-  echo "binary was built without the web UI (or with a placeholder shell)" >&2
-  sed -n '1,40p' "$scratch/index.html" >&2
+# Every asset referenced by the Topcoat document must ship in the binary.
+# Legacy Vite bundles must not remain in a production release.
+if grep -Eq '(src|href)="/assets/' "$scratch/index.html"; then
+  echo "the web root still references a retired frontend bundle" >&2
+  exit 1
+fi
+assets="$(grep -Eo '/__topcoat-[A-Za-z0-9._~%+-]+\.(js|css)' "$scratch/index.html" | sort -u || true)"
+js_assets="$(printf '%s\n' "$assets" | grep -E '\.js$' || true)"
+css_assets="$(printf '%s\n' "$assets" | grep -E '\.css$' || true)"
+if ! printf '%s\n' "$js_assets" | grep -Fxq '/__topcoat-runtime.js' || [[ -z ${css_assets//[[:space:]]/} ]]; then
+  echo "the web root is missing the Topcoat runtime or stylesheet" >&2
+  exit 1
+fi
+retired_status="$(curl --silent --show-error --connect-timeout 2 --max-time 15 \
+  --output /dev/null --write-out '%{http_code}' \
+  "http://127.0.0.1:$port/assets/index-retired.js")"
+if [[ $retired_status != 404 ]]; then
+  echo "retired frontend assets must return 404, got $retired_status" >&2
   exit 1
 fi
 

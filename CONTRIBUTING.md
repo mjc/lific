@@ -8,7 +8,7 @@ If you want to discuss an idea before writing code, open an issue. If you have a
 
 - **Source**: [github.com/VoidNullable/lific](https://github.com/VoidNullable/lific)
 - **License**: Apache-2.0
-- **Stack**: Rust 2024 edition (MSRV 1.88), Svelte 5 frontend (Tailwind v4, Vite, Bun)
+- **Stack**: Rust 2024 edition (MSRV 1.99), Topcoat 0.9 frontend with embedded JavaScript and CSS
 - **Docs**: [lific.dev/docs](https://lific.dev/docs)
 
 ## Building
@@ -29,123 +29,91 @@ devenv shell
 devenv test
 ```
 
-Entering the default shell runs the web workspace's frozen Bun install task,
-not the test suite. The same task is a prerequisite of builds and checks.
-Formatting is explicit with `treefmt`; shell entry never reformats sources.
-The native Bun installer is disabled because it does not support frozen
-installs; there is only one installer per workspace, without a separate cache
-that can outlive `node_modules`. The other JavaScript workspaces have profiles:
-
-```bash
-devenv --profile docs tasks run lific:docs:check
-devenv --profile e2e tasks run lific:e2e
-devenv --profile promo tasks run lific:promo:check
-```
-
-Project build tasks always build the frontend before compiling the Rust binary,
-and release binaries must embed a current `web/dist/` through `rust-embed`:
+The default environment supplies Rust and Node for the application and its
+frontend checks. Bun installs dependencies for the documentation, browser-test,
+and promo workspaces through frozen-lockfile tasks. Entering a shell prepares
+the selected workspace; project checks run through explicit tasks.
 
 ```bash
 devenv tasks run lific:debug-build
-devenv --profile release-linux tasks run lific:release:x86_64-unknown-linux-gnu # locked dist binary
+devenv --profile docs tasks run lific:docs:check
+devenv --profile topcoat-e2e tasks run lific:topcoat:e2e
+devenv --profile promo tasks run lific:promo:check
 ```
 
-Start the backend and frontend together through devenv's native process manager:
+Lific v3 uses Topcoat for all browser routes. Rust embeds its pages, browser
+runtime, JavaScript, CSS, and image assets from `src/topcoat` into each debug
+and release executable. The same build works from an isolated package source
+copy, and the resulting executable can serve its interface from any directory.
+
+Start the development server through devenv's process manager:
 
 ```bash
 devenv up
 ```
 
-The two processes are intentional: Vite provides frontend hot reload and API
-proxying during development, while the Rust process is the real server and
-embeds `web/dist` into release binaries. The backend restarts automatically
-when Rust source or Cargo configuration changes. Both bind to localhost by
-default; set `VITE_HOST` and `VITE_ALLOWED_HOSTS` explicitly when remote UI
-access is needed.
+The Rust server handles the browser interface, REST, MCP, OAuth, and WebSocket
+connections on one port. The managed backend uses an explicit development
+configuration and stores its database under `.devenv/state/`. Its initial
+administrator name is `Devenv`, with password `devenv-local-password`.
+These credentials belong to the development instance; operator configurations
+are excluded from that process. The backend restarts when its watched sources
+or Cargo configuration change.
 
-The managed backend uses an explicit development configuration and stores its
-database under `.devenv/state/`. Its initial administrator name is `Devenv`,
-with password `devenv-local-password`. These credentials belong to the local
-development instance. Existing project, user, and system Lific configurations
-are not loaded by these processes.
+Use `cargo fmt` for Rust and the pinned Topcoat CLI for macro bodies:
+
+```bash
+devenv tasks run lific:topcoat:fmt
+```
+
+On NixOS and nix-darwin, use the repository's devenv workflow. If an existing
+shell's `DEVENV_ROOT` belongs to another project, start a fresh command in this
+checkout.
 
 ## Tests
 
 ```bash
 devenv test
+devenv tasks run lific:topcoat:test
+devenv --profile topcoat-e2e tasks run lific:topcoat:e2e
 ```
 
-The Devenv test graph runs native treefmt and Clippy, all-target Rust tests,
-Svelte checks and unit tests, the frontend build, and the release smoke
-regression test. Documentation is checked in its profile:
-
-```bash
-devenv --profile docs tasks run lific:docs:check
-```
-
-The browser suites use their profile's frozen Bun install and build the web
-prerequisite through the task graph:
-
-```bash
-devenv --profile e2e tasks run lific:e2e
-```
-
-The promo profile has the same task-graph entry point:
-
-```bash
-devenv --profile promo tasks run lific:promo:check
-```
+The project graph runs Rust tests, frontend unit checks, release smoke
+regressions, and environment checks. Treefmt and Clippy use the pinned Rust
+toolchain. Browser tests use the E2E workspace's pinned Playwright dependency
+and the profile's Chromium executable. Topcoat tests live next to their
+features under `src/topcoat`; `e2e` holds their shared browser dependency.
 
 The checks exercise these behaviors:
 
-- Rust tests cover MCP tool behavior, REST boundaries, CLI parsing and help,
-  first boot and initialization on a real temporary filesystem, imports,
-  exports, issue references, rate limiting, retention, previews, caller
-  resolution, and error handling. Most use in-memory SQLite; `lific init`
-  tests use self-cleaning on-disk temporary directories because that command
-  creates files and opens a database by path.
-- MCP pre-init contract tests cover server and tool discovery rejection, ping
-  and ignored traffic, continued handshakes, broken-pipe termination, and EOF
-  termination.
-- Web unit tests cover frontend helpers and state transitions that do not need
-  a browser. The web check task also typechecks the Svelte app and Vite config.
-- `smoke` starts a real binary, seeds a project, and visits the core overview,
-  issue, page, board, settings, and navigation routes while checking rendered
-  content and browser errors.
-- `archives` runs two real server instances and exercises archive export/import,
-  stale downloads, permissions, oversized uploads, mobile export, and failure
-  handling across admin and regular-user sessions.
-- `public` checks public project, issue, and page rendering, pagination,
-  sanitization of hostile Markdown/HTML, attachment URL handling, anonymous
-  access, and that public pages never call credentialed private APIs.
-- `sidebar`, `mobile-nav`, and `context-menu` use focused browser fixtures to
-  cover responsive layout, keyboard/focus behavior, touch targets, project and
-  group recovery, ordering rollback, theme readability, route reveal, and
-  native modified-link behavior without requiring a full seeded application.
-  The native-link cases capture CDP events and browser state so Ctrl-click and
-  middle-click popup regressions retain useful failure evidence.
-- The release smoke check runs each native artifact's `--version` and `--help`,
-  starts it with a temporary config/database, and fetches its API, embedded HTML,
-  and JavaScript/CSS bundles. Missing assets that return the SPA fallback fail.
-- `devenv test` also starts the actual backend and Vite processes through the
-  native process manager, waits for their readiness probes, checks the UI and
-  API proxy, then stops both. Its freshly allocated database is under
+- Rust tests cover MCP and REST contracts, CLI behavior, first boot, imports,
+  exports, authorization, migrations, issue references, retention, and server
+  routing. Topcoat route tests check page composition, asset content types,
+  private/public/auth chrome, and preservation of the Axum API routes.
+- Frontend unit tests cover session and role changes, request scope, shared
+  shell navigation, preferences, keyboard controls, live synchronization,
+  issue filters and edits, attachments, pages, plans, modules, and public reads.
+- Browser tests exercise focus and keyboard behavior, responsive navigation,
+  session transitions, draft recovery, serialized saves, project administration,
+  public Markdown and Mermaid safety, attachment capture and upload, previews,
+  and anonymous media playback and seeking.
+- Release smoke checks run each native artifact's version and help commands,
+  start it with a temporary configuration and database, and fetch its API,
+  rendered HTML, JavaScript, and CSS from a directory outside the checkout.
+  Empty assets or HTML returned in place of JavaScript/CSS fail the check.
+- Environment checks cover shell/task boundaries, formatter ordering,
+  compiler consistency, cross-linker settings, and package source allowlists.
+  Package sources exclude local databases, dependency installs, and build caches.
+- `devenv test` starts the actual backend through the process manager, waits for
+  readiness, and stops it afterward. Its temporary database lives under
   `DEVENV_RUNTIME`, separate from the persistent development database.
-- Environment regression checks verify shell/test task boundaries, formatter
-  ordering, compiler consistency, and the packaged source allowlists.
 
-The packaged frontend uses the same `web/bun.lock` as local builds and platform
-releases. After intentionally updating that lockfile, regenerate its Nix
-dependency manifest through the pinned Devenv tool:
+Documentation and promo checks have their own profiles:
 
 ```bash
-devenv tasks run lific:web:lock-update
+devenv --profile docs tasks run lific:docs:check
+devenv --profile promo tasks run lific:promo:check
 ```
-
-The test graph rejects a stale generated manifest. Nix package inputs are
-explicit source files, never local databases, dependency installs, or build
-caches. The package builds and embeds a fresh UI with the version from
-`Cargo.toml`; it never uses or removes the checkout's `web/dist`.
 
 Every new MCP tool and REST endpoint should ship with tests. Conventions:
 
@@ -184,8 +152,8 @@ project check task without the test lifecycle.
 
 ## Release builds
 
-Pushing a version tag runs the release workflow. It builds the embedded web UI
-and produces locked `dist` artifacts for Linux x86_64 and aarch64,
+Pushing a version tag runs the release workflow. It compiles the Topcoat pages
+and browser assets into locked `dist` artifacts for Linux x86_64 and aarch64,
 macOS x86_64 and aarch64, and Windows x86_64 (MSVC). Linux targets use the
 devenv-provided Zig linker. macOS targets build on macOS runners; the Windows
 MSVC artifact is cross-built on Linux using the `release-windows-msvc` profile.
@@ -193,6 +161,11 @@ A Windows runner verifies its checksum and executes those exact bytes before
 publication. CI also retains native Windows Clippy and all-target Rust tests.
 The workflow publishes SHA-256 checksums and attaches all five binaries to the
 GitHub release.
+
+Follow the [deployment and rollback instructions](docs/topcoat-migration.md#deployment-and-rollback)
+when upgrading an instance. Dependency changes must follow the
+[pinned Topcoat upgrade policy](docs/topcoat-migration.md#pinned-topcoat-upgrade-policy),
+including route parity and release artifact checks.
 
 For a local Linux cross-build:
 

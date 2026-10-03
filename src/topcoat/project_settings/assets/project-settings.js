@@ -60,6 +60,7 @@
       groups: [],
       labels: [],
       members: [],
+      bindings: [],
       users: [],
       capabilities: null,
       error: "",
@@ -190,7 +191,7 @@
         this.env.saveDownload(result.data);
       });
     }
-    canExportArchive() {
+    canManageBindings() {
       return (
         !!this.state.role &&
         (this.state.role.is_admin ||
@@ -198,6 +199,9 @@
           (this.env.userId?.() != null &&
             this.state.project?.lead_user_id === this.env.userId()))
       );
+    }
+    canExportArchive() {
+      return this.canManageBindings();
     }
     exportArchive(confirmed) {
       if (!confirmed || !this.canExportArchive()) return Promise.resolve(false);
@@ -327,12 +331,13 @@
           `/projects/${project.id}/my-role`,
           `/labels?project_id=${project.id}`,
           `/projects/${project.id}/members`,
+          `/projects/${project.id}/bindings`,
         );
       const results = await Promise.all(
         paths.map((path) => this.request(path)),
       );
       if (!current()) return;
-      const [groups, users, capabilities, role, labels, members] = results;
+      const [groups, users, capabilities, role, labels, members, bindings] = results;
       const failures = results.filter((result) => !result.ok);
       if (role && !role.ok) {
         this.publish({
@@ -367,6 +372,7 @@
         role: role?.data || null,
         labels: labels?.data || [],
         members: members?.data || [],
+        bindings: bindings?.data || [],
         warning: failures.map((result) => result.error).join(" "),
       });
       if (!refresh && this.refreshQueued) void this.refresh();
@@ -379,7 +385,9 @@
         identity === null ||
         this.state.busy ||
         this.state.refreshing ||
-        (permission && !permissions(this.state.role)[permission])
+        (permission && !(permission === "bindings"
+          ? this.canManageBindings()
+          : permissions(this.state.role)[permission]))
       )
         return false;
       this.publish({ busy: true, error: "", warning: "", authNotice: "" });
@@ -514,13 +522,29 @@
         }
       });
     }
+    binding(action, input) {
+      return this.mutate("bindings", async (live) => {
+        const result = await this.required(
+          action === "remove" ? `/repos/bindings/${input.id}` : "/repos/bind",
+          action === "remove" ? "DELETE" : "POST",
+          action === "remove" ? undefined : {
+            project: this.state.project.identifier,
+            aliases: [{ kind: input.kind, value: input.value.trim() }],
+          },
+        );
+        if (!live()) return;
+        const bindings = this.state.bindings.filter(record =>
+          record.binding.id !== (action === "remove" ? input.id : result.binding.id));
+        this.publish({ bindings: action === "remove" ? bindings : [...bindings, result] });
+      });
+    }
     deleteProject(confirmation) {
       return this.mutate("manage", async (live) => {
         if (confirmation !== this.state.project.identifier)
           throw new Error("Type the project identifier to confirm deletion.");
         await this.required(`/projects/${this.state.project.id}`, "DELETE");
         if (live()) {
-          this.publish({ project: null });
+          this.publish({ project: null, status: "idle" });
           this.env.navigate?.("/");
         }
       });
@@ -685,7 +709,10 @@
     return value;
   }
   function link(doc, text, href) {
-    return node(doc, "a", text, { href, class: "tc-button" });
+    return node(doc, "a", text, {
+      href: doc.defaultView?.LificTopcoatRouting?.href(href) ?? href,
+      class: "tc-button",
+    });
   }
   function section(doc, title) {
     const value = node(doc, "section");
@@ -1099,6 +1126,29 @@
     submit(doc, group, "Save group");
     grouping.append(group);
     fragment.append(grouping);
+    const repositories = section(doc, "Repository bindings");
+    for (const record of state.bindings) {
+      const row = node(doc, "div", null, { class: "tc-project-settings__row" });
+      row.append(node(doc, "p", record.identities.map(alias => `${alias.kind}: ${alias.value}`).join(" · ")));
+      if (controller.canManageBindings()) row.append(button(doc, "Remove binding", () => {
+        if (doc.defaultView.confirm("Remove this repository binding?"))
+          void controller.binding("remove", { id: record.binding.id });
+      }));
+      repositories.append(row);
+    }
+    if (!state.bindings.length) repositories.append(node(doc, "p", "No repositories are bound to this project."));
+    if (controller.canManageBindings()) {
+      const bind = form(doc, "binding", null, values => controller.binding("add", values));
+      field(doc, bind, "kind", "Repository alias type", "remote", {
+        select: [["remote", "Remote"], ["root", "Root commit"]],
+      });
+      field(doc, bind, "value", "Repository alias", "", { required: true });
+      bind.append(node(doc, "p", "Run lific bind --json in the checkout and copy an alias's exact kind and value, including the v1: prefix."));
+      bind.append(node(doc, "p", "Remote example: v1:github.com/acme/app. Root commit example: v1:0123456789abcdef0123456789abcdef01234567."));
+      submit(doc, bind, "Bind repository");
+      repositories.append(bind);
+    }
+    fragment.append(repositories);
     const members = section(doc, "Project members");
     for (const member of state.members) {
       const row = node(doc, "div", null, { class: "tc-project-settings__row" });
@@ -1426,7 +1476,7 @@
               ? undefined
               : JSON.stringify(request.body),
         }),
-      navigate: (path) => win.location.assign(path),
+      navigate: (path) => win.location.assign(win.LificTopcoatRouting?.href(path) ?? path),
       reauthenticate: async (password) => {
         const userId = session.state.user?.id;
         const result = await session.request("/auth/me/refresh", {
@@ -1449,7 +1499,7 @@
         const token = win.localStorage.getItem("lific_token"),
           owner = identity();
         try {
-          const response = await win.fetch("/api" + path, {
+          const response = await win.fetch(win.LificTopcoatRouting?.href("/api" + path) ?? "/api" + path, {
             headers: token ? { Authorization: `Bearer ${token}` } : {},
             cache: "no-store",
           });
@@ -1499,7 +1549,8 @@
           const xhr = new win.XMLHttpRequest(),
             token = win.localStorage.getItem("lific_token"),
             owner = identity();
-          xhr.open("POST", "/api/project-archives");
+          const path = "/api/project-archives";
+          xhr.open("POST", win.LificTopcoatRouting?.href(path) ?? path);
           if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
           xhr.upload.onprogress = (event) =>
             onProgress(

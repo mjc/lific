@@ -178,6 +178,10 @@ devenv allow && devenv shell
 devenv tasks run lific:debug-build
 ```
 
+Lific v3 embeds its Topcoat interface in the executable. No separate frontend build is required.
+
+Keep a pre-upgrade backup and the previous executable. See the [migration and rollback instructions](docs/topcoat-migration.md#deployment-and-rollback).
+
 [CONTRIBUTING.md](CONTRIBUTING.md) covers tests and release builds.
 
 ## Community
