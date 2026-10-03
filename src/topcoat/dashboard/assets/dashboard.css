@@ -90,3 +90,4 @@
 .tc-dashboard__main > h2 { display: flex; align-items: center; min-height: 1.1rem; }
 .tc-dashboard__count { line-height: 1.6; }
 .tc-dashboard__card > h2 .tc-dashboard__link { line-height: 1.6; }
+.tc-dashboard__main .tc-dashboard__card > .tc-dashboard__link:last-child { text-align: center; font-size: .6875rem; color: var(--tc-faint); padding: .5rem 1rem; }
