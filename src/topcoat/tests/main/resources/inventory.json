@@ -1,0 +1,265 @@
+{
+  "baseline": "9683d38af8e1e6f9b076439fe90d9519109b2218",
+  "files": [
+    {
+      "source": "web/tests/altText.test.ts",
+      "target": "src/topcoat/tests/main/resources/altText.test.js",
+      "cases": [
+        "folds newlines and collapses runs of whitespace",
+        "strips brackets that would terminate the alt early",
+        "reduces a whitespace-only input to nothing",
+        "locates the alt of the reference at the insertion point",
+        "ignores a bracket pair that is not an image reference",
+        "falls back to searching from the start when the offset is past it",
+        "returns null when there is no image reference",
+        "replaces the filename placeholder with the description",
+        "rewrites the reference at the offset, not an earlier one",
+        "fills an empty alt slot",
+        "treats a blank description as a skip",
+        "leaves the document alone when the reference is gone",
+        "sanitizes on the way in so the reference cannot be broken",
+        "tolerates an out-of-range offset"
+      ]
+    },
+    {
+      "source": "web/tests/annotateMath.test.ts",
+      "target": "src/topcoat/tests/main/resources/annotateMath.test.js",
+      "cases": [
+        "normalizes a drag in any direction to a positive rect",
+        "clips a rect that overhangs the image",
+        "collapses a rect that lies entirely outside the image",
+        "block size scales with the region's short side, within bounds",
+        "downsamples to one pixel per block and paints back over the region",
+        "the intermediate buffer holds far fewer samples than the region",
+        "clips the sampled region to the image before sampling",
+        "returns null for a degenerate region",
+        "never produces a zero-dimension buffer for a sub-block region",
+        "fits a large image into the viewport and never upscales a small one",
+        "stroke width tracks the image's short side within sane limits",
+        "moves a single edge and leaves the others alone",
+        "moves both axes for a corner handle",
+        "pins the rect at the minimum instead of inverting it",
+        "keeps the rect inside the image",
+        "returns snapshots newest first and reports emptiness",
+        "drops the oldest entries past the limit",
+        "clear empties the history",
+        "keeps jpeg as jpeg and flattens everything else to png",
+        "marks the annotated copy and fixes the extension"
+      ],
+      "additionalTargets": [
+        "src/topcoat/tests/main/resources/annotation.browser.test.js"
+      ]
+    },
+    {
+      "source": "web/tests/ansi.test.ts",
+      "target": "src/topcoat/tests/main/resources/ansi.test.js",
+      "cases": [
+        "plain text becomes one unstyled span",
+        "colors the run between an SGR code and its reset",
+        "combines attributes and clears them individually",
+        "reads bright, 256-color and truecolor forms",
+        "an empty parameter list is a reset",
+        "strips sequences it does not support instead of printing them",
+        "carries style across a line boundary",
+        "a line of pure escapes still yields one empty span",
+        "merges adjacent runs that share a style",
+        "detects and removes escapes",
+        "maps style to css, swapping colors when inverted"
+      ]
+    },
+    {
+      "source": "web/tests/attachmentDeepLink.test.ts",
+      "target": "src/topcoat/tests/main/resources/attachmentDeepLink.test.js",
+      "cases": [
+        "formats single lines and ranges",
+        "normalizes a backwards range",
+        "parses with or without the leading hash",
+        "rejects anything that is not an attachment line anchor",
+        "reads the path-style fragment",
+        "reads the query carried on a hash route",
+        "returns null for routes and anchors that carry no target",
+        "adds and removes the query without disturbing other params",
+        "keeps the hash route intact when selecting a line",
+        "uses the bare fragment when the route is not in the hash",
+        "turns a hash route into a path-style URL",
+        "preserves a sub-path deployment prefix",
+        "keeps an existing path-style location as-is",
+        "reads extensions off a filename",
+        "mime wins for media and images",
+        "extension decides what kind of text a text/plain file is",
+        "works with no mime at all, as markdown links do",
+        "unknown types fall back to the download chip"
+      ]
+    },
+    {
+      "source": "web/tests/bigPaste.test.ts",
+      "target": "src/topcoat/tests/main/resources/bigPaste.test.js",
+      "cases": [
+        "counts lines without inventing one for empty text",
+        "the line threshold is strict at 60",
+        "the character threshold is strict at 6000",
+        "ordinary pastes are left alone",
+        "generates a local-time paste-YYYYMMDD-HHMM.txt filename",
+        "wraps the pasted text as a text/plain file",
+        "describes the paste by whichever threshold it tripped"
+      ]
+    },
+    {
+      "source": "web/tests/csv.test.ts",
+      "target": "src/topcoat/tests/main/resources/csv.test.js",
+      "cases": [
+        "reads a header row and body rows",
+        "honors quotes, escaped quotes, and embedded separators",
+        "keeps newlines inside a quoted field",
+        "tolerates CRLF and a UTF-8 BOM",
+        "caps rows but still reports the true total",
+        "reports the widest row for a ragged file",
+        "an empty document yields no headers and no rows",
+        "splits on tabs when told to",
+        "prefers the extension",
+        "falls back to the most common candidate in the first line",
+        "compares numbers numerically and text case-insensitively",
+        "sinks blanks in both directions",
+        "does not mutate the input",
+        "treats a missing cell as blank"
+      ]
+    },
+    {
+      "source": "web/tests/diff.test.ts",
+      "target": "src/topcoat/tests/main/resources/diff.test.js",
+      "cases": [
+        "splits files and counts each side",
+        "numbers lines from the hunk header, per side",
+        "keeps the +/- marker out of the line text",
+        "summarizes with correct pluralization",
+        "handles a bare diff -u with no git header",
+        "names new and deleted files from the surviving side",
+        "flags binary files and gives them no hunk lines",
+        "discards a format-patch preamble",
+        "an empty or prose-only document parses to nothing",
+        "sniffs a diff by its hunk header"
+      ]
+    },
+    {
+      "source": "web/tests/downscale.test.ts",
+      "target": "src/topcoat/tests/main/resources/downscale.test.js",
+      "cases": [
+        "offers a resize for an image past the long-edge threshold",
+        "offers a resize once the file passes 80% of the cap",
+        "declines to offer when resizing would change nothing",
+        "leaves ordinary images alone",
+        "never offers for formats the canvas cannot re-encode",
+        "ignores images with no measurable dimensions",
+        "a smaller cap pulls the offer threshold down with it",
+        "output mime preserves the source type where the canvas can",
+        "scaled dimensions keep the aspect ratio and never upscale",
+        "the size estimate tracks pixel count and stays plausible",
+        "reads the byte cap out of the server's rejection"
+      ]
+    },
+    {
+      "source": "web/tests/files.test.ts",
+      "target": "src/topcoat/tests/main/resources/files.test.js",
+      "cases": [
+        "rounds to the coarsest useful unit",
+        "a file past the grace window goes on the next pass",
+        "states how many references go with the file",
+        "admins and maintainers may delete anyone's file",
+        "a viewer may delete only their own upload",
+        "fails open while the viewer is unknown",
+        "an uploaderless file is not deletable by a plain viewer",
+        "issues route by identifier, pages by numeric id",
+        "a comment lands on the entity its thread lives on",
+        "an unresolvable link has no route",
+        "a comment reference says so on the chip",
+        "uploader options are distinct, sorted, and skip deleted accounts",
+        "every class has a label"
+      ]
+    },
+    {
+      "source": "web/tests/issueExport.test.ts",
+      "target": "src/topcoat/tests/main/resources/issueExport.test.js",
+      "cases": [
+        "exports only requested issues, in order, using authentication",
+        "refuses a partial export when a selected issue fails",
+        "cancels the response when aggregate bytes exceed the limit"
+      ]
+    },
+    {
+      "source": "web/tests/projectArchives.test.ts",
+      "target": "src/topcoat/tests/main/resources/projectArchives.test.js",
+      "cases": [
+        "archive fetch returns bytes without saving and forwards cancellation and session",
+        "session observers see same-tab refresh and logout and unsubscribe cleanly"
+      ]
+    },
+    {
+      "source": "web/tests/uploadQueue.test.ts",
+      "target": "src/topcoat/tests/main/resources/uploadQueue.test.js",
+      "cases": [
+        "runs at most `limit` tasks at once",
+        "a rejected task frees its slot and does not stall the queue",
+        "a task that throws synchronously rejects rather than wedging a slot",
+        "resolves with each task's own value, in completion order",
+        "a limit below one is clamped to serial execution"
+      ]
+    },
+    {
+      "source": "web/tests/voiceNote.test.ts",
+      "target": "src/topcoat/tests/main/resources/voiceNote.test.js",
+      "cases": [
+        "stamps local date and time to the minute",
+        "zero-pads every field",
+        "sorts lexicographically in chronological order",
+        "follows the container the platform actually recorded",
+        "ignores codec parameters",
+        "falls back to webm for anything unrecognised",
+        "prefers opus in webm when it is available",
+        "falls through to the first supported container",
+        "returns undefined when nothing is supported",
+        "treats a throwing isTypeSupported as unsupported",
+        "every candidate is a concrete audio type",
+        "renders m:ss under an hour",
+        "adds an hours field past an hour",
+        "clamps a negative elapsed time to zero",
+        "reads silence as zero",
+        "saturates at one for a full-scale signal",
+        "scales quiet speech into a visible range",
+        "handles an empty buffer"
+      ]
+    },
+    {
+      "source": "e2e/project-archives.ts",
+      "target": "src/topcoat/tests/main/resources/project-archives.browser.test.mjs",
+      "cases": [
+        "ok  source UI archive download",
+        "ok  empty-instance import, counts, other-tab discovery, graph, comment, page, attachment, privacy, mobile report",
+        "ok  duplicate ID, invalid extension, server-sourced browser size cap",
+        "ok  in-flight navigation and duplicate-submit guard, lost response remains unknown after reload, no automatic retry",
+        "ok  delayed export aborts on project navigation, account change and same-user session replacement, no stale download event",
+        "ok  pending warnings isolated by user ID, old-account progress/report hidden, own-only reset, session-refresh and logout retention",
+        "ok  regular-user controls hidden and POST denied in legacy mode, mobile export, no unexpected console errors"
+      ],
+      "notes": "Real isolated executable/database/browser. Archive uses two instances, authentic downloaded gzip, real import and actual attached bytes; delay probes forward real backend responses. Discord exports and named connections run independently of selection presentation checks."
+    },
+    {
+      "source": "e2e/discord-feedback.ts",
+      "target": "src/topcoat/tests/main/resources/discord-feedback.browser.test.mjs",
+      "cases": [
+        "ok   Discord issue selection, export, icons (${width}px)",
+        "ok   Discord custom/named connection lifecycle (390px)"
+      ],
+      "notes": "Real isolated executable/database/browser. Archive uses two instances, authentic downloaded gzip, real import and actual attached bytes; delay probes forward real backend responses. Discord exports and named connections run independently of selection presentation checks."
+    }
+  ],
+  "translation_notes": {
+    "altText": "Original insertion offsets selected an image. Current production edits the same selected reference by attachment ID; same filenames, whitespace, sanitization, missing-reference and unchanged-document assertions remain.",
+    "attachmentDeepLink": "Production collaboration resolves fragments and selected spans. URL-write/copy cases mount the actual Files text preview and fail on missing selectable lines. Extension-helper fixtures assert actual viewer dispatch rather than an obsolete private helper return value.",
+    "ansi": "Cases read spans/text/style from actual FilesController.preview output. No ANSI implementation is supplied by the adapter.",
+    "downscale": "Dimensions and byte estimates read the actual production offer. A null offer leaves the source dimensions untouched.",
+    "files": "Deleted helper behavior is exercised through actual FilesController.render/renderLinks/remove and current Rust MIME-filter markup. Boundary DOM stubs do not supply production decisions.",
+    "projectArchives": "Archive byte download calls the current production download closure; session notifications execute the current embedded session script. Download cancellation is asserted outside the fetch callback so production error handling cannot hide the harness assertion.",
+    "uploadQueue": "Original task queue assertions now drive actual attachment composer upload admission. Boundary DOM and upload outcomes are controlled; admission, completion and slot release are production behavior.",
+    "annotateMath": "Root owns live production annotation adapters. Fixed production60-entry undo bound replaces obsolete arbitrary-limit helper; additional browser test executes actual annotation UI/canvas."
+  }
+}
