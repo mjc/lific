@@ -1,0 +1,11 @@
+{
+  "baseline": "9683d38af8e1e6f9b076439fe90d9519109b2218",
+  "files": [
+    {
+      "source": "web/tests/viteConfig.test.ts",
+      "target": "src/topcoat/tests/main/routing.browser.test.js",
+      "cases": ["the dev server proxies private and public API routes to Rust"],
+      "mapping": "Topcoat serves both namespaces directly. The browser verifies real authenticated private JSON, public JSON, and anonymous private refusal through the same mounted origin."
+    }
+  ]
+}
