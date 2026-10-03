@@ -231,6 +231,7 @@
         if(offsets[event.key]){event.preventDefault();this.transform.x+=offsets[event.key][0];this.transform.y+=offsets[event.key][1];this.applyTransform();}
         else if(['+','=','-','Home'].includes(event.key)){event.preventDefault();if(event.key==='Home')this.fitGraph();else this.zoom(event.key==='-'?1/1.2:1.2);}});
       viewport.addEventListener('wheel',event=>{event.preventDefault();this.hidePreview();this.zoom(event.deltaY<0?1.1:1/1.1,{x:event.clientX-viewport.getBoundingClientRect().left,y:event.clientY-viewport.getBoundingClientRect().top});},{passive:false});
+      viewport.addEventListener('dragstart',event=>event.preventDefault());
       viewport.addEventListener('pointerdown',event=>{
         if(event.button!==0)return;this.hidePreview();moved=false;
         const source=event.target.closest('[data-graph-source]');
@@ -238,7 +239,7 @@
         if(event.target.closest('button,[data-edge-path]'))return;
         const node=event.target.closest('[data-graph-node]');
         drag={x:event.clientX,y:event.clientY,id:node?Number(node.dataset.graphNode):null,point:node?{...this.positions.get(Number(node.dataset.graphNode))}:{...this.transform}};
-        viewport.setPointerCapture(event.pointerId);
+        (node?.querySelector('[data-graph-issue]')||viewport).setPointerCapture(event.pointerId);
       });
       viewport.addEventListener('pointermove',event=>{
         if(!drag)return;const dx=event.clientX-drag.x,dy=event.clientY-drag.y;if(Math.abs(dx)+Math.abs(dy)>5)moved=true;

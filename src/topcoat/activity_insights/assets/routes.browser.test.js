@@ -91,6 +91,22 @@ test('headless activity, insights, and graph preserve data scope, aggregate mean
         await page.evaluate(()=>{insights.status_counts.total=0;});await page.getByRole('button',{name:'4w',exact:true}).click();await page.getByText(/Nothing to chart yet/).waitFor();
         await page.evaluate(()=>{failPath='/projects/3/insights?weeks=26';});await page.getByRole('button',{name:'26w',exact:true}).click();await page.getByRole('button',{name:'Retry'}).click();await page.getByRole('button',{name:'26w',exact:true}).waitFor();
       });
+      await t.test('graph pointer clicks navigate while node dragging and canvas panning do not',async()=>{
+        await mount('graph');
+        const node=page.locator('[data-graph-issue="1"]');await node.click();
+        assert.deepEqual(await page.evaluate(()=>destinations),['/ENG/issues/ENG-1']);
+        await page.evaluate(()=>{destinations=[];});
+        const before=await page.evaluate(()=>({...document.querySelector('[data-topcoat-analytics]')._analytics.positions.get(1)}));
+        const card=await node.boundingBox();await page.mouse.move(card.x+80,card.y+20);await page.mouse.down();await page.mouse.move(card.x+120,card.y+50,{steps:5});await page.mouse.up();
+        const after=await page.evaluate(()=>({...document.querySelector('[data-topcoat-analytics]')._analytics.positions.get(1)}));
+        assert.equal(after.x,before.x+40);assert.equal(after.y,before.y+30);assert.deepEqual(await page.evaluate(()=>destinations),[]);
+        const canvas=await page.locator('[data-graph-viewport]').boundingBox();
+        const transform=await page.evaluate(()=>({...document.querySelector('[data-topcoat-analytics]')._analytics.transform}));
+        await page.mouse.move(canvas.x+100,canvas.y+300);await page.mouse.down();await page.mouse.move(canvas.x+145,canvas.y+325,{steps:5});await page.mouse.up();
+        assert.deepEqual(await page.evaluate(()=>document.querySelector('[data-topcoat-analytics]')._analytics.transform),{...transform,x:transform.x+45,y:transform.y+25});
+        assert.deepEqual(await page.evaluate(()=>destinations),[]);
+        await node.click();assert.deepEqual(await page.evaluate(()=>destinations),['/ENG/issues/ENG-1']);
+      });
       await t.test('graph linkage, closed visibility, layout, keyboard navigation, and hover preview preserve destinations',async()=>{
         await mount('graph');assert.equal(await page.locator('[data-graph-node]').count(),2);assert.equal(await page.locator('[data-graph-node="99"]').count(),0);
         const position=await page.evaluate(()=>[...document.querySelector('[data-topcoat-analytics]')._analytics.positions.values()]);assert.ok(position.find(row=>row.id===1).x<position.find(row=>row.id===2).x);
