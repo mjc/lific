@@ -27,7 +27,7 @@ use axum::{
     http::{StatusCode, header},
     response::{IntoResponse, Response},
 };
-use std::sync::Arc;
+use std::{borrow::Cow, sync::Arc};
 
 use crate::authz;
 use crate::db::models::*;
@@ -74,6 +74,339 @@ pub struct UploadResponse {
     pub has_thumbnail: bool,
 }
 
+/// The entity a newly uploaded attachment should be linked to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct AttachmentLink {
+    entity: AttachmentEntity,
+    entity_id: i64,
+}
+
+impl AttachmentLink {
+    pub(crate) const fn new(entity: AttachmentEntity, entity_id: i64) -> Self {
+        Self { entity, entity_id }
+    }
+}
+
+const HWP_MIME: &str = "application/x-hwp";
+const HWP_DECLARATIONS: &[&str] = &[
+    HWP_MIME,
+    "application/haansofthwp",
+    "application/vnd.hancom.hwp",
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FilenameKind {
+    Hwp,
+    Other,
+}
+
+#[derive(Debug)]
+struct UploadBytes {
+    bytes: Vec<u8>,
+    size: i64,
+}
+
+impl UploadBytes {
+    fn new(bytes: Vec<u8>, max_bytes: usize) -> Result<Self, LificError> {
+        if bytes.is_empty() {
+            return Err(LificError::BadRequest("empty file".into()));
+        }
+        if bytes.len() > max_bytes {
+            return Err(LificError::BadRequest(format!(
+                "file too large: more than {max_bytes} bytes"
+            )));
+        }
+        let size = i64::try_from(bytes.len())
+            .map_err(|_| LificError::BadRequest("file is too large to store".into()))?;
+        Ok(Self { bytes, size })
+    }
+
+    fn as_slice(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    const fn size(&self) -> i64 {
+        self.size
+    }
+}
+
+#[derive(Debug)]
+struct SanitizedFilename<'a> {
+    value: Cow<'a, str>,
+    kind: FilenameKind,
+}
+
+impl<'a> SanitizedFilename<'a> {
+    fn new(filename: &'a str) -> Self {
+        let base = filename
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or(filename)
+            .trim();
+        let value = if is_safe_filename(base) {
+            Cow::Borrowed(base)
+        } else {
+            Cow::Owned(sanitize_filename(filename))
+        };
+        let kind = if is_hwp_filename(value.as_ref()) {
+            FilenameKind::Hwp
+        } else {
+            FilenameKind::Other
+        };
+        Self { value, kind }
+    }
+
+    fn as_str(&self) -> &str {
+        self.value.as_ref()
+    }
+
+    fn kind(&self) -> FilenameKind {
+        self.kind
+    }
+}
+
+#[derive(Debug)]
+struct ValidatedMime(String);
+
+impl ValidatedMime {
+    fn sniff(
+        bytes: &[u8],
+        filename: &SanitizedFilename<'_>,
+        declared: Option<&str>,
+    ) -> Result<Self, LificError> {
+        let claims_hwp = declared.is_some_and(is_hwp_declaration);
+        let hint = match (filename.kind(), claims_hwp) {
+            (FilenameKind::Hwp, _) => Some(HWP_MIME),
+            (FilenameKind::Other, true) => {
+                return Err(LificError::BadRequest(
+                    "HWP MIME requires a .hwp filename".into(),
+                ));
+            }
+            (FilenameKind::Other, false) => declared,
+        };
+        let mime = storage::sniff_and_validate(bytes, hint)?;
+        if !storage::ALLOWED_MIMES.contains(&mime.as_str()) {
+            return Err(LificError::BadRequest(format!(
+                "rejected: '{mime}' is not an allowed file type"
+            )));
+        }
+        Ok(Self(mime))
+    }
+
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+fn is_hwp_declaration(mime: &str) -> bool {
+    HWP_DECLARATIONS
+        .iter()
+        .any(|allowed| mime.eq_ignore_ascii_case(allowed))
+}
+
+fn is_hwp_filename(filename: &str) -> bool {
+    filename
+        .rsplit_once('.')
+        .is_some_and(|(_, extension)| extension.eq_ignore_ascii_case("hwp"))
+}
+
+fn is_safe_filename(filename: &str) -> bool {
+    !filename.is_empty()
+        && filename
+            .chars()
+            .enumerate()
+            .all(|(index, character)| index < 255 && !character.is_control())
+}
+
+#[derive(Debug)]
+enum DerivedAttachmentMetadata {
+    None,
+    Raster {
+        dimensions: (u32, u32),
+        thumbnail: Option<Vec<u8>>,
+    },
+}
+
+impl DerivedAttachmentMetadata {
+    fn derive(bytes: &[u8], mime: &ValidatedMime) -> Self {
+        if !storage::is_raster_mime(mime.as_str()) {
+            return Self::None;
+        }
+        let Some(dimensions) = storage::image_dimensions(bytes) else {
+            return Self::None;
+        };
+        let thumbnail = match storage::generate_thumbnail(bytes) {
+            Ok(thumb) => thumb,
+            Err(error) => {
+                tracing::warn!(error = %error, "failed to generate attachment thumbnail");
+                None
+            }
+        };
+        Self::Raster {
+            dimensions,
+            thumbnail,
+        }
+    }
+
+    fn thumbnail(&self) -> Option<&[u8]> {
+        match self {
+            Self::None => None,
+            Self::Raster { thumbnail, .. } => thumbnail.as_deref(),
+        }
+    }
+}
+
+/// Transport-neutral upload input. Wire parsing stays in REST and MCP; this
+/// type owns the common validation and persistence state transition.
+#[derive(Debug)]
+pub(crate) struct AttachmentUpload<'a> {
+    bytes: Vec<u8>,
+    filename: &'a str,
+    declared_mime: Option<&'a str>,
+    link: Option<AttachmentLink>,
+    max_bytes: usize,
+}
+
+impl<'a> AttachmentUpload<'a> {
+    pub(crate) fn new(
+        bytes: Vec<u8>,
+        filename: &'a str,
+        declared_mime: Option<&'a str>,
+        link: Option<AttachmentLink>,
+        max_bytes: usize,
+    ) -> Self {
+        Self {
+            bytes,
+            filename,
+            declared_mime,
+            link,
+            max_bytes,
+        }
+    }
+
+    pub(crate) fn validate(
+        self,
+        db: &'a DbPool,
+        identity: &'a Option<crate::resolve_caller::ResolvedIdentity>,
+    ) -> Result<ValidatedAttachmentUpload<'a>, LificError> {
+        let caller = identity
+            .as_ref()
+            .ok_or_else(|| LificError::Forbidden("authentication required".into()))?;
+        if let Some(link) = self.link {
+            authorize_link(db, identity, link.entity, link.entity_id)?;
+        }
+        let Self {
+            bytes,
+            filename,
+            declared_mime,
+            link,
+            max_bytes,
+        } = self;
+        let bytes = UploadBytes::new(bytes, max_bytes)?;
+        let filename = SanitizedFilename::new(filename);
+        let mime = ValidatedMime::sniff(bytes.as_slice(), &filename, declared_mime)?;
+        let metadata = DerivedAttachmentMetadata::derive(bytes.as_slice(), &mime);
+        Ok(ValidatedAttachmentUpload {
+            bytes,
+            filename,
+            mime,
+            metadata,
+            link,
+            caller,
+            db,
+            identity,
+        })
+    }
+}
+
+pub(crate) struct ValidatedAttachmentUpload<'a> {
+    bytes: UploadBytes,
+    filename: SanitizedFilename<'a>,
+    mime: ValidatedMime,
+    metadata: DerivedAttachmentMetadata,
+    link: Option<AttachmentLink>,
+    caller: &'a crate::resolve_caller::ResolvedIdentity,
+    db: &'a DbPool,
+    identity: &'a Option<crate::resolve_caller::ResolvedIdentity>,
+}
+
+/// Persist an upload that has passed authorization and validation.
+pub(crate) fn store_upload(
+    store: &AttachmentStore,
+    upload: ValidatedAttachmentUpload<'_>,
+) -> Result<(Attachment, Option<RealtimeEvent>), LificError> {
+    let db = upload.db;
+    let identity = upload.identity;
+    let sha = AttachmentStore::hash_bytes(upload.bytes.as_slice());
+    let thumbnail = upload.metadata.thumbnail();
+
+    let (attachment, event) = store
+        .try_with_lock(|store| {
+            let blob_existed = store.blob_exists(&sha)?;
+            let thumb_existed = thumbnail.is_some() && store.thumb_exists(&sha)?;
+            let result = db.transaction(|conn| {
+                crate::actor::stamp(
+                    conn,
+                    &crate::actor::ActorCtx {
+                        user_id: Some(upload.caller.user.id),
+                        transport: upload.caller.transport,
+                    },
+                );
+                let mut attachment = q::create_attachment(
+                    conn,
+                    &sha,
+                    upload.filename.as_str(),
+                    upload.mime.as_str(),
+                    upload.bytes.size(),
+                    Some(upload.caller.user.id),
+                )?;
+                store.write_unlocked(upload.bytes.as_slice())?;
+                if let Some(thumbnail) = thumbnail
+                    && let Err(error) = store.write_thumb(&sha, thumbnail)
+                {
+                    tracing::warn!(error = %error, "failed to cache attachment thumbnail");
+                }
+                if let DerivedAttachmentMetadata::Raster {
+                    dimensions: (width, height),
+                    ..
+                } = &upload.metadata
+                {
+                    q::set_dimensions(conn, attachment.id, i64::from(*width), i64::from(*height))?;
+                    attachment = q::get_attachment(conn, attachment.id)?;
+                }
+                if q::is_extractable(upload.mime.as_str(), upload.bytes.size())
+                    && let Ok(text) = std::str::from_utf8(upload.bytes.as_slice())
+                {
+                    q::set_extracted_text(conn, attachment.id, text)?;
+                }
+
+                let event = match upload.link {
+                    Some(link) => {
+                        authorize_link_conn(conn, identity, link.entity, link.entity_id)?;
+                        q::link_attachment(conn, attachment.id, link.entity, link.entity_id)?;
+                        linked_entity_event(conn, link.entity, link.entity_id)?
+                    }
+                    None => None,
+                };
+                Ok((attachment, event))
+            });
+            if result.is_err() {
+                discard_failed_upload(
+                    db,
+                    store,
+                    &sha,
+                    blob_existed,
+                    thumb_existed,
+                    thumbnail.is_some(),
+                );
+            }
+            result
+        })?
+        .ok_or_else(AttachmentStore::busy_error)?;
+
+    Ok((attachment, event))
+}
+
 /// `POST /api/attachments` (multipart). Reads the first file part, validates
 /// size + MIME (magic-byte sniffed, never trusting the client header), stores
 /// the bytes content-addressed, and records the metadata row. Optional form
@@ -113,7 +446,7 @@ pub(super) async fn upload_attachment(
         match name.as_str() {
             "file" => {
                 if let Some(fname) = field.file_name() {
-                    filename = sanitize_filename(fname);
+                    filename = fname.to_owned();
                 }
                 declared_mime = field.content_type().map(|s| s.to_string());
                 let mut data = Vec::new();
@@ -160,125 +493,18 @@ pub(super) async fn upload_attachment(
         }
     };
 
-    // LIF-405: authorize the requested link target BEFORE any bytes hit the
-    // store or any row is written, so a rejected link leaves nothing behind.
-    // This is the cheap pre-flight; the authoritative gate runs again inside
-    // the write transaction below (see `authorize_link_conn`).
-    if let Some((entity, entity_id)) = link {
-        authorize_link(&db, &identity, entity, entity_id)?;
-    }
-
     let bytes =
         file_bytes.ok_or_else(|| LificError::BadRequest("no 'file' field in upload".into()))?;
-    if bytes.is_empty() {
-        return Err(LificError::BadRequest("empty file".into()));
-    }
-
-    // Some installers share OLE's compound-file signature with legacy HWP.
-    // Require an HWP extension whenever the client explicitly claims an HWP
-    // MIME, and use the extension to choose the expected MIME for browsers
-    // that only report application/octet-stream.
-    let has_hwp_extension = filename.to_ascii_lowercase().ends_with(".hwp");
-    let claims_hwp = declared_mime.as_deref().is_some_and(|mime| {
-        [
-            "application/x-hwp",
-            "application/haansofthwp",
-            "application/vnd.hancom.hwp",
-        ]
-        .iter()
-        .any(|allowed| mime.eq_ignore_ascii_case(allowed))
-    });
-    if claims_hwp && !has_hwp_extension {
-        return Err(LificError::BadRequest(
-            "HWP MIME requires a .hwp filename".into(),
-        ));
-    }
-    let sniff_mime = if has_hwp_extension {
-        Some("application/x-hwp")
-    } else {
-        declared_mime.as_deref()
-    };
-    let mime = storage::sniff_and_validate(&bytes, sniff_mime)?;
-    if !storage::ALLOWED_MIMES.contains(&mime.as_str()) {
-        return Err(LificError::BadRequest(format!(
-            "rejected: '{mime}' is not an allowed file type"
-        )));
-    }
-
-    let size = bytes.len() as i64;
-    let sha = AttachmentStore::hash_bytes(&bytes);
-    let dimensions = if storage::is_raster_mime(&mime) {
-        storage::image_dimensions(&bytes)
-    } else {
-        None
-    };
-    let thumbnail = if dimensions.is_some() {
-        match storage::generate_thumbnail(&bytes) {
-            Ok(thumb) => thumb,
-            Err(e) => {
-                tracing::warn!(error = %e, "failed to generate attachment thumbnail");
-                None
-            }
-        }
-    } else {
-        None
-    };
-    // Serialize the blob write with metadata insertion and orphan cleanup.
-    // Otherwise GC can delete a newly written blob in the gap before its row
-    // is inserted.
-    // Non-blocking: a REST handler must not park a Tokio worker for the
-    // length of a dump. Busy means "retry", not "failed".
-    let (attachment, event) = store
-        .try_with_lock(|store| {
-            // Same definition of "already there" the writer uses, so a path that
-            // is present but not a usable regular file fails here rather than
-            // being read as "this upload created it" during cleanup.
-            let blob_existed = store.blob_exists(&sha)?;
-            let thumb_existed = match thumbnail.as_ref() {
-                Some(_) => store.thumb_exists(&sha)?,
-                None => false,
-            };
-            let result = db.transaction(|conn| {
-                let mut att =
-                    q::create_attachment(conn, &sha, &filename, &mime, size, Some(user.id))?;
-                store.write_unlocked(&bytes)?;
-                if let Some(thumb) = thumbnail.as_deref()
-                    && let Err(e) = store.write_thumb(&sha, thumb)
-                {
-                    tracing::warn!(error = %e, "failed to cache attachment thumbnail");
-                }
-                if let Some((w, h)) = dimensions {
-                    q::set_dimensions(conn, att.id, i64::from(w), i64::from(h))?;
-                    att = q::get_attachment(conn, att.id)?;
-                }
-                if q::is_extractable(&mime, size)
-                    && let Ok(text) = std::str::from_utf8(&bytes)
-                {
-                    q::set_extracted_text(conn, att.id, text)?;
-                }
-                let event = match link {
-                    Some((entity, eid)) => {
-                        authorize_link_conn(conn, &identity, entity, eid)?;
-                        q::link_attachment(conn, att.id, entity, eid)?;
-                        linked_entity_event(conn, entity, eid)?
-                    }
-                    None => None,
-                };
-                Ok((att, event))
-            });
-            if result.is_err() {
-                discard_failed_upload(
-                    &db,
-                    store,
-                    &sha,
-                    blob_existed,
-                    thumb_existed,
-                    thumbnail.is_some(),
-                );
-            }
-            result
-        })?
-        .ok_or_else(AttachmentStore::busy_error)?;
+    let link = link.map(|(entity, entity_id)| AttachmentLink::new(entity, entity_id));
+    let upload = AttachmentUpload::new(
+        bytes,
+        filename.as_str(),
+        declared_mime.as_deref(),
+        link,
+        config.max_bytes,
+    )
+    .validate(&db, &identity)?;
+    let (attachment, event) = store_upload(&store, upload)?;
     if let Some(event) = event {
         realtime.send(event);
     }
@@ -480,12 +706,7 @@ pub(super) async fn download_attachment(
     headers: axum::http::HeaderMap,
     Path(id): Path<i64>,
 ) -> Result<Response, LificError> {
-    let attachment = with_read(&db, |conn| q::get_attachment(conn, id))?;
-
-    // Authorize: the caller must be able to view SOME project this attachment
-    // is linked into (Viewer), or be the uploader / an admin for a still-
-    // unlinked attachment.
-    authorize_read(&db, &identity, &attachment)?;
+    let attachment = load_authorized_attachment(&db, &identity, id)?;
 
     let bytes = store.read(&attachment.sha256)?;
     let total = bytes.len() as u64;
@@ -657,8 +878,7 @@ pub(super) async fn attachment_thumbnail(
     Extension(store): Extension<AttachmentStore>,
     Path(id): Path<i64>,
 ) -> Result<Response, LificError> {
-    let attachment = with_read(&db, |conn| q::get_attachment(conn, id))?;
-    authorize_read(&db, &identity, &attachment)?;
+    let attachment = load_authorized_attachment(&db, &identity, id)?;
 
     if !storage::is_raster_mime(&attachment.mime) {
         return Err(LificError::NotFound(
@@ -856,8 +1076,7 @@ pub(super) async fn attachment_links(
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
     Path(id): Path<i64>,
 ) -> Result<axum::Json<AttachmentLinks>, LificError> {
-    let attachment = with_read(&db, |conn| q::get_attachment(conn, id))?;
-    authorize_read(&db, &identity, &attachment)?;
+    let attachment = load_authorized_attachment(&db, &identity, id)?;
 
     let entities = visible_links(&db, &identity, id)?;
 
@@ -991,8 +1210,7 @@ pub(super) async fn attachment_preview(
     Extension(store): Extension<AttachmentStore>,
     Path(id): Path<i64>,
 ) -> Result<axum::Json<crate::preview::Preview>, LificError> {
-    let attachment = with_read(&db, |conn| q::get_attachment(conn, id))?;
-    authorize_read(&db, &identity, &attachment)?;
+    let attachment = load_authorized_attachment(&db, &identity, id)?;
 
     let bytes = store.read(&attachment.sha256)?;
     Ok(axum::Json(crate::preview::preview_bytes(&bytes)?))
@@ -1166,7 +1384,7 @@ pub(crate) fn authorize_link_conn(
 /// attachment. When enforcement is off, `require_role(.., Viewer)` is an
 /// unconditional allow (legacy mode), so this reduces to today's open read
 /// behavior — matching every other GET while the flag is off.
-pub(crate) fn authorize_read(
+fn authorize_read(
     db: &DbPool,
     identity: &Option<crate::resolve_caller::ResolvedIdentity>,
     attachment: &Attachment,
@@ -1197,6 +1415,17 @@ pub(crate) fn authorize_read(
             LificError::Forbidden("not authorized to read this attachment".into())
         }))
     }
+}
+
+/// Load attachment metadata and apply the shared read gate before returning it.
+pub(crate) fn load_authorized_attachment(
+    db: &DbPool,
+    identity: &Option<crate::resolve_caller::ResolvedIdentity>,
+    id: i64,
+) -> Result<Attachment, LificError> {
+    let attachment = with_read(db, |conn| q::get_attachment(conn, id))?;
+    authorize_read(db, identity, &attachment)?;
+    Ok(attachment)
 }
 
 /// Delete gate: uploader, admin, or Maintainer on any owning project.
@@ -1390,6 +1619,12 @@ mod tests {
         assert_eq!(sanitize_filename("C:\\Windows\\evil.exe"), "evil.exe");
         assert_eq!(sanitize_filename("nam\u{0007}e.png"), "name.png");
         assert_eq!(sanitize_filename("   "), "upload");
+    }
+
+    #[test]
+    fn safe_filename_borrows_the_path_tail() {
+        let filename = SanitizedFilename::new("../reports/summary.txt");
+        assert!(matches!(filename.value, Cow::Borrowed("summary.txt")));
     }
 
     #[test]
@@ -2636,6 +2871,38 @@ mod media_tests {
                     transport: crate::actor::Transport::Web,
                 },
             )))
+    }
+
+    #[tokio::test]
+    async fn upload_owner_and_audit_actor_use_the_resolved_caller() {
+        let db = crate::db::open_memory().unwrap();
+        let user_id = {
+            let conn = db.write().unwrap();
+            conn.execute(
+                "INSERT INTO users (username, email, password_hash, display_name, is_admin, is_bot)
+                 VALUES ('uploader', 'uploader@example.test', 'x', 'Uploader', 1, 0)",
+                [],
+            )
+            .unwrap();
+            conn.last_insert_rowid()
+        };
+        let (store, _tmp) = crate::api::test_helpers::test_attachment_store();
+        let app = app_with_store(db.clone(), store, user_id, "uploader", "Uploader");
+
+        let response = upload(&app, "note.txt", "text/plain", b"hello", None).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let id = parse_json(response).await["id"].as_i64().unwrap();
+        let conn = db.read().unwrap();
+        let attachment = crate::db::queries::attachments::get_attachment(&conn, id).unwrap();
+        let actor: (Option<i64>, String) = conn
+            .query_row(
+                "SELECT user_id, transport FROM _actor_state WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(attachment.uploader_id, Some(user_id));
+        assert_eq!(actor, (Some(user_id), "web".into()));
     }
 
     /// A tiny but structurally valid WebM header the sniffer accepts.
