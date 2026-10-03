@@ -3704,3 +3704,70 @@ fn response_envelopes_cannot_contain_a_request_method() {
         "method": "server/request", "result": {}});
     assert!(validate_envelope(&value, &serde_json::json!(1)).is_err());
 }
+
+#[tokio::test]
+async fn march_multi_instance_batches_route_individual_calls_and_keep_protocol_errors() {
+    let router = router_bound(&[("private", None)], Some("private"));
+    let transport = RecordingTransport::default();
+    let init = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"march","version":"1"}}});
+    let batch = serde_json::json!([
+        {"jsonrpc":"2.0","method":"notifications/initialized"},
+        {"jsonrpc":"2.0","id":"surface","method":"tools/list"},
+        {"jsonrpc":"2.0","id":-7,"method":"tools/call","params":{"name":"get_issue","arguments":{"instance":"private","identifier":"LIF-42"}}},
+        {"jsonrpc":"2.0","id":8,"method":"unknown-method"},false
+    ]);
+    let out = run_pump(&format!("{init}\n{batch}\n[]\n"), &router, &transport).await;
+    assert_eq!(out.len(), 3);
+    let replies = out[1].as_array().unwrap();
+    assert_eq!(replies.len(), 4);
+    assert_eq!(replies[0]["id"], "surface");
+    assert_eq!(replies[1]["id"], -7);
+    assert_eq!(
+        replies[1]["result"]["_meta"][PROVENANCE_META_KEY],
+        "private"
+    );
+    assert_eq!(replies[2]["error"]["code"], -32601);
+    assert_eq!(replies[3]["error"]["code"], -32600);
+    assert_eq!(out[2]["error"]["code"], -32600);
+    assert_eq!(transport.seen.lock().unwrap().len(), 1);
+    for version in ["2025-06-18", "2025-11-25"] {
+        let mut init = init.clone();
+        init["params"]["protocolVersion"] = Value::String(version.into());
+        let out = run_pump(&format!("{init}\n{batch}\n"), &router, &NeverCalled).await;
+        assert_eq!(out[1]["error"]["code"], -32600);
+    }
+}
+
+#[tokio::test]
+async fn march_caller_ids_containing_credentials_survive_local_forwarded_and_batch_redaction() {
+    let secret = "secret-token-value";
+    let mut router = router_bound(&[("private", None)], Some("private"));
+    router.redactor = Redactor::new([secret.to_owned()]);
+    let transport = RecordingTransport::default();
+    let init = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}});
+    let ping = serde_json::json!({"jsonrpc":"2.0","id":format!("local-{secret}"),"method":"ping"});
+    let call = serde_json::json!({"jsonrpc":"2.0","id":format!("remote-{secret}"),"method":"tools/call","params":{"name":"get_issue","arguments":{"identifier":"LIF-42"}}});
+    let batch = serde_json::json!([ping.clone(), call.clone()]);
+    let replies = run_pump(
+        &format!("{init}\n{ping}\n{call}\n{batch}\n"),
+        &router,
+        &transport,
+    )
+    .await;
+    assert_eq!(replies[1]["id"], ping["id"]);
+    assert_eq!(replies[2]["id"], call["id"]);
+    assert!(replies[2].get("result").is_some());
+    assert_eq!(replies[3][0]["id"], ping["id"]);
+    assert_eq!(replies[3][1]["id"], call["id"]);
+    assert!(replies[3][1].get("result").is_some());
+    for mut reply in replies {
+        if let Some(items) = reply.as_array_mut() {
+            for item in items {
+                item.as_object_mut().unwrap().remove("id");
+            }
+        } else {
+            reply.as_object_mut().unwrap().remove("id");
+        }
+        assert!(!reply.to_string().contains(secret));
+    }
+}

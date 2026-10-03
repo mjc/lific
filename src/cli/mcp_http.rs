@@ -21,7 +21,7 @@ pub(super) struct Session {
 #[derive(Clone, Copy)]
 pub(super) struct Limits {
     max_bytes: usize,
-    deadline: Option<tokio::time::Instant>,
+    pub(super) deadline: Option<tokio::time::Instant>,
 }
 
 impl Limits {
@@ -362,22 +362,36 @@ async fn post_once<S: NotificationSink>(
                 continue;
             };
             let value: Value = serde_json::from_str(&data).map_err(ForwardError::unreachable)?;
-            if value.get("id") == message.get("id") && value.get("method").is_none() {
-                reply = Some(data);
+            let values = response_messages(
+                value,
+                state.version.as_deref() == Some(crate::mcp::batching::MARCH),
+                (method == "initialize").then_some(&message["id"]),
+            )?;
+            for value in values {
+                if value.get("id") == message.get("id") && value.get("method").is_none() {
+                    super::mcp_instances::validate_envelope(&value, &message["id"])
+                        .map_err(ForwardError::unreachable)?;
+                    if reply.replace(value.to_string()).is_some() {
+                        return Err(ForwardError::unreachable(
+                            "duplicate response ID in MCP batch",
+                        ));
+                    }
+                } else {
+                    if value.get("id").is_some()
+                        || !valid_request(&value)
+                        || value.get("result").is_some()
+                        || value.get("error").is_some()
+                    {
+                        return Err(ForwardError::unreachable(
+                            "invalid or unexpected SSE notification",
+                        ));
+                    }
+                    notifications.send(value).await?;
+                }
+            }
+            if reply.is_some() {
                 break;
             }
-            if value.get("id").is_some() {
-                return Err(ForwardError::unreachable(
-                    "SSE response has an unexpected request id",
-                ));
-            }
-            if !valid_request(&value)
-                || value.get("result").is_some()
-                || value.get("error").is_some()
-            {
-                return Err(ForwardError::unreachable("invalid SSE notification"));
-            }
-            notifications.send(value).await?;
         }
         reply.ok_or_else(|| ForwardError::unreachable("SSE stream ended without a response"))?
     } else {
@@ -385,7 +399,38 @@ async fn post_once<S: NotificationSink>(
             "expected JSON or SSE from {endpoint}, got content-type {mime}"
         )));
     };
-    let value: Value = serde_json::from_str(&payload).map_err(ForwardError::unreachable)?;
+    let raw: Value = serde_json::from_str(&payload).map_err(ForwardError::unreachable)?;
+    let value = if raw.is_array() {
+        let mut matched = None;
+        for value in response_messages(
+            raw,
+            state.version.as_deref() == Some(crate::mcp::batching::MARCH),
+            (method == "initialize").then_some(&message["id"]),
+        )? {
+            if value.get("id") == message.get("id") && value.get("method").is_none() {
+                if matched.replace(value).is_some() {
+                    return Err(ForwardError::unreachable(
+                        "duplicate response ID in MCP batch",
+                    ));
+                }
+            } else {
+                if value.get("id").is_some()
+                    || !valid_request(&value)
+                    || value.get("result").is_some()
+                    || value.get("error").is_some()
+                {
+                    return Err(ForwardError::unreachable(
+                        "invalid or unexpected JSON response batch member",
+                    ));
+                }
+                notifications.send(value).await?;
+            }
+        }
+        matched.ok_or_else(|| ForwardError::unreachable("MCP response batch omitted request ID"))?
+    } else {
+        raw
+    };
+    let payload = value.to_string();
     super::mcp_instances::validate_envelope(&value, &message["id"])
         .map_err(ForwardError::unreachable)?;
     if method == "initialize"
@@ -400,6 +445,41 @@ async fn post_once<S: NotificationSink>(
         };
     }
     Ok(Some(payload))
+}
+
+fn response_messages(
+    value: Value,
+    march: bool,
+    initialize_id: Option<&Value>,
+) -> Result<Vec<Value>, ForwardError> {
+    match value {
+        Value::Array(items) => {
+            let negotiated_march = initialize_id.is_some_and(|id| {
+                items.iter().any(|item| {
+                    item.get("id") == Some(id)
+                        && item.get("method").is_none()
+                        && serde_json::from_value::<rmcp::model::InitializeResult>(
+                            item["result"].clone(),
+                        )
+                        .is_ok_and(|result| {
+                            result.protocol_version.as_str() == crate::mcp::batching::MARCH
+                        })
+                })
+            });
+            if (march || negotiated_march)
+                && !items.is_empty()
+                && items.len() <= crate::mcp::batching::MAX_BATCH_MESSAGES
+                && items.iter().all(crate::mcp::batching::valid_message)
+            {
+                Ok(items)
+            } else {
+                Err(ForwardError::unreachable(
+                    "invalid response batch for negotiated MCP version",
+                ))
+            }
+        }
+        value => Ok(vec![value]),
+    }
 }
 
 pub(super) async fn read_capped(
@@ -980,5 +1060,77 @@ mod tests {
             -32603
         );
         task.abort();
+    }
+}
+
+#[cfg(test)]
+mod march_batch_tests {
+    use super::*;
+    use serde_json::json;
+    #[tokio::test]
+    async fn march_backend_response_arrays_work_for_initialization_json_and_sse() {
+        for sse in [false, true] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let endpoint = format!("http://{}/mcp", listener.local_addr().unwrap());
+            let app=axum::Router::new().route("/mcp",axum::routing::post(move|axum::Json(request):axum::Json<Value>|async move {
+                let result=if request["method"]=="initialize" { json!({"protocolVersion":"2025-03-26","capabilities":{},"serverInfo":{"name":"march","version":"1"}}) } else {json!({})};
+                let batch=json!([
+                    {"jsonrpc":"2.0","method":"notifications/progress","params":{"progressToken":"batch","progress":1}},
+                    {"jsonrpc":"2.0","id":request["id"],"result":result}
+                ]);
+                axum::response::Response::builder().header("content-type",if sse {"text/event-stream"}else{"application/json"}).header("Mcp-Session-Id","march-session").body(axum::body::Body::from(if sse {format!("data: {batch}\n\n")}else{batch.to_string()})).unwrap()
+            }));
+            let task = tokio::spawn(async move {
+                axum::serve(listener, app).await.unwrap();
+            });
+            let client = reqwest::Client::new();
+            let session = Mutex::default();
+            let mut notifications = vec![];
+            for request in [
+                json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}),
+                json!({"jsonrpc":"2.0","id":"ping","method":"ping"}),
+            ] {
+                let raw = post_with_notifications(
+                    &client,
+                    &endpoint,
+                    None,
+                    &session,
+                    request.to_string(),
+                    Limits::with_timeout(1024 * 1024, std::time::Duration::from_secs(3)),
+                    &mut NotificationWriter(&mut notifications),
+                )
+                .await
+                .unwrap();
+                let response: Value = serde_json::from_str(&raw).unwrap();
+                assert_eq!(response["id"], request["id"]);
+            }
+            assert_eq!(
+                session.lock().unwrap().version.as_deref(),
+                Some("2025-03-26")
+            );
+            assert_eq!(String::from_utf8(notifications).unwrap().lines().count(), 2);
+            task.abort();
+        }
+    }
+    #[test]
+    fn march_response_arrays_require_valid_members_and_actual_march_negotiation() {
+        let id = json!(1);
+        let initialize = json!({"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-03-26","capabilities":{},"serverInfo":{"name":"test","version":"1"}}});
+        assert!(response_messages(json!([initialize]), false, Some(&id)).is_ok());
+        let mut later = initialize;
+        later["result"]["protocolVersion"] = json!("2025-11-25");
+        assert!(response_messages(json!([later]), false, Some(&id)).is_err());
+        assert!(
+            response_messages(json!([{"jsonrpc":"2.0","id":1,"result":{}}]), false, None).is_err()
+        );
+        assert!(
+            response_messages(
+                json!([{"jsonrpc":"2.0","id":1,"result":{}},false]),
+                true,
+                None
+            )
+            .is_err()
+        );
+        assert!(response_messages(json!([]), true, None).is_err());
     }
 }

@@ -15,8 +15,7 @@ something that does serve them, give that server its own MCP entry.
 
 The client connection retains March, June and November 2025 initialization as
 well as July 2026 discovery. March clients can initialize, list and call tools
-using individual JSON-RPC messages. JSON-RPC batches remain unsupported, as in
-earlier releases; see the [MCP compatibility limits](/docs/mcp#http-endpoint).
+using individual JSON-RPC messages. March sessions also receive batches after an individual initialization: each request is routed separately, and its reply is collected into one array. Notifications produce no reply. June, November and July require individual messages. See the [MCP batch limits](/docs/mcp#http-endpoint).
 
 Use it when you keep a private tracker and also work in a community tracker.
 Instead of two copies of every tool, the agent sees one `create_issue` with an

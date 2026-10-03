@@ -11,6 +11,7 @@
 
 use std::{net::SocketAddr, sync::Arc};
 
+use crate::mcp::batching::HttpService;
 use axum::{
     Router,
     body::Body,
@@ -19,9 +20,6 @@ use axum::{
     middleware,
     response::{IntoResponse, Response},
     routing::{any, get},
-};
-use rmcp::transport::streamable_http_server::{
-    session::local::LocalSessionManager, tower::StreamableHttpService,
 };
 use rust_embed::Embed;
 use tower_http::compression::Compression;
@@ -301,14 +299,13 @@ pub(crate) fn build_app_with_store(
     // `Service::call` clones its config on every request. Keep
     // the service behind an `Arc` so Axum's clone boundary does not copy the
     // host allowlist (the SDK's `handle` method only needs `&self`).
-    let mcp_service = Arc::new(StreamableHttpService::new(
+    let mcp_service = Arc::new(HttpService::new(
         move || {
             Ok(mcp::LificMcp::with_realtime(
                 db_for_mcp.clone(),
                 realtime_for_mcp.clone(),
             ))
         },
-        Arc::new(LocalSessionManager::default()),
         mcp_config,
     ));
 
@@ -809,9 +806,8 @@ fn build_authless_mcp_router(
 ) -> Router {
     let allowed_hosts_for_links = allowed_hosts.clone();
     let config = mcp::streamable_http_config(allowed_hosts).with_allowed_origins(allowed_origins);
-    let service = Arc::new(StreamableHttpService::new(
+    let service = Arc::new(HttpService::new(
         move || Ok(mcp::LificMcp::with_realtime(pool.clone(), realtime.clone())),
-        Arc::new(LocalSessionManager::default()),
         config,
     ));
     Router::new().route(
@@ -2079,6 +2075,115 @@ mod authless_mcp_tests {
             assert!(text.contains(&format!("{own} project")), "{text}");
             assert!(!text.contains(&format!("{other} project")), "{text}");
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn march_batches_in_production_router_preserve_auth_transport_policy_and_current_user() {
+        let pool = db::open_memory().unwrap();
+        let users = seed_two_project_leads(&pool);
+        let keys = [
+            auth::create_api_key(&pool, "alice-batch", Some(users[0].id)).unwrap(),
+            auth::create_api_key(&pool, "bob-batch", Some(users[1].id)).unwrap(),
+        ];
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = Config::default();
+        cfg.auth.required = true;
+        cfg.database.path = dir.path().join("lific.db");
+        let app = build_app(&cfg, pool, realtime::RealtimeHub::new(), Arc::from([]));
+        let make = |body: serde_json::Value, key: Option<&str>, session: Option<&str>| {
+            let mut builder = Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("host", "localhost")
+                .header("content-type", "application/json")
+                .header("accept", "application/json, text/event-stream");
+            if let Some(key) = key {
+                builder = builder.header("authorization", format!("Bearer {key}"));
+            }
+            if let Some(session) = session {
+                builder = builder.header("Mcp-Session-Id", session);
+            }
+            builder.body(Body::from(body.to_string())).unwrap()
+        };
+        let init = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1"}}});
+        let response = app
+            .clone()
+            .oneshot(make(init, Some(&keys[0]), None))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let session = response.headers()["Mcp-Session-Id"]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let _ = response.into_body().collect().await.unwrap();
+        let batch = |id: i64| {
+            serde_json::json!([
+                {"jsonrpc":"2.0","method":"notifications/initialized"},
+                {"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"list_resources","arguments":{"resource_type":"project"}}},
+                {"jsonrpc":"2.0","id":id+1,"method":"tools/call","params":{"name":"list_resources","arguments":{"resource_type":"project"}}}
+            ])
+        };
+        for (caller, key) in keys.iter().enumerate() {
+            let response = app
+                .clone()
+                .oneshot(make(
+                    batch(2 + caller as i64 * 2),
+                    Some(key),
+                    Some(&session),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            let text = String::from_utf8(bytes.to_vec()).unwrap();
+            let frame = text
+                .lines()
+                .find_map(|line| line.strip_prefix("data: "))
+                .unwrap();
+            let replies: serde_json::Value = serde_json::from_str(frame).unwrap();
+            assert_eq!(replies.as_array().unwrap().len(), 2);
+            let (own, other) = [("ALICE", "BOB"), ("BOB", "ALICE")][caller];
+            for reply in replies.as_array().unwrap() {
+                let text = reply["result"]["content"][0]["text"].as_str().unwrap();
+                assert!(text.contains(&format!("{own} project")));
+                assert!(!text.contains(&format!("{other} project")));
+            }
+        }
+        for key in [None, Some("invalid-key")] {
+            assert_eq!(
+                app.clone()
+                    .oneshot(make(batch(10), key, Some(&session)))
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::UNAUTHORIZED
+            );
+        }
+        let mut wrong_host = make(batch(10), Some(&keys[0]), Some(&session));
+        wrong_host
+            .headers_mut()
+            .insert("host", "attacker.example".parse().unwrap());
+        assert_eq!(
+            app.clone().oneshot(wrong_host).await.unwrap().status(),
+            StatusCode::FORBIDDEN
+        );
+        let mut wrong_origin = make(serde_json::json!([]), Some(&keys[0]), Some(&session));
+        wrong_origin
+            .headers_mut()
+            .insert("origin", "https://attacker.example".parse().unwrap());
+        assert_eq!(
+            app.clone().oneshot(wrong_origin).await.unwrap().status(),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            app.clone()
+                .oneshot(make(batch(10), Some(&keys[0]), Some("missing-session")))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::NOT_FOUND
+        );
     }
 
     /// LIF-155 over the real transport: rmcp runs each tool on its own

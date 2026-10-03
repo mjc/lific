@@ -989,7 +989,7 @@ async fn async_main(cli: Cli, matches: clap::ArgMatches) -> Result<(), Box<dyn s
 
             info!("lific MCP server started (stdio)");
 
-            let handle = server.serve(rmcp::transport::io::stdio()).await?;
+            let handle = server.serve(mcp::batching::stdio()).await?;
             if let Some(u) = &token_user {
                 info!(user = %u.username, "stdio session bound to agent");
             }

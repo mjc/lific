@@ -31,10 +31,12 @@
 //! far worse than one that forwards verbatim.
 
 use std::error::Error;
+#[cfg(test)]
+use tokio::io::AsyncBufReadExt;
 
 use reqwest::StatusCode;
 use serde_json::Value;
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncWrite, AsyncWriteExt, BufReader};
 
 /// A forward to the remote instance that produced no JSON-RPC response.
 ///
@@ -107,6 +109,17 @@ trait Forwarder {
     {
         async move { self.forward(body).await }
     }
+    fn forward_with_deadline<S: super::mcp_http::NotificationSink>(
+        &self,
+        body: String,
+        notifications: &mut S,
+        _deadline: Option<tokio::time::Instant>,
+    ) -> impl std::future::Future<Output = Result<String, ForwardError>> + Send
+    where
+        Self: Sync,
+    {
+        async move { self.forward_with_notifications(body, notifications).await }
+    }
 }
 
 /// The real forwarder: one POST per request against `{url}/mcp`.
@@ -131,6 +144,29 @@ impl Forwarder for HttpForwarder {
             &self.session,
             body,
             super::mcp_http::Limits::with_timeout(4 * 1024 * 1024, self.request_timeout),
+            notifications,
+        )
+        .await
+    }
+
+    async fn forward_with_deadline<S: super::mcp_http::NotificationSink>(
+        &self,
+        body: String,
+        notifications: &mut S,
+        deadline: Option<tokio::time::Instant>,
+    ) -> Result<String, ForwardError> {
+        let mut limits =
+            super::mcp_http::Limits::with_timeout(4 * 1024 * 1024, self.request_timeout);
+        if let Some(deadline) = deadline {
+            limits.deadline = Some(limits.deadline.map_or(deadline, |own| own.min(deadline)));
+        }
+        super::mcp_http::post_with_notifications(
+            &self.client,
+            &self.endpoint,
+            self.credential.as_deref(),
+            &self.session,
+            body,
+            limits,
             notifications,
         )
         .await
@@ -386,77 +422,177 @@ where
     W: AsyncWrite + Unpin + Send,
     F: Forwarder + Sync,
 {
-    let mut lines = input.lines();
     let mut output = output;
+    pump_inner(input, &mut output, forwarder, bound, None).await
+}
 
-    while let Some(line) = lines.next_line().await? {
-        if line.trim().is_empty() {
-            continue;
-        }
+fn pump_inner<'a, R, F>(
+    input: R,
+    output: &'a mut (dyn AsyncWrite + Unpin + Send),
+    forwarder: &'a F,
+    bound: Option<&'a str>,
+    deadline: Option<tokio::time::Instant>,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<()>> + Send + 'a>>
+where
+    R: AsyncBufRead + Unpin + Send + 'a,
+    F: Forwarder + Sync + 'a,
+{
+    Box::pin(async move {
+        let mut input = input;
+        let mut march = false;
+        let mut output = output;
 
-        let message: Value = match serde_json::from_str(&line) {
-            Ok(message) => message,
-            Err(error) => {
+        loop {
+            let line = match super::mcp_instances::read_frame(
+                &mut input,
+                crate::mcp::batching::MAX_REQUEST_BYTES,
+            )
+            .await?
+            {
+                super::mcp_instances::Frame::Eof => break,
+                super::mcp_instances::Frame::Line(line) => line,
+                _ => {
+                    write_line(
+                        &mut output,
+                        &encode(&parse_error_response("Invalid or oversized MCP frame")),
+                    )
+                    .await?;
+                    continue;
+                }
+            };
+            if line.trim().is_empty() {
+                continue;
+            }
+
+            let message: Value = match serde_json::from_str(&line) {
+                Ok(message) => message,
+                Err(error) => {
+                    write_line(
+                        &mut output,
+                        &encode(&parse_error_response(&error.to_string())),
+                    )
+                    .await?;
+                    continue;
+                }
+            };
+
+            if let Some(items) = message.as_array() {
+                if let Some(error) = crate::mcp::batching::batch_error(items, march) {
+                    write_line(&mut output, &encode(&error)).await?;
+                    continue;
+                }
+                let deadline =
+                    Some(tokio::time::Instant::now() + crate::mcp::batching::BATCH_TIMEOUT);
+                let mut writer = crate::mcp::batching::BatchWriter::new(&mut output);
+                let mut ids = std::collections::HashSet::new();
+                for item in items {
+                    if !crate::mcp::batching::valid_message(item) {
+                        write_line(
+                            &mut writer,
+                            &encode(&crate::mcp::batching::error(
+                                Value::Null,
+                                -32600,
+                                "Invalid Request",
+                            )),
+                        )
+                        .await?;
+                        continue;
+                    }
+                    if item.get("method").is_none() {
+                        continue;
+                    }
+                    if let Some(id) = item.get("id")
+                        && !ids.insert(id.to_string())
+                    {
+                        write_line(
+                            &mut writer,
+                            &encode(&crate::mcp::batching::error(
+                                Value::Null,
+                                -32600,
+                                "Duplicate batch request ID",
+                            )),
+                        )
+                        .await?;
+                        continue;
+                    }
+                    let frame = format!("{item}\n");
+                    pump_inner(frame.as_bytes(), &mut writer, forwarder, bound, deadline).await?;
+                }
+                let replies = std::mem::take(&mut writer.replies);
+                drop(writer);
+                if !replies.is_empty() {
+                    write_line(&mut output, &encode(&Value::Array(replies))).await?;
+                }
+                continue;
+            }
+
+            if !super::mcp_http::valid_request(&message) {
                 write_line(
                     &mut output,
-                    &encode(&parse_error_response(&error.to_string())),
+                    &encode(&serde_json::json!({
+                        "jsonrpc": "2.0", "id": null,
+                        "error": {"code": -32600, "message": "Invalid JSON-RPC request"},
+                    })),
                 )
                 .await?;
                 continue;
             }
-        };
 
-        if !super::mcp_http::valid_request(&message) {
-            write_line(
-                &mut output,
-                &encode(&serde_json::json!({
-                    "jsonrpc": "2.0", "id": null,
-                    "error": {"code": -32600, "message": "Invalid JSON-RPC request"},
-                })),
-            )
-            .await?;
-            continue;
+            // Legacy initialization notifications complete the backend handshake.
+            // Notifications never produce a stdio response.
+            let Some(id) = message.get("id").cloned() else {
+                if let Err(error) = forwarder
+                    .forward_with_deadline(
+                        line,
+                        &mut super::mcp_http::IgnoreNotifications,
+                        deadline,
+                    )
+                    .await
+                {
+                    tracing::warn!(%error, "remote MCP notification failed");
+                }
+                continue;
+            };
+
+            let is_initialize = message
+                .get("method")
+                .and_then(Value::as_str)
+                .is_some_and(|method| matches!(method, "initialize" | "server/discover"));
+            let request = inject_bound_project(&message, bound).unwrap_or(line);
+
+            let outcome = match forwarder
+                .forward_with_deadline(
+                    request,
+                    &mut super::mcp_http::NotificationWriter(&mut output),
+                    deadline,
+                )
+                .await
+            {
+                // Validate before relaying: a body that is not JSON is a broken
+                // remote, and the client deserves an error carrying its own id
+                // rather than a garbage frame.
+                Ok(body) => match serde_json::from_str::<Value>(&body) {
+                    Ok(value) if is_initialize => augment_initialize(&value, bound).unwrap_or(body),
+                    Ok(_) => body,
+                    Err(error) => encode(&internal_error_response(
+                        &id,
+                        &ForwardError::unreachable(format!("response was not JSON ({error})"))
+                            .message,
+                    )),
+                },
+                Err(error) => encode(&internal_error_response(&id, &error.message)),
+            };
+            if is_initialize && let Ok(value) = serde_json::from_str::<Value>(&outcome) {
+                march = value
+                    .pointer("/result/protocolVersion")
+                    .and_then(Value::as_str)
+                    == Some(crate::mcp::batching::MARCH);
+            }
+            write_line(&mut output, &outcome).await?;
         }
 
-        // Legacy initialization notifications complete the backend handshake.
-        // Notifications never produce a stdio response.
-        let Some(id) = message.get("id").cloned() else {
-            if let Err(error) = forwarder.forward(line).await {
-                tracing::warn!(%error, "remote MCP notification failed");
-            }
-            continue;
-        };
-
-        let is_initialize = message
-            .get("method")
-            .and_then(Value::as_str)
-            .is_some_and(|method| matches!(method, "initialize" | "server/discover"));
-        let request = inject_bound_project(&message, bound).unwrap_or(line);
-
-        let outcome = match forwarder
-            .forward_with_notifications(
-                request,
-                &mut super::mcp_http::NotificationWriter(&mut output),
-            )
-            .await
-        {
-            // Validate before relaying: a body that is not JSON is a broken
-            // remote, and the client deserves an error carrying its own id
-            // rather than a garbage frame.
-            Ok(body) => match serde_json::from_str::<Value>(&body) {
-                Ok(value) if is_initialize => augment_initialize(&value, bound).unwrap_or(body),
-                Ok(_) => body,
-                Err(error) => encode(&internal_error_response(
-                    &id,
-                    &ForwardError::unreachable(format!("response was not JSON ({error})")).message,
-                )),
-            },
-            Err(error) => encode(&internal_error_response(&id, &error.message)),
-        };
-        write_line(&mut output, &outcome).await?;
-    }
-
-    Ok(())
+        Ok(())
+    })
 }
 
 /// Run the proxy against `url`, pumping this process's stdin and stdout.
@@ -536,6 +672,116 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
 
+    #[tokio::test]
+    async fn march_remote_batches_split_requests_preserve_binding_and_skip_notification_replies() {
+        let forwarder = MockForwarder::new(|body| {
+            let value: Value = serde_json::from_str(body).unwrap();
+            if value["method"] == "initialize" {
+                Ok(serde_json::json!({"jsonrpc":"2.0","id":value["id"],"result":{"protocolVersion":"2025-03-26"}}).to_string())
+            } else {
+                Ok(
+                    serde_json::json!({"jsonrpc":"2.0","id":value["id"],"result":{"content":[]}})
+                        .to_string(),
+                )
+            }
+        });
+        let init = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}});
+        let batch = serde_json::json!([
+            {"jsonrpc":"2.0","method":"notifications/initialized"},
+            {"jsonrpc":"2.0","id":"tool","method":"tools/call","params":{"name":"get_board","arguments":{}}},
+            {"jsonrpc":"2.0","id":-2,"method":"ping"},false
+        ]);
+        let out = run_pump_bound(&format!("{init}\n{batch}\n[]\n"), &forwarder, Some("LIF")).await;
+        assert_eq!(out.len(), 3);
+        let replies = out[1].as_array().unwrap();
+        assert_eq!(replies.len(), 3);
+        assert_eq!(replies[0]["id"], "tool");
+        assert_eq!(replies[1]["id"], -2);
+        assert_eq!(replies[2]["error"]["code"], -32600);
+        assert_eq!(out[2]["error"]["code"], -32600);
+        let seen = forwarder.received();
+        assert_eq!(seen.len(), 4);
+        assert!(
+            seen.iter()
+                .all(|body| serde_json::from_str::<Value>(body).unwrap().is_object())
+        );
+        let call: Value = serde_json::from_str(&seen[2]).unwrap();
+        assert_eq!(call["params"]["arguments"]["project"], "LIF");
+        let over = Value::Array(vec![
+            serde_json::json!({"jsonrpc":"2.0","id":2,"method":"ping"});
+            crate::mcp::batching::MAX_BATCH_MESSAGES + 1
+        ]);
+        let before = forwarder.received().len();
+        let out = run_pump(&format!("{init}\n{over}\n"), &forwarder).await;
+        assert_eq!(out[1]["error"]["code"], -32600);
+        assert_eq!(forwarder.received().len(), before + 1);
+        for version in ["2025-06-18", "2025-11-25", "2026-07-28"] {
+            let forwarder = MockForwarder::replying(
+                &serde_json::json!({"jsonrpc":"2.0","id":1,"result":{"protocolVersion":version}})
+                    .to_string(),
+            );
+            let out = run_pump(&format!("{init}\n{batch}\n"), &forwarder).await;
+            assert_eq!(out[1]["error"]["code"], -32600);
+            assert_eq!(forwarder.received().len(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn march_batch_notifications_flush_before_aggregate_response() {
+        struct BatchForwarder(HttpForwarder);
+        impl Forwarder for BatchForwarder {
+            async fn forward(&self, body: String) -> Result<String, ForwardError> {
+                self.forward_with_notifications(
+                    body,
+                    &mut super::super::mcp_http::IgnoreNotifications,
+                )
+                .await
+            }
+            async fn forward_with_notifications<S: super::super::mcp_http::NotificationSink>(
+                &self,
+                body: String,
+                notifications: &mut S,
+            ) -> Result<String, ForwardError> {
+                let message: Value = serde_json::from_str(&body).unwrap();
+                if message["method"] == "initialize" {
+                    Ok(serde_json::json!({"jsonrpc":"2.0","id":message["id"],"result":{"protocolVersion":"2025-03-26"}}).to_string())
+                } else {
+                    self.0.forward_with_notifications(body, notifications).await
+                }
+            }
+        }
+        let release = std::sync::Arc::new(tokio::sync::Notify::new());
+        let notification = serde_json::json!({"jsonrpc":"2.0","method":"notifications/progress","params":{"progressToken":"batch","progress":1}});
+        let (endpoint, server) =
+            super::super::mcp_http::sse_test_backend(notification.clone(), release.clone()).await;
+        let forwarder = BatchForwarder(HttpForwarder {
+            client: reqwest::Client::new(),
+            request_timeout: std::time::Duration::from_secs(3),
+            endpoint,
+            credential: None,
+            session: Mutex::default(),
+        });
+        let input=b"{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-03-26\"}}\n[{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"get_issue\"}}]\n";
+        let (output, reader) = tokio::io::duplex(4096);
+        let task = tokio::spawn(async move {
+            pump(&input[..], output, &forwarder, None).await.unwrap();
+        });
+        let mut lines = BufReader::new(reader).lines();
+        let _ = lines.next_line().await.unwrap();
+        let first = tokio::time::timeout(std::time::Duration::from_secs(2), lines.next_line())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&first).unwrap(), notification);
+        release.notify_one();
+        let last = lines.next_line().await.unwrap().unwrap();
+        let batch: Value = serde_json::from_str(&last).unwrap();
+        assert_eq!(batch[0]["id"], 1);
+        assert!(batch[0].get("result").is_some());
+        task.await.unwrap();
+        server.abort();
+    }
     #[tokio::test]
     async fn sse_notifications_reach_stdio_before_the_final_reply() {
         let release = std::sync::Arc::new(tokio::sync::Notify::new());
