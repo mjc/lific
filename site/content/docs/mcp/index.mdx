@@ -35,9 +35,11 @@ The server advertises the tools capability only. It serves no MCP resources or p
 https://your-server.example/mcp
 ```
 
-The endpoint supports MCP `2026-07-28` plus legacy `2025-06-18` and `2025-11-25`. July requests are stateless: every request carries `_meta` with `io.modelcontextprotocol/protocolVersion` and `io.modelcontextprotocol/clientCapabilities`, plus `MCP-Protocol-Version` and `Mcp-Method` HTTP headers. Calls to named tools also carry `Mcp-Name`. `server/discover` returns the supported versions, capabilities and instructions without initialization. Results carry `resultType: "complete"`.
+The endpoint supports MCP `2026-07-28` plus legacy `2025-03-26`, `2025-06-18` and `2025-11-25`. July requests are stateless: every request carries `_meta` with `io.modelcontextprotocol/protocolVersion` and `io.modelcontextprotocol/clientCapabilities`, plus `MCP-Protocol-Version` and `Mcp-Method` HTTP headers. Calls to named tools also carry `Mcp-Name`. `server/discover` returns the supported versions, capabilities and instructions without initialization. Results carry `resultType: "complete"`.
 
-Legacy clients perform `initialize`, retain the returned `Mcp-Session-Id`, send `notifications/initialized`, and include the session ID and negotiated protocol version on subsequent requests. HTTP responses can be JSON or SSE; clients must accept both. Unsupported legacy initialization versions negotiate November 2025.
+Legacy clients perform `initialize`, retain the returned `Mcp-Session-Id`, and send `notifications/initialized`. Subsequent requests include the session ID; June and November clients also include the negotiated `MCP-Protocol-Version`. March clients can omit that version header. HTTP responses can be JSON or SSE; clients must accept both. Unsupported legacy initialization versions negotiate November 2025.
+
+March compatibility retains the single-message initialization and tool calls available in earlier releases. JSON-RPC batches remain unsupported over HTTP and stdio, including the remote and multi-instance proxies. This is an existing gap against the [March specification's requirement to receive batches](https://modelcontextprotocol.io/specification/2025-03-26/basic#batching).
 
 Requests with an `Origin` header must match `server.cors_origins`, the public server origin, or a local loopback origin. Other origins receive HTTP 403. Configured browser origins remain specific to their scheme, host and port.
 
@@ -107,7 +109,7 @@ A session launched with no `LIFIC_TOKEN` has no credential to check and keeps it
 
 ### Discovery and legacy initialization
 
-July requests carry the same per-request metadata over stdio as HTTP. Discovery and tool calls need no initialization. Legacy clients retain the initialization handshake; the server negotiates June or November 2025 and omits July result fields from their responses.
+July requests carry the same per-request metadata over stdio as HTTP. Discovery and tool calls need no initialization. Legacy clients retain the initialization handshake; the server negotiates March, June or November 2025 and omits `resultType: "complete"` from their responses.
 
 ## Remote stdio
 

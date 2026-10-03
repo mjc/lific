@@ -652,6 +652,7 @@ fn server_result_meta() -> rmcp::model::JsonObject {
 impl ServerHandler for LificMcp {
     fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
         Cow::Borrowed(&[
+            ProtocolVersion::V_2025_03_26,
             ProtocolVersion::V_2025_06_18,
             ProtocolVersion::V_2025_11_25,
             ProtocolVersion::V_2026_07_28,
@@ -869,6 +870,7 @@ mod tests {
         assert_eq!(
             server.supported_protocol_versions().as_ref(),
             &[
+                ProtocolVersion::V_2025_03_26,
                 ProtocolVersion::V_2025_06_18,
                 ProtocolVersion::V_2025_11_25,
                 ProtocolVersion::V_2026_07_28,

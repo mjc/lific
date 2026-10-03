@@ -2411,6 +2411,112 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn march_only_http_client_initializes_lists_and_calls_without_version_headers() {
+        async fn read_reply(response: reqwest::Response, id: i64) -> serde_json::Value {
+            assert_eq!(response.status(), reqwest::StatusCode::OK);
+            let is_sse = response.headers()["content-type"]
+                .to_str()
+                .unwrap()
+                .starts_with("text/event-stream");
+            let text = response.text().await.unwrap();
+            let reply: serde_json::Value = if is_sse {
+                text.lines()
+                    .filter_map(|line| line.strip_prefix("data:"))
+                    .filter_map(|data| serde_json::from_str::<serde_json::Value>(data.trim()).ok())
+                    .find(|reply| reply["id"] == id)
+                    .unwrap_or_else(|| panic!("missing reply to {id}: {text}"))
+            } else {
+                serde_json::from_str(&text).unwrap()
+            };
+            assert_eq!(reply["id"], id, "{reply}");
+            assert!(reply.get("error").is_none(), "{reply}");
+            assert!(reply["result"].get("resultType").is_none(), "{reply}");
+            reply
+        }
+
+        let pool = crate::db::open_memory().unwrap();
+        let key = crate::auth::create_api_key(&pool, "march-client", None).unwrap();
+        let base = serve_ephemeral(build_test_app(pool, "http://127.0.0.1")).await;
+        let client = test_client();
+        let endpoint = format!("{base}/mcp");
+
+        // March predates MCP-Protocol-Version/Mcp-Method headers and July's
+        // per-request metadata. Exercise a client that sends neither.
+        let post = |body: serde_json::Value, session: Option<&str>| {
+            let mut request = client
+                .post(&endpoint)
+                .bearer_auth(&key)
+                .header("Accept", "application/json, text/event-stream")
+                .json(&body);
+            if let Some(session) = session {
+                request = request.header("Mcp-Session-Id", session);
+            }
+            request
+        };
+        let initialize = post(
+            serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-03-26", "capabilities": {},
+                    "clientInfo": {"name": "march-only", "version": "1"}}}),
+            None,
+        )
+        .send()
+        .await
+        .unwrap();
+        assert_eq!(initialize.status(), reqwest::StatusCode::OK);
+        let session = initialize.headers()["Mcp-Session-Id"]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let initialized = read_reply(initialize, 1).await;
+        assert_eq!(initialized["result"]["protocolVersion"], "2025-03-26");
+        assert_eq!(initialized["result"]["serverInfo"]["name"], "lific");
+        assert_eq!(
+            initialized["result"]["capabilities"]["tools"],
+            serde_json::json!({})
+        );
+
+        let notification = post(
+            serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+            Some(&session),
+        )
+        .send()
+        .await
+        .unwrap();
+        assert_eq!(notification.status(), reqwest::StatusCode::ACCEPTED);
+        assert!(notification.bytes().await.unwrap().is_empty());
+
+        for (id, method, params) in [
+            (2, "tools/list", serde_json::json!({})),
+            (
+                3,
+                "tools/call",
+                serde_json::json!({"name": "search", "arguments": {"query": "march-no-result"}}),
+            ),
+        ] {
+            let response = post(
+                serde_json::json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}),
+                Some(&session),
+            )
+            .send()
+            .await
+            .unwrap();
+            let reply = read_reply(response, id).await;
+            if method == "tools/list" {
+                assert!(
+                    reply["result"]["tools"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|tool| tool["name"] == "search")
+                );
+            } else {
+                assert_ne!(reply["result"]["isError"], true, "{reply}");
+                assert!(reply["result"]["content"][0]["text"].is_string(), "{reply}");
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn mcp_tools_call_uses_july_complete_result_type() {
         let pool = crate::db::open_memory().unwrap();
         let key = crate::auth::create_api_key(&pool, "doctor-result-type", None).unwrap();

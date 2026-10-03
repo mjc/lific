@@ -1564,8 +1564,8 @@ async fn initialize_is_answered_locally_and_describes_the_routing_rules() {
     .await;
 
     assert_eq!(
-        out[0]["result"]["protocolVersion"], "2025-11-25",
-        "an unsupported legacy version falls back to November"
+        out[0]["result"]["protocolVersion"], "2025-03-26",
+        "a March-only client must keep its requested version"
     );
     let instructions = out[0]["result"]["instructions"].as_str().unwrap();
     assert!(instructions.contains(LIST_INSTANCES), "got: {instructions}");
@@ -1574,6 +1574,66 @@ async fn initialize_is_answered_locally_and_describes_the_routing_rules() {
         instructions.contains("PRIV"),
         "per-instance binding: {instructions}"
     );
+}
+
+#[tokio::test]
+async fn march_only_stdio_client_initializes_lists_and_routes_calls() {
+    use std::fmt::Write;
+
+    let router = router_bound(&[("private", None)], Some("private"));
+    let transport = RecordingTransport::default();
+    let messages = [
+        serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2025-03-26", "capabilities": {},
+                "clientInfo": {"name": "march-only", "version": "1"}}}),
+        serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+        serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
+        serde_json::json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+            "params": {"name": "get_issue", "arguments": {"instance": "private", "identifier": "LIF-42"}}}),
+    ];
+    let mut input = String::new();
+    for message in messages {
+        writeln!(input, "{message}").unwrap();
+    }
+    let replies = run_pump(&input, &router, &transport).await;
+    assert_eq!(replies.len(), 3, "notifications produce no reply");
+    assert_eq!(replies[0]["result"]["protocolVersion"], "2025-03-26");
+    assert!(
+        replies[1]["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| tool["name"] == "get_issue")
+    );
+    assert_eq!(replies[2]["result"]["content"][0]["text"], "LIF-42");
+    for (reply, id) in replies.iter().zip(1..=3) {
+        assert_eq!(reply["id"], id);
+        assert!(reply.get("error").is_none(), "{reply}");
+        assert!(reply["result"].get("resultType").is_none(), "{reply}");
+    }
+    let forwarded = transport.seen.lock().unwrap();
+    assert_eq!(forwarded.len(), 1);
+    assert_eq!(forwarded[0].0, "private");
+    assert_eq!(
+        forwarded[0].1["params"]["arguments"]["identifier"],
+        "LIF-42"
+    );
+    assert!(
+        forwarded[0].1["params"]["arguments"]
+            .get("instance")
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn unknown_legacy_version_still_negotiates_november() {
+    let router = router_bound(&[("private", None)], Some("private"));
+    let out = run_pump(
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2099-01-01\"}}\n",
+        &router,
+        &NeverCalled,
+    ).await;
+    assert_eq!(out[0]["result"]["protocolVersion"], "2025-11-25");
 }
 
 #[tokio::test]
@@ -1597,7 +1657,7 @@ async fn july_discovery_and_lists_need_no_initialize_or_client_info() {
                 .expect("discovery conforms to the SDK schema");
             assert_eq!(
                 out[0]["result"]["supportedVersions"],
-                serde_json::json!(["2025-06-18", "2025-11-25", "2026-07-28"])
+                serde_json::json!(["2025-03-26", "2025-06-18", "2025-11-25", "2026-07-28"])
             );
         }
         if matches!(method, "server/discover" | "tools/list") {
@@ -1613,7 +1673,7 @@ async fn july_discovery_and_lists_need_no_initialize_or_client_info() {
     assert_eq!(out[0]["error"]["data"]["requested"], "2099-01-01");
     assert_eq!(
         out[0]["error"]["data"]["supported"],
-        serde_json::json!(["2025-06-18", "2025-11-25", "2026-07-28"])
+        serde_json::json!(["2025-03-26", "2025-06-18", "2025-11-25", "2026-07-28"])
     );
 }
 

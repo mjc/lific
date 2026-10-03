@@ -63,8 +63,12 @@ const STARTUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 const PROTOCOL_VERSION: &str = "2025-11-25";
 const STATELESS_PROTOCOL_VERSION: &str = "2026-07-28";
 /// Versions accepted in per-request metadata and advertised by discovery.
-const KNOWN_PROTOCOL_VERSIONS: [&str; 3] =
-    ["2025-06-18", PROTOCOL_VERSION, STATELESS_PROTOCOL_VERSION];
+const KNOWN_PROTOCOL_VERSIONS: [&str; 4] = [
+    "2025-03-26",
+    "2025-06-18",
+    PROTOCOL_VERSION,
+    STATELESS_PROTOCOL_VERSION,
+];
 
 /// Authoritative source alias, written last by this process.
 const PROVENANCE_META_KEY: &str = "dev.lific/instance";
