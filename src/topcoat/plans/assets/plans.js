@@ -44,7 +44,7 @@
       clearTimeout(this.timer);this.timer=null;
       const revision=this.editRevision;
       const turn=++this.generation;this.picker?.dispose();this.picker=null;
-      this.peek?.dispose();this.peek=null;
+      this.peek?.dispose();this.peek=null;if(!refresh){this.references?.dispose();this.references=null;}
       this.busy=false;this.root.querySelectorAll('.tc-plan-dialog').forEach(node=>{node.close();node.remove();});
       if(!refresh){this.role=null;this.content.replaceChildren();this.plan=null;this.project=null;}
       this.error.hidden=true;this.status.textContent='Loading plans…';this.root.setAttribute('aria-busy','true');
@@ -140,6 +140,7 @@
       }).join('')}</ol>`;
     }
     renderDetail(){
+      this.references?.dispose();
       const plan=this.plan,edit=editable(this.role),counts=progress(plan);
       this.content.innerHTML=`<nav aria-label="Breadcrumb"><a href="/${encodeURIComponent(this.identifier)}/plans">Plans</a> / ${escapeHtml(plan.identifier)}</nav>
         <header class="tc-plans-heading">${edit?`<label>Plan title<input data-plan-title data-edit-control value="${escapeHtml(plan.title)}"></label>`:`<h1>${escapeHtml(plan.title)}</h1>`}
@@ -154,6 +155,7 @@
         <p>Created ${escapeHtml(plan.created_at)} · Updated ${escapeHtml(plan.updated_at)}</p>`;
       const all=flattenSteps(plan.steps),find=id=>all.find(row=>row.step.id===Number(id))?.step;
       for(const {step} of all){const node=this.content.querySelector(`[data-step-description="${step.id}"]`);if(globalThis.lificIssueEditor?.renderMarkdown)globalThis.lificIssueEditor.renderMarkdown(node,step.description||'');else node.textContent=step.description||'';}
+      this.references=globalThis.LificTopcoatIssuePicker.bindReferences(this.content,{root:this.root,request:path=>this.request(path),onPeek:identifier=>this.openPeek(identifier)});
       const scalar=(selector,field)=>{const input=this.content.querySelector(selector);input?.addEventListener(field==='title'?'blur':'change',()=>{
         const value=field==='title'?input.value.trim():input.value;if(!value){input.value=plan[field];return;}if(value!==plan[field])void this.mutate(`/plans/${this.id}`,'PUT',{[field]:value});});
         if(field==='title')input?.addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();input.blur();}else if(event.key==='Escape'){input.value=plan.title;input.blur();}});};
@@ -179,13 +181,13 @@
         if(next>=0&&next<siblings.length)void this.mutate(`/plans/${this.id}/steps/${step.id}`,'PUT',movePatch(step.parent_step_id,next),{step:true});
       }));
       this.content.querySelectorAll('[data-step-edit-description]').forEach(button=>button.addEventListener('click',()=>this.editDescription(find(button.dataset.stepEditDescription))));
-      this.content.querySelectorAll('a[href*="/issues/"]').forEach(link=>link.addEventListener('click',event=>{
-        if(!event.shiftKey)return;event.preventDefault();this.peek?.dispose();
-        const identifier=decodeURIComponent(link.getAttribute('href').split('/').at(-1));
-        this.peek=globalThis.LificTopcoatIssuePicker.peek(this.root,{request:path=>this.request(path),identifier,onClose:()=>{this.peek=null;}});
+      this.content.querySelectorAll('a[href*="/issues/"]:not([data-issue-ident])').forEach(link=>link.addEventListener('click',event=>{
+        if(!event.shiftKey)return;event.preventDefault();
+        this.openPeek(decodeURIComponent(link.getAttribute('href').split('/').at(-1)));
       }));
       const anchor=location.hash.match(/^#step-(\d+)$/)?.[1];if(anchor)this.content.querySelector(`[data-plan-step="${Number(anchor)}"]`)?.scrollIntoView({block:'center'});
     }
+    openPeek(identifier){this.peek?.dispose();this.peek=globalThis.LificTopcoatIssuePicker.peek(this.root,{request:path=>this.request(path),identifier,onClose:()=>{this.peek=null;}});}
     dialog(title,markup,onSubmit){
       const node=document.createElement('dialog');node.className='tc-plan-dialog';node.innerHTML=`<h2>${escapeHtml(title)}</h2><form>${markup}<div><button type="submit">Save</button><button type="button" data-dialog-cancel>Cancel</button></div><p data-dialog-error role="alert"></p></form>`;
       this.root.append(node);const previous=document.activeElement;
@@ -209,7 +211,7 @@
       title:stepId===null?'Set anchor issue':'Link an issue to this step',onClose:()=>{this.picker=null;},
       onSelect:async issue=>{this.picker=null;await this.mutate(stepId===null?`/plans/${this.id}`:`/plans/${this.id}/steps/${stepId}`,'PUT',{issue_id:issue.id},{step:stepId!==null});},
       ...stepId===null?{onClear:async()=>{this.picker=null;await this.mutate(`/plans/${this.id}`,'PUT',{issue_id:null});}}:{}});}
-    dispose(){this.disposed=true;this.generation++;clearTimeout(this.timer);this.picker?.dispose();this.peek?.dispose();for(const remove of this.listeners)remove();this.listeners=[];this.root.querySelectorAll('dialog').forEach(node=>node.remove());}
+    dispose(){this.disposed=true;this.generation++;clearTimeout(this.timer);this.picker?.dispose();this.peek?.dispose();this.references?.dispose();for(const remove of this.listeners)remove();this.listeners=[];this.root.querySelectorAll('dialog').forEach(node=>node.remove());}
   }
   const api={Controller,flattenSteps,movePatch,provenance,progress};
   globalThis.LificTopcoatPlans=api;if(typeof module!=='undefined')module.exports=api;

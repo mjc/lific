@@ -42,7 +42,7 @@ test('headless modules preserve metadata, project issue scope, assignment, and l
           return {ok:false,status:400,error:`Unexpected ${url}`};
         }};
       },{viewer,enforced,projectLead});
-      for(const file of ['../../issue_detail/editor/assets/editor.js','../../plans/assets/picker.js','modules.js'])await page.addScriptTag({content:fs.readFileSync(path.join(__dirname,file),'utf8')});
+      for(const file of ['../../issue_detail/editor/assets/editor.js','../../plans/assets/picker.js','icons.js','modules.js'])await page.addScriptTag({content:fs.readFileSync(path.join(__dirname,file),'utf8')});
       await page.waitForFunction(()=>document.querySelector('[data-topcoat-modules]').getAttribute('aria-busy')==='false');
       await page.evaluate(()=>{document.querySelector('[data-topcoat-modules]')._modules.navigate=path=>destinations.push(path);});
     }
@@ -62,6 +62,42 @@ test('headless modules preserve metadata, project issue scope, assignment, and l
         await page.evaluate(()=>{document.activeElement.blur();dispatchEvent(new PageTransitionEvent('pagehide',{persisted:true}));module.name='Restored module';dispatchEvent(new PageTransitionEvent('pageshow',{persisted:true}));});
         await page.waitForFunction(()=>document.querySelector('[data-module-name]').value==='Restored module');
         assert.equal(await page.evaluate(()=>document.querySelector('[data-topcoat-modules]')._modules.disposed),false);
+      });
+      await t.test('module description identifiers link to lists and issue references support previews',async()=>{
+        await mount();await page.evaluate(async()=>{module.description='ENG-7 and *ENG-DOC-3* with ENG-PLAN-2, `ENG-8`, and [ENG-9](https://example.test/)';await document.querySelector('[data-topcoat-modules]')._modules.load();});
+        const body=page.locator('[data-module-description]'),issue=body.getByRole('link',{name:'ENG-7',exact:true});
+        assert.equal(await issue.count(),1);assert.equal(await issue.getAttribute('href'),'/ENG/issues/ENG-7');
+        assert.equal(await body.getByRole('link',{name:'ENG-DOC-3',exact:true}).getAttribute('href'),'/ENG/pages');
+        assert.equal(await body.getByRole('link',{name:'ENG-PLAN-2',exact:true}).getAttribute('href'),'/ENG/plans');
+        assert.equal(await body.locator('code a, a a').count(),0);
+        await issue.focus();await page.locator('[data-reference-preview]').waitFor();assert.match(await page.locator('[data-reference-preview]').textContent(),/ENG-7.*Engine bug/);
+        await issue.click({modifiers:['Shift']});await page.getByRole('heading',{name:'ENG-7 · Engine bug'}).waitFor();
+        await page.keyboard.press('e');assert.equal(await page.locator('[data-module-description-form]').count(),0);
+        await page.getByRole('button',{name:'Close peek'}).click();await issue.click();await page.waitForURL('http://modules.test/ENG/issues/ENG-7');
+      });
+      await t.test('stored Lucide icons render on module lists and detail with a safe fallback',async()=>{
+        await mount({mode:'list'});await page.evaluate(async()=>{module.emoji='lucide:Rocket';await document.querySelector('[data-topcoat-modules]')._modules.load();});
+        const link=page.getByRole('link',{name:'Engine',exact:true});assert.equal(await link.locator('svg').count(),1);assert.doesNotMatch(await link.textContent(),/lucide:/);
+        await mount({viewer:true});await page.evaluate(async()=>{module.emoji='lucide:Boxes';await document.querySelector('[data-topcoat-modules]')._modules.load();});
+        assert.equal(await page.locator('.tc-module-heading [data-module-icon] svg').count(),1);assert.doesNotMatch(await page.locator('.tc-module-heading').first().textContent(),/lucide:/);
+        await page.evaluate(async()=>{module.emoji='lucide:MissingIcon';await document.querySelector('[data-topcoat-modules]')._modules.load();});
+        assert.equal(await page.locator('[data-module-icon] svg').count(),1);assert.doesNotMatch(await page.locator('.tc-module-heading').first().textContent(),/MissingIcon/);
+      });
+      await t.test('E opens description editing and respects input, modifier, permission, and overlay guards',async()=>{
+        await mount();await page.keyboard.press('e');assert.equal(await page.getByLabel('Description',{exact:true}).count(),1);
+        await page.getByLabel('Description',{exact:true}).fill('Unchanged draft');await page.keyboard.press('E');assert.equal(await page.locator('[data-module-description-form]').count(),1);
+        await page.getByRole('button',{name:'Cancel',exact:true}).click();
+        for(const chord of ['Control+e','Meta+e','Alt+e']){await page.keyboard.press(chord);assert.equal(await page.locator('[data-module-description-form]').count(),0);}
+        for(const selector of ['[data-module-name]','[data-module-status]','[data-module-search]']){await mount();await page.locator(selector).focus();await page.keyboard.press('e');assert.equal(await page.locator('[data-module-description-form]').count(),0);}
+        await page.evaluate(()=>{const node=document.createElement('div');node.contentEditable='true';node.id='editable';document.body.append(node);node.focus();});await page.keyboard.press('e');assert.equal(await page.locator('[data-module-description-form]').count(),0);
+        for(const markup of ['<dialog open><button>Overlay</button></dialog>','<div role="menu"><button>Context action</button></div>','<div role="dialog"><button>Peek</button></div>']){
+          await page.evaluate(markup=>{document.activeElement.blur();const node=document.createElement('div');node.id='overlay';node.innerHTML=markup;document.body.append(node);},markup);
+          await page.keyboard.press('e');assert.equal(await page.locator('[data-module-description-form]').count(),0);await page.locator('#overlay').evaluate(node=>node.remove());
+        }
+        await page.evaluate(()=>document.activeElement.blur());await page.keyboard.press('Shift+e');assert.equal(await page.getByLabel('Description',{exact:true}).count(),1);
+        await mount({viewer:true});await page.keyboard.press('e');assert.equal(await page.locator('[data-module-description-form]').count(),0);
+        await mount({enforced:false});await page.keyboard.press('e');assert.equal(await page.locator('[data-module-description-form]').count(),0);
+        await mount({mode:'list'});await page.keyboard.press('e');assert.equal(await page.locator('[data-module-description-form]').count(),0);
       });
       await t.test('module detail pages all issues and authoritative memberships beyond the server cap',async()=>{
         await mount();await page.evaluate(async()=>{

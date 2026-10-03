@@ -9,6 +9,7 @@ pub(crate) const SCRIPT_PATH: &str = "/__topcoat-modules.js";
 pub(crate) const SCRIPT: &str = concat!(
     include_str!("../issue_detail/editor/assets/editor.js"),
     include_str!("../plans/assets/picker.js"),
+    include_str!("assets/icons.js"),
     include_str!("assets/modules.js")
 );
 pub(crate) const STYLESHEET_PATH: &str = "/__topcoat-modules.css";

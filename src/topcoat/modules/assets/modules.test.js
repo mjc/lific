@@ -35,3 +35,12 @@ test('module metadata and issue assignment follow separate enforced and legacy g
   assert.equal(metadataEditable({role:null,enforced:false,is_admin:false},{lead_user_id:1},{id:1}),true);
   assert.equal(metadataEditable(null),false);
 });
+
+// Exercise the bundled dictionary, including old Lucide aliases and invalid names.
+test('module icons render installed Lucide names and aliases while escaping literal emoji values',()=>{
+  require('./icons.js');
+  const {moduleIcon}=require('./modules.js');
+  for(const name of Object.keys(globalThis.LificTopcoatModuleIcons.names)){assert.match(moduleIcon(`lucide:${name}`),/^<svg .*<(?:(?:path|rect|circle|ellipse|line|polyline|polygon) )/);}
+  assert.equal(moduleIcon('🚀'),'🚀');assert.equal(moduleIcon('<script>'),'&lt;script&gt;');
+  assert.equal(moduleIcon('lucide:MissingIcon'),moduleIcon(null));assert.equal(moduleIcon('lucide:__proto__'),moduleIcon(null));
+});

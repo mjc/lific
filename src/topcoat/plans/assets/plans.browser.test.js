@@ -8,8 +8,9 @@ test('headless plans preserve nested edits, linked completion, server progress, 
     const {chromium}=await import(path.resolve(__dirname,'../../../../e2e/node_modules/playwright/index.mjs'));
     const browser=await chromium.launch({headless:true,executablePath:process.env.PLAYWRIGHT_EXECUTABLE_PATH});
     const page=await browser.newPage();page.setDefaultTimeout(5000);const errors=[];page.on('pageerror',error=>errors.push(error.message));
+    const pickerCss=fs.readFileSync(`${__dirname}/picker.css`,'utf8');
     async function mount({mode='detail',viewer=false}={}){
-      await page.route('http://planning.test/**',route=>route.fulfill({contentType:'text/html',body:`<!doctype html><section data-topcoat-plans="${mode}" data-project-identifier="ENG" data-plan-id="10"><p data-plans-status role="status"></p><div data-plans-error role="alert" hidden></div><div data-plans-content></div></section>`}));
+      await page.route('http://planning.test/**',route=>route.fulfill({contentType:'text/html',body:`<!doctype html><style>${pickerCss}</style><section data-topcoat-plans="${mode}" data-project-identifier="ENG" data-plan-id="10"><p data-plans-status role="status"></p><div data-plans-error role="alert" hidden></div><div data-plans-content></div></section>`}));
       await page.goto(`http://planning.test/ENG/plans${mode==='detail'?'/10':''}`);
       await page.evaluate(({viewer})=>{
         window.calls=[];window.destinations=[];window.failure=null;window.role=viewer?'viewer':'maintainer';window.holdWrite=false;
@@ -84,6 +85,57 @@ test('headless plans preserve nested edits, linked completion, server progress, 
         await page.evaluate(()=>{dispatchEvent(new PageTransitionEvent('pagehide',{persisted:true}));plan.title='Restored plan';dispatchEvent(new PageTransitionEvent('pageshow',{persisted:true}));});
         await page.waitForFunction(()=>document.querySelector('[data-plan-title]').value==='Restored plan');
         assert.equal(await page.evaluate(()=>document.querySelector('[data-topcoat-plans]')._plans.disposed),false);
+      });
+      await t.test('description references navigate and preview without linking code or authored anchors',async()=>{
+        await mount();await page.evaluate(async()=>{plan.steps[0].description='See ENG-7, **ENG-DOC-3**, and ENG-PLAN-2. `ENG-8` [ENG-9](https://example.test/)\n\n```\nENG-10\n```';await document.querySelector('[data-topcoat-plans]')._plans.load();});
+        const body=page.locator('[data-step-description="1"]');
+        assert.equal(await body.getByRole('link',{name:'ENG-7',exact:true}).count(),1);
+        assert.equal(await body.getByRole('link',{name:'ENG-7',exact:true}).getAttribute('href'),'/ENG/issues/ENG-7');
+        assert.equal(await body.getByRole('link',{name:'ENG-DOC-3',exact:true}).getAttribute('href'),'/ENG/pages');
+        assert.equal(await body.getByRole('link',{name:'ENG-PLAN-2',exact:true}).getAttribute('href'),'/ENG/plans');
+        assert.equal(await body.locator('code a, a a').count(),0);assert.equal(await body.getByRole('link',{name:'ENG-9'}).getAttribute('href'),'https://example.test/');
+        await body.getByRole('link',{name:'ENG-7',exact:true}).hover();await page.locator('[data-reference-preview]').waitFor();
+        assert.match(await page.locator('[data-reference-preview]').textContent(),/ENG-7.*Engine/);
+        await body.getByRole('link',{name:'ENG-7',exact:true}).click({modifiers:['Shift']});await page.getByRole('heading',{name:'ENG-7 · Engine'}).waitFor();
+        await page.getByRole('button',{name:'Close peek'}).click();await body.getByRole('link',{name:'ENG-DOC-3',exact:true}).click();
+        await page.waitForURL('http://planning.test/ENG/pages');
+      });
+      await t.test('peek description references hover and retarget the same preview with Shift-click',async()=>{
+        await mount();await page.evaluate(async()=>{
+          issue.description='Continue with ENG-8.';plan.steps[0].description='ENG-7';
+          const request=lificSession.request;lificSession.request=(url,options)=>url==='/issues/resolve/ENG-8'?
+            Promise.resolve({ok:true,data:{id:8,project_id:3,identifier:'ENG-8',title:'Next issue',status:'todo',description:'Return to ENG-7.'}}):request(url,options);
+          await document.querySelector('[data-topcoat-plans]')._plans.load();
+        });
+        const outer=page.locator('[data-step-description="1"] a');await outer.focus();await outer.click({modifiers:['Shift']});
+        const nested=page.locator('dialog [data-peek-markdown] a');await nested.hover();await page.locator('dialog [data-reference-preview]').waitFor();
+        assert.match(await page.locator('dialog [data-reference-preview]').textContent(),/ENG-8.*Next issue/);
+        await nested.click({modifiers:['Shift']});await page.getByRole('heading',{name:'ENG-8 · Next issue'}).waitFor();
+        assert.equal(await page.locator('dialog[open]').count(),1);assert.equal(await page.locator('[data-reference-preview]').count(),0);
+        await page.getByRole('button',{name:'Close peek'}).click();assert.equal(await outer.evaluate(node=>node===document.activeElement),true);
+      });
+      await t.test('reference context actions preview or open a new tab and clean up on dismissal and scope changes',async()=>{
+        await mount();await page.evaluate(async()=>{plan.steps[0].description='ENG-7';window.opened=[];window.open=(...args)=>opened.push(args);await document.querySelector('[data-topcoat-plans]')._plans.load();});
+        const link=page.locator('[data-step-description="1"] a');await link.hover();await page.locator('[data-reference-preview]').waitFor();await link.click({button:'right'});
+        const menu=page.getByRole('menu');await menu.waitFor();assert.equal(await page.locator('[data-reference-preview]').count(),0);
+        assert.equal(await menu.getByRole('menuitem',{name:'Open preview'}).evaluate(node=>node===document.activeElement),true);
+        await page.keyboard.press('ArrowDown');await page.keyboard.press('Enter');
+        assert.deepEqual(await page.evaluate(()=>opened),[['http://planning.test/ENG/issues/ENG-7','_blank','noopener']]);assert.equal(await menu.count(),0);
+        await link.click({button:'right'});await page.getByRole('menuitem',{name:'Open preview'}).click();await page.getByRole('heading',{name:'ENG-7 · Engine'}).waitFor();
+        assert.equal(await menu.count(),0);await page.getByRole('button',{name:'Close peek'}).click();
+        await link.click({button:'right'});await page.keyboard.press('Escape');assert.equal(await menu.count(),0);assert.equal(await link.evaluate(node=>node===document.activeElement),true);
+        await link.click({button:'right'});await page.locator('[data-plan-progress]').click();assert.equal(await menu.count(),0);
+        await link.click({button:'right'});await page.evaluate(()=>{lificSession.state.user={id:2};dispatchEvent(new CustomEvent('lific:account-change'));});
+        await page.getByLabel('Plan title').waitFor();assert.equal(await menu.count(),0);
+      });
+      await t.test('reference hover previews close on scroll and resize',async()=>{
+        await mount();await page.evaluate(async()=>{plan.steps[0].description='ENG-7';await document.querySelector('[data-topcoat-plans]')._plans.load();});
+        const link=page.locator('[data-step-description="1"] a');await link.hover();
+        await page.evaluate(()=>dispatchEvent(new Event('resize')));await page.waitForTimeout(400);
+        assert.equal(await page.locator('[data-reference-preview]').count(),0,'resize cancels a pending preview');
+        await page.mouse.move(1,1);await link.hover();await page.locator('[data-reference-preview]').waitFor();
+        await page.evaluate(()=>dispatchEvent(new Event('scroll')));
+        assert.equal(await page.locator('[data-reference-preview]').count(),0,'scroll hides a visible preview');
       });
       await t.test('step completion uses server effect; unchecking preserves the done issue; reopen refresh clears completion',async()=>{
         await mount();await page.locator('[data-step-done="2"]').check();

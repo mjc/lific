@@ -78,9 +78,10 @@
   function peek(root,{request,identifier,onClose}={}) {
     const dialog=document.createElement('dialog');dialog.className='tc-issue-picker';
     dialog.innerHTML='<p data-peek-status role="status">Loading issue…</p><div data-peek-content></div><button type="button" data-peek-close>Close peek</button>';
-    root.append(dialog);const focused=document.activeElement;let alive=true,epoch=0;
-    function dispose(){if(!alive)return;alive=false;epoch++;dialog.close();dialog.remove();if(focused?.isConnected)focused.focus();onClose?.();}
+    root.append(dialog);const focused=document.activeElement;let alive=true,epoch=0,references=null;
+    function dispose(){if(!alive)return;alive=false;epoch++;references?.dispose();dialog.close();dialog.remove();if(focused?.isConnected)focused.focus();onClose?.();}
     async function load(){
+      references?.dispose();references=null;
       const turn=++epoch,status=dialog.querySelector('[data-peek-status]'),content=dialog.querySelector('[data-peek-content]');status.textContent='Loading issue…';content.replaceChildren();
       try {
         const issue=await request(`/issues/resolve/${encodeURIComponent(identifier)}`);if(!alive||turn!==epoch)return;
@@ -88,6 +89,7 @@
           <a href="/${encodeURIComponent(issue.identifier.replace(/-\d+$/,''))}/issues/${encodeURIComponent(issue.identifier)}">Open issue</a>`;
         const description=content.querySelector('[data-peek-markdown]');
         if(globalThis.lificIssueEditor?.renderMarkdown)globalThis.lificIssueEditor.renderMarkdown(description,issue.description||'');else description.textContent=issue.description||'';
+        references=bindReferences(description,{root:dialog,request,onPeek:next=>{identifier=next;void load();}});
         status.textContent='';
       }catch(reason){if(alive&&turn===epoch){status.textContent='';const error=document.createElement('p');error.setAttribute('role','alert');error.textContent=reason.message||'Could not load issue.';
         const retry=document.createElement('button');retry.type='button';retry.textContent='Retry';retry.addEventListener('click',()=>void load(),{once:true});content.replaceChildren(error,retry);}}
@@ -95,7 +97,71 @@
     dialog.querySelector('[data-peek-close]').addEventListener('click',dispose);dialog.addEventListener('cancel',event=>{event.preventDefault();dispose();});
     dialog.showModal();void load();return {dispose};
   }
-  const api={escapeHtml,identifierShape,findIssues,mount,peek};
+  function bindReferences(container,{root=container,request,onPeek}={}) {
+    let alive=true,epoch=0,timer=null,card=null,menu=null,menuTrigger=null;
+    const listeners=[];
+    const listen=(node,event,callback)=>{node.addEventListener(event,callback);listeners.push(()=>node.removeEventListener(event,callback));};
+    const hide=()=>{epoch++;clearTimeout(timer);card?.remove();card=null;};
+    const closeMenu=(restore=false)=>{
+      if(!menu)return;menu.remove();menu=null;
+      if(restore&&menuTrigger?.isConnected)menuTrigger.focus({preventScroll:true});
+      menuTrigger=null;hide();
+    };
+    const openMenu=(event,link)=>{
+      event.preventDefault();event.stopPropagation();
+      globalThis.dispatchEvent(new Event('lific:reference-menu'));hide();menuTrigger=link;
+      menu=document.createElement('div');menu.dataset.referenceMenu='';menu.setAttribute('role','menu');menu.setAttribute('aria-label','Issue reference actions');
+      Object.assign(menu.style,{position:'fixed',zIndex:'1000',padding:'.35rem',display:'grid',background:'var(--surface,#fff)',color:'var(--text,#18212f)',border:'1px solid var(--border,#d3dae4)',borderRadius:'.4rem',maxWidth:'calc(100vw - 16px)'});
+      for(const [label,action] of [
+        ['Open preview',()=>onPeek?.(link.dataset.issueIdent)],
+        ['Open in new tab',()=>globalThis.open(new URL(link.href,location.href).href,'_blank','noopener')],
+      ]){
+        const item=document.createElement('button');item.type='button';item.setAttribute('role','menuitem');item.textContent=label;
+        Object.assign(item.style,{font:'inherit',textAlign:'left',minHeight:'2.5rem',padding:'.4rem .75rem',color:'inherit',background:'transparent',border:'0',cursor:'pointer'});
+        item.addEventListener('click',event=>{event.stopPropagation();closeMenu(true);action();});menu.append(item);
+      }
+      root.append(menu);const box=menu.getBoundingClientRect();
+      menu.style.left=`${Math.max(8,Math.min(event.clientX,innerWidth-box.width-8))}px`;
+      menu.style.top=`${Math.max(8,Math.min(event.clientY,innerHeight-box.height-8))}px`;
+      menu.firstElementChild.focus();
+    };
+    const keydown=event=>{
+      if(!menu)return;
+      if(['Escape','Tab'].includes(event.key)){event.preventDefault();event.stopImmediatePropagation();closeMenu(true);return;}
+      if(!menu.contains(document.activeElement)||!['ArrowDown','ArrowUp','Home','End'].includes(event.key))return;
+      event.preventDefault();event.stopImmediatePropagation();const items=[...menu.children],index=items.indexOf(document.activeElement);
+      items[event.key==='Home'?0:event.key==='End'?items.length-1:(index+(event.key==='ArrowDown'?1:-1)+items.length)%items.length].focus();
+    };
+    globalThis.addEventListener('keydown',keydown,true);listeners.push(()=>globalThis.removeEventListener('keydown',keydown,true));
+    listen(globalThis,'lific:reference-menu',()=>closeMenu());
+    listen(globalThis,'contextmenu',()=>closeMenu());
+    listen(globalThis,'click',event=>{if(menu&&!menu.contains(event.target))closeMenu();});
+    listen(globalThis,'resize',()=>{closeMenu();hide();});
+    const scroll=event=>{if(menu?.contains(event.target))return;closeMenu();hide();};
+    globalThis.addEventListener('scroll',scroll,true);listeners.push(()=>globalThis.removeEventListener('scroll',scroll,true));
+    const show=link=>{
+      hide();const turn=epoch;
+      timer=setTimeout(async()=>{
+        try {
+          const issue=await request(`/issues/resolve/${encodeURIComponent(link.dataset.issueIdent)}`);
+          if(!alive||turn!==epoch||!link.isConnected)return;
+          card=document.createElement('aside');card.dataset.referencePreview='';card.setAttribute('role','tooltip');
+          card.innerHTML=`<strong>${escapeHtml(issue.identifier)} · ${escapeHtml(issue.title)}</strong><p>${escapeHtml(issue.status)} · ${escapeHtml(issue.priority||'none')}</p>`;
+          root.append(card);
+          const rect=link.getBoundingClientRect();card.style.left=`${Math.max(8,Math.min(rect.left,innerWidth-card.offsetWidth-8))}px`;
+          card.style.top=`${Math.max(8,Math.min(rect.bottom+6,innerHeight-card.offsetHeight-8))}px`;
+        }catch{ /* Unavailable references remain ordinary navigation links. */ }
+      },350);
+    };
+    for(const link of container.querySelectorAll('a[data-issue-ident]')){
+      listen(link,'mouseenter',()=>show(link));listen(link,'focus',()=>show(link));
+      listen(link,'mouseleave',hide);listen(link,'blur',hide);
+      listen(link,'click',event=>{if(!event.shiftKey)return;event.preventDefault();hide();onPeek?.(link.dataset.issueIdent);});
+      listen(link,'contextmenu',event=>openMenu(event,link));
+    }
+    return {dispose(){if(!alive)return;alive=false;closeMenu();hide();for(const remove of listeners)remove();}};
+  }
+  const api={escapeHtml,identifierShape,findIssues,mount,peek,bindReferences};
   globalThis.LificTopcoatIssuePicker=api;
   if(typeof module!=='undefined')module.exports=api;
 })();
