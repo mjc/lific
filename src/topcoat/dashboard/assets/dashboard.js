@@ -363,7 +363,9 @@ function renderHome(doc, model, user, now) {
   if (!model.issueTotal) {
     const quiet = card(doc, 'All quiet here');
     const mascot = element(doc, 'img');
-    mascot.src = '/__topcoat-dashboard-mascot.png'; mascot.alt = ''; mascot.width = 180;
+    mascot.src = doc.defaultView?.LificTopcoatRouting?.href('/__topcoat-dashboard-mascot.png')
+      ?? `${doc.body?.dataset.lificBasePath ?? ''}/__topcoat-dashboard-mascot.png`;
+    mascot.alt = ''; mascot.width = 180;
     quiet.append(mascot, element(doc, 'p', 'Nothing active or todo across your projects right now.'));
     main.append(quiet);
   }

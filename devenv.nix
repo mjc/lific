@@ -205,6 +205,7 @@ let
           node --test src/topcoat/pages/assets/pages.browser.test.js
           node --test src/topcoat/public/assets/public.markdown-media.browser.test.js
           node --test src/topcoat/public/assets/public.browser.test.js
+          node --test src/topcoat/acceptance/*.browser.test.js
         '';
         after = [ "lific:install:e2e" "lific:debug-build" ];
       };

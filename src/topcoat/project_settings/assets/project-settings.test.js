@@ -270,6 +270,19 @@ test("unknown archive import survives page reload until project list is checked"
   controller.acknowledgeArchive();
   assert.equal(saved.size, 0);
 });
+test("project ZIP export requests a format matching its saved filename", async () => {
+  const { controller } = setup();
+  const downloads = [], saved = [];
+  const data = {blob: "ZIP bundle", filename: "LIF.zip"};
+  controller.env.download = async (path, filename) => {
+    downloads.push({path, filename});
+    return success(data);
+  };
+  controller.env.saveDownload = value => saved.push(value);
+  assert.equal(await controller.exportData(), true);
+  assert.deepEqual(downloads, [{path: "/export/projects/LIF", filename: "LIF.zip"}]);
+  assert.deepEqual(saved, [data]);
+});
 test("archive export requires confirmation and verified account before saving", async () => {
   const { controller } = setup(async () => success({ id: 1 }));
   let saved = 0;

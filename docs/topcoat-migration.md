@@ -41,7 +41,8 @@ embedded from `src/topcoat` using `include_str!` and `include_bytes!`.
 The crate's `src/**/*` source allowlist includes them for Cargo installs and
 isolated Nix packages. Production executables serve their interface from any
 working directory. Release smoke checks run artifacts outside the checkout
-and fetch their rendered page and referenced JavaScript/CSS.
+and fetch their rendered page, referenced JavaScript/CSS, install manifest,
+and app icons.
 
 ## Deployment and rollback
 
@@ -125,6 +126,16 @@ The shared request boundary preserves these contracts:
 
 ## Feature and integration coverage
 
+- The executable acceptance suite starts an isolated instance with a real
+  database behind a stripping `/app` proxy. It seeds resources through REST,
+  opens private and public route families in headless Chromium, and checks
+  login, session replacement, logout, WebSocket reconnect and replay, MCP
+  initialization, uploads, downloads, exports, and public audio seeking.
+  Requests reach the assembled server without API mocks. The `e2e` profile's
+  `lific:e2e` task runs this suite after building the executable.
+- These isolated checks establish local integration coverage. Deployment
+  acceptance still requires the same flows on the staging target and a
+  smoke check of the deployed production artifact.
 - Route tests exercise shared document composition, private/public/auth chrome,
   project setup and settings, issues, pages, files, plans, modules, activity,
   insights, dependency graphs, and embedded assets. They also check that the

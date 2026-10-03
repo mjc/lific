@@ -59,8 +59,12 @@ mod topcoat_app {
             }
             _ => super::topcoat_frontend::session::Scope::Private,
         };
+        let require_session = matches!(
+            route.layout,
+            super::topcoat_frontend::shell::Layout::Private
+        );
         let session_attributes =
-            super::topcoat_frontend::session::bootstrap_attributes(cx, &scope, false);
+            super::topcoat_frontend::session::bootstrap_attributes(cx, &scope, require_session);
         Ok(view! {
             <!DOCTYPE html>
             <html lang="en">
@@ -92,6 +96,7 @@ mod topcoat_app {
                     <link rel="stylesheet" href=(super::topcoat_frontend::identity::STYLESHEET_PATH)>
                     <link rel="stylesheet" href=(super::topcoat_frontend::project_settings::STYLESHEET_PATH)>
                     <link rel="stylesheet" href=(super::topcoat_frontend::files::STYLESHEET_PATH)>
+                    <link rel="stylesheet" href=(super::topcoat_frontend::pages::STYLESHEET_PATH)>
                     <link rel="stylesheet" href=(super::topcoat_frontend::plans::STYLESHEET_PATH)>
                     <link rel="stylesheet" href=(super::topcoat_frontend::modules::STYLESHEET_PATH)>
                     <link rel="stylesheet" href=(super::topcoat_frontend::activity_insights::STYLESHEET_PATH)>
@@ -117,6 +122,7 @@ mod topcoat_app {
                     <script defer="defer" src=(super::topcoat_frontend::identity::SCRIPT_PATH)></script>
                     <script defer="defer" src=(super::topcoat_frontend::project_settings::SCRIPT_PATH)></script>
                     <script defer="defer" src=(super::topcoat_frontend::files::SCRIPT_PATH)></script>
+                    <script defer="defer" src=(super::topcoat_frontend::pages::SCRIPT_PATH)></script>
                     <script defer="defer" src=(super::topcoat_frontend::plans::SCRIPT_PATH)></script>
                     <script defer="defer" src=(super::topcoat_frontend::modules::SCRIPT_PATH)></script>
                     <script defer="defer" src=(super::topcoat_frontend::activity_insights::SCRIPT_PATH)></script>
@@ -845,6 +851,8 @@ mod topcoat_app_tests {
         assert!(body.contains("/__topcoat-issue-create.js"));
         assert!(body.contains("/__topcoat-files.css"));
         assert!(body.contains("/__topcoat-files.js"));
+        assert!(body.contains("/__topcoat-pages.css"));
+        assert!(body.contains("/__topcoat-pages.js"));
         assert!(body.contains("/__topcoat-plans.css"));
         assert!(body.contains("/__topcoat-plans.js"));
         assert!(body.contains("/__topcoat-modules.css"));
@@ -906,6 +914,13 @@ mod topcoat_app_tests {
             );
             assert!(body.contains(&format!("<title>{title}</title>")), "{path}");
             assert!(body.contains(expected), "{path}");
+            assert!(
+                body.contains(&format!(
+                    "data-lific-require-session=\"{}\"",
+                    layout == "private"
+                )),
+                "{path}"
+            );
             if path == "/login" {
                 assert!(body.contains("data-topcoat-identity=\"login\""));
             } else if path == "/signup" {
@@ -1438,9 +1453,16 @@ mod topcoat_app_tests {
     async fn controls_runtime_executes_control_handlers_from_the_shared_layout() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
-        let app = axum::Router::new().fallback_service(topcoat::router::tower::TowerService::new(
-            topcoat_app::router(),
-        ));
+        let app = axum::Router::new()
+            .route(
+                "/api/auth/me",
+                axum::routing::get(|| async {
+                    axum::Json(serde_json::json!({"id": 1, "username": "runtime-fixture"}))
+                }),
+            )
+            .fallback_service(topcoat::router::tower::TowerService::new(
+                topcoat_app::router(),
+            ));
         let server = tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
@@ -1453,6 +1475,7 @@ mod topcoat_app_tests {
             const browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH });
             try {
                 const page = await browser.newPage();
+                await page.addInitScript(() => localStorage.setItem('lific_token', 'runtime-fixture'));
                 const failures = [];
                 page.on('pageerror', error => failures.push(error.message));
                 await page.goto(process.env.LIFIC_TOPCOAT_RUNTIME_URL);

@@ -64,6 +64,7 @@ test("e2e profile runs the production frontend without a development bundler", (
     "lific:debug-build",
   ]);
   expect(tasks["lific:e2e"].exec).toContain("src/topcoat/public/assets/public.browser.test.js");
+  expect(tasks["lific:e2e"].exec).toContain("src/topcoat/acceptance/*.browser.test.js");
   expect(tasks["lific:e2e"].exec).not.toContain("topcoat-spike");
   expect(Object.keys(processes)).toEqual(["backend"]);
 }, 360_000);
