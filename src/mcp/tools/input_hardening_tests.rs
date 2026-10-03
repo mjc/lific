@@ -702,6 +702,11 @@ mod wire {
                 .await;
             match response.get("error") {
                 Some(error) => Err(error["message"].as_str().unwrap_or_default().to_owned()),
+                None if response["result"]["isError"] == true => Err(response["result"]["content"]
+                    [0]["text"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned()),
                 None => Ok(response["result"]["content"][0]["text"]
                     .as_str()
                     .unwrap_or_default()

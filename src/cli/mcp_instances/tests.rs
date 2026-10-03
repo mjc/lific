@@ -378,6 +378,7 @@ fn http_backends(entries: &[(&str, &str, Option<&str>)]) -> HttpBackends {
                 (
                     (*alias).to_owned(),
                     HttpBackend {
+                        session: std::sync::Arc::default(),
                         client: reqwest::Client::builder()
                             .redirect(reqwest::redirect::Policy::none())
                             .connect_timeout(CONNECT_TIMEOUT)
@@ -1558,8 +1559,8 @@ async fn initialize_is_answered_locally_and_describes_the_routing_rules() {
     .await;
 
     assert_eq!(
-        out[0]["result"]["protocolVersion"], "2025-03-26",
-        "a version the proxy knows is echoed back"
+        out[0]["result"]["protocolVersion"], "2025-11-25",
+        "an unsupported legacy version falls back to November"
     );
     let instructions = out[0]["result"]["instructions"].as_str().unwrap();
     assert!(instructions.contains(LIST_INSTANCES), "got: {instructions}");
@@ -1568,6 +1569,71 @@ async fn initialize_is_answered_locally_and_describes_the_routing_rules() {
         instructions.contains("PRIV"),
         "per-instance binding: {instructions}"
     );
+}
+
+#[tokio::test]
+async fn july_discovery_and_lists_need_no_initialize_or_client_info() {
+    let router = router_bound(&[("private", Some("PRIV"))], Some("private"));
+    for method in ["server/discover", "tools/list", "ping"] {
+        let request = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": method,
+            "params": {"_meta": {
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientCapabilities": {},
+            }}
+        });
+        let out = run_pump(&format!("{request}\n"), &router, &NeverCalled).await;
+        assert_eq!(out[0]["result"]["resultType"], "complete", "{out:?}");
+        assert_eq!(
+            out[0]["result"]["_meta"]["io.modelcontextprotocol/serverInfo"]["name"],
+            "lific-multi-instance-proxy"
+        );
+        if method == "server/discover" {
+            serde_json::from_value::<rmcp::model::DiscoverResult>(out[0]["result"].clone())
+                .expect("discovery conforms to the SDK schema");
+            assert_eq!(
+                out[0]["result"]["supportedVersions"],
+                serde_json::json!(["2025-06-18", "2025-11-25", "2026-07-28"])
+            );
+        }
+        if matches!(method, "server/discover" | "tools/list") {
+            assert_eq!(out[0]["result"]["ttlMs"], 0);
+            assert_eq!(out[0]["result"]["cacheScope"], "private");
+        }
+    }
+    let unsupported = serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list",
+        "params": {"_meta": {"io.modelcontextprotocol/protocolVersion": "2099-01-01"}}
+    });
+    let out = run_pump(&format!("{unsupported}\n"), &router, &NeverCalled).await;
+    assert_eq!(out[0]["error"]["code"], -32022);
+    assert_eq!(out[0]["error"]["data"]["requested"], "2099-01-01");
+    assert_eq!(
+        out[0]["error"]["data"]["supported"],
+        serde_json::json!(["2025-06-18", "2025-11-25", "2026-07-28"])
+    );
+}
+
+#[tokio::test]
+async fn july_selector_validation_is_a_tool_error_and_invalid_envelopes_do_not_run() {
+    let router = router_bound(&[("private", None)], Some("private"));
+    let request = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "list_instances", "arguments": {"extra": true}, "_meta": {
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientCapabilities": {},
+        }}
+    });
+    let out = run_pump(&format!("{request}\n"), &router, &NeverCalled).await;
+    assert_eq!(out[0]["result"]["isError"], true);
+    assert_eq!(out[0]["result"]["resultType"], "complete");
+    for invalid in [
+        serde_json::json!({"jsonrpc": "1.0", "id": 1, "method": "tools/list"}),
+        serde_json::json!({"jsonrpc": "2.0", "id": null, "method": "tools/list"}),
+        serde_json::json!({"jsonrpc": "2.0", "id": [], "method": "tools/list"}),
+        serde_json::json!({"jsonrpc": "2.0", "id": {}, "method": "tools/list"}),
+        serde_json::json!([]),
+    ] {
+        let out = run_pump(&format!("{invalid}\n"), &router, &NeverCalled).await;
+        assert_eq!(out[0]["error"]["code"], -32600);
+    }
 }
 
 #[tokio::test]
@@ -1712,7 +1778,11 @@ async fn assert_total_startup_deadline(exhaust_during_binding: bool) {
     async fn mcp(
         State((gate, paginate)): State<(Gate, bool)>,
         axum::Json(request): axum::Json<Value>,
-    ) -> axum::Json<Value> {
+    ) -> axum::response::Response {
+        use axum::response::IntoResponse;
+        if request["method"] == "notifications/initialized" {
+            return StatusCode::ACCEPTED.into_response();
+        }
         wait(&gate, false).await;
         let result = if request["method"] == "initialize" {
             serde_json::json!({ "protocolVersion": PROTOCOL_VERSION, "capabilities": {}, "serverInfo": { "name": "mock", "version": "0" } })
@@ -1722,6 +1792,7 @@ async fn assert_total_startup_deadline(exhaust_during_binding: bool) {
             serde_json::json!({ "tools": [tool_value("get_issue", serde_json::json!({ "type": "object" }))] })
         };
         axum::Json(serde_json::json!({ "jsonrpc": "2.0", "id": request["id"], "result": result }))
+            .into_response()
     }
     async fn binding(State((gate, _)): State<(Gate, bool)>) -> axum::Json<Value> {
         wait(&gate, true).await;

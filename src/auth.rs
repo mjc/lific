@@ -16,6 +16,7 @@ use crate::db::models::AuthUser;
 
 #[derive(Clone)]
 pub struct AuthState {
+    pub public_url_is_explicit: bool,
     pub db: DbPool,
     pub public_url: String,
     /// LIF-294: mirror of `[auth] required`. When false, a request with no
@@ -771,9 +772,28 @@ pub async fn require_api_key(
     // canonical protected-resource metadata lives at the path-aware well-known
     // location. Point Claude there so the `resource` it reads matches the URL
     // the user entered.
+    let issuer = if !auth.public_url_is_explicit {
+        request
+            .headers()
+            .get(axum::http::header::HOST)
+            .and_then(|value| value.to_str().ok())
+            .and_then(crate::links::parse_http_authority)
+            .filter(|authority| {
+                crate::links::authority_is_allowlisted(
+                    authority,
+                    &["localhost".into(), "127.0.0.1".into(), "::1".into()],
+                )
+            })
+            .map_or_else(
+                || auth.public_url.clone(),
+                |authority| format!("http://{authority}"),
+            )
+    } else {
+        auth.public_url.clone()
+    };
     let www_auth = format!(
         "Bearer resource_metadata=\"{}/.well-known/oauth-protected-resource/mcp\"",
-        auth.public_url
+        issuer.trim_end_matches('/')
     );
 
     let Some(token) = token else {
@@ -936,7 +956,8 @@ pub async fn require_api_key(
         // first two answered "valid" and then "unbound", and an unbound OAuth
         // token takes the operator fallback, so revoking a tool's credential
         // could promote it. The typed outcome makes that state unrepresentable.
-        match crate::oauth::resolve_oauth_credential(&auth.db, &token) {
+        let resource = format!("{}/mcp", issuer.trim_end_matches('/'));
+        match crate::oauth::resolve_oauth_credential_for_resource(&auth.db, &token, &resource) {
             Ok(credential) => {
                 if is_mcp_request {
                     info!("/mcp authorized: OAuth token accepted");
@@ -2764,6 +2785,7 @@ mod tests {
 
     fn test_auth_state(pool: &db::DbPool) -> AuthState {
         AuthState {
+            public_url_is_explicit: false,
             db: pool.clone(),
             public_url: "https://example.com".into(),
             required: true,
@@ -2807,6 +2829,51 @@ mod tests {
         )
         .unwrap();
         token
+    }
+
+    #[tokio::test]
+    async fn implicit_issuer_challenge_and_token_audience_follow_the_same_loopback_host() {
+        let pool = test_db();
+        let mut state = test_auth_state(&pool);
+        state.public_url = "http://127.0.0.1:3456".into();
+        state.public_url_is_explicit = false;
+        let app = echo_app(state);
+        let token = insert_oauth_token(&pool, "loopback-resource", None);
+        pool.write().unwrap().execute("UPDATE oauth_tokens SET resource = 'http://localhost:3456/mcp' WHERE access_token = ?1", [sha256_hex(token.as_bytes())]).unwrap();
+        let challenge = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/echo")
+                    .header("host", "localhost:3456")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(challenge.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            challenge.headers()["www-authenticate"],
+            "Bearer resource_metadata=\"http://localhost:3456/.well-known/oauth-protected-resource/mcp\""
+        );
+        for (host, expected) in [
+            ("localhost:3456", StatusCode::OK),
+            ("127.0.0.1:3456", StatusCode::UNAUTHORIZED),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/echo")
+                        .header("host", host)
+                        .header("authorization", format!("Bearer {token}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected, "{host}");
+        }
     }
 
     #[tokio::test]

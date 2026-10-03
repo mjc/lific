@@ -1807,6 +1807,7 @@ dependencies = [
  "serde_yaml",
  "sha2",
  "similar",
+ "sse-stream",
  "subtle",
  "tar",
  "tempfile",

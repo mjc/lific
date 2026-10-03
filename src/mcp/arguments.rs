@@ -5,8 +5,8 @@
 //! parameter (`comments` for `include_comments`) fails instead of being
 //! dropped while the tool answers a different question. Serde's own message
 //! lists every valid field but buries the likely one; this rewrites it to
-//! lead with the closest match. The error stays `-32602 Invalid params`,
-//! which is exactly what it is, and the list of valid names comes from serde,
+//! lead with the closest match. Validation failures use `isError: true` on
+//! the wire, and the list of valid names comes from serde,
 //! so it can never disagree with what the deserializer accepts.
 
 use rmcp::ErrorData;
@@ -43,7 +43,7 @@ pub(crate) fn explain_unknown_parameter(
     }
 }
 
-fn describe(tool: &str, top_level: Option<&[String]>, message: &str) -> Option<String> {
+pub(super) fn describe(tool: &str, top_level: Option<&[String]>, message: &str) -> Option<String> {
     const PREFIX: &str = "unknown field `";
     let start = message.find(PREFIX)? + PREFIX.len();
     let rest = &message[start..];

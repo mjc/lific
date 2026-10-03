@@ -7,7 +7,7 @@ description: Route one agent connection to named Lific servers, with separate cr
 separately authenticated Lific servers. The agent gets one MCP entry, and every
 tool call names the server it is for.
 
-The proxy routes **tool calls only**. It answers `initialize`, `ping` and
+The proxy routes **tool calls only**. It answers `server/discover`, legacy `initialize`, `ping` and
 `tools/list` itself, and refuses `resources/*`, `prompts/*`, `completion/*` and
 `logging/setLevel` with `-32601`. Lific servers advertise no resources or
 prompts, so nothing a Lific server offers is lost. If you also point it at
@@ -115,7 +115,7 @@ lific mcp --instances ~/.config/lific/instances.toml
 No database is opened and no `--url` applies; each instance carries its own.
 `--instances` conflicts with `--remote`, and is refused alongside `--url`.
 
-At startup the proxy contacts every instance independently, runs `initialize`,
+At startup the proxy contacts every instance independently, runs `initialize`, completes `notifications/initialized`,
 pages through `tools/list`, and checks that every backend advertises the **same
 complete tool definitions**. This includes descriptions, annotations, titles,
 input and output schemas, and any other metadata. Tool order and JSON object

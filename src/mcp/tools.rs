@@ -14981,6 +14981,7 @@ mod authz_gating_tests {
         }
 
         let auth_state = crate::auth::AuthState {
+            public_url_is_explicit: false,
             db: (*m.db).clone(),
             public_url: "https://example.com".into(),
             required: true,

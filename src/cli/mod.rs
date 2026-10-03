@@ -10,6 +10,7 @@ pub mod import;
 pub mod instance;
 pub mod key;
 pub mod login;
+mod mcp_http;
 pub mod mcp_instances;
 pub mod mcp_proxy;
 pub mod member;

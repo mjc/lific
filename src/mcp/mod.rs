@@ -35,6 +35,8 @@ pub(crate) fn streamable_http_config(
         .with_json_response(true)
         .with_stateless_protocol_metadata_required(true)
         .with_allowed_hosts(allowed_hosts)
+        .with_allowed_origins(["http://localhost:*", "http://127.0.0.1:*", "http://[::1]:*"])
+        .enforce_origin_validation()
 }
 
 /// Direct-call tests still use process-wide context; production HTTP requests
@@ -636,16 +638,31 @@ impl LificMcp {
     }
 }
 
+fn server_result_meta() -> rmcp::model::JsonObject {
+    serde_json::json!({
+        "io.modelcontextprotocol/serverInfo": {
+            "name": "lific", "version": env!("CARGO_PKG_VERSION"),
+        },
+    })
+    .as_object()
+    .expect("server metadata is an object")
+    .clone()
+}
+
 impl ServerHandler for LificMcp {
     fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
-        Cow::Borrowed(&[ProtocolVersion::V_2025_03_26, ProtocolVersion::V_2026_07_28])
+        Cow::Borrowed(&[
+            ProtocolVersion::V_2025_06_18,
+            ProtocolVersion::V_2025_11_25,
+            ProtocolVersion::V_2026_07_28,
+        ])
     }
 
     fn get_info(&self) -> ServerConfig {
-        // Pin to 2025-03-26: rmcp defaults to 2025-06-18 which many clients
-        // (including Zed) skipped, going straight from 2025-03-26 to 2025-11-25.
+        // Legacy negotiation falls back to November 2025; July requests
+        // negotiate independently using per-request metadata.
         let info = ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
-            .with_protocol_version(ProtocolVersion::V_2025_03_26)
+            .with_protocol_version(ProtocolVersion::V_2025_11_25)
             // Identify as lific, not rmcp's build-env default — this name is
             // what connected clients (and `lific doctor`) display.
             .with_server_info(rmcp::model::Implementation::new(
@@ -670,11 +687,11 @@ impl ServerHandler for LificMcp {
     ) -> impl std::future::Future<Output = Result<rmcp::model::ListToolsResult, rmcp::ErrorData>>
     + rmcp::service::MaybeSendFuture
     + '_ {
-        std::future::ready(Ok(rmcp::model::ListToolsResult::with_all_items(
-            self.tool_router.list_all(),
-        )
-        .with_ttl_ms(3_600_000)
-        .with_cache_scope(rmcp::model::CacheScope::Public)))
+        let mut result = rmcp::model::ListToolsResult::with_all_items(self.tool_router.list_all())
+            .with_ttl_ms(3_600_000)
+            .with_cache_scope(rmcp::model::CacheScope::Public);
+        result.meta = Some(server_result_meta().into());
+        std::future::ready(Ok(result))
     }
 
     /// The one place every MCP tool call passes through, whatever the
@@ -739,6 +756,26 @@ impl ServerHandler for LificMcp {
                 })
                 .map(|response| match response {
                     rmcp::model::CallToolResponse::Complete(mut result) => {
+                        let top_level = self.tool_router.get(&tool).and_then(|tool| {
+                            tool.input_schema
+                                .get("properties")
+                                .and_then(serde_json::Value::as_object)
+                                .map(|properties| properties.keys().cloned().collect::<Vec<_>>())
+                        });
+                        for content in &mut result.content {
+                            if let rmcp::model::ContentBlock::Text(text) = content {
+                                // All text tool wrappers stamp failures with this prefix.
+                                if text.text.starts_with("Error: ") {
+                                    result.is_error = Some(true);
+                                }
+                                if result.is_error == Some(true)
+                                    && let Some(message) =
+                                        arguments::describe(&tool, top_level.as_deref(), &text.text)
+                                {
+                                    text.text = message;
+                                }
+                            }
+                        }
                         let mut meta = result.meta.unwrap_or_default();
                         meta.insert(
                             "io.modelcontextprotocol/serverInfo".into(),
@@ -831,7 +868,11 @@ mod tests {
 
         assert_eq!(
             server.supported_protocol_versions().as_ref(),
-            &[ProtocolVersion::V_2025_03_26, ProtocolVersion::V_2026_07_28,]
+            &[
+                ProtocolVersion::V_2025_06_18,
+                ProtocolVersion::V_2025_11_25,
+                ProtocolVersion::V_2026_07_28,
+            ]
         );
     }
 
@@ -950,6 +991,7 @@ mod tests {
         let token = insert_oauth_token(&pool, "mcp", Some(user_id));
 
         let auth_state = crate::auth::AuthState {
+            public_url_is_explicit: false,
             db: pool.clone(),
             public_url: "https://example.com".into(),
             required: true,
@@ -1089,6 +1131,7 @@ mod tests {
         }
 
         let auth_state = crate::auth::AuthState {
+            public_url_is_explicit: false,
             db: pool.clone(),
             public_url: "https://example.com".into(),
             required: true,

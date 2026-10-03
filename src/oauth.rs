@@ -353,11 +353,12 @@ async fn authorization_server_metadata(
     let issuer = effective_issuer(&state, &headers);
     Json(serde_json::json!({
         "issuer": issuer,
-        "authorization_endpoint": format!("{issuer}/oauth/authorize"),
-        "token_endpoint": format!("{issuer}/oauth/token"),
-        "registration_endpoint": format!("{issuer}/oauth/register"),
-        "revocation_endpoint": format!("{issuer}/oauth/revoke"),
-        "device_authorization_endpoint": format!("{issuer}/oauth/device_authorization"),
+        "authorization_response_iss_parameter_supported": issuer.starts_with("https://"),
+        "authorization_endpoint": format!("{}/oauth/authorize", issuer.trim_end_matches('/')),
+        "token_endpoint": format!("{}/oauth/token", issuer.trim_end_matches('/')),
+        "registration_endpoint": format!("{}/oauth/register", issuer.trim_end_matches('/')),
+        "revocation_endpoint": format!("{}/oauth/revoke", issuer.trim_end_matches('/')),
+        "device_authorization_endpoint": format!("{}/oauth/device_authorization", issuer.trim_end_matches('/')),
         "scopes_supported": ["mcp"],
         "response_types_supported": ["code"],
         "response_modes_supported": ["query"],
@@ -383,6 +384,7 @@ struct RegisterRequest {
     #[serde(default)]
     redirect_uris: Vec<String>,
     client_name: Option<String>,
+    application_type: Option<String>,
     // LIF-415: a submitted `token_endpoint_auth_method` is deliberately not
     // captured. Unknown fields are ignored by serde, and the registration
     // response always reports `none` because that is the only method this
@@ -499,6 +501,14 @@ async fn register_client(
         }
     }
 
+    let application_type = req.application_type.as_deref().unwrap_or("web");
+    if !matches!(application_type, "web" | "native") {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "invalid_client_metadata"})),
+        )
+            .into_response();
+    }
     let redirect_uris_json =
         serde_json::to_string(&req.redirect_uris).unwrap_or_else(|_| "[]".into());
     if redirect_uris_json.len() > MAX_REDIRECT_METADATA_BYTES {
@@ -608,8 +618,8 @@ async fn register_client(
             .into_response();
     }
     if let Err(e) = conn.execute(
-        "INSERT INTO oauth_clients (client_id, client_name, redirect_uris) VALUES (?1, ?2, ?3)",
-        params![client_id, client_name, redirect_uris_json],
+        "INSERT INTO oauth_clients (client_id, client_name, redirect_uris, application_type) VALUES (?1, ?2, ?3, ?4)",
+        params![client_id, client_name, redirect_uris_json, application_type],
     ) {
         tracing::error!(error = %e, "failed to register OAuth client");
         return (StatusCode::INTERNAL_SERVER_ERROR, "database error").into_response();
@@ -624,6 +634,7 @@ async fn register_client(
             "client_id": client_id,
             "client_name": client_name,
             "redirect_uris": req.redirect_uris,
+            "application_type": application_type,
             // LIF-415: RFC 7591 §3.2.1 — the response states the metadata the
             // server actually registered, not the client's wish. Every client
             // here is public: no secret is issued, so echoing back a requested
@@ -694,6 +705,66 @@ fn valid_authorize_request(
         && code_challenge_method == Some("S256")
 }
 
+/// Native loopback redirects may change only their port. Web clients and
+/// every other URI component retain exact registration matching.
+fn redirect_matches(registered: &str, requested: &str, native: bool) -> bool {
+    if registered == requested {
+        return true;
+    }
+    if !native {
+        return false;
+    }
+    let (Ok(mut registered_url), Ok(mut requested_url)) = (
+        reqwest::Url::parse(registered),
+        reqwest::Url::parse(requested),
+    ) else {
+        return false;
+    };
+    if registered_url.scheme() != "http"
+        || !registered_url
+            .host_str()
+            .is_some_and(|host| matches!(host, "127.0.0.1" | "[::1]"))
+    {
+        return false;
+    }
+    let _ = registered_url.set_port(None);
+    let _ = requested_url.set_port(None);
+    // Preserve exact byte matching for all components apart from the port.
+    // URL serialization alone would also normalize path escapes and hosts.
+    fn without_port(raw: &str) -> Option<String> {
+        let (scheme, rest) = raw.split_once("://")?;
+        let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+        let authority = &rest[..end];
+        let host = if authority.starts_with('[') {
+            &authority[..=authority.find(']')?]
+        } else {
+            authority.split(':').next()?
+        };
+        Some(format!("{scheme}://{host}{}", &rest[end..]))
+    }
+    registered_url == requested_url && without_port(registered) == without_port(requested)
+}
+
+fn append_issuer(redirect: &mut String, issuer: &str) {
+    // RFC 9207 requires HTTPS issuers. Local HTTP development advertises no
+    // issuer-response support, while HTTPS responses use the exact metadata value.
+    if issuer.starts_with("https://") {
+        redirect.push_str(&format!("&iss={}", urlencoding::encode(issuer)));
+    }
+}
+
+fn no_store(mut response: Response) -> Response {
+    response.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-store"),
+    );
+    response.headers_mut().insert(
+        axum::http::header::PRAGMA,
+        axum::http::HeaderValue::from_static("no-cache"),
+    );
+    response
+}
+
 async fn authorize_page(
     State(oauth): State<OAuthState>,
     headers: HeaderMap,
@@ -720,6 +791,22 @@ async fn authorize_page(
             .into_response();
     }
 
+    let expected_resource = format!(
+        "{}/mcp",
+        effective_issuer(&oauth, &headers).trim_end_matches('/')
+    );
+    if params
+        .resource
+        .as_deref()
+        .is_some_and(|resource| resource != expected_resource)
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Html("Invalid resource indicator.".to_string()),
+        )
+            .into_response();
+    }
+
     // Resolve the registered client before showing consent. A generic
     // "application" prompt trains users to approve phishing clients and gives
     // no meaningful capability disclosure. The redirect URI is checked here
@@ -730,20 +817,20 @@ async fn authorize_page(
         .ok()
         .and_then(|conn| {
             conn.query_row(
-                "SELECT client_name, redirect_uris FROM oauth_clients WHERE client_id = ?1",
+                "SELECT client_name, redirect_uris, application_type FROM oauth_clients WHERE client_id = ?1",
                 params![params.client_id],
                 |row| {
                     let name: String = row.get(0)?;
                     let uris_json: String = row.get(1)?;
-                    Ok((name, uris_json))
+                    Ok((name, uris_json, row.get::<_, String>(2)?))
                 },
             )
             .ok()
         })
-        .and_then(|(name, uris_json)| {
+        .and_then(|(name, uris_json, application_type)| {
             let uris: Vec<String> = serde_json::from_str(&uris_json).ok()?;
             uris.iter()
-                .any(|uri| uri == &params.redirect_uri)
+                .any(|uri| redirect_matches(uri, &params.redirect_uri, application_type == "native"))
                 .then_some(name)
         });
     let Some(client_name) = client_name else {
@@ -850,7 +937,7 @@ async fn authorize_page(
         code_challenge_method =
             html_escape(params.code_challenge_method.as_deref().unwrap_or("S256")),
         scope = html_escape(requested_scope),
-        resource = html_escape(params.resource.as_deref().unwrap_or("")),
+        resource = html_escape(params.resource.as_deref().unwrap_or(&expected_resource)),
         csrf_token = html_escape(&csrf_token),
         token_lifetime = ACCESS_TOKEN_LIFETIME_LABEL,
         approving_identity = html_escape(&approving_identity),
@@ -1078,7 +1165,10 @@ async fn authorize_approve(
         "{}/mcp",
         effective_issuer(&oauth, &headers).trim_end_matches('/')
     );
-    if let Some(resource) = form.resource.as_deref()
+    if let Some(resource) = form
+        .resource
+        .as_deref()
+        .filter(|resource| !resource.is_empty())
         && resource != expected_resource
     {
         return (
@@ -1091,15 +1181,17 @@ async fn authorize_approve(
     // Validate the redirect_uri against the client's registered URIs
     let redirect_ok = validate_redirect_uri(&form.redirect_uri).is_ok()
         && if let Ok(conn) = oauth.db.read() {
-            let registered: Result<String, _> = conn.query_row(
-                "SELECT redirect_uris FROM oauth_clients WHERE client_id = ?1",
+            let registered: Result<(String, String), _> = conn.query_row(
+                "SELECT redirect_uris, application_type FROM oauth_clients WHERE client_id = ?1",
                 params![form.client_id],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             );
             match registered {
-                Ok(uris_json) => {
+                Ok((uris_json, application_type)) => {
                     let uris: Vec<String> = serde_json::from_str(&uris_json).unwrap_or_default();
-                    uris.iter().any(|u| u == &form.redirect_uri)
+                    uris.iter().any(|u| {
+                        redirect_matches(u, &form.redirect_uri, application_type == "native")
+                    })
                 }
                 Err(_) => false,
             }
@@ -1129,6 +1221,7 @@ async fn authorize_approve(
                 let encoded = urlencoding::encode(state);
                 redirect_url.push_str(&format!("&state={encoded}"));
             }
+            append_issuer(&mut redirect_url, &effective_issuer(&oauth, &headers));
             info!(client_id = %form.client_id, "OAuth authorization denied");
             return Redirect::to(&redirect_url).into_response();
         }
@@ -1184,8 +1277,8 @@ async fn authorize_approve(
     };
 
     if let Err(e) = tx.execute(
-        "INSERT INTO oauth_codes (code, client_id, redirect_uri, code_challenge, code_challenge_method, expires_at, scope, user_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO oauth_codes (code, client_id, redirect_uri, code_challenge, code_challenge_method, expires_at, scope, user_id, resource)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![
             code,
             form.client_id,
@@ -1195,6 +1288,7 @@ async fn authorize_approve(
             expires.to_rfc3339(),
             scope,
             bot_id,
+            expected_resource,
         ],
     ) {
         tracing::error!(error = %e, "failed to store OAuth authorization code");
@@ -1217,8 +1311,7 @@ async fn authorize_approve(
         redirect_url.push_str(&format!("&state={encoded}"));
     }
     let issuer = effective_issuer(&oauth, &headers);
-    let encoded_issuer = urlencoding::encode(issuer.trim_end_matches('/'));
-    redirect_url.push_str(&format!("&iss={encoded_issuer}"));
+    append_issuer(&mut redirect_url, &issuer);
 
     info!(client_id = %form.client_id, "OAuth authorization approved");
     Redirect::to(&redirect_url).into_response()
@@ -1470,6 +1563,7 @@ fn cleanup_expired_device_codes(conn: &Connection) -> rusqlite::Result<usize> {
 #[derive(Deserialize)]
 struct DeviceAuthRequest {
     client_id: Option<String>,
+    resource: Option<String>,
     /// Lific supports one device capability and rejects omitted or expanded
     /// scopes instead of silently upgrading the request.
     #[serde(default)]
@@ -1481,6 +1575,15 @@ struct DeviceAuthRequest {
 async fn device_authorization(
     State(state): State<OAuthState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    no_store(device_authorization_inner(state, peer, headers, body))
+}
+
+fn device_authorization_inner(
+    state: OAuthState,
+    peer: SocketAddr,
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
@@ -1520,15 +1623,35 @@ async fn device_authorization(
     let req: DeviceAuthRequest = if content_type.contains("application/json") {
         serde_json::from_slice(&body).unwrap_or(DeviceAuthRequest {
             client_id: None,
+            resource: None,
             scope: None,
         })
     } else {
         // application/x-www-form-urlencoded (default)
         serde_urlencoded::from_bytes(&body).unwrap_or(DeviceAuthRequest {
             client_id: None,
+            resource: None,
             scope: None,
         })
     };
+
+    let resource = format!(
+        "{}/mcp",
+        effective_issuer(&state, &headers).trim_end_matches('/')
+    );
+    if req
+        .resource
+        .as_deref()
+        .is_some_and(|requested| requested != resource)
+    {
+        return no_store(
+            (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "invalid_target"})),
+            )
+                .into_response(),
+        );
+    }
 
     // RFC 8628 §3.1 makes `scope` OPTIONAL, so omitting it must not be an
     // error: a conforming client that asks for no particular capability gets
@@ -1622,8 +1745,8 @@ async fn device_authorization(
     for _ in 0..5 {
         let res = conn.execute(
             "INSERT INTO oauth_device_codes
-                (device_code_hash, user_code, client_name, expires_at, interval_seconds, status, scope, client_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?7)",
+                (device_code_hash, user_code, client_name, expires_at, interval_seconds, status, scope, client_id, resource)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?7, ?8)",
             params![
                 device_code_hash,
                 user_code,
@@ -1632,6 +1755,7 @@ async fn device_authorization(
                 DEVICE_CODE_INTERVAL,
                 OAUTH_SCOPE,
                 client_id,
+                resource,
             ],
         );
         match res {
@@ -2051,6 +2175,7 @@ struct TokenRequest {
     /// RFC 8628 device grant: the opaque device_code returned by
     /// /oauth/device_authorization.
     device_code: Option<String>,
+    resource: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -2063,10 +2188,30 @@ struct TokenResponse {
 
 async fn token_exchange(
     State(state): State<OAuthState>,
+    headers: HeaderMap,
     axum::Form(req): axum::Form<TokenRequest>,
 ) -> Response {
+    let resource = format!(
+        "{}/mcp",
+        effective_issuer(&state, &headers).trim_end_matches('/')
+    );
+    no_store(token_exchange_inner(&state, req, &resource))
+}
+
+fn token_exchange_inner(state: &OAuthState, req: TokenRequest, resource: &str) -> Response {
+    if req
+        .resource
+        .as_deref()
+        .is_some_and(|requested| requested != resource)
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "invalid_target"})),
+        )
+            .into_response();
+    }
     if req.grant_type == DEVICE_CODE_GRANT {
-        return device_token_exchange(&state, &req);
+        return device_token_exchange(state, &req, resource);
     }
     if req.grant_type != "authorization_code" {
         return (
@@ -2119,13 +2264,14 @@ async fn token_exchange(
         used: i64,
         scope: String,
         user_id: Option<i64>,
+        resource: Option<String>,
     }
 
     let code_row: Result<AuthCodeRow, _> = conn.query_row(
         // `datetime(expires_at)` for the same reason as the device codes: the
         // column holds RFC 3339, and raw text comparison against
         // `datetime('now')` mis-orders it within the same day.
-        "SELECT client_id, redirect_uri, code_challenge, code_challenge_method, used, scope, user_id \
+        "SELECT client_id, redirect_uri, code_challenge, code_challenge_method, used, scope, user_id, resource \
          FROM oauth_codes WHERE code = ?1 AND datetime(expires_at) > datetime('now')",
         params![code],
         |row| {
@@ -2137,6 +2283,7 @@ async fn token_exchange(
                 used: row.get(4)?,
                 scope: row.get(5)?,
                 user_id: row.get(6)?,
+                resource: row.get(7)?,
             })
         },
     );
@@ -2149,6 +2296,7 @@ async fn token_exchange(
         used,
         scope,
         user_id: code_user_id,
+        resource: code_resource,
     } = match code_row {
         Ok(row) => row,
         Err(_) => {
@@ -2160,6 +2308,16 @@ async fn token_exchange(
         }
     };
 
+    if code_resource
+        .as_deref()
+        .is_some_and(|bound| bound != resource)
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "invalid_target"})),
+        )
+            .into_response();
+    }
     if used != 0 {
         return (
             StatusCode::BAD_REQUEST,
@@ -2261,8 +2419,8 @@ async fn token_exchange(
     let expires_at = chrono::Utc::now() + chrono::Duration::seconds(expires_in as i64);
 
     if let Err(e) = conn.execute(
-        "INSERT INTO oauth_tokens (access_token, client_id, expires_at, scope, user_id) VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![token_hash, stored_client_id, expires_at.to_rfc3339(), scope, code_user_id],
+        "INSERT INTO oauth_tokens (access_token, client_id, expires_at, scope, user_id, resource) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![token_hash, stored_client_id, expires_at.to_rfc3339(), scope, code_user_id, resource],
     ) {
         tracing::error!(error = %e, "failed to store OAuth token");
         return (StatusCode::INTERNAL_SERVER_ERROR, "database error").into_response();
@@ -2288,7 +2446,7 @@ async fn token_exchange(
 /// hash, enforces the polling interval (`slow_down`), and returns the
 /// per-status error (`authorization_pending` / `access_denied` /
 /// `expired_token`) or, on approval, mints and returns an access token.
-fn device_token_exchange(state: &OAuthState, req: &TokenRequest) -> Response {
+fn device_token_exchange(state: &OAuthState, req: &TokenRequest, resource: &str) -> Response {
     let Some(device_code) = req.device_code.as_deref().filter(|c| !c.is_empty()) else {
         return device_error(
             StatusCode::BAD_REQUEST,
@@ -2336,10 +2494,11 @@ fn device_token_exchange(state: &OAuthState, req: &TokenRequest) -> Response {
         expires_at: String,
         interval_seconds: i64,
         last_polled_at: Option<String>,
+        resource: Option<String>,
     }
 
     let row: Result<DeviceRow, _> = conn.query_row(
-        "SELECT client_id, status, user_id, scope, expires_at, interval_seconds, last_polled_at
+        "SELECT client_id, status, user_id, scope, expires_at, interval_seconds, last_polled_at, resource
          FROM oauth_device_codes WHERE device_code_hash = ?1",
         params![device_code_hash],
         |r| {
@@ -2351,6 +2510,7 @@ fn device_token_exchange(state: &OAuthState, req: &TokenRequest) -> Response {
                 expires_at: r.get(4)?,
                 interval_seconds: r.get(5)?,
                 last_polled_at: r.get(6)?,
+                resource: r.get(7)?,
             })
         },
     );
@@ -2360,6 +2520,14 @@ fn device_token_exchange(state: &OAuthState, req: &TokenRequest) -> Response {
         // Unknown device_code → invalid_grant per RFC 8628 §3.5.
         Err(_) => return device_error(StatusCode::BAD_REQUEST, "invalid_grant", None),
     };
+
+    if row
+        .resource
+        .as_deref()
+        .is_some_and(|bound| bound != resource)
+    {
+        return device_error(StatusCode::BAD_REQUEST, "invalid_target", None);
+    }
 
     let now = chrono::Utc::now();
 
@@ -2487,14 +2655,15 @@ fn device_token_exchange(state: &OAuthState, req: &TokenRequest) -> Response {
             let tx = conn;
 
             if let Err(e) = tx.execute(
-                "INSERT INTO oauth_tokens (access_token, client_id, expires_at, scope, user_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                "INSERT INTO oauth_tokens (access_token, client_id, expires_at, scope, user_id, resource)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![
                     token_hash,
                     client_id,
                     expires_at.to_rfc3339(),
                     scope,
-                    approved_user_id
+                    approved_user_id,
+                    resource,
                 ],
             ) {
                 tracing::error!(error = %e, "failed to store device OAuth token");
@@ -2752,6 +2921,22 @@ pub enum OAuthReject {
 /// binding, the bound user, and the bot owner's liveness in one joined query so
 /// revocation cannot land between those decisions.
 pub fn resolve_oauth_credential(db: &DbPool, token: &str) -> Result<OAuthCredential, OAuthReject> {
+    resolve_oauth_credential_inner(db, token, None)
+}
+
+pub(crate) fn resolve_oauth_credential_for_resource(
+    db: &DbPool,
+    token: &str,
+    resource: &str,
+) -> Result<OAuthCredential, OAuthReject> {
+    resolve_oauth_credential_inner(db, token, Some(resource))
+}
+
+fn resolve_oauth_credential_inner(
+    db: &DbPool,
+    token: &str,
+    resource: Option<&str>,
+) -> Result<OAuthCredential, OAuthReject> {
     if !token.starts_with("lific_at_") {
         return Err(OAuthReject::Invalid);
     }
@@ -2782,8 +2967,9 @@ pub fn resolve_oauth_credential(db: &DbPool, token: &str) -> Result<OAuthCredent
              LEFT JOIN users user ON user.id = token.user_id
              LEFT JOIN users owner ON owner.id = user.owner_id
              WHERE token.access_token = ?1 AND token.revoked = 0
-               AND datetime(token.expires_at) > datetime('now')",
-            params![token_hash],
+               AND datetime(token.expires_at) > datetime('now')
+               AND (?2 IS NULL OR token.resource IS NULL OR token.resource = ?2)",
+            params![token_hash, resource],
             |row| {
                 Ok(CredentialRow {
                     bound_user_id: row.get(0)?,
@@ -2879,10 +3065,14 @@ mod tests {
     /// Most tests need a generous cap so unrelated registrations don't
     /// trip the limiter; the rate-limit tests pass a small cap.
     fn test_oauth_app_with_register_limit(cap: usize) -> (Router, DbPool) {
+        test_oauth_app_settings(cap, "https://example.com")
+    }
+
+    fn test_oauth_app_settings(cap: usize, issuer: &str) -> (Router, DbPool) {
         let db = crate::db::open_memory().expect("test db");
         let state = OAuthState {
             db: db.clone(),
-            issuer: "https://example.com".into(),
+            issuer: issuer.into(),
             issuer_is_explicit: true,
             allowed_hosts: test_allowed_hosts(),
             register_limiter: Arc::new(RateLimiter::new(cap, std::time::Duration::from_secs(3600))),
@@ -3018,6 +3208,209 @@ mod tests {
         base64_url_encode(&Sha256::digest(
             b"test_verifier_abcdefghijklmnopqrstuvwxyz_0123456789",
         ))
+    }
+
+    #[test]
+    fn native_loopback_redirects_change_only_the_port() {
+        assert!(redirect_matches(
+            "http://127.0.0.1:40001/callback",
+            "http://127.0.0.1:40002/callback",
+            true
+        ));
+        assert!(redirect_matches(
+            "http://[::1]:40001/callback",
+            "http://[::1]:40002/callback",
+            true
+        ));
+        for requested in [
+            "http://localhost:40002/callback",
+            "http://127.0.0.1:40002/other",
+            "http://127.0.0.1:40002/callback?extra=1",
+            "http://127.0.0.1:40002/%63allback",
+        ] {
+            assert!(!redirect_matches(
+                "http://127.0.0.1:40001/callback",
+                requested,
+                true
+            ));
+        }
+        assert!(!redirect_matches(
+            "http://127.0.0.1:40001/callback",
+            "http://127.0.0.1:40002/callback",
+            false
+        ));
+        assert!(!redirect_matches(
+            "https://example.com:40001/callback",
+            "https://example.com:40002/callback",
+            true
+        ));
+    }
+
+    #[tokio::test]
+    async fn consent_defaults_resource_and_preserves_issuer_on_approval_and_denial() {
+        let (app, db) = test_oauth_app_settings(1000, "https://example.com/");
+        let session = create_test_session(&db);
+        let client = register_client_helper(&app, "http://localhost/callback").await;
+        let params = authorize_body(&client, "http://localhost/callback", &session);
+        let page = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/oauth/authorize?{params}"))
+                    .header("cookie", format!("lific_token={session}"))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(page.status(), StatusCode::OK);
+        let html = String::from_utf8(
+            page.into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(html.contains("name=\"resource\" value=\"https://example.com/mcp\""));
+        let metadata = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/.well-known/oauth-authorization-server")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let metadata: serde_json::Value =
+            serde_json::from_slice(&metadata.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(
+            metadata["authorization_response_iss_parameter_supported"],
+            true
+        );
+        assert_eq!(
+            metadata["authorization_endpoint"],
+            "https://example.com/oauth/authorize"
+        );
+        for decision in ["deny", "approve"] {
+            let body = format!(
+                "{}&resource=",
+                params.replace("decision=approve", &format!("decision={decision}"))
+            );
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/oauth/authorize")
+                        .header("content-type", "application/x-www-form-urlencoded")
+                        .header("cookie", format!("lific_token={session}"))
+                        .body(axum::body::Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::SEE_OTHER);
+            let location =
+                reqwest::Url::parse(response.headers()["location"].to_str().unwrap()).unwrap();
+            let issuer = location
+                .query_pairs()
+                .find(|(name, _)| name == "iss")
+                .unwrap()
+                .1
+                .into_owned();
+            assert_eq!(issuer, metadata["issuer"].as_str().unwrap());
+        }
+    }
+
+    #[tokio::test]
+    async fn token_exchange_keeps_resource_binding_and_rejects_other_targets_without_burning_code()
+    {
+        let (app, db) = test_oauth_app();
+        let session = create_test_session(&db);
+        let redirect = "http://localhost/callback";
+        let client = register_client_helper(&app, redirect).await;
+        let approval = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/authorize")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .header("cookie", format!("lific_token={session}"))
+                    .body(axum::body::Body::from(authorize_body(
+                        &client, redirect, &session,
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(approval.status(), StatusCode::SEE_OTHER);
+        let location =
+            reqwest::Url::parse(approval.headers()["location"].to_str().unwrap()).unwrap();
+        let code = location
+            .query_pairs()
+            .find(|(key, _)| key == "code")
+            .unwrap()
+            .1
+            .into_owned();
+        for resource in ["https://other.example/mcp", "https://example.com/mcp"] {
+            let body = serde_urlencoded::to_string([
+                ("grant_type", "authorization_code"),
+                ("code", code.as_str()),
+                ("client_id", client.as_str()),
+                ("redirect_uri", redirect),
+                (
+                    "code_verifier",
+                    "test_verifier_abcdefghijklmnopqrstuvwxyz_0123456789",
+                ),
+                ("resource", resource),
+            ])
+            .unwrap();
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/oauth/token")
+                        .header("content-type", "application/x-www-form-urlencoded")
+                        .body(axum::body::Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.headers()["cache-control"], "no-store");
+            assert_eq!(response.headers()["pragma"], "no-cache");
+            let status = response.status();
+            let value: serde_json::Value =
+                serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                    .unwrap();
+            if resource.contains("other") {
+                assert_eq!(status, StatusCode::BAD_REQUEST);
+                assert_eq!(value["error"], "invalid_target");
+                let used: bool = db
+                    .read()
+                    .unwrap()
+                    .query_row(
+                        "SELECT used FROM oauth_codes WHERE code = ?1",
+                        [&code],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert!(!used);
+            } else {
+                assert_eq!(status, StatusCode::OK, "{value}");
+                let token = value["access_token"].as_str().unwrap();
+                assert!(resolve_oauth_credential_for_resource(&db, token, resource).is_ok());
+                assert_eq!(
+                    resolve_oauth_credential_for_resource(&db, token, "https://other.example/mcp"),
+                    Err(OAuthReject::Invalid)
+                );
+            }
+        }
     }
 
     // ── Authorization approval validates tokens ─────────────
@@ -6064,6 +6457,7 @@ mod tests {
             use tower::ServiceExt;
             let f = fixture();
             let auth_state = crate::auth::AuthState {
+                public_url_is_explicit: false,
                 db: f.db.clone(),
                 public_url: "https://example.com".into(),
                 required: true,

@@ -1747,7 +1747,7 @@ mod tests {
         axum::Json(serde_json::json!({
             "jsonrpc": "2.0",
             "id": 1,
-            "result": { "serverInfo": { "name": "test" } }
+            "result": { "resultType": "complete", "serverInfo": { "name": "test", "version": "1" }, "supportedVersions": ["2026-07-28"] }
         }))
     }
 
