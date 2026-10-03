@@ -93,6 +93,173 @@
   });
   listen(window, 'hashchange', () => { if (!current()) routeChanged(); });
 
+  let activeMenu = null;
+  function dismissMenu() {
+    if (!activeMenu) return;
+    const {menu, trigger} = activeMenu;
+    activeMenu = null;
+    menu.remove();
+    trigger.setAttribute('aria-expanded', 'false');
+    if (trigger.isConnected && !trigger.closest('[inert]')) trigger.focus();
+  }
+  function showMenu(trigger, items) {
+    dismissMenu();
+    const menu = document.createElement('div');
+    menu.className = 'tc-mobile__menu'; menu.setAttribute('role', 'menu');
+    trigger.setAttribute('aria-expanded', 'true');
+    for (const item of items) {
+      const button = document.createElement('button');
+      button.type = 'button'; button.setAttribute('role', 'menuitem');
+      button.textContent = item.label; button.disabled = !!item.disabled;
+      button.addEventListener('click', () => { dismissMenu(); item.run?.(); });
+      menu.append(button);
+    }
+    document.body.append(menu);
+    const rect = trigger.getBoundingClientRect();
+    menu.style.left = `${Math.max(8, Math.min(rect.left, innerWidth - 216))}px`;
+    menu.style.top = `${Math.max(8, Math.min(rect.bottom, innerHeight - menu.offsetHeight - 8))}px`;
+    activeMenu = {menu, trigger};
+    const enabled = () => [...menu.querySelectorAll('button:not(:disabled)')];
+    (enabled()[0] || menu).focus();
+    menu.addEventListener('keydown', event => {
+      const rows = enabled(), index = rows.indexOf(document.activeElement);
+      if (event.key === 'Escape' || event.key === 'Tab') {
+        event.preventDefault(); event.stopPropagation(); dismissMenu();
+      } else if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+        event.preventDefault(); event.stopPropagation();
+        const next = event.key === 'Home' ? 0 : event.key === 'End' ? rows.length - 1
+          : (index + (event.key === 'ArrowDown' ? 1 : -1) + rows.length) % rows.length;
+        rows[next]?.focus();
+      }
+    });
+  }
+  listen(document, 'pointerdown', event => {
+    if (activeMenu && !activeMenu.menu.contains(event.target) && !activeMenu.trigger.contains(event.target)) dismissMenu();
+  });
+  const themeTrigger = root.querySelector('[data-mobile-theme]');
+  function themePreference() {
+    try { const value = localStorage.getItem('lific_theme'); return ['system', 'light', 'dark'].includes(value) ? value : 'system'; }
+    catch { return 'system'; }
+  }
+  function updateThemeLabel() {
+    if (!themeTrigger) return;
+    const label = `Choose theme, current: ${themePreference()}`;
+    themeTrigger.setAttribute('aria-label', label); themeTrigger.title = label;
+  }
+  if (themeTrigger) {
+    updateThemeLabel();
+    listen(themeTrigger, 'click', () => showMenu(themeTrigger, ['System', 'Light', 'Dark'].map(label => ({label, run() {
+      const control = document.createElement('select');
+      control.dataset.tcPreference = 'theme'; control.hidden = true;
+      const option = document.createElement('option'); option.value = label.toLowerCase(); control.append(option);
+      document.body.append(control); control.value = option.value;
+      control.dispatchEvent(new Event('change', {bubbles: true}));
+      control.remove(); updateThemeLabel();
+    }}))));
+    listen(window, 'storage', updateThemeLabel);
+  }
+
+  const controller = () => window.lificTopcoatShell?.projectController?.();
+  let renameForm = null;
+  let renameOperation = 0;
+  function groupTrigger(id) {
+    return [...root.querySelectorAll('[data-mobile-group-action]')].find(button => button.dataset.mobileGroupAction === String(id));
+  }
+  function reportCatalogError(message) {
+    let alert = root.querySelector('[data-mobile-error]');
+    if (!alert) {
+      alert = document.createElement('p'); alert.dataset.mobileError = '';
+      alert.setAttribute('role', 'alert'); root.append(alert);
+    }
+    alert.textContent = message;
+  }
+  async function saveOrder(kind, id, delta) {
+    const app = controller(); if (!app) return;
+    try {
+      if (kind === 'project') {
+        const group = app.snapshot.groups.find(row => row.project_ids.includes(id));
+        const siblings = app.snapshot.projects.filter(row => group ? group.project_ids.includes(row.id) : !app.snapshot.groups.some(item => item.project_ids.includes(row.id)));
+        const ids = window.LificTopcoatProjects.moveBy(siblings.map(row => row.id), id, delta);
+        await app.reorderProjects(window.LificTopcoatProjects.mergeProjectOrder(app.snapshot, group?.id ?? null, ids));
+      }
+      else await app.reorderGroups(window.LificTopcoatProjects.moveBy(app.snapshot.groups.map(row => row.id), id, delta));
+    } catch (error) {
+      reportCatalogError(`${kind === 'project' ? 'Project' : 'Group'} order wasn't saved: ${error.message}`);
+    }
+  }
+  function beginRename(group) {
+    renameForm?.remove();
+    const form = document.createElement('form'); form.className = 'tc-mobile__rename';
+    renameForm = form;
+    const input = document.createElement('input'); input.setAttribute('aria-label', 'Group name');
+    input.value = group.name; input.required = true; input.maxLength = 80;
+    const save = document.createElement('button'); save.type = 'submit'; save.textContent = 'Save';
+    const cancel = document.createElement('button'); cancel.type = 'button'; cancel.textContent = 'Cancel';
+    const alert = document.createElement('p'); alert.setAttribute('role', 'alert'); alert.hidden = true;
+    form.append(input, save, cancel, alert); root.append(form);
+    const operation = ++renameOperation;
+    const finish = () => { if (renameForm !== form) return; ++renameOperation; renameForm = null; form.remove(); groupTrigger(group.id)?.focus(); };
+    cancel.addEventListener('click', finish);
+    form.addEventListener('keydown', event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); finish(); } });
+    form.addEventListener('submit', async event => {
+      event.preventDefault(); if (save.disabled) return;
+      const app = controller(); if (!app) return;
+      save.disabled = true; alert.hidden = true;
+      try { await app.renameGroup(group.id, input.value.trim()); if (renameOperation === operation) finish(); }
+      catch (error) { if (renameOperation === operation) { alert.textContent = error.message; alert.hidden = false; input.focus(); } }
+      finally { save.disabled = false; }
+    });
+    input.focus(); input.select();
+  }
+  function actionButton(label, data, id, items) {
+    const button = document.createElement('button'); button.type = 'button';
+    button.className = 'tc-mobile__actions'; button.textContent = '…';
+    button.dataset[data] = String(id); button.setAttribute('aria-label', `Actions for ${label}`);
+    button.setAttribute('aria-haspopup', 'menu'); button.setAttribute('aria-expanded', 'false');
+    button.addEventListener('click', () => showMenu(button, items()));
+    return button;
+  }
+  let projectMenuProvider = null;
+  function projectRow(item) {
+    if (publicProject) return projectButton(item);
+    const row = document.createElement('div'); row.className = 'tc-mobile__catalog-row';
+    const action = actionButton(item.name, 'mobileProjectAction', item.id, () => {
+      const app = controller();
+      const snapshot = app?.snapshot ?? catalog;
+      const group = snapshot.groups.find(row => row.project_ids.includes(item.id));
+      const rows = snapshot.projects.filter(project => group ? group.project_ids.includes(project.id) : !snapshot.groups.some(row => row.project_ids.includes(project.id)));
+      const index = rows.findIndex(project => project.id === item.id);
+      const custom = projectMenuProvider ? projectMenuProvider(item) : [
+        ...snapshot.groups.filter(row => row.id !== group?.id).map(row => ({label:`Move to ${row.name}`,run:()=>app?.assignProject(item.id,row.id).catch(error=>reportCatalogError(error.message))})),
+        ...(group ? [{label:'Remove from group',run:()=>app?.assignProject(item.id,null).catch(error=>reportCatalogError(error.message))}] : []),
+        {label:'New group…',run:()=>beginCreateGroup(item.id)},
+      ];
+      return [...custom,
+        {label: 'Move up', disabled: index <= 0, run: () => saveOrder('project', item.id, -1)},
+        {label: 'Move down', disabled: index < 0 || index >= rows.length - 1, run: () => saveOrder('project', item.id, 1)}];
+    });
+    row.append(projectButton(item), action); return row;
+  }
+  const createTrigger = root.querySelector('[data-mobile-create]');
+  if (createTrigger) listen(createTrigger, 'click', () => showMenu(createTrigger, [
+    {label: 'New project', run: () => navigateTo('/projects/new')},
+    {label: 'Import project', run: () => navigateTo('/projects/import')},
+    {label: 'New group', run() { beginCreateGroup(); }},
+  ]));
+  function beginCreateGroup(projectId = null) {
+    const app = controller(); if (!app) return;
+    const form = document.createElement('form'); form.className = 'tc-mobile__rename';
+    const input = document.createElement('input'); input.setAttribute('aria-label', 'New group name'); input.required = true;
+    const save = document.createElement('button'); save.type = 'submit'; save.textContent = 'Create group';
+    const cancel = document.createElement('button'); cancel.type = 'button'; cancel.textContent = 'Cancel';
+    form.append(input, save, cancel); root.append(form); input.focus();
+    const close = () => { form.remove(); createTrigger.focus(); };
+    cancel.addEventListener('click', close);
+    form.addEventListener('keydown', event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(); } });
+    form.addEventListener('submit', async event => { event.preventDefault(); if(save.disabled)return; save.disabled=true; try { const result = await app.createGroup(input.value.trim());
+      if (projectId !== null && result?.result?.id) await app.assignProject(projectId, result.result.id); close(); } catch(error) { reportCatalogError(error.message); input.focus(); } finally {save.disabled=false;} });
+  }
+
   let catalog = {generation: -1, projects: [], groups: []};
   const sameProject = (left, right) => typeof left === 'string' && typeof right === 'string' && left.toLowerCase() === right.toLowerCase();
   function project(identifier) {
@@ -109,7 +276,9 @@
     const icon = document.createElement('span');
     icon.className = 'tc-mobile__icon';
     icon.setAttribute('aria-hidden', 'true');
-    icon.textContent = item.emoji || item.identifier.slice(0, 2);
+    const renderedIcon = window.LificProjectIcons?.projectIcon(document, item.emoji);
+    if (renderedIcon && typeof renderedIcon !== 'string') icon.append(renderedIcon);
+    else icon.textContent = renderedIcon || item.identifier.slice(0, 2);
     const text = document.createElement('span');
     text.className = 'tc-mobile__project-text';
     const name = document.createElement('span');
@@ -134,14 +303,23 @@
       for (const group of [...catalog.groups].sort((a, b) => a.sort_order - b.sort_order)) {
         const heading = document.createElement('h3');
         heading.textContent = group.name;
-        fragment.append(heading);
+        const groupRow = document.createElement('div'); groupRow.className = 'tc-mobile__catalog-row';
+        const action = actionButton(group.name, 'mobileGroupAction', group.id, () => {
+          const rows = controller()?.snapshot.groups ?? catalog.groups;
+          const index = rows.findIndex(row => row.id === group.id);
+          return [{label:'Rename',run:()=>beginRename(group)},
+            {label:'Move up',disabled:index<=0,run:()=>saveOrder('group',group.id,-1)},
+            {label:'Move down',disabled:index<0||index>=rows.length-1,run:()=>saveOrder('group',group.id,1)},
+            {label:'Delete group',run:()=>controller()?.deleteGroup(group.id).catch(error=>reportCatalogError(error.message))}];
+        });
+        groupRow.append(heading, action); fragment.append(groupRow);
         for (const id of group.project_ids) {
           const item = projects.find(item => item.id === id);
-          if (item && !assigned.has(id)) { assigned.add(id); fragment.append(projectButton(item)); }
+          if (item && !assigned.has(id)) { assigned.add(id); fragment.append(projectRow(item)); }
         }
       }
     }
-    for (const item of projects) if (!assigned.has(item.id)) fragment.append(projectButton(item));
+    for (const item of projects) if (!assigned.has(item.id)) fragment.append(projectRow(item));
     list.replaceChildren(fragment);
     panel.querySelector('[data-mobile-empty]').hidden = projects.length !== 0;
     if (focused && opened && level === 'root') {
@@ -223,6 +401,7 @@
     if (entry && desktop.matches) { close(); return; }
     const wasOpen = opened;
     const oldLevel = level;
+    if (!entry) { dismissMenu(); renameForm?.remove(); renameForm = null; ++renameOperation; }
     if (!entry || oldLevel !== (entry.depth === 2 ? 'project' : 'root')) resetGesture();
     if (entry && !wasOpen) {
       restoreFocus = document.activeElement instanceof HTMLElement &&
@@ -372,6 +551,7 @@
 
   window.lificMobileNavigation = {
     openAt, close, navigateTo, routeChanged, setCatalog,
+    setProjectMenuProvider(provider) { projectMenuProvider = typeof provider === 'function' ? provider : null; },
     destroy() {
       pending = null;
       traversing = false;

@@ -13,6 +13,9 @@ pub(crate) mod page_chrome;
 pub(crate) mod projects;
 pub(crate) mod recents;
 
+pub(crate) const PROJECT_ICONS_SCRIPT: &str = include_str!("assets/project-icons.js");
+pub(crate) const PROJECT_ICONS_SCRIPT_PATH: &str = "/__topcoat-project-icons.js";
+
 pub(crate) const STYLESHEET: &str = include_str!("assets/shell.css");
 pub(crate) const STYLESHEET_PATH: &str = "/__topcoat-shell.css";
 pub(crate) const ROUTE_SCRIPT: &str = include_str!("assets/shell.js");

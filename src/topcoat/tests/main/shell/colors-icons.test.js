@@ -1,6 +1,6 @@
 const {test}=require('node:test');const assert=require('node:assert/strict');const {lexical}=require('./source.js');
 const {safeColor}=lexical('project_settings/assets/project-settings.js',['safeColor']);
-const {projectLink}=lexical('shell/assets/projects.js',['projectLink']);
+const {projectLink}=lexical('shell/assets/projects.js',['projectLink'],{window:{LificProjectIcons:require('../../../shell/assets/project-icons.js')}});
 function rendered(value){const document={createElement:tagName=>({tagName,children:[],dataset:{},attributes:{},setAttribute(key,value){this.attributes[key]=value;},append(...children){this.children.push(...children);}})};document.createElementNS=(_,tagName)=>document.createElement(tagName);return projectLink(document,{id:1,identifier:'ONE',name:'One',emoji:value},null);}
 test('safeLabelColor / preserves hex colors and rejects CSS source',()=>{
  assert.equal(safeColor('#12aBcF'),'#12aBcF');assert.equal(safeColor('red; background-image: url(https://example.test)'),'#6B7280');

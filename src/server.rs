@@ -106,6 +106,7 @@ mod topcoat_app {
                     <script defer="defer" src=(super::topcoat_frontend::session::SCRIPT_PATH)></script>
                     <script defer="defer" src=(super::topcoat_frontend::attachments::SCRIPT_PATH)></script>
                     <script defer="defer" src=(super::topcoat_frontend::sync::SCRIPT_PATH)></script>
+                    <script defer="defer" src=(super::topcoat_frontend::shell::PROJECT_ICONS_SCRIPT_PATH)></script>
                     <script defer="defer" src=(super::topcoat_frontend::shell::mobile::SCRIPT_PATH)></script>
                     <script defer="defer" src=(super::topcoat_frontend::shell::projects::SCRIPT_PATH)></script>
                     <script defer="defer" src=(super::topcoat_frontend::shell::recents::SCRIPT_PATH)></script>
@@ -381,6 +382,16 @@ mod topcoat_app {
             .header("cache-control", "no-cache")
             .body(topcoat::router::Body::from(
                 super::topcoat_frontend::shell::mobile::SCRIPT,
+            ))?)
+    }
+
+    #[route(GET "/__topcoat-project-icons.js")]
+    async fn project_icons_script() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "text/javascript; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::shell::PROJECT_ICONS_SCRIPT,
             ))?)
     }
 

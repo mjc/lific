@@ -69,3 +69,18 @@
 }
 [data-motion="reduced"] .tc-mobile,
 [data-motion="reduced"] .tc-mobile__pane { transition: none; }
+
+.tc-mobile__menu { position: fixed; z-index: 1000; min-width: 13rem; padding: .375rem; border: 1px solid var(--tc-border); border-radius: .5rem; background: var(--tc-surface); color: var(--tc-text); box-shadow: 0 .5rem 1.5rem rgb(0 0 0 / 18%); }
+.tc-mobile__menu button { display: block; width: 100%; min-height: 2.75rem; padding: .5rem .75rem; text-align: left; border: 0; border-radius: .25rem; background: transparent; color: inherit; font: inherit; }
+.tc-mobile__menu button:disabled { opacity: .5; }
+.tc-mobile__menu button:focus { outline: 2px solid var(--tc-focus); outline-offset: -2px; background: var(--tc-bg-subtle); }
+.tc-mobile__footer [data-mobile-theme] { min-height: 2.75rem; width: 100%; text-align: left; }
+
+.tc-mobile__catalog-row { display: flex; align-items: center; gap: .25rem; }
+.tc-mobile__catalog-row h3 { flex: 1; }
+.tc-mobile__scroll .tc-mobile__catalog-row > button[data-mobile-project-trigger] { flex: 1; min-width: 0; }
+.tc-mobile__scroll .tc-mobile__catalog-row > .tc-mobile__actions { flex: none; width: 2.75rem; justify-content: center; padding: .25rem; }
+.tc-mobile__rename { margin: .5rem 1rem; display: flex; flex-wrap: wrap; gap: .5rem; }
+.tc-mobile__rename input { width: 100%; min-height: 2.75rem; background: var(--tc-surface); color: var(--tc-text); border: 1px solid var(--tc-border); border-radius: .25rem; padding: .5rem; }
+.tc-mobile__rename button { min-height: 2.75rem; }
+.tc-mobile__rename [role=alert], .tc-mobile [data-mobile-error] { color: var(--tc-danger); }

@@ -48,6 +48,7 @@
 
   function quality(term, text, fuzzy = true) {
     const t = String(text ?? '').toLowerCase();
+    if (!term || !t) return 0;
     if (t === term) return 1;
     const at = t.indexOf(term);
     if (at >= 0) return term.length < 2 ? 0.6 : at === 0 ? 0.9 : boundary.test(t[at - 1]) ? 0.8 : 0.6;
@@ -55,7 +56,7 @@
     return fuzzy && term.length >= 4 && t.split(/[^a-z0-9]+/).some(word => word && distance(term, word, budget) <= budget) ? 0.4 : 0;
   }
 
-  function searchDocuments(query, docs) {
+  function searchLocalDocuments(query, docs, perKind = 0) {
     const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
     const hits = terms.length ? docs.map(doc => {
       const fields = [[5, doc.title], [4, doc.identifier], [4, String(doc.identifier ?? '').match(/\d+$/)?.[0], false],
@@ -63,8 +64,17 @@
       const scores = terms.map(term => Math.max(...fields.map(([weight, text, fuzzy]) => weight * quality(term, text, fuzzy))));
       return {doc, score: scores.every(score => score > 0) ? scores.reduce((a, b) => a + b, 0) / (terms.length * 5) : 0};
     }).filter(hit => hit.score > 0).sort((a, b) => b.score - a.score || String(b.doc.updated_at ?? '').localeCompare(String(a.doc.updated_at ?? '')) || a.doc.identifier.localeCompare(b.doc.identifier)) : [];
+    if (!perKind) return hits;
     const counts = new Map();
-    return hits.filter(({doc}) => {const count = counts.get(doc.kind) ?? 0; counts.set(doc.kind, count + 1); return count < 8;});
+    return hits.filter(({doc}) => {const count = counts.get(doc.kind) ?? 0; counts.set(doc.kind, count + 1); return count < perKind;});
+  }
+
+  function searchDocuments(query, docs) {
+    return searchLocalDocuments(query, docs, 8);
+  }
+
+  function localScoreToPaletteScore(score) {
+    return 1.2 + Math.min(1, Math.max(0, score)) * 1.3;
   }
 
   function catalogResults(query, catalog) {
@@ -230,7 +240,7 @@
       if (q) {
         local = [
           ...(ref ? referenceLocal(ref) : []),
-          ...searchDocuments(q, documents(active)).map(({doc, score}) => docResult(doc, active, 1.2 + score * 1.3)),
+          ...searchDocuments(q, documents(active)).map(({doc, score}) => docResult(doc, active, localScoreToPaletteScore(score))),
           ...catalogResults(q, catalog),
           ...[...owners.values()].flatMap(owner => owner.results ?? []).map(result => ({...result, score: fuzzyScore(q, result.title)})).filter(result => result.score >= 0.3),
         ];

@@ -230,6 +230,7 @@
     transition();
     return {
       refresh: () => transition(true),
+      projectController: () => projectApp?.controller ?? null,
       dispose() {
         disposed = true;
         requestGeneration++;
