@@ -1283,6 +1283,22 @@ fn finish(mut buffer: Vec<u8>) -> Frame {
 fn complete_july_result(response: &mut Value) {
     if let Some(result) = response.get_mut("result").and_then(Value::as_object_mut) {
         result.insert("resultType".into(), Value::String("complete".into()));
+        // Older Lific servers encode business failures only in their text.
+        // Translate that convention when exposing their results to July clients.
+        if result
+            .get("content")
+            .and_then(Value::as_array)
+            .is_some_and(|content| {
+                content.iter().any(|item| {
+                    item["type"] == "text"
+                        && item["text"]
+                            .as_str()
+                            .is_some_and(|text| text.starts_with("Error: "))
+                })
+            })
+        {
+            result.insert("isError".into(), Value::Bool(true));
+        }
         if result.contains_key("supportedVersions") || result.contains_key("tools") {
             result.insert("ttlMs".into(), Value::from(0));
             result.insert("cacheScope".into(), Value::String("private".into()));

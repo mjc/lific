@@ -2440,6 +2440,38 @@ impl InstanceTransport for FixedReply {
     }
 }
 
+#[tokio::test]
+async fn july_translates_legacy_business_failures_without_changing_legacy_results() {
+    let router = router(&["private"], Some("private"));
+    for (modern, text, expected_error) in [
+        (true, "Error: Not found: issue LIF-42 not found", true),
+        (false, "Error: Not found: issue LIF-42 not found", false),
+        (true, "LIF-42 found", false),
+    ] {
+        let transport = FixedReply::new(
+            serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {
+                "content": [{"type": "text", "text": text}], "isError": false,
+            }})
+            .to_string(),
+        );
+        let mut request: Value = serde_json::from_str(&call(
+            "get_issue",
+            serde_json::json!({"identifier": "LIF-42"}),
+        ))
+        .unwrap();
+        if modern {
+            request["params"]["_meta"] = serde_json::json!({
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientCapabilities": {},
+            });
+        }
+        let out = run_pump(&format!("{request}\n"), &router, &transport).await;
+        assert_eq!(out[0]["result"]["isError"], expected_error, "{out:?}");
+        assert_eq!(out[0]["result"].get("resultType").is_some(), modern);
+        assert_eq!(*transport.seen.lock().unwrap(), vec!["private"]);
+    }
+}
+
 async fn assert_safe_backend_refusal(raw: String, reason: &str) {
     let transport = FixedReply::new(raw);
     let mut router = router(&["private", "community"], Some("private"));
