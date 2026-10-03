@@ -252,3 +252,72 @@ test('headless annotation crop handles change flattened dimensions and undo rest
     await page.evaluate(()=>composer.dispose());
   }finally{await browser.close();}
 });
+
+test('headless capture trigger offers mobile files, camera annotation and voice recording', {skip: !process.env.PLAYWRIGHT_EXECUTABLE_PATH}, async t => {
+ const {chromium}=await import(path.resolve(__dirname,'../../../..','e2e/node_modules/playwright/index.mjs'));
+ const browser=await chromium.launch({headless:true,executablePath:process.env.PLAYWRIGHT_EXECUTABLE_PATH});
+ const page=await browser.newPage();page.setDefaultTimeout(3000);const errors=[];page.on('pageerror',e=>errors.push(e.message));
+ async function mount(coarse=false,supported=true){
+  await page.evaluate(()=>window.composer?.dispose());await page.setContent('<section style="margin-top:200px"><textarea aria-label=Draft style="display:block;width:600px;height:100px"></textarea></section>');
+  await page.evaluate(({coarse,supported})=>{
+   window.pointerQuery=new EventTarget();pointerQuery.matches=coarse;window.matchMedia=()=>pointerQuery;
+   window.files=[];window.stopped=0;window.urls=[];window.revoked=[];window.mediaRequests=0;window.rejectMicrophone=false;
+   Object.defineProperty(navigator,'mediaDevices',{configurable:true,value:{getUserMedia:async()=>{mediaRequests++;if(rejectMicrophone)throw Error('denied');return {getTracks:()=>[{stop:()=>stopped++}]};}}});
+   window.MediaRecorder=supported?class{static isTypeSupported(mime){return mime==='audio/mp4';}constructor(stream,options){window.recorder=this;this.mime=options.mimeType;this.state='inactive';}start(slice){this.state='recording';this.slice=slice;}stop(){this.state='inactive';this.ondataavailable({data:new Blob(['recorded'],{type:this.mime})});this.onstop();}}:undefined;
+   const create=URL.createObjectURL.bind(URL),revoke=URL.revokeObjectURL.bind(URL);URL.createObjectURL=blob=>{const url=create(blob);urls.push(url);return url;};URL.revokeObjectURL=url=>{revoked.push(url);revoke(url);};
+  },{coarse,supported});
+  await page.addScriptTag({content:fs.readFileSync(`${__dirname}/attachments.js`,'utf8')});
+  await page.evaluate(()=>{window.audience='one';const textarea=document.querySelector('textarea');window.composer=LificTopcoatAttachments.createComposer({root:document.querySelector('section'),textarea,text:{read:()=>textarea.value,write:value=>textarea.value=value},client:{audience:()=>audience,upload(file){files.push(file);return {result:Promise.resolve({ok:true,data:{id:8,filename:file.name,mime:file.type}}),abort(){}};}},onUploaded:(_row,snippet)=>textarea.value+=snippet});});
+ }
+ try{
+  await t.test('coarse attach menu routes camera images through annotation and dismisses accessibly',async()=>{
+   await mount(true);const attach=page.getByRole('button',{name:'Attach files',exact:true});await attach.click();assert.equal(await attach.getAttribute('aria-expanded'),'true');
+   assert.equal(await page.getByRole('menuitem',{name:'Files',exact:true}).count(),1);assert.equal(await page.getByRole('menuitem',{name:'Record voice',exact:true}).count(),1);
+   await page.keyboard.press('Escape');assert.equal(await page.getByRole('menu').count(),0);await attach.click();await page.locator('textarea').click({position:{x:500,y:50}});assert.equal(await page.getByRole('menu').count(),0);
+   await attach.click();const chooser=page.waitForEvent('filechooser');await page.getByRole('menuitem',{name:'Camera',exact:true}).click();const camera=await chooser;
+   assert.equal(await camera.element().getAttribute('capture'),'environment');assert.equal(await camera.element().getAttribute('accept'),'image/*');
+   const png=await page.evaluate(async()=>{const canvas=document.createElement('canvas');canvas.width=8;canvas.height=8;return [...new Uint8Array(await (await new Promise(resolve=>canvas.toBlob(resolve))).arrayBuffer())];});
+   await camera.setFiles({name:'photo.png',mimeType:'image/png',buffer:Buffer.from(png)});await page.getByRole('button',{name:'Skip annotation',exact:true}).click();await page.getByRole('button',{name:'Skip image description',exact:true}).click();
+   assert.equal(await page.evaluate(()=>files[0].name),'photo.png');assert.equal(await camera.element().inputValue(),'');
+   await attach.click();await page.getByRole('menuitem',{name:'Record voice',exact:true}).click();await page.getByRole('button',{name:'Stop',exact:true}).click();
+   await page.getByRole('group',{name:'Voice note'}).getByRole('button',{name:'Attach',exact:true}).click();await page.waitForFunction(()=>files.length===2);
+   assert.equal(await page.evaluate(()=>files[1].type),'audio/mp4');assert.match(await page.evaluate(()=>files[1].name),/^voice-note-\d{8}-\d{4}\.m4a$/);
+   assert.equal(await page.evaluate(()=>recorder.slice),1000);assert.equal(await page.evaluate(()=>stopped),1);assert.equal(await page.evaluate(()=>revoked.includes(urls.at(-1))),true);
+  });
+  await t.test('desktop file picker stays direct and recording previews can attach, discard or report permission errors',async()=>{
+   await mount();const chooser=page.waitForEvent('filechooser');await page.getByRole('button',{name:'Attach files',exact:true}).click();await (await chooser).setFiles({name:'notes.txt',mimeType:'text/plain',buffer:Buffer.from('note')});await page.waitForFunction(()=>files.length===1);
+   const record=page.getByRole('button',{name:'Record a voice note',exact:true});await record.click();await page.getByRole('button',{name:'Cancel',exact:true}).click();assert.equal(await page.locator('audio').count(),0);assert.equal(await page.evaluate(()=>stopped),1);
+   await record.click();await page.getByRole('button',{name:'Stop',exact:true}).click();assert.equal(await page.locator('audio[controls]').count(),1);await page.getByRole('button',{name:'Discard',exact:true}).click();assert.equal(await page.evaluate(()=>files.length),1);
+   await page.evaluate(()=>rejectMicrophone=true);await record.click();await page.getByRole('alert').filter({hasText:'Microphone unavailable'}).waitFor();await page.getByRole('button',{name:'Dismiss',exact:true}).click();assert.equal(await page.getByRole('group',{name:'Voice note'}).count(),0);
+   await mount(false,false);assert.equal(await page.getByRole('button',{name:'Record a voice note',exact:true}).count(),0);assert.equal(await page.getByRole('button',{name:'Attach files',exact:true}).count(),1);
+  });
+  await t.test('late microphone requests and active recordings release tracks on scope change and disposal',async()=>{
+   await mount();await page.evaluate(()=>navigator.mediaDevices.getUserMedia=()=>new Promise(resolve=>window.releaseMicrophone=()=>resolve({getTracks:()=>[{stop:()=>stopped++}]})));
+   await page.getByRole('button',{name:'Record a voice note',exact:true}).click();await page.getByText('Waiting for the microphone…',{exact:true}).waitFor();
+   await page.evaluate(()=>{audience='two';dispatchEvent(new Event('lific:scope-change'));releaseMicrophone();});await page.waitForFunction(()=>stopped===1);assert.equal(await page.getByRole('group',{name:'Voice note'}).count(),0);
+   await mount();await page.getByRole('button',{name:'Record a voice note',exact:true}).click();await page.getByRole('button',{name:'Stop',exact:true}).waitFor();await page.evaluate(()=>composer.dispose());
+   assert.equal(await page.evaluate(()=>stopped),1);assert.equal(await page.getByRole('button',{name:'Attach files',exact:true}).count(),0);assert.equal(await page.evaluate(()=>files.length),0);
+  });
+  await t.test('camera selection from an earlier account or scope cannot enter the new upload queue',async()=>{
+   for(const event of ['lific:account-change','lific:scope-change']){
+    await mount(true);await page.getByRole('button',{name:'Attach files',exact:true}).click();const choosing=page.waitForEvent('filechooser');await page.getByRole('menuitem',{name:'Camera',exact:true}).click();const oldCamera=await choosing;
+    const photo={name:'old-photo.png',mimeType:'image/png',buffer:Buffer.from('delayed camera selection')};
+    await page.evaluate(event=>{audience='two';dispatchEvent(new Event(event));},event);await oldCamera.setFiles(photo);
+    assert.equal(await page.getByRole('button',{name:'Annotate',exact:true}).count(),0);assert.equal(await page.evaluate(()=>composer.items.length),0);assert.equal(await page.evaluate(()=>files.length),0);
+    assert.equal(await oldCamera.element().inputValue(),'');
+    await page.getByRole('button',{name:'Attach files',exact:true}).click();const retrying=page.waitForEvent('filechooser');await page.getByRole('menuitem',{name:'Camera',exact:true}).click();await (await retrying).setFiles({...photo,name:'new-photo.png'});
+    await page.getByRole('button',{name:'Skip annotation',exact:true}).click();await page.getByRole('button',{name:'Skip image description',exact:true}).click();assert.equal(await page.evaluate(()=>files[0].name),'new-photo.png');
+   }
+  });
+  await t.test('repeated Stop while asynchronous onstop is pending preserves the recording',async()=>{
+   await mount();await page.evaluate(()=>{MediaRecorder.prototype.stop=function(){window.stopCalls=(window.stopCalls||0)+1;if(this.state==='inactive')throw new DOMException('Already stopped','InvalidStateError');this.state='inactive';window.completeRecording=()=>{this.ondataavailable({data:new Blob(['recorded asynchronously'],{type:this.mime})});this.onstop();};};window.stopCalls=0;});
+   await page.getByRole('button',{name:'Record a voice note',exact:true}).click();await page.getByRole('button',{name:'Stop',exact:true}).click();
+   await page.getByRole('button',{name:'Stop',exact:true}).click();await page.getByRole('button',{name:'Record a voice note',exact:true}).click();
+   assert.equal(await page.evaluate(()=>composer.pending),true);assert.equal(await page.evaluate(()=>stopCalls),1);assert.equal(await page.evaluate(()=>stopped),0);
+   await page.evaluate(()=>completeRecording());assert.equal(await page.locator('audio[controls]').count(),1);assert.equal(await page.evaluate(()=>stopped),1);
+   await page.getByRole('group',{name:'Voice note'}).getByRole('button',{name:'Attach',exact:true}).click();await page.waitForFunction(()=>files.length===1);
+   assert.equal(await page.evaluate(()=>files[0].text()),'recorded asynchronously');assert.equal(await page.evaluate(()=>composer.pending),false);
+  });
+  assert.deepEqual(errors,[]);
+ }finally{await browser.close();}
+});
