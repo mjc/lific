@@ -1542,7 +1542,7 @@
         doc.body.append(anchor);
         anchor.click();
         anchor.remove();
-        win.URL.revokeObjectURL(url);
+        win.setTimeout(() => win.URL.revokeObjectURL(url), 1000);
       },
       upload: (file, onProgress, onProcessing) =>
         new Promise((resolve) => {

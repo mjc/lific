@@ -754,10 +754,11 @@ mod tests {
             import {pathToFileURL} from 'node:url';
             const {initializePreferences} = await import(pathToFileURL(process.env.LIFIC_PREFERENCES_MODULE).href);
             const values = new Map();
+            const writes = [];
             const storage = {
                 getItem: key => values.get(key) ?? null,
-                setItem: (key, value) => values.set(key, value),
-                removeItem: key => values.delete(key),
+                setItem: (key, value) => { writes.push(key); values.set(key, value); },
+                removeItem: key => { writes.push(key); values.delete(key); },
             };
             function tab(name) {
                 const listeners = new Map();
@@ -782,6 +783,7 @@ mod tests {
             }
             const changeTheme = tab('theme');
             const changeAccent = tab('accent');
+            assert.deepEqual(writes, [], 'ordinary initialization must not publish preference writes');
             changeTheme('dark');
             assert.equal(values.get('lific_theme'),'dark');
             changeAccent('teal');

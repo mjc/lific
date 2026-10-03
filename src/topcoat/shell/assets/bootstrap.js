@@ -71,7 +71,14 @@
         const response = await request(path, options);
         assertCurrent(isCurrent);
         const result = responseData(response, 'save project changes');
-        const snapshot = await this.fetch();
+        let snapshot;
+        try {
+          snapshot = await this.fetch();
+        } catch {
+          // The write committed; a failed reload must not report it as unsaved.
+          assertCurrent(isCurrent);
+          return {result};
+        }
         assertCurrent(isCurrent);
         return {result, snapshot};
       },

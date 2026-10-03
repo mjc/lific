@@ -168,8 +168,11 @@ export function initializePreferences(doc = document, storage = browserStorage()
   // Import earlier Topcoat preferences into the shared keys once. Subsequent
   // removal of a shared key then means "use the default", rather than falling
   // back to an obsolete aggregate value.
+  let hasAggregate = false;
+  try { hasAggregate = storage?.getItem(STORAGE_KEY) != null; } catch {}
+  const loaded = loadPreferences(storage);
   let current = applyPreferences(
-    savePreferences(loadPreferences(storage), storage),
+    hasAggregate ? savePreferences(loaded, storage) : loaded,
     doc.documentElement,
   );
   const cleanups = [];

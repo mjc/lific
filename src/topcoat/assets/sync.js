@@ -201,7 +201,7 @@
                 });
                 term.channel.postMessage({kind:'hello'});
                 env.locks.request(`lific-topcoat-sync-${fingerprint}`,{mode:'exclusive',signal:term.controller.signal},()=>new Promise(resolve=>{
-                    if(transport===term&&valid(term.generation)) {term.release=resolve;term.leader=true;openSocket(term);}else resolve();
+                    if(transport===term&&valid(term.generation)) {term.release=resolve;term.leader=true;term.open=false;notify();openSocket(term);}else resolve();
                 })).catch(error=>{if(transport===term&&error.name!=='AbortError') {stopTransport();env.error?.(error);}});
             } else {term.leader=true;openSocket(term);}
         }

@@ -2,6 +2,36 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
+test("project downloads retain their object URL until deferred cleanup", {
+  skip: !process.env.PLAYWRIGHT_EXECUTABLE_PATH,
+}, async () => {
+  const { chromium } = await import(path.resolve(__dirname, "../../../..", "e2e/node_modules/playwright/index.mjs"));
+  const browser = await chromium.launch({headless: true, executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH});
+  try {
+    const page = await browser.newPage();
+    await page.setContent('<section data-topcoat-project-settings="settings"><div data-project-settings-content></div></section>');
+    await page.addScriptTag({content: fs.readFileSync(`${__dirname}/project-settings.js`, "utf8")});
+    const result = await page.evaluate(() => {
+      const calls = [], timers = [];
+      URL.createObjectURL = () => 'blob:project-download';
+      URL.revokeObjectURL = url => calls.push(['revoke', url]);
+      HTMLAnchorElement.prototype.click = function () {calls.push(['download', this.href, this.download, this.isConnected]);};
+      window.setTimeout = (callback, delay) => {timers.push({callback, delay});return timers.length;};
+      const app = LificTopcoatProjectSettings.attach(document.querySelector('section'), {
+        session: {state: {publicProject: null, user: null}},
+      });
+      app.controller.env.saveDownload({blob: new Blob(['archive']), filename: 'LIF.lific.tar.gz'});
+      const beforeCleanup = [...calls];
+      const delays = timers.map(timer => timer.delay);
+      for (const timer of timers) timer.callback();
+      return {beforeCleanup, delays, afterCleanup: calls, remainingAnchors: document.querySelectorAll('a[download]').length};
+    });
+    assert.deepEqual(result.beforeCleanup, [['download', 'blob:project-download', 'LIF.lific.tar.gz', true]]);
+    assert.deepEqual(result.delays, [1000]);
+    assert.deepEqual(result.afterCleanup, [...result.beforeCleanup, ['revoke', 'blob:project-download']]);
+    assert.equal(result.remainingAnchors, 0);
+  } finally {await browser.close();}
+});
 test(
   "headless project administration edits the shared identity and rolls back failed group assignment",
   { skip: !process.env.PLAYWRIGHT_EXECUTABLE_PATH },

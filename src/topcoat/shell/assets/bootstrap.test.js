@@ -1,6 +1,7 @@
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
 const {mount, freezeCatalog, privateIdentity, createCatalogAdapter} = require('./bootstrap.js');
+const {CatalogController} = require('./projects.js');
 
 class Node {
   constructor(tag = 'div') {
@@ -114,6 +115,39 @@ test('catalog adapter loads both REST catalogs and maps every component command'
     assert.deepEqual(requests.slice(before + 1).map(request => request.path).sort(), ['/project-groups', '/projects']);
   }
   await assert.rejects(adapter.command({type: 'unknown'}), /Unsupported/);
+});
+
+test('saved catalog commands survive reload failure without rollback or duplicate creation', async () => {
+  const writes = [];
+  const created = {id: 4, name: 'Later', project_ids: []};
+  const adapter = createCatalogAdapter({request: async (path, options = {}) => {
+    if (!options.method) throw new Error('Catalog reload is offline.');
+    writes.push({path, options});
+    return {ok: true, data: options.method === 'POST' ? created : {id: 3, name: 'Renamed'}};
+  }}, () => 2, () => true);
+  const controller = new CatalogController(adapter);
+  controller.snapshot = freezeCatalog(1, [], [{id: 3, name: 'Work', project_ids: []}]);
+
+  assert.deepEqual(await controller.renameGroup(3, 'Renamed'), {result: {id: 3, name: 'Renamed'}});
+  assert.equal(controller.snapshot.groups[0].name, 'Renamed');
+  assert.equal(controller.pending, false);
+  assert.equal(controller.error, 'Catalog reload is offline.');
+  assert.deepEqual(await controller.createGroup('Later'), {result: created});
+  assert.equal(controller.pending, false);
+  assert.equal(await controller.refresh(), false);
+  assert.deepEqual(writes.map(({path, options}) => [path, options.method]), [
+    ['/project-groups/3', 'PATCH'], ['/project-groups', 'POST'],
+  ]);
+});
+
+test('a failed catalog reload still rejects a saved command after its account changes', async () => {
+  let current = true;
+  const adapter = createCatalogAdapter({request: async (_path, options = {}) => {
+    if (options.method) return {ok: true, data: {id: 4, name: 'Later'}};
+    current = false;
+    throw new Error('Catalog reload is offline.');
+  }}, () => 1, () => current);
+  await assert.rejects(adapter.command({type: 'create_group', name: 'Later'}), /session changed/);
 });
 
 test('private components mount only for an authenticated private session and clean up on scope change', () => {
