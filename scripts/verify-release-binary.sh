@@ -50,31 +50,66 @@ cd "$scratch"
 "$binary" --version
 "$binary" --help >/dev/null
 
+startup_timeout="${LIFIC_VERIFY_STARTUP_TIMEOUT:-60}"
+if ! [[ $startup_timeout =~ ^[1-9][0-9]*$ ]]; then
+  echo "LIFIC_VERIFY_STARTUP_TIMEOUT must be a positive integer" >&2
+  exit 1
+fi
+startup_deadline=$((SECONDS + startup_timeout))
+
+# Never pass 0 to curl: it means "no timeout", rather than an expired budget.
+request_budget() {
+  local remaining=$((startup_deadline - SECONDS)) limit="${1:-5}"
+  if ((remaining <= 0)); then
+    return 1
+  fi
+  if ((remaining > limit)); then
+    remaining=$limit
+  fi
+  printf '%s\n' "$remaining"
+}
+
 port="${LIFIC_VERIFY_PORT:-}"
+automatic_port=true
+attempted_ports=()
+
+choose_port() {
+  local candidate budget
+  for _ in {1..20}; do
+    if ! budget="$(request_budget 2)"; then
+      echo "server did not report a healthy start within ${startup_timeout}s" >&2
+      return 1
+    fi
+    candidate="$((34567 + RANDOM % 1000))"
+    case " ${attempted_ports[*]} " in
+      *" $candidate "*) continue ;;
+    esac
+    if ! curl --connect-timeout 1 --max-time "$budget" --silent --output /dev/null "http://127.0.0.1:$candidate/"; then
+      port="$candidate"
+      return
+    fi
+  done
+  echo "could not find an available verification port" >&2
+  return 1
+}
 
 # An override is useful for CI and local debugging. For the automatic case,
 # retry a collision so an unrelated local server does not make this test flaky.
 if [[ -n $port ]]; then
-  if curl --connect-timeout 1 --max-time 2 --silent --output /dev/null "http://127.0.0.1:$port/"; then
+  automatic_port=false
+  budget="$(request_budget 2)"
+  if curl --connect-timeout 1 --max-time "$budget" --silent --output /dev/null "http://127.0.0.1:$port/"; then
     echo "verification port $port is already serving HTTP" >&2
     exit 1
   fi
 else
-  for _ in {1..20}; do
-    candidate="$((34567 + RANDOM % 1000))"
-    if ! curl --connect-timeout 1 --max-time 2 --silent --output /dev/null "http://127.0.0.1:$candidate/"; then
-      port="$candidate"
-      break
-    fi
-  done
-  if [[ -z $port ]]; then
-    echo "could not find an available verification port" >&2
-    exit 1
-  fi
+  choose_port
 fi
 
 config="$scratch/verify-lific.toml"
-cat >"$config" <<TOML
+start_server() {
+  attempted_ports+=("$port")
+  cat >"$config" <<TOML
 # Written by verify-release-binary.sh. Passed with --config so the run cannot
 # inherit a project-local, user, or system lific.toml.
 [server]
@@ -96,60 +131,61 @@ allow_signup = false
 level = "info"
 TOML
 
-LIFIC_INIT_ADMIN_NAME=Release \
-  LIFIC_INIT_ADMIN_PASSWORD=release-smoke-password-123 \
-  "$binary" \
-  --config "$config" \
-  start --init-if-missing --host 127.0.0.1 --port "$port" \
-  >"$scratch/server.log" 2>&1 &
-server_pid=$!
-
-startup_timeout="${LIFIC_VERIFY_STARTUP_TIMEOUT:-60}"
-if ! [[ $startup_timeout =~ ^[1-9][0-9]*$ ]]; then
-  echo "LIFIC_VERIFY_STARTUP_TIMEOUT must be a positive integer" >&2
-  exit 1
-fi
-startup_deadline=$((SECONDS + startup_timeout))
-
-# Seconds left before the startup deadline, clamped to a sane per-request
-# budget. Never returns 0: `curl --max-time 0` means "no timeout", so a
-# deadline that rolls over mid-loop used to turn the bounded wait into an
-# unbounded one.
-request_budget() {
-  local remaining=$((startup_deadline - SECONDS))
-  if ((remaining <= 0)); then
-    return 1
-  fi
-  if ((remaining > 5)); then
-    remaining=5
-  fi
-  printf '%s\n' "$remaining"
+  LIFIC_INIT_ADMIN_NAME=Release \
+    LIFIC_INIT_ADMIN_PASSWORD=release-smoke-password-123 \
+    "$binary" \
+    --config "$config" \
+    start --init-if-missing --host 127.0.0.1 --port "$port" \
+    >"$scratch/server.log" 2>&1 &
+  server_pid=$!
 }
 
 started=false
 healthy=false
-while ((SECONDS < startup_deadline)); do
-  if ! kill -0 "$server_pid" 2>/dev/null; then
-    cat "$scratch/server.log" >&2
-    echo "server exited before it served a request" >&2
-    exit 1
-  fi
-
-  # The production server logs this only after TcpListener::bind succeeds.
-  # Waiting for that event ties the HTTP probe to this process rather than
-  # accepting the first response from an unrelated listener.
-  if grep -q 'lific server started' "$scratch/server.log"; then
-    started=true
-    if budget="$(request_budget)"; then
-      if curl --fail --silent --show-error \
-        --connect-timeout 1 --max-time "$budget" \
-        "http://127.0.0.1:$port/api/health" >"$scratch/health.txt"; then
-        healthy=true
+startup_attempt=0
+while ((startup_attempt < 20 && SECONDS < startup_deadline)); do
+  startup_attempt=$((startup_attempt + 1))
+  start_server
+  started=false
+  healthy=false
+  retry=false
+  while ((SECONDS < startup_deadline)); do
+    if ! kill -0 "$server_pid" 2>/dev/null; then
+      if [[ $automatic_port == true ]] &&
+        ! grep -q 'lific server started' "$scratch/server.log" &&
+        grep -Eqi 'EADDRINUSE|address already in use' "$scratch/server.log"; then
+        wait "$server_pid" 2>/dev/null || true
+        server_pid=""
+        echo "verification port $port was claimed before startup; trying another port" >&2
+        retry=true
         break
       fi
+      cat "$scratch/server.log" >&2
+      echo "server exited before it served a request" >&2
+      exit 1
     fi
+
+    # The production server logs this only after TcpListener::bind succeeds.
+    # Waiting for that event ties the HTTP probe to this process rather than
+    # accepting the first response from an unrelated listener.
+    if grep -q 'lific server started' "$scratch/server.log"; then
+      started=true
+      if budget="$(request_budget)"; then
+        if curl --fail --silent --show-error \
+          --connect-timeout 1 --max-time "$budget" \
+          "http://127.0.0.1:$port/api/health" >"$scratch/health.txt"; then
+          healthy=true
+          break
+        fi
+      fi
+    fi
+    sleep 1
+  done
+  if [[ $retry == true ]] && ((startup_attempt < 20 && SECONDS < startup_deadline)); then
+    choose_port
+    continue
   fi
-  sleep 1
+  break
 done
 
 if [[ $started != true || $healthy != true ]] || ! kill -0 "$server_pid" 2>/dev/null; then
