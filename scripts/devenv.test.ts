@@ -101,7 +101,7 @@ test("test graph checks formatting before compilation and isolates the backend",
   expect(Object.keys(processes)).toEqual(["backend"]);
   const watchedPaths = processes.backend.watch.paths;
   expect(watchedPaths.join()).toMatch(/\/build\.rs/);
-  expect(processes.backend.watch.extensions).toEqual(expect.arrayContaining(["js", "css", "png"]));
+  expect(processes.backend.watch.extensions).toEqual(expect.arrayContaining(["js", "css", "png", "webmanifest"]));
 }, 360_000);
 
 test("backend starts with a private runtime config instead of an immutable store config", () => {
