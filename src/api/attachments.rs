@@ -2740,6 +2740,31 @@ mod media_tests {
         }
     }
 
+    #[tokio::test]
+    async fn audio_mp4_upload_persists_and_reads_as_audio() {
+        let app = test_app();
+        let bytes = mp4_bytes();
+        let response = upload(&app, "voice.m4a", "audio/mp4", &bytes, None).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let row = parse_json(response).await;
+        assert_eq!(row["mime"], "audio/mp4");
+        let id = row["id"].as_i64().unwrap();
+        let response = json_get(&app, &format!("/api/attachments/{id}")).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            header(&response, "content-type").as_deref(),
+            Some("audio/mp4")
+        );
+        assert!(
+            header(&response, "content-disposition")
+                .unwrap()
+                .starts_with("inline")
+        );
+        assert_eq!(body_bytes(response).await, bytes);
+        let response = upload(&app, "invalid.m4a", "audio/mp4", b"\x7FELF....", None).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
     // ── Range requests ───────────────────────────────────────
 
     #[tokio::test]
