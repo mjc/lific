@@ -304,6 +304,9 @@
   function render(root, controller, options = {}) {
     const focus = focusedControl(root);
     const createOpen = root.querySelector('.tc-projects__create-menu')?.open ?? false;
+    const groupMenus = new Set([...root.querySelectorAll('details')]
+      .filter(menu => menu.open && menu.dataset.groupActions)
+      .map(menu => menu.dataset.groupActions));
     if (controller.scope === 'public') {
       root.replaceChildren();
       return;
@@ -360,6 +363,12 @@
       disclosure.setAttribute('aria-expanded', String(expanded.has(String(group.id))));
       disclosure.dataset.action = 'disclose';
       const name = element(document, 'span', 'tc-projects__group-name', group.name);
+      const groupMenu = element(document, 'details', 'tc-projects__group-menu');
+      groupMenu.dataset.groupActions = String(group.id);
+      groupMenu.open = groupMenus.has(String(group.id));
+      const groupToggle = element(document, 'summary', 'tc-projects__group-toggle', '⋯');
+      groupToggle.setAttribute('aria-label', `Actions for group ${group.name}`);
+      groupMenu.append(groupToggle);
       const actions = element(document, 'div', 'tc-projects__group-actions');
       for (const [delta, label] of [[-1, `Move ${group.name} up`], [1, `Move ${group.name} down`]]) {
         const move = element(document, 'button', 'tc-projects__action', delta < 0 ? '↑' : '↓');
@@ -385,7 +394,8 @@
       remove.dataset.action = 'delete-group';
       renameForm.append(renameName, rename, remove);
       actions.append(renameForm);
-      header.append(disclosure, name, actions);
+      groupMenu.append(actions);
+      header.append(disclosure, name, groupMenu);
       item.append(header);
       const list = element(document, 'div', 'tc-projects__project-list');
       list.hidden = !expanded.has(String(group.id));
