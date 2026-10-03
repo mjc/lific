@@ -19,7 +19,7 @@
     const owner = canEdit && comment.user_id === api().state.user?.id;
     const body = draft ? `<div data-comment-editor=""><textarea data-comment-edit-draft="${comment.id}" aria-label="Edit comment" ${canEdit ? '' : 'readonly'}>${escape(draft.content)}</textarea><div class="tc-collab__upload-tools"><label>Attach files <input type="file" multiple data-comment-files="${comment.id}" ${canEdit ? '' : 'disabled'}></label><span data-comment-upload-status="${comment.id}" role="status"></span></div><button type="button" data-comment-save="${comment.id}" ${!canEdit||draft.uploading ? 'disabled' : ''}>Save comment</button><button type="button" data-comment-cancel="${comment.id}">Cancel</button></div>` : `<div class="tc-comment__body" data-comment-content="">${escape(comment.content)}</div>`;
     const refs=referenceSummary(comment.content);
-    return `<li class="tc-comment" id="comment-${comment.id}" data-comment-id="${comment.id}"><header><strong>${escape(comment.author_display_name || comment.author)}</strong><time datetime="${escape(comment.created_at)}">${escape(date(comment.created_at))}</time><a class="tc-comment__permalink" href="#comment-${comment.id}" aria-label="Link to this comment">#</a>${comment.kind === 'verification' ? '<span class="tc-comment__badge">Verification</span>' : ''}</header>${body}${refs.issues||refs.attachments||refs.mentions?`<small class="tc-comment__references">References: ${refs.issues?`${refs.issues} issue${refs.issues===1?'':'s'}`:''}${refs.attachments?`${refs.issues?', ':''}${refs.attachments} attachment${refs.attachments===1?'':'s'}`:''}${refs.mentions?`${refs.issues||refs.attachments?', ':''}${refs.mentions} mention${refs.mentions===1?'':'s'}`:''}</small>`:''}${owner ? `<div class="tc-comment__actions"><button type="button" data-comment-edit="${comment.id}">Edit</button><button type="button" data-comment-delete="${comment.id}">Delete</button></div>` : ''}</li>`;
+    return `<li class="tc-comment" id="comment-${comment.id}" data-comment-id="${comment.id}"><header><strong>${escape(comment.author_display_name || comment.author)}</strong><time datetime="${escape(comment.created_at)}">${escape(date(comment.created_at))}</time>${comment.updated_at !== comment.created_at ? '<span class="tc-comment__edited">edited</span>' : ''}<a class="tc-comment__permalink" href="#comment-${comment.id}" aria-label="Link to this comment">#</a>${comment.kind === 'verification' ? '<span class="tc-comment__badge">Verification</span>' : ''}</header>${body}${refs.issues||refs.attachments||refs.mentions?`<small class="tc-comment__references">References: ${refs.issues?`${refs.issues} issue${refs.issues===1?'':'s'}`:''}${refs.attachments?`${refs.issues?', ':''}${refs.attachments} attachment${refs.attachments===1?'':'s'}`:''}${refs.mentions?`${refs.issues||refs.attachments?', ':''}${refs.mentions} mention${refs.mentions===1?'':'s'}`:''}</small>`:''}${owner ? `<div class="tc-comment__actions"><button type="button" data-comment-edit="${comment.id}">Edit</button><button type="button" data-comment-delete="${comment.id}">Delete</button></div>` : ''}</li>`;
   }
 
   function decorateCommentReferences(node) {
@@ -140,41 +140,64 @@
     return {page:rows.slice(0,50).reverse(),hasOlder:rows.length>50||result.headers?.get('x-comment-has-more')==='true'};
   }
 
+  const compareComments = (left, right) => String(left.created_at).localeCompare(String(right.created_at)) || Number(left.id) - Number(right.id);
+  function mergeComments(existing, incoming) {
+    const rows = new Map(existing.map(comment => [Number(comment.id), comment]));
+    for (const comment of incoming) rows.set(Number(comment.id), comment);
+    return [...rows.values()].sort(compareComments);
+  }
+  function reconcileComments(existing, refreshed) {
+    const boundary = refreshed.items[0];
+    if (!boundary) return refreshed;
+    const preserved = existing.items.filter(comment => compareComments(comment, boundary) < 0);
+    return preserved.length ? {items: mergeComments(preserved, refreshed.items), hasOlder: existing.hasOlder} : refreshed;
+  }
+  async function readCommentWindow(root, current, minRows = 0, before = null, isCurrent = () => true) {
+    // Each 50-row page transfers a lookahead too: nine pages fit the 500-row ceiling.
+    const target = Math.min(450, Math.max(50, Number.isFinite(minRows) ? Math.floor(minRows) : 0));
+    let items = [], hasOlder = false, cursor = before;
+    for (let page = 0; page < (before || !(minRows > 50) ? 1 : 9); page++) {
+      const response = await fetchCommentPage(root, current, cursor);
+      if (!isCurrent()) return null;
+      items = mergeComments(response.page, items);
+      hasOlder = response.hasOlder;
+      const oldest = response.page[0];
+      if (!oldest) break;
+      const next = {created_at: oldest.created_at, id: oldest.id};
+      if (!hasOlder || items.length >= target || (cursor && compareComments(next, cursor) === 0)) break;
+      cursor = next;
+    }
+    if (items.length > target) {items = items.slice(-target); hasOlder = true;}
+    return {items, hasOlder};
+  }
   async function refreshComments(root, current = null, before = null) {
-    const existing=root._comments||[];
-    const first=await fetchCommentPage(root,current,before);
-    if (!root.isConnected || (current !== null && current !== root._collabGeneration)) return;
-    let page=first.page,older=first.hasOlder;
-    let comments;
-    let cursor=page.length?{created_at:page[0].created_at,id:page[0].id}:before;
-    if(before){
-      const byId=new Map(existing.map(item=>[Number(item.id),item]));for(const item of page)byId.set(Number(item.id),item);
-      comments=[...byId.values()].sort((a,b)=>String(a.created_at).localeCompare(String(b.created_at))||Number(a.id)-Number(b.id));
-      root._commentsWindowExpanded=true;
-    } else if(root._commentsWindowExpanded&&existing.length){
-      const priorIds=new Set(existing.map(item=>Number(item.id)));
-      const newRows=page.filter(item=>!priorIds.has(Number(item.id))).length;
-      const desired=existing.length+newRows, seen=new Map(page.map(item=>[Number(item.id),item]));
-      comments=page;
-      while(comments.length<desired&&older){
-        if(!cursor)break;
-        const next=await fetchCommentPage(root,current,cursor);
-        if(!root.isConnected||(current!==null&&current!==root._collabGeneration))return;
-        page=next.page;older=next.hasOlder;
-        for(const item of page)seen.set(Number(item.id),item);
-        comments=[...seen.values()].sort((a,b)=>String(a.created_at).localeCompare(String(b.created_at))||Number(a.id)-Number(b.id));
-        if(!page.length)break;
-        const nextCursor={created_at:page[0].created_at,id:page[0].id};
-        if(cursor.created_at===nextCursor.created_at&&Number(cursor.id)===Number(nextCursor.id))break;
-        cursor=nextCursor;
+    const operation = root._commentOperation = (root._commentOperation || 0) + 1;
+    const isCurrent = () => root.isConnected && operation === root._commentOperation
+      && (current === null || current === root._collabGeneration);
+    // A committed local fold can land during a read. Re-read against it, without
+    // allowing sustained mutation churn to turn a background refresh into a crawl.
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const existing = root._comments || [];
+      const refreshed = await readCommentWindow(root, current, root._commentsWindowExpanded ? existing.length : 0, before, isCurrent);
+      if (!refreshed || !isCurrent()) return;
+      if (root._comments && root._comments !== existing) continue;
+      let window = refreshed;
+      if (before) {
+        window = {items: mergeComments(refreshed.items, existing), hasOlder: refreshed.hasOlder};
+        root._commentsWindowExpanded = true;
+      } else if (root._commentsWindowExpanded) {
+        window = reconcileComments({items: existing, hasOlder: root._commentsHasOlder ?? true}, refreshed);
       }
-    } else comments=first.page;
-    root._commentsHasOlder=older;
-    root._nextCommentCursor=cursor;
-    const olderButton=root.querySelector('[data-comments-older]');olderButton.hidden=!older;olderButton.disabled=false;
-    root._comments = comments;
-    renderCommentList(root,comments);
-    if(!before)await resolveCommentHash(root,current);
+      root._comments = window.items;
+      root._commentsHasOlder = window.hasOlder;
+      const oldest = window.items[0];
+      root._nextCommentCursor = oldest ? {created_at: oldest.created_at, id: oldest.id} : before;
+      const olderButton = root.querySelector('[data-comments-older]');
+      olderButton.hidden = !window.hasOlder; olderButton.disabled = false;
+      renderCommentList(root, window.items);
+      if (!before) await resolveCommentHash(root, current);
+      return;
+    }
   }
 
   const targetFragment = location => /^#(?:comment-[1-9][0-9]*|att[1-9][0-9]*(?:-L[1-9][0-9]*(?:-[1-9][0-9]*)?)?)$/.test(location?.hash||'') ? location.hash : '';
@@ -186,9 +209,17 @@
     const fragment=targetFragment(location);
     const match=fragment ? fragment.match(/^#comment-([1-9][0-9]*)$/) : (/^[1-9][0-9]*$/.test(query||'')?[null,query]:null)||location?.hash?.match(/[?&]comment=([1-9][0-9]*)(?:&|$)/);
     if(!match)return false;
-    const targetId=match[1];if(root._commentTargetDone===targetId)return false;if(root._commentTargetPromise&&root._commentTargetId===targetId)return root._commentTargetPromise;
-    const id=Number(targetId),promise=(async()=>{let budget=10;
-      while(root.isConnected&&root._comments?.every(item=>Number(item.id)!==id)&&!root.querySelector('[data-comments-older]').hidden&&budget-->0){const cursor=root._nextCommentCursor;if(!cursor)break;await refreshComments(root,current,cursor);}
+    const targetId=match[1];if(root._commentTargetPromise&&root._commentTargetId===targetId)return root._commentTargetPromise;
+    const key=`${root.dataset.issueId}:${targetId}`;
+    if(root._commentAnchorAttempt?.key!==key)root._commentAnchorAttempt={key,loaded:-1,pages:0};
+    const attempt=root._commentAnchorAttempt;
+    const id=Number(targetId),promise=(async()=>{
+      while(root.isConnected&&root._comments?.every(item=>Number(item.id)!==id)&&!root.querySelector('[data-comments-older]').hidden){
+        if(attempt.pages>=10||attempt.loaded===root._comments.length)break;
+        const cursor=root._nextCommentCursor;if(!cursor)break;
+        attempt.loaded=root._comments.length;attempt.pages++;
+        await refreshComments(root,current,cursor);
+      }
       const target=root.querySelector(`#comment-${id}`);
       if(target){target.classList.add('tc-comment--target');target.scrollIntoView?.({block:'center'});return true;}
       return false;
@@ -368,7 +399,7 @@
       const original=event.target.closest('[data-attachment-original]');
       if(original){const card=original.closest('[data-attachment-id]'),image=card?.querySelector('[data-attachment-image]');if(image&&root._composerClient)image.src=root._composerClient.url(Number(card.dataset.attachmentId),'original');return;}
       const older=event.target.closest('[data-comments-older]');
-      if(older){older.disabled=true;root._commentTargetDone=null;const cursor=root._nextCommentCursor;try{if(cursor)await refreshComments(root,root._collabGeneration,cursor);}catch(error){say(error.message);}root.querySelector('[data-comments-older]').focus();return;}
+      if(older){older.disabled=true;const cursor=root._nextCommentCursor;try{if(cursor)await refreshComments(root,root._collabGeneration,cursor);}catch(error){say(error.message);}root.querySelector('[data-comments-older]').focus();return;}
       const edit = event.target.closest('[data-comment-edit]');
       const remove = event.target.closest('[data-comment-delete]');
       const unlink = event.target.closest('[data-relation-remove]');
@@ -425,7 +456,13 @@
     function onApplied(event) {
       if (event.detail?.route?.issue_id !== Number(root.dataset.issueId) || event.detail?.route?.generation !== JSON.parse(initialRoute).generation) return;
       if(event.detail.panel)commitDraft(event.detail);
-      if (event.detail.panel === 'comments') void refreshComments(root,root._collabGeneration).catch(error=>{if(root.isConnected)say(`Saved, but comments could not refresh: ${error.message}`);});
+      if (event.detail.panel === 'comments') {
+        const action=event.detail.action, comment=event.detail.mutation;
+        if(action?.operation==='delete_comment')root._comments=(root._comments||[]).filter(row=>Number(row.id)!==Number(action.comment_id));
+        else if(comment?.id)root._comments=mergeComments(root._comments||[],[comment]);
+        renderCommentList(root,root._comments||[]);
+        void refreshComments(root,root._collabGeneration).catch(error=>{if(root.isConnected)say(`Saved, but comments could not refresh: ${error.message}`);});
+      }
       publishIssuePanels(event.detail.issue);
       if (event.detail.panel === 'comments' || event.detail.panel === 'relations' || event.detail.panel === 'waits') void read(`/issues/${root.dataset.issueId}/activity?limit=100`).then(data=>{if(root.isConnected)renderActivity(root,data.items || []);});
       if (event.detail.kind === 'deleted' || event.detail.deleted) { root.querySelector('[data-issue-delete]')?.setAttribute('hidden',''); root.querySelector('[data-issue-restore]')?.removeAttribute('hidden'); }
@@ -444,7 +481,7 @@
       takeAction(event.detail);say(event.detail.error||'Could not save. Your draft is still here; try again.');
     }
     function onScope() {
-      generation++;audienceGeneration++;root._collabGeneration++;
+      generation++;audienceGeneration++;root._collabGeneration++;root._commentAnchorAttempt=null;
       for(const id of [...root._commentUploads.keys()])cancelCommentUploads(id);
       for(const state of root._commentEdits.values())state.uploading=false;
       root._attachmentMount?.dispose?.();root._attachmentMount=null;

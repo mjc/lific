@@ -285,7 +285,7 @@
           this.publishIssue(updated,{descriptionAcknowledgement:action?.type === 'save_description'
             && String(updated?.description ?? '') === String(action.description ?? '')});
           if (panel) {
-            this.emit('lific:issue-detail-applied',{route:this.route,panel,issue:updated,mutation:mutationResult});
+            this.emit('lific:issue-detail-applied',{route:this.route,panel,issue:updated,mutation:mutationResult,operation:action?.operation,action});
           } else if (action?.type === 'save_description') {
             this.emit('lific:issue-detail-applied',{route:this.route,kind:'editor',issue:updated,description:updated.description,
               expected_seq:updated.seq,edit_revision:editRevision});
