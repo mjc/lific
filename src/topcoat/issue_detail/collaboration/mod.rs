@@ -43,7 +43,10 @@ fn render<'a>(
     let comments_enabled = capabilities.comment;
     let edit_enabled = capabilities.edit;
     let identifier = issue.map_or("", |issue| issue.identifier.as_str());
-    let issue_id = issue.map_or(route_key.issue_id.to_string(), |issue| issue.id.to_string());
+    let issue_id = issue.map_or_else(
+        || route_key.issue_id.to_string(),
+        |issue| issue.id.to_string(),
+    );
     let project_id = issue.map_or(String::new(), |issue| issue.project_id.to_string());
     let blocks = issue
         .and_then(|issue| issue.blocks.as_deref())
