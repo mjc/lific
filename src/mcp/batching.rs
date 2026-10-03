@@ -2154,7 +2154,12 @@ mod cancellation_tests {
             tokio::time::advance(BATCH_TIMEOUT).await;
             tokio::task::yield_now().await;
             assert!(!producer.is_finished());
-            tokio::time::advance(BATCH_DELIVERY_GRACE - std::time::Duration::from_secs(1)).await;
+            tokio::time::advance(
+                BATCH_DELIVERY_GRACE
+                    .checked_sub(std::time::Duration::from_secs(1))
+                    .unwrap(),
+            )
+            .await;
             assert!(!producer.is_finished());
             if resume {
                 assert_eq!(receiver.recv().await.unwrap().unwrap(), notification);
