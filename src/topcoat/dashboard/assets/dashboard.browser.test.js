@@ -78,12 +78,12 @@ test('headless home and overview render private work and respond to keyboard, li
         assert.match(await page.locator('[data-dashboard-activity-rate]').textContent(), /12 updates\/day/);
       });
 
-      await t.test('overview deep links show counts, live metrics, attention and role-sensitive controls', async () => {
+      await t.test('overview deep links retain live progress and attention focus without duplicate route actions', async () => {
         await mount('overview', 'LIF');
         assert.equal(await page.getByRole('heading', {name: 'Lific <b>project</b>'}).count(), 1);
         assert.equal(await page.getByRole('progressbar').getAttribute('aria-label'), '5 of 10 issues done');
         assert.equal(await page.getByRole('link', {name: 'Project settings'}).count(), 0);
-        const link = page.getByRole('link', {name: 'New issue'});
+        const link = page.locator('.tc-dashboard__issue').first();
         await link.focus();
         await page.evaluate(() => {done = 7; dispatchEvent(new CustomEvent('lific:realtime', {detail: {type: 'issue.updated', project_id: 1}}));});
         await page.waitForFunction(() => document.querySelector('progress')?.value === 7);
@@ -91,7 +91,8 @@ test('headless home and overview render private work and respond to keyboard, li
         await page.evaluate(async () => {role = 'viewer'; await lificDashboard.refresh();});
         assert.equal(await page.getByRole('link', {name: 'New issue'}).count(), 0);
         await page.evaluate(async () => {role = 'lead'; await lificDashboard.refresh();});
-        assert.equal(await page.getByRole('link', {name: 'Project settings'}).getAttribute('href'), '/LIF/settings');
+        assert.equal(await page.getByRole('link', {name: 'Project settings'}).count(), 0);
+        assert.equal(await page.getByRole('link', {name: 'New issue'}).count(), 0);
       });
 
       await t.test('overview access revocation clears private data and retry reloads it', async () => {

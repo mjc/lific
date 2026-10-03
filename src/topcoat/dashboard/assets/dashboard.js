@@ -451,14 +451,7 @@ function renderOverview(doc, model) {
   heading.tabIndex = -1; heading.dataset.dashboardFocus = 'heading';
   identity.append(element(doc, 'p', project.identifier, 'tc-dashboard__identifier'), heading);
   if (project.description) identity.append(element(doc, 'p', project.description));
-  const actions = element(doc, 'div', null, 'tc-dashboard__actions');
-  if (model.newIssueHref) {
-    const create = link(doc, 'New issue', model.newIssueHref, 'tc-button');
-    create.prepend(icon(doc, 'plus'));
-    actions.append(create);
-  }
-  if (model.settingsHref) actions.append(link(doc, 'Project settings', model.settingsHref, 'tc-button'));
-  hero.append(identity, actions);
+  hero.append(identity);
   fragment.append(hero);
   if (model.counts) {
     const metrics = element(doc, 'section', null, 'tc-dashboard__metrics');
@@ -467,21 +460,28 @@ function renderOverview(doc, model) {
     progress.max = model.counts.total || 1;
     progress.value = model.counts.done;
     progress.setAttribute('aria-label', `${model.counts.done} of ${model.counts.total} issues done`);
-    metrics.append(progress, element(doc, 'p', `${model.counts.done}/${model.counts.total} done · ${model.completion}%`));
-    fragment.append(metrics);
+    progress.className = 'tc-dashboard__native-progress';
+    const ring = element(doc, 'span', `${model.completion}%`, 'tc-dashboard__progress-ring');
+    ring.setAttribute('aria-hidden', 'true');
+    ring.style.setProperty('--tc-completion', `${model.completion}%`);
+    metrics.append(progress, ring, element(doc, 'p', `${model.counts.done}/${model.counts.total} done`));
+    hero.append(metrics);
   }
   const attention = card(doc, 'Needs attention');
   if (!model.attention.length) attention.append(element(doc, 'p', 'Nothing needs attention'));
-  for (const issue of model.attention) attention.append(issueRow(doc, project, issue));
-  if (model.moreCount) attention.append(link(doc, `View ${model.moreCount} more open issues`, projectRoute(project, 'issues')));
-  fragment.append(attention);
-  if (model.activity.length) fragment.append(activityCard(doc, model.activity));
-  const navigation = element(doc, 'nav', null, 'tc-dashboard__actions');
-  navigation.setAttribute('aria-label', 'Project sections');
-  for (const [label, section] of [['Issues', 'issues'], ['Pages', 'pages'], ['Modules', 'modules'], ['Plans', 'plans'], ['Activity', 'activity'], ['Insights', 'insights']]) {
-    navigation.append(link(doc, label, projectRoute(project, section)));
+  for (const issue of model.attention) {
+    const row = issueRow(doc, project, issue);
+    row.prepend(row.querySelector('.tc-dashboard__priority'));
+    row.append(row.querySelector('.tc-dashboard__status'));
+    attention.append(row);
   }
-  fragment.append(navigation);
+  if (model.moreCount) attention.firstElementChild.append(link(doc, `+${model.moreCount} more open`, projectRoute(project, 'issues')));
+  fragment.append(attention);
+  if (model.activity.length) {
+    const activity = activityCard(doc, model.activity);
+    activity.classList.add('tc-dashboard__overview-activity');
+    fragment.append(activity);
+  }
   return fragment;
 }
 
