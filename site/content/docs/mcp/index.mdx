@@ -115,6 +115,8 @@ July requests carry the same per-request metadata over stdio as HTTP. Discovery 
 
 The proxy preserves JSON-RPC errors returned by the server. When the server is unreachable, answers with a transport error, or rejects the credential, the proxy answers that request with a JSON-RPC error (`-32603`) carrying a readable message, and keeps running. It ends only when the client closes its input. The [remote stdio walkthrough](/docs/repository-bindings#use-a-remote-server) covers binding a checkout through it.
 
+If the server explicitly rejects an expired legacy session, the proxy completes a fresh handshake and retries the rejected request once. Recovery uses the same server and credential, retains the negotiated protocol version, and shares the original request's 120-second HTTP timeout. Authentication failures, tool errors and protocol errors are returned without retrying the call.
+
 ## Response conventions
 
 These hold on every transport.

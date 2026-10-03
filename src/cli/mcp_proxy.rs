@@ -112,6 +112,7 @@ trait Forwarder {
 /// The real forwarder: one POST per request against `{url}/mcp`.
 struct HttpForwarder {
     client: reqwest::Client,
+    request_timeout: std::time::Duration,
     endpoint: String,
     credential: Option<String>,
     session: std::sync::Mutex<super::mcp_http::Session>,
@@ -129,22 +130,15 @@ impl Forwarder for HttpForwarder {
             self.credential.as_deref(),
             &self.session,
             body,
-            4 * 1024 * 1024,
+            super::mcp_http::Limits::with_timeout(4 * 1024 * 1024, self.request_timeout),
             notifications,
         )
         .await
     }
 
     async fn forward(&self, body: String) -> Result<String, ForwardError> {
-        super::mcp_http::post(
-            &self.client,
-            &self.endpoint,
-            self.credential.as_deref(),
-            &self.session,
-            body,
-            4 * 1024 * 1024,
-        )
-        .await
+        self.forward_with_notifications(body, &mut super::mcp_http::IgnoreNotifications)
+            .await
     }
 }
 
@@ -514,6 +508,7 @@ pub async fn run(url: String, credential: Option<String>) -> Result<(), Box<dyn 
     let endpoint = format!("{}/mcp", url.trim_end_matches('/'));
     let forwarder = HttpForwarder {
         client,
+        request_timeout: std::time::Duration::from_secs(120),
         endpoint,
         credential,
         session: std::sync::Mutex::new(super::mcp_http::Session::default()),
@@ -550,6 +545,7 @@ mod tests {
             super::super::mcp_http::sse_test_backend(notification.clone(), release.clone()).await;
         let forwarder = HttpForwarder {
             client: reqwest::Client::new(),
+            request_timeout: std::time::Duration::from_secs(3),
             endpoint,
             credential: None,
             session: Mutex::default(),
@@ -588,6 +584,7 @@ mod tests {
             let (endpoint, server) = super::super::mcp_http::sse_test_backend(frame, release).await;
             let forwarder = HttpForwarder {
                 client: reqwest::Client::new(),
+                request_timeout: std::time::Duration::from_secs(3),
                 endpoint,
                 credential: None,
                 session: Mutex::default(),
@@ -707,6 +704,7 @@ mod tests {
                 .timeout(std::time::Duration::from_secs(3))
                 .build()
                 .unwrap(),
+            request_timeout: std::time::Duration::from_secs(3),
             endpoint: format!("http://{}/mcp", listener.local_addr().unwrap()),
             credential: None,
             session: Mutex::default(),

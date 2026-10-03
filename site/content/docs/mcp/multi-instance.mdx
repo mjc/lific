@@ -256,6 +256,9 @@ cut short.
   else. There is no way to make it reach a server you did not configure.
 - **No fallback.** An instance that is down, rejects the credential, or fails a
   call produces a failed call for that alias. It never retries elsewhere.
+  An explicit expired-session rejection triggers one fresh handshake and one
+  retry against the same instance, within the call timeout. Authentication,
+  tool and protocol errors do not trigger recovery.
 - **No ambient state.** There is no "active instance" to switch, so nothing a
   previous call did can change where the next one goes.
 - **No redirects.** Each backend's HTTP client refuses to follow them, so a

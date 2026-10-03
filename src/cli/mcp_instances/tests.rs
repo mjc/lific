@@ -382,6 +382,7 @@ fn http_backends(entries: &[(&str, &str, Option<&str>)]) -> HttpBackends {
                 (
                     (*alias).to_owned(),
                     HttpBackend {
+                        request_timeout: std::time::Duration::from_secs(10),
                         session: std::sync::Arc::default(),
                         client: reqwest::Client::builder()
                             .redirect(reqwest::redirect::Policy::none())

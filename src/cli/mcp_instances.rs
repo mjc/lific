@@ -509,6 +509,7 @@ pub(crate) trait InstanceTransport: Sync {
 
 struct HttpBackend {
     client: reqwest::Client,
+    request_timeout: std::time::Duration,
     endpoint: String,
     credential: Option<String>,
     session: std::sync::Arc<std::sync::Mutex<super::mcp_http::Session>>,
@@ -554,7 +555,7 @@ impl HttpBackends {
             backend.credential.as_deref(),
             &backend.session,
             body,
-            MAX_RESPONSE_BYTES,
+            super::mcp_http::Limits::with_timeout(MAX_RESPONSE_BYTES, backend.request_timeout),
             notifications,
         )
         .await
@@ -2009,6 +2010,7 @@ pub async fn run(path: &Path) -> Result<(), Box<dyn Error>> {
             spec.alias.clone(),
             HttpBackend {
                 client,
+                request_timeout: CALL_TIMEOUT,
                 endpoint: format!("{}/mcp", spec.url),
                 credential: credential.clone(),
                 session: std::sync::Arc::default(),
@@ -2028,6 +2030,7 @@ pub async fn run(path: &Path) -> Result<(), Box<dyn Error>> {
                     spec.alias.clone(),
                     HttpBackend {
                         client: clients.remove(&spec.alias).expect("client per alias"),
+                        request_timeout: DISCOVERY_TIMEOUT,
                         endpoint: format!("{}/mcp", spec.url),
                         credential: credential.clone(),
                         session: backends[&spec.alias].session.clone(),

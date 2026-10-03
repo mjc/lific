@@ -12,6 +12,32 @@ use super::mcp_proxy::{ForwardError, tidy};
 pub(super) struct Session {
     id: Option<String>,
     version: Option<String>,
+    initialize: Option<String>,
+}
+
+/// A shared response cap and optional budget for the complete HTTP exchange,
+/// including session recovery. Network reads time out without cancelling a
+/// notification sink midway through writing a stdio frame.
+#[derive(Clone, Copy)]
+pub(super) struct Limits {
+    max_bytes: usize,
+    deadline: Option<tokio::time::Instant>,
+}
+
+impl Limits {
+    fn new(max_bytes: usize) -> Self {
+        Self {
+            max_bytes,
+            deadline: None,
+        }
+    }
+
+    pub(super) fn with_timeout(max_bytes: usize, timeout: std::time::Duration) -> Self {
+        Self {
+            max_bytes,
+            deadline: Some(tokio::time::Instant::now() + timeout),
+        }
+    }
 }
 
 pub(super) fn valid_request(message: &Value) -> bool {
@@ -62,7 +88,7 @@ pub(super) async fn post(
         credential,
         session,
         body,
-        max_bytes,
+        Limits::new(max_bytes),
         &mut IgnoreNotifications,
     )
     .await
@@ -74,10 +100,108 @@ pub(super) async fn post_with_notifications<S: NotificationSink>(
     credential: Option<&str>,
     session: &Mutex<Session>,
     body: String,
-    max_bytes: usize,
+    limits: Limits,
     notifications: &mut S,
 ) -> Result<String, ForwardError> {
-    let message: Value = serde_json::from_str(&body).map_err(ForwardError::unreachable)?;
+    if let Some(reply) = post_once(
+        client,
+        endpoint,
+        credential,
+        session,
+        &body,
+        limits,
+        notifications,
+    )
+    .await?
+    {
+        return Ok(reply);
+    }
+    // Only the SDK's pre-dispatch missing-session rejection reaches this path.
+    // A timeout or a tool/protocol error never causes a possibly executed call
+    // to be replayed. Each frontend request gets at most one recovery attempt.
+    let previous = session
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    let initialize = previous.initialize.as_ref().ok_or_else(|| {
+        ForwardError::unreachable("expired MCP session has no saved initialization request")
+    })?;
+    // Publish only a completed handshake: cancellation during either POST
+    // leaves the original session available for the next recovery attempt.
+    let recovered_session = Mutex::new(previous.clone());
+    let recovery = async {
+        let reply = post_once(
+            client,
+            endpoint,
+            credential,
+            &recovered_session,
+            initialize,
+            limits,
+            notifications,
+        )
+        .await?
+        .ok_or_else(|| ForwardError::unreachable("fresh initialization rejected its session"))?;
+        let response: Value = serde_json::from_str(&reply).map_err(ForwardError::unreachable)?;
+        let initialized =
+            serde_json::from_value::<rmcp::model::InitializeResult>(response["result"].clone())
+                .map_err(|_| {
+                    ForwardError::unreachable(
+                        "session recovery returned an invalid initialization result",
+                    )
+                })?;
+        if previous.version.as_deref() != Some(initialized.protocol_version.as_str()) {
+            return Err(ForwardError::unreachable(
+                "session recovery changed the negotiated protocol version",
+            ));
+        }
+        post_once(
+            client,
+            endpoint,
+            credential,
+            &recovered_session,
+            r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
+            limits,
+            notifications,
+        )
+        .await?
+        .ok_or_else(|| {
+            ForwardError::unreachable("new MCP session expired during initialization")
+        })?;
+        Ok::<_, ForwardError>(())
+    }
+    .await;
+    recovery?;
+    *session
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = recovered_session
+        .into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    post_once(
+        client,
+        endpoint,
+        credential,
+        session,
+        &body,
+        limits,
+        notifications,
+    )
+    .await?
+    .ok_or_else(|| ForwardError::unreachable("new MCP session was rejected after recovery"))
+}
+
+/// `None` denotes only the SDK's exact rejection of an attached expired
+/// session, before dispatch. Callers decide whether to perform a new handshake.
+async fn post_once<S: NotificationSink>(
+    client: &reqwest::Client,
+    endpoint: &str,
+    credential: Option<&str>,
+    session: &Mutex<Session>,
+    body: &str,
+    limits: Limits,
+    notifications: &mut S,
+) -> Result<Option<String>, ForwardError> {
+    let max_bytes = limits.max_bytes;
+    let message: Value = serde_json::from_str(body).map_err(ForwardError::unreachable)?;
     let method = message["method"].as_str().unwrap_or_default();
     let state = session
         .lock()
@@ -124,8 +248,17 @@ pub(super) async fn post_with_notifications<S: NotificationSink>(
     if let Some(credential) = credential {
         request = request.bearer_auth(credential);
     }
+    if let Some(deadline) = limits.deadline {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(ForwardError::unreachable(
+                "MCP HTTP exchange exceeded its time budget",
+            ));
+        }
+        request = request.timeout(remaining);
+    }
     let response = request
-        .body(body)
+        .body(body.to_owned())
         .send()
         .await
         .map_err(ForwardError::unreachable)?;
@@ -139,7 +272,15 @@ pub(super) async fn post_with_notifications<S: NotificationSink>(
         return Err(ForwardError::rejected(status));
     }
     if !status.is_success() {
-        let detail = read_capped(response, max_bytes).await.unwrap_or_default();
+        let detail = read_capped(response, max_bytes).await?;
+        if status == reqwest::StatusCode::NOT_FOUND
+            && !modern
+            && method != "initialize"
+            && state.id.is_some()
+            && detail == "Not Found: Session not found"
+        {
+            return Ok(None);
+        }
         if let Ok(mut value) = serde_json::from_str::<Value>(&detail)
             && message.get("id").is_some()
             && value["jsonrpc"] == "2.0"
@@ -159,7 +300,7 @@ pub(super) async fn post_with_notifications<S: NotificationSink>(
             {
                 value["id"] = id.clone();
             }
-            return Ok(value.to_string());
+            return Ok(Some(value.to_string()));
         }
         return Err(ForwardError::unreachable(format!(
             "HTTP {status} from {endpoint}: {}",
@@ -178,7 +319,7 @@ pub(super) async fn post_with_notifications<S: NotificationSink>(
                 "notification response contained an unexpected body",
             ));
         }
-        return Ok(body);
+        return Ok(Some(body));
     }
     let session_id = response
         .headers()
@@ -255,9 +396,10 @@ pub(super) async fn post_with_notifications<S: NotificationSink>(
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Session {
             id: session_id,
             version: Some(version.to_owned()),
+            initialize: Some(body.to_owned()),
         };
     }
-    Ok(payload)
+    Ok(Some(payload))
 }
 
 pub(super) async fn read_capped(
@@ -431,6 +573,412 @@ mod tests {
                 "{method}"
             );
         }
+        task.abort();
+    }
+
+    #[derive(Default)]
+    struct CollectedNotifications(Vec<Value>);
+
+    impl NotificationSink for CollectedNotifications {
+        async fn send(&mut self, notification: Value) -> Result<(), ForwardError> {
+            self.0.push(notification);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn expired_sessions_recover_once_without_replaying_other_failures() {
+        use std::sync::Arc;
+
+        for (mode, expected_methods, succeeds) in [
+            ("recover", 6, true),
+            ("persistent", 6, false),
+            ("init_error", 4, false),
+            ("init_missing", 4, false),
+            ("init_invalid", 4, false),
+            ("init_changed_legacy", 4, false),
+            ("init_changed_modern", 4, false),
+            ("initialized_error", 5, false),
+            ("initialized_missing", 5, false),
+            ("unauthorized", 3, false),
+            ("forbidden", 3, false),
+            ("server_error", 3, false),
+            ("generic_404", 3, false),
+            ("rpc_404", 3, true),
+            ("modern_404", 3, false),
+            ("capped_404", 3, false),
+        ] {
+            let requests = Arc::new(Mutex::new(Vec::<(HeaderMap, Value)>::new()));
+            let observed = requests.clone();
+            let initialize = json!({
+                "jsonrpc": "2.0", "id": 41, "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {},
+                    "clientInfo": {"name": "original-client", "version": "17"},
+                },
+            });
+            let original_initialize = initialize.clone();
+            let backend = move |headers: HeaderMap, axum::Json(body): axum::Json<Value>| {
+                let observed = observed.clone();
+                let original_initialize = original_initialize.clone();
+                async move {
+                    assert_eq!(headers["authorization"], "Bearer fixed-credential");
+                    let initialization_count = {
+                        let mut requests = observed.lock().unwrap();
+                        requests.push((headers.clone(), body.clone()));
+                        requests
+                            .iter()
+                            .filter(|(_, body)| body["method"] == "initialize")
+                            .count()
+                    };
+                    match body["method"].as_str().unwrap() {
+                        "initialize" => {
+                            assert!(!headers.contains_key("mcp-session-id"));
+                            assert_eq!(body, original_initialize);
+                            assert_eq!(headers["mcp-protocol-version"], "2025-06-18");
+                            if initialization_count == 2 && mode == "init_missing" {
+                                return (StatusCode::NOT_FOUND, "Not Found: Session not found")
+                                    .into_response();
+                            }
+                            if initialization_count == 2 && mode == "init_error" {
+                                return axum::Json(json!({"jsonrpc": "2.0", "id": body["id"], "error": {"code": -32603, "message": "cannot initialize"}})).into_response();
+                            }
+                            let result = if initialization_count == 2
+                                && matches!(mode, "init_changed_legacy" | "init_changed_modern")
+                            {
+                                json!({"protocolVersion": if mode == "init_changed_legacy" { "2025-06-18" } else { "2026-07-28" }, "capabilities": {}, "serverInfo": {"name": "mock", "version": "1"}})
+                            } else if initialization_count == 2 && mode == "init_invalid" {
+                                json!({"protocolVersion": "2025-11-25"})
+                            } else {
+                                json!({"protocolVersion": "2025-11-25", "capabilities": {}, "serverInfo": {"name": "mock", "version": "1"}})
+                            };
+                            (
+                                [(
+                                    "mcp-session-id",
+                                    if initialization_count == 1 {
+                                        "old"
+                                    } else {
+                                        "new"
+                                    },
+                                )],
+                                axum::Json(
+                                    json!({"jsonrpc": "2.0", "id": body["id"], "result": result}),
+                                ),
+                            )
+                                .into_response()
+                        }
+                        "notifications/initialized" => {
+                            assert_eq!(headers["mcp-protocol-version"], "2025-11-25");
+                            if initialization_count == 2 && mode == "initialized_missing" {
+                                return (StatusCode::NOT_FOUND, "Not Found: Session not found")
+                                    .into_response();
+                            }
+                            if initialization_count == 2 && mode == "initialized_error" {
+                                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                            }
+                            StatusCode::ACCEPTED.into_response()
+                        }
+                        "tools/call" => {
+                            if mode == "modern_404" {
+                                assert!(!headers.contains_key("mcp-session-id"));
+                                assert_eq!(headers["mcp-protocol-version"], "2026-07-28");
+                            } else {
+                                assert_eq!(headers["mcp-protocol-version"], "2025-11-25");
+                            }
+                            match mode {
+                                "unauthorized" => return StatusCode::UNAUTHORIZED.into_response(),
+                                "forbidden" => return StatusCode::FORBIDDEN.into_response(),
+                                "server_error" => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+                                "generic_404" => return (StatusCode::NOT_FOUND, "No such route").into_response(),
+                                "rpc_404" => return (StatusCode::NOT_FOUND, axum::Json(json!({"jsonrpc": "2.0", "id": body["id"], "error": {"code": -32601, "message": "Method not found"}}))).into_response(),
+                                "capped_404" => return (StatusCode::NOT_FOUND, format!("Not Found: Session not found{}", " ".repeat(4096))).into_response(),
+                                _ => {}
+                            }
+                            if mode == "persistent"
+                                || headers.get("mcp-session-id").is_none_or(|id| id == "old")
+                            {
+                                return (StatusCode::NOT_FOUND, "Not Found: Session not found")
+                                    .into_response();
+                            }
+                            assert_eq!(headers["mcp-session-id"], "new");
+                            (
+                                [("content-type", "text/event-stream")],
+                                format!("data: {}\n\ndata: {}\n\n",
+                                    json!({"jsonrpc": "2.0", "method": "notifications/progress", "params": {"progressToken": "p", "progress": 1}}),
+                                    json!({"jsonrpc": "2.0", "id": body["id"], "result": {"content": [{"type": "text", "text": "done"}]}}),
+                                ),
+                            ).into_response()
+                        }
+                        _ => panic!("unexpected method"),
+                    }
+                }
+            };
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let endpoint = format!("http://{}/mcp", listener.local_addr().unwrap());
+            let task = tokio::spawn(async move {
+                axum::serve(
+                    listener,
+                    axum::Router::new().route("/mcp", axum::routing::post(backend)),
+                )
+                .await
+                .unwrap();
+            });
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(3))
+                .build()
+                .unwrap();
+            let session = Mutex::default();
+            for message in [
+                initialize,
+                json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+            ] {
+                post(
+                    &client,
+                    &endpoint,
+                    Some("fixed-credential"),
+                    &session,
+                    message.to_string(),
+                    4096,
+                )
+                .await
+                .unwrap();
+            }
+            let mut call = json!({"jsonrpc": "2.0", "id": 19, "method": "tools/call", "params": {"name": "get_issue", "arguments": {"identifier": "APP-1"}}});
+            if mode == "modern_404" {
+                call["params"]["_meta"] = json!({"io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientCapabilities": {}});
+            }
+            let mut notifications = CollectedNotifications::default();
+            let result = post_with_notifications(
+                &client,
+                &endpoint,
+                Some("fixed-credential"),
+                &session,
+                call.to_string(),
+                Limits::new(4096),
+                &mut notifications,
+            )
+            .await;
+            assert_eq!(result.is_ok(), succeeds, "{mode}: {result:?}");
+            if mode.starts_with("init_") || mode.starts_with("initialized_") {
+                let unchanged = session.lock().unwrap();
+                assert_eq!(unchanged.id.as_deref(), Some("old"), "{mode}");
+                assert_eq!(unchanged.version.as_deref(), Some("2025-11-25"), "{mode}");
+            }
+            let observed = requests.lock().unwrap();
+            assert_eq!(observed.len(), expected_methods, "{mode}");
+            if mode == "recover" || mode == "persistent" {
+                assert_eq!(observed[3].1["method"], "initialize");
+                assert_eq!(observed[4].1["method"], "notifications/initialized");
+                assert_eq!(
+                    observed[2].1, observed[5].1,
+                    "recovery must replay the same request"
+                );
+                assert_eq!(observed[5].0["mcp-session-id"], "new");
+            }
+            if mode == "recover" {
+                assert_eq!(
+                    serde_json::from_str::<Value>(&result.unwrap()).unwrap()["id"],
+                    19
+                );
+                assert_eq!(notifications.0.len(), 1);
+                assert_eq!(notifications.0[0]["method"], "notifications/progress");
+            } else {
+                assert!(notifications.0.is_empty(), "{mode}");
+            }
+            drop(observed);
+            task.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelling_recovery_does_not_publish_an_uninitialized_session() {
+        use std::sync::Arc;
+
+        let initialized_started = Arc::new(tokio::sync::Notify::new());
+        let started = initialized_started.clone();
+        let backend = move |headers: HeaderMap, axum::Json(body): axum::Json<Value>| {
+            let started = started.clone();
+            async move {
+                match body["method"].as_str().unwrap() {
+                    "initialize" => (
+                        [("mcp-session-id", "new")],
+                        axum::Json(json!({"jsonrpc": "2.0", "id": body["id"], "result": {
+                            "protocolVersion": "2025-11-25", "capabilities": {},
+                            "serverInfo": {"name": "mock", "version": "1"},
+                        }})),
+                    )
+                        .into_response(),
+                    "notifications/initialized" => {
+                        assert_eq!(headers["mcp-session-id"], "new");
+                        started.notify_one();
+                        std::future::pending::<Response>().await
+                    }
+                    "tools/call" => {
+                        assert_eq!(headers["mcp-session-id"], "old");
+                        (StatusCode::NOT_FOUND, "Not Found: Session not found").into_response()
+                    }
+                    _ => panic!("unexpected method"),
+                }
+            }
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}/mcp", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                axum::Router::new().route("/mcp", axum::routing::post(backend)),
+            )
+            .await
+            .unwrap();
+        });
+        let original_initialize =
+            json!({"jsonrpc": "2.0", "id": 41, "method": "initialize", "params": {
+                "protocolVersion": "2025-06-18", "capabilities": {},
+                "clientInfo": {"name": "original", "version": "1"},
+            }})
+            .to_string();
+        let session = Mutex::new(Session {
+            id: Some("old".into()),
+            version: Some("2025-11-25".into()),
+            initialize: Some(original_initialize.clone()),
+        });
+        let client = reqwest::Client::new();
+        {
+            let request = post(
+                &client,
+                &endpoint,
+                None,
+                &session,
+                json!({"jsonrpc": "2.0", "id": 19, "method": "tools/call", "params": {"name": "get_issue"}}).to_string(),
+                4096,
+            );
+            tokio::pin!(request);
+            tokio::select! {
+                result = &mut request => panic!("recovery unexpectedly finished: {result:?}"),
+                () = initialized_started.notified() => {},
+            }
+            // Leaving this scope drops the in-flight recovery future.
+        }
+        let unchanged = session.lock().unwrap();
+        assert_eq!(unchanged.id.as_deref(), Some("old"));
+        assert_eq!(unchanged.version.as_deref(), Some("2025-11-25"));
+        assert_eq!(unchanged.initialize.as_ref(), Some(&original_initialize));
+        drop(unchanged);
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn recovery_network_wait_uses_the_shared_deadline() {
+        let initialization_started = std::sync::Arc::new(tokio::sync::Notify::new());
+        let started = initialization_started.clone();
+        let backend = move |axum::Json(body): axum::Json<Value>| {
+            let started = started.clone();
+            async move {
+                if body["method"] == "initialize" {
+                    started.notify_one();
+                    std::future::pending::<Response>().await
+                } else {
+                    (StatusCode::NOT_FOUND, "Not Found: Session not found").into_response()
+                }
+            }
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}/mcp", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                axum::Router::new().route("/mcp", axum::routing::post(backend)),
+            )
+            .await
+            .unwrap();
+        });
+        let session = Mutex::new(Session {
+            id: Some("old".into()),
+            version: Some("2025-11-25".into()),
+            initialize: Some(json!({"jsonrpc": "2.0", "id": 41, "method": "initialize", "params": {
+                "protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "original", "version": "1"},
+            }}).to_string()),
+        });
+        let client = reqwest::Client::new();
+        let mut notifications = IgnoreNotifications;
+        let request = post_with_notifications(
+            &client, &endpoint, None, &session,
+            json!({"jsonrpc": "2.0", "id": 19, "method": "tools/call", "params": {"name": "get_issue"}}).to_string(),
+            Limits::with_timeout(4096, std::time::Duration::from_secs(3)), &mut notifications,
+        );
+        tokio::pin!(request);
+        tokio::select! {
+            result = &mut request => panic!("recovery unexpectedly finished before its network gate: {result:?}"),
+            () = initialization_started.notified() => {},
+        }
+        tokio::time::pause();
+        tokio::time::advance(std::time::Duration::from_secs(4)).await;
+        let result = request.await;
+        tokio::time::resume();
+        assert!(result.is_err());
+        assert_eq!(session.lock().unwrap().id.as_deref(), Some("old"));
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn network_deadline_finishes_a_notification_frame_before_returning_error() {
+        use tokio::io::{AsyncBufReadExt, AsyncReadExt};
+
+        let notification = json!({"jsonrpc": "2.0", "method": "notifications/message", "params": {"data": "x".repeat(8192)}});
+        let (endpoint, task) = sse_test_backend(
+            notification.clone(),
+            std::sync::Arc::new(tokio::sync::Notify::new()),
+        )
+        .await;
+        let (mut writer, mut reader) = tokio::io::duplex(8);
+        let client = reqwest::Client::new();
+        let session = Mutex::default();
+        let mut first = [0; 8];
+        let mut remainder = String::new();
+        let result = {
+            let mut sink = NotificationWriter(&mut writer);
+            let request = post_with_notifications(
+                &client, &endpoint, None, &session,
+                json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "get_issue", "_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}}}).to_string(),
+                Limits::with_timeout(65536, std::time::Duration::from_secs(3)), &mut sink,
+            );
+            tokio::pin!(request);
+            tokio::select! {
+                result = &mut request => panic!("notification should wait for its writer: {result:?}"),
+                result = reader.read_exact(&mut first) => { result.unwrap(); },
+            }
+            // Advance past the HTTP deadline while stdout is blocked mid-frame.
+            tokio::time::pause();
+            tokio::time::advance(std::time::Duration::from_secs(4)).await;
+            assert!(futures_util::poll!(&mut request).is_pending());
+            let mut buffered = tokio::io::BufReader::new(&mut reader);
+            let (result, read) = tokio::join!(&mut request, buffered.read_line(&mut remainder));
+            read.unwrap();
+            tokio::time::resume();
+            result
+        };
+        assert!(result.is_err());
+        let frame = format!("{}{remainder}", std::str::from_utf8(&first).unwrap());
+        assert_eq!(frame, format!("{notification}\n"));
+        serde_json::from_str::<Value>(&frame).unwrap();
+        let error = super::super::mcp_proxy::internal_error_response(
+            &json!(1),
+            &result.unwrap_err().message,
+        )
+        .to_string();
+        let mut buffered = tokio::io::BufReader::new(reader);
+        let mut error_frame = String::new();
+        let (write, read) = tokio::join!(
+            super::super::mcp_proxy::write_line(&mut writer, &error),
+            buffered.read_line(&mut error_frame),
+        );
+        write.unwrap();
+        read.unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&error_frame).unwrap()["error"]["code"],
+            -32603
+        );
         task.abort();
     }
 }
