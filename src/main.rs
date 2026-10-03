@@ -710,6 +710,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
             url,
             non_interactive,
             complete,
+            client_id,
             label,
             no_store,
         } => {
@@ -718,6 +719,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                 url,
                 non_interactive,
                 complete,
+                client_id,
                 label,
                 no_store,
             };

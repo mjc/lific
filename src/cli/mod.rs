@@ -212,6 +212,10 @@ pub enum Command {
         #[arg(long)]
         complete: Option<String>,
 
+        /// Registered client ID from the login's next_step command.
+        #[arg(long, requires = "complete")]
+        client_id: Option<String>,
+
         /// Human-friendly label for this login, shown on the approval page.
         #[arg(long)]
         label: Option<String>,
@@ -1823,6 +1827,7 @@ mod tests {
                 url,
                 non_interactive,
                 complete,
+                client_id,
                 label,
                 no_store,
             } => {
@@ -1832,6 +1837,7 @@ mod tests {
                 assert_eq!(url, env_fallback("LIFIC_URL"));
                 assert!(!non_interactive);
                 assert!(complete.is_none());
+                assert!(client_id.is_none());
                 assert!(label.is_none());
                 assert!(!no_store);
             }
@@ -1857,12 +1863,14 @@ mod tests {
                 url,
                 non_interactive,
                 complete,
+                client_id,
                 label,
                 no_store,
             } => {
                 assert_eq!(url, Some("http://127.0.0.1:3998".into()));
                 assert!(non_interactive);
                 assert!(complete.is_none());
+                assert!(client_id.is_none());
                 assert_eq!(label, Some("my-laptop".into()));
                 assert!(no_store);
             }
@@ -1888,6 +1896,26 @@ mod tests {
             }
             _ => panic!("expected Login"),
         }
+    }
+
+    #[test]
+    fn parse_login_completion_with_its_client_id() {
+        let cli = Cli::try_parse_from([
+            "lific",
+            "login",
+            "--complete",
+            "device-code",
+            "--client-id",
+            "original-client",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Login { client_id, .. } => {
+                assert_eq!(client_id.as_deref(), Some("original-client"));
+            }
+            _ => panic!("expected Login"),
+        }
+        assert!(Cli::try_parse_from(["lific", "login", "--client-id", "original-client"]).is_err());
     }
 
     #[test]

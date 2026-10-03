@@ -576,6 +576,87 @@ mod tests {
     const REQUEST: &str = r#"{"jsonrpc":"2.0","id":7,"method":"tools/list","params":{}}"#;
 
     #[tokio::test]
+    async fn http_errors_always_complete_the_original_stdio_request() {
+        use axum::response::IntoResponse;
+        async fn backend(axum::Json(request): axum::Json<Value>) -> axum::response::Response {
+            let case = request["params"]["case"].as_str().unwrap();
+            let mut response = serde_json::json!({"jsonrpc": "2.0", "id": null,
+                "error": {"code": -32022, "message": "Unsupported protocol version",
+                    "data": {"supported": ["2025-06-18"]}}
+            });
+            match case {
+                "missing" => {
+                    response.as_object_mut().unwrap().remove("id");
+                }
+                "wrong" => response["id"] = Value::from(999),
+                "matched" => response["id"] = request["id"].clone(),
+                "malformed" => response["error"]["code"] = Value::from("invalid"),
+                _ => {}
+            }
+            let status = if case == "success_null" {
+                StatusCode::OK
+            } else {
+                StatusCode::BAD_REQUEST
+            };
+            (status, axum::Json(response)).into_response()
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let forwarder = HttpForwarder {
+            client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(3))
+                .build()
+                .unwrap(),
+            endpoint: format!("http://{}/mcp", listener.local_addr().unwrap()),
+            credential: None,
+            session: Mutex::default(),
+        };
+        let task = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                axum::Router::new().route("/mcp", axum::routing::post(backend)),
+            )
+            .await
+            .unwrap();
+        });
+        for case in [
+            "null",
+            "missing",
+            "matched",
+            "wrong",
+            "malformed",
+            "success_null",
+        ] {
+            let input = format!(
+                "{}\n",
+                serde_json::json!({"jsonrpc": "2.0", "id": 42,
+                    "method": "tools/list", "params": {"case": case}
+                })
+            );
+            let mut output = Vec::new();
+            pump(
+                BufReader::new(input.as_bytes()),
+                &mut output,
+                &forwarder,
+                None,
+            )
+            .await
+            .unwrap();
+            let response: Value = serde_json::from_slice(&output).unwrap();
+            assert_eq!(response["id"], 42, "{case}: {response}");
+            if matches!(case, "null" | "missing" | "matched") {
+                assert_eq!(response["error"]["code"], -32022);
+                assert_eq!(
+                    response["error"]["data"]["supported"],
+                    serde_json::json!(["2025-06-18"])
+                );
+            } else {
+                assert_eq!(response["error"]["code"], -32603);
+            }
+        }
+        task.abort();
+    }
+
+    #[tokio::test]
     async fn a_request_is_forwarded_verbatim_and_its_reply_lands_on_stdout() {
         let forwarder =
             MockForwarder::replying(r#"{"jsonrpc":"2.0","id":7,"result":{"tools":[]}}"#);

@@ -2521,6 +2521,23 @@ fn device_token_exchange(state: &OAuthState, req: &TokenRequest, resource: &str)
         Err(_) => return device_error(StatusCode::BAD_REQUEST, "invalid_grant", None),
     };
 
+    // Public clients must identify themselves at the token endpoint (RFC
+    // 8628 §3.4). Check the authorization's client before expiry cleanup or
+    // polling bookkeeping so an unrelated client cannot mutate the grant.
+    // Migrated grants without a resource predate client-aware CLI polling:
+    // allow those callers to omit client_id until their existing grant expires.
+    // A supplied client_id must still match, including on migrated grants.
+    if row
+        .client_id
+        .as_deref()
+        .is_some_and(|bound| match req.client_id.as_deref() {
+            Some(presented) => presented != bound,
+            None => row.resource.is_some(),
+        })
+    {
+        return device_error(StatusCode::BAD_REQUEST, "invalid_grant", None);
+    }
+
     if row
         .resource
         .as_deref()
@@ -2839,7 +2856,7 @@ mod pkce_tests {
 /// odd length or any non-hex digit. Used to parse a presented CSRF MAC before
 /// constant-time verification (LIF-208).
 fn hex_decode(s: &str) -> Result<Vec<u8>, ()> {
-    if !s.len().is_multiple_of(2) {
+    if !s.is_ascii() || !s.len().is_multiple_of(2) {
         return Err(());
     }
     (0..s.len())
@@ -3957,6 +3974,9 @@ mod tests {
         // Odd-length hex → decode fails, must reject.
         assert!(!validate_csrf_token(&format!("{ts}.abc"), "sess"));
 
+        // An even byte count can still contain a multibyte non-hex digit.
+        assert!(!validate_csrf_token(&format!("{ts}.€a"), "sess"));
+
         // Empty signature → reject.
         assert!(!validate_csrf_token(&format!("{ts}."), "sess"));
     }
@@ -3967,6 +3987,30 @@ mod tests {
         assert_eq!(hex_decode(&hex_encode(b"lific")).unwrap(), b"lific");
         assert!(hex_decode("abc").is_err(), "odd length rejected");
         assert!(hex_decode("zz").is_err(), "non-hex rejected");
+        assert!(hex_decode("€a").is_err(), "multibyte input rejected");
+        assert_eq!(hex_decode("ABcd").unwrap(), vec![0xab, 0xcd]);
+    }
+
+    #[tokio::test]
+    async fn device_rejects_a_unicode_csrf_signature_before_authentication() {
+        let (app, _) = test_oauth_app();
+        let timestamp = chrono::Utc::now().timestamp();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/device")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(axum::body::Body::from(format!(
+                        "user_code=X&csrf_token={timestamp}.%E2%82%ACa"
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert!(String::from_utf8_lossy(&body).contains("Invalid or expired form"));
     }
 
     // ── LIF-49: metadata does not advertise refresh_token ────
@@ -5419,8 +5463,11 @@ mod tests {
 
     // ── LIF-252: device authorization flow (RFC 8628) ────────────────────
 
-    /// POST /oauth/device_authorization and return the parsed JSON.
-    async fn request_device_code(app: &Router, client_name: Option<&str>) -> serde_json::Value {
+    /// Register a device client, returning its ID and the authorization JSON.
+    async fn request_device_code(
+        app: &Router,
+        client_name: Option<&str>,
+    ) -> (String, serde_json::Value) {
         let client_id = register_named_client_helper(
             app,
             "http://localhost/callback",
@@ -5442,16 +5489,23 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-        serde_json::from_slice(&bytes).unwrap()
+        (client_id, serde_json::from_slice(&bytes).unwrap())
     }
 
     /// POST the device grant to /oauth/token and return (status, json).
-    async fn poll_device_token(app: &Router, device_code: &str) -> (StatusCode, serde_json::Value) {
-        let body = format!(
+    async fn poll_device_token(
+        app: &Router,
+        device_code: &str,
+        client_id: Option<&str>,
+    ) -> (StatusCode, serde_json::Value) {
+        let mut body = format!(
             "grant_type={}&device_code={}",
             urlencoding::encode("urn:ietf:params:oauth:grant-type:device_code"),
             urlencoding::encode(device_code),
         );
+        if let Some(client_id) = client_id {
+            body.push_str(&format!("&client_id={}", urlencoding::encode(client_id)));
+        }
         let resp = app
             .clone()
             .oneshot(
@@ -5473,7 +5527,7 @@ mod tests {
     #[tokio::test]
     async fn device_authorization_returns_wellformed_response() {
         let (app, _db) = test_oauth_app();
-        let v = request_device_code(&app, Some("My CLI")).await;
+        let (_, v) = request_device_code(&app, Some("My CLI")).await;
         assert!(v["device_code"].as_str().is_some());
         let user_code = v["user_code"].as_str().unwrap();
         // Format XXXX-XXXX from the unambiguous alphabet.
@@ -5614,7 +5668,7 @@ mod tests {
     #[tokio::test]
     async fn device_code_stored_only_as_hash() {
         let (app, db) = test_oauth_app();
-        let v = request_device_code(&app, None).await;
+        let (_, v) = request_device_code(&app, None).await;
         let device_code = v["device_code"].as_str().unwrap();
         let hash = sha256_hex(device_code.as_bytes());
         let conn = db.read().unwrap();
@@ -5681,14 +5735,14 @@ mod tests {
             .unwrap()
         };
 
-        let v = request_device_code(&app, Some("laptop <img>")).await;
+        let (device_client_id, v) = request_device_code(&app, Some("laptop <img>")).await;
         let device_code = v["device_code"].as_str().unwrap().to_string();
         let user_code = v["user_code"].as_str().unwrap().to_string();
 
         let device_hash = sha256_hex(device_code.as_bytes());
 
         // First poll: pending.
-        let (status, body) = poll_device_token(&app, &device_code).await;
+        let (status, body) = poll_device_token(&app, &device_code, Some(&device_client_id)).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(body["error"], "authorization_pending");
 
@@ -5804,7 +5858,7 @@ mod tests {
 
         // Next poll: approved → returns a token bound to the tool bot.
         reset_last_poll(&db);
-        let (status, body) = poll_device_token(&app, &device_code).await;
+        let (status, body) = poll_device_token(&app, &device_code, Some(&device_client_id)).await;
         assert_eq!(status, StatusCode::OK, "expected token, got {body}");
         let access_token = body["access_token"].as_str().unwrap();
         assert!(access_token.starts_with("lific_at_"));
@@ -5813,7 +5867,7 @@ mod tests {
 
         // Single-use: a replay poll now fails (consumed → invalid_grant).
         reset_last_poll(&db);
-        let (status, body) = poll_device_token(&app, &device_code).await;
+        let (status, body) = poll_device_token(&app, &device_code, Some(&device_client_id)).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(body["error"], "invalid_grant");
     }
@@ -5821,15 +5875,15 @@ mod tests {
     #[tokio::test]
     async fn device_polling_slow_down_when_too_fast() {
         let (app, _db) = test_oauth_app();
-        let v = request_device_code(&app, None).await;
+        let (device_client_id, v) = request_device_code(&app, None).await;
         let device_code = v["device_code"].as_str().unwrap().to_string();
 
         // First poll registers last_polled_at (pending).
-        let (_, body) = poll_device_token(&app, &device_code).await;
+        let (_, body) = poll_device_token(&app, &device_code, Some(&device_client_id)).await;
         assert_eq!(body["error"], "authorization_pending");
 
         // Immediate second poll (< interval seconds) → slow_down.
-        let (status, body) = poll_device_token(&app, &device_code).await;
+        let (status, body) = poll_device_token(&app, &device_code, Some(&device_client_id)).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(body["error"], "slow_down");
     }
@@ -5837,7 +5891,7 @@ mod tests {
     #[tokio::test]
     async fn device_expired_token_after_expiry() {
         let (app, db) = test_oauth_app();
-        let v = request_device_code(&app, None).await;
+        let (device_client_id, v) = request_device_code(&app, None).await;
         let device_code = v["device_code"].as_str().unwrap().to_string();
         let hash = sha256_hex(device_code.as_bytes());
 
@@ -5852,7 +5906,7 @@ mod tests {
             .unwrap();
         }
 
-        let (status, body) = poll_device_token(&app, &device_code).await;
+        let (status, body) = poll_device_token(&app, &device_code, Some(&device_client_id)).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(body["error"], "expired_token");
     }
@@ -5861,7 +5915,7 @@ mod tests {
     async fn device_denied_path() {
         let (app, db) = test_oauth_app();
         let session_token = create_test_session(&db);
-        let v = request_device_code(&app, None).await;
+        let (device_client_id, v) = request_device_code(&app, None).await;
         let device_code = v["device_code"].as_str().unwrap().to_string();
         let user_code = v["user_code"].as_str().unwrap().to_string();
 
@@ -5886,7 +5940,7 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
 
-        let (status, body) = poll_device_token(&app, &device_code).await;
+        let (status, body) = poll_device_token(&app, &device_code, Some(&device_client_id)).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(body["error"], "access_denied");
     }
@@ -5895,7 +5949,7 @@ mod tests {
     async fn device_requires_an_explicit_approval_decision() {
         let (app, db) = test_oauth_app();
         let session = create_test_session(&db);
-        let response = request_device_code(&app, None).await;
+        let (_, response) = request_device_code(&app, None).await;
         let user_code = response["user_code"].as_str().unwrap();
         let csrf = generate_csrf_token(&session);
 
@@ -5939,7 +5993,7 @@ mod tests {
     #[tokio::test]
     async fn device_verification_requires_login() {
         let (app, _db) = test_oauth_app();
-        let v = request_device_code(&app, None).await;
+        let (_, v) = request_device_code(&app, None).await;
         let user_code = v["user_code"].as_str().unwrap().to_string();
 
         // CSRF bound to the empty (unauthenticated) session so we get past the
@@ -5970,7 +6024,7 @@ mod tests {
         // A CSRF minted for no session must not approve with a victim cookie.
         let (app, db) = test_oauth_app();
         let session_token = create_test_session(&db);
-        let v = request_device_code(&app, None).await;
+        let (_, v) = request_device_code(&app, None).await;
         let user_code = v["user_code"].as_str().unwrap().to_string();
 
         let csrf = generate_csrf_token(""); // unbound
@@ -6024,7 +6078,7 @@ mod tests {
     #[tokio::test]
     async fn device_unknown_device_code_is_invalid_grant() {
         let (app, _db) = test_oauth_app();
-        let (status, body) = poll_device_token(&app, "totally-unknown-device-code").await;
+        let (status, body) = poll_device_token(&app, "totally-unknown-device-code", None).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(body["error"], "invalid_grant");
     }
@@ -6079,14 +6133,134 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn device_token_rejects_another_or_missing_client_without_mutating_the_grant() {
+        let (app, db) = test_oauth_app();
+        let (client_id, authorization) = request_device_code(&app, Some("Original client")).await;
+        let other_client_id = register_client_helper(&app, "http://localhost/other").await;
+        let device_code = authorization["device_code"].as_str().unwrap();
+        let hash = sha256_hex(device_code.as_bytes());
+
+        // An unrelated poll must not advance even a pending grant's interval.
+        let (status, body) = poll_device_token(&app, device_code, Some(&other_client_id)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"], "invalid_grant");
+        let last_polled: Option<String> = db
+            .read()
+            .unwrap()
+            .query_row(
+                "SELECT last_polled_at FROM oauth_device_codes WHERE device_code_hash = ?1",
+                params![hash],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(last_polled.is_none());
+
+        approve_device_code(&db, &hash);
+        for request_client in [Some(other_client_id.as_str()), None, Some("")] {
+            let (status, body) = poll_device_token(&app, device_code, request_client).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert_eq!(body["error"], "invalid_grant");
+            assert_eq!(device_status(&db, &hash), "approved");
+            assert_eq!(token_count(&db), 0);
+            let last_polled: Option<String> = db
+                .read()
+                .unwrap()
+                .query_row(
+                    "SELECT last_polled_at FROM oauth_device_codes WHERE device_code_hash = ?1",
+                    params![hash],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(last_polled.is_none());
+        }
+
+        // The correct client can still redeem immediately after all failures.
+        let (status, body) = poll_device_token(&app, device_code, Some(&client_id)).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(device_status(&db, &hash), "consumed");
+        assert_eq!(token_count(&db), 1);
+    }
+
+    #[tokio::test]
+    async fn migrated_device_grant_accepts_an_omitted_client_but_rejects_a_wrong_one() {
+        let (app, db) = test_oauth_app();
+        let (client_id, authorization) = request_device_code(&app, Some("Pre-upgrade CLI")).await;
+        let other_client_id = register_client_helper(&app, "http://localhost/other").await;
+        let device_code = authorization["device_code"].as_str().unwrap();
+        let hash = sha256_hex(device_code.as_bytes());
+        approve_device_code(&db, &hash);
+        // Migration 058 leaves the audience NULL on grants already in flight.
+        db.write()
+            .unwrap()
+            .execute(
+                "UPDATE oauth_device_codes SET resource = NULL WHERE device_code_hash = ?1",
+                params![hash],
+            )
+            .unwrap();
+
+        for request_client in [Some(other_client_id.as_str()), Some("")] {
+            let (status, body) = poll_device_token(&app, device_code, request_client).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert_eq!(body["error"], "invalid_grant");
+            assert_eq!(device_status(&db, &hash), "approved");
+            assert_eq!(token_count(&db), 0);
+            let last_polled: Option<String> = db
+                .read()
+                .unwrap()
+                .query_row(
+                    "SELECT last_polled_at FROM oauth_device_codes WHERE device_code_hash = ?1",
+                    params![hash],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(last_polled.is_none());
+        }
+
+        let (status, body) = poll_device_token(&app, device_code, None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(device_status(&db, &hash), "consumed");
+        assert_eq!(token_count(&db), 1);
+        let token_client_id: String = db
+            .read()
+            .unwrap()
+            .query_row("SELECT client_id FROM oauth_tokens", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(token_client_id, client_id);
+    }
+
+    #[tokio::test]
+    async fn migrated_device_grant_with_an_omitted_client_still_expires() {
+        let (app, db) = test_oauth_app();
+        let (_, authorization) = request_device_code(&app, Some("Pre-upgrade CLI")).await;
+        let device_code = authorization["device_code"].as_str().unwrap();
+        let hash = sha256_hex(device_code.as_bytes());
+        approve_device_code(&db, &hash);
+        db.write()
+            .unwrap()
+            .execute(
+                "UPDATE oauth_device_codes SET resource = NULL, expires_at = ?2
+                 WHERE device_code_hash = ?1",
+                params![
+                    hash,
+                    (chrono::Utc::now() - chrono::Duration::seconds(1)).to_rfc3339()
+                ],
+            )
+            .unwrap();
+        let (status, body) = poll_device_token(&app, device_code, None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"], "expired_token");
+        assert_eq!(token_count(&db), 0);
+    }
+
+    #[tokio::test]
     async fn device_consumed_code_cannot_mint_a_second_token() {
         let (app, db) = test_oauth_app();
-        let v = request_device_code(&app, None).await;
+        let (device_client_id, v) = request_device_code(&app, None).await;
         let device_code = v["device_code"].as_str().unwrap().to_string();
         let hash = sha256_hex(device_code.as_bytes());
 
         approve_device_code(&db, &hash);
-        let (status, body) = poll_device_token(&app, &device_code).await;
+        let (status, body) = poll_device_token(&app, &device_code, Some(&device_client_id)).await;
         assert_eq!(status, StatusCode::OK, "expected token, got {body}");
         // Clients read `scope` off the token response; it stays on the wire.
         assert_eq!(body["scope"], "mcp");
@@ -6102,7 +6276,7 @@ mod tests {
             )
             .unwrap();
         }
-        let (status, body) = poll_device_token(&app, &device_code).await;
+        let (status, body) = poll_device_token(&app, &device_code, Some(&device_client_id)).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(body["error"], "invalid_grant");
         assert_eq!(token_count(&db), 1, "replay must not mint a second token");
@@ -6114,7 +6288,7 @@ mod tests {
         // handing out a token while leaving the code approved and replayable.
         // Now the whole exchange fails and nothing is written.
         let (app, db) = test_oauth_app();
-        let v = request_device_code(&app, None).await;
+        let (device_client_id, v) = request_device_code(&app, None).await;
         let device_code = v["device_code"].as_str().unwrap().to_string();
         let hash = sha256_hex(device_code.as_bytes());
 
@@ -6130,7 +6304,7 @@ mod tests {
             .unwrap();
         }
 
-        let (status, _) = poll_device_token(&app, &device_code).await;
+        let (status, _) = poll_device_token(&app, &device_code, Some(&device_client_id)).await;
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(token_count(&db), 0, "no token may survive a failed consume");
         assert_eq!(device_status(&db, &hash), "approved");
@@ -6185,7 +6359,7 @@ mod tests {
         );
 
         // The confirmation step still asks, because that is where it is read.
-        let v = request_device_code(&app, Some("laptop")).await;
+        let (_, v) = request_device_code(&app, Some("laptop")).await;
         let body = format!(
             "user_code={}&decision=approve&csrf_token={}",
             urlencoding::encode(v["user_code"].as_str().unwrap()),
@@ -6896,7 +7070,7 @@ mod tests {
         #[tokio::test]
         async fn a_legacy_unbound_device_approval_cannot_be_exchanged() {
             let (app, db) = test_oauth_app();
-            let v = request_device_code(&app, Some("My CLI")).await;
+            let (device_client_id, v) = request_device_code(&app, Some("My CLI")).await;
             db.write()
                 .unwrap()
                 .execute(
@@ -6906,7 +7080,12 @@ mod tests {
                 )
                 .unwrap();
 
-            let (status, body) = poll_device_token(&app, v["device_code"].as_str().unwrap()).await;
+            let (status, body) = poll_device_token(
+                &app,
+                v["device_code"].as_str().unwrap(),
+                Some(&device_client_id),
+            )
+            .await;
             assert_eq!(status, StatusCode::BAD_REQUEST);
             assert_eq!(body["error"], "invalid_grant");
 
@@ -7016,7 +7195,7 @@ mod tests {
         async fn an_aged_session_may_not_approve_a_device() {
             let (app, db) = test_oauth_app();
             let session = create_test_session(&db);
-            let v = request_device_code(&app, Some("My CLI")).await;
+            let (_, v) = request_device_code(&app, Some("My CLI")).await;
             db.write()
                 .unwrap()
                 .execute(
@@ -7072,7 +7251,7 @@ mod tests {
         async fn an_aged_session_may_still_deny_a_device() {
             let (app, db) = test_oauth_app();
             let session = create_test_session(&db);
-            let v = request_device_code(&app, Some("Unknown device")).await;
+            let (device_client_id, v) = request_device_code(&app, Some("Unknown device")).await;
             db.write()
                 .unwrap()
                 .execute(
@@ -7123,7 +7302,12 @@ mod tests {
                 .unwrap()
                 .execute("UPDATE oauth_device_codes SET last_polled_at = NULL", [])
                 .unwrap();
-            let (status, body) = poll_device_token(&app, v["device_code"].as_str().unwrap()).await;
+            let (status, body) = poll_device_token(
+                &app,
+                v["device_code"].as_str().unwrap(),
+                Some(&device_client_id),
+            )
+            .await;
             assert_eq!(status, StatusCode::BAD_REQUEST);
             assert_eq!(body["error"], "access_denied");
         }
@@ -7134,7 +7318,7 @@ mod tests {
         async fn a_revoked_session_may_not_deny_a_device() {
             let (app, db) = test_oauth_app();
             let session = create_test_session(&db);
-            let v = request_device_code(&app, None).await;
+            let (_, v) = request_device_code(&app, None).await;
             db.write()
                 .unwrap()
                 .execute("DELETE FROM sessions", [])
@@ -7337,7 +7521,7 @@ mod tests {
         async fn an_ordinary_device_flow_still_works() {
             let (app, db) = test_oauth_app();
             let session = create_test_session(&db);
-            let v = request_device_code(&app, Some("My CLI")).await;
+            let (device_client_id, v) = request_device_code(&app, Some("My CLI")).await;
             let client_id: String = db
                 .read()
                 .unwrap()
@@ -7349,7 +7533,12 @@ mod tests {
                 .unwrap();
             approve_device(&app, &db, &session, v["user_code"].as_str().unwrap()).await;
 
-            let (status, body) = poll_device_token(&app, v["device_code"].as_str().unwrap()).await;
+            let (status, body) = poll_device_token(
+                &app,
+                v["device_code"].as_str().unwrap(),
+                Some(&device_client_id),
+            )
+            .await;
             assert_eq!(status, StatusCode::OK, "{body}");
             assert!(
                 body["access_token"]
@@ -7369,7 +7558,7 @@ mod tests {
         async fn a_device_approved_before_a_lockdown_is_denied_after_it() {
             let (app, db) = test_oauth_app();
             let session = create_test_session(&db);
-            let v = request_device_code(&app, Some("My CLI")).await;
+            let (device_client_id, v) = request_device_code(&app, Some("My CLI")).await;
             approve_device(&app, &db, &session, v["user_code"].as_str().unwrap()).await;
 
             {
@@ -7377,7 +7566,12 @@ mod tests {
                 crate::db::queries::users::lock_down_account(&conn, owner_id(&db)).unwrap();
             }
 
-            let (status, body) = poll_device_token(&app, v["device_code"].as_str().unwrap()).await;
+            let (status, body) = poll_device_token(
+                &app,
+                v["device_code"].as_str().unwrap(),
+                Some(&device_client_id),
+            )
+            .await;
             assert_eq!(status, StatusCode::BAD_REQUEST);
             assert_eq!(body["error"], "access_denied", "the denial wins cleanly");
 
@@ -7393,7 +7587,7 @@ mod tests {
         async fn a_device_bound_to_a_bot_with_an_inactive_owner_cannot_exchange() {
             let (app, db) = test_oauth_app();
             let session = create_test_session(&db);
-            let v = request_device_code(&app, Some("My CLI")).await;
+            let (device_client_id, v) = request_device_code(&app, Some("My CLI")).await;
             approve_device(&app, &db, &session, v["user_code"].as_str().unwrap()).await;
 
             {
@@ -7401,7 +7595,12 @@ mod tests {
                 crate::db::queries::users::set_active(&conn, owner_id(&db), false).unwrap();
             }
 
-            let (status, body) = poll_device_token(&app, v["device_code"].as_str().unwrap()).await;
+            let (status, body) = poll_device_token(
+                &app,
+                v["device_code"].as_str().unwrap(),
+                Some(&device_client_id),
+            )
+            .await;
             assert_eq!(status, StatusCode::BAD_REQUEST);
             assert_eq!(body["error"], "invalid_grant");
             assert_eq!(
@@ -7414,7 +7613,7 @@ mod tests {
         async fn an_oauth_token_may_not_approve_a_device() {
             let (app, db) = test_oauth_app();
             let session = create_test_session(&db);
-            let v = request_device_code(&app, Some("My CLI")).await;
+            let (_, v) = request_device_code(&app, Some("My CLI")).await;
 
             let access_token = {
                 let token = "lific_at_device-approver".to_string();

@@ -95,7 +95,8 @@ pub(super) async fn post(
     }
     if !status.is_success() {
         let detail = read_capped(response, max_bytes).await.unwrap_or_default();
-        if let Ok(value) = serde_json::from_str::<Value>(&detail)
+        if let Ok(mut value) = serde_json::from_str::<Value>(&detail)
+            && message.get("id").is_some()
             && value["jsonrpc"] == "2.0"
             && value["error"]["code"].as_i64().is_some()
             && value["error"]["message"].is_string()
@@ -104,16 +105,34 @@ pub(super) async fn post(
                 || value["id"].is_null()
                 || value.get("id") == message.get("id"))
         {
-            // Keep protocol errors (including version negotiation) intact.
-            return Ok(detail);
+            // This HTTP response belongs to this request, even when an early
+            // transport rejection could not extract its JSON-RPC id. Preserve
+            // the protocol error and let the stdio client complete its request.
+            if value.get("id").is_none_or(Value::is_null)
+                && let Some(id) = message.get("id")
+            {
+                value["id"] = id.clone();
+            }
+            return Ok(value.to_string());
         }
         return Err(ForwardError::unreachable(format!(
             "HTTP {status} from {endpoint}: {}",
             tidy(&detail)
         )));
     }
-    if message.get("id").is_none() && status == reqwest::StatusCode::ACCEPTED {
-        return Ok(String::new());
+    if message.get("id").is_none() {
+        if status != reqwest::StatusCode::ACCEPTED {
+            return Err(ForwardError::unreachable(format!(
+                "notification returned HTTP {status}, expected 202 Accepted"
+            )));
+        }
+        let body = read_capped(response, max_bytes).await?;
+        if !body.is_empty() {
+            return Err(ForwardError::unreachable(
+                "notification response contained an unexpected body",
+            ));
+        }
+        return Ok(body);
     }
     let session_id = response
         .headers()
@@ -244,6 +263,11 @@ mod tests {
                     assert_eq!(headers["MCP-Protocol-Version"], "2025-11-25");
                     if method == "notifications/initialized" {
                         StatusCode::ACCEPTED.into_response()
+                    } else if method == "notifications/unexpected_response" {
+                        axum::Json(json!({"jsonrpc": "2.0", "id": null, "result": {}}))
+                            .into_response()
+                    } else if method == "notifications/unexpected_body" {
+                        (StatusCode::ACCEPTED, "{}").into_response()
                     } else {
                         (
                             StatusCode::NOT_FOUND,
@@ -297,6 +321,25 @@ mod tests {
                     assert_eq!(response["error"]["code"], -32601);
                 }
             }
+        }
+        for method in [
+            "notifications/rejected",
+            "notifications/unexpected_response",
+            "notifications/unexpected_body",
+        ] {
+            assert!(
+                post(
+                    &client,
+                    &endpoint,
+                    None,
+                    &session,
+                    json!({"jsonrpc": "2.0", "method": method}).to_string(),
+                    4096,
+                )
+                .await
+                .is_err(),
+                "{method}"
+            );
         }
         task.abort();
     }

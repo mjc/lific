@@ -1403,9 +1403,18 @@ where
             .unwrap_or_default()
             .to_owned();
 
-        let requested_version = message
-            .pointer("/params/_meta/io.modelcontextprotocol~1protocolVersion")
-            .and_then(Value::as_str);
+        let version_meta =
+            message.pointer("/params/_meta/io.modelcontextprotocol~1protocolVersion");
+        if version_meta.is_some_and(|version| !version.is_string()) {
+            write_frame(
+                &mut output,
+                router,
+                &error_response(&id, -32602, "protocolVersion metadata must be a string"),
+            )
+            .await?;
+            continue;
+        }
+        let requested_version = version_meta.and_then(Value::as_str);
         if let Some(version) = requested_version
             && version != "2026-07-28"
             && !KNOWN_PROTOCOL_VERSIONS.contains(&version)
@@ -1422,9 +1431,15 @@ where
         if method == "server/discover" || modern {
             let meta = &message["params"]["_meta"];
             if !modern
-                || (meta.get("io.modelcontextprotocol/clientInfo").is_some()
-                    && !meta["io.modelcontextprotocol/clientInfo"].is_object())
-                || !meta["io.modelcontextprotocol/clientCapabilities"].is_object()
+                || meta
+                    .get("io.modelcontextprotocol/clientInfo")
+                    .is_some_and(|info| {
+                        serde_json::from_value::<rmcp::model::Implementation>(info.clone()).is_err()
+                    })
+                || serde_json::from_value::<rmcp::model::ClientCapabilities>(
+                    meta["io.modelcontextprotocol/clientCapabilities"].clone(),
+                )
+                .is_err()
             {
                 write_frame(
                     &mut output,
@@ -1432,7 +1447,7 @@ where
                     &error_response(
                         &id,
                         -32602,
-                        "July requests require protocolVersion and clientCapabilities metadata",
+                        "July requests require valid protocolVersion, clientCapabilities and optional clientInfo metadata",
                     ),
                 )
                 .await?;
@@ -1476,6 +1491,15 @@ where
                         "result": { "tools": router.tools },
                     })
                 }
+            }
+            "tools/call"
+                if modern
+                    && serde_json::from_value::<rmcp::model::CallToolRequestParams>(
+                        message["params"].clone(),
+                    )
+                    .is_err() =>
+            {
+                error_response(&id, -32602, "Invalid tools/call parameters")
             }
             "tools/call" => match router.plan(&message) {
                 Ok(Route::Local) => router.list_instances_result(&id),
@@ -1588,6 +1612,22 @@ where
         .and_then(Value::as_str)
         == Some("2026-07-28")
     {
+        // Older Lific backends report argument validation as a protocol error.
+        // The routed call already has a known tool and a valid request envelope;
+        // expose its argument failure as a July tool result.
+        let known_tool = router
+            .tools
+            .iter()
+            .any(|tool| tool["name"] == body["params"]["name"]);
+        let valid_call =
+            serde_json::from_value::<rmcp::model::CallToolRequestParams>(body["params"].clone())
+                .is_ok();
+        if known_tool && valid_call && outcome["error"]["code"] == -32602 {
+            outcome = serde_json::json!({"jsonrpc": "2.0", "id": id, "result": {
+                "content": [{"type": "text", "text": outcome["error"]["message"]}],
+                "isError": true,
+            }});
+        }
         complete_july_result(&mut outcome);
     }
     stamp_provenance(&mut outcome, alias);

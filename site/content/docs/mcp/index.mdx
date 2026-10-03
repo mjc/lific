@@ -71,6 +71,8 @@ Lific supports the authorization-code grant with S256 PKCE and the device author
 
 New authorization and device grants retain their canonical resource through token exchange. A token request for another resource is rejected, and issued tokens are checked against their resource on HTTP requests. Existing grants and tokens without resource metadata remain compatible until they expire. Native clients registered with `application_type: "native"` may change the port of a loopback IP callback; all other redirect components must match exactly.
 
+New device token requests must include the client ID used to request that device code. An omitted or different client ID is rejected without consuming the approved grant. Pending grants created before the upgrade still accept an omitted client ID until they expire; a supplied different ID is rejected.
+
 Both grants are approved from a signed-in browser, and only from a browser: an OAuth access token cannot approve an authorization request or a device code. The browser session must also have signed in within the last 15 minutes, because approving a connection mints a 30-day credential for the tool.
 
 An older session is refused, and the refusal is not resumed for you. Nothing is created. To continue, sign **out** of Lific (revisiting the login page does not help, since the old session is still valid, just old), sign back in, then start the connection again from your client. On an instance that signs in without a password, signing out and reloading is enough.

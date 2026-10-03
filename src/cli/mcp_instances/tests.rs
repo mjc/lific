@@ -118,6 +118,10 @@ impl MockServer {
                 }
             }
 
+            if parsed["method"] == "notifications/initialized" {
+                return axum::http::StatusCode::ACCEPTED.into_response();
+            }
+
             if ctx.behaviour == Behaviour::Redirect {
                 return (
                     axum::http::StatusCode::TEMPORARY_REDIRECT,
@@ -1637,6 +1641,78 @@ async fn july_selector_validation_is_a_tool_error_and_invalid_envelopes_do_not_r
 }
 
 #[tokio::test]
+async fn july_metadata_uses_sdk_capability_and_implementation_types() {
+    let router = router(&["private"], Some("private"));
+    for method in ["server/discover", "tools/list", "tools/call"] {
+        for (capabilities, info) in [
+            (serde_json::json!({"sampling": false}), None),
+            (serde_json::json!({"roots": {"listChanged": "yes"}}), None),
+            (serde_json::json!({}), Some(serde_json::json!({}))),
+            (
+                serde_json::json!({}),
+                Some(serde_json::json!({"name": "client", "version": 1})),
+            ),
+        ] {
+            let mut meta = serde_json::json!({
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientCapabilities": capabilities,
+            });
+            if let Some(info) = info {
+                meta["io.modelcontextprotocol/clientInfo"] = info;
+            }
+            let request = serde_json::json!({"jsonrpc": "2.0", "id": 1,
+                "method": method, "params": {
+                    "name": "get_issue", "arguments": {"identifier": "LIF-42"}, "_meta": meta,
+                }
+            });
+            let out = run_pump(&format!("{request}\n"), &router, &NeverCalled).await;
+            assert_eq!(out[0]["error"]["code"], -32602, "{out:?}");
+            assert!(out[0].get("result").is_none());
+        }
+    }
+}
+
+#[tokio::test]
+async fn malformed_protocol_versions_do_not_fall_back_to_legacy() {
+    let router = router(&["private"], Some("private"));
+    for version in [serde_json::json!(42), Value::Null, serde_json::json!({})] {
+        for method in ["server/discover", "tools/list", "tools/call"] {
+            let request = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": method,
+                "params": {"name": "get_issue", "arguments": {}, "_meta": {
+                    "io.modelcontextprotocol/protocolVersion": version,
+                    "io.modelcontextprotocol/clientCapabilities": {},
+                }}
+            });
+            let out = run_pump(&format!("{request}\n"), &router, &NeverCalled).await;
+            assert_eq!(out[0]["error"]["code"], -32602, "{out:?}");
+            assert!(out[0].get("result").is_none());
+        }
+    }
+}
+
+#[tokio::test]
+async fn malformed_july_tool_envelopes_are_protocol_errors_before_routing() {
+    let router = router(&["private"], Some("private"));
+    for name in ["get_issue", "list_instances"] {
+        for (key, value) in [
+            ("inputResponses", serde_json::json!(false)),
+            ("requestState", serde_json::json!({})),
+        ] {
+            let mut request = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": name, "arguments": {}, "_meta": {
+                    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                    "io.modelcontextprotocol/clientCapabilities": {},
+                }}
+            });
+            request["params"][key] = value;
+            let out = run_pump(&format!("{request}\n"), &router, &NeverCalled).await;
+            assert_eq!(out[0]["error"]["code"], -32602, "{out:?}");
+            assert!(out[0].get("result").is_none());
+        }
+    }
+}
+
+#[tokio::test]
 async fn tools_list_is_answered_from_the_local_surface_and_rejects_cursors() {
     let router = router(&["private", "community"], Some("private"));
 
@@ -2470,6 +2546,68 @@ async fn july_translates_legacy_business_failures_without_changing_legacy_result
         assert_eq!(out[0]["result"].get("resultType").is_some(), modern);
         assert_eq!(*transport.seen.lock().unwrap(), vec!["private"]);
     }
+}
+
+#[tokio::test]
+async fn july_translates_backend_argument_errors_but_preserves_protocol_errors() {
+    let router = router(&["private"], Some("private"));
+    for (modern, code, tool_error) in [
+        (true, -32602, true),
+        (false, -32602, false),
+        (true, -32601, false),
+        (true, -32603, false),
+    ] {
+        let transport = FixedReply::new(
+            serde_json::json!({"jsonrpc": "2.0", "id": 1,
+                "error": {"code": code, "message": "missing field `identifier`"}
+            })
+            .to_string(),
+        );
+        let mut request: Value =
+            serde_json::from_str(&call("get_issue", serde_json::json!({}))).unwrap();
+        if modern {
+            request["params"]["_meta"] = serde_json::json!({
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientCapabilities": {},
+            });
+        }
+        let out = run_pump(&format!("{request}\n"), &router, &transport).await;
+        if tool_error {
+            assert_eq!(out[0]["result"]["isError"], true, "{out:?}");
+            assert_eq!(out[0]["result"]["resultType"], "complete");
+            assert!(
+                out[0]["result"]["content"][0]["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains("missing field `identifier`")
+            );
+        } else {
+            assert_eq!(out[0]["error"]["code"], code, "{out:?}");
+            assert!(out[0].get("result").is_none());
+        }
+        assert_eq!(*transport.seen.lock().unwrap(), vec!["private"]);
+    }
+}
+
+#[tokio::test]
+async fn unknown_tools_keep_backend_protocol_errors_for_july_clients() {
+    let router = router(&["private"], Some("private"));
+    let transport = FixedReply::new(
+        serde_json::json!({"jsonrpc": "2.0", "id": 1,
+            "error": {"code": -32602, "message": "tool not found"}
+        })
+        .to_string(),
+    );
+    let request = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "does_not_exist", "arguments": {"instance": "private"}, "_meta": {
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientCapabilities": {},
+        }}
+    });
+    let out = run_pump(&format!("{request}\n"), &router, &transport).await;
+    assert_eq!(out[0]["error"]["code"], -32602, "{out:?}");
+    assert!(out[0].get("result").is_none());
+    assert_eq!(*transport.seen.lock().unwrap(), vec!["private"]);
 }
 
 async fn assert_safe_backend_refusal(raw: String, reason: &str) {
