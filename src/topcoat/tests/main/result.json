@@ -1,0 +1,141 @@
+{
+  "baseline": "9683d38af8e1e6f9b076439fe90d9519109b2218",
+  "runs": [
+    {
+      "command": "node --test src/topcoat/tests/main/issues/references.test.js src/topcoat/tests/main/resources/annotateMath.test.js src/topcoat/tests/main/resources/voiceNote.test.js src/topcoat/tests/main/resources/bigPaste.test.js",
+      "tests": 65,
+      "failed": 20,
+      "passed": 45,
+      "cancelled": 0,
+      "skipped": 0,
+      "todo": 0,
+      "topLevel": 20,
+      "suites": 13
+    },
+    {
+      "command": "node --test src/topcoat/tests/main/resources/annotation.browser.test.js",
+      "tests": 1,
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0,
+      "cancelled": 0
+    },
+    {
+      "command": "node --test src/topcoat/tests/main/fixture.browser.test.js src/topcoat/tests/main/routing.browser.test.js",
+      "tests": 2,
+      "passed": 2,
+      "failed": 0,
+      "skipped": 0,
+      "cancelled": 0
+    }
+  ],
+  "failures": [
+    {
+      "case": "caches stable not-found responses",
+      "target": "src/topcoat/tests/main/issues/references.test.js",
+      "classification": "unsupported internal eager subscription/global cache contract; actual parent-controller behavior not established"
+    },
+    {
+      "case": "resolves a shared status once for every subscriber",
+      "target": "src/topcoat/tests/main/issues/references.test.js",
+      "classification": "unsupported internal eager subscription/global cache contract; actual parent-controller behavior not established"
+    },
+    {
+      "case": "isolates subscriber exceptions",
+      "target": "src/topcoat/tests/main/issues/references.test.js",
+      "classification": "unsupported internal eager subscription/global cache contract; actual parent-controller behavior not established"
+    },
+    {
+      "case": "drops unsubscribed status work before it reaches the server",
+      "target": "src/topcoat/tests/main/issues/references.test.js",
+      "classification": "unsupported internal eager subscription/global cache contract; actual parent-controller behavior not established"
+    },
+    {
+      "case": "caps concurrent issue resolution",
+      "target": "src/topcoat/tests/main/issues/references.test.js",
+      "classification": "unsupported internal eager subscription/global cache contract; actual parent-controller behavior not established"
+    },
+    {
+      "case": "an old cleanup cannot remove a replacement same-key subscription",
+      "target": "src/topcoat/tests/main/issues/references.test.js",
+      "classification": "unsupported internal eager subscription/global cache contract; actual parent-controller behavior not established"
+    },
+    {
+      "case": "does not join an aborted queued request for the same identifier",
+      "target": "src/topcoat/tests/main/issues/references.test.js",
+      "classification": "unsupported internal eager subscription/global cache contract; actual parent-controller behavior not established"
+    },
+    {
+      "case": "refreshes subscribers after the session changes during a request",
+      "target": "src/topcoat/tests/main/issues/references.test.js",
+      "classification": "unsupported internal eager subscription/global cache contract; actual parent-controller behavior not established"
+    },
+    {
+      "case": "shares one browser refresh listener and removes it after teardown",
+      "target": "src/topcoat/tests/main/issues/references.test.js",
+      "classification": "unsupported internal eager subscription/global cache contract; actual parent-controller behavior not established"
+    },
+    {
+      "case": "keeps a shared request alive for a direct caller after status teardown",
+      "target": "src/topcoat/tests/main/issues/references.test.js",
+      "classification": "unsupported internal eager subscription/global cache contract; actual parent-controller behavior not established"
+    },
+    {
+      "case": "caps direct cached issue resolution",
+      "target": "src/topcoat/tests/main/issues/references.test.js",
+      "classification": "unsupported internal eager subscription/global cache contract; actual parent-controller behavior not established"
+    },
+    {
+      "case": "block size scales with the region's short side, within bounds",
+      "target": "src/topcoat/tests/main/resources/annotateMath.test.js",
+      "classification": "observable product behavior"
+    },
+    {
+      "case": "downsamples to one pixel per block and paints back over the region",
+      "target": "src/topcoat/tests/main/resources/annotateMath.test.js",
+      "classification": "observable product behavior"
+    },
+    {
+      "case": "the intermediate buffer holds far fewer samples than the region",
+      "target": "src/topcoat/tests/main/resources/annotateMath.test.js",
+      "classification": "observable product behavior"
+    },
+    {
+      "case": "never produces a zero-dimension buffer for a sub-block region",
+      "target": "src/topcoat/tests/main/resources/annotateMath.test.js",
+      "classification": "observable product behavior"
+    },
+    {
+      "case": "counts lines without inventing one for empty text",
+      "target": "src/topcoat/tests/main/resources/bigPaste.test.js",
+      "classification": "unreachable helper input under production admission/recorder invariants"
+    },
+    {
+      "case": "describes the paste by whichever threshold it tripped",
+      "target": "src/topcoat/tests/main/resources/bigPaste.test.js",
+      "classification": "observable product behavior"
+    },
+    {
+      "case": "adds an hours field past an hour",
+      "target": "src/topcoat/tests/main/resources/voiceNote.test.js",
+      "classification": "unreachable helper input under production admission/recorder invariants"
+    },
+    {
+      "case": "clamps a negative elapsed time to zero",
+      "target": "src/topcoat/tests/main/resources/voiceNote.test.js",
+      "classification": "unreachable helper input under production admission/recorder invariants"
+    },
+    {
+      "case": "handles an empty buffer",
+      "target": "src/topcoat/tests/main/resources/voiceNote.test.js",
+      "classification": "unreachable helper input under production admission/recorder invariants"
+    }
+  ],
+  "review_notes": [
+    "Each reference subscriber uses a distinct live hover binder in the adapter. Actual production binds one Markdown container and parent controllers own session/scope/realtime refresh. These contracts cannot establish a visible stale-preview regression.",
+    "The subscriber exception case only fails on a logging count; delivery to another tooltip succeeds.",
+    "Voice recorder stops after ten minutes, uses monotonic elapsed time, and supplies a fixed 512-sample buffer. Empty pasted text cannot pass the large-paste threshold.",
+    "The actual pixelation action paints solid black rather than downsampling the region. Long single-line paste offer uses line count rather than character count.",
+    "Shared authenticated fixture injection is restricted to the scratch origin; about:blank pageerror regression was observed red then green."
+  ]
+}

@@ -153,7 +153,9 @@ async function startFixture({binary = process.env.LIFIC_BIN || path.join(root, '
       const context = await browser.newContext();
       if (authenticated) {
         await context.addCookies([{name: 'lific_token', value: token, url: origin, httpOnly: true, sameSite: 'Lax'}]);
-        await context.addInitScript(value => localStorage.setItem('lific_token', value), token);
+        await context.addInitScript(({origin, token}) => {
+          if (location.origin === origin) localStorage.setItem('lific_token', token);
+        }, {origin, token});
       }
       return context.newPage();
     };
