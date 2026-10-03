@@ -413,6 +413,7 @@ use rmcp::ServiceExt;
 use tracing::info;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let runtime = build_runtime()?;
     // Clap's generated argument builders need substantial debug-build stack.
     // Parse before polling the command future so their frames do not overlap
     // with the async dispatcher's temporaries on Windows's smaller stack.
@@ -448,7 +449,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    build_runtime()?.block_on(async_main(cli, matches))
+    runtime.block_on(async_main(cli, matches))
 }
 
 async fn async_main(cli: Cli, matches: clap::ArgMatches) -> Result<(), Box<dyn std::error::Error>> {
