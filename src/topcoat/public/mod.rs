@@ -7,9 +7,16 @@ use topcoat::{
 
 pub(crate) const SCRIPT_PATH: &str = "/__topcoat-public.js";
 pub(crate) const SCRIPT: &str = concat!(
+    include_str!("assets/vendor.marked.js"),
+    "\n",
+    include_str!("assets/vendor.dompurify.js"),
+    "\n",
+    include_str!("assets/vendor.mermaid.js"),
+    "\n",
     include_str!("../attachments/assets/attachments.js"),
     include_str!("assets/public.js")
 );
+pub(crate) const MEDIA_WORKER: &str = include_str!("assets/public.media-worker.js");
 pub(crate) const STYLESHEET_PATH: &str = "/__topcoat-public.css";
 pub(crate) const STYLESHEET: &str = include_str!("assets/public.css");
 

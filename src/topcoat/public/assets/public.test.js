@@ -13,3 +13,23 @@ test('renderer exports no DOM-dependent controller construction on the Node path
  assert.equal(typeof publicUi.renderMarkdown,'function');
  assert.equal(typeof publicUi.attach,'function');
 });
+
+test('public navigation rewrites only supported routes within the current project',()=>{
+ assert.equal(publicUi.publicHref('#/ENG/issues/ENG-2?comment=91','ENG'),'/public/ENG/issues/ENG-2?comment=91');
+ assert.equal(publicUi.publicHref('/ENG/pages/22','ENG'),'/public/ENG/pages/22');
+ assert.equal(publicUi.publicHref('#comment-91','ENG'),'#comment-91');
+ for(const href of ['/ENG/issues/new','/ENG/plans/1','/ENG/settings','/OTHER/issues/OTHER-1','/public/ENG/files','javascript:bad()']) assert.equal(publicUi.publicHref(href,'ENG'),null,href);
+});
+
+test('attachment targets preserve single lines and reversed ranges from fragment and query links',()=>{
+ assert.deepEqual(publicUi.attachmentTarget('#att31-L10-12'),{id:31,start:10,end:12});
+ assert.deepEqual(publicUi.attachmentTarget('att31-L12-10'),{id:31,start:10,end:12});
+ assert.deepEqual(publicUi.attachmentTarget('#att31-L10'),{id:31,start:10,end:10});
+ assert.equal(publicUi.attachmentTarget('#att31-L0'),null);
+});
+
+test('public search matches abbreviated words and ranks exact names over preview matches',()=>{
+ assert.ok(publicUi.searchScore('Alpa','Alpha')>=.25);
+ assert.ok(publicUi.searchScore('alpha','Alpha')>publicUi.searchScore('alpha','Long alpha explanation'));
+ assert.equal(publicUi.searchScore('missing','Alpha'),0);
+});

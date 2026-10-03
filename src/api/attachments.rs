@@ -566,7 +566,7 @@ pub(super) async fn download_attachment(
 
 /// What a `Range` header asked for, resolved against the resource length.
 #[derive(Debug, PartialEq, Eq)]
-enum RangeRequest {
+pub(super) enum RangeRequest {
     /// Serve the entire resource with a 200. Also the answer for a header we
     /// are entitled to ignore.
     Whole,
@@ -588,7 +588,7 @@ enum RangeRequest {
 /// ignore a multi-range request rather than build a multipart body. Only a
 /// well-formed range that points outside the resource is a 416, because that
 /// one is a genuine client error rather than a capability gap.
-fn parse_range(value: &str, total: u64) -> RangeRequest {
+pub(super) fn parse_range(value: &str, total: u64) -> RangeRequest {
     let Some(spec) = value.trim().strip_prefix("bytes=") else {
         return RangeRequest::Whole;
     };

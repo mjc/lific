@@ -848,6 +848,16 @@ mod topcoat_spike {
             ))?)
     }
 
+    #[route(GET "/__topcoat-public-media.js")]
+    async fn public_media_worker() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "text/javascript; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::public::MEDIA_WORKER,
+            ))?)
+    }
+
     #[route(GET "/__topcoat-preferences.js")]
     async fn preferences_script() -> Result<Response> {
         Ok(Response::builder()
