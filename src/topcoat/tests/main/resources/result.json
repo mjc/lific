@@ -1,0 +1,136 @@
+{
+  "baseline": "9683d38af8e1e6f9b076439fe90d9519109b2218",
+  "scope": "15 original frontend test sources; no product changes",
+  "runs": [
+    {
+      "command": "node --test --test-reporter=spec src/topcoat/tests/main/resources/{altText,ansi,attachmentDeepLink,csv,diff,downscale,files,issueExport,projectArchives,uploadQueue}.test.js",
+      "native_entries": 104,
+      "passed": 78,
+      "failed": 26,
+      "skipped": 0,
+      "cancelled": 0,
+      "note": "101 original unit cases plus three independent concurrency-limit probes. Parent test failures are included in native count."
+    },
+    {
+      "command": "node --test --test-concurrency=1 src/topcoat/tests/main/resources/*browser.test.mjs",
+      "native_entries": 14,
+      "passed": 4,
+      "failed": 10,
+      "skipped": 0,
+      "cancelled": 0,
+      "duration_ms": 76454.968788,
+      "note": "Headless real executable and real SQLite databases. The archive uses independent source and destination servers. Parent failures are included in native count."
+    }
+  ],
+  "separate_root_owned_sources": [
+    "web/tests/annotateMath.test.ts",
+    "web/tests/voiceNote.test.ts",
+    "web/tests/bigPaste.test.ts"
+  ],
+  "failures": [
+    {
+      "area": "ANSI text viewer",
+      "cases": 10,
+      "expected": "SGR colors, attributes and resets; strip unsupported escapes; carry styles across lines; invert colors",
+      "observed": "Actual Files preview renders raw escape sequences in a single unstyled pre",
+      "classification": "product behavior"
+    },
+    {
+      "area": "attachment line links",
+      "cases": 9,
+      "expected": "Read hash-route att query; select single/backwards/range lines; preserve URL parameters and mount prefix; copy full line links",
+      "observed": "Fragment range restoration passes; hash-route att query returns null; Files preview has no selectable line or copy-link controls",
+      "classification": "product behavior"
+    },
+    {
+      "area": "Files page links",
+      "expected": "The page fixture with page_id42 resolves /LIF/pages/42",
+      "observed": "/LIF/pages/1 from entity_id1",
+      "classification": "conflicting helper fixture fields; review against actual backend entity contract"
+    },
+    {
+      "area": "Files deletion confirmation",
+      "expected": "Removes the file and its 1 reference.",
+      "observed": "Delete shot.png and its 1 reference?",
+      "classification": "copy difference, reference count retained"
+    },
+    {
+      "area": "archive download cancellation",
+      "expected": "Production fetch forwards supplied AbortSignal while returning bytes without saving",
+      "observed": "Production fetch has no signal; raw bytes and session notification behavior otherwise pass",
+      "classification": "product behavior"
+    },
+    {
+      "area": "upload concurrency normalization",
+      "expected": "0/-5 admit one upload;3.7 admits three",
+      "observed": "0/-5 admit none;3.7 admits four",
+      "classification": "helper option edge; normal concurrency3 and slot release pass"
+    },
+    {
+      "area": "issue selection presentation",
+      "expected": "Select-all aria-pressed false initially and state/count reflect current visible selection",
+      "observed": "aria-pressed is absent (null)",
+      "classification": "product accessibility"
+    },
+    {
+      "area": "named Codex connections",
+      "expected": "Chosen Codex template accepts independent codex-laptop connection identity",
+      "observed": "Real POST sends tool codex and ignores the named connection ID; custom-ID independent lifecycle passes",
+      "classification": "product behavior"
+    },
+    {
+      "area": "archive observer discovery",
+      "expected": "Other real destination tab discovers newly imported ARC without reload",
+      "observed": "Observer /projects/new has no Archive specimen after15seconds",
+      "classification": "product behavior"
+    },
+    {
+      "area": "archive browser validation",
+      "expected": "Invalid extension disables import; original oversized/server-cap assertions remain in same validation case",
+      "observed": "Invalid-extension error is shown but import button stays enabled",
+      "classification": "product behavior"
+    },
+    {
+      "area": "archive pending navigation",
+      "expected": "Leaving and returning while POST is held retains import-in-progress state and prevents duplicate submit",
+      "observed": "Returned form has lost active state and exposes import controls instead of Import in progress",
+      "classification": "product behavior"
+    },
+    {
+      "area": "archive mobile export",
+      "expected": "390px source archive overview does not overflow horizontally",
+      "observed": "Source export document scrollWidth exceeds innerWidth; nonadmin controls and server403 pass",
+      "classification": "product layout"
+    },
+    {
+      "area": "archive stale response across accounts",
+      "expected": "Real held archive GET aborts after account change and emits no stale download",
+      "observed": "No requestfailed event after10seconds on account switch; project navigation cancellation passes",
+      "classification": "product behavior"
+    },
+    {
+      "area": "archive pending account isolation",
+      "expected": "Second account has fresh import form and cannot see first account unknown-outcome warning",
+      "observed": "Old-account warning remains visible after real authentication finishes",
+      "classification": "product behavior"
+    }
+  ],
+  "passed_browser_evidence": [
+    "Real selected-issue Markdown downloads at1440px and390px include both selected titles and real comment, exclude third issue, preserve expected filename, reject503 without partial download, and do not overflow.",
+    "Three custom-ID connections persist; disconnect/reconnect/delete codex-laptop leaves codex-desktop connected; reconnect does not duplicate rows; mobile settings does not overflow.",
+    "Source browser downloads valid ARC.lific.tar.gz; destination real POST201 transfers per-table counts, graph edge, comment, page body/title, original exact attachment bytes, unresolved reference warning and private project while source remains public.",
+    "Regular account cannot import or export archives through UI and actual POST returns403 in legacy authorization mode."
+  ],
+  "retained_assertions_blocked_by_earlier_failures": [
+    "Remaining issue selection, collapsed-group, shortcut and search assertions follow the failing select-all presentation check.",
+    "Oversized file cap/disabled button follow failing invalid-extension disablement.",
+    "Lost-response reload/no-retry assertions follow failing pending-navigation retention.",
+    "Same-user session replacement follows failing cross-account GET cancellation.",
+    "Old-account delayed real201 report suppression, per-user acknowledgement, password refresh and logout retention follow failing unknown-warning isolation."
+  ],
+  "harness_notes": [
+    "No absent-export sentinel is used for translated cases. DOM adapters invoke current production functions and inspect actual rendering.",
+    "An earlier concurrent browser run used an arbitrary10second timeout and observed a late successful import; that run is excluded. Final run restores original30second timeout and serial file execution.",
+    "Source helper functionality expressed through an obsolete private function is mapped to current observable production behavior; inventory records selection by attachment ID, production offer dimensions and live DOM operations."
+  ]
+}
