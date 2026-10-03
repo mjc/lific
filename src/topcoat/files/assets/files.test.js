@@ -54,3 +54,9 @@ test('unified diff previews preserve file boundaries, line numbers, renames, bin
  assert.deepEqual(diff.files[0].lines.filter(line=>['add','del','context'].includes(line.kind)).map(line=>[line.kind,line.oldNo,line.newNo]),[['context',3,4],['del',4,null],['add',null,5]]);
  assert.equal(files.summarizeDiff(diff),'2 files changed, +1 -1');
 });
+
+test('archive entry sizes preserve expanded and compressed bytes while directories omit both',()=>{
+ assert.deepEqual(files.archiveEntrySizes({name:'data.json',size:1536,compressed:128}),['1.5 KB','128 B']);
+ assert.deepEqual(files.archiveEntrySizes({name:'empty.txt',size:0,compressed:0}),['0 B','0 B']);
+ assert.deepEqual(files.archiveEntrySizes({name:'nested/',size:1024,compressed:128}),['','']);
+});
