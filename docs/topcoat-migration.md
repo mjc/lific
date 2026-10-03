@@ -83,6 +83,45 @@ those schema checks or reverse migrations. Restore the pre-upgrade archive when
 returning to a release that cannot use the upgraded schema; the old release
 cannot restore a v3 archive with a newer schema either.
 
+## Staging acceptance
+
+Record the target URL and mount prefix, candidate commit, deployed executable
+checksum or image digest, previous deployment, and backup location. Use a
+designated test account and project whose password, publication, and content
+can be changed during the pass. Deploy the candidate using the rollback
+procedure above before running these checks.
+Use the route inventory in `src/topcoat/acceptance/routes.browser.test.js`,
+substituting the deployed test project's identifiers.
+
+| Flow | Action | Expected result |
+| --- | --- | --- |
+| Routes | Open each private route family and each published issue/page route directly, including after reload. | The intended screen loads its data; assets and navigation stay under the configured mount prefix. |
+| Authentication | Open a private detail anonymously, try a wrong password, then sign in. Rotate the test account's password, reload, and sign out. | Anonymous navigation reaches login; rejected credentials create no session; replacement survives reload; the replaced and signed-out tokens are rejected. |
+| Realtime | Open the same issue in two authenticated browser contexts. Record its sync cursor, disconnect one context, edit from the other, then reconnect it. Inspect the mounted WebSocket connection and frames. | A new `/api/events/ws` connection upgrades successfully and sends `resume` with the project ID and cursor; the committed change renders. REST catch-up may finish before WebSocket reconnection. |
+| Public sharing | Publish the test project and open its issue and page in an anonymous context. Repeat with private credentials already stored in that context. | Published content is read-only; public resource requests carry neither bearer credentials nor session cookies. |
+| Exports | Use issue-list **Export selected**, page **Export Markdown**, and project settings **Export project data**. | Markdown contains persisted content; **Export project data** downloads a ZIP with a matching filename and expected project data. The separate project archive export uses `.tar.gz`. |
+| Attachments | Upload a known text file, reload its issue, and download it. Upload playable audio and seek in its public preview. | Metadata and bytes persist; downloaded bytes match; public playback and byte-range seeking work. |
+| Proxy and services | Use the public mounted URL for documents, REST reads, MCP initialization, WebSockets, downloads, and media. | Requests stay under the mount; service endpoints remain reachable and enforce their existing authentication rules. |
+| Packaging | Fetch the rendered document's scripts/styles, install manifest, and icons from the deployed target; request a retired bundle path. | Embedded assets have their expected content types, manifest URLs preserve the mount, icons are PNGs, and retired bundles return 404. |
+
+To prove cursor replay after reconnecting, open a fresh native WebSocket to
+the same mounted endpoint using the authenticated browser's session cookie.
+Send `{"type":"resume","project_id":<id>,"cursor":<saved pre-disconnect cursor>}`
+and verify an `issue.updated` event for the offline edit's issue ID and
+committed sequence before closing the connection. The request pattern is in
+`src/topcoat/acceptance/session.browser.test.js`.
+
+Record the UTC time, route or operation, expected and observed result, and
+sanitized evidence for each row. Link the deployment's artifact identity and
+these results in the parity matrix. Keep bearer tokens, cookies, passwords,
+and private content out of captured evidence. A failed row leaves staging
+acceptance open until its fix passes on the deployed candidate.
+
+After staging passes, repeat the route, service, and asset checks on the
+deployed production artifact. Exercise writes only in its designated test
+project. Record production results separately; isolated executable tests and
+staging results establish their respective coverage.
+
 ## Pinned Topcoat upgrade policy
 
 `Cargo.toml` pins Topcoat with `version = "=0.9.0"`; the macro formatter CLI
