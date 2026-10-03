@@ -117,15 +117,8 @@
         if (result.ok) {
           selection = env.selection?.() || selection;
           const snippet = env.attachments.markdown(result.data);
-          const text = state.description;
-          const start = Math.max(0, Math.min(text.length, selection.start));
-          const end = Math.max(start, Math.min(text.length, selection.end));
-          const before = text.slice(0, start);
-          const after = text.slice(end);
-          const prefix = before && !before.endsWith('\n') ? '\n' : '';
-          const suffix = after && !after.startsWith('\n') ? '\n' : '';
-          const caret = before.length + prefix.length + snippet.length;
-          publish({description: `${before}${prefix}${snippet}${suffix}${after}`, caret});
+          const {text, caret} = globalThis.lificIssueEditor.insertSnippetAt(state.description, selection.start, selection.end, snippet);
+          publish({description: text, caret});
           publish({uploads:state.uploads.map(item=>item.id===id?{...item,status:'complete',progress:100,error:''}:item)});
           selection = {start: caret, end: caret};
         } else if (result.canceled) {
