@@ -680,7 +680,7 @@ mod tests {
 
     fn run_preferences_script(script: &str) {
         let fixture = tempfile::tempdir().unwrap();
-        let module = fixture.path().join("preferences.mjs");
+        let module = fixture.path().join("preferences # fixture.mjs");
         std::fs::write(&module, PREFERENCES_SCRIPT).unwrap();
         let output = std::process::Command::new("node")
             .args(["--input-type=module", "--eval", script])
@@ -700,7 +700,8 @@ mod tests {
         run_preferences_script(
             r#"
             import assert from 'node:assert/strict';
-            const {loadPreferences, savePreferences, STORAGE_KEY} = await import(process.env.LIFIC_PREFERENCES_MODULE);
+            import {pathToFileURL} from 'node:url';
+            const {loadPreferences, savePreferences, STORAGE_KEY} = await import(pathToFileURL(process.env.LIFIC_PREFERENCES_MODULE).href);
             const values = new Map([
                 ['lific_theme', 'dark'], ['lific_accent', 'teal'],
                 ['lific_density', 'compact'], ['lific_font_scale', 'lg'],
@@ -750,7 +751,8 @@ mod tests {
         run_preferences_script(
             r#"
             import assert from 'node:assert/strict';
-            const {initializePreferences} = await import(process.env.LIFIC_PREFERENCES_MODULE);
+            import {pathToFileURL} from 'node:url';
+            const {initializePreferences} = await import(pathToFileURL(process.env.LIFIC_PREFERENCES_MODULE).href);
             const values = new Map();
             const storage = {
                 getItem: key => values.get(key) ?? null,
@@ -794,7 +796,8 @@ mod tests {
         run_preferences_script(
             r#"
             import assert from 'node:assert/strict';
-            const {loadPreferences, savePreferences, normalizePreferences, initializePreferences, STORAGE_KEY} = await import(process.env.LIFIC_PREFERENCES_MODULE);
+            import {pathToFileURL} from 'node:url';
+            const {loadPreferences, savePreferences, normalizePreferences, initializePreferences, STORAGE_KEY} = await import(pathToFileURL(process.env.LIFIC_PREFERENCES_MODULE).href);
             const values = new Map([['lific_motion','reduced']]);
             const storage = {
                 getItem: key => values.get(key) ?? null,
@@ -878,7 +881,8 @@ mod tests {
             import assert from 'node:assert/strict';
             import {readFileSync} from 'node:fs';
             import {join} from 'node:path';
-            const {chromium} = await import(process.env.LIFIC_PLAYWRIGHT_MODULE);
+            import {pathToFileURL} from 'node:url';
+            const {chromium} = await import(pathToFileURL(process.env.LIFIC_PLAYWRIGHT_MODULE).href);
             const browser = await chromium.launch({executablePath:process.env.PLAYWRIGHT_EXECUTABLE_PATH});
             try {
                 const context = await browser.newContext({reducedMotion:'reduce'});
@@ -1515,7 +1519,8 @@ mod tests {
             import assert from 'node:assert/strict';
             import { readFileSync } from 'node:fs';
             import { join } from 'node:path';
-            const { chromium } = await import(process.env.LIFIC_PLAYWRIGHT_MODULE);
+            import {pathToFileURL} from 'node:url';
+            const { chromium } = await import(pathToFileURL(process.env.LIFIC_PLAYWRIGHT_MODULE).href);
             const browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH });
             try {
                 const page = await browser.newPage();

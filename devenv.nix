@@ -547,6 +547,7 @@ in
           "js"
           "css"
           "png"
+          "webmanifest"
         ];
         ignore = [ "target" ];
       };

@@ -221,6 +221,8 @@ check_asset() {
   case "$kind:$content_type" in
     js:*javascript* | js:*ecmascript*) ;;
     css:*css*) ;;
+    manifest:application/manifest+json | manifest:application/manifest+json\;*) ;;
+    png:image/png | png:image/png\;*) ;;
     *)
       echo "$kind asset $path came back as '$content_type', which means the" >&2
       echo "binary does not contain it and served the SPA fallback instead" >&2
@@ -228,8 +230,15 @@ check_asset() {
       ;;
   esac
 
+  if [[ $kind == png ]]; then
+    if [[ $(od -An -tx1 -N8 "$body" | tr -d '[:space:]') != 89504e470d0a1a0a ]]; then
+      echo "PNG asset $path does not have a PNG signature" >&2
+      return 1
+    fi
+    return
+  fi
   if head -c 200 "$body" | grep -qi '<!doctype html\|<html'; then
-    echo "$kind asset $path is an HTML document, not a bundle" >&2
+    echo "$kind asset $path is an HTML document" >&2
     return 1
   fi
 }
@@ -243,5 +252,23 @@ while read -r asset; do
   [[ -n $asset ]] || continue
   check_asset "$asset" css
 done <<<"$css_assets"
+
+check_asset /manifest.webmanifest manifest
+# These URLs resolve relative to the manifest so installs retain a proxy mount.
+for field in id start_url scope; do
+  if ! grep -Eq "\"$field\"[[:space:]]*:[[:space:]]*\"\./\"" "$scratch/asset-body"; then
+    echo "install manifest $field must be ./" >&2
+    exit 1
+  fi
+done
+for icon in icon-192.png icon-512.png icon-maskable-512.png; do
+  if ! grep -Eq "\"src\"[[:space:]]*:[[:space:]]*\"${icon%.png}\\.png\"" "$scratch/asset-body"; then
+    echo "install manifest is missing the relative icon URL $icon" >&2
+    exit 1
+  fi
+done
+for icon in favicon.png apple-touch-icon.png icon-192.png icon-512.png icon-maskable-512.png; do
+  check_asset "/$icon" png
+done
 
 echo "release binary serves its API and the embedded web UI"

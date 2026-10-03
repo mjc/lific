@@ -66,8 +66,14 @@ mod topcoat_app {
             <html lang="en">
                 <head>
                     <meta charset="utf-8">
-                    <meta name="viewport" content="width=device-width, initial-scale=1">
+                    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
                     <title>(title)</title>
+                    <link rel="icon" type="image/png" href="/favicon.png">
+                    <link rel="manifest" href="/manifest.webmanifest">
+                    <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+                    <meta name="apple-mobile-web-app-title" content="Lific">
+                    <meta name="theme-color" content="#fafcfb" media="(prefers-color-scheme: light)">
+                    <meta name="theme-color" content="#1c221f" media="(prefers-color-scheme: dark)">
                     <link rel="stylesheet" href="/__topcoat-app.css">
                     <link rel="stylesheet" href=(super::topcoat_frontend::shell::STYLESHEET_PATH)>
                     <link rel="stylesheet" href=(super::topcoat_frontend::shell::mobile::STYLESHEET_PATH)>

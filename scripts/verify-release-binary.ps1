@@ -88,9 +88,30 @@ allow_signup = false
             throw "Embedded asset $asset was empty or returned the wrong content type: $mime"
         }
     }
+    $manifestResponse = Invoke-WebRequest "http://127.0.0.1:$port/manifest.webmanifest" -TimeoutSec 5
+    $manifestMime = $manifestResponse.Headers["Content-Type"] -join ","
+    if ($manifestResponse.StatusCode -ne 200 -or $manifestResponse.RawContentLength -eq 0 -or $manifestMime -notmatch '^application/manifest\+json(?:;|$)') {
+        throw "Install manifest was empty or returned the wrong content type: $manifestMime"
+    }
+    # application/manifest+json may be classified as binary by Invoke-WebRequest.
+    $manifest = [Text.Encoding]::UTF8.GetString($manifestResponse.RawContentStream.ToArray()) | ConvertFrom-Json
+    foreach ($field in @("id", "start_url", "scope")) {
+        if ($manifest.$field -ne "./") { throw "Install manifest $field must be ./" }
+    }
+    foreach ($icon in @("icon-192.png", "icon-512.png", "icon-maskable-512.png")) {
+        if ($manifest.icons.src -notcontains $icon) { throw "Install manifest is missing the relative icon URL $icon" }
+    }
+    foreach ($icon in @("favicon.png", "apple-touch-icon.png", "icon-192.png", "icon-512.png", "icon-maskable-512.png")) {
+        $response = Invoke-WebRequest "http://127.0.0.1:$port/$icon" -TimeoutSec 5
+        $mime = $response.Headers["Content-Type"] -join ","
+        $bytes = $response.RawContentStream.ToArray()
+        if ($response.StatusCode -ne 200 -or $mime -notmatch '^image/png(?:;|$)' -or $bytes.Length -lt 8 -or [BitConverter]::ToString($bytes, 0, 8) -ne "89-50-4E-47-0D-0A-1A-0A") {
+            throw "Install icon $icon was empty, was not PNG data, or returned the wrong content type: $mime"
+        }
+    }
     $retired = Invoke-WebRequest "http://127.0.0.1:$port/assets/index-retired.js" -TimeoutSec 5 -SkipHttpErrorCheck
     if ($retired.StatusCode -ne 404) { throw "Retired frontend asset returned $($retired.StatusCode), expected 404" }
-    Write-Host "Verified artifact checksum, startup, database, API, and embedded JavaScript/CSS."
+    Write-Host "Verified artifact checksum, startup, database, API, embedded JavaScript/CSS, install manifest, and PNG icons."
 } finally {
     if ($null -ne $server -and -not $server.HasExited) {
         Stop-Process -Id $server.Id -Force

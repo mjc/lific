@@ -53,6 +53,8 @@ const shell = (withAssets: boolean) =>
 
 const html = (withAssets: boolean) =>
   new Response(shell(withAssets), { headers: { "content-type": "text/html" } });
+const iconPaths = ["favicon.png", "apple-touch-icon.png", "icon-192.png", "icon-512.png", "icon-maskable-512.png"];
+const png = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10, 0]);
 
 Bun.serve({
   port: Number(process.env.PORT),
@@ -62,12 +64,28 @@ Bun.serve({
     if (path === "/api/health") {
       return new Response("ok", { headers: { "content-type": "text/plain" } });
     }
-    if (["full", "legacy", "legacy-asset"].includes(mode) && path === "/__topcoat-runtime.js") {
+    if (path === "/manifest.webmanifest") {
+      if (mode === "manifest-html") return html(true);
+      const manifest = {
+        id: "./", start_url: mode === "manifest-root-url" ? "/" : "./", scope: "./",
+        icons: iconPaths.slice(2).map(src => ({src: mode === "manifest-root-icon" ? `/${src}` : src})),
+      };
+      return new Response(mode === "manifest-empty" ? "" : JSON.stringify(manifest), {
+        headers: {"content-type": mode === "manifest-mime" ? "text/plain" : "application/manifest+json"},
+      });
+    }
+    if (iconPaths.includes(path.slice(1))) {
+      if (mode === `missing-${path.slice(1)}`) return new Response("Not found", {status: 404});
+      return new Response(mode === "png-empty" ? null : mode === "png-html" ? shell(true) : png, {
+        headers: {"content-type": mode === "png-mime" ? "text/plain" : "image/png"},
+      });
+    }
+    if (!["no-assets", "spa"].includes(mode) && path === "/__topcoat-runtime.js") {
       return new Response("export const ok = 1;\n", {
         headers: { "content-type": "text/javascript" },
       });
     }
-    if (["full", "legacy", "legacy-asset"].includes(mode) && path === "/__topcoat-runtime.css") {
+    if (!["no-assets", "spa"].includes(mode) && path === "/__topcoat-runtime.css") {
       return new Response(":root{--ok:1}\n", {
         headers: { "content-type": "text/css" },
       });
@@ -172,6 +190,17 @@ if ! grep -Fq "release binary serves its API and the embedded web UI" "$scratch/
   fail "verifier passed without reporting what it proved"
 fi
 echo "a complete build passes, addressed by a relative path"
+
+# Install metadata and icons must ship alongside the JavaScript and CSS.
+for mode in manifest-html manifest-mime manifest-empty manifest-root-url manifest-root-icon \
+  missing-favicon.png missing-apple-touch-icon.png missing-icon-192.png \
+  missing-icon-512.png missing-icon-maskable-512.png png-mime png-empty png-html; do
+  status="$(run_verifier "$scratch" "$fixture_binary" FIXTURE_MODE="$mode")"
+  if [[ $status -eq 0 || $status -eq 124 ]]; then
+    fail "verifier accepted broken install assets ($mode) or hung while rejecting them"
+  fi
+  echo "broken install assets ($mode) are rejected"
+done
 
 # 2. A shell with no bundle references is a binary built without Topcoat assets.
 status="$(run_verifier "$scratch" "$fixture_binary" FIXTURE_MODE=no-assets)"
