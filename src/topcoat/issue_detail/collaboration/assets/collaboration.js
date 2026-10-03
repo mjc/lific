@@ -19,10 +19,10 @@
     const owner = canEdit && comment.user_id === api().state.user?.id;
     const body = draft ? `<div data-comment-editor=""><textarea data-comment-edit-draft="${comment.id}" aria-label="Edit comment" ${canEdit ? '' : 'readonly'}>${escape(draft.content)}</textarea><div class="tc-collab__upload-tools"><label>Attach files <input type="file" multiple data-comment-files="${comment.id}" ${canEdit ? '' : 'disabled'}></label><span data-comment-upload-status="${comment.id}" role="status"></span></div><button type="button" data-comment-save="${comment.id}" ${!canEdit||draft.uploading ? 'disabled' : ''}>Save comment</button><button type="button" data-comment-cancel="${comment.id}">Cancel</button></div>` : `<div class="tc-comment__body" data-comment-content="">${escape(comment.content)}</div>`;
     const refs=referenceSummary(comment.content);
-    return `<li class="tc-comment" id="comment-${comment.id}" data-comment-id="${comment.id}"><header><strong>${escape(comment.author_display_name || comment.author)}</strong><time datetime="${escape(comment.created_at)}">${escape(date(comment.created_at))}</time>${comment.updated_at !== comment.created_at ? '<span class="tc-comment__edited">edited</span>' : ''}<a class="tc-comment__permalink" href="#comment-${comment.id}" aria-label="Link to this comment">#</a>${comment.kind === 'verification' ? '<span class="tc-comment__badge">Verification</span>' : ''}</header>${body}${refs.issues||refs.attachments||refs.mentions?`<small class="tc-comment__references">References: ${refs.issues?`${refs.issues} issue${refs.issues===1?'':'s'}`:''}${refs.attachments?`${refs.issues?', ':''}${refs.attachments} attachment${refs.attachments===1?'':'s'}`:''}${refs.mentions?`${refs.issues||refs.attachments?', ':''}${refs.mentions} mention${refs.mentions===1?'':'s'}`:''}</small>`:''}${owner ? `<div class="tc-comment__actions"><button type="button" data-comment-edit="${comment.id}">Edit</button><button type="button" data-comment-delete="${comment.id}">Delete</button></div>` : ''}</li>`;
+    return `<li class="tc-comment" id="comment-${comment.id}" data-comment-id="${comment.id}"><header><strong>${escape(comment.author_display_name || comment.author)}</strong><time datetime="${escape(comment.created_at)}">${escape(date(comment.created_at))}</time>${comment.updated_at !== comment.created_at ? `<span class="tc-comment__edited" title="Edited ${escape(comment.updated_at)}">edited</span>` : ''}<a class="tc-comment__permalink" href="#comment-${comment.id}" aria-label="Link to this comment">#</a>${comment.kind === 'verification' ? '<span class="tc-comment__badge">Verification</span>' : ''}</header>${body}${refs.issues||refs.attachments||refs.mentions?`<small class="tc-comment__references">References: ${refs.issues?`${refs.issues} issue${refs.issues===1?'':'s'}`:''}${refs.attachments?`${refs.issues?', ':''}${refs.attachments} attachment${refs.attachments===1?'':'s'}`:''}${refs.mentions?`${refs.issues||refs.attachments?', ':''}${refs.mentions} mention${refs.mentions===1?'':'s'}`:''}</small>`:''}${owner ? `<div class="tc-comment__actions"><button type="button" data-comment-edit="${comment.id}">Edit</button><button type="button" data-comment-delete="${comment.id}">Delete</button></div>` : ''}</li>`;
   }
 
-  function decorateCommentReferences(node) {
+  function decorateCommentReferences(node, candidates = node.closest('[data-topcoat-collaboration]')?._commentCandidates || []) {
     const walker=node.ownerDocument.createTreeWalker(node,NodeFilter.SHOW_TEXT);
     const textNodes=[];while(walker.nextNode())textNodes.push(walker.currentNode);
     for(const textNode of textNodes){
@@ -30,7 +30,7 @@
       const text=textNode.nodeValue, pattern=/(@[\w-]+|\b[A-Z][A-Z0-9_-]*-[1-9][0-9]*\b)/g;
       if(!pattern.test(text))continue;pattern.lastIndex=0;const fragment=node.ownerDocument.createDocumentFragment();let offset=0,match;
       while((match=pattern.exec(text))){fragment.append(text.slice(offset,match.index));const token=match[0];
-        if(token.startsWith('@')){const span=node.ownerDocument.createElement('span');span.className='tc-comment__mention';span.textContent=token;fragment.append(span);}
+        if(token.startsWith('@')){const user=candidates.find(candidate=>candidate.username.toLowerCase()===token.slice(1).toLowerCase());const span=node.ownerDocument.createElement('span');span.className='tc-comment__mention';span.textContent=user?.display_name?`@${user.display_name}`:token;fragment.append(span);}
         else {const a=node.ownerDocument.createElement('a');a.href=issueHref(node.closest('[data-topcoat-collaboration]'),token);a.textContent=token;fragment.append(a);}
         offset=pattern.lastIndex;
       }
@@ -39,11 +39,12 @@
   }
 
   function renderCommentBodies(root) {
+    const diagramBudget={blocks:0,sourceBytes:0};
     for(const body of root.querySelectorAll('[data-comment-content]')){
       const source=body.textContent||'';
-      if(globalThis.lificIssueEditor?.renderMarkdown)globalThis.lificIssueEditor.renderMarkdown(body,source);
+      if(globalThis.lificIssueEditor?.renderMarkdown)globalThis.lificIssueEditor.renderMarkdown(body,source,{diagramBudget});
       else body.innerHTML=escape(source).replace(/\n/g,'<br>');
-      decorateCommentReferences(body);
+      decorateCommentReferences(body, root._commentCandidates || []);
     }
   }
 
@@ -51,10 +52,18 @@
     const active=root.ownerDocument.activeElement,activeField=active?.matches?.('[data-comment-edit-draft]')&&root.contains(active)?active:null;
     let focusedId=null;
     for(const state of root._commentEdits?.values?.()||[])state.focused=false;
-    if(activeField){focusedId=Number(activeField.dataset.commentEditDraft);const state=root._commentEdits.get(focusedId)||{};Object.assign(state,{content:activeField.value,selectionStart:activeField.selectionStart,selectionEnd:activeField.selectionEnd,focused:true});root._commentEdits.set(focusedId,state);}
+    if(activeField&&root._commentEdits?.has(Number(activeField.dataset.commentEditDraft))){focusedId=Number(activeField.dataset.commentEditDraft);const state=root._commentEdits.get(focusedId);Object.assign(state,{content:activeField.value,selectionStart:activeField.selectionStart,selectionEnd:activeField.selectionEnd,focused:true});}
+    const markup=comments.length?`<ol>${comments.map(item=>commentMarkup(item,canEdit,root._commentEdits?.get(Number(item.id)))).join('')}</ol>`:'<p class="tc-collab__muted">No comments yet</p>';
+    // Retain a bounded digest, rather than a second copy of all comment bodies.
+    const inputs=markup+JSON.stringify((root._commentCandidates||[]).map(user=>[user.username,user.display_name]));
+    let first=0x811c9dc5,second=0x7fffffff;
+    for(let index=0;index<inputs.length;index++){first=Math.imul(first^inputs.charCodeAt(index),0x01000193);second=Math.imul(second^inputs.charCodeAt(index),0x01000193);}
+    const revision=`${inputs.length}:${first>>>0}:${second>>>0}`;
+    if(root._commentRenderRevision===revision)return;
+    root._commentRenderRevision=revision;
     const editors=new Map([...root.querySelectorAll('[data-comment-id] [data-comment-editor]')].map(editor=>[Number(editor.closest('[data-comment-id]').dataset.commentId),editor]));
     root.querySelector('[data-comment-count]').textContent=String(comments.length);
-    root.querySelector('[data-comment-thread]').innerHTML=comments.length?`<ol>${comments.map(item=>commentMarkup(item,canEdit,root._commentEdits?.get(Number(item.id)))).join('')}</ol>`:'<p class="tc-collab__muted">No comments yet</p>';
+    root.querySelector('[data-comment-thread]').innerHTML=markup;
     for(const [id,editor] of editors){const replacement=root.querySelector(`[data-comment-id="${id}"] [data-comment-editor]`);if(replacement){editor.querySelector('textarea').readOnly=!canEdit;editor.querySelector('[data-comment-files]').disabled=!canEdit;editor.querySelector('[data-comment-save]').disabled=!canEdit||Boolean(root._commentEdits.get(id)?.uploading);replacement.replaceWith(editor);}}
     root._syncCommentComposers?.();
     renderCommentBodies(root);
@@ -214,12 +223,13 @@
     if(root._commentAnchorAttempt?.key!==key)root._commentAnchorAttempt={key,loaded:-1,pages:0};
     const attempt=root._commentAnchorAttempt;
     const id=Number(targetId),promise=(async()=>{
-      while(root.isConnected&&root._comments?.every(item=>Number(item.id)!==id)&&!root.querySelector('[data-comments-older]').hidden){
+      while(root.isConnected&&root._commentAnchorAttempt===attempt&&root._comments?.every(item=>Number(item.id)!==id)&&!root.querySelector('[data-comments-older]').hidden){
         if(attempt.pages>=10||attempt.loaded===root._comments.length)break;
         const cursor=root._nextCommentCursor;if(!cursor)break;
         attempt.loaded=root._comments.length;attempt.pages++;
         await refreshComments(root,current,cursor);
       }
+      if(root._commentAnchorAttempt!==attempt)return false;
       const target=root.querySelector(`#comment-${id}`);
       if(target){target.classList.add('tc-comment--target');target.scrollIntoView?.({block:'center'});return true;}
       return false;
@@ -357,8 +367,9 @@
       const controller=globalThis.LificTopcoatAttachments.createComposer({root:host,client:root._composerClient,target:null,concurrency:1,textarea:field,text:{read:()=>commentTextarea(id)?.value||'',write},
         onStatus:message=>{const status=root.querySelector(`[data-comment-upload-status="${id}"]`);if(status)status.textContent=message;},
         onUploaded:(_attachment,markdown)=>{
-          const current=commentTextarea(id);if(!current)return;const text=current.value,start=current.selectionStart??text.length,end=current.selectionEnd??start,before=text.slice(0,start),after=text.slice(end),prefix=before&&!/\s$/.test(before)?' ':'',suffix=after&&!/^\s/.test(after)?' ':'';
-          current.value=`${before}${prefix}${markdown}${suffix}${after}`;const caret=start+prefix.length+markdown.length;current.setSelectionRange(caret,caret);current.dispatchEvent(new Event('input',{bubbles:true}));
+          const current=commentTextarea(id);if(!current)return;
+          const {text,caret}=globalThis.lificIssueEditor.insertSnippetAt(current.value,current.selectionStart,current.selectionEnd,markdown);
+          current.value=text;current.setSelectionRange(caret,caret);current.dispatchEvent(new Event('input',{bubbles:true}));
         }});
       const queue={get pending(){return controller.pending;},enqueue:(files,options)=>controller.enqueue(files,options),dispose(){controller.dispose();host.remove();}};
       root._commentUploads.set(id,queue);return queue;
@@ -371,7 +382,12 @@
     let candidates = [];
     let mentionMatches = [], mentionIndex = 0;
     const candidateGeneration=generation;
-    void request(`/projects/${root.dataset.projectId}/mention-candidates`).then(result => { if (!disposed && generation===candidateGeneration && result.ok) candidates = result.data; });
+    function receiveCandidates(result, current) {
+      if(disposed||generation!==current||!result.ok)return;
+      candidates=Array.isArray(result.data)?result.data:[];root._commentCandidates=candidates;
+      if(root.isConnected&&Array.isArray(root._comments))renderCommentList(root,root._comments);
+    }
+    void request(`/projects/${root.dataset.projectId}/mention-candidates`).then(result=>receiveCandidates(result,candidateGeneration));
 
     async function onSubmit(event) {
       const form = event.target;
@@ -416,7 +432,7 @@
         const row = save.closest('[data-comment-id]'), field = row.querySelector('textarea'), content = field.value.trim();
         if (content&&!root._commentUploads.get(String(save.dataset.commentSave))?.pending) {const action={type:'mutate_panel',panel:'comments',operation:'edit_comment',comment_id:Number(save.dataset.commentSave),content};trackAction(action,null,field.value);send(root,action);}
       }
-      const cancelEdit=event.target.closest('[data-comment-cancel]');if(cancelEdit){const id=String(cancelEdit.dataset.commentCancel);cancelCommentUploads(id);root._commentEdits.delete(Number(id));void refreshComments(root);}
+      const cancelEdit=event.target.closest('[data-comment-cancel]');if(cancelEdit){const id=String(cancelEdit.dataset.commentCancel);cancelCommentUploads(id);root._commentEdits.delete(Number(id));renderCommentList(root,root._comments||[]);root.querySelector(`[data-comment-edit="${Number(id)}"]`)?.focus();}
       if (remove) {
         const id = Number(remove.dataset.commentDelete);
         const comment=root._comments.find(item=>Number(item.id)===id), refs=referenceSummary(comment?.content||''), impact=[];if(refs.issues)impact.push(`${refs.issues} issue reference${refs.issues===1?'':'s'}`);if(refs.attachments)impact.push(`${refs.attachments} attachment reference${refs.attachments===1?'':'s'}`);if(refs.mentions)impact.push(`${refs.mentions} mention${refs.mentions===1?'':'s'}`);
@@ -443,8 +459,15 @@
       input.setRangeText(`@${user.username} `,at,input.selectionStart,'end');root.querySelector('[data-mention-list]').hidden=true;mentionMatches=[];input.focus();
     }
     function onKeydown(event) {
+      if(event.target.matches('[data-comment-edit-draft]')){
+        const id=Number(event.target.dataset.commentEditDraft);
+        if(event.key==='Escape'){event.preventDefault();event.stopPropagation();root.querySelector(`[data-comment-cancel="${id}"]`)?.click();}
+        else if(event.key==='Enter'&&(event.metaKey||event.ctrlKey)){event.preventDefault();root.querySelector(`[data-comment-save="${id}"]`)?.click();}
+        return;
+      }
       if(!event.target.matches('[data-comment-draft]'))return;
-      const list=root.querySelector('[data-mention-list]');if(list.hidden||!mentionMatches.length)return;
+      const list=root.querySelector('[data-mention-list]');
+      if(list.hidden||!mentionMatches.length){if(event.key==='Enter'&&(event.metaKey||event.ctrlKey)){event.preventDefault();if(root.dataset.commentEnabled==='true')event.target.closest('[data-comment-compose]')?.requestSubmit();}return;}
       if(event.key==='ArrowDown'||event.key==='ArrowUp'){event.preventDefault();mentionIndex=(mentionIndex+(event.key==='ArrowDown'?1:-1)+mentionMatches.length)%mentionMatches.length;for(const option of list.querySelectorAll('[role=option]'))option.setAttribute('aria-selected',String(Number(option.dataset.mentionIndex)===mentionIndex));}
       else if(event.key==='Enter'||event.key==='Tab'){event.preventDefault();chooseMention(mentionIndex);}
       else if(event.key==='Escape'){event.preventDefault();list.hidden=true;}
@@ -493,7 +516,8 @@
       const compose=root.querySelector('[data-comment-compose]'), relation=root.querySelector('[data-relation-create]'), wait=root.querySelector('[data-wait-create]'), del=root.querySelector('[data-issue-delete]');
       if(compose)compose.hidden=!comment;if(relation)relation.hidden=!edit;if(wait)wait.hidden=!edit;if(del)del.hidden=!edit;
       renderRelations(root);renderWaits(root,[]);
-      if(root.dataset.projectId) {const candidateGeneration=generation;void request(`/projects/${root.dataset.projectId}/mention-candidates`).then(result=>{if(!disposed&&generation===candidateGeneration&&result.ok)candidates=result.data;});}
+      root._commentCandidates=[];root._commentRenderRevision=null;
+      if(root.dataset.projectId) {const candidateGeneration=generation;void request(`/projects/${root.dataset.projectId}/mention-candidates`).then(result=>receiveCandidates(result,candidateGeneration));}
       queueMicrotask(()=>{if(!disposed)void refresh(root);});
     }
     function onWaitKind(event) {

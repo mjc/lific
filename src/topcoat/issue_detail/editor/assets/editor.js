@@ -2,6 +2,16 @@
 (() => {
   'use strict';
 
+  function insertSnippetAt(current, selectionStart, selectionEnd, snippet) {
+    const rawStart = Number.isFinite(selectionStart) ? selectionStart : current.length;
+    const rawEnd = Number.isFinite(selectionEnd) ? selectionEnd : rawStart;
+    const start = Math.min(current.length, Math.max(0, Math.min(rawStart, rawEnd)));
+    const end = Math.min(current.length, Math.max(start, Math.max(rawStart, rawEnd)));
+    const before = current.slice(0, start), after = current.slice(end);
+    const insertion = `${before && !before.endsWith('\n') ? '\n' : ''}${snippet}\n`;
+    return {text: before + insertion + after, caret: before.length + insertion.length};
+  }
+
   function createSaveQueue({text = '', savedDescription = '', expectedSeq = 0, debounceMs = -1, save, onChange = () => {}}) {
     let current = String(text), saved = String(savedDescription), seq = Number(expectedSeq);
     let dirty = current !== saved, conflict = false, error = '', timer = null, running = null;
@@ -287,7 +297,7 @@
     return index;
   }
 
-  function renderMarkdown(container, source) {
+  function renderMarkdown(container, source, {diagramBudget = {blocks:0,sourceBytes:0}} = {}) {
     container.replaceChildren();
     const lines = String(source).replace(/\r\n?/g, '\n').split('\n');
     let i = 0;
@@ -295,9 +305,16 @@
       const line = lines[i];
       if (!line.trim()) {i++; continue;}
       if (/^```/.test(line)) {
+        const language = line.slice(3).trim();
         const code = []; i++;
         while (i < lines.length && !/^```/.test(lines[i])) code.push(lines[i++]);
         if (i < lines.length) i++;
+        if (language === 'mermaid' && globalThis.LificTopcoatPublic?.renderMarkdown && globalThis.marked && globalThis.DOMPurify) {
+          const diagram = document.createElement('div');
+          container.append(diagram);
+          globalThis.LificTopcoatPublic.renderMarkdown(container.ownerDocument, diagram, `\`\`\`mermaid\n${code.join('\n')}\n\`\`\``, '', diagramBudget);
+          continue;
+        }
         const pre = document.createElement('pre'), codeNode = document.createElement('code');
         codeNode.textContent = code.join('\n'); pre.append(codeNode); container.append(pre); continue;
       }
@@ -453,14 +470,8 @@
       }
     }
     function insertUploadedMarkdown(markdown) {
-      const text = input.value;
-      const start = Math.max(0, Math.min(text.length, lastSelection.start));
-      const end = Math.max(start, Math.min(text.length, lastSelection.end));
-      const before = text.slice(0, start), after = text.slice(end);
-      const prefix = before && !before.endsWith('\n') ? '\n' : '';
-      const suffix = after && !after.startsWith('\n') ? '\n' : '';
-      const caret = before.length + prefix.length + markdown.length;
-      input.value = `${before}${prefix}${markdown}${suffix}${after}`;
+      const {text, caret} = insertSnippetAt(input.value, lastSelection.start, lastSelection.end, markdown);
+      input.value = text;
       lastSelection = {start: caret, end: caret};
       input.focus(); input.setSelectionRange(caret, caret);
       input.dispatchEvent(new Event('input', {bubbles: true}));
@@ -599,7 +610,7 @@
     return {flush, update, dispose, queue, cancel, preview() {showingPreview = true; renderState();}, edit() {showingPreview = false; renderState(); input.focus();}};
   }
 
-  const api = {createSaveQueue, renderMarkdown, mount};
+  const api = {createSaveQueue, insertSnippetAt, renderMarkdown, mount};
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   if (typeof window !== 'undefined') window.lificIssueEditor = api;
 })();

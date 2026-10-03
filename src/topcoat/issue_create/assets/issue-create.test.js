@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import fs from 'node:fs';
 const context = {URLSearchParams, encodeURIComponent, console};
+context.window = context;
+vm.runInNewContext(fs.readFileSync(new URL('../../issue_detail/editor/assets/editor.js', import.meta.url), 'utf8'), context);
 vm.runInNewContext(fs.readFileSync(new URL('./issue-create.js', import.meta.url), 'utf8'), context);
 const {model, controller, attachmentClient} = context.LificTopcoatIssueCreate;
 
@@ -99,7 +101,7 @@ test('uploaded markdown replaces the textarea selection and leaves the caret aft
   await c.upload([{name: 'screen.png'}], {start: 6, end: 7});
   const snippet = '![screen.png](/api/attachments/22)';
   assert.equal(c.state.description, `Before\n${snippet}\nafter`);
-  assert.equal(c.state.caret, 6 + 1 + snippet.length);
+  assert.equal(c.state.caret, 6 + 1 + snippet.length + 1);
 });
 
 test('inline label creation posts its color, adds and selects the label, and sorts choices', async () => {

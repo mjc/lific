@@ -68,7 +68,7 @@
     parent.append(doc.createTextNode(value.slice(cursor)));
   }
 
-  function renderMarkdown(doc, target, source, project) {
+  function renderMarkdown(doc, target, source, project, diagramBudget = {blocks:0,sourceBytes:0}) {
     const win = doc.defaultView;
     const diagrams = [];
     const renderer = new win.marked.Renderer();
@@ -121,7 +121,6 @@
       if (statements.some(part => /^radar-beta\b/i.test(part)) && statements.some(part => {const ticks = part.match(/^ticks\s+(\d+)\s*$/i); return ticks && Number(ticks[1]) > 128;})) return true;
       return statements.some(part => /^architecture-beta\b/i.test(part)) && statements.some(part => /^group\s+(?:__proto__|prototype|constructor)\b/i.test(part));
     };
-    let diagramCount = 0;
     for (const block of target.querySelectorAll('[data-public-diagram-index]')) {
       const value = diagrams[Number(block.dataset.publicDiagramIndex)];
       delete block.dataset.publicDiagramIndex;
@@ -131,9 +130,12 @@
       // out of Mermaid's temporary DOM before SVG sanitization occurs.
       if (diagramTooComplex(value) || /(?:img|image)\s*:|<\s*(?:img|image|foreignObject)|url\s*\(|@import|%%\{/i.test(value)) {
         block.textContent = 'Mermaid diagram skipped: source is too complex or contains unsupported media.';
-      } else if (++diagramCount > 2) block.textContent = 'Mermaid diagram skipped: this document contains too many diagrams.';
-      else if (!win?.mermaid || !win?.DOMPurify) block.textContent = 'Diagram renderer unavailable.';
+      } else if (diagramBudget.blocks >= 2) block.textContent = 'Mermaid diagram skipped: this document contains too many diagrams.';
+      else if (diagramBudget.sourceBytes + new TextEncoder().encode(value).length > 8192) block.textContent = 'Mermaid diagram skipped: this document contains too much diagram source.';
       else {
+        diagramBudget.blocks++;
+        diagramBudget.sourceBytes += new TextEncoder().encode(value).length;
+        if (!win?.mermaid || !win?.DOMPurify) {block.textContent = 'Diagram renderer unavailable.'; continue;}
         win.mermaid.initialize({startOnLoad:false, securityLevel:'strict', suppressErrorRendering:true, htmlLabels:false, flowchart:{htmlLabels:false}, theme:doc.documentElement.classList.contains('dark')?'dark':'default', secure:['securityLevel','htmlLabels','startOnLoad','maxTextSize','maxEdges','suppressErrorRendering'], maxTextSize:4096, maxEdges:128});
         const id = `public-diagram-${Math.random().toString(36).slice(2)}`;
         void win.mermaid.render(id, value).then(result => {

@@ -407,7 +407,7 @@ test('headless editor inserts uploaded attachment markdown at the selection and 
       await input.focus(); await input.press('Control+S');
       assert.equal(await page.evaluate(() => saves.length), 0);
       await page.evaluate(() => finishUpload());
-      await page.waitForFunction(() => document.querySelector('[data-editor-input]').value === 'one \n![sample.png](/api/attachments/17)');
+      await page.waitForFunction(() => document.querySelector('[data-editor-input]').value === 'one \n![sample.png](/api/attachments/17)\n');
       await page.locator('[data-attachment-files]').evaluate(async input => {
         while (document.querySelector('[data-editor-save]').disabled) await new Promise(resolve => setTimeout(resolve, 10));
       });
