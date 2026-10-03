@@ -715,7 +715,7 @@
     });
   }
   function section(doc, title) {
-    const value = node(doc, "section");
+    const value = node(doc, "section", null, {"data-settings-section": title});
     value.append(node(doc, "h2", title));
     return value;
   }
@@ -1048,9 +1048,7 @@
         "data-project-identity": "",
         "data-settings-identity-owner": "",
       });
-    block.append(
-      node(doc, "p", project.identifier, { class: "tc-dashboard__identifier" }),
-    );
+    const text = node(doc, "div", null, {class: "tc-project-settings__identity-text"});
     const heading = node(doc, "h1");
     heading.tabIndex = -1;
     heading.dataset.dashboardFocus = "heading";
@@ -1070,14 +1068,20 @@
           control.focus();
         });
         edit.className = "tc-project-settings__inline";
+        if (key === "emoji") {
+          edit.setAttribute("aria-label", value || "Add icon…");
+          edit.textContent = value || "+";
+        }
         target.replaceChildren(edit);
       };
       show();
     };
     if (access.manage) inline(heading, "name", "Name", project.name);
     else heading.textContent = project.name;
-    block.append(heading);
-    const description = node(doc, "div");
+    const nameRow = node(doc, "div", null, {class: "tc-project-settings__name-row"});
+    nameRow.append(heading, node(doc, "span", project.identifier, {class: "tc-project-settings__identifier"}));
+    text.append(nameRow);
+    const description = node(doc, "div", null, {class: "tc-project-settings__description"});
     if (access.manage)
       inline(
         description,
@@ -1087,11 +1091,15 @@
         true,
       );
     else description.textContent = project.description;
-    block.append(description);
-    const icon = node(doc, "div");
+    text.append(description);
+    const metadata = node(doc, "div", null, {class: "tc-project-settings__metadata"});
+    const created = new Date(/[zZ]|[+-]\d{2}:?\d{2}$/.test(project.created_at) ? project.created_at : `${project.created_at}Z`);
+    if (Number.isFinite(created.getTime())) metadata.append(node(doc, "span", `Created ${created.toLocaleDateString('en-US', {month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit'})}`));
+    text.append(metadata);
+    const icon = node(doc, "div", null, {class: "tc-project-settings__identity-icon"});
     if (access.manage) inline(icon, "emoji", "Icon", project.emoji || "");
     else if (project.emoji) icon.textContent = project.emoji;
-    block.append(icon);
+    block.append(icon, text);
     return block;
   }
   function renderSettings(doc, state, controller) {
@@ -1447,6 +1455,12 @@
       fragment.append(archive);
     }
     fragment.append(renderGroups(doc, state, controller));
+    const order = ['Sidebar group', 'Labels', 'Public view', 'Project archive', 'Project members',
+      'Import GitHub issues', 'Repository bindings', 'Danger zone', 'Project groups'];
+    for (const title of order) {
+      const area = [...fragment.children].find(child => child.dataset.settingsSection === title);
+      if (area) fragment.append(area);
+    }
     return fragment;
   }
   function attach(root, options = {}) {
