@@ -64,7 +64,7 @@
 
 .tc-dashboard__icon { display: inline-flex; width: .875rem; height: .875rem; flex: none; }
 .tc-dashboard__icon svg, .tc-dashboard__status svg { width: 100%; height: 100%; }
-.tc-dashboard__greeting-icon { position: absolute; left: 0; top: 0; width: 2.75rem; height: 2.75rem; display: grid; place-items: center; border-radius: .75rem; background: var(--tc-accent-subtle); color: var(--tc-accent); }
+.tc-dashboard__greeting-icon { position: absolute; left: 0; top: 50%; transform: translateY(-50%); width: 2.75rem; height: 2.75rem; display: grid; place-items: center; border-radius: .75rem; background: var(--tc-accent-subtle); color: var(--tc-accent); }
 .tc-dashboard__greeting-icon svg { width: 1.25rem; height: 1.25rem; }
 .tc-dashboard[data-topcoat-dashboard="home"] .tc-dashboard__hero > div:first-child::before,
 .tc-dashboard__actions .tc-button[href]::before,

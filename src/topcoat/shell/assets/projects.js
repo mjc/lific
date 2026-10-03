@@ -474,6 +474,33 @@
     controller.connect();
     draw();
     controller.refresh();
+    const menuWindow = root.ownerDocument.defaultView;
+    const openMenus = () => [...root.querySelectorAll('details')].filter(menu => menu.open);
+    const closeMenus = (restore = false) => {
+      for (const menu of openMenus()) {
+        menu.open = false;
+        if (restore) menu.querySelector('summary')?.focus({preventScroll: true});
+      }
+    };
+    const dismissMenus = event => {
+      const summary = event.target.closest?.('summary');
+      if (summary && root.contains(summary)) {
+        for (const menu of openMenus()) if (!menu.contains(summary)) menu.open = false;
+        return;
+      }
+      const menus = openMenus();
+      if (menus.some(menu => menu.contains(event.target))) return;
+      const active = root.ownerDocument.activeElement;
+      closeMenus(active === root.ownerDocument.body || menus.some(menu => menu.contains(active)));
+    };
+    const dismissMenusKey = event => {
+      if (!['Escape', 'Tab'].includes(event.key) || !openMenus().length) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      closeMenus(true);
+    };
+    menuWindow?.addEventListener?.('click', dismissMenus, true);
+    menuWindow?.addEventListener?.('keydown', dismissMenusKey, true);
     root.addEventListener('click', event => {
       if (controller.pending) return;
       const button = event.target.closest?.('[data-action="disclose"]');
@@ -578,7 +605,11 @@
       draggedProject = draggedGroup = null;
     });
     root.addEventListener('dragend', () => { draggedProject = draggedGroup = null; });
-    return {controller, destroy() { unsubscribe(); controller.disconnect(); }};
+    return {controller, destroy() {
+      menuWindow?.removeEventListener?.('click', dismissMenus, true);
+      menuWindow?.removeEventListener?.('keydown', dismissMenusKey, true);
+      unsubscribe(); controller.disconnect();
+    }};
   }
 
   const api = {CatalogController, normalizeCatalog, visibleProjects, moveProject, moveBy, moveBefore,
