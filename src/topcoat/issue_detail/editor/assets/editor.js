@@ -107,11 +107,34 @@
     return {edit, flush, state, setCanonical, setBlocked, setConflict, discard, dispose};
   }
 
+  function appendReferences(parent, source) {
+    const pattern = /\b([A-Z][A-Z0-9]{1,4})-(DOC-|PLAN-)?(\d+)(?:#comment-(\d+))?\b|(?<![A-Za-z0-9_&-])#([1-9]\d*)\b/g;
+    let offset = 0, match;
+    while ((match = pattern.exec(source))) {
+      if (match.index > offset) parent.append(document.createTextNode(source.slice(offset, match.index)));
+      const [, project, marker, number, comment, samePageComment] = match;
+      if (samePageComment) {
+        const link = document.createElement('a');
+        link.setAttribute('href', `#comment-${samePageComment}`);
+        link.className = 'comment-ref'; link.textContent = match[0];
+        parent.append(link); offset = pattern.lastIndex; continue;
+      }
+      const identifier = `${project}-${marker || ''}${number}`;
+      const link = document.createElement('a');
+      const route = `/${project}/${marker === 'DOC-' ? 'pages' : marker === 'PLAN-' ? 'plans' : `issues/${identifier}`}${comment && !marker ? `?comment=${comment}` : ''}`;
+      link.setAttribute('href', globalThis.lificSession?.state?.publicProject != null ? `/public${route}` : route);
+      link.className = 'identifier-link'; link.textContent = match[0];
+      if (!marker) link.setAttribute('data-issue-ident', identifier);
+      parent.append(link); offset = pattern.lastIndex;
+    }
+    if (offset < source.length) parent.append(document.createTextNode(source.slice(offset)));
+  }
+
   function appendInline(parent, source) {
     const pattern = /(!?)\[([^\]]*)\]\(([^)\s]+)(?:\s+"([^"]*)")?\)|\*\*([^*]+)\*\*|__([^_]+)__|`([^`]+)`|\*([^*]+)\*|_([^_]+)_/g;
     let offset = 0, match;
     while ((match = pattern.exec(source))) {
-      if (match.index > offset) parent.append(document.createTextNode(source.slice(offset, match.index)));
+      if (match.index > offset) appendReferences(parent, source.slice(offset, match.index));
       const [, image, label, rawUrl, title, bold, boldAlt, code, italic, italicAlt] = match;
       if (rawUrl) {
         const attachment = rawUrl.match(/^\/api\/attachments\/(\d+)$/);
@@ -148,15 +171,15 @@
           parent.append(link);
         }
       } else if (bold || boldAlt) {
-        const node = document.createElement('strong'); node.textContent = bold || boldAlt; parent.append(node);
+        const node = document.createElement('strong'); appendInline(node, bold || boldAlt); parent.append(node);
       } else if (italic || italicAlt) {
-        const node = document.createElement('em'); node.textContent = italic || italicAlt; parent.append(node);
+        const node = document.createElement('em'); appendInline(node, italic || italicAlt); parent.append(node);
       } else {
         const node = document.createElement('code'); node.textContent = code; parent.append(node);
       }
       offset = pattern.lastIndex;
     }
-    if (offset < source.length) parent.append(document.createTextNode(source.slice(offset)));
+    if (offset < source.length) appendReferences(parent, source.slice(offset));
   }
   function _text(parent, text) {parent.append(document.createTextNode(text));}
 

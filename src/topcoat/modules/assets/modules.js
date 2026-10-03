@@ -3,6 +3,12 @@
   const escapeHtml=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
   const editable=role=>!!role&&(role.is_admin||!role.enforced||['lead','maintainer'].includes(role.role));
   const metadataEditable=(role,project,user)=>!!role&&(role.is_admin||role.role==='lead'||role.enforced&&role.role==='maintainer'||!role.enforced&&project?.lead_user_id!=null&&Number(project.lead_user_id)===Number(user?.id));
+  function moduleIcon(value){
+    const registry=globalThis.LificTopcoatModuleIcons;
+    if(value&&!String(value).startsWith('lucide:'))return escapeHtml(value);
+    const name=String(value||'').slice(7),index=registry&&Object.hasOwn(registry.names,name)?registry.names[name]:registry?.names.Layers;
+    return `<svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${registry?.paths[index]||'<path d="m12 3 10 6-10 6L2 9z M2 15l10 6 10-6 M2 12l10 6 10-6"/>'}</svg>`;
+  }
   const STATUSES=['active','planned','paused','backlog','done','cancelled'];
   const TAB_STATUSES={active:['active','planned','paused'],backlog:['backlog'],archive:['done','cancelled']};
   function visibleModules(rows,tab){return tab==='all'?rows:rows.filter(row=>(TAB_STATUSES[tab]||[]).includes(row.status));}
@@ -28,6 +34,7 @@
       listen(globalThis,'lific:realtime',event=>{const detail=event.detail||{};if(detail.type==='resync.required'||Number(detail.project_id)===Number(this.project?.id))this.scheduleRefresh();});
       for(const event of ['focus','online'])listen(globalThis,event,()=>this.scheduleRefresh());
       listen(document,'visibilitychange',()=>{if(!document.hidden)this.scheduleRefresh();});
+      listen(globalThis,'keydown',event=>this.handleKeydown(event));
       listen(globalThis,'pagehide',event=>{if(!event.persisted)this.dispose();});
       listen(globalThis,'pageshow',event=>{if(event.persisted)audience();});
       this.unsubscribe=this.sync?.subscribe?.(()=>{
@@ -35,6 +42,15 @@
         const model=this.sync.peekProject(this.project.id);if(model?.status==='ready'){this.issues=model.issues;if(!this.localWork())this.renderList();}
       });
       if(!session?.state?.loading)void this.load();
+    }
+    handleKeydown(event){
+      if(!['e','E'].includes(event.key)||event.defaultPrevented||event.ctrlKey||event.metaKey||event.altKey)return;
+      if(this.mode!=='detail'||this.disposed||this.busy||!this.module||!this.metadataEditable()||this.root.getAttribute('aria-busy')==='true')return;
+      const focused=document.activeElement;
+      if(focused&&(focused.matches('input,textarea,select')||focused.isContentEditable))return;
+      if(this.content.querySelector('[data-module-description-form]')||this.picker||this.peek)return;
+      if([...document.querySelectorAll('dialog[open],[role="dialog"],[role="menu"]')].some(node=>!node.closest('[hidden],[aria-hidden="true"]')&&node.getClientRects().length))return;
+      event.preventDefault();this.editDescription();
     }
     identity(){let token='';try{token=localStorage.getItem('lific_token')||'';}catch{}return `${this.session?.state?.user?.id??''}:${this.session?.state?.publicProject??''}:${token}`;}
     current(turn){return !this.disposed&&turn===this.generation&&this.scope===this.identity();}
@@ -55,14 +71,14 @@
       const [issues,blocked,workable]=await Promise.all([read(''),read('&blocked=true'),read('&workable=true')]);
       return {issues,blocked:new Map(blocked.map(issue=>[issue.id,issue])),workable:new Set(workable.map(issue=>issue.id))};
     }
-    localWork(){return this.busy||this.picker||this.root.querySelector('dialog[open]')||this.content.querySelector('[data-module-description-form]')||[...this.content.querySelectorAll('[data-module-create] input')].some(input=>input.value.trim())||this.content.contains(document.activeElement)&&document.activeElement.matches('input,textarea,select');}
+    localWork(){return this.busy||this.picker||this.peek||this.root.querySelector('dialog[open]')||this.content.querySelector('[data-module-description-form]')||[...this.content.querySelectorAll('[data-module-create] input')].some(input=>input.value.trim())||this.content.contains(document.activeElement)&&document.activeElement.matches('input,textarea,select');}
     scheduleRefresh(){clearTimeout(this.timer);this.timer=setTimeout(()=>{this.timer=null;if(this.root.getAttribute('aria-busy')==='true'||this.localWork())this.scheduleRefresh();else void this.load({refresh:true});},250);}
     showError(reason){this.error.hidden=false;this.error.replaceChildren(document.createTextNode(reason?.message||'Could not load modules.'));}
     async load({refresh=false}={}){
       if(refresh&&this.localWork()){this.scheduleRefresh();return;}
       clearTimeout(this.timer);this.timer=null;
       const revision=this.editRevision;
-      const turn=++this.generation;this.busy=false;this.picker?.dispose();this.picker=null;
+      const turn=++this.generation;this.busy=false;this.picker?.dispose();this.picker=null;this.peek?.dispose();this.peek=null;if(!refresh){this.references?.dispose();this.references=null;}
       if(!refresh){this.role=null;this.content.replaceChildren();this.project=null;this.module=null;this.issues=[];this.blocked=new Map();this.workable=new Set();}
       this.status.textContent='Loading modules…';this.error.hidden=true;this.root.setAttribute('aria-busy','true');
       try {
@@ -119,21 +135,22 @@
           <progress max="${assigned.length||1}" value="${done}"></progress><span>${done}/${assigned.length} assigned issues done</span></section>
         ${edit?'<form data-module-create><label>Module name<input name="name" required maxlength="200"></label><label>Icon or emoji<input name="emoji" placeholder="Emoji or lucide:Layers"></label><button type="submit">Create module</button></form>':''}
         ${rows.length?STATUSES.concat(['other']).map(status=>{const group=rows.filter(row=>status==='other'?!STATUSES.includes(row.status):row.status===status).sort((a,b)=>a.name.localeCompare(b.name));
-          return group.length?`<section><h2>${escapeHtml(status)}</h2><ul>${group.map(module=>{const counts=moduleProgress(this.issues,module.id);return `<li><a href="/${encodeURIComponent(this.identifier)}/modules/${module.id}">${escapeHtml(module.emoji||'')} ${escapeHtml(module.name)}</a>
+          return group.length?`<section><h2>${escapeHtml(status)}</h2><ul>${group.map(module=>{const counts=moduleProgress(this.issues,module.id);return `<li><a href="/${encodeURIComponent(this.identifier)}/modules/${module.id}"><span data-module-icon>${moduleIcon(module.emoji)}</span> ${escapeHtml(module.name)}</a>
             <p>${escapeHtml(module.description?.split('\n').find(line=>line.trim()&&!line.startsWith('#'))||'')}</p><progress max="${counts.total||1}" value="${counts.done}"></progress><span>${counts.done}/${counts.total} issues done</span></li>`;}).join('')}</ul></section>`:'';}).join(''):
           `<p>${this.modules.length?'No modules in this view.':'No modules yet.'}</p>`}`;
       this.content.querySelectorAll('[data-module-tab]').forEach(button=>button.addEventListener('click',()=>{this.tab=button.dataset.moduleTab;saveTab(this.identifier,this.tab);this.renderList();}));
       this.content.querySelector('[data-module-create]')?.addEventListener('submit',event=>{event.preventDefault();const data=new FormData(event.currentTarget),name=data.get('name').trim(),emoji=data.get('emoji').trim();if(name)void this.mutate('/modules','POST',{project_id:this.project.id,name,status:'active',...emoji?{emoji}:{}});});
     }
     renderDetail({preserveDescription=true}={}){
+      this.references?.dispose();
       const descriptionForm=preserveDescription?this.content.querySelector('[data-module-description-form]'):null;
       const focused=descriptionForm?.contains(document.activeElement)?document.activeElement:null;
       descriptionForm?.remove();
       const module=this.module,edit=this.metadataEditable(),editIssues=editable(this.role),counts=moduleProgress(this.issues,this.id);
       this.content.innerHTML=`<nav aria-label="Breadcrumb"><a href="/${encodeURIComponent(this.identifier)}/modules">Modules</a> / ${escapeHtml(module.name)}</nav>
-        <header class="tc-module-heading">${edit?`<label>Module name<input data-module-name value="${escapeHtml(module.name)}"></label>`:`<h1>${escapeHtml(module.name)}</h1>`}
+        <header class="tc-module-heading"><span data-module-icon>${moduleIcon(module.emoji)}</span>${edit?`<label>Module name<input data-module-name value="${escapeHtml(module.name)}"></label>`:`<h1>${escapeHtml(module.name)}</h1>`}
           <label>Status<select aria-label="Module status" data-module-status ${edit?'':'disabled'}>${STATUSES.map(status=>`<option ${module.status===status?'selected':''}>${status}</option>`).join('')}</select></label>
-          ${edit?`<label>Icon or emoji<input data-module-emoji value="${escapeHtml(module.emoji||'')}" placeholder="Emoji or lucide:Layers"></label><button type="button" data-module-delete>Delete module</button>`:`<span>${escapeHtml(module.emoji||'')}</span>`}</header>
+          ${edit?`<label>Icon or emoji<input data-module-emoji value="${escapeHtml(module.emoji||'')}" placeholder="Emoji or lucide:Layers"></label><button type="button" data-module-delete>Delete module</button>`:''}</header>
         <section aria-label="Module progress"><progress max="${counts.total||1}" value="${counts.done}"></progress><span data-module-progress>${counts.done}/${counts.total} issues done</span></section>
         <section><h2>Description</h2><article data-module-description></article>${edit?'<button type="button" data-module-edit-description>Edit description</button>':''}</section>
         <section><header class="tc-module-heading"><h2>Issues (${this.issues.length})</h2>${editIssues?`<a href="/${encodeURIComponent(this.identifier)}/issues/new?module=${this.id}">New issue in module</a><button type="button" data-module-assign>Assign issue</button>`:''}</header>
@@ -141,6 +158,9 @@
         <p>Created ${escapeHtml(module.created_at)} · Updated ${escapeHtml(module.updated_at)}</p>`;
       const description=this.content.querySelector('[data-module-description]');
       if(globalThis.lificIssueEditor?.renderMarkdown)globalThis.lificIssueEditor.renderMarkdown(description,module.description||'');else description.textContent=module.description||'';
+      this.references=globalThis.LificTopcoatIssuePicker.bindReferences(description,{root:this.root,request:path=>this.request(path),onPeek:identifier=>{
+        this.peek?.dispose();this.peek=globalThis.LificTopcoatIssuePicker.peek(this.root,{request:path=>this.request(path),identifier,onClose:()=>{this.peek=null;}});
+      }});
       const bind=(selector,field)=>{const node=this.content.querySelector(selector);node?.addEventListener(field==='status'?'change':'blur',()=>{
         const value=field==='emoji'?node.value.trim()||null:node.value.trim();if(field==='name'&&!value){node.value=module.name;return;}
         if(value!==(module[field]??null))void this.mutate(`/modules/${this.id}`,'PUT',{[field]:value});});
@@ -162,6 +182,7 @@
       list.querySelectorAll('[data-module-detach]').forEach(button=>button.addEventListener('click',()=>void this.mutate(`/issues/${button.dataset.moduleDetach}`,'PUT',{module_id:null},{assignment:true})));
     }
     editDescription(){
+      if(this.busy||this.disposed||!this.module||!this.metadataEditable()||this.content.querySelector('[data-module-description-form]'))return;
       const article=this.content.querySelector('[data-module-description]'),button=this.content.querySelector('[data-module-edit-description]');article.hidden=true;button.hidden=true;
       const form=document.createElement('form');form.dataset.moduleDescriptionForm='';form.innerHTML=`<label>Description<textarea aria-label="Description" name="description">${escapeHtml(this.module.description)}</textarea></label><button type="submit">Save description</button><button type="button" data-description-cancel>Cancel</button>`;
       article.after(form);form.querySelector('textarea').focus();
@@ -171,8 +192,8 @@
     }
     assignIssue(){this.picker?.dispose();this.picker=globalThis.LificTopcoatIssuePicker.mount(this.root,{request:path=>this.request(path),project:this.project,projectOnly:true,title:'Assign an issue to this module',
       onClose:()=>{this.picker=null;},onSelect:async issue=>{this.picker=null;await this.mutate(`/issues/${issue.id}`,'PUT',{module_id:this.id},{assignment:true});}});}
-    dispose(){this.disposed=true;this.generation++;clearTimeout(this.timer);this.picker?.dispose();this.unsubscribe?.();for(const remove of this.listeners)remove();this.listeners=[];}
+    dispose(){this.disposed=true;this.generation++;clearTimeout(this.timer);this.picker?.dispose();this.peek?.dispose();this.references?.dispose();this.unsubscribe?.();for(const remove of this.listeners)remove();this.listeners=[];}
   }
-  const api={Controller,moduleProgress,visibleModules,issueState,metadataEditable,editable};globalThis.LificTopcoatModules=api;if(typeof module!=='undefined')module.exports=api;
+  const api={Controller,moduleProgress,visibleModules,issueState,metadataEditable,editable,moduleIcon};globalThis.LificTopcoatModules=api;if(typeof module!=='undefined')module.exports=api;
   if(typeof document!=='undefined')document.querySelectorAll('[data-topcoat-modules]').forEach(root=>{root._modules=new Controller(root);});
 })();

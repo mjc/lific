@@ -3,6 +3,39 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
+test('headless editor links cross-issue comment references as a single comment anchor',
+  {skip: !process.env.PLAYWRIGHT_EXECUTABLE_PATH}, async () => {
+    const {chromium} = await import(path.resolve(__dirname, '../../../../../e2e/node_modules/playwright/index.mjs'));
+    const browser = await chromium.launch({headless: true, executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH});
+    try {
+      const page = await browser.newPage();
+      await page.setContent('<article id="preview"></article>');
+      await page.addScriptTag({content: fs.readFileSync(`${__dirname}/editor.js`, 'utf8')});
+      await page.evaluate(() => lificIssueEditor.renderMarkdown(document.querySelector('#preview'), 'ENG-7#comment-3'));
+      const link = page.locator('#preview a');
+      assert.equal(await link.count(), 1);
+      assert.equal(await link.textContent(), 'ENG-7#comment-3');
+      assert.equal(await link.getAttribute('href'), '/ENG/issues/ENG-7?comment=3');
+    } finally {await browser.close();}
+  });
+
+test('headless editor links bare same-page comment references without matching embedded hashes',
+  {skip: !process.env.PLAYWRIGHT_EXECUTABLE_PATH}, async () => {
+    const {chromium} = await import(path.resolve(__dirname, '../../../../../e2e/node_modules/playwright/index.mjs'));
+    const browser = await chromium.launch({headless: true, executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH});
+    try {
+      const page = await browser.newPage();
+      await page.setContent('<article id="preview"></article>');
+      await page.addScriptTag({content: fs.readFileSync(`${__dirname}/editor.js`, 'utf8')});
+      await page.evaluate(() => lificIssueEditor.renderMarkdown(document.querySelector('#preview'), 'See #42, but abc#42 stays literal.'));
+      const link = page.locator('#preview a');
+      assert.equal(await link.count(), 1);
+      assert.equal(await link.textContent(), '#42');
+      assert.equal(await link.getAttribute('href'), '#comment-42');
+      assert.equal(await page.locator('#preview').textContent(), 'See #42, but abc#42 stays literal.');
+    } finally {await browser.close();}
+  });
+
 test('headless editor renders markdown as safe text and preserves a draft after conflict',
   {skip: !process.env.PLAYWRIGHT_EXECUTABLE_PATH}, async () => {
     const {chromium} = await import(path.resolve(__dirname, '../../../../../e2e/node_modules/playwright/index.mjs'));
