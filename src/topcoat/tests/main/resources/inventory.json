@@ -259,7 +259,7 @@
     "downscale": "Dimensions and byte estimates read the actual production offer. A null offer leaves the source dimensions untouched.",
     "files": "Deleted helper behavior is exercised through actual FilesController.render/renderLinks/remove and current Rust MIME-filter markup. Boundary DOM stubs do not supply production decisions.",
     "projectArchives": "Archive byte download calls the current production download closure; session notifications execute the current embedded session script. Download cancellation is asserted outside the fetch callback so production error handling cannot hide the harness assertion.",
-    "uploadQueue": "Original task queue assertions now drive actual attachment composer upload admission. Boundary DOM and upload outcomes are controlled; admission, completion and slot release are production behavior.",
+    "uploadQueue": "Original task queue assertions now drive actual attachment composer upload admission. Boundary DOM and upload outcomes are controlled; observer promises settle only from production onUploaded/onStatus and terminal item state, never directly from transport outcomes. Admission, completion and slot release are production behavior.",
     "annotateMath": "Root owns live production annotation adapters. Fixed production60-entry undo bound replaces obsolete arbitrary-limit helper; additional browser test executes actual annotation UI/canvas."
   }
 }
