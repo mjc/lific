@@ -12,6 +12,13 @@ test('empty real instances support operator CLI setup and remove their scratch d
     assert.deepEqual(await projects.json(), []);
     assert.ok(fs.existsSync(fixture.config));
     assert.ok(fs.existsSync(fixture.database));
+    const page = await fixture.newPage();
+    const errors = [];
+    page.on('pageerror', error => errors.push(error.message));
+    await page.goto('about:blank');
+    await page.goto(fixture.url('/'));
+    assert.equal(await page.evaluate(() => localStorage.getItem('lific_token')), fixture.token);
+    assert.deepEqual(errors, []);
     fixture.cli(['user', 'create', '--username', 'main-test-user', '--email', 'main-test@example.test',
       '--password', 'main-test-password-123', '--json']);
     const login = await fixture.api('/auth/login', {method: 'POST', token: null,
