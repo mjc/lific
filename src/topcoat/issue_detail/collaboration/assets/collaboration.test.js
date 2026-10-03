@@ -13,7 +13,7 @@ test('direct comment query targets scroll to the loaded comment',async()=>{
   context.globalThis.location={search:'?comment=9',hash:''};
   let scrolled=false,highlighted=false;
   const target={classList:{add:name=>{highlighted=name==='tc-comment--target';}},scrollIntoView:()=>{scrolled=true;}};
-  const root={isConnected:true,_comments:[{id:9}],querySelector:selector=>selector==='#comment-9'?target:{hidden:true}};
+  const root={dataset:{issueId:'7'},isConnected:true,_comments:[{id:9}],querySelector:selector=>selector==='#comment-9'?target:{hidden:true}};
   assert.equal(await ui.resolveCommentHash(root),true);
   assert.equal(scrolled,true);assert.equal(highlighted,true);
 });
@@ -80,7 +80,7 @@ test('wait rows distinguish user/date blockers and expose clear only with edit a
 
 test('new comment fragment supersedes a cold-load comment query',async()=>{
  context.globalThis.location={search:'?comment=9',hash:'#comment-10'};let selected;
- const root={isConnected:true,_comments:[{id:9},{id:10}],querySelector:selector=>({classList:{add(){}},scrollIntoView(){selected=selector;}})};
+ const root={dataset:{issueId:'7'},isConnected:true,_comments:[{id:9},{id:10}],querySelector:selector=>({classList:{add(){}},scrollIntoView(){selected=selector;}})};
  assert.equal(await ui.resolveCommentHash(root),true);assert.equal(selected,'#comment-10');
 });
 test('new attachment fragment supersedes the cold-load attachment query',async()=>{
