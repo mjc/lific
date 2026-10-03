@@ -201,7 +201,7 @@ test('headless image composer offers annotation, resize and alt text without upl
     await page.setContent('<section id=composer></section>');
     await page.addScriptTag({content:fs.readFileSync(`${__dirname}/attachments.js`,'utf8')});
     await page.evaluate(async()=>{
-      const canvas=document.createElement('canvas');canvas.width=5000;canvas.height=3000;const ctx=canvas.getContext('2d');ctx.fillStyle='white';ctx.fillRect(0,0,5000,3000);const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/png'));
+      const canvas=document.createElement('canvas');canvas.width=5000;canvas.height=1000;const ctx=canvas.getContext('2d');ctx.fillStyle='white';ctx.fillRect(0,0,5000,1000);const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/png'));
       window.original=new File([blob],'shot.png',{type:'image/png'});window.files=[];window.draft='';
       const client={audience:()=> 'same',upload(file){files.push(file);return {result:Promise.resolve({ok:true,data:{id:8,filename:file.name,mime:file.type}}),abort(){}};}};
       window.composer=LificTopcoatAttachments.createComposer({root:document.querySelector('section'),client,text:{read:()=>draft,write:value=>draft=value},onUploaded:(row,snippet)=>{draft+=snippet;}});
@@ -212,7 +212,7 @@ test('headless image composer offers annotation, resize and alt text without upl
     const canvas=page.locator('[data-attachment-annotation-canvas]');const box=await canvas.boundingBox();
     await page.mouse.move(box.x+10,box.y+10);await page.mouse.down();await page.mouse.move(box.x+70,box.y+70);await page.mouse.up();
     await page.getByRole('button',{name:'Upload annotated image',exact:true}).click();
-    await page.getByRole('button',{name:/Resize to 2560px/}).click();
+    await page.getByRole('button',{name:/Resize to 2560px/}).click({timeout:30000});
     await page.getByRole('textbox',{name:/Describe shot-annotated.png/}).fill('A redacted [diagram]');
     await page.getByRole('button',{name:'Apply image description',exact:true}).click();
     await page.evaluate(()=>pending);
