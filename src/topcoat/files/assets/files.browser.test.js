@@ -141,3 +141,104 @@ test('headless Files previews keep structured data safe, sortable, lazy, and rec
   assert.equal(await page.locator('[data-files-viewer] script,img,svg').count(),0);assert.deepEqual(errors,[]);
  }finally{await browser.close();}
 });
+
+test('headless Files recover errors, explain empty results, refresh project changes, and preserve archive sizes',{skip:!process.env.PLAYWRIGHT_EXECUTABLE_PATH},async t=>{
+ const {chromium}=await import(path.resolve(__dirname,'../../../..','e2e/node_modules/playwright/index.mjs'));
+ const browser=await chromium.launch({headless:true,executablePath:process.env.PLAYWRIGHT_EXECUTABLE_PATH});
+ const page=await browser.newPage();page.setDefaultTimeout(3000);const errors=[];page.on('pageerror',error=>errors.push(error.message));
+ async function mount(){
+  await page.evaluate(()=>window.controller?.dispose());
+  await page.setContent('<section data-topcoat-files data-mounted="true" data-project-identifier="ENG"><p data-files-status></p><div data-files-error hidden></div><span data-files-count></span><span data-files-bytes></span><div data-files-list></div><button data-files-more>Load more</button><button data-files-mime="image">Images</button><button data-files-mime="">All</button><select data-files-uploader></select><select data-files-sort><option value="created_at">Newest</option><option value="filename">Filename</option></select><span data-files-orphan-count></span><div data-files-orphans></div><dialog data-files-viewer><h2 data-files-viewer-title></h2><p data-files-viewer-status></p><div data-files-viewer-content></div><a data-files-download>Download original</a><button data-files-viewer-close>Close</button></dialog></section>');
+  await page.evaluate(()=>{
+   window.calls=[];window.failure=false;window.holdRead=false;window.pendingReads=[];window.holdDelete=false;
+   window.rows=[{id:1,filename:'archive.zip',mime:'application/zip',mime_class:'archive',size_bytes:100,entities:[],uploader:'alex',uploader_id:1,created_at:'2026-01-01'}];
+   window.orphans=[];
+   window.lificSession={state:{user:{id:1},publicProject:null},resolve:path=>({kind:'private',url:`/api${path}`}),request:async(path,options={})=>{
+    calls.push(path);
+    if(path==='/attachments/1/links')return {ok:true,data:{entities:[]}};
+    if(path==='/attachments/1'&&options.method==='DELETE'){if(holdDelete)await new Promise(resolve=>window.releaseDelete=resolve);rows=rows.filter(row=>row.id!==1);return {ok:true,data:{deleted:true}};}const data=path==='/projects'?[{id:7,identifier:'ENG'}]:path.includes('my-role')?{role:'maintainer',enforced:true}:path.endsWith('/orphans')?{items:orphans}:null;
+    if(data)return {ok:true,data};
+    if(path.includes('/attachments?')){
+     if(failure){failure=false;return {ok:false,error:'Transient listing failure'};}
+     const query=new URLSearchParams(path.split('?')[1]),filtered=rows.filter(row=>!query.has('mime_class')||row.mime_class===query.get('mime_class'));
+     const data={items:JSON.parse(JSON.stringify(filtered)),total_count:filtered.length,total_bytes:filtered.reduce((sum,row)=>sum+row.size_bytes,0),has_more:false};
+     if(holdRead)await new Promise(resolve=>pendingReads.push(resolve));return {ok:true,data};
+    }
+    return {ok:false,error:`Unexpected ${path}`};
+   }};
+   window.LificTopcoatAttachments={viewerKind:()=> 'zip'};
+  });
+  await page.addScriptTag({content:fs.readFileSync(`${__dirname}/files.js`,'utf8')});
+  await page.evaluate(()=>{window.controller=new LificTopcoatFiles.FilesController(document.querySelector('[data-topcoat-files]'),{attachmentClient:{preview:async()=>({ok:true,data:{kind:'zip',entries:[{name:'nested/',size:1024,compressed:128},{name:'nested/data.txt',size:1536,compressed:128}],total_entries:2,truncated:false}})}});});
+  await page.waitForFunction(()=>controller.rows.length===1&&document.querySelector('[data-topcoat-files]').getAttribute('aria-busy')==='false');
+ }
+ try{
+  await t.test('project and resync events refresh current filters while foreign projects are ignored',async()=>{
+   await mount();await page.locator('[data-files-mime="image"]').click();
+   await page.waitForFunction(()=>!controller.loadingMore);
+   const before=await page.evaluate(()=>calls.length);
+   await page.evaluate(()=>dispatchEvent(new CustomEvent('lific:realtime',{detail:{type:'attachment.created',project_id:8}})));
+   await page.waitForTimeout(350);assert.equal(await page.evaluate(()=>calls.length),before);
+   await page.evaluate(()=>{rows.push({...rows[0],id:2,filename:'new.png',mime_class:'image'});for(let i=0;i<4;i++)dispatchEvent(new CustomEvent('lific:realtime',{detail:{type:'attachment.created',project_id:7}}));});
+   await page.waitForFunction(()=>controller.rows[0]?.id===2);assert.equal(await page.evaluate(()=>calls.length),before+2,'a burst coalesces into one listing and orphan refresh');assert.equal(await page.locator('[data-files-count]').textContent(),'1 file');
+   const reads=await page.evaluate(()=>calls.filter(path=>path.includes('/attachments?')).slice(-1));assert.match(reads[0],/mime_class=image/);
+   await page.evaluate(()=>{rows=[];orphans=[{id:3,filename:'loose.txt',size_bytes:4,seconds_until_sweep:60,uploader:'alex',uploader_id:1}];dispatchEvent(new CustomEvent('lific:realtime',{detail:{type:'resync.required'}}));});
+   await page.waitForFunction(()=>controller.rows.length===0&&controller.orphans.length===1);assert.match(await page.locator('[data-files-orphans]').textContent(),/loose.txt/);
+  });
+  await t.test('focus, visibility, and BFCache restoration refresh, preserving newer filter results and cleanup',async()=>{
+   await mount();
+   for(const event of ['focus','visibilitychange','pageshow']){
+    await page.evaluate(event=>{rows[0].filename=event;if(event==='visibilitychange')document.dispatchEvent(new Event(event));else if(event==='pageshow')dispatchEvent(new PageTransitionEvent(event,{persisted:true}));else dispatchEvent(new Event(event));},event);
+    await page.waitForFunction(event=>controller.rows[0]?.filename===event,event);
+   }
+   await page.evaluate(()=>{holdRead=true;dispatchEvent(new Event('focus'));});await page.waitForFunction(()=>pendingReads.length===1);
+   await page.locator('[data-files-mime="image"]').click();await page.waitForFunction(()=>pendingReads.length===2);
+   await page.evaluate(()=>{holdRead=false;pendingReads[1]();});await page.waitForFunction(()=>controller.rows.length===0&&!controller.loadingMore);
+   await page.evaluate(()=>pendingReads[0]());assert.equal(await page.locator('[data-file-id]').count(),0);
+   const before=await page.evaluate(()=>{controller.dispose();return calls.length;});await page.evaluate(()=>dispatchEvent(new Event('focus')));await page.waitForTimeout(350);assert.equal(await page.evaluate(()=>calls.length),before);
+  });
+  await t.test('refresh waits for an active deletion so its acknowledgement remains current',async()=>{
+   await mount();await page.evaluate(()=>{holdDelete=true;window.confirm=()=>true;});
+   await page.locator('[data-files-delete="1"]').click();await page.waitForFunction(()=>typeof releaseDelete==='function');
+   const before=await page.evaluate(()=>({generation:controller.generation,reads:calls.filter(path=>path.includes('/attachments?')).length}));
+   await page.evaluate(()=>dispatchEvent(new CustomEvent('lific:realtime',{detail:{type:'attachment.deleted',project_id:7}})));await page.waitForTimeout(350);
+   assert.deepEqual(await page.evaluate(()=>({generation:controller.generation,reads:calls.filter(path=>path.includes('/attachments?')).length})),before);
+   await page.evaluate(()=>releaseDelete());await page.waitForFunction(()=>controller.rows.length===0&&!controller.deleting);assert.equal(await page.locator('[data-file-id]').count(),0);
+  });
+  await t.test('successful filter and reload requests remove a previous fetch error',async()=>{
+   await mount();await page.evaluate(async()=>{failure=true;await controller.refilter();});assert.equal(await page.locator('[data-files-error]').isVisible(),true);
+   await page.locator('[data-files-mime="image"]').click();await page.waitForFunction(()=>!controller.loadingMore);assert.equal(await page.locator('[data-files-error]').isVisible(),false);
+   await page.evaluate(async()=>{failure=true;await controller.reload();});assert.equal(await page.locator('[data-files-error]').isVisible(),true);
+   await page.evaluate(()=>controller.reload());assert.equal(await page.locator('[data-files-error]').isVisible(),false);
+  });
+  await t.test('a late inventory success preserves the orphan error until that request succeeds',async()=>{
+   for(const method of ['load','reload']){
+    await mount();await page.evaluate(method=>{
+     const request=lificSession.request;lificSession.request=async(path,options)=>path.endsWith('/orphans')?{ok:false,error:'Orphan inventory failed'}:request(path,options);
+     holdRead=true;window.inventoryLoad=controller[method]();
+    },method);
+    await page.waitForFunction(()=>pendingReads.length===1&&!document.querySelector('[data-files-error]').hidden);
+    assert.match(await page.locator('[data-files-error]').textContent(),/Orphan inventory failed/);
+    await page.evaluate(async()=>{holdRead=false;pendingReads[0]();await inventoryLoad;await Promise.resolve();});
+    assert.equal(await page.locator('[data-files-error]').isVisible(),true,'the later successful listing cannot clear the orphan failure');
+    assert.match(await page.locator('[data-files-error]').textContent(),/Orphan inventory failed/);
+    await page.evaluate(()=>controller.refilter());assert.equal(await page.locator('[data-files-error]').isVisible(),true,'a filter fetch cannot repair the orphan read');
+    await page.evaluate(async()=>{const request=lificSession.request;lificSession.request=(path,options)=>path.endsWith('/orphans')?Promise.resolve({ok:true,data:{items:[]}}):request(path,options);await controller.reload();});
+    assert.equal(await page.locator('[data-files-error]').isVisible(),false,'both inventories succeeded');
+   }
+  });
+  await t.test('empty project and filtered results retain the legacy explanation',async()=>{
+   await mount();await page.evaluate(async()=>{rows=[];await controller.reload();});assert.match(await page.locator('[data-files-list]').textContent(),/No files here yet/);
+   assert.match(await page.locator('[data-files-list]').textContent(),/Files appear once they are attached to an issue, page, or comment in this project\./);
+   await page.evaluate(async()=>{rows=[{id:1,filename:'notes.txt',mime_class:'text',size_bytes:4,entities:[],created_at:'2026-01-01'}];await controller.reload();});
+   await page.locator('[data-files-mime="image"]').click();await page.waitForFunction(()=>!controller.loadingMore);assert.match(await page.locator('[data-files-list]').textContent(),/No files here yet/);
+  });
+  await t.test('archive preview distinguishes compressed bytes and omits sizes for directory entries',async()=>{
+   await mount();await page.locator('[data-files-view="1"]').click();await page.getByRole('columnheader',{name:'Compressed',exact:true}).waitFor();
+   assert.deepEqual(await page.locator('[data-files-viewer] tbody tr').first().locator('td').allTextContents(),['nested/','','']);
+   assert.deepEqual(await page.locator('[data-files-viewer] tbody tr').nth(1).locator('td').allTextContents(),['nested/data.txt','1.5 KB','128 B']);
+   assert.equal(await page.locator('[data-files-download]').getAttribute('href'),'/api/attachments/1');
+  });
+  assert.deepEqual(errors,[]);
+ }finally{await browser.close();}
+});

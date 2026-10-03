@@ -13,6 +13,7 @@
     const value = bytes / (1024 ** rank);
     return `${value.toFixed(rank === 0 || value >= 10 ? 0 : 1)} ${units[rank]}`;
   };
+  const archiveEntrySizes = entry => String(entry.name).endsWith('/') ? ['', ''] : [formatBytes(entry.size), formatBytes(entry.compressed)];
   const formatCountdown = seconds => {
     if (seconds <= 0) return 'swept on the next pass';
     const hours = Math.floor(seconds / 3600);
@@ -371,9 +372,9 @@
       this.root = root; this.win = win; this.doc = root.ownerDocument; this.session = session;
       this.attachmentClient = attachmentClient || win.LificTopcoatAttachments?.createClient({session, win});
       this.projectName = root.dataset.projectIdentifier;
-      this.project = null; this.rows = []; this.orphans = []; this.links = new Map();
+      this.project = null; this.rows = []; this.orphans = []; this.links = new Map(); this.inventoryErrors = {files: '', orphans: ''};
       this.mime = null; this.uploader = ''; this.sort = 'created_at'; this.totalCount = 0; this.totalBytes = 0; this.hasMore = false;
-      this.loadingMore = false; this.canEdit = false; this.isAdmin = false; this.viewerId = session?.state?.user?.id ?? null;
+      this.loadingMore = false; this.deleting = null; this.refreshTimer = null; this.canEdit = false; this.isAdmin = false; this.viewerId = session?.state?.user?.id ?? null;
       this.audience = session ? identity(session) : null; this.generation = 0; this.disposed = false; this.previewGeneration = 0;
       this.listeners = []; this.aborters = new Set(); this.objectUrls = new Set();
       const listen = (target, type, fn) => { target.addEventListener(type, fn); this.listeners.push(() => target.removeEventListener(type, fn)); };
@@ -381,17 +382,34 @@
       listen(root, 'change', event => this.change(event));
       listen(root, 'cancel', event => { if (event.target.matches('[data-files-viewer]')) { this.previewGeneration++; this.clearViewer(); } });
       for (const name of ['lific:session-change', 'lific:account-change', 'lific:scope-change']) listen(win, name, () => this.transition());
+      listen(win, 'lific:realtime', event => {
+        const detail = event.detail || {};
+        if (detail.type === 'resync.required' || Number(detail.project_id) === Number(this.project?.id)) this.scheduleRefresh();
+      });
+      for (const event of ['focus', 'online']) listen(win, event, () => this.scheduleRefresh());
+      listen(this.doc, 'visibilitychange', () => { if (!this.doc.hidden) this.scheduleRefresh(); });
       listen(win, 'pagehide', event => { if (!event.persisted) this.dispose(); });
-      listen(win, 'pageshow', event => { if (event.persisted) this.transition(); });
+      listen(win, 'pageshow', event => { if (event.persisted) { this.transition(); this.scheduleRefresh(); } });
       void this.load();
     }
     current(generation) { return !this.disposed && generation === this.generation && this.audience === identity(this.session); }
+    scheduleRefresh() {
+      if (this.disposed) return;
+      this.win.clearTimeout(this.refreshTimer);
+      this.refreshTimer = this.win.setTimeout(() => {
+        this.refreshTimer = null;
+        if (this.disposed || this.audience !== identity(this.session)) return;
+        if (this.doc.hidden || this.root.getAttribute('aria-busy') === 'true' || this.loadingMore || this.deleting) { this.scheduleRefresh(); return; }
+        void this.reload();
+      }, 250);
+    }
     transition() {
       const next = identity(this.session);
       if (next === this.audience) return;
-      this.audience = next; this.generation++; this.previewGeneration++;
+      this.win.clearTimeout(this.refreshTimer); this.refreshTimer = null;
+      this.audience = next; this.generation++; this.previewGeneration++; this.deleting = null;
       for (const controller of this.aborters) controller.abort(); this.aborters.clear();
-      this.clearViewer(); this.project = null; this.rows = []; this.orphans = []; this.links.clear();
+      this.clearViewer(); this.project = null; this.rows = []; this.orphans = []; this.links.clear(); this.inventoryErrors = {files: '', orphans: ''};
       this.viewerId = this.session?.state?.user?.id ?? null;
       $(this.root, '[data-files-list]').replaceChildren(); $(this.root, '[data-files-orphans]').replaceChildren();
       this.root.setAttribute('aria-busy', 'true');
@@ -443,27 +461,52 @@
         if (!this.current(generation)) return;
         this.rows = replace ? data.items : [...this.rows, ...data.items];
         this.totalCount = data.total_count; this.totalBytes = data.total_bytes; this.hasMore = data.has_more;
+        this.inventoryError('files', '');
         this.render();
+      } catch (error) {
+        if (this.current(generation)) this.inventoryError('files', error.message);
+        throw error;
       } finally {
         if (this.current(generation)) { this.loadingMore = false; this.render(); }
       }
     }
     async loadOrphans(generation = this.generation) {
-      const data = await requestData(this.session, `/projects/${this.project.id}/attachments/orphans`);
-      if (!this.current(generation)) return;
-      this.orphans = data.items; this.renderOrphans();
+      try {
+        const data = await requestData(this.session, `/projects/${this.project.id}/attachments/orphans`);
+        if (!this.current(generation)) return;
+        this.orphans = data.items; this.inventoryError('orphans', ''); this.renderOrphans();
+      } catch (error) {
+        if (this.current(generation)) this.inventoryError('orphans', error.message);
+        throw error;
+      }
+    }
+    inventoryError(source, message) {
+      this.inventoryErrors[source] = message;
+      const pending = Object.values(this.inventoryErrors).filter(Boolean);
+      if (pending.length) this.showError('', true);
+      else { const error = $(this.root, '[data-files-error]'); error.hidden = true; error.replaceChildren(); }
     }
     async reload() {
       if (!this.project) return this.load();
       const generation = ++this.generation;
+      this.root.setAttribute('aria-busy', 'true');
       try {
         await Promise.all([this.loadPage(true, generation), this.loadOrphans(generation)]);
-        if (this.current(generation)) this.render();
+        if (this.current(generation)) {
+          this.render();
+          $(this.root, '[data-files-status]').textContent = `${this.totalCount} ${this.totalCount === 1 ? 'file' : 'files'} · ${formatBytes(this.totalBytes)}`;
+        }
       } catch (error) { if (this.current(generation)) this.showError(error.message); }
+      finally { if (this.current(generation)) this.root.setAttribute('aria-busy', 'false'); }
     }
     render() {
       const list = $(this.root, '[data-files-list]'); list.replaceChildren();
       for (const row of this.rows) list.append(this.renderRow(row));
+      if (!this.rows.length && !this.loadingMore) {
+        const empty = this.doc.createElement('p'); empty.textContent = 'No files here yet';
+        const explanation = this.doc.createElement('p'); explanation.textContent = 'Files appear once they are attached to an issue, page, or comment in this project.';
+        list.append(empty, explanation);
+      }
       $(this.root, '[data-files-count]').textContent = `${this.totalCount} ${this.totalCount === 1 ? 'file' : 'files'}`;
       $(this.root, '[data-files-bytes]').textContent = formatBytes(this.totalBytes);
       $(this.root, '[data-files-more]').hidden = !this.hasMore || this.loadingMore;
@@ -565,24 +608,28 @@
     }
     showError(message, retry = false) {
       const error = $(this.root, '[data-files-error]'); error.hidden = false; error.replaceChildren();
-      const text = this.doc.createElement('span'); text.textContent = message; error.append(text);
+      const messages = [...new Set([message, ...Object.values(this.inventoryErrors)].filter(Boolean))];
+      const text = this.doc.createElement('span'); text.textContent = messages.join(' · '); error.append(text);
       if (retry) { const button = this.doc.createElement('button'); button.type = 'button'; button.dataset.filesRetry = ''; button.textContent = 'Try again'; error.append(button); }
     }
     async remove(id, orphan = false) {
+      if (this.deleting) return;
       const generation = this.generation;
       const row = [...this.rows, ...this.orphans].find(item => item.id === id);
       if (!row || !canDelete({uploaderId: row.uploader_id, viewerId: this.viewerId, isAdmin: this.isAdmin, canEdit: this.canEdit, orphan})) return;
-      const links = orphan ? {entities: []} : await requestData(this.session, `/attachments/${id}/links`).catch(() => ({entities: []}));
-      if (!this.current(generation)) return;
-      const count = links.entities?.length || 0;
-      if (!this.win.confirm(count ? `Delete ${row.filename} and its ${count} reference${count === 1 ? '' : 's'}?` : `Delete ${row.filename}?`)) return;
-      if (!this.current(generation)) return;
+      const operation = {}; this.deleting = operation;
       try {
+        const links = orphan ? {entities: []} : await requestData(this.session, `/attachments/${id}/links`).catch(() => ({entities: []}));
+        if (!this.current(generation)) return;
+        const count = links.entities?.length || 0;
+        if (!this.win.confirm(count ? `Delete ${row.filename} and its ${count} reference${count === 1 ? '' : 's'}?` : `Delete ${row.filename}?`)) return;
+        if (!this.current(generation)) return;
         await requestData(this.session, `/attachments/${id}`, {method: 'DELETE'});
         if (!this.current(generation)) return;
         $(this.root, '[data-files-error]').hidden = true;
         await this.reload();
-      } catch (error) { this.showError(`Couldn't delete the file: ${error.message}`); }
+      } catch (error) { if (this.current(generation)) this.showError(`Couldn't delete the file: ${error.message}`); }
+      finally { if (this.deleting === operation) this.deleting = null; }
     }
     async preview(id) {
       const row = [...this.rows, ...this.orphans].find(item => item.id === id);
@@ -633,9 +680,17 @@
         if (generation !== this.previewGeneration) return;
         const status = $(dialog, '[data-files-viewer-status]');
         if (result.ok && result.data?.kind === 'zip') {
-          const list = this.doc.createElement('ul');
-          for (const entry of result.data.entries || []) { const item = this.doc.createElement('li'); item.textContent = `${entry.name} · ${formatBytes(entry.size)}`; list.append(item); }
-          content.append(list); status.textContent = result.data.truncated ? `Archive preview truncated (${result.data.total_entries} entries).` : `${result.data.total_entries} archive entries.`;
+          const table = this.doc.createElement('table'); table.className = 'tc-files__data';
+          const head = this.doc.createElement('thead'), header = this.doc.createElement('tr'), body = this.doc.createElement('tbody');
+          for (const label of ['Name', 'Size', 'Compressed']) { const cell = this.doc.createElement('th'); cell.scope = 'col'; cell.textContent = label; header.append(cell); }
+          head.append(header);
+          for (const entry of result.data.entries || []) {
+            const row = this.doc.createElement('tr');
+            for (const value of [entry.name, ...archiveEntrySizes(entry)]) { const cell = this.doc.createElement('td'); cell.textContent = value; row.append(cell); }
+            body.append(row);
+          }
+          table.append(head, body); content.append(table);
+          status.textContent = result.data.truncated ? `Archive preview truncated (${result.data.total_entries} entries).` : `${result.data.total_entries} archive entries.`;
         } else if (result.ok && result.data?.kind === 'sqlite') {
           const list = this.doc.createElement('ul');
           for (const table of result.data.tables || []) { const item = this.doc.createElement('li'); item.textContent = `${table.name} · ${table.rows} rows`; list.append(item); }
@@ -676,6 +731,7 @@
     }
     dispose() {
       this.disposed = true; this.generation++; this.previewGeneration++;
+      this.win.clearTimeout(this.refreshTimer); this.refreshTimer = null;
       for (const remove of this.listeners) remove(); this.listeners = [];
       for (const controller of this.aborters) controller.abort(); this.aborters.clear();
       this.clearViewer();
@@ -683,7 +739,7 @@
   }
 
   function attach(root, options) { const controller = new FilesController(root, options); return {controller, dispose: () => controller.dispose()}; }
-  const api = Object.freeze({PAGE_SIZE, MIME_FILTERS: Object.freeze(MIME_FILTERS), SORTS: Object.freeze(SORTS), formatBytes, formatCountdown, canDelete, entityHref, detectDelimiter, parseDelimited, sortRows, parseUnifiedDiff, summarizeDiff, FilesController, attach});
+  const api = Object.freeze({PAGE_SIZE, MIME_FILTERS: Object.freeze(MIME_FILTERS), SORTS: Object.freeze(SORTS), formatBytes, archiveEntrySizes, formatCountdown, canDelete, entityHref, detectDelimiter, parseDelimited, sortRows, parseUnifiedDiff, summarizeDiff, FilesController, attach});
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   if (typeof globalThis !== 'undefined') globalThis.LificTopcoatFiles = api;
   if (typeof window !== 'undefined') {
