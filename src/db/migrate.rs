@@ -1037,6 +1037,75 @@ mod tests {
         );
     }
 
+    #[test]
+    fn audio_mp4_migration_keeps_deleted_highest_attachment_id() {
+        assert_audio_mp4_migration_keeps_sequence(false);
+    }
+
+    #[test]
+    fn audio_mp4_migration_keeps_empty_attachment_sequence() {
+        assert_audio_mp4_migration_keeps_sequence(true);
+    }
+
+    fn assert_audio_mp4_migration_keeps_sequence(empty: bool) {
+        let conn = migrated_up_to(58);
+        let sha = "a".repeat(64);
+        conn.execute(
+            "INSERT INTO attachments(id,sha256,filename,mime,size_bytes)
+             VALUES(7,?1,'surviving.png','image/png',10),(42,?1,'deleted.png','image/png',10)",
+            [&sha],
+        )
+        .unwrap();
+        conn.execute("DELETE FROM attachments WHERE id=42", [])
+            .unwrap();
+        if empty {
+            conn.execute("DELETE FROM attachments", []).unwrap();
+        }
+        let sequence = |conn: &Connection| {
+            conn.query_row(
+                "SELECT seq FROM sqlite_sequence WHERE name='attachments'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(sequence(&conn), 42);
+        run(&conn).unwrap();
+        assert_eq!(
+            sequence(&conn),
+            42,
+            "the rebuilt table must retain deleted IDs in its watermark"
+        );
+        assert_eq!(
+            count(&conn, "SELECT COUNT(*) FROM attachments"),
+            if empty { 0 } else { 1 }
+        );
+        let row = crate::db::queries::attachments::create_attachment(
+            &conn,
+            &sha,
+            "voice.m4a",
+            "audio/mp4",
+            32,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            row.id, 43,
+            "new uploads must never reuse an earlier attachment ID"
+        );
+        run(&conn).unwrap();
+        let next = crate::db::queries::attachments::create_attachment(
+            &conn,
+            &sha,
+            "next.m4a",
+            "audio/mp4",
+            32,
+            None,
+        )
+        .unwrap();
+        assert_eq!(next.id, 44);
+    }
+
     fn stored_checksum(conn: &Connection, version: i64) -> Option<String> {
         conn.query_row(
             "SELECT checksum FROM _migrations WHERE version = ?1",
