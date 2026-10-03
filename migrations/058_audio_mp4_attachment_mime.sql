@@ -46,6 +46,15 @@ SELECT id, sha256, filename, mime, size_bytes, uploader_id, created_at,
        width, height, alt_text, imported_author
 FROM attachments;
 
+-- Preserve deleted IDs too: existing references may still point to them.
+INSERT INTO sqlite_sequence (name, seq)
+SELECT 'attachments_new', seq FROM sqlite_sequence
+WHERE name = 'attachments'
+  AND NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name = 'attachments_new');
+UPDATE sqlite_sequence
+SET seq = max(seq, COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'attachments'), 0))
+WHERE name = 'attachments_new';
+
 DROP TABLE attachments;
 ALTER TABLE attachments_new RENAME TO attachments;
 
