@@ -1,6 +1,10 @@
 .tc-page-chrome {
   min-width: 0;
-  border-bottom: 1px solid color-mix(in srgb, currentColor 16%, transparent);
+  padding: 0 1.5rem;
+  background: var(--tc-chrome);
+  color: var(--tc-muted);
+  font-size: .8125rem;
+  border-bottom: 0;
 }
 
 .tc-page-chrome__row,
@@ -15,7 +19,7 @@
 .tc-page-chrome__row {
   justify-content: space-between;
   gap: 1rem;
-  min-height: 2.75rem;
+  min-height: 2.3rem;
 }
 
 .tc-page-chrome__breadcrumb {

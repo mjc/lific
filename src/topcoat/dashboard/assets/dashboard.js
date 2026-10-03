@@ -278,6 +278,15 @@ class DashboardController {
   }
 }
 
+// Lucide vector markup from the original frontend; strings contain no user data.
+const ICONS = {"sun": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"4\"/><path d=\"M12 2v2\"/><path d=\"M12 20v2\"/><path d=\"m4.93 4.93 1.41 1.41\"/><path d=\"m17.66 17.66 1.41 1.41\"/><path d=\"M2 12h2\"/><path d=\"M20 12h2\"/><path d=\"m6.34 17.66-1.41 1.41\"/><path d=\"m19.07 4.93-1.41 1.41\"/></svg>", "sunrise": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M12 2v8\"/><path d=\"m4.93 10.93 1.41 1.41\"/><path d=\"M2 18h2\"/><path d=\"M20 18h2\"/><path d=\"m19.07 10.93-1.41 1.41\"/><path d=\"M22 22H2\"/><path d=\"m8 6 4-4 4 4\"/><path d=\"M16 18a4 4 0 0 0-8 0\"/></svg>", "sunset": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M12 10V2\"/><path d=\"m4.93 10.93 1.41 1.41\"/><path d=\"M2 18h2\"/><path d=\"M20 18h2\"/><path d=\"m19.07 10.93-1.41 1.41\"/><path d=\"M22 22H2\"/><path d=\"m16 6-4 4-4-4\"/><path d=\"M16 18a4 4 0 0 0-8 0\"/></svg>", "moon": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401\"/></svg>", "plus": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M5 12h14\"/><path d=\"M12 5v14\"/></svg>", "command": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3\"/></svg>", "circle": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"10\"/></svg>", "circle-dot": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"10\"/><circle cx=\"12\" cy=\"12\" r=\"1\"/></svg>", "circle-dashed": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M10.1 2.182a10 10 0 0 1 3.8 0\"/><path d=\"M13.9 21.818a10 10 0 0 1-3.8 0\"/><path d=\"M17.609 3.721a10 10 0 0 1 2.69 2.7\"/><path d=\"M2.182 13.9a10 10 0 0 1 0-3.8\"/><path d=\"M20.279 17.609a10 10 0 0 1-2.7 2.69\"/><path d=\"M21.818 10.1a10 10 0 0 1 0 3.8\"/><path d=\"M3.721 6.391a10 10 0 0 1 2.7-2.69\"/><path d=\"M6.391 20.279a10 10 0 0 1-2.69-2.7\"/></svg>", "circle-check-big": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M21.801 10A10 10 0 1 1 17 3.335\"/><path d=\"m9 11 3 3L22 4\"/></svg>", "circle-x": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"10\"/><path d=\"m15 9-6 6\"/><path d=\"m9 9 6 6\"/></svg>", "history": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8\"/><path d=\"M3 3v5h5\"/><path d=\"M12 7v5l4 2\"/></svg>", "pin": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M12 17v5\"/><path d=\"M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z\"/></svg>", "file-text": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z\"/><path d=\"M14 2v5a1 1 0 0 0 1 1h5\"/><path d=\"M10 9H8\"/><path d=\"M16 13H8\"/><path d=\"M16 17H8\"/></svg>", "list-checks": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M13 5h8\"/><path d=\"M13 12h8\"/><path d=\"M13 19h8\"/><path d=\"m3 17 2 2 4-4\"/><path d=\"m3 7 2 2 4-4\"/></svg>", "arrow-up-right": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M7 7h10v10\"/><path d=\"M7 17 17 7\"/></svg>"};
+function icon(doc, name, className = 'tc-dashboard__icon') {
+  const node = element(doc, 'span', null, className);
+  node.setAttribute('aria-hidden', 'true');
+  node.innerHTML = ICONS[name];
+  return node;
+}
+
 function element(doc, tag, text = null, className = null) {
   const node = doc.createElement(tag);
   if (text !== null) node.textContent = String(text);
@@ -301,10 +310,22 @@ function card(doc, title) {
 
 function issueRow(doc, project, issue) {
   const row = link(doc, '', projectRoute(project, 'issues', issue.identifier), 'tc-dashboard__issue');
-  const status = element(doc, 'span', issue.status, 'tc-dashboard__status');
+  const status = icon(doc, {active: 'circle-dot', todo: 'circle', backlog: 'circle-dashed', done: 'circle-check-big', cancelled: 'circle-x'}[issue.status] || 'circle', 'tc-dashboard__status');
+  status.dataset.status = issue.status;
+  status.removeAttribute('aria-hidden');
+  status.setAttribute('role', 'img');
+  status.setAttribute('aria-label', issue.status);
   const identifier = element(doc, 'span', issue.identifier, 'tc-dashboard__identifier');
   const title = element(doc, 'span', issue.title, 'tc-dashboard__issue-title');
-  const priority = element(doc, 'span', issue.priority, 'tc-dashboard__priority');
+  const priority = element(doc, 'span', null, 'tc-dashboard__priority');
+  priority.dataset.priority = issue.priority;
+  priority.setAttribute('role', 'img');
+  priority.setAttribute('aria-label', issue.priority);
+  priority.title = issue.priority;
+  const priorityLines = {high: [12, 6, 18], medium: [9, 15], low: [12]}[issue.priority];
+  if (priorityLines) priority.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">'
+    + priorityLines.map(y => `<line x1="5" y1="${y}" x2="19" y2="${y}"/>`).join('') + '</svg>';
+  else if (issue.priority === 'urgent') priority.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 8v4m0 4h.01"/></svg>';
   row.append(status, identifier, title, priority);
   if (issue.ageLabel) {
     row.dataset.heat = issue.heat;
@@ -332,7 +353,14 @@ function activityCard(doc, activity) {
   const list = element(doc, 'ul', null, 'tc-dashboard__activity');
   for (const row of activity) {
     const item = element(doc, 'li');
-    item.append(row.href ? link(doc, activityText(row), row.href) : element(doc, 'span', activityText(row)));
+    const content = row.href ? link(doc, '', row.href) : element(doc, 'span', null, 'tc-dashboard__link');
+    const text = activityText(row);
+    const label = row.entity_label || row.entity_type || '';
+    const actor = row.actor_display_name || row.actor_username || (row.actor_is_bot ? 'a bot' : 'system');
+    content.append(element(doc, 'span', actor, 'tc-dashboard__actor'),
+      doc.createTextNode(text.slice(actor.length, label ? -label.length : undefined)),
+      element(doc, 'span', label, 'tc-dashboard__activity-identifier'));
+    item.append(content);
     list.append(item);
   }
   section.append(list);
@@ -350,28 +378,43 @@ function renderHome(doc, model, user, now) {
   heading.dataset.dashboardFocus = 'heading';
   welcome.append(heading, element(doc, 'p', new Date(now).toLocaleDateString('en-US', {weekday: 'long', month: 'long', day: 'numeric'})));
   const actions = element(doc, 'div', null, 'tc-dashboard__actions');
-  if (model.newIssueHref) actions.append(link(doc, 'New issue', model.newIssueHref, 'tc-button'));
+  if (model.newIssueHref) {
+    const create = link(doc, 'New issue', model.newIssueHref, 'tc-button');
+    create.prepend(icon(doc, 'plus'));
+    actions.append(create);
+  }
   const jump = element(doc, 'button', 'Jump to…', 'tc-button');
+  jump.prepend(icon(doc, 'command'));
   jump.type = 'button';
   jump.dataset.paletteOpen = '';
   jump.dataset.dashboardFocus = 'palette';
   actions.append(jump);
+  welcome.prepend(icon(doc, hour < 5 || hour >= 21 ? 'moon' : hour < 12 ? 'sunrise' : hour < 17 ? 'sun' : 'sunset', 'tc-dashboard__greeting-icon'));
   hero.append(welcome, actions);
   const columns = element(doc, 'div', null, 'tc-dashboard__columns');
   const main = element(doc, 'div', null, 'tc-dashboard__main');
-  main.append(element(doc, 'h2', `My active issues (${model.issueTotal})`));
+  const activeHeading = element(doc, 'h2', 'My active issues');
+  activeHeading.append(element(doc, 'span', model.issueTotal, 'tc-dashboard__count'));
+  main.append(activeHeading);
   if (!model.issueTotal) {
     const quiet = card(doc, 'All quiet here');
     const mascot = element(doc, 'img');
     mascot.src = doc.defaultView?.LificTopcoatRouting?.href('/__topcoat-dashboard-mascot.png')
       ?? `${doc.body?.dataset.lificBasePath ?? ''}/__topcoat-dashboard-mascot.png`;
     mascot.alt = ''; mascot.width = 180;
-    quiet.append(mascot, element(doc, 'p', 'Nothing active or todo across your projects right now.'));
+    const illustration = element(doc, 'span', null, 'tc-dashboard__mascot');
+    illustration.setAttribute('aria-hidden', 'true');
+    illustration.style.maskImage = `url("${mascot.src}")`;
+    quiet.append(illustration, element(doc, 'p', 'Nothing active or todo assigned to you across your projects right now.'));
     main.append(quiet);
   }
   for (const group of model.issueGroups) {
     const section = card(doc, '');
-    section.firstElementChild.append(link(doc, `${group.project.name} (${group.total})`, projectRoute(group.project, 'overview')));
+    const destination = link(doc, '', projectRoute(group.project, 'overview'));
+    destination.append(element(doc, 'span', group.project.emoji || group.project.identifier.slice(0, 2), 'tc-dashboard__project-icon'),
+      element(doc, 'span', group.project.name, 'tc-dashboard__project-name'),
+      element(doc, 'span', group.total, 'tc-dashboard__project-count'));
+    section.firstElementChild.append(destination);
     for (const issue of group.visible) section.append(issueRow(doc, group.project, issue));
     if (group.total > group.visible.length) section.append(link(doc, `View all ${group.total} in ${group.project.identifier}`, projectRoute(group.project, 'issues')));
     main.append(section);
@@ -388,14 +431,7 @@ function renderHome(doc, model, user, now) {
     aside.append(pinned);
   }
   if (model.activity.length) aside.append(activityCard(doc, model.activity));
-  if (model.projects.length) {
-    const projects = card(doc, 'Projects');
-    for (const group of model.projectGroups) {
-      if (group.id !== null) projects.append(element(doc, 'h3', group.name));
-      for (const project of group.projects) projects.append(link(doc, `${project.name} · ${project.identifier}`, projectRoute(project, 'overview')));
-    }
-    aside.append(projects);
-  } else {
+  if (!model.projects.length) {
     const empty = card(doc, 'No projects yet');
     empty.append(element(doc, 'p', 'Create or import a project to start tracking your work.'), link(doc, 'Create project', '/projects/new'), link(doc, 'Import project', '/projects/import'));
     main.append(empty);
@@ -416,7 +452,11 @@ function renderOverview(doc, model) {
   identity.append(element(doc, 'p', project.identifier, 'tc-dashboard__identifier'), heading);
   if (project.description) identity.append(element(doc, 'p', project.description));
   const actions = element(doc, 'div', null, 'tc-dashboard__actions');
-  if (model.newIssueHref) actions.append(link(doc, 'New issue', model.newIssueHref, 'tc-button'));
+  if (model.newIssueHref) {
+    const create = link(doc, 'New issue', model.newIssueHref, 'tc-button');
+    create.prepend(icon(doc, 'plus'));
+    actions.append(create);
+  }
   if (model.settingsHref) actions.append(link(doc, 'Project settings', model.settingsHref, 'tc-button'));
   hero.append(identity, actions);
   fragment.append(hero);

@@ -366,6 +366,7 @@ pub(crate) fn shell<'a>(cx: &'a Cx, route: &ParsedRoute<'_>, content: BoxView<'a
     };
     let auth_link = route.page == Page::Login;
     let signup_link = route.page == Page::Signup;
+    let mobile_brand = route.page.title();
     let desktop_navigation = navigation(cx, route, "Desktop navigation");
     let shell_context = match route.layout {
         Layout::Auth => context::ShellContext::auth(route).expect("auth route layout"),
@@ -406,7 +407,13 @@ pub(crate) fn shell<'a>(cx: &'a Cx, route: &ParsedRoute<'_>, content: BoxView<'a
         <div class="tc-shell" data-layout=(layout_name)>
             <a class="tc-shell__skip" href="#main-content">"Skip to content"</a>
             <header class="tc-shell__header">
-                <a class="tc-shell__brand" href=(brand_href)>"Lific"</a>
+                <a class="tc-shell__brand" href=(brand_href)>
+                    <span class="tc-shell__brand-desktop">"Lific"</span>
+                    <span class="tc-shell__brand-mobile">(mobile_brand)</span>
+                </a>
+                if is_private {
+                    <span class="tc-shell__version">(concat!("v", env!("CARGO_PKG_VERSION")))</span>
+                }
                 if is_public {
                     <span class="tc-shell__hint">"Public project · Read only"</span>
                 }
