@@ -161,3 +161,26 @@ test('discard returns to the latest server version without a write', async () =>
   assert.deepEqual(calls, []);
   queue.dispose();
 });
+
+test('authored logical Markdown links retain a colliding mount while absolute and fragment targets preserve their meaning', () => {
+  const node = tag => ({tag, attributes: {}, childNodes: [],
+    append(...children) {this.childNodes.push(...children);},
+    replaceChildren() {this.childNodes = [];},
+    setAttribute(name, value) {this.attributes[name] = value;},
+  });
+  const preview = node('article');
+  const baseURI = 'https://lific.test/ENG/ENG/issues/ENG-1';
+  const context = vm.createContext({module: {exports: {}}, URL, document: {baseURI, createElement: node, createTextNode: text => ({text})},
+    LificTopcoatRouting: {href: logical => `/ENG${logical}`}, preview});
+  vm.runInContext(fs.readFileSync(`${__dirname}/editor.js`, 'utf8'), context);
+  context.module.exports.renderMarkdown(preview, '[Issue](/ENG/issues/ENG-7?comment=3#comment-3) [Settings](/settings) [Absolute](https://lific.test/ENG/issues/ENG-8) [Fragment](#comment-9) [Network](//other.test/ENG/issues/ENG-9) ENG-7');
+  const links = preview.childNodes[0].childNodes.filter(child => child.tag === 'a');
+  assert.deepEqual(links.slice(0, 5).map(link => link.href), [
+    'https://lific.test/ENG/ENG/issues/ENG-7?comment=3#comment-3',
+    'https://lific.test/ENG/settings',
+    'https://lific.test/ENG/issues/ENG-8',
+    `${baseURI}#comment-9`,
+    'https://other.test/ENG/issues/ENG-9',
+  ]);
+  assert.equal(links[5].attributes.href, '/ENG/ENG/issues/ENG-7');
+});

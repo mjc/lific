@@ -197,3 +197,9 @@ test('single issue route persists its deferred delete for the list screen to res
   assert.ok(records[0].deadline>Date.now());
  } finally {globalThis.crypto=previous;}
 });
+
+test('selected export fetches preserve the deployment mount and authorization headers',async()=>{
+ const {exportSelected}=require('./issue-list.js'),calls=[];
+ const blob=await exportSelected([issue(1)],{identity:()=>1,href:path=>`/app${path}`,headers:()=>({Authorization:'Bearer token'}),fetch:async(path,options)=>{calls.push({path,headers:options.headers});return new Response('Export');}});
+ assert.equal(await blob.text(),'Export');assert.deepEqual(calls,[{path:'/app/api/export/issues/ENG-1',headers:{Authorization:'Bearer token'}}]);
+});

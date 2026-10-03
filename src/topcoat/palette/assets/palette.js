@@ -136,13 +136,14 @@
     let projectsAt = 0, catalogAt = 0, projectsPending = null, catalogPending = null;
     let items = [], local = [], remote = [], searching = false, error = '', timer = null, queuedEnter = null;
 
+    function currentRoute() { return win.LificTopcoatRouting?.currentPath() ?? win.location.pathname; }
     function privateIdentity() {
       const state = session.state;
-      return state.publicProject === null && state.user && !win.location.pathname.startsWith('/public/') &&
-        !['/login', '/signup'].includes(win.location.pathname) ? state.user.id : null;
+      return state.publicProject === null && state.user && !currentRoute().startsWith('/public/') &&
+        !['/login', '/signup'].includes(currentRoute()) ? state.user.id : null;
     }
     const currentProject = () => catalog.projects.find(project => project.identifier.toLowerCase() ===
-      win.location.pathname.match(/^\/([A-Za-z][A-Za-z0-9_-]*)\//)?.[1]?.toLowerCase());
+      currentRoute().match(/^\/([A-Za-z][A-Za-z0-9_-]*)\//)?.[1]?.toLowerCase());
     const allowed = action => !action.requires || session.affordances?.()[action.requires] === true;
     const key = item => item.type === 'action' ? `action:${item.action.id}` : item.type === 'child' ? `child:${item.child.title}` : `nav:${item.result.route}`;
     const current = generation => !disposed && generation === epoch && identity !== null && privateIdentity() === identity;
@@ -233,7 +234,7 @@
           ...catalogResults(q, catalog),
           ...[...owners.values()].flatMap(owner => owner.results ?? []).map(result => ({...result, score: fuzzyScore(q, result.title)})).filter(result => result.score >= 0.3),
         ];
-      } else local = [...recentResults(readRecents(), catalog.projects, win.location.pathname),
+      } else local = [...recentResults(readRecents(), catalog.projects, currentRoute()),
         ...catalog.projects.map(project => ({kind: 'project', title: project.name, identifier: project.identifier, route: `/${project.identifier}/overview`, score: 0.5}))];
       publish(keepSelection);
     }
@@ -369,7 +370,7 @@
     }
 
     function navigate(href, newTab = false) {
-      if (newTab) win.open(href, '_blank', 'noopener');
+      if (newTab) win.open(win.LificTopcoatRouting?.href(href) ?? href, '_blank', 'noopener');
       else win.dispatchEvent(new win.CustomEvent('lific:navigate', {detail: {href, history: 'push'}}));
     }
 

@@ -10,11 +10,12 @@ test('headless identity screens preserve auth policy, credential errors, and adm
     const page=await browser.newPage(); page.setDefaultTimeout(5000);
     const errors=[]; page.on('pageerror',error=>errors.push(error.stack||error.message));
     const script=fs.readFileSync(`${__dirname}/identity.js`,'utf8');
-    async function mount(mode,user=null,instance={allow_signup:true,has_users:true,instance_name:'Lific',login_message:''}) {
+    async function mount(mode,user=null,instance={allow_signup:true,has_users:true,instance_name:'Lific',login_message:''},basePath='') {
       await page.route('http://identity.test/**',route=>route.fulfill({contentType:'text/html',body:`<!doctype html><html><body>
         <section class="tc-identity" data-topcoat-identity="${mode}" aria-busy="true"><p data-identity-status role="status">Loading</p><div data-identity-content></div></section></body></html>`}));
-      await page.goto('http://identity.test/');
-      await page.evaluate(({user,instance})=>{
+      await page.goto(`http://identity.test${basePath}/`);
+      await page.evaluate(({user,instance,basePath})=>{
+        window.LificTopcoatRouting={href:route=>`${basePath}${route}`};
         window.calls=[];window.navigated=[];
         window.lificSession={state:{user,loading:false},request:async(path,options={})=>{
           calls.push({path,options});
@@ -26,7 +27,7 @@ test('headless identity screens preserve auth policy, credential errors, and adm
           return {ok:false,status:403,error:'Unexpected request'};
         },refreshAccount:async()=>user?{ok:true,data:user}:{ok:false,status:401,error:'not signed in'},
           saveSession(){},clearSession(){},logout:async()=>({ok:true})};
-      },{user,instance});
+      },{user,instance,basePath});
       await page.addScriptTag({content:script});
       await page.waitForFunction(()=>document.querySelector('[data-identity-content]')?.children.length>0);
     }
@@ -208,6 +209,131 @@ test('headless identity screens preserve auth policy, credential errors, and adm
         await page.getByText('@new-member · Member · Active').waitFor();
         assert.equal(await page.getByLabel('Username').inputValue(),'');
         assert.equal(await page.getByLabel('Initial password').inputValue(),'');
+      });
+      await t.test('profile changes save trimmed values and preserve the form after a refused update',async()=>{
+        await mount('settings',{id:1,username:'member',display_name:'Member',email:'old@example.com',is_admin:false});
+        await page.evaluate(()=>{
+          const previous=lificSession.request;window.profileWrites=[];window.rejectProfile=true;
+          lificSession.request=async(path,options={})=>{
+            if(path==='/auth/me'&&options.method==='PATCH'){
+              const patch=JSON.parse(options.body);profileWrites.push(patch);
+              return rejectProfile?{ok:false,status:400,error:'Email is already in use'}:{ok:true,data:{id:1,username:'member',...patch}};
+            }
+            return previous(path,options);
+          };
+        });
+        await page.getByLabel('Display name',{exact:true}).fill('  Changed Member  ');
+        await page.getByLabel('Email',{exact:true}).fill('new@example.com');
+        await page.getByRole('button',{name:'Save profile'}).click();
+        await page.getByText('Email is already in use',{exact:true}).waitFor();
+        assert.equal(await page.getByLabel('Display name',{exact:true}).inputValue(),'  Changed Member  ');
+        await page.evaluate(()=>window.rejectProfile=false);
+        await page.getByRole('button',{name:'Save profile'}).click();
+        await page.getByText('Profile saved.',{exact:true}).waitFor();
+        assert.deepEqual(await page.evaluate(()=>profileWrites.at(-1)),{display_name:'Changed Member',email:'new@example.com'});
+        assert.equal(await page.evaluate(()=>document.querySelector('[data-topcoat-identity]')._app.state.user.display_name),'Changed Member');
+      });
+      await t.test('connected tool lifecycle confirms disconnect and delete and reconnects the original custom identity',async()=>{
+        await mount('settings',{id:1,username:'member',display_name:'Member',is_admin:false});
+        await page.evaluate(()=>{
+          const previous=lificSession.request;window.lifecycle=[];window.confirmation=true;window.confirmMessages=[];
+          window.confirm=message=>{confirmMessages.push(message);return confirmation;};
+          window.bots=[{id:8,username:'obsolete-owner-name',tool_id:'custom-laptop',display_name:'Laptop',connected:true}];
+          lificSession.request=async(path,options={})=>{
+            if(path==='/auth/bots'&&options.method!=='POST')return {ok:true,data:bots};
+            if(path==='/auth/bots/8/disconnect'){lifecycle.push(['disconnect']);bots[0].connected=false;return {ok:true,data:{disconnected:true}};}
+            if(path==='/auth/bots'&&options.method==='POST'){
+              lifecycle.push(['reconnect',JSON.parse(options.body)]);bots[0].connected=true;return {ok:true,data:{key:'replacement-tool-secret'}};
+            }
+            if(path==='/auth/bots/8'&&options.method==='DELETE'){lifecycle.push(['delete']);bots=[];return {ok:true,data:{deleted:true}};}
+            return previous(path,options);
+          };
+          const app=document.querySelector('[data-topcoat-identity]')._app;app.state.bots=bots;LificTopcoatIdentity.renderSettings(document.querySelector('[data-identity-content]'),app);
+        });
+        await page.evaluate(()=>window.confirmation=false);
+        await page.getByRole('button',{name:'Disconnect',exact:true}).click();
+        assert.deepEqual(await page.evaluate(()=>lifecycle),[]);
+        await page.evaluate(()=>window.confirmation=true);
+        await page.getByRole('button',{name:'Disconnect',exact:true}).click();
+        await page.getByText('Laptop · Disconnected',{exact:false}).waitFor();
+        await page.getByRole('button',{name:'Reconnect',exact:true}).click();
+        await page.getByText('replacement-tool-secret',{exact:true}).waitFor();
+        assert.equal(await page.getByRole('button',{name:'Disconnect',exact:true}).count(),1);
+        assert.deepEqual(await page.evaluate(()=>lifecycle[1]),['reconnect',{tool:'custom-laptop',display_name:'Laptop'}]);
+        await page.getByRole('button',{name:'Delete',exact:true}).click();
+        await page.waitForFunction(()=>!document.querySelector('[data-bot-action]'));
+        assert.deepEqual(await page.evaluate(()=>lifecycle.map(action=>action[0])),['disconnect','reconnect','delete']);
+        assert.match(await page.evaluate(()=>confirmMessages.at(-1)),/Delete/);
+      });
+      await t.test('canceling recent authentication restores stored settings and discards the coalesced patch',async()=>{
+        await mount('instance',{id:1,username:'admin',is_admin:true});
+        await page.evaluate(()=>{
+          const previous=lificSession.request;window.settingsWrites=[];
+          lificSession.request=async(path,options={})=>{
+            if(path==='/instance/settings'&&options.method==='PATCH'){settingsWrites.push(JSON.parse(options.body));return {ok:false,status:403,code:'recent_auth_required',error:'Recent authentication required'};}
+            return previous(path,options);
+          };
+        });
+        await page.getByLabel('Allow sign up').uncheck();
+        await page.getByRole('heading',{name:'Confirm your identity'}).waitFor();
+        assert.equal(await page.getByLabel('Allow sign up').isChecked(),false);
+        await page.getByLabel('Instance name').fill('Pending name');await page.getByLabel('Instance name').blur();
+        await page.getByRole('button',{name:'Cancel',exact:true}).click();
+        await page.waitForFunction(()=>document.querySelector('[data-setting=allow_signup]').checked);
+        assert.equal(await page.getByLabel('Instance name').inputValue(),'Lific');
+        assert.equal(await page.getByRole('heading',{name:'Confirm your identity'}).count(),0);
+        assert.deepEqual(await page.evaluate(()=>document.querySelector('[data-topcoat-identity]')._app.state.pendingPatch),{});
+        assert.equal(await page.evaluate(()=>settingsWrites.length),1);
+      });
+      await t.test('admin lifecycle requires confirmation and recent authentication before promotion then demotion and activation changes',async()=>{
+        await mount('instance',{id:1,username:'admin',is_admin:true});
+        await page.evaluate(()=>{
+          const previous=lificSession.request;window.lifecycle=[];window.confirmation=false;window.requireRecent=true;
+          window.confirm=()=>confirmation;window.managedUser={id:7,username:'reader',display_name:'Reader',is_admin:false,is_active:true};
+          lificSession.request=async(path,options={})=>{
+            if(path==='/users'&&options.method!=='POST')return {ok:true,data:[managedUser]};
+            if(path==='/auth/me/refresh')return {ok:true,data:{token:'recent-session'}};
+            if(path.startsWith('/users/7/')){
+              const action=path.split('/').at(-1);lifecycle.push(action);
+              if(requireRecent){requireRecent=false;return {ok:false,status:403,code:'recent_auth_required',error:'Recent authentication required'};}
+              if(action==='promote'||action==='demote')managedUser.is_admin=action==='promote';
+              else managedUser.is_active=action==='reactivate';
+              return {ok:true,data:managedUser};
+            }
+            return previous(path,options);
+          };
+          const app=document.querySelector('[data-topcoat-identity]')._app;app.state.users=[managedUser];LificTopcoatIdentity.renderInstance(document.querySelector('[data-identity-content]'),app);
+        });
+        await page.getByRole('button',{name:'Make admin',exact:true}).click();
+        assert.deepEqual(await page.evaluate(()=>lifecycle),[]);
+        await page.evaluate(()=>window.confirmation=true);
+        await page.getByRole('button',{name:'Make admin',exact:true}).click();
+        await page.getByRole('heading',{name:'Confirm your identity'}).waitFor();
+        await page.getByRole('button',{name:'Cancel',exact:true}).click();
+        await page.getByRole('button',{name:'Make admin',exact:true}).waitFor();
+        assert.deepEqual(await page.evaluate(()=>lifecycle),['promote']);
+        await page.evaluate(()=>window.requireRecent=true);
+        await page.getByRole('button',{name:'Make admin',exact:true}).click();
+        await page.getByLabel('Password',{exact:true}).fill('current password');
+        await page.getByRole('button',{name:'Confirm and continue'}).click();
+        await page.getByRole('button',{name:'Remove admin',exact:true}).waitFor();
+        await page.getByRole('button',{name:'Remove admin',exact:true}).click();
+        await page.getByRole('button',{name:'Make admin',exact:true}).waitFor();
+        await page.getByRole('button',{name:'Deactivate',exact:true}).click();
+        await page.getByRole('button',{name:'Reactivate',exact:true}).waitFor();
+        await page.getByRole('button',{name:'Reactivate',exact:true}).click();
+        await page.getByRole('button',{name:'Deactivate',exact:true}).waitFor();
+        assert.deepEqual(await page.evaluate(()=>lifecycle),['promote','promote','promote','demote','deactivate','reactivate']);
+      });
+      await t.test('prefixed identity links and tool client endpoints stay under the deployment mount',async()=>{
+        await mount('login',null,{allow_signup:true,has_users:true,instance_name:'Lific',login_message:''},'/app');
+        assert.equal(await page.getByRole('link',{name:'Create an account',exact:true}).getAttribute('href'),'/app/signup');
+        await mount('settings',{id:1,username:'admin',is_admin:true},{allow_signup:true,has_users:true},'/app');
+        assert.equal(await page.getByRole('link',{name:'Instance settings',exact:true}).getAttribute('href'),'/app/settings/instance');
+        await page.evaluate(()=>{const previous=lificSession.request;lificSession.request=async(path,options={})=>path==='/auth/bots'&&options.method==='POST'?{ok:true,data:{key:'prefixed-secret'}}:previous(path,options);});
+        await page.getByLabel('Client template').selectOption('cursor');await page.getByRole('button',{name:'Connect tool'}).click();
+        await page.getByText('prefixed-secret',{exact:true}).waitFor();
+        assert.equal(JSON.parse(await page.locator('[data-client-config]').textContent()).lific.url,'http://identity.test/app/mcp');
       });
       await t.test('password rotation refreshes revoked credentials and removes displayed secrets',async()=>{
         await mount('settings',{id:1,username:'admin',display_name:'Admin',email:'admin@example.com',is_admin:true});

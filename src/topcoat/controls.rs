@@ -1,4 +1,4 @@
-//! Shared controls for the opt-in Topcoat frontend.
+//! Shared controls for the Topcoat frontend.
 //!
 //! Render these with the request's `Cx` and load [`STYLESHEET`] after the
 //! scaffold stylesheet. Set `data-theme` on the document to [`Theme::as_str`]
@@ -696,7 +696,7 @@ mod tests {
     }
 
     #[test]
-    fn controls_preferences_preserve_existing_svelte_appearance_on_migration() {
+    fn controls_preferences_preserve_existing_appearance_settings() {
         run_preferences_script(
             r#"
             import assert from 'node:assert/strict';

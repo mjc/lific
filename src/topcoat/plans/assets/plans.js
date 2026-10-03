@@ -1,5 +1,7 @@
 (() => {
   'use strict';
+  const routeHref=path=>globalThis.LificTopcoatRouting?.href(path)??path;
+  const currentRoute=()=>globalThis.LificTopcoatRouting?.currentPath()??location.pathname;
   const escapeHtml=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
   const editable=role=>!!role&&(role.is_admin||!role.enforced||['lead','maintainer'].includes(role.role));
   const STATUSES=['active','done','archived'];
@@ -16,7 +18,7 @@
   const saveTab=(project,tab)=>{try{localStorage.setItem(`lific:subtab:plans:${project}`,tab);}catch{}};
 
   class Controller {
-    constructor(root,{session=globalThis.lificSession,sync=globalThis.lificSync,navigate=path=>location.assign(path)}={}){
+    constructor(root,{session=globalThis.lificSession,sync=globalThis.lificSync,navigate=path=>location.assign(routeHref(path))}={}){
       this.root=root;this.session=session;this.sync=sync;this.navigate=navigate;
       this.mode=root.dataset.topcoatPlans;this.identifier=root.dataset.projectIdentifier;this.id=Number(root.dataset.planId);
       this.content=root.querySelector('[data-plans-content]');this.status=root.querySelector('[data-plans-status]');this.error=root.querySelector('[data-plans-error]');
@@ -49,7 +51,7 @@
       if(!refresh){this.role=null;this.content.replaceChildren();this.plan=null;this.project=null;}
       this.error.hidden=true;this.status.textContent='Loading plans…';this.root.setAttribute('aria-busy','true');
       try {
-        if(this.session?.state?.publicProject||location.pathname.startsWith('/public/'))throw new Error('Plans are not available in public projects.');
+        if(this.session?.state?.publicProject||currentRoute().startsWith('/public/'))throw new Error('Plans are not available in public projects.');
         if(this.mode==='detail'&&(!Number.isSafeInteger(this.id)||this.id<=0))throw new Error('Invalid plan ID.');
         const projects=await this.request('/projects');if(!this.current(turn))return;
         const project=projects.find(item=>item.identifier.toLowerCase()===this.identifier.toLowerCase());
@@ -113,7 +115,7 @@
         `<button type="button" data-plan-tab="${tab}" aria-current="${this.tab===tab?'page':'false'}">${tab[0].toUpperCase()+tab.slice(1)} (${this.plans.filter(plan=>tab==='all'||plan.status===tab).length})</button>`).join('')}</nav>
         ${edit&&['active','all'].includes(this.tab)?'<form data-plan-create><label>Plan title<input name="title" required maxlength="200"></label><button type="submit" data-edit-control>Create plan</button></form>':''}
         ${rows.length?STATUSES.concat(['other']).map(status=>{const group=rows.filter(plan=>status==='other'?!STATUSES.includes(plan.status):plan.status===status);return group.length?
-          `<section><h2>${escapeHtml(status)}</h2><ul>${group.map(plan=>{const counts=progress(plan);return `<li><a href="/${encodeURIComponent(this.identifier)}/plans/${plan.id}">${escapeHtml(plan.identifier)} · ${escapeHtml(plan.title)}</a>
+          `<section><h2>${escapeHtml(status)}</h2><ul>${group.map(plan=>{const counts=progress(plan);return `<li><a href="${routeHref(`/${encodeURIComponent(this.identifier)}/plans/${plan.id}`)}">${escapeHtml(plan.identifier)} · ${escapeHtml(plan.title)}</a>
             <progress max="${counts.total||1}" value="${counts.done}"></progress><span>${counts.done}/${counts.total} steps</span></li>`;}).join('')}</ul></section>`:'';}).join(''):
           `<p>${this.plans.length?'No plans in this view.':'No plans yet.'}</p>`}`;
       this.content.querySelectorAll('[data-plan-tab]').forEach(button=>button.addEventListener('click',()=>{this.tab=button.dataset.planTab;saveTab(this.project.id,this.tab);this.renderList();}));
@@ -127,7 +129,7 @@
           <button type="button" data-step-collapse="${step.id}" aria-expanded="${expanded}" aria-label="${expanded?'Collapse':'Expand'} ${escapeHtml(step.title)}">${expanded?'▾':'▸'}</button>
           <label><input type="checkbox" data-step-done="${step.id}" data-edit-control ${step.done?'checked':''} ${edit?'':'disabled'} aria-label="Complete ${escapeHtml(step.title)}"></label>
           ${edit?`<input data-step-title="${step.id}" data-edit-control aria-label="Step title ${step.id}" value="${escapeHtml(step.title)}">`:`<span>${escapeHtml(step.title)}</span>`}
-          ${step.issue_identifier?`<a href="/${encodeURIComponent(step.issue_identifier.split('-')[0])}/issues/${encodeURIComponent(step.issue_identifier)}">${escapeHtml(provenance(step))}</a>`:''}
+          ${step.issue_identifier?`<a href="${routeHref(`/${encodeURIComponent(step.issue_identifier.split('-')[0])}/issues/${encodeURIComponent(step.issue_identifier)}`)}">${escapeHtml(provenance(step))}</a>`:''}
           ${edit?`<div class="tc-plan-step-actions"><button type="button" data-step-child="${step.id}" data-edit-control>Add child</button>
             <button type="button" data-step-link="${step.id}" data-edit-control>Link issue</button>${step.issue_id!=null?`<button type="button" data-step-detach="${step.id}" data-edit-control>Detach issue</button>`:''}
             <button type="button" data-step-move="${step.id}" data-edit-control>Move step</button>
@@ -142,12 +144,12 @@
     renderDetail(){
       this.references?.dispose();
       const plan=this.plan,edit=editable(this.role),counts=progress(plan);
-      this.content.innerHTML=`<nav aria-label="Breadcrumb"><a href="/${encodeURIComponent(this.identifier)}/plans">Plans</a> / ${escapeHtml(plan.identifier)}</nav>
+      this.content.innerHTML=`<nav aria-label="Breadcrumb"><a href="${routeHref(`/${encodeURIComponent(this.identifier)}/plans`)}">Plans</a> / ${escapeHtml(plan.identifier)}</nav>
         <header class="tc-plans-heading">${edit?`<label>Plan title<input data-plan-title data-edit-control value="${escapeHtml(plan.title)}"></label>`:`<h1>${escapeHtml(plan.title)}</h1>`}
           <label>Status<select aria-label="Plan status" data-plan-status data-edit-control ${edit?'':'disabled'}>${STATUSES.map(status=>`<option ${plan.status===status?'selected':''}>${status}</option>`).join('')}</select></label>
           ${edit?'<button type="button" data-plan-delete data-edit-control>Delete plan</button>':''}</header>
         <section aria-label="Plan progress"><progress max="${counts.total||1}" value="${counts.done}"></progress><span data-plan-progress>${counts.done}/${counts.total} steps</span></section>
-        <section class="tc-plan-anchor"><h2>Anchor issue</h2>${plan.anchor_identifier?`<a href="/${encodeURIComponent(plan.anchor_identifier.split('-')[0])}/issues/${encodeURIComponent(plan.anchor_identifier)}">${escapeHtml(plan.anchor_identifier)}</a>`:'<p>No anchor issue.</p>'}
+        <section class="tc-plan-anchor"><h2>Anchor issue</h2>${plan.anchor_identifier?`<a href="${routeHref(`/${encodeURIComponent(plan.anchor_identifier.split('-')[0])}/issues/${encodeURIComponent(plan.anchor_identifier)}`)}">${escapeHtml(plan.anchor_identifier)}</a>`:'<p>No anchor issue.</p>'}
           ${edit?'<button type="button" data-plan-anchor data-edit-control>Set anchor issue</button>':''}</section>
         <section><h2>Steps</h2>${edit?'<button type="button" data-plan-add-root data-edit-control>Add step</button>':''}
           ${plan.steps?.length?this.stepRows(plan.steps):'<p>No steps yet.</p>'}</section>

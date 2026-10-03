@@ -8,9 +8,9 @@ test('headless activity, insights, and graph preserve data scope, aggregate mean
     const {chromium}=await import(path.resolve(__dirname,'../../../../e2e/node_modules/playwright/index.mjs'));
     const browser=await chromium.launch({headless:true,executablePath:process.env.PLAYWRIGHT_EXECUTABLE_PATH});
     const page=await browser.newPage();page.setDefaultTimeout(6000);const errors=[];page.on('pageerror',error=>errors.push(error.message));
-    async function mount(mode,{viewer=false,query=''}={}){
+    async function mount(mode,{viewer=false,query='',basePath=''}={}){
       await page.route('http://analytics.test/**',route=>route.fulfill({contentType:'text/html',body:`<!doctype html><section data-topcoat-analytics="${mode}" data-project-identifier="ENG"><p data-analytics-status role="status"></p><div data-analytics-error role="alert" hidden></div><div data-analytics-content></div></section>`}));
-      await page.goto(`http://analytics.test/ENG/${mode}${query}`);
+      await page.goto(`http://analytics.test${basePath}/ENG/${mode}${query}`);
       await page.evaluate(({viewer})=>{
         window.calls=[];window.destinations=[];window.failPath=null;window.holdPath=null;window.releaseRead=null;window.graphRefreshFailure=false;
         window.activity=Array.from({length:51},(_,index)=>({id:51-index,ts:`2026-10-${index===50?'01':'02'} 10:00:00`,actor_user_id:index%2?7:null,actor_username:index%2?'mika':null,actor_display_name:index%2?'Mika':null,actor_is_bot:false,transport:index%2?'web':'system',entity_type:index===50?'page':'issue',entity_id:index===50?8:7,entity_label:index===50?'Knowledge':'ENG-7',project_id:3,issue_id:index===50?null:7,page_id:index===50?8:null,action:'update',field:'description',old_value:'first\nold line\nlast',new_value:'first\nnew line\nlast'}));
@@ -48,6 +48,7 @@ test('headless activity, insights, and graph preserve data scope, aggregate mean
           if(url===holdPath){const snapshot=result();holdPath=null;return new Promise(resolve=>{window.releaseRead=()=>{const release=resolve;window.releaseRead=null;release(snapshot);};});}return result();
         }};
       },{viewer});
+      await page.evaluate(basePath=>{document.body.dataset.lificBasePath=basePath;window.LificTopcoatRouting={href:route=>`${basePath}${route}`,path:pathname=>basePath&&pathname.startsWith(`${basePath}/`)?pathname.slice(basePath.length):pathname};},basePath);
       for(const file of ['model.js','routes.js'])await page.addScriptTag({content:fs.readFileSync(path.join(__dirname,file),'utf8')});
       await page.addStyleTag({content:fs.readFileSync(path.join(__dirname,'routes.css'),'utf8')});
       await page.waitForFunction(()=>document.querySelector('[data-topcoat-analytics]').getAttribute('aria-busy')==='false');
@@ -160,6 +161,19 @@ test('headless activity, insights, and graph preserve data scope, aggregate mean
         assert.equal(await page.locator('[data-graph-relation-list] a').count(),2);
         await page.evaluate(()=>{holdPath='/issues?project_id=3&limit=500';void document.querySelector('[data-topcoat-analytics]')._analytics.load();});await page.waitForFunction(()=>typeof releaseRead==='function');
         await page.evaluate(()=>{lificSession.state.user=null;dispatchEvent(new CustomEvent('lific:account-change'));});assert.equal(await page.locator('[data-graph-node]').count(),0);await page.evaluate(()=>{holdPath=null;releaseRead();});await page.waitForTimeout(50);assert.equal(await page.locator('[data-graph-node]').count(),0);await page.getByText('Sign in to view project data.').waitFor();
+      });
+      await t.test('prefixed activity and graph keep native links external and navigation events logical',async()=>{
+        await mount('activity',{basePath:'/ENG',query:'?unknown=keep'});
+        assert.equal(await page.getByRole('link',{name:'Project overview'}).getAttribute('href'),'/ENG/ENG/overview');
+        const first=page.locator('[data-activity-rows] details').first();await first.locator('summary').click();
+        assert.equal(await first.getByRole('link',{name:'ENG-7'}).getAttribute('href'),'/ENG/ENG/issues/ENG-7');
+        await page.evaluate(()=>{delete window.LificTopcoatRouting;});
+        await first.getByRole('link',{name:'ENG-7'}).click();assert.deepEqual(await page.evaluate(()=>destinations),['/ENG/issues/ENG-7']);
+        await page.getByLabel('Search activity').fill('new');assert.match(page.url(),/\/ENG\/ENG\/activity\?/);assert.match(page.url(),/unknown=keep/);
+        await mount('graph',{basePath:'/ENG'});
+        assert.ok((await page.locator('[data-graph-relation-list] a').evaluateAll(links=>links.map(link=>link.getAttribute('href')))).every(href=>href.startsWith('/ENG/ENG/issues/')));
+        await page.getByRole('button',{name:'Manage relation ENG-1 blocks ENG-2',exact:true}).click();
+        assert.ok((await page.getByRole('dialog').locator('a').evaluateAll(links=>links.map(link=>link.getAttribute('href')))).every(href=>href.startsWith('/ENG/ENG/issues/')));
       });
       assert.deepEqual(errors,[]);
     }finally{await browser.close();}

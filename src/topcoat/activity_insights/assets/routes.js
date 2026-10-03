@@ -4,7 +4,9 @@
   const escapeHtml=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const identity=session=>session?.state?.publicProject==null&&session?.state?.user?`private:${session.state.user.id}`:null;
   const editable=role=>role&&(!role.enforced||role.is_admin||['lead','maintainer','admin'].includes(role.role));
-  const href=(project,issue)=>`/${encodeURIComponent(project)}/issues/${encodeURIComponent(issue.identifier)}`;
+  const routeHref=(path,win)=>win.LificTopcoatRouting?.href(path) ?? `${win.document.body?.dataset.lificBasePath ?? ''}${path}`;
+  const routePath=(path,win)=>{const base=win.document.body?.dataset.lificBasePath;return win.LificTopcoatRouting?.path(path) ?? (base&&path.startsWith(`${base}/`)?path.slice(base.length):path);};
+  const href=(project,issue,win)=>routeHref(`/${encodeURIComponent(project)}/issues/${encodeURIComponent(issue.identifier)}`,win);
   const relationName=type=>type==='duplicate'?'duplicates':type==='blocks'?'blocks':'relates to';
   const ACTIVITY_PAGE=50;
   const geometry={nodeWidth:200,nodeHeight:58,gapX:90,gapY:18,componentGap:48};
@@ -18,7 +20,7 @@
       const query=queryOf(win);this.filters={actor:query.get('actor')||'all',query:query.get('q')||'',start:query.get('start')||'',end:query.get('end')||''};
       this.weeks=12;this.showClosed=query.get('closed')==='1';this.view=query.get('view')==='unlinked'?'unlinked':'linked';this.transform={x:24,y:24,scale:1};
       const listen=(target,type,handler)=>{target.addEventListener(type,handler);this.listeners.push(()=>target.removeEventListener(type,handler));};
-      listen(root,'click',event=>{const link=event.target.closest('a[href]');if(link&&root.contains(link)&&!event.ctrlKey&&!event.metaKey&&!event.shiftKey&&!event.altKey&&event.button===0){event.preventDefault();this.navigate(link.getAttribute('href'));}});
+      listen(root,'click',event=>{const link=event.target.closest('a[href]');if(link&&root.contains(link)&&!event.ctrlKey&&!event.metaKey&&!event.shiftKey&&!event.altKey&&event.button===0){event.preventDefault();this.navigate(routePath(link.getAttribute('href'),this.win));}});
       for(const name of ['lific:account-change','lific:session-change','lific:scope-change'])listen(win,name,()=>this.transition());
       listen(win,'pagehide',event=>{if(!event.persisted)this.dispose();});
       listen(win,'pageshow',event=>{if(event.persisted)this.restore();});
@@ -105,7 +107,7 @@
     }
     renderActivity(){
       const f=this.filters;
-      this.content.innerHTML=`<header><h1>Activity</h1><a href="/${encodeURIComponent(this.identifier)}/overview">Project overview</a></header>
+      this.content.innerHTML=`<header><h1>Activity</h1><a href="${routeHref(`/${encodeURIComponent(this.identifier)}/overview`,this.win)}">Project overview</a></header>
         <form class="tc-analytics__filters" data-activity-filters><label>Search activity<input type="search" name="q" value="${escapeHtml(f.query)}"></label>
           <label>From date<input type="date" name="start" value="${escapeHtml(f.start)}"></label><label>To date<input type="date" name="end" value="${escapeHtml(f.end)}"></label>
           <button type="button" data-activity-clear>Clear filters</button></form>
@@ -135,7 +137,7 @@
         const diff=model.diffLines(row.old_value||'',row.new_value||''),multiline=(row.old_value||'').includes('\n')||(row.new_value||'').includes('\n');
         return `<details data-activity-id="${row.id}" ${expanded.includes(String(row.id))?'open':''}><summary>${escapeHtml(model.actorName(row))}${row.actor_is_bot?' · agent':''} ${escapeHtml(model.activityVerb(row))} ${escapeHtml(row.entity_label||`#${row.entity_id}`)} <time datetime="${model.timestamp(row.ts).toISOString()}">${escapeHtml(row.ts)}</time>
           ${row.action==='update'&&!multiline?` · ${escapeHtml(row.old_value||'(none)')} → ${escapeHtml(row.new_value||'(none)')}`:''}</summary>
-          <dl><dt>When</dt><dd>${escapeHtml(model.timestamp(row.ts).toLocaleString())} · ${escapeHtml(row.ts)} UTC</dd><dt>Who</dt><dd>${escapeHtml(model.actorName(row))} ${escapeHtml(row.actor_username||'')} via ${escapeHtml(row.transport)}${standing>=0?` · ${this.actors[standing].actions} actions · rank ${standing+1}`:''}</dd><dt>Entity</dt><dd>${dest?`<a href="${escapeHtml(dest)}">${escapeHtml(row.entity_label||`#${row.entity_id}`)}</a>`:escapeHtml(row.entity_label||`#${row.entity_id}`)}</dd></dl>
+          <dl><dt>When</dt><dd>${escapeHtml(model.timestamp(row.ts).toLocaleString())} · ${escapeHtml(row.ts)} UTC</dd><dt>Who</dt><dd>${escapeHtml(model.actorName(row))} ${escapeHtml(row.actor_username||'')} via ${escapeHtml(row.transport)}${standing>=0?` · ${this.actors[standing].actions} actions · rank ${standing+1}`:''}</dd><dt>Entity</dt><dd>${dest?`<a href="${escapeHtml(routeHref(dest,this.win))}">${escapeHtml(row.entity_label||`#${row.entity_id}`)}</a>`:escapeHtml(row.entity_label||`#${row.entity_id}`)}</dd></dl>
           ${multiline&&diff!==null?`<pre class="tc-activity__diff" aria-label="Changed lines">${model.foldContext(diff).map(line=>line.kind==='fold'?`<span>… ${line.count} unchanged lines …</span>`:`<span class="tc-activity__${line.kind}">${line.kind==='added'?'+ ':line.kind==='removed'?'- ':'  '}${escapeHtml(line.text)}</span>`).join('')}</pre>`:`<div class="tc-activity__values"><div><h3>Before</h3><pre>${escapeHtml(row.old_value||'(none)')}</pre></div><div><h3>After</h3><pre>${escapeHtml(row.new_value||'(none)')}</pre></div></div>`}</details>`;}).join('')}</section>`).join(''):`<p>${this.items.length?'No matching activity in the loaded history.':'No activity yet.'}</p>`;
       if(focus)root.querySelector(`[data-activity-id="${focus}"] summary`)?.focus();
       const more=this.content.querySelector('[data-activity-more]');more.hidden=!this.hasMore;more.disabled=this.loadingMore;more.textContent=this.loadingMore?'Loading…':'Load more';
@@ -194,11 +196,11 @@
             <svg class="tc-graph__edges" data-graph-edges width="${Math.max(200,layout.width)}" height="${Math.max(58,layout.height)}" aria-hidden="true"><defs><marker id="tc-graph-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/></marker></defs></svg>
             ${rows.map(issue=>{const point=layout.positions.get(issue.id);return `<article class="tc-graph__node" data-graph-node="${issue.id}" style="left:${point.x}px;top:${point.y}px">
               ${edit?`<button type="button" data-graph-target="${issue.id}" class="tc-graph__handle tc-graph__handle--target" aria-label="Connect to ${escapeHtml(issue.identifier)}">●</button>`:''}
-              <a href="${href(this.identifier,issue)}" data-graph-issue="${issue.id}"><strong>${escapeHtml(issue.identifier)} · ${escapeHtml(issue.status)}</strong><span>${escapeHtml(issue.title)}</span></a>
+              <a href="${href(this.identifier,issue,this.win)}" data-graph-issue="${issue.id}"><strong>${escapeHtml(issue.identifier)} · ${escapeHtml(issue.status)}</strong><span>${escapeHtml(issue.title)}</span></a>
               ${edit?`<button type="button" data-graph-source="${issue.id}" class="tc-graph__handle tc-graph__handle--source" aria-label="Connect from ${escapeHtml(issue.identifier)}">●</button>`:''}</article>`;}).join('')}</div></div>
           <section class="tc-analytics__card" aria-label="Graph text alternative"><h2>Issues and relations</h2><p>Every node and relation is available here for keyboard navigation.</p>
-            <ul>${rows.map(issue=>`<li><a href="${href(this.identifier,issue)}">${escapeHtml(issue.identifier)} · ${escapeHtml(issue.title)}</a> · ${escapeHtml(issue.status)}${edit?` <button type="button" data-graph-connect-from="${issue.id}">Connect ${escapeHtml(issue.identifier)}</button>`:''}</li>`).join('')}</ul>
-            ${this.view==='linked'?`<ul data-graph-relation-list>${partition.relations.map((relation,index)=>`<li><a href="/${encodeURIComponent(this.identifier)}/issues/${encodeURIComponent(relation.source_identifier)}">${escapeHtml(relation.source_identifier)}</a> ${relationName(relation.relation_type)} <a href="/${encodeURIComponent(this.identifier)}/issues/${encodeURIComponent(relation.target_identifier)}">${escapeHtml(relation.target_identifier)}</a>${edit?` <button type="button" data-graph-edge="${index}">Manage relation ${escapeHtml(relation.source_identifier)} ${relationName(relation.relation_type)} ${escapeHtml(relation.target_identifier)}</button>`:''}</li>`).join('')}</ul>`:''}</section>`}`;
+            <ul>${rows.map(issue=>`<li><a href="${href(this.identifier,issue,this.win)}">${escapeHtml(issue.identifier)} · ${escapeHtml(issue.title)}</a> · ${escapeHtml(issue.status)}${edit?` <button type="button" data-graph-connect-from="${issue.id}">Connect ${escapeHtml(issue.identifier)}</button>`:''}</li>`).join('')}</ul>
+            ${this.view==='linked'?`<ul data-graph-relation-list>${partition.relations.map((relation,index)=>`<li><a href="${routeHref(`/${encodeURIComponent(this.identifier)}/issues/${encodeURIComponent(relation.source_identifier)}`,this.win)}">${escapeHtml(relation.source_identifier)}</a> ${relationName(relation.relation_type)} <a href="${routeHref(`/${encodeURIComponent(this.identifier)}/issues/${encodeURIComponent(relation.target_identifier)}`,this.win)}">${escapeHtml(relation.target_identifier)}</a>${edit?` <button type="button" data-graph-edge="${index}">Manage relation ${escapeHtml(relation.source_identifier)} ${relationName(relation.relation_type)} ${escapeHtml(relation.target_identifier)}</button>`:''}</li>`).join('')}</ul>`:''}</section>`}`;
       this.content.querySelectorAll('[data-graph-view]').forEach(button=>button.addEventListener('click',()=>{this.view=button.dataset.graphView;this.transform={x:24,y:24,scale:1};this.saveQuery({view:this.view==='linked'?'':this.view});this.renderGraph();this.content.querySelector(`[data-graph-view="${this.view}"]`).focus();}));
       this.content.querySelector('[data-graph-closed]').addEventListener('change',event=>{this.showClosed=event.target.checked;this.saveQuery({closed:this.showClosed?'1':''});this.renderGraph();this.content.querySelector('[data-graph-closed]').focus();});
       this.content.querySelectorAll('[data-graph-connect],[data-graph-connect-from],[data-graph-source]').forEach(button=>button.addEventListener('click',()=>this.connectDialog(Number(button.dataset.graphConnectFrom||button.dataset.graphSource)||null)));
@@ -287,7 +289,7 @@
     }
     edgeDialog(relation){
       if(!editable(this.role)||this.busy)return;
-      const dialog=this.openDialog('Manage relation',`<p><a href="/${encodeURIComponent(this.identifier)}/issues/${encodeURIComponent(relation.source_identifier)}">${escapeHtml(relation.source_identifier)}</a> ${relationName(relation.relation_type)} <a href="/${encodeURIComponent(this.identifier)}/issues/${encodeURIComponent(relation.target_identifier)}">${escapeHtml(relation.target_identifier)}</a></p>
+      const dialog=this.openDialog('Manage relation',`<p><a href="${routeHref(`/${encodeURIComponent(this.identifier)}/issues/${encodeURIComponent(relation.source_identifier)}`,this.win)}">${escapeHtml(relation.source_identifier)}</a> ${relationName(relation.relation_type)} <a href="${routeHref(`/${encodeURIComponent(this.identifier)}/issues/${encodeURIComponent(relation.target_identifier)}`,this.win)}">${escapeHtml(relation.target_identifier)}</a></p>
         ${relation.relation_type!=='relates_to'?'<button type="button" data-relation-reverse>Reverse direction</button>':''}<button type="button" data-relation-remove>Remove relation</button>`);
       const payload={source:relation.source_identifier,target:relation.target_identifier};dialog.querySelector('[data-relation-reverse]')?.addEventListener('click',()=>void this.mutate('/issues/reverse',payload));dialog.querySelector('[data-relation-remove]').addEventListener('click',()=>void this.mutate('/issues/unlink',payload));
     }
@@ -304,7 +306,7 @@
     hidePreview(){this.previewTurn++;this.win.clearTimeout(this.previewShow);this.win.clearTimeout(this.previewHide);this.preview?.remove();this.preview=null;}
     async showPreview(id,anchor){
       this.hidePreview();const turn=this.previewTurn,generation=this.generation,issue=this.issues.find(row=>row.id===id);if(!issue)return;
-      const card=this.doc.createElement('aside');card.className='tc-graph__preview';card.setAttribute('aria-label',`Preview ${issue.identifier}`);card.innerHTML=`<h2>${escapeHtml(issue.identifier)}</h2><p>${escapeHtml(issue.title)}</p><p>${escapeHtml(issue.status)} · ${escapeHtml(issue.priority||'none')}</p><p data-preview-description>Loading preview…</p><a href="${href(this.identifier,issue)}">Open issue</a>`;
+      const card=this.doc.createElement('aside');card.className='tc-graph__preview';card.setAttribute('aria-label',`Preview ${issue.identifier}`);card.innerHTML=`<h2>${escapeHtml(issue.identifier)}</h2><p>${escapeHtml(issue.title)}</p><p>${escapeHtml(issue.status)} · ${escapeHtml(issue.priority||'none')}</p><p data-preview-description>Loading preview…</p><a href="${href(this.identifier,issue,this.win)}">Open issue</a>`;
       this.root.append(card);this.preview=card;const rect=anchor.getBoundingClientRect();card.style.left=`${Math.max(8,Math.min(rect.left,this.win.innerWidth-330))}px`;card.style.top=`${Math.max(8,Math.min(rect.bottom+6,this.win.innerHeight-230))}px`;
       card.addEventListener('pointerenter',()=>this.win.clearTimeout(this.previewHide));card.addEventListener('pointerleave',()=>this.hidePreview());card.addEventListener('keydown',event=>{if(event.key==='Escape'){event.preventDefault();this.hidePreview();anchor.focus();}});
       try{const data=await this.request(`/issues/resolve/${encodeURIComponent(issue.identifier)}`);if(!this.current(generation)||turn!==this.previewTurn)return;card.querySelector('[data-preview-description]').textContent=data.description?.slice(0,1500)||'No description.';}

@@ -95,6 +95,19 @@ test('headless project Files preserve scope, filters, paging, permissions, orpha
   assert.equal(await page.locator('[data-files-viewer]').evaluate(dialog=>dialog.open),false);
   assert.equal(await page.locator('[data-files-viewer-title]').textContent(),'');
   assert.equal(await page.locator('[data-files-delete="1"]').isVisible(),false);
+  await page.evaluate(() => {
+   window.LificTopcoatRouting={href:path=>`/ENG${path}`};
+   lificSession.resolve=path=>({kind:'private',url:`/ENG/api${path}`});
+   lificSession.state.user.id=6;window.dispatchEvent(new Event('lific:session-change'));
+  });
+  await page.waitForFunction(()=>document.querySelectorAll('[data-file-id]').length===50);
+  await page.locator('[data-files-expand="3"]').click();await page.getByRole('link',{name:'ENG-3'}).waitFor();
+  assert.equal(await page.getByRole('link',{name:'ENG-3'}).getAttribute('href'),'/ENG/ENG/issues/ENG-3');
+  assert.equal(await page.getByRole('link',{name:'OTHER-4'}).getAttribute('href'),'/ENG/OTHER/issues/OTHER-4');
+  assert.equal(await page.getByRole('link',{name:'OTHER-DOC-17',exact:true}).getAttribute('href'),'/ENG/OTHER/pages/17');
+  await page.locator('[data-files-view="2"]').click();await page.locator('[data-files-viewer] pre').waitFor();
+  assert.equal(await page.locator('[data-files-download]').getAttribute('href'),'/ENG/api/attachments/2');
+
  }finally{await browser.close();}
 });
 

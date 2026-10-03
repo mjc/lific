@@ -25,8 +25,9 @@ test('headless palette keyboard, search, action registration and scope behavior'
     </dialog></body></html>`;
   try {
     await page.route('http://lific.test/**', route => route.fulfill({contentType: 'text/html', body: html}));
-    await page.goto('http://lific.test/LIF/issues');
+    await page.goto('http://lific.test/app/LIF/issues');
     await page.evaluate(() => {
+      window.LificTopcoatRouting={href:route=>`/app${route}`,currentPath:()=>location.pathname.slice(4)};
       window.requests = []; window.failSearch = false; window.deferSearch = false; window.pending = [];
       localStorage.setItem('lific_recents', JSON.stringify([{type: 'page', project: 'LIF', routeId: '10', identifier: 'LIF-DOC-1', title: 'Recently read', ts: 1}]));
       window.lificSession = {state: {user: {id: 1}, publicProject: null}, affordances: () => ({edit: true, manage: false}),
@@ -190,7 +191,7 @@ test('headless palette keyboard, search, action registration and scope behavior'
       await input.fill('doc 1');
       await page.keyboard.press('Control+Enter');
       await page.waitForFunction(() => window.opened.length === 1);
-      assert.deepEqual(await page.evaluate(() => window.opened[0]), ['/LIF/pages/10', '_blank', 'noopener']);
+      assert.deepEqual(await page.evaluate(() => window.opened[0]), ['/app/LIF/pages/10', '_blank', 'noopener']);
     });
 
     await t.test('unregistering or replacing a route owner cancels its open prompt and submenu callbacks', async () => {
@@ -237,11 +238,11 @@ test('headless palette keyboard, search, action registration and scope behavior'
       await input.fill('ephemeral rename');
       await page.keyboard.press('Enter');
       await input.fill('stale route');
-      await page.evaluate(() => {history.replaceState({}, '', '/OTHER/issues'); dispatchEvent(new PopStateEvent('popstate'));});
+      await page.evaluate(() => {history.replaceState({}, '', '/app/OTHER/issues'); dispatchEvent(new PopStateEvent('popstate'));});
       await page.keyboard.press('Enter');
       assert.deepEqual(await page.evaluate(() => window.staleRuns), []);
       assert.equal(await dialog.isVisible(), false);
-      await page.evaluate(() => {history.replaceState({}, '', '/LIF/issues'); dispatchEvent(new PopStateEvent('popstate'));});
+      await page.evaluate(() => {history.replaceState({}, '', '/app/LIF/issues'); dispatchEvent(new PopStateEvent('popstate'));});
     });
 
     await t.test('a project catalog event supersedes a delayed project fetch and its cached answer', async () => {

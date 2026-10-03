@@ -228,7 +228,17 @@
             dispose() {disposed=true;generation++;stopTransport();for(const model of models.values()){env.cancel(model.timer);model.controller?.abort();}models.clear();listeners.clear();}
         };
     }
-    globalThis.LificSync={createClient};
+    function websocketUrl(win) {
+        const path = win.LificTopcoatRouting?.href('/api/events/ws')
+            ?? `${win.document.body?.dataset.lificBasePath ?? ''}/api/events/ws`;
+        const url = new URL(win.location.href);
+        url.protocol = win.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        url.pathname = path;
+        url.search = '';
+        url.hash = '';
+        return url.href;
+    }
+    globalThis.LificSync={createClient,websocketUrl};
     if(typeof window==='undefined') return;
     const client=createClient({session:window.lificSession,token:()=>localStorage.getItem('lific_token'),
         delay:window.setTimeout.bind(window),cancel:window.clearTimeout.bind(window),
@@ -236,7 +246,7 @@
         socket:url=>new WebSocket(url),locks:navigator.locks,
         channel:typeof BroadcastChannel==='function'?name=>new BroadcastChannel(name):null,
         fingerprint:globalThis.crypto?.subtle?async token=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(token))),byte=>byte.toString(16).padStart(2,'0')).join(''):null,
-        websocketUrl:()=>`${location.protocol==='https:'?'wss:':'ws:'}//${location.host}/api/events/ws`,
+        websocketUrl:()=>websocketUrl(window),
         notify:()=>window.dispatchEvent(new CustomEvent('lific:sync-change')),
         event:event=>window.dispatchEvent(new CustomEvent('lific:realtime',{detail:event}))});
     window.lificSync=client;

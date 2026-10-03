@@ -11,11 +11,12 @@ test('headless editor links cross-issue comment references as a single comment a
       const page = await browser.newPage();
       await page.setContent('<article id="preview"></article>');
       await page.addScriptTag({content: fs.readFileSync(`${__dirname}/editor.js`, 'utf8')});
-      await page.evaluate(() => lificIssueEditor.renderMarkdown(document.querySelector('#preview'), 'ENG-7#comment-3'));
+      await page.evaluate(() => {window.LificTopcoatRouting={href:route=>`/ENG${route}`};lificIssueEditor.renderMarkdown(document.querySelector('#preview'), 'ENG-7#comment-3');});
       const link = page.locator('#preview a');
       assert.equal(await link.count(), 1);
       assert.equal(await link.textContent(), 'ENG-7#comment-3');
-      assert.equal(await link.getAttribute('href'), '/ENG/issues/ENG-7?comment=3');
+      assert.equal(await link.getAttribute('href'), '/ENG/ENG/issues/ENG-7?comment=3');
+      await page.evaluate(() => {delete window.LificTopcoatRouting;});
     } finally {await browser.close();}
   });
 
@@ -484,5 +485,28 @@ test('headless editor saves explicitly and Cancel or Escape discard the draft',
       await input.press('Control+S');
       await page.waitForFunction(() => document.querySelector('[data-editor-input]').hidden);
       assert.deepEqual(await page.evaluate(() => saves), ['commit', 'shortcut']);
+    } finally {await browser.close();}
+  });
+
+test('headless authored Markdown links prefix logical routes once when the mount equals the project',
+  {skip: !process.env.PLAYWRIGHT_EXECUTABLE_PATH}, async () => {
+    const {chromium} = await import(path.resolve(__dirname, '../../../../../e2e/node_modules/playwright/index.mjs'));
+    const browser = await chromium.launch({headless: true, executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH});
+    try {
+      const page = await browser.newPage();
+      await page.route('http://editor.test/**', route => route.fulfill({contentType: 'text/html', body: '<article id="preview"></article>'}));
+      await page.goto('http://editor.test/ENG/ENG/issues/ENG-1');
+      await page.addScriptTag({content: fs.readFileSync(`${__dirname}/editor.js`, 'utf8')});
+      await page.evaluate(() => {
+        window.LificTopcoatRouting = {href: logical => `/ENG${logical}`};
+        lificIssueEditor.renderMarkdown(document.querySelector('#preview'), '[Authored](/ENG/issues/ENG-7?comment=3#comment-3) [Absolute](http://editor.test/ENG/issues/ENG-8) [Fragment](#comment-9) [Network](//other.test/ENG/issues/ENG-9) ENG-7');
+      });
+      assert.equal(await page.getByRole('link', {name: 'Authored'}).getAttribute('href'), 'http://editor.test/ENG/ENG/issues/ENG-7?comment=3#comment-3');
+      assert.equal(await page.getByRole('link', {name: 'Absolute'}).getAttribute('href'), 'http://editor.test/ENG/issues/ENG-8');
+      assert.equal(await page.getByRole('link', {name: 'Fragment'}).getAttribute('href'), 'http://editor.test/ENG/ENG/issues/ENG-1#comment-9');
+      assert.equal(await page.getByRole('link', {name: 'Network'}).getAttribute('href'), 'http://other.test/ENG/issues/ENG-9');
+      assert.equal(await page.getByRole('link', {name: 'ENG-7', exact: true}).getAttribute('href'), '/ENG/ENG/issues/ENG-7');
+      await page.getByRole('link', {name: 'Authored'}).click();
+      await page.waitForURL('http://editor.test/ENG/ENG/issues/ENG-7?comment=3#comment-3');
     } finally {await browser.close();}
   });

@@ -31,7 +31,7 @@ function fixture(initial = {}, options = {}) {
   const nodes = {'[data-sidebar-toggle]': toggle, '[data-sidebar-resize]': handle,
     '[data-sidebar-probe]': probe, '.tc-shell__desktop': sidebar};
   shell.querySelector = selector => nodes[selector];
-  const body = {style: {cursor: 'auto', userSelect: 'text'}};
+  const body = {dataset: {}, style: {cursor: 'auto', userSelect: 'text'}};
   let fontSize = options.fontSize ?? 16;
   let resize;
   const document = {body, documentElement: element(), querySelector: () => shell};
@@ -132,4 +132,77 @@ test('a second primary pointer cannot replace the active resize owner', () => {
   f.handle.emit('pointerup', {pointerId: 1});
   assert.equal(f.body.style.cursor, 'auto');
   assert.equal(f.body.style.userSelect, 'text');
+});
+
+function routeFixture(href, {canGoBack, length = 1, state = {other: 42}, basePath, layout} = {}) {
+  let current = new URL(href);
+  const entries = [href], replacements = [];
+  const location = {get href() {return current.href;}, get pathname() {return current.pathname;},
+    get hash() {return current.hash;}, get search() {return current.search;},
+    replace(href) {replacements.push(href);}};
+  const history = {length, state,
+    replaceState(next, _, href) {this.state = next; current = new URL(href, current); entries[entries.length - 1] = current.href;},
+    pushState(next, _, href) {this.state = next; current = new URL(href, current); entries.push(current.href); this.length++;}};
+  const window = {history, location, navigation: {canGoBack}, addEventListener() {}};
+  const document = {body: {dataset: {lificBasePath: basePath, lificProjectId: '7'}}, querySelector() {return null;}};
+  const localStorage = {getItem(key) {return key === 'lific:list:layout:LIF' ? layout : null;}};
+  vm.runInNewContext(fs.readFileSync(`${__dirname}/shell.js`, 'utf8'), {document, window, history, location, localStorage, URL});
+  return {window, entries, replacements, history};
+}
+
+test('cold detail entries get a parent list while keeping their complete destination and state', () => {
+  for (const [route, parent] of [['issues/LIF-9', 'issues'], ['pages/9', 'pages'], ['modules/9', 'modules'], ['plans/9', 'plans']]) {
+    const href = `https://lific.test/app/LIF/${route}?comment=3#comment-3`;
+    const f = routeFixture(href, {basePath: '/app', canGoBack: false});
+    assert.deepEqual(f.entries, [`https://lific.test/app/LIF/${parent}`, href]);
+    assert.equal(f.history.state.other, 42);
+  }
+  const board = routeFixture('https://lific.test/LIF/issues/LIF-9', {canGoBack: false, layout: 'board'});
+  assert.equal(board.entries[0], 'https://lific.test/LIF/board');
+});
+
+test('real back history and non-detail routes are preserved', () => {
+  for (const options of [{canGoBack: true}, {length: 2}]) {
+    const href = 'https://lific.test/LIF/issues/LIF-9';
+    assert.deepEqual(routeFixture(href, options).entries, [href]);
+  }
+  for (const route of ['/LIF/issues', '/login', '/LIF/issues/new', '/public/LIF/issues/LIF-9']) {
+    const href = `https://lific.test${route}`;
+    assert.deepEqual(routeFixture(href, {canGoBack: false}).entries, [href]);
+  }
+});
+
+test('legacy hash route restoration retains its deployment prefix and fragment', () => {
+  const f = routeFixture('https://lific.test/app/#/public/LIF/issues/LIF-9?comment=3#comment-3', {canGoBack: true});
+  assert.deepEqual(f.replacements, ['https://lific.test/app/public/LIF/issues/LIF-9?comment=3#comment-3']);
+  assert.equal(f.window.LificTopcoatRouting.basePath, '/app');
+  assert.equal(f.window.LificTopcoatRouting.href('/api/auth/me'), '/app/api/auth/me');
+  assert.equal(f.window.LificTopcoatRouting.href('/app/LIF/issues'), '/app/app/LIF/issues');
+  assert.equal(f.window.LificTopcoatRouting.path('/app/public/LIF/issues'), '/public/LIF/issues');
+});
+
+
+test('mounts that match project or global route names still prefix logical destinations', () => {
+  for (const basePath of ['/LIF', '/settings']) {
+    const f = routeFixture(`https://lific.test${basePath}/LIF/issues`, {basePath, canGoBack: true});
+    const routing = f.window.LificTopcoatRouting;
+    assert.equal(routing.href('/LIF/issues'), `${basePath}/LIF/issues`);
+    assert.equal(routing.href('/settings'), `${basePath}/settings`);
+    assert.equal(routing.path(`${basePath}/LIF/issues`), '/LIF/issues');
+    assert.equal(routing.path(`${basePath}/settings`), '/settings');
+  }
+});
+
+test('session routes retain logical project and settings names that equal their mount', () => {
+  const source = fs.readFileSync(`${__dirname}/../../session.rs`, 'utf8').match(/BROWSER_SCRIPT: &str = r#"([\s\S]*?)"#;/)[1];
+  for (const basePath of ['/LIF', '/settings']) {
+    const routing = routeFixture(`https://lific.test${basePath}/LIF/issues`, {basePath, canGoBack: true}).window.LificTopcoatRouting;
+    const window = {LificTopcoatRouting: routing, addEventListener() {}, dispatchEvent() {}};
+    const document = {readyState:'loading', body:{dataset:{}}, addEventListener() {}};
+    vm.runInNewContext(source, {window, document, localStorage:{getItem() {return null;}}, location:{pathname:`${basePath}/LIF/issues`,hash:''}, URLSearchParams});
+    assert.equal(window.lificSession.scopedRoute('/LIF/issues'), `${basePath}/LIF/issues`);
+    assert.equal(window.lificSession.scopedRoute('/settings'), `${basePath}/settings`);
+    window.lificSession.state.publicProject = 'LIF';
+    assert.equal(window.lificSession.scopedRoute('/LIF/issues'), `${basePath}/public/LIF/issues`);
+  }
 });

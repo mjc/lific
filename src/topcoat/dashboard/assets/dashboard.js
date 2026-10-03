@@ -287,7 +287,8 @@ function element(doc, tag, text = null, className = null) {
 
 function link(doc, text, href, className = 'tc-dashboard__link') {
   const node = element(doc, 'a', text, className);
-  node.href = href;
+  node.href = doc.defaultView?.LificTopcoatRouting?.href(href)
+    ?? `${doc.body?.dataset.lificBasePath ?? ''}${href}`;
   node.dataset.dashboardFocus = href;
   return node;
 }

@@ -73,17 +73,23 @@ allow_signup = false
 
     $page = Invoke-WebRequest "http://127.0.0.1:$port/" -TimeoutSec 5
     if ($page.StatusCode -ne 200 -or $page.Content -notmatch "<html") { throw "Embedded web UI did not respond with HTML" }
-    foreach ($extension in @("js", "css")) {
-        $pattern = '(?:src|href)="(/assets/[^"\s]+\.' + $extension + ')"'
-        $asset = [regex]::Match($page.Content, $pattern).Groups[1].Value
-        if (-not $asset) { throw "Embedded web UI did not reference a $extension asset" }
+    if ($page.Content -match '(?:src|href)="/assets/') { throw "Web UI references a retired frontend bundle" }
+    $assets = [regex]::Matches($page.Content, '/__topcoat-[A-Za-z0-9._~%+-]+\.(?:js|css)') |
+        ForEach-Object { $_.Value } | Sort-Object -Unique
+    if ($assets -notcontains "/__topcoat-runtime.js" -or -not ($assets | Where-Object { $_.EndsWith(".css") })) {
+        throw "Web UI is missing the Topcoat runtime or stylesheet"
+    }
+    foreach ($asset in $assets) {
         $response = Invoke-WebRequest "http://127.0.0.1:$port$asset" -TimeoutSec 5
         $mime = $response.Headers["Content-Type"] -join ","
-        $expectedMime = if ($extension -eq "js") { "(?:java|ecma)script" } else { "text/css" }
-        if ($response.StatusCode -ne 200 -or $response.RawContentLength -eq 0 -or $mime -notmatch $expectedMime) {
+        $expectedMime = if ($asset.EndsWith(".js")) { "(?:java|ecma)script" } else { "text/css" }
+        $assetStart = $response.Content.Substring(0, [Math]::Min(200, $response.Content.Length))
+        if ($response.StatusCode -ne 200 -or $response.RawContentLength -eq 0 -or $mime -notmatch $expectedMime -or $assetStart -match "<!doctype html|<html") {
             throw "Embedded asset $asset was empty or returned the wrong content type: $mime"
         }
     }
+    $retired = Invoke-WebRequest "http://127.0.0.1:$port/assets/index-retired.js" -TimeoutSec 5 -SkipHttpErrorCheck
+    if ($retired.StatusCode -ne 404) { throw "Retired frontend asset returned $($retired.StatusCode), expected 404" }
     Write-Host "Verified artifact checksum, startup, database, API, and embedded JavaScript/CSS."
 } finally {
     if ($null -ne $server -and -not $server.HasExited) {

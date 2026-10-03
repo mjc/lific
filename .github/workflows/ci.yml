@@ -47,12 +47,8 @@ jobs:
           add-rust-environment-hash-key: false
           cache-bin: false
           cache-workspace-crates: true
-      - name: Test the Topcoat feature without Vite
-        run: devenv --profile topcoat tasks run lific:topcoat:test
-      - name: Check Topcoat formatting and lint
-        run: devenv --profile topcoat shell -- bash -euo pipefail -c 'cargo fmt -- --check && cargo clippy --all-targets --locked --no-default-features --features topcoat-spike -- -D warnings'
       - name: Run Topcoat browser tests
-        run: devenv --profile topcoat-e2e tasks run lific:topcoat:e2e
+        run: devenv --profile e2e tasks run lific:e2e
 
   check:
     runs-on: ubuntu-latest
@@ -90,16 +86,6 @@ jobs:
           cache-workspace-crates: true
       - name: Run project, hook, and documentation checks
         run: devenv tasks run lific:check devenv:git-hooks:run lific:docs:check
-      - name: Run the browser task graph
-        run: devenv --profile e2e tasks run lific:e2e
-      - name: Retain native-link browser traces on failure
-        if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: native-link-traces
-          path: /tmp/lific-native-links-*/trace.zip
-          if-no-files-found: ignore
-          retention-days: 7
 
   windows:
     # Keep native Windows-only code and tests covered in addition to executing
@@ -114,9 +100,6 @@ jobs:
           toolchain: 1.99.0
           components: clippy
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
-      - name: Ensure web/dist exists for rust-embed
-        run: mkdir -p web/dist
-        shell: bash
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
       - name: Test

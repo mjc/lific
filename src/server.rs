@@ -810,7 +810,7 @@ mod topcoat_app_tests {
     use tower::ServiceExt;
 
     #[tokio::test]
-    async fn topcoat_scaffold_page_uses_the_shared_document_layout() {
+    async fn topcoat_page_uses_the_shared_document_layout() {
         let response = topcoat::router::tower::TowerService::new(topcoat_app::router())
             .oneshot(
                 Request::builder()
@@ -851,9 +851,7 @@ mod topcoat_app_tests {
         assert!(body.contains("/__topcoat-project-settings.css"));
         assert!(body.contains("/__topcoat-project-settings.js"));
         assert!(body.contains("/__topcoat-runtime.js"));
-        assert!(body.contains("<main id=\"main-content\">"));
-        assert!(!body.contains("topcoat-scaffold__header"));
-        assert!(!body.contains("class=\"skip-link\""));
+        assert!(body.contains("class=\"tc-shell__main\""));
     }
 
     #[tokio::test]
@@ -1479,7 +1477,47 @@ mod topcoat_app_tests {
 /// pages and CORS preflights. Route-specific policies such as the attachment
 /// sandbox win when they are already present.
 async fn add_security_headers(request: Request<Body>, next: middleware::Next) -> Response {
+    let prefix = trusted_forwarded_prefix(&request).map(str::to_owned);
     let mut response = next.run(request).await;
+    if let Some(prefix) = prefix {
+        if let Some(location) = response
+            .headers()
+            .get(header::LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|location| prefix_same_origin_location(&prefix, location))
+        {
+            response
+                .headers_mut()
+                .insert(header::LOCATION, HeaderValue::from_str(&location).unwrap());
+        }
+
+        if response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with("text/html"))
+        {
+            let body = std::mem::replace(response.body_mut(), Body::empty());
+            match axum::body::to_bytes(body, usize::MAX).await {
+                Ok(body) => {
+                    let document = String::from_utf8_lossy(&body);
+                    let prefixed = prefix_topcoat_document(&prefix, &document);
+                    response
+                        .headers_mut()
+                        .insert(header::CONTENT_LENGTH, HeaderValue::from(prefixed.len()));
+                    *response.body_mut() = Body::from(prefixed);
+                }
+                Err(error) => {
+                    tracing::error!(%error, "failed to apply the trusted proxy path prefix");
+                    response = (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "failed to render document",
+                    )
+                        .into_response();
+                }
+            }
+        }
+    }
     let headers = response.headers_mut();
     for (name, value) in [
         (header::X_FRAME_OPTIONS, "DENY"),
@@ -1498,6 +1536,48 @@ async fn add_security_headers(request: Request<Body>, next: middleware::Next) ->
         .entry(HeaderName::from_static("cross-origin-resource-policy"))
         .or_insert(HeaderValue::from_static("same-origin"));
     response
+}
+
+fn trusted_forwarded_prefix(request: &Request<Body>) -> Option<&str> {
+    let peer = request
+        .extensions()
+        .get::<axum::extract::ConnectInfo<SocketAddr>>()?;
+    let trusted_proxies = request.extensions().get::<Arc<[ratelimit::IpNetwork]>>()?;
+    if !trusted_proxies
+        .iter()
+        .any(|network| network.contains(peer.0.ip()))
+    {
+        return None;
+    }
+
+    request
+        .headers()
+        .get("x-forwarded-prefix")
+        .and_then(|value| value.to_str().ok())
+        .and_then(topcoat_frontend::session::forwarded_prefix)
+}
+
+fn prefix_same_origin_location(prefix: &str, location: &str) -> Option<String> {
+    if !location.starts_with('/') || location.starts_with("//") {
+        return None;
+    }
+    Some(format!("{prefix}{location}"))
+}
+
+fn prefix_topcoat_document(prefix: &str, document: &str) -> String {
+    let mut prefixed = document.to_owned();
+    for attribute in ["href", "src", "action"] {
+        for quote in ['"', '\''] {
+            let root_url = format!("{attribute}={quote}/");
+            let prefixed_url = format!("{attribute}={quote}{prefix}/");
+            prefixed = prefixed.replace(&root_url, &prefixed_url);
+        }
+    }
+    prefixed.replacen(
+        "<body",
+        &format!("<body data-lific-base-path=\"{prefix}\""),
+        1,
+    )
 }
 
 /// How far this instance can be reached from, as configured.
@@ -1842,7 +1922,11 @@ pub(crate) fn build_app_with_store(
     // neither is layered onto this router. Only
     // published projects are reachable through it (the flag is checked in the
     // SQL of every read), and only with `GET`.
-    let app = app.merge(api::public::router(pool, attachment_store, trusted_proxies));
+    let app = app.merge(api::public::router(
+        pool,
+        attachment_store,
+        trusted_proxies.clone(),
+    ));
     let app = app
         .route("/assets/{*path}", any(|| async { StatusCode::NOT_FOUND }))
         .fallback_service(topcoat::router::tower::TowerService::new(
@@ -1879,7 +1963,8 @@ pub(crate) fn build_app_with_store(
             // Compression's DefaultPredicate already skips SSE
             // (text/event-stream — so MCP streaming is untouched), gRPC,
             // already-compressed images, and bodies under 32 bytes.
-            .layer(middleware::from_fn(add_security_headers)),
+            .layer(middleware::from_fn(add_security_headers))
+            .layer(axum::Extension(trusted_proxies)),
     )
 }
 
@@ -2771,6 +2856,128 @@ mod compression_tests {
 /// assembled app can prove that mounting it did not put it behind the auth
 /// middleware, or the authenticated API in front of it.
 #[cfg(test)]
+mod topcoat_prefix_tests {
+    use super::*;
+    use tower::ServiceExt;
+
+    #[test]
+    fn topcoat_documents_keep_root_urls_inside_the_forwarded_prefix() {
+        let html = concat!(
+            "<html><head></head><body>",
+            "<link href=\"/__topcoat-app.css\">",
+            "<script src=\"/__topcoat-shell.js\"></script>",
+            "<form action=\"/login\"></form>",
+            "<a href=\"/LIF/issues\">Issues</a>",
+            "</body></html>"
+        );
+
+        assert_eq!(
+            prefix_topcoat_document("/app", html),
+            concat!(
+                "<html><head></head><body data-lific-base-path=\"/app\">",
+                "<link href=\"/app/__topcoat-app.css\">",
+                "<script src=\"/app/__topcoat-shell.js\"></script>",
+                "<form action=\"/app/login\"></form>",
+                "<a href=\"/app/LIF/issues\">Issues</a>",
+                "</body></html>"
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn trusted_proxy_prefix_rewrites_documents_but_ignores_untrusted_headers() {
+        let proxies = Arc::<[ratelimit::IpNetwork]>::from(vec![
+            ratelimit::IpNetwork::parse("127.0.0.1").unwrap(),
+        ]);
+        let app = Router::new()
+            .route(
+                "/",
+                axum::routing::get(|| async {
+                    axum::response::Html(
+                        "<html><head></head><body><a href=\"/login\">Log in</a></body></html>",
+                    )
+                }),
+            )
+            .route(
+                "/redirect",
+                axum::routing::get(|| async {
+                    axum::response::Redirect::permanent("/public/LIF/issues/LIF-42")
+                }),
+            )
+            .route(
+                "/external",
+                axum::routing::get(|| async {
+                    axum::response::Redirect::temporary("https://identity.example/callback")
+                }),
+            )
+            .layer(middleware::from_fn(add_security_headers))
+            .layer(axum::Extension(proxies));
+
+        let mut trusted = Request::builder()
+            .uri("/")
+            .header("x-forwarded-prefix", "/app")
+            .body(Body::empty())
+            .unwrap();
+        trusted.extensions_mut().insert(axum::extract::ConnectInfo(
+            "127.0.0.1:3000".parse::<SocketAddr>().unwrap(),
+        ));
+        let response = app.clone().oneshot(trusted).await.unwrap();
+        let trusted_document = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let trusted_document = String::from_utf8(trusted_document.to_vec()).unwrap();
+        assert!(trusted_document.contains("data-lific-base-path=\"/app\""));
+        assert!(trusted_document.contains("href=\"/app/login\""));
+
+        let mut untrusted = Request::builder()
+            .uri("/")
+            .header("x-forwarded-prefix", "/app")
+            .body(Body::empty())
+            .unwrap();
+        untrusted
+            .extensions_mut()
+            .insert(axum::extract::ConnectInfo(
+                "198.51.100.8:3000".parse::<SocketAddr>().unwrap(),
+            ));
+        let response = app.clone().oneshot(untrusted).await.unwrap();
+        let untrusted_document = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let untrusted_document = String::from_utf8(untrusted_document.to_vec()).unwrap();
+        assert!(!untrusted_document.contains("data-lific-base-path="));
+        assert!(untrusted_document.contains("href=\"/login\""));
+
+        let mut redirect = Request::builder()
+            .uri("/redirect")
+            .header("x-forwarded-prefix", "/app")
+            .body(Body::empty())
+            .unwrap();
+        redirect.extensions_mut().insert(axum::extract::ConnectInfo(
+            "127.0.0.1:3000".parse::<SocketAddr>().unwrap(),
+        ));
+        let response = app.clone().oneshot(redirect).await.unwrap();
+        assert_eq!(
+            response.headers().get(header::LOCATION).unwrap(),
+            "/app/public/LIF/issues/LIF-42"
+        );
+
+        let mut external = Request::builder()
+            .uri("/external")
+            .header("x-forwarded-prefix", "/app")
+            .body(Body::empty())
+            .unwrap();
+        external.extensions_mut().insert(axum::extract::ConnectInfo(
+            "127.0.0.1:3000".parse::<SocketAddr>().unwrap(),
+        ));
+        let response = app.oneshot(external).await.unwrap();
+        assert_eq!(
+            response.headers().get(header::LOCATION).unwrap(),
+            "https://identity.example/callback"
+        );
+    }
+}
+
+#[cfg(test)]
 mod public_surface_tests {
     use super::*;
     use crate::db::models::*;
@@ -2886,6 +3093,7 @@ mod public_surface_tests {
         let mut cfg = Config::default();
         cfg.auth.required = true;
         cfg.server.host = "127.0.0.1".into();
+        cfg.server.trusted_proxies = vec!["127.0.0.1".into()];
         let trusted_proxies = Arc::<[ratelimit::IpNetwork]>::from(
             cfg.server.trusted_proxy_ranges().expect("proxy ranges"),
         );
@@ -3111,6 +3319,36 @@ mod public_surface_tests {
             assert!(body.contains("class=\"tc-shell\""), "{path}: {body}");
             assert!(body.contains("/__topcoat-runtime.js"), "{path}: {body}");
         }
+
+        let mut proxied_document = Request::builder()
+            .uri("/login")
+            .header("x-forwarded-prefix", "/app")
+            .body(Body::empty())
+            .unwrap();
+        proxied_document
+            .extensions_mut()
+            .insert(axum::extract::ConnectInfo(
+                "127.0.0.1:3000".parse::<SocketAddr>().unwrap(),
+            ));
+        let response = d.app.clone().oneshot(proxied_document).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_string(response).await;
+        assert!(body.contains("data-lific-base-path=\"/app\""));
+        assert!(body.contains("href=\"/app/__topcoat-app.css\""));
+
+        let mut proxied_api = Request::builder()
+            .uri("/api/health")
+            .header("x-forwarded-prefix", "/app")
+            .body(Body::empty())
+            .unwrap();
+        proxied_api
+            .extensions_mut()
+            .insert(axum::extract::ConnectInfo(
+                "127.0.0.1:3000".parse::<SocketAddr>().unwrap(),
+            ));
+        let response = d.app.clone().oneshot(proxied_api).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_string(response).await, "ok");
 
         let health = anonymous(&d.app, "GET", "/api/health").await;
         assert_eq!(health.status(), StatusCode::OK);

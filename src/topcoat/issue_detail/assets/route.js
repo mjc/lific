@@ -174,8 +174,8 @@
       if (title) title.textContent = issue.title || '';
       if (back) {
         const layout = read(localStorage(), `lific:list:layout:${this.projectIdentifier}`);
-        back.href = layout === 'board' ? `/${encodeURIComponent(this.projectIdentifier)}/board` : `/${encodeURIComponent(this.projectIdentifier)}/issues`;
-        if (this.publicScope) back.href = back.href.replace(/^\//, '/public/');
+        const route = `${this.publicScope ? '/public' : ''}/${encodeURIComponent(this.projectIdentifier)}/${layout === 'board' ? 'board' : 'issues'}`;
+        back.href = globalThis.LificTopcoatRouting?.href(route) ?? route;
       }
       const fieldsRoot = this.root.querySelector('[data-issue-fields]');
       if (fieldsRoot && globalThis.LificTopcoatIssueFields) {
@@ -318,7 +318,8 @@
       const route = this.route, dispatchGeneration = this.generation;
       const queuedWork = this.saveChain.then(async () => {
         if (!this.current(dispatchGeneration) || !routeMatches(intent.route,this.route)) return {status:'stale'};
-        const destination = this.root.querySelector('[data-detail-back]')?.href || `/${this.projectIdentifier}/issues`;
+        const parent = `/${encodeURIComponent(this.projectIdentifier)}/issues`;
+        const destination = this.root.querySelector('[data-detail-back]')?.href || globalThis.LificTopcoatRouting?.href(parent) || parent;
         const list = globalThis.LificTopcoatIssueList;
         if (list?.queueDeletion) {
           const sessionStorage = (() => {try {return globalThis.sessionStorage;} catch {return null;}})();

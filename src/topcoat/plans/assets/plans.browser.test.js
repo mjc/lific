@@ -11,8 +11,9 @@ test('headless plans preserve nested edits, linked completion, server progress, 
     const pickerCss=fs.readFileSync(`${__dirname}/picker.css`,'utf8');
     async function mount({mode='detail',viewer=false}={}){
       await page.route('http://planning.test/**',route=>route.fulfill({contentType:'text/html',body:`<!doctype html><style>${pickerCss}</style><section data-topcoat-plans="${mode}" data-project-identifier="ENG" data-plan-id="10"><p data-plans-status role="status"></p><div data-plans-error role="alert" hidden></div><div data-plans-content></div></section>`}));
-      await page.goto(`http://planning.test/ENG/plans${mode==='detail'?'/10':''}`);
+      await page.goto(`http://planning.test/app/ENG/plans${mode==='detail'?'/10':''}`);
       await page.evaluate(({viewer})=>{
+        window.LificTopcoatRouting={href:route=>`/app${route}`,currentPath:()=>location.pathname.slice(4)};
         window.calls=[];window.destinations=[];window.failure=null;window.role=viewer?'viewer':'maintainer';window.holdWrite=false;
         window.issue={id:7,project_id:3,identifier:'ENG-7',title:'Engine',status:'active'};
         const step=(id,title,parent=null,children=[])=>({id,plan_id:10,parent_step_id:parent,position:0,title,description:id===2?'**Child markdown**':'',done:false,issue_id:id===2?7:null,
@@ -80,7 +81,7 @@ test('headless plans preserve nested edits, linked completion, server progress, 
         assert.match(await page.locator('[data-plan-activity]').textContent(),/Alex create.*Deployment/);
         await page.locator('[data-plan-step="2"]>div a').click({modifiers:['Shift']});
         await page.getByRole('heading',{name:'ENG-7 · Engine'}).waitFor();
-        assert.equal(await page.getByRole('link',{name:'Open issue',exact:true}).getAttribute('href'),'/ENG/issues/ENG-7');
+        assert.equal(await page.getByRole('link',{name:'Open issue',exact:true}).getAttribute('href'),'/app/ENG/issues/ENG-7');
         await page.getByRole('button',{name:'Close peek'}).click();
         await page.evaluate(()=>{dispatchEvent(new PageTransitionEvent('pagehide',{persisted:true}));plan.title='Restored plan';dispatchEvent(new PageTransitionEvent('pageshow',{persisted:true}));});
         await page.waitForFunction(()=>document.querySelector('[data-plan-title]').value==='Restored plan');
@@ -90,15 +91,15 @@ test('headless plans preserve nested edits, linked completion, server progress, 
         await mount();await page.evaluate(async()=>{plan.steps[0].description='See ENG-7, **ENG-DOC-3**, and ENG-PLAN-2. `ENG-8` [ENG-9](https://example.test/)\n\n```\nENG-10\n```';await document.querySelector('[data-topcoat-plans]')._plans.load();});
         const body=page.locator('[data-step-description="1"]');
         assert.equal(await body.getByRole('link',{name:'ENG-7',exact:true}).count(),1);
-        assert.equal(await body.getByRole('link',{name:'ENG-7',exact:true}).getAttribute('href'),'/ENG/issues/ENG-7');
-        assert.equal(await body.getByRole('link',{name:'ENG-DOC-3',exact:true}).getAttribute('href'),'/ENG/pages');
-        assert.equal(await body.getByRole('link',{name:'ENG-PLAN-2',exact:true}).getAttribute('href'),'/ENG/plans');
+        assert.equal(await body.getByRole('link',{name:'ENG-7',exact:true}).getAttribute('href'),'/app/ENG/issues/ENG-7');
+        assert.equal(await body.getByRole('link',{name:'ENG-DOC-3',exact:true}).getAttribute('href'),'/app/ENG/pages');
+        assert.equal(await body.getByRole('link',{name:'ENG-PLAN-2',exact:true}).getAttribute('href'),'/app/ENG/plans');
         assert.equal(await body.locator('code a, a a').count(),0);assert.equal(await body.getByRole('link',{name:'ENG-9'}).getAttribute('href'),'https://example.test/');
         await body.getByRole('link',{name:'ENG-7',exact:true}).hover();await page.locator('[data-reference-preview]').waitFor();
         assert.match(await page.locator('[data-reference-preview]').textContent(),/ENG-7.*Engine/);
         await body.getByRole('link',{name:'ENG-7',exact:true}).click({modifiers:['Shift']});await page.getByRole('heading',{name:'ENG-7 · Engine'}).waitFor();
         await page.getByRole('button',{name:'Close peek'}).click();await body.getByRole('link',{name:'ENG-DOC-3',exact:true}).click();
-        await page.waitForURL('http://planning.test/ENG/pages');
+        await page.waitForURL('http://planning.test/app/ENG/pages');
       });
       await t.test('peek description references hover and retarget the same preview with Shift-click',async()=>{
         await mount();await page.evaluate(async()=>{
@@ -120,7 +121,7 @@ test('headless plans preserve nested edits, linked completion, server progress, 
         const menu=page.getByRole('menu');await menu.waitFor();assert.equal(await page.locator('[data-reference-preview]').count(),0);
         assert.equal(await menu.getByRole('menuitem',{name:'Open preview'}).evaluate(node=>node===document.activeElement),true);
         await page.keyboard.press('ArrowDown');await page.keyboard.press('Enter');
-        assert.deepEqual(await page.evaluate(()=>opened),[['http://planning.test/ENG/issues/ENG-7','_blank','noopener']]);assert.equal(await menu.count(),0);
+        assert.deepEqual(await page.evaluate(()=>opened),[['http://planning.test/app/ENG/issues/ENG-7','_blank','noopener']]);assert.equal(await menu.count(),0);
         await link.click({button:'right'});await page.getByRole('menuitem',{name:'Open preview'}).click();await page.getByRole('heading',{name:'ENG-7 · Engine'}).waitFor();
         assert.equal(await menu.count(),0);await page.getByRole('button',{name:'Close peek'}).click();
         await link.click({button:'right'});await page.keyboard.press('Escape');assert.equal(await menu.count(),0);assert.equal(await link.evaluate(node=>node===document.activeElement),true);

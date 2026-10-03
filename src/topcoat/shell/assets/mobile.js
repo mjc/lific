@@ -160,7 +160,8 @@
     if (item) for (const [slug, label] of destinations) {
       if (publicProject && !['issues', 'pages'].includes(slug)) continue;
       const link = document.createElement('a');
-      link.href = `${publicProject ? '/public' : ''}/${item.identifier}/${slug}`;
+      const logical = `${publicProject ? '/public' : ''}/${item.identifier}/${slug}`;
+      link.href = window.LificTopcoatRouting?.href(logical) ?? `${document.body.dataset.lificBasePath ?? ''}${logical}`;
       link.dataset.mobileDestination = '';
       link.dataset.mobileSlug = slug;
       link.textContent = label;
@@ -294,7 +295,10 @@
     const link = target.closest('a[data-mobile-destination]');
     if (link && event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) {
       event.preventDefault();
-      navigateTo(link.getAttribute('href'));
+      const href = link.getAttribute('href');
+      const base = document.body.dataset.lificBasePath;
+      const logical = window.LificTopcoatRouting?.path(href) ?? (base && href.startsWith(`${base}/`) ? href.slice(base.length) : href);
+      navigateTo(logical);
     }
   });
   const contextMenuOpen = () => [...document.querySelectorAll('[role="menu"]')].some(menu =>

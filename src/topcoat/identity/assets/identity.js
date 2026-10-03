@@ -8,10 +8,12 @@
   const validEmail = value => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
   const recentAuth = result => result?.status === 403 &&
     (result.code === 'recent_auth_required' || /recent.{0,20}(session|auth)|sign in again/i.test(result.error ?? ''));
+  const connectionId = bot => bot.tool_id ?? ['codex','vscode','zed','opencode','cursor','claude-code','claude','pi'].find(tool=>bot.username?.startsWith(`${tool}-`)) ?? bot.username;
+  const routeHref = route => globalThis.LificTopcoatRouting?.href(route) ?? route;
   const detectOs = navigator => /Win/i.test(navigator?.userAgent||'')?'windows':/Mac/i.test(navigator?.userAgent||'')?'mac':'linux';
 
   function toolSetup(tool, origin, key, os='linux') {
-    const url=`${origin}/mcp`, auth=`Bearer ${key}`;
+    const url=`${origin}${routeHref('/mcp')}`, auth=`Bearer ${key}`;
     const templates={
       codex:{name:'Codex',path:{linux:'~/.codex/config.toml',mac:'~/.codex/config.toml',windows:'%USERPROFILE%\\.codex\\config.toml'},
         instructions:'Add this block to config.toml, then set the key in your shell environment.',usesEnvKey:true,
@@ -144,19 +146,40 @@
       return result;
     };
     const logout = async () => { await env.session.logout(); env.navigate('/login'); };
+    let settingsSave = null, settingsQueue = {};
     const saveSettings = async patch => {
       if (state.pendingAction?.kind === 'settings') {
         update({pendingPatch:{...state.pendingPatch, ...patch}, settings:{...state.settings, ...patch}});
         return {ok:false, pending:true};
       }
-      const result = await send('/instance/settings', 'PATCH', patch);
-      if (result.ok) update({settings:result.data, sectionError:''});
-      else if (recentAuth(result)) {
-        update({pendingAction:{kind:'settings'}, pendingPatch:{...state.pendingPatch, ...patch},
-          settings:{...state.settings, ...patch}});
-        return {...result,pending:true};
-      } else update({sectionError:result.error, settings:state.settings});
-      return result;
+      const baseline = {...state.settings};
+      settingsQueue = {...settingsQueue, ...patch};
+      update({settings:{...state.settings,...patch}});
+      if (settingsSave) return settingsSave;
+      settingsSave = (async () => {
+        let stored = baseline;
+        for (;;) {
+          const submitted = settingsQueue;
+          settingsQueue = {};
+          const result = await send('/instance/settings', 'PATCH', submitted);
+          if (result.ok) {
+            stored = result.data;
+            update({settings:{...stored,...settingsQueue},sectionError:''});
+            if (Object.keys(settingsQueue).length) continue;
+          } else if (recentAuth(result)) {
+            update({pendingAction:{kind:'settings'},pendingPatch:{...submitted,...settingsQueue},
+              settings:{...stored,...submitted,...settingsQueue}});
+            settingsQueue = {};
+            return {...result,pending:true};
+          } else {
+            settingsQueue = {};
+            update({sectionError:result.error,settings:stored});
+          }
+          return result;
+        }
+      })();
+      try {return await settingsSave;}
+      finally {settingsSave=null;}
     };
     const runSensitive = async action => {
       const result = await action();
@@ -199,7 +222,7 @@
         }
           return retry;
         }
-        update({settings:retry.data,sectionError:''});
+        update({settings:{...retry.data,...state.pendingPatch},sectionError:''});
         if(Object.keys(state.pendingPatch).length===0) {
           update({pendingAction:null,pendingPatch:{}});
           return retry;
@@ -233,7 +256,7 @@
     const s = app.state;
     const closed = mode === 'signup' && s.instance && !s.instance.allow_signup && s.instance.has_users;
     if (closed) {
-      root.innerHTML = `<h1>Sign up is closed</h1><p>This instance is not accepting new accounts.</p><a href="/login">Log in</a>`;
+      root.innerHTML = `<h1>Sign up is closed</h1><p>This instance is not accepting new accounts.</p><a href="${escapeHtml(routeHref('/login'))}">Log in</a>`;
       return;
     }
     const message = s.instance?.login_message ? `<p class="tc-identity__message">${escapeHtml(s.instance.login_message)}</p>` : '';
@@ -244,14 +267,14 @@
       <label>Username or email<input name="identity" autocomplete="username" required></label>
       <label>Password<span class="tc-identity__password"><input name="password" type="password" autocomplete="current-password" required>${show}</span></label>
       <button class="tc-button tc-button--primary" type="submit">Log in</button></form>
-      ${s.instance?.allow_signup || !s.instance?.has_users ? '<p>New here? <a href="/signup">Create an account</a></p>' : ''}`;
+      ${s.instance?.allow_signup || !s.instance?.has_users ? `<p>New here? <a href="${escapeHtml(routeHref('/signup'))}">Create an account</a></p>` : ''}`;
     else root.innerHTML = `${branding}<h1>${s.instance?.has_users ? 'Create your account' : 'Set up your instance'}</h1>${message}${error}<form data-signup novalidate>
       <label>Username<input name="username" autocomplete="username" pattern="[A-Za-z0-9_-]{2,}" required></label>
       <label>Email<input name="email" type="email" autocomplete="email" required></label>
       <label>Password<span class="tc-identity__password"><input name="password" type="password" autocomplete="new-password" minlength="8" maxlength="1024" required>${show}</span></label>
       <p class="tc-identity__hint">Use at least 8 characters.</p>
       <button class="tc-button tc-button--primary" type="submit">${s.instance?.has_users ? 'Create account' : 'Create administrator account'}</button></form>
-      <p>Already have an account? <a href="/login">Log in</a></p>`;
+      <p>Already have an account? <a href="${escapeHtml(routeHref('/login'))}">Log in</a></p>`;
     const form = root.querySelector('form');
     form?.addEventListener('submit', async event => {
       event.preventDefault();
@@ -289,11 +312,11 @@
       <label data-custom-tool hidden>Custom tool ID<input name="custom_tool" placeholder="my-agent" pattern="[A-Za-z0-9_-]{1,48}"></label><label>Display name (optional)<input name="display_name" maxlength="80"></label>
       <button class="tc-button" type="submit">Connect tool</button></form>
       ${s.bots.map(bot=>`<p>${escapeHtml(bot.display_name || bot.username)} · ${bot.connected?'Connected':'Disconnected'}
-      ${bot.connected?`<button class="tc-button" data-bot-action="disconnect" data-id="${escapeHtml(bot.id)}">Disconnect</button>`:''}
+      ${bot.connected?`<button class="tc-button" data-bot-action="disconnect" data-id="${escapeHtml(bot.id)}">Disconnect</button>`:`<button class="tc-button" data-bot-reconnect="${escapeHtml(bot.id)}">Reconnect</button>`}
       <button class="tc-button" data-bot-action="delete" data-id="${escapeHtml(bot.id)}">Delete</button></p>`).join('')}</section>
       <section><h2>Sessions</h2><p>Signing out everywhere revokes this session and connected API credentials.</p>
       <button class="tc-button" data-signout-all>Sign out everywhere</button><button class="tc-button" data-logout>Log out</button></section>
-      ${user.is_admin ? '<p><a href="/settings/instance">Instance settings</a></p>' : ''}
+      ${user.is_admin ? `<p><a href="${escapeHtml(routeHref('/settings/instance'))}">Instance settings</a></p>` : ''}
       ${renderReauth(root,app)}<div data-secret class="tc-identity__secret" hidden></div>`;
     root.querySelector('[data-profile]')?.addEventListener('submit', async e => {
       e.preventDefault(); const form = e.currentTarget, d = new FormData(form), out = await app.changeProfile({display_name:d.get('display_name').trim(), email:d.get('email').trim()});
@@ -311,6 +334,12 @@
     root.querySelectorAll('[data-revoke-key]').forEach(button => button.addEventListener('click', async () => {
       if(confirm('Revoke this API key?')) {const out=await app.revokeKey(button.dataset.revokeKey); if(!out.ok) alert(out.error); await app.loadAccountData(); renderSettings(root,app);}
     }));
+    root.querySelectorAll('[data-bot-reconnect]').forEach(button => button.addEventListener('click', async () => {
+      const bot=s.bots.find(bot=>String(bot.id)===button.dataset.botReconnect);
+      const out=await app.connectBot(connectionId(bot),bot.display_name||'');
+      if(!out.ok&&!out.pending) {app.state.sectionError=out.error;renderSettings(root,app);}
+      else {renderSettings(root,app);if(out.ok)showSecret(root,app);}
+    }));
     root.querySelectorAll('[data-bot-action]').forEach(button => button.addEventListener('click', async () => {
       const action=button.dataset.botAction; if(!confirm(`${action==='delete'?'Delete':'Disconnect'} this connected tool?`)) return;
       const out=await app.botAction(button.dataset.id,action); if(!out.ok) alert(out.error); await app.loadAccountData(); renderSettings(root,app);
@@ -326,7 +355,7 @@
     root.querySelector('[data-cancel-reauth]')?.addEventListener('click',()=>{app.state.pendingAction=null;app.state.pendingPatch={};renderSettings(root,app);});
   }
 
-  function envNavigate(app, path) { app.logout ? app.logout() : location.assign(path); }
+  function envNavigate(app, path) { app.logout ? app.logout() : location.assign(routeHref(path)); }
   async function copyText(value) {
     try {
       if(globalThis.navigator?.clipboard?.writeText) {
@@ -440,7 +469,7 @@
   async function attach(root, env={}) {
     const mode=root?.dataset.topcoatIdentity, session=env.session||globalThis.lificSession;
     if(!root||!session||!['login','signup','settings','instance'].includes(mode))return null;
-    const app=controller({session,navigate:path=>env.navigate?env.navigate(path):globalThis.location.assign(path),preferences:env.preferences||globalThis.LificTopcoatPreferences,os:env.os||detectOs(globalThis.navigator)});
+    const app=controller({session,navigate:path=>env.navigate?env.navigate(path):globalThis.location.assign(routeHref(path)),preferences:env.preferences||globalThis.LificTopcoatPreferences,os:env.os||detectOs(globalThis.navigator)});
     const status=root.querySelector('[data-identity-status]'), content=root.querySelector('[data-identity-content]');
     root._app=app;
     root.setAttribute('aria-busy','true');
@@ -450,18 +479,18 @@
         if(!session.state?.user) {
           try { if(globalThis.localStorage?.getItem('lific_token')) await session.refreshAccount(); } catch {}
         }
-        if(session.state?.user) globalThis.location.assign('/');
+        if(session.state?.user) globalThis.location.assign(routeHref('/'));
         if(!hasInstance) throw new Error(app.state.error||'Could not load instance settings.');
         if(mode==='login'&&app.state.instance.web_auto_login) {
           const auto=await session.request('/auth/auto-login',{method:'POST'});
-          if(auto.ok){session.saveSession(auto.data.token);globalThis.location.assign('/');return app;}
+          if(auto.ok){session.saveSession(auto.data.token);globalThis.location.assign(routeHref('/'));return app;}
           app.state.error=auto.error;
         }
         renderAuth(content,mode,app);
         if(app.state.error) {const error=content.querySelector('[data-form-error]');if(error){error.textContent=app.state.error;error.hidden=false;}}
       } else {
         const signedIn=await app.loadAccount();
-        if(!signedIn) {globalThis.location.assign('/login');return app;}
+        if(!signedIn) {globalThis.location.assign(routeHref('/login'));return app;}
         if(mode==='settings') {await app.loadAccountData();renderSettings(content,app);}
         else {await app.loadAdmin();renderInstance(content,app);}
       }

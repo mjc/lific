@@ -36,3 +36,14 @@ test('issue picker resolves numeric IDs, merges project FTS hits, and restricts 
   assert.deepEqual((await findIssues(request,'OTHER-9',project,{projectOnly:true})).map(hit=>hit.identifier),['ENG-7']);
   assert.ok(calls.some(path=>path.includes('project_id=3')));
 });
+
+test('plans list links retain the deployment mount when it matches the project identifier',()=>{
+ const {Controller}=require('./plans.js');
+ globalThis.LificTopcoatRouting={href:path=>`/ENG${path}`};
+ try{
+  const app=Object.create(Controller.prototype),content={querySelectorAll:()=>[],querySelector:()=>null};
+  Object.assign(app,{content,identifier:'ENG',tab:'active',role:null,project:null,issues:[],plans:[{id:2,identifier:'ENG-PLAN-2',name:'Engine',title:'Engine',status:'active'}]});
+  app.renderList();assert.match(content.innerHTML,/href="\/ENG\/ENG\/plans\/2"/);
+  app.collapsed=new Set();assert.match(app.stepRows([{id:1,title:'Step',issue_identifier:'ENG-7',children:[]}]),/href="\/ENG\/ENG\/issues\/ENG-7"/);
+ }finally{delete globalThis.LificTopcoatRouting;}
+});
