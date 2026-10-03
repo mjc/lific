@@ -211,6 +211,7 @@ let
           node --test src/topcoat/public/assets/public.markdown-media.browser.test.js
           node --test src/topcoat/public/assets/public.browser.test.js
           node --test src/topcoat/acceptance/*.browser.test.js
+          node --test src/topcoat/visual_parity/*.browser.test.cjs
         '';
         after = [ "lific:install:e2e" "lific:debug-build" ];
       };

@@ -77,7 +77,7 @@ async function checkSidebarContrast(page, directory) {
       assert.ok(result.minimumText >= 4.5, JSON.stringify(result));
       assert.ok(result.marker >= 3 && result.focusOnSelection >= 3, JSON.stringify(result));
       assert.notEqual(await selected.evaluate((el) => getComputedStyle(el).backgroundColor), await neutral.evaluate((el) => getComputedStyle(el).backgroundColor), "Selection differs from hover");
-      assert.equal(await page.locator('aside [data-project-id="1"]').evaluate((el) => getComputedStyle(el.parentElement).backgroundColor), "rgba(0, 0, 0, 0)", "Expanded active parent stays transparent");
+      assert.equal(await page.locator('aside.tc-shell__desktop a.tc-projects__project[data-project-id="1"]').evaluate((el) => getComputedStyle(el.parentElement).backgroundColor), "rgba(0, 0, 0, 0)", "Expanded active parent stays transparent");
       results.push(result);
     }
   await require("node:fs/promises").writeFile(resolve(directory, "sidebar-contrast.json"), JSON.stringify(results, null, 2));

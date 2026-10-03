@@ -25,14 +25,21 @@ test('real server loads every private route family through a stripping proxy',
       const project = fixture.project.identifier;
       const routes = [
         ['/', '[data-topcoat-dashboard="home"]', async root => {
-          await contains(root.locator('[data-dashboard-content]'), fixture.project.name);
+          await contains(root.locator('[data-dashboard-content]'), 'All quiet here');
+          await contains(page.locator('[data-topcoat-projects]'), fixture.project.name);
           assert.equal((await root.locator('[data-dashboard-errors]').textContent()).trim(), '');
-          const mascot = root.locator('img[src*="__topcoat-dashboard-mascot"]');
-          assert.equal(await mascot.getAttribute('src'), `${fixture.prefix}/__topcoat-dashboard-mascot.png`);
-          await page.waitForFunction(() => {
-            const image = document.querySelector('[data-topcoat-dashboard="home"] img');
-            return image?.complete && image.naturalWidth > 0;
-          });
+          const mascot = root.locator('.tc-dashboard__mascot');
+          assert.equal(await mascot.isVisible(), true);
+          const mask = await mascot.evaluate(element => getComputedStyle(element).maskImage);
+          const mascotPath = `${fixture.prefix}/__topcoat-dashboard-mascot.png`;
+          assert.equal(new URL(mask.slice(5, -2), fixture.origin).pathname, mascotPath);
+          const decoded = await page.evaluate(url => new Promise((resolve, reject) => {
+            const image = new Image();
+            image.onload = () => resolve(image.naturalWidth > 0);
+            image.onerror = () => reject(new Error('The mascot asset could not be decoded'));
+            image.src = url;
+          }), `${fixture.origin}${mascotPath}`);
+          assert.equal(decoded, true);
         }],
         ['/settings', '[data-topcoat-identity="settings"]', root => contains(root.locator('h1'), 'Account settings')],
         ['/settings/instance', '[data-topcoat-identity="instance"]', root => contains(root.locator('h1'), 'Instance settings')],

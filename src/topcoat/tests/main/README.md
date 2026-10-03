@@ -22,6 +22,6 @@ node src/topcoat/tests/main/run.js browser /tmp/frontend-browser-results.jsonl
 
 Every file runs even when an earlier file fails. Failures retain a nonzero exit status and run in CI. Product assertions stay active; selector, setup, and adapter mistakes are corrected during the port. Missing adapters are incomplete coverage and are reported separately from confirmed product failures.
 
-Confirmed failures and their reproduction commands belong in the single [failure ledger](https://lific.mjc.lol/LIF/issues/LIF-228).
+Confirmed failures and their reproduction commands belong in the single [failure ledger](https://lific.mjc.lol/LIF/issues/LIF-228). The complete suite checkpoint, per-file counts and failed assertions are recorded in `failure-ledger.json`; its checkpoint note identifies evidence awaiting a rerun after production changes.
 
 The ledger separates observable regressions from unsupported internal contracts and unreachable helper inputs. In particular, the reference adapter's subscriber-per-container requests do not establish a failure of the parent controller's account or realtime refresh. Voice timer inputs beyond the recorder's ten-minute limit and empty sample buffers cannot occur in the actual recorder. Those original assertions remain active and are reported separately.
