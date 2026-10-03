@@ -184,7 +184,7 @@
       return this.mutate("manage", async (live) => {
         const result = await this.env.download(
           `/export/projects/${encodeURIComponent(this.state.project.identifier)}`,
-          `${this.state.project.identifier}.json`,
+          `${this.state.project.identifier}.zip`,
         );
         if (!live()) return;
         if (!result.ok) throw new Error(result.error);
