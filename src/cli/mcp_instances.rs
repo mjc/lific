@@ -61,8 +61,10 @@ const STARTUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Fallback when the client asks for a version we do not recognize.
 const PROTOCOL_VERSION: &str = "2025-11-25";
-/// Versions this proxy will echo back to a client that requested one.
-const KNOWN_PROTOCOL_VERSIONS: [&str; 2] = ["2025-06-18", "2025-11-25"];
+const STATELESS_PROTOCOL_VERSION: &str = "2026-07-28";
+/// Versions accepted in per-request metadata and advertised by discovery.
+const KNOWN_PROTOCOL_VERSIONS: [&str; 3] =
+    ["2025-06-18", PROTOCOL_VERSION, STATELESS_PROTOCOL_VERSION];
 
 /// Authoritative source alias, written last by this process.
 const PROVENANCE_META_KEY: &str = "dev.lific/instance";
@@ -1020,7 +1022,9 @@ impl Router {
             .get("params")
             .and_then(|params| params.get("protocolVersion"))
             .and_then(Value::as_str)
-            .filter(|version| KNOWN_PROTOCOL_VERSIONS.contains(version))
+            .filter(|version| {
+                *version != STATELESS_PROTOCOL_VERSION && KNOWN_PROTOCOL_VERSIONS.contains(version)
+            })
             .unwrap_or(PROTOCOL_VERSION);
         serde_json::json!({
             "jsonrpc": "2.0",
@@ -1416,18 +1420,18 @@ where
         }
         let requested_version = version_meta.and_then(Value::as_str);
         if let Some(version) = requested_version
-            && version != "2026-07-28"
             && !KNOWN_PROTOCOL_VERSIONS.contains(&version)
         {
             let mut response = error_response(&id, -32022, "Unsupported protocol version");
-            response["error"]["data"] = serde_json::json!({"supported": ["2025-06-18", "2025-11-25", "2026-07-28"], "requested": version});
+            response["error"]["data"] =
+                serde_json::json!({"supported": KNOWN_PROTOCOL_VERSIONS, "requested": version});
             write_frame(&mut output, router, &response).await?;
             continue;
         }
         let modern = message
             .pointer("/params/_meta/io.modelcontextprotocol~1protocolVersion")
             .and_then(Value::as_str)
-            == Some("2026-07-28");
+            == Some(STATELESS_PROTOCOL_VERSION);
         if method == "server/discover" || modern {
             let meta = &message["params"]["_meta"];
             if !modern
@@ -1462,8 +1466,7 @@ where
                     .as_object_mut()
                     .expect("initialize result")
                     .remove("protocolVersion");
-                result["result"]["supportedVersions"] =
-                    serde_json::json!(["2025-06-18", "2025-11-25", "2026-07-28"]);
+                result["result"]["supportedVersions"] = serde_json::json!(KNOWN_PROTOCOL_VERSIONS);
                 result
             }
             "ping" => serde_json::json!({
@@ -1610,7 +1613,7 @@ where
     if body
         .pointer("/params/_meta/io.modelcontextprotocol~1protocolVersion")
         .and_then(Value::as_str)
-        == Some("2026-07-28")
+        == Some(STATELESS_PROTOCOL_VERSION)
     {
         // Older Lific backends report argument validation as a protocol error.
         // The routed call already has a known tool and a valid request envelope;

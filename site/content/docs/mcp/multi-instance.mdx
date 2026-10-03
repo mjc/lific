@@ -155,9 +155,10 @@ The rules, in full:
   forwarded. A typo cannot write to the wrong tracker because it never reaches a
   tracker.
 
-A call the proxy cannot route fails with JSON-RPC error `-32602` rather than a
-tool result, so a client can tell "never sent" apart from a refusal by the
-tracker, which arrives as `Error:` text as usual.
+A call the proxy cannot route returns a tool result with `isError: true` to July
+clients and JSON-RPC error `-32602` to legacy clients. These selection failures
+occur before forwarding. A refusal by the tracker arrives as `Error:` text;
+July clients also receive `isError: true` for those tool failures.
 
 The advertised schema says the same thing, so a client can catch an omission
 without spending a call: with several instances configured, `instance` is listed

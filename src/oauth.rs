@@ -765,6 +765,11 @@ fn no_store(mut response: Response) -> Response {
     response
 }
 
+/// OAuth parameters without a value are omitted (RFC 6749 sections 3.1 and 3.2).
+fn non_empty_resource(resource: Option<&str>) -> Option<&str> {
+    resource.filter(|resource| !resource.is_empty())
+}
+
 async fn authorize_page(
     State(oauth): State<OAuthState>,
     headers: HeaderMap,
@@ -795,9 +800,7 @@ async fn authorize_page(
         "{}/mcp",
         effective_issuer(&oauth, &headers).trim_end_matches('/')
     );
-    if params
-        .resource
-        .as_deref()
+    if non_empty_resource(params.resource.as_deref())
         .is_some_and(|resource| resource != expected_resource)
     {
         return (
@@ -937,7 +940,9 @@ async fn authorize_page(
         code_challenge_method =
             html_escape(params.code_challenge_method.as_deref().unwrap_or("S256")),
         scope = html_escape(requested_scope),
-        resource = html_escape(params.resource.as_deref().unwrap_or(&expected_resource)),
+        resource = html_escape(
+            non_empty_resource(params.resource.as_deref()).unwrap_or(&expected_resource)
+        ),
         csrf_token = html_escape(&csrf_token),
         token_lifetime = ACCESS_TOKEN_LIFETIME_LABEL,
         approving_identity = html_escape(&approving_identity),
@@ -1165,10 +1170,7 @@ async fn authorize_approve(
         "{}/mcp",
         effective_issuer(&oauth, &headers).trim_end_matches('/')
     );
-    if let Some(resource) = form
-        .resource
-        .as_deref()
-        .filter(|resource| !resource.is_empty())
+    if let Some(resource) = non_empty_resource(form.resource.as_deref())
         && resource != expected_resource
     {
         return (
@@ -1639,11 +1641,7 @@ fn device_authorization_inner(
         "{}/mcp",
         effective_issuer(&state, &headers).trim_end_matches('/')
     );
-    if req
-        .resource
-        .as_deref()
-        .is_some_and(|requested| requested != resource)
-    {
+    if non_empty_resource(req.resource.as_deref()).is_some_and(|requested| requested != resource) {
         return no_store(
             (
                 StatusCode::BAD_REQUEST,
@@ -2199,11 +2197,7 @@ async fn token_exchange(
 }
 
 fn token_exchange_inner(state: &OAuthState, req: TokenRequest, resource: &str) -> Response {
-    if req
-        .resource
-        .as_deref()
-        .is_some_and(|requested| requested != resource)
-    {
+    if non_empty_resource(req.resource.as_deref()).is_some_and(|requested| requested != resource) {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({"error": "invalid_target"})),
@@ -3269,28 +3263,34 @@ mod tests {
         let session = create_test_session(&db);
         let client = register_client_helper(&app, "http://localhost/callback").await;
         let params = authorize_body(&client, "http://localhost/callback", &session);
-        let page = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/oauth/authorize?{params}"))
-                    .header("cookie", format!("lific_token={session}"))
-                    .body(axum::body::Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(page.status(), StatusCode::OK);
-        let html = String::from_utf8(
-            page.into_body()
-                .collect()
+        for resource in [
+            "",
+            "&resource=",
+            "&resource=https%3A%2F%2Fexample.com%2Fmcp",
+        ] {
+            let page = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/oauth/authorize?{params}{resource}"))
+                        .header("cookie", format!("lific_token={session}"))
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
                 .await
-                .unwrap()
-                .to_bytes()
-                .to_vec(),
-        )
-        .unwrap();
-        assert!(html.contains("name=\"resource\" value=\"https://example.com/mcp\""));
+                .unwrap();
+            assert_eq!(page.status(), StatusCode::OK);
+            let html = String::from_utf8(
+                page.into_body()
+                    .collect()
+                    .await
+                    .unwrap()
+                    .to_bytes()
+                    .to_vec(),
+            )
+            .unwrap();
+            assert!(html.contains("name=\"resource\" value=\"https://example.com/mcp\""));
+        }
         let metadata = app
             .clone()
             .oneshot(
@@ -5522,6 +5522,61 @@ mod tests {
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         let val = serde_json::from_slice(&bytes).unwrap_or_else(|_| serde_json::json!({}));
         (status, val)
+    }
+
+    #[tokio::test]
+    async fn empty_device_resources_default_to_the_mcp_resource_through_exchange() {
+        let (app, db) = test_oauth_app();
+        let client_id = register_client_helper(&app, "http://localhost/callback").await;
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/device_authorization")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(axum::body::Body::from(format!(
+                        "client_id={}&scope=mcp&resource=",
+                        urlencoding::encode(&client_id)
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let grant: serde_json::Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        let device_code = grant["device_code"].as_str().unwrap();
+        approve_device_code(&db, &sha256_hex(device_code.as_bytes()));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/token")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(axum::body::Body::from(format!(
+                        "grant_type={}&device_code={}&client_id={}&resource=",
+                        urlencoding::encode(DEVICE_CODE_GRANT),
+                        urlencoding::encode(device_code),
+                        urlencoding::encode(&client_id)
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let token: serde_json::Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        let token = token["access_token"].as_str().unwrap();
+        assert!(
+            resolve_oauth_credential_for_resource(&db, token, "https://example.com/mcp").is_ok()
+        );
+        assert_eq!(
+            resolve_oauth_credential_for_resource(&db, token, "https://other.example/mcp"),
+            Err(OAuthReject::Invalid)
+        );
     }
 
     #[tokio::test]
