@@ -1,0 +1,515 @@
+{
+  "baseline": "9683d38af8e1e6f9b076439fe90d9519109b2218",
+  "files": [
+    {
+      "source": "e2e/context-menu.ts",
+      "target": "src/topcoat/tests/main/issues/context-menu.browser.test.js",
+      "cases": [],
+      "notes": "Original component fixture is translated to the shipped two-action issue reference menu. Callback actions use Open preview; native gestures use a real issue anchor and popup destination. Keyboard, focus restoration, touch geometry, visual focus, Escape propagation, replacement, read-only/no-action state, mobile palette ownership, theme/OS/storage and Settings/session assertions are retained. Current DOM names replace obsolete configurable menu labels. Appearance uses current applyPreferences(savePreferences()) boundary and data-theme/colorScheme rather than retired reactive stores/class names. Preference OS/storage case loads the actual preferences module and production stylesheet on an isolated real-origin document, matching original component isolation; full clear does not accidentally test authenticated navigation.",
+      "assertionGroups": [
+        "context menu: actionable items have 44px touch targets",
+        "context menu: arrows/Home/End wrap and one item owns the roving tab stop",
+        "context menu: hover moves keyboard focus and Enter invokes one action",
+        "context menu: consumed Escape misses later capture and bubble listeners",
+        "context menu: nonfocusable right-click trigger temporarily gains tabindex",
+        "context menu: action focus and outside-click focus survive closing",
+        "context menu: replacing an open menu resets actual focus at identical coordinates",
+        "context menu: read-only references offer no disabled mutation action",
+        "context menu: plain and Space activation invoke the menu action once",
+        "context menu: mobile navigation owns Control/Meta K/P shortcuts",
+        "context menu: theme follows preference, OS changes and cross-tab storage/clear",
+        "context menu: Settings profile response updates session user and appearance control",
+        "context menu: Tab closes and restores trigger",
+        "context menu: Shift+Tab closes and restores trigger",
+        "context menu: Escape closes and restores trigger",
+        "context menu: native Control reference opens real destination and bypasses action callback",
+        "context menu: native middle reference opens real destination and bypasses action callback"
+      ]
+    },
+    {
+      "source": "e2e/duplicate-relations.ts",
+      "target": "src/topcoat/tests/main/issues/real.browser.test.js",
+      "cases": [],
+      "notes": "Real executable API creates source/target/duplicate link; exact forward/reverse labels, navigation, desktop visibility and 390px reverse visibility remain active. Current anchors replace former button routing.",
+      "assertionGroups": [
+        "duplicate relations: forward navigation and reverse link on desktop and mobile"
+      ]
+    },
+    {
+      "source": "e2e/issue-topbar.ts",
+      "target": "src/topcoat/tests/main/issues/issue-topbar.browser.test.js",
+      "cases": [],
+      "notes": "Real executable issue toolbar at all five original widths. Layout/Status/Create controls replace former List/Filter/More create geometry targets. One-pixel center spread and no document overflow unchanged. View options/focus, quick/full creation openings, search bounds/Escape and pageerror assertions preserved; callback invocation count maps to exactly one creation form per activation.",
+      "assertionGroups": [
+        "issue toolbar at 360px: layout, filter and create centers align within one pixel without overflow",
+        "issue toolbar at 360px: View options expands and focuses Display controls",
+        "issue toolbar at 360px: Quick create and New issue each invoke creation exactly once",
+        "issue toolbar at 360px: search expands, fits viewport and collapses on Escape",
+        "issue toolbar at 640px: layout, filter and create centers align within one pixel without overflow",
+        "issue toolbar at 640px: View options expands and focuses Display controls",
+        "issue toolbar at 640px: Quick create and New issue each invoke creation exactly once",
+        "issue toolbar at 640px: search expands, fits viewport and collapses on Escape",
+        "issue toolbar at 700px: layout, filter and create centers align within one pixel without overflow",
+        "issue toolbar at 700px: View options expands and focuses Display controls",
+        "issue toolbar at 700px: Quick create and New issue each invoke creation exactly once",
+        "issue toolbar at 700px: search expands, fits viewport and collapses on Escape",
+        "issue toolbar at 767px: layout, filter and create centers align within one pixel without overflow",
+        "issue toolbar at 767px: View options expands and focuses Display controls",
+        "issue toolbar at 767px: Quick create and New issue each invoke creation exactly once",
+        "issue toolbar at 767px: search expands, fits viewport and collapses on Escape",
+        "issue toolbar at 1200px: layout, filter and create centers align within one pixel without overflow",
+        "issue toolbar at 1200px: Quick create and New issue each invoke creation exactly once",
+        "issue toolbar at 1200px: search expands, fits viewport and collapses on Escape"
+      ]
+    },
+    {
+      "source": "e2e/issue-waits.ts",
+      "target": "src/topcoat/tests/main/issues/real.browser.test.js",
+      "cases": [],
+      "notes": "Real executable database and UI for adding user/date blockers with exact notes, overdue presentation, accessible most-pressing list/board summary, clearing only the person and pageerror safety. Each original sequential phase is a separate test with fresh issue, so an earlier presentation failure does not hide later phases.",
+      "assertionGroups": [
+        "issue waits: add a person with note through detail UI (LIF-485)",
+        "issue waits: add expired date window and show overdue headline and note (LIF-485)",
+        "issue waits: clearing person leaves date blocker (LIF-485)",
+        "issue waits: issues indicator names both waits and distinguishes overdue (LIF-485)",
+        "issue waits: board indicator names both waits and distinguishes overdue (LIF-485)"
+      ]
+    },
+    {
+      "source": "e2e/peek-permissions.ts",
+      "target": "src/topcoat/tests/main/issues/peek-permissions.browser.test.js",
+      "cases": [],
+      "notes": "Original five component/API policy fixtures remain component boundaries. Current production picker opens the real peek controller. Deferred role gating, readonly/editable fields, delayed typed PUT, Enter/blur dedup, Escape rollback, Ctrl+S and error states retain the original assertions; no real-server flow is replaced by a mock.",
+      "assertionGroups": [
+        "peek permissions: viewer",
+        "peek permissions: maintainer",
+        "peek permissions: admin",
+        "peek permissions: legacy",
+        "peek permissions: unavailable"
+      ]
+    },
+    {
+      "source": "e2e/smoke.ts",
+      "target": "src/topcoat/tests/main/issues/real.browser.test.js",
+      "cases": [],
+      "notes": "Real executable scratch database and production router through prefix-stripping /app proxy. Real username/password login, bearer plus HttpOnly cookie, all nine seeded routes, boundary/blank/console/pageerror checks, visible seed text and synthesized Back parent rendering. Editable page title is asserted from visible input value as well as body text. API seed replaces CLI identifiers only; protocol credentials and browser/server are real.",
+      "helperMappings": [
+        {
+          "source": "e2e/discord-feedback.ts",
+          "owner": "resources",
+          "target": "src/topcoat/tests/main/resources/discord-feedback.browser.test.mjs"
+        },
+        {
+          "source": "e2e/palette-search.ts",
+          "owner": "shell",
+          "target": "src/topcoat/tests/main/shell/palette-search.browser.test.js"
+        },
+        {
+          "source": "e2e/duplicate-relations.ts",
+          "target": "src/topcoat/tests/main/issues/real.browser.test.js"
+        },
+        {
+          "source": "e2e/issue-waits.ts",
+          "target": "src/topcoat/tests/main/issues/real.browser.test.js"
+        }
+      ],
+      "assertionGroups": [
+        "smoke: real login creates bearer and cookie and reaches the app",
+        "smoke: every seeded main route renders content without boundary, console or page errors",
+        "smoke: deep-link Back synthesizes parent and renders the seeded issue (LIF-434)"
+      ]
+    },
+    {
+      "source": "web/tests/commentLinks.test.ts",
+      "target": "src/topcoat/tests/main/issues/commentLinks.browser.test.js",
+      "cases": [
+        "keeps a public prefix inside the route rather than the base path",
+        "reads canonical anchors and normalized hash-route queries",
+        "preserves route query parameters while carrying the comment target",
+        "keeps plain anchors on the current route and adopts routed hashes",
+        "separates a public URL base path from the resource route"
+      ],
+      "notes": "Actual mounted routes and live comment focus/permalinks replace retired pure helper names. Public prefix remains in logical route; browser prefix remains /app. Canonical permalink may use #comment-id while retaining the existing query. Native routed hashes retain target query. Root and alternate base-path helper cases are checked at the live shell routing boundary."
+    },
+    {
+      "source": "web/tests/comments.test.ts",
+      "target": "src/topcoat/tests/main/issues/comments.test.js",
+      "cases": [
+        "only the comment author gets web mutation actions",
+        "routes comment shortcuts by the focused interaction",
+        "renders mutation actions only for the comment author",
+        "renders unsafe stored label colors through the component fallback",
+        "the thread revision changes for every way the rendered thread can change",
+        "the thread revision tracks the mention roster the bodies render with",
+        "every comment body renders its diagrams inside the thread",
+        "marks comments edited only when the update timestamp changes",
+        "renders the original time and exact edited timestamp",
+        "folding a comment in by id is idempotent and keeps thread order",
+        "the thread comparator is the key the cursor pages by",
+        "updates a comment through its typed API call",
+        "requests the newest bounded comment page and shows it chronologically",
+        "infers hasMore from the over-fetched row without ever showing it",
+        "trusts the server about what lies past a page the byte budget cut short",
+        "the cursor the client pages by is the row the server named",
+        "a short page from a server that says nothing is still the end of the thread",
+        "a full page is more comments even when the header disagrees",
+        "paging a budget-limited thread walks it whole, without repeats",
+        "sends the keyset cursor pair for older pages and never exceeds the cap",
+        "pages back through a thread that is being written to, without duplicates",
+        "dedupes defensively when two pages overlap",
+        "olderCursor names the oldest loaded comment, or nothing when empty",
+        "a refresh reconciles every loaded page, not just the newest",
+        "a refresh never fetches more than the reader already loaded",
+        "a refresh keeps exactly the rows it was asked for, not whole pages",
+        "an exact page boundary needs no trimming",
+        "a thread shorter than the window is returned whole",
+        "an automatic refresh is capped no matter how much history is loaded",
+        "refresh bounds are enforced against any caller argument",
+        "a fractional page size rounds down and still pages",
+        "a capped refresh keeps the older rows the reader loaded by hand",
+        "reconciliation replaces the window when nothing older was preserved",
+        "reconciliation orders preserved rows by the same key the cursor uses",
+        "only the newest comment-window operation may write",
+        "a replacement window applies, re-reads, or stands down",
+        "a failed page aborts the refresh instead of showing a half window",
+        "an empty thread refreshes to an empty window without looping",
+        "a deep link to an unloaded comment asks for the previous page",
+        "a failing anchor fetch is not retried until more comments arrive",
+        "the automatic anchor walk stops after its page budget",
+        "a manual load older does not hand the automatic walk a fresh budget",
+        "navigating to another thread starts the anchor walk over",
+        "deletes a comment through its typed API call"
+      ],
+      "notes": "35 Node controller cases plus 9 browser parent cases preserve all 44 original titles. Actual collaboration refreshComments/fetchCommentPage/renderCommentList/resolveCommentHash and current manual older click branch are exposed for controlled component tests; no old implementation is copied. Real browser update/delete/keyboard requests use actual database. Retired configurable page geometry maps to current fixed50 rows/51 fetch and actual ten-page anchor bound.",
+      "additionalTargets": [
+        "src/topcoat/tests/main/issues/comments.browser.test.js"
+      ],
+      "mappings": [
+        {
+          "original": "only the comment author gets web mutation actions",
+          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "translated": "only the comment author gets web mutation actions"
+        },
+        {
+          "original": "routes comment shortcuts by the focused interaction",
+          "target": "src/topcoat/tests/main/issues/comments.browser.test.js",
+          "translated": "routes comment shortcuts by the focused interaction",
+          "notes": "Submit/save/cancel/new-Escape drive actual composer; menu-Escape uses shipped reference menu rooted in comment, retaining close/focus behavior."
+        },
+        {
+          "original": "renders mutation actions only for the comment author",
+          "target": "src/topcoat/tests/main/issues/comments.browser.test.js",
+          "translated": "renders mutation actions only for the comment author"
+        },
+        {
+          "original": "renders unsafe stored label colors through the component fallback",
+          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "translated": "renders unsafe stored label colors through the component fallback",
+          "notes": "Actual project-settings safeColor boundary must choose #6B7280 and reject the injected stored color; retired ColorPicker SSR wrapper is omitted."
+        },
+        {
+          "original": "the thread revision changes for every way the rendered thread can change",
+          "target": "src/topcoat/tests/main/issues/comments.browser.test.js",
+          "translated": "the thread revision changes for every way the rendered thread can change",
+          "notes": "Digest helper replaced by rendered thread transitions and Markdown call count: fresh-object same thread must not rerender, post/prepend/same-second edit/delete must update; bounded revision metadata must not keep another full body."
+        },
+        {
+          "original": "the thread revision tracks the mention roster the bodies render with",
+          "target": "src/topcoat/tests/main/issues/comments.browser.test.js",
+          "translated": "the thread revision tracks the mention roster the bodies render with",
+          "notes": "Actual mention-candidate roster and real profile/member mutations must change rendered mention display names; same roster reload is stable. Current renderer does not consume roster display names, so assertion remains active."
+        },
+        {
+          "original": "every comment body renders its diagrams inside the thread",
+          "target": "src/topcoat/tests/main/issues/comments.browser.test.js",
+          "translated": "every comment body renders its diagrams inside the thread"
+        },
+        {
+          "original": "marks comments edited only when the update timestamp changes",
+          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "translated": "marks comments edited only when the update timestamp changes"
+        },
+        {
+          "original": "renders the original time and exact edited timestamp",
+          "target": "src/topcoat/tests/main/issues/comments.browser.test.js",
+          "translated": "renders the original time and exact edited timestamp"
+        },
+        {
+          "original": "folding a comment in by id is idempotent and keeps thread order",
+          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "translated": "folding a comment in by id is idempotent and keeps thread order"
+        },
+        {
+          "original": "the thread comparator is the key the cursor pages by",
+          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "translated": "the thread comparator is the key the cursor pages by"
+        },
+        {
+          "original": "updates a comment through its typed API call",
+          "target": "src/topcoat/tests/main/issues/comments.browser.test.js",
+          "translated": "updates a comment through its typed API call"
+        },
+        {
+          "original": "requests the newest bounded comment page and shows it chronologically",
+          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "translated": "requests the newest bounded comment page and shows it chronologically"
+        },
+        {
+          "original": "infers hasMore from the over-fetched row without ever showing it",
+          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "translated": "infers hasMore from the over-fetched row without ever showing it"
+        },
+        {
+          "original": "trusts the server about what lies past a page the byte budget cut short",
+          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "translated": "trusts the server about what lies past a page the byte budget cut short"
+        },
+        {
+          "original": "the cursor the client pages by is the row the server named",
+          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "translated": "the cursor the client pages by is the row the server named"
+        },
+        {
+          "original": "a short page from a server that says nothing is still the end of the thread",
+          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "translated": "a short page from a server that says nothing is still the end of the thread"
+        },
+        {
+          "original": "a full page is more comments even when the header disagrees",
+          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "translated": "a full page is more comments even when the header disagrees"
+        },
+        {
+          "original": "paging a budget-limited thread walks it whole, without repeats",
+          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "translated": "paging a budget-limited thread walks it whole, without repeats"
+        },
+        {
+          "original": "sends the keyset cursor pair for older pages and never exceeds the cap",
+          "target": "src/topcoat/tests/main/issues/comments.browser.test.js",
+          "translated": "sends the keyset cursor pair for older pages and never exceeds the cap",
+          "notes": "Current issue and page comment controllers must send both cursor fields, desc51 fetch with50 cap, no offset."
+        },
+        {
+          "original": "pages back through a thread that is being written to, without duplicates",
+          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "translated": "pages back through a thread that is being written to, without duplicates",
+          "notes": "Original three2-row pages scaled to150 actual rows; arrival during pagination preserves cursor and uniqueness."
+        },
+        {
+          "original": "dedupes defensively when two pages overlap",
+          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "translated": "dedupes defensively when two pages overlap"
+        },
+        {
+          "original": "olderCursor names the oldest loaded comment, or nothing when empty",
+          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "translated": "olderCursor names the oldest loaded comment, or nothing when empty"
+        },
+        {
+          "original": "a refresh reconciles every loaded page, not just the newest",
+          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "translated": "a refresh reconciles every loaded page, not just the newest",
+          "notes": "Original three 2-row pages scaled to three actual50-row pages (150 total): deletion/edit/order and cursor-pair requirements retained."
+        },
+        {
+          "original": "a refresh never fetches more than the reader already loaded",
+          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "translated": "a refresh never fetches more than the reader already loaded",
+          "notes": "Actual expanded150-row window over500 rows, three51-row requests and exact newest150 result."
+        },
+        {
+          "original": "a refresh keeps exactly the rows it was asked for, not whole pages",
+          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "translated": "a refresh keeps exactly the rows it was asked for, not whole pages"
+        },
+        {
+          "original": "an exact page boundary needs no trimming",
+          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "translated": "an exact page boundary needs no trimming"
+        },
+        {
+          "original": "a thread shorter than the window is returned whole",
+          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "translated": "a thread shorter than the window is returned whole"
+        },
+        {
+          "original": "an automatic refresh is capped no matter how much history is loaded",
+          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "translated": "an automatic refresh is capped no matter how much history is loaded"
+        },
+        {
+          "original": "refresh bounds are enforced against any caller argument",
+          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "translated": "refresh bounds are enforced against any caller argument",
+          "notes": "Former external pageSize/budget arguments cannot alter current fixed50-row protocol. Positive integer request limits and bounded traversal remain required."
+        },
+        {
+          "original": "a fractional page size rounds down and still pages",
+          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "translated": "a fractional page size rounds down and still pages",
+          "notes": "Retired caller pageSize argument replaced by production integer geometry: two actual51-row fetches,100 retained rows in ascending order, remaining history. Arrays cannot have fractional length; actual anchor traversal bound separately tested."
+        },
+        {
+          "original": "a capped refresh keeps the older rows the reader loaded by hand",
+          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "translated": "a capped refresh keeps the older rows the reader loaded by hand"
+        },
+        {
+          "original": "reconciliation replaces the window when nothing older was preserved",
+          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "translated": "reconciliation replaces the window when nothing older was preserved"
+        },
+        {
+          "original": "reconciliation orders preserved rows by the same key the cursor uses",
+          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "translated": "reconciliation orders preserved rows by the same key the cursor uses"
+        },
+        {
+          "original": "only the newest comment-window operation may write",
+          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "translated": "only the newest comment-window operation may write"
+        },
+        {
+          "original": "a replacement window applies, re-reads, or stands down",
+          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "translated": "a replacement window applies, re-reads, or stands down"
+        },
+        {
+          "original": "a failed page aborts the refresh instead of showing a half window",
+          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "translated": "a failed page aborts the refresh instead of showing a half window"
+        },
+        {
+          "original": "an empty thread refreshes to an empty window without looping",
+          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "translated": "an empty thread refreshes to an empty window without looping"
+        },
+        {
+          "original": "a deep link to an unloaded comment asks for the previous page",
+          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "translated": "a deep link to an unloaded comment asks for the previous page"
+        },
+        {
+          "original": "a failing anchor fetch is not retried until more comments arrive",
+          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "translated": "a failing anchor fetch is not retried until more comments arrive"
+        },
+        {
+          "original": "the automatic anchor walk stops after its page budget",
+          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "translated": "the automatic anchor walk stops after its page budget"
+        },
+        {
+          "original": "a manual load older does not hand the automatic walk a fresh budget",
+          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "translated": "a manual load older does not hand the automatic walk a fresh budget",
+          "notes": "Live source onClick older branch plus resolveCommentHash over controlled pages: ten automatic reads, one manual read, then no fresh automatic ten-read allowance."
+        },
+        {
+          "original": "navigating to another thread starts the anchor walk over",
+          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "translated": "navigating to another thread starts the anchor walk over"
+        },
+        {
+          "original": "deletes a comment through its typed API call",
+          "target": "src/topcoat/tests/main/issues/comments.browser.test.js",
+          "translated": "deletes a comment through its typed API call"
+        }
+      ]
+    },
+    {
+      "source": "web/tests/insertSnippet.test.ts",
+      "target": "src/topcoat/tests/main/issues/insertSnippet.test.js",
+      "cases": [
+        "images embed, everything else links",
+        "inserting into an empty composer adds no leading break",
+        "inserting mid-line breaks onto its own block",
+        "inserting at the start of a fresh line keeps it inline",
+        "inserting in the middle keeps the tail and lands the caret before it",
+        "a selection is replaced, not pushed aside",
+        "a backwards selection is normalised",
+        "out-of-range offsets clamp to the text instead of throwing",
+        "consecutive inserts stack one per line"
+      ],
+      "notes": "Original assertions call current issue-create upload completion and attachment Markdown helper through controlled transfer/selection boundary; text and caret values are unchanged requirements."
+    },
+    {
+      "source": "web/tests/pendingPatch.test.ts",
+      "target": "src/topcoat/tests/main/issues/pendingPatch.test.js",
+      "cases": [
+        "with nothing parked, a patch is sent",
+        "with a patch parked, later ones merge instead of being sent",
+        "a later edit to the same field wins",
+        "the drain's own send is always dispatched",
+        "an edit during the replay parks instead of racing it",
+        "a merged patch names every field that has to be restored on cancel",
+        "a stale refusal plus two queued fields yields one merged patch and no more sends",
+        "stops on a failure, leaving whatever is parked for the prompt",
+        "finishes when a send lands and nothing arrived meanwhile",
+        "continues with whatever arrived while the send was in flight",
+        "taking a snapshot clears the slot so new edits start a fresh one",
+        "A refused, B merged, C edited mid-replay: all three land",
+        "a failed replay retains an edit made during it"
+      ],
+      "notes": "Original pure decisions map to live identity saveSettings/reauthenticate dispatch, parking, merge, snapshot, resume and drain outcomes. Controlled deferred requests supply only transport boundary."
+    },
+    {
+      "source": "web/tests/references.test.ts",
+      "target": "src/topcoat/tests/main/issues/references.test.js",
+      "cases": [
+        "does not reuse an account's issue snapshot after the session changes",
+        "retries a transient failure",
+        "caches stable not-found responses",
+        "re-fetches a status after realtime invalidation",
+        "resolves a shared status once for every subscriber",
+        "isolates subscriber exceptions",
+        "returns but does not cache a direct response invalidated in the same session",
+        "suppresses a direct response from an old session",
+        "drops unsubscribed status work before it reaches the server",
+        "caps concurrent issue resolution",
+        "releases active status work when its last subscriber leaves",
+        "restarts a status request after immediate same-key resubscription",
+        "an old cleanup cannot remove a replacement same-key subscription",
+        "releases queue slots after abortable direct consumers leave",
+        "does not join an aborted queued request for the same identifier",
+        "refreshes subscribers after the session changes during a request",
+        "shares one browser refresh listener and removes it after teardown",
+        "keeps a shared request alive for a direct caller after status teardown",
+        "caps direct cached issue resolution",
+        "returns but does not cache module data invalidated in the same session",
+        "does not return or cache module data from an old session"
+      ],
+      "notes": "Root-owned frozen adapter invokes live session.request for direct reads and live picker.bindReferences focus/card lifecycle for subscriptions. DOM insertion observes subscriber delivery; clock boundary runs debounce immediately. No cache/queue/refresh/cancellation functionality is implemented in the adapter."
+    },
+    {
+      "source": "web/tests/saveQueue.test.ts",
+      "target": "src/topcoat/tests/main/issues/saveQueue.test.js",
+      "cases": [
+        "sends one patch straight through",
+        "an edit made during an in-flight save is not dropped",
+        "queued patches coalesce, last write winning per field",
+        "everyone who pushed into a coalesced batch learns how it went",
+        "a failure does not stall the queue",
+        "reports busy while a save is in flight and idle again afterwards",
+        "an edit arriving after dispatch is not merged into the sent patch"
+      ],
+      "notes": "Original deferred transport and settlement assertions observe live identity settingsSave/settingsQueue transitions. Pending promises have only a test deadline so a missing batch settlement fails instead of hanging."
+    },
+    {
+      "source": "web/tests/waits.test.ts",
+      "target": "src/topcoat/tests/main/issues/waits.browser.test.js",
+      "cases": [
+        "a date wait holds, comes due on its first day, and goes overdue after its last",
+        "a user wait holds until cleared",
+        "date arithmetic stays on the calendar",
+        "today is the server's day at its UTC offset, not the browser's",
+        "with no server clock yet, the server's own state stands",
+        "windows collapse a shared month",
+        "the detail headline names the state",
+        "the chip shows the most pressing wait and counts the rest"
+      ],
+      "notes": "Original eight titles retain calendar/state/text/summary requirements at real REST, native date input and live collaboration/list renderer. Calendar arithmetic maps to unchanged ISO date input and Dec31-Jan1 wire payload. Server-day authority is checked in Chicago/UTC/Kolkata browser zones, rather than restoring retired client UTC-offset arithmetic helper."
+    }
+  ]
+}
