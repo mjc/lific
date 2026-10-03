@@ -1,0 +1,6 @@
+Browser bundles copied without modification from these npm package releases:
+  mermaid 11.17.2: mermaid/dist/mermaid.min.js (vendor.mermaid.js)
+  marked 17.0.6: marked/lib/marked.umd.js (vendor.marked.js)
+  DOMPurify 3.4.15: dompurify/dist/purify.min.js (vendor.dompurify.js)
+The upstream license notices remain in each bundle; complete package licenses
+are included alongside them. These local bundles require no CDN requests.

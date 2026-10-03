@@ -378,7 +378,8 @@ To activate Devenv automatically when changing into the checkout, add the
 Devenv hook for your shell once (for zsh, `eval "$(devenv hook zsh)"`), then
 run `devenv allow` in this checkout.
 
-Release builds always build and embed the Svelte 5 web UI:
+Lific v3 uses Topcoat for its browser interface. Rust compiles the pages,
+browser runtime, and JavaScript/CSS assets into the executable:
 
 ```bash
 devenv --profile release-linux tasks run lific:release:x86_64-unknown-linux-gnu
@@ -386,9 +387,13 @@ devenv --profile release-linux tasks run lific:release:x86_64-unknown-linux-gnu
 
 Use `release-darwin` for macOS targets and `release-windows-msvc` for the
 Windows MSVC cross-build on Linux. `devenv build outputs.lific` builds the
-native, Nix-packaged release; it builds the locked frontend in an isolated
-derivation and embeds it before compiling Rust. SQLite is bundled via
-`rusqlite`; no system SQLite is required.
+native, Nix-packaged release from the locked Rust sources. SQLite is bundled
+via `rusqlite`; no system SQLite is required. `devenv up` runs the development
+server with the same embedded interface.
+
+Before deploying v3, retain the previous executable or image and a pre-upgrade
+backup. The [migration and rollback instructions](docs/topcoat-migration.md#deployment-and-rollback)
+explain the schema compatibility check and recovery steps.
 
 ### Docker (optional)
 

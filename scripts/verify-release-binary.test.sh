@@ -36,22 +36,25 @@ free_port() {
 
 # A stand-in web server. MODE picks which release build it imitates:
 #   full        - carries the web UI, serves the bundles it names
-#   no-assets   - serves a shell that names no bundles (built without web/dist)
+#   no-assets   - serves a shell that names no bundles (built without Topcoat assets)
 #   spa         - names bundles but does not have them, so /assets falls back
-#                 to index.html with 200 text/html
+#                 to HTML with 200 text/html
 fixture_server="$scratch/fixture-server.ts"
 cat >"$fixture_server" <<'TS'
 const mode = process.env.MODE ?? "full";
 const shell = (withAssets: boolean) =>
   `<!doctype html><html lang="en"><head><title>Lific</title>` +
   (withAssets
-    ? `<script type="module" crossorigin src="/assets/index-abc123.js"></script>` +
-      `<link rel="stylesheet" crossorigin href="/assets/index-abc123.css">`
+    ? `<script type="module" crossorigin src="/__topcoat-runtime.js"></script>` +
+      `<link rel="stylesheet" crossorigin href="/__topcoat-runtime.css">`
     : "") +
+  (mode === "legacy" ? `<script src="/assets/index-legacy.js"></script>` : "") +
   `</head><body><div id="app"></div></body></html>`;
 
 const html = (withAssets: boolean) =>
   new Response(shell(withAssets), { headers: { "content-type": "text/html" } });
+const iconPaths = ["favicon.png", "apple-touch-icon.png", "icon-192.png", "icon-512.png", "icon-maskable-512.png"];
+const png = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10, 0]);
 
 Bun.serve({
   port: Number(process.env.PORT),
@@ -61,17 +64,34 @@ Bun.serve({
     if (path === "/api/health") {
       return new Response("ok", { headers: { "content-type": "text/plain" } });
     }
-    if (mode === "full" && path === "/assets/index-abc123.js") {
+    if (path === "/manifest.webmanifest") {
+      if (mode === "manifest-html") return html(true);
+      const manifest = {
+        id: "./", start_url: mode === "manifest-root-url" ? "/" : "./", scope: "./",
+        icons: iconPaths.slice(2).map(src => ({src: mode === "manifest-root-icon" ? `/${src}` : src})),
+      };
+      return new Response(mode === "manifest-empty" ? "" : JSON.stringify(manifest), {
+        headers: {"content-type": mode === "manifest-mime" ? "text/plain" : "application/manifest+json"},
+      });
+    }
+    if (iconPaths.includes(path.slice(1))) {
+      if (mode === `missing-${path.slice(1)}`) return new Response("Not found", {status: 404});
+      return new Response(mode === "png-empty" ? null : mode === "png-html" ? shell(true) : png, {
+        headers: {"content-type": mode === "png-mime" ? "text/plain" : "image/png"},
+      });
+    }
+    if (!["no-assets", "spa"].includes(mode) && path === "/__topcoat-runtime.js") {
       return new Response("export const ok = 1;\n", {
         headers: { "content-type": "text/javascript" },
       });
     }
-    if (mode === "full" && path === "/assets/index-abc123.css") {
+    if (!["no-assets", "spa"].includes(mode) && path === "/__topcoat-runtime.css") {
       return new Response(":root{--ok:1}\n", {
         headers: { "content-type": "text/css" },
       });
     }
-    // Everything else, including a missing asset, gets the SPA fallback.
+    if (path.startsWith("/assets/") && mode !== "legacy" && mode !== "legacy-asset") return new Response("Not found", { status: 404 });
+    // Missing current assets imitate an incorrect HTML fallback.
     return html(mode !== "no-assets");
   },
 });
@@ -171,7 +191,18 @@ if ! grep -Fq "release binary serves its API and the embedded web UI" "$scratch/
 fi
 echo "a complete build passes, addressed by a relative path"
 
-# 2. A shell with no bundle references is a binary built without web/dist.
+# Install metadata and icons must ship alongside the JavaScript and CSS.
+for mode in manifest-html manifest-mime manifest-empty manifest-root-url manifest-root-icon \
+  missing-favicon.png missing-apple-touch-icon.png missing-icon-192.png \
+  missing-icon-512.png missing-icon-maskable-512.png png-mime png-empty png-html; do
+  status="$(run_verifier "$scratch" "$fixture_binary" FIXTURE_MODE="$mode")"
+  if [[ $status -eq 0 || $status -eq 124 ]]; then
+    fail "verifier accepted broken install assets ($mode) or hung while rejecting them"
+  fi
+  echo "broken install assets ($mode) are rejected"
+done
+
+# 2. A shell with no bundle references is a binary built without Topcoat assets.
 status="$(run_verifier "$scratch" "$fixture_binary" FIXTURE_MODE=no-assets)"
 if [[ $status -eq 0 ]]; then
   fail "verifier accepted a web root that names no JS or CSS bundle"
@@ -190,6 +221,19 @@ if [[ $status -eq 124 ]]; then
   fail "verifier hung on a missing bundle"
 fi
 echo "a missing bundle served as SPA HTML is rejected"
+
+# A partially cut over binary that still serves the retired bundle must fail.
+status="$(run_verifier "$scratch" "$fixture_binary" FIXTURE_MODE=legacy)"
+if [[ $status -eq 0 || $status -eq 124 ]]; then
+  fail "verifier accepted a legacy frontend bundle or hung while rejecting it"
+fi
+echo "a release retaining the legacy frontend is rejected"
+status="$(run_verifier "$scratch" "$fixture_binary" FIXTURE_MODE=legacy-asset)"
+if [[ $status -eq 0 || $status -eq 124 ]]; then
+  fail "verifier accepted retired assets that are no longer referenced"
+fi
+echo "retired frontend assets must return 404 even when not referenced"
+
 
 # 4. A hostile working directory (its own lific.toml, its own files) must not
 #    reach the run: the verifier resolves the binary, moves to a scratch
@@ -213,7 +257,7 @@ printf '%s\n' \
   >"$no_response_server"
 
 status="$(run_verifier "$scratch" "$fixture_binary" \
-  FIXTURE_SERVER="$no_response_server" LIFIC_VERIFY_STARTUP_TIMEOUT=3)"
+  FIXTURE_SERVER="$no_response_server" LIFIC_VERIFY_STARTUP_TIMEOUT=3 LIFIC_VERIFY_PORT="$(free_port)")"
 if [[ $status -eq 124 ]]; then
   fail "verifier hung on a non-responding server"
 fi

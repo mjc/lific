@@ -23,7 +23,6 @@ let
     [backup]
     enabled = false
   '';
-  bun2nix = inputs.bun2nix.packages.${pkgs.stdenv.hostPlatform.system}.default;
   msvcPkgs = import inputs.nixpkgs {
     system = pkgs.stdenv.hostPlatform.system;
     config = {
@@ -64,48 +63,6 @@ let
       root = ./.;
       fileset = lib.fileset.unions paths;
     };
-  webBundle = pkgs.stdenv.mkDerivation {
-    pname = "lific-web";
-    version = lificVersion;
-    # The browser bundle must be reproducible from source, never copied from
-    # a developer's checkout.
-    # Vite reads Cargo.toml for the version displayed in the UI.
-    src = source [
-      ./Cargo.toml
-      ./web/package.json
-      ./web/bun.lock
-      ./web/index.html
-      ./web/vite.config.ts
-      ./web/svelte.config.js
-      ./web/tsconfig.json
-      ./web/tsconfig.app.json
-      ./web/tsconfig.node.json
-      ./web/src
-      ./web/public
-    ];
-    nativeBuildInputs = [
-      bun2nix.hook
-      config.languages.javascript.package
-    ];
-    bunRoot = "web";
-    bunInstallFlags = [
-      "--frozen-lockfile"
-      "--linker=hoisted"
-    ]
-    ++ lib.optionals pkgs.stdenv.isDarwin [ "--backend=copyfile" ];
-    bunDeps = bun2nix.fetchBunDeps { bunNix = ./web/bun.nix; };
-    buildPhase = ''
-      runHook preBuild
-      (cd web && bun run build)
-      runHook postBuild
-    '';
-    installPhase = ''
-      runHook preInstall
-      mkdir -p "$out"
-      cp -R web/dist/. "$out/"
-      runHook postInstall
-    '';
-  };
   lificPackage = rustPlatform.buildRustPackage {
     pname = "lific";
     version = lificVersion;
@@ -120,12 +77,6 @@ let
     ];
     cargoLock.lockFile = ./Cargo.lock;
     buildType = "dist";
-    # This is the derivation's private source copy. The checkout is never
-    # modified: every release package embeds the UI built by webBundle.
-    postPatch = ''
-      mkdir -p web/dist
-      cp -R ${webBundle}/. web/dist/
-    '';
     doCheck = false;
   };
   playwrightBrowsers = pkgs.playwright-driver.browsers.override {
@@ -207,17 +158,70 @@ let
     trap cleanup EXIT INT TERM
     bun install --frozen-lockfile
   '';
+  browserProfile = {
+    languages.javascript.directory = "${repoRoot}/e2e";
+    packages = [ playwrightBrowsers pkgs.ffmpeg ];
+    env.PLAYWRIGHT_BROWSERS_PATH = "${playwrightBrowsers}";
+    env.PLAYWRIGHT_EXECUTABLE_PATH = "${playwrightChromium}";
+    tasks = {
+      "lific:install:e2e" = {
+        cwd = "${repoRoot}/e2e";
+        exec = lockedBunInstall "e2e";
+        before = [ "devenv:enterShell" ];
+      };
+      "lific:topcoat:e2e" = {
+        after = [ "lific:e2e" ];
+      };
+      "lific:e2e" = {
+        cwd = repoRoot;
+        exec = ''
+          set -e
+          cargo test --locked controls_runtime_executes_control_handlers_from_the_shared_layout -- --include-ignored
+          cargo test --locked controls_tooltip_stays_inside_viewport_edges_with_enlarged_text -- --include-ignored
+          cargo test --locked controls_preferences_ -- --include-ignored
+          node --test src/topcoat/shell/assets/mobile.test.js
+          node --test src/topcoat/shell/assets/recents.browser.test.js
+          node --test src/topcoat/shell/assets/shell.browser.test.js
+          node --test src/topcoat/palette/assets/palette.browser.test.js
+          node --test src/topcoat/attachments/assets/attachments.browser.test.js
+          node --test src/topcoat/dashboard/assets/dashboard.browser.test.js
+          node --test src/topcoat/dashboard/assets/dashboard.session.browser.test.js
+          node --test src/topcoat/issue_list/assets/issue-list.browser.test.js
+          node --test src/topcoat/issue_detail/assets/fields.test.js src/topcoat/issue_detail/assets/route.test.js
+          node --test src/topcoat/issue_detail/editor/assets/editor.test.js
+          node --test src/topcoat/issue_detail/editor/assets/editor.browser.test.js
+          node --test src/topcoat/issue_detail/assets/route.browser.test.js
+          node --test src/topcoat/issue_detail/collaboration/assets/collaboration.test.js
+          node --test src/topcoat/issue_detail/collaboration/assets/collaboration.browser.test.js
+          node --test src/topcoat/issue_create/assets/issue-create.test.js
+          node --test src/topcoat/issue_create/assets/issue-create.browser.test.js
+          node --test src/topcoat/project_settings/assets/project-settings.browser.test.js
+          node --test src/topcoat/identity/assets/identity.test.js
+          node --test src/topcoat/identity/assets/identity.browser.test.js
+          node --test src/topcoat/files/assets/files.browser.test.js
+          node --test src/topcoat/plans/assets/plans.browser.test.js
+          node --test src/topcoat/modules/assets/modules.browser.test.js
+          node --test src/topcoat/activity_insights/assets/routes.browser.test.js
+          node --test src/topcoat/pages/assets/pages.browser.test.js
+          node --test src/topcoat/public/assets/public.markdown-media.browser.test.js
+          node --test src/topcoat/public/assets/public.browser.test.js
+          node --test src/topcoat/acceptance/*.browser.test.js
+        '';
+        after = [ "lific:install:e2e" "lific:debug-build" ];
+      };
+    };
+  };
 in
 {
   languages.rust = {
     enable = true;
     channel = "stable";
-    version = "1.88.0";
+    version = "1.99.0";
   };
 
   languages.javascript = {
     enable = true;
-    directory = "${repoRoot}/web";
+    directory = repoRoot;
     bun = {
       enable = true;
       # The native installer cannot enforce --frozen-lockfile. Use one task
@@ -230,6 +234,9 @@ in
   # Each profile adds an explicit frozen install prerequisite so direct task
   # invocations are reproducible without relying on shell entry.
   profiles = {
+    # Topcoat is the standard frontend. These names retain existing task entry points.
+    topcoat.module = { };
+    topcoat-e2e.module = browserProfile;
     docs.module = {
       # Documentation needs Bun, not the Rust toolchain or source hooks.
       languages.rust.enable = lib.mkForce false;
@@ -238,51 +245,7 @@ in
       git-hooks.hooks.treefmt.enable = lib.mkForce false;
       languages.javascript.directory = "${repoRoot}/site";
     };
-    e2e.module = {
-      languages.javascript.directory = "${repoRoot}/e2e";
-      packages = [ playwrightBrowsers ];
-      env.PLAYWRIGHT_BROWSERS_PATH = "${playwrightBrowsers}";
-      env.PLAYWRIGHT_EXECUTABLE_PATH = "${playwrightChromium}";
-      tasks = {
-        "lific:install:e2e" = {
-          cwd = "${repoRoot}/e2e";
-          exec = lockedBunInstall "e2e";
-          before = [ "devenv:enterShell" ];
-        };
-        # Backend suites share the debug binary; component suites only need
-        # Vite and Chromium. Keeping those groups separate lets the task graph
-        # run them concurrently without changing the test scripts.
-        "lific:e2e:app" = {
-          cwd = "${repoRoot}/e2e";
-          exec = ''
-            bun run smoke
-            bun run archives
-            bun run public
-          '';
-          after = [
-            "lific:debug-build"
-            "lific:install:e2e"
-          ];
-        };
-        "lific:e2e:components" = {
-          cwd = "${repoRoot}/e2e";
-          exec = ''
-            bun run sidebar
-            bun run mobile-nav
-            bun run context-menu
-            bun run peek-permissions
-            bun run issue-topbar
-          '';
-          after = [
-            "lific:web:build"
-            "lific:install:e2e"
-          ];
-        };
-        "lific:e2e" = {
-          after = [ "lific:e2e:app" "lific:e2e:components" ];
-        };
-      };
-    };
+    e2e.module = browserProfile;
     promo.module = {
       languages.javascript.directory = "${repoRoot}/promo";
       packages = pkgs.lib.optionals pkgs.stdenv.isLinux chromiumRuntimePackages;
@@ -325,12 +288,10 @@ in
         "lific:release:x86_64-unknown-linux-gnu" = {
           cwd = repoRoot;
           exec = "cargo zigbuild --locked --profile dist --target x86_64-unknown-linux-gnu";
-          after = [ "lific:web:build" ];
         };
         "lific:release:aarch64-unknown-linux-gnu" = {
           cwd = repoRoot;
           exec = "cargo zigbuild --locked --profile dist --target aarch64-unknown-linux-gnu";
-          after = [ "lific:web:build" ];
         };
       };
     };
@@ -347,7 +308,6 @@ in
             cargo build --locked --profile dist --target x86_64-apple-darwin
             bash scripts/fix-macos-release-linkage.sh target/x86_64-apple-darwin/dist/lific
           '';
-          after = [ "lific:web:build" ];
         };
         "lific:release:aarch64-apple-darwin" = {
           cwd = repoRoot;
@@ -356,7 +316,6 @@ in
             cargo build --locked --profile dist --target aarch64-apple-darwin
             bash scripts/fix-macos-release-linkage.sh target/aarch64-apple-darwin/dist/lific
           '';
-          after = [ "lific:web:build" ];
         };
       };
     };
@@ -378,7 +337,6 @@ in
       tasks."lific:release:x86_64-pc-windows-msvc" = {
         cwd = repoRoot;
         exec = "cargo build --locked --profile dist --target x86_64-pc-windows-msvc";
-        after = [ "lific:web:build" ];
       };
     };
   };
@@ -396,27 +354,22 @@ in
       # shfmt.enable = true;
     };
     config.settings.excludes = [
-      "web/dist/*"
       "site/.next/*"
       "promo/out/*"
       "target/*"
-      "web/bun.nix"
     ];
   };
 
   outputs = {
     lific = lificPackage;
-    web = webBundle;
   };
 
-  packages = [
-    bun2nix
-  ]
-  ++ (with pkgs; [
+  packages = with pkgs; [
+    nodejs
     curl
     file
     git
-  ]);
+  ];
 
   env.CARGO_TERM_COLOR = "always";
   env.RUST_BACKTRACE = "1";
@@ -426,20 +379,13 @@ in
     # Only attach the test graph when actually running `devenv test`.
     "devenv:git-hooks:run" = {
       before = lib.mkForce (lib.optionals config.devenv.isTesting [ "devenv:enterTest" ]);
-      after = [ "lific:web:build" ] ++ lib.optionals config.devenv.isTesting [ "lific:web:check" ];
+      after = lib.optionals config.devenv.isTesting [ "lific:topcoat:test" ];
     };
     "devenv:treefmt:run" = {
       # Formatting is explicit in development and checked before CI builds.
       # Shell entry must not silently repair a future formatting failure.
       before = lib.mkForce (lib.optionals config.devenv.isTesting [ "devenv:enterTest" ]);
       exec = lib.mkForce "treefmt --ci";
-    };
-    "lific:install:web" = {
-      cwd = "${repoRoot}/web";
-      exec = lockedBunInstall "web";
-      before = lib.optionals (config.languages.javascript.directory == "${repoRoot}/web") [
-        "devenv:enterShell"
-      ];
     };
     "lific:install:site" = {
       cwd = "${repoRoot}/site";
@@ -458,43 +404,58 @@ in
       exec = "bun scripts/check-docs.mjs";
       after = [ "lific:docs:build" ];
     };
-    "lific:web:lock-check" = {
-      cwd = "${repoRoot}/web";
-      exec = ''
-        generated="$(mktemp)"
-        trap 'rm -f "$generated"' EXIT
-        bun2nix -o "$generated"
-        diff -u bun.nix "$generated"
-      '';
-    };
-    "lific:web:lock-update" = {
-      cwd = "${repoRoot}/web";
-      exec = "bun2nix -o bun.nix";
-    };
     "lific:rust-test" = {
       cwd = repoRoot;
       exec = "cargo test --all-targets --locked";
-      after = [ "lific:web:build" ] ++ lib.optionals config.devenv.isTesting [ "lific:web:check" ];
+      after = lib.optionals config.devenv.isTesting [ "devenv:treefmt:run" ];
     };
-    "lific:web:check" = {
-      cwd = "${repoRoot}/web";
-      exec = "bun run check && bun test";
-      after = [ "lific:install:web" ] ++ lib.optionals config.devenv.isTesting [ "devenv:treefmt:run" ];
+    "lific:topcoat:build" = {
+      cwd = repoRoot;
+      exec = "cargo build --locked";
+    };
+    "lific:topcoat:test" = {
+      cwd = repoRoot;
+      exec = ''
+        set -e
+        node --test src/topcoat/assets/sync.test.js
+        node --test src/topcoat/assets/controls.test.mjs
+        node --test src/topcoat/shell/assets/shell.test.js
+        node --test src/topcoat/shell/assets/bootstrap.test.js
+        node --test src/topcoat/shell/assets/page-chrome.test.js
+        node --test src/topcoat/shell/assets/projects.test.js
+        node --test src/topcoat/shell/assets/recents.test.js
+        node --test src/topcoat/palette/assets/palette.test.js
+        node --test src/topcoat/attachments/assets/attachments.test.js
+        node --test src/topcoat/dashboard/assets/dashboard.test.js
+        node --test src/topcoat/issue_list/assets/issue-list.test.js
+        node --test src/topcoat/issue_detail/editor/assets/editor.test.js
+        node --test src/topcoat/issue_detail/collaboration/assets/collaboration.test.js
+        node --test src/topcoat/issue_create/assets/issue-create.test.js
+        node --test src/topcoat/issue_detail/assets/fields.test.js
+        node --test src/topcoat/issue_detail/assets/route.test.js
+        node --test src/topcoat/project_settings/assets/project-settings.test.js
+        node --test src/topcoat/identity/assets/identity.test.js
+        node --test src/topcoat/pages/assets/pages.test.js
+        node --test src/topcoat/files/assets/files.test.js
+        node --test src/topcoat/plans/assets/plans.test.js
+        node --test src/topcoat/modules/assets/modules.test.js
+        node --test src/topcoat/activity_insights/assets/model.test.js
+        node --test src/topcoat/public/assets/public.test.js
+        node --test src/topcoat/public/assets/public.media-worker.test.js
+      '';
+    };
+    "lific:topcoat:install-cli" = {
+      cwd = repoRoot;
+      exec = "cargo install --locked --version 0.9.0 topcoat-cli";
+    };
+    "lific:topcoat:fmt" = {
+      cwd = repoRoot;
+      exec = "${config.devenv.state}/cargo-install/bin/topcoat fmt src/server.rs";
+      after = [ "lific:topcoat:install-cli" ];
     };
     "lific:community-proxy:check" = {
       cwd = repoRoot;
       exec = "bun test ./deploy/community-redirect/worker.test.mjs";
-      after = [ "lific:install:web" ];
-    };
-    "lific:web:build" = {
-      cwd = "${repoRoot}/web";
-      exec = ''
-        bun run build
-        # Vite clears dist before writing the bundle; keep the tracked checkout
-        # marker so the generated tree remains safe for native git hooks.
-        touch dist/.gitkeep
-      '';
-      after = [ "lific:install:web" ];
     };
     "lific:release-test" = {
       cwd = repoRoot;
@@ -520,15 +481,13 @@ in
           fi
         fi
       '';
-      after = [ "lific:web:build" ];
     };
     "lific:check" = {
       before = lib.optionals config.devenv.isTesting [ "devenv:enterTest" ];
       after = [
         "lific:rust-test"
-        "lific:web:check"
+        "lific:topcoat:test"
         "lific:release-test"
-        "lific:web:lock-check"
         "lific:community-proxy:check"
         "lific:devenv-test"
       ];
@@ -536,20 +495,24 @@ in
     "lific:debug-build" = {
       cwd = repoRoot;
       exec = "cargo build --locked";
-      after = [ "lific:web:build" ];
     };
   };
 
   processes = {
     backend = {
       exec = ''
+        set -e
+        # Startup tightens config permissions. Keep the immutable template in
+        # the store and give the backend its own owner-readable runtime copy.
+        dev_config="$(mktemp "$DEVENV_RUNTIME/lific-dev.XXXXXX.toml")"
+        install -m 600 ${devConfig} "$dev_config"
         ${lib.optionalString config.devenv.isTesting ''
           # Devenv owns the test process lifetime; the database lives in its
           # isolated runtime directory, never in the developer's state.
           export LIFIC_DEV_DB="$(mktemp -d "$DEVENV_RUNTIME/lific-test.XXXXXX")/lific.db"
         ''}
         exec cargo run --locked -- \
-          --config ${devConfig} \
+          --config "$dev_config" \
           --db "$LIFIC_DEV_DB" \
           start --init-if-missing --host 127.0.0.1 \
           --port "$LIFIC_DEV_PORT"
@@ -582,22 +545,13 @@ in
           "toml"
           "lock"
           "sql"
+          "js"
+          "css"
+          "png"
+          "webmanifest"
         ];
         ignore = [ "target" ];
       };
-    };
-    frontend = {
-      exec = "bun run dev";
-      cwd = "${repoRoot}/web";
-      ports.http.allocate = 5173;
-      env.VITE_PORT = builtins.toString config.processes.frontend.ports.http.value;
-      env.VITE_API_TARGET = "http://127.0.0.1:${builtins.toString config.processes.backend.ports.http.value}";
-      after = [ "devenv:processes:backend@ready" ];
-      ready.http.get = {
-        port = config.processes.frontend.ports.http.value;
-        path = "/";
-      };
-      ready.timeout = 30;
     };
   };
 
@@ -605,10 +559,6 @@ in
     wait_for_processes 60
     curl --fail --silent --show-error --connect-timeout 1 --max-time 5 \
       http://127.0.0.1:${toString config.processes.backend.ports.http.value}/api/health
-    curl --fail --silent --show-error --connect-timeout 1 --max-time 5 \
-      http://127.0.0.1:${toString config.processes.frontend.ports.http.value}/ | grep -q '<html'
-    curl --fail --silent --show-error --connect-timeout 1 --max-time 5 \
-      http://127.0.0.1:${toString config.processes.frontend.ports.http.value}/api/health
   '';
 
   git-hooks.hooks = {

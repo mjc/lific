@@ -281,6 +281,11 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "HWP attachment MIME",
         include_str!("../../migrations/057_hwp_attachment_mime.sql"),
     ),
+    (
+        58,
+        "audio MP4 attachment MIME",
+        include_str!("../../migrations/058_audio_mp4_attachment_mime.sql"),
+    ),
 ];
 
 /// Migrations that rebuild a table other tables reference by foreign key.
@@ -309,7 +314,7 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
 /// before its savepoint releases, and `run_inner` repeats the check
 /// batch-wide before commit to cover every other migration that ran while
 /// enforcement was off.
-const FK_REBUILD_MIGRATIONS: &[i64] = &[39, 43, 50, 57];
+const FK_REBUILD_MIGRATIONS: &[i64] = &[39, 43, 50, 57, 58];
 
 /// Highest migration version this binary knows how to apply. Used by
 /// `lific dump`/`restore` (LIF-266) to stamp and gate archives on schema
@@ -920,6 +925,185 @@ mod tests {
             1,
             "the search triggers must be recreated"
         );
+    }
+
+    #[test]
+    fn audio_mp4_migration_preserves_attachment_data_and_constraints() {
+        let conn = migrated_up_to(58);
+        let sha = "a".repeat(64);
+        conn.execute_batch(&format!(
+            "INSERT INTO projects(id,name,identifier) VALUES(1,'Before','BEF');
+             INSERT INTO issues(id,project_id,sequence,title) VALUES(1,1,1,'Issue');
+             INSERT INTO attachments(id,sha256,filename,mime,size_bytes,created_at,width,height,alt_text,imported_author)
+                 VALUES(7,'{sha}','diagram.png','image/png',10,'2025-01-02',20,30,'Diagram','ada');
+             INSERT INTO attachment_links(attachment_id,entity_type,entity_id) VALUES(7,'issue',1);
+             UPDATE attachments_fts SET extracted_text='preserved transcript' WHERE attachment_id=7;"
+        )).unwrap();
+        run(&conn).unwrap();
+        let previous: (String, String, i64, i64, String, String) = conn.query_row(
+            "SELECT sha256,created_at,width,height,alt_text,imported_author FROM attachments WHERE id=7",
+            [], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?))
+        ).unwrap();
+        assert_eq!(
+            previous,
+            (
+                sha.clone(),
+                "2025-01-02".into(),
+                20,
+                30,
+                "Diagram".into(),
+                "ada".into()
+            )
+        );
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM attachment_links WHERE attachment_id=7"
+            ),
+            1
+        );
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM attachments_fts WHERE attachments_fts MATCH 'transcript'"
+            ),
+            1
+        );
+        let bytes = b"\0\0\0\x20ftypisom\0\0\x02\0isomiso2avc1mp41";
+        let mime = crate::storage::sniff_and_validate(bytes, Some("audio/mp4")).unwrap();
+        let row = crate::db::queries::attachments::create_attachment(
+            &conn,
+            &sha,
+            "voice.m4a",
+            &mime,
+            bytes.len() as i64,
+            None,
+        )
+        .unwrap();
+        assert!(row.id > 7);
+        assert_eq!(
+            crate::db::queries::attachments::get_attachment(&conn, row.id)
+                .unwrap()
+                .mime,
+            "audio/mp4"
+        );
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM attachments_fts WHERE attachments_fts MATCH 'voice'"
+            ),
+            1
+        );
+        conn.execute(
+            "UPDATE attachments SET filename='renamed.m4a' WHERE id=?1",
+            [row.id],
+        )
+        .unwrap();
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM attachments_fts WHERE attachments_fts MATCH 'renamed'"
+            ),
+            1
+        );
+        conn.execute("DELETE FROM attachments WHERE id=?1", [row.id])
+            .unwrap();
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM attachments_fts WHERE attachments_fts MATCH 'renamed'"
+            ),
+            0
+        );
+        for (hash, mime, size) in [
+            (sha.as_str(), "text/html", 1),
+            ("bad", "audio/mp4", 1),
+            (sha.as_str(), "audio/mp4", -1),
+        ] {
+            assert!(
+                crate::db::queries::attachments::create_attachment(
+                    &conn, hash, "bad.m4a", mime, size, None
+                )
+                .is_err()
+            );
+        }
+        run(&conn).unwrap();
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM attachment_links WHERE attachment_id=7"
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn audio_mp4_migration_keeps_deleted_highest_attachment_id() {
+        assert_audio_mp4_migration_keeps_sequence(false);
+    }
+
+    #[test]
+    fn audio_mp4_migration_keeps_empty_attachment_sequence() {
+        assert_audio_mp4_migration_keeps_sequence(true);
+    }
+
+    fn assert_audio_mp4_migration_keeps_sequence(empty: bool) {
+        let conn = migrated_up_to(58);
+        let sha = "a".repeat(64);
+        conn.execute(
+            "INSERT INTO attachments(id,sha256,filename,mime,size_bytes)
+             VALUES(7,?1,'surviving.png','image/png',10),(42,?1,'deleted.png','image/png',10)",
+            [&sha],
+        )
+        .unwrap();
+        conn.execute("DELETE FROM attachments WHERE id=42", [])
+            .unwrap();
+        if empty {
+            conn.execute("DELETE FROM attachments", []).unwrap();
+        }
+        let sequence = |conn: &Connection| {
+            conn.query_row(
+                "SELECT seq FROM sqlite_sequence WHERE name='attachments'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(sequence(&conn), 42);
+        run(&conn).unwrap();
+        assert_eq!(
+            sequence(&conn),
+            42,
+            "the rebuilt table must retain deleted IDs in its watermark"
+        );
+        assert_eq!(
+            count(&conn, "SELECT COUNT(*) FROM attachments"),
+            if empty { 0 } else { 1 }
+        );
+        let row = crate::db::queries::attachments::create_attachment(
+            &conn,
+            &sha,
+            "voice.m4a",
+            "audio/mp4",
+            32,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            row.id, 43,
+            "new uploads must never reuse an earlier attachment ID"
+        );
+        run(&conn).unwrap();
+        let next = crate::db::queries::attachments::create_attachment(
+            &conn,
+            &sha,
+            "next.m4a",
+            "audio/mp4",
+            32,
+            None,
+        )
+        .unwrap();
+        assert_eq!(next.id, 44);
     }
 
     fn stored_checksum(conn: &Connection, version: i64) -> Option<String> {

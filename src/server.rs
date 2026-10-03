@@ -11,20 +11,20 @@
 
 use std::{net::SocketAddr, sync::Arc};
 
+use axum::http::StatusCode;
 use axum::{
     Router,
     body::Body,
     extract::Request,
-    http::{HeaderName, HeaderValue, Method, StatusCode, header},
+    http::{HeaderName, HeaderValue, Method, header},
     middleware,
     response::{IntoResponse, Response},
-    routing::{any, get},
+    routing::any,
 };
 use rmcp::transport::streamable_http_server::{
     session::local::LocalSessionManager,
     tower::{StreamableHttpServerConfig, StreamableHttpService},
 };
-use rust_embed::Embed;
 use tower_http::compression::Compression;
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tracing::{info, warn};
@@ -34,62 +34,1479 @@ use crate::{
     actor, api, auth, backup, db, links, mcp, oauth, ratelimit, realtime, resolve_caller, storage,
 };
 
-/// Embedded frontend assets compiled from web/dist/.
-/// Falls back gracefully if dist/ doesn't exist (e.g. dev builds without frontend).
-#[derive(Embed)]
-#[folder = "web/dist/"]
-#[allow(dead_code)]
-struct WebAssets;
+#[path = "topcoat/mod.rs"]
+mod topcoat_frontend;
+mod topcoat_app {
+    #[cfg(test)]
+    use topcoat::view::attributes;
+    use topcoat::{
+        Result,
+        router::{Slot, layout, page, response::Response, route},
+        view::{View, ViewExt, view},
+    };
 
-/// Serve an embedded static file, or fall back to index.html for SPA routing.
-async fn serve_frontend(uri: axum::http::Uri) -> impl IntoResponse {
-    let path = uri.path().trim_start_matches('/');
-
-    // Try the exact path first (e.g. assets/index-abc.js)
-    if let Some(file) = WebAssets::get(path) {
-        let mime = mime_guess::from_path(path)
-            .first_or_octet_stream()
-            .to_string();
-        // Vite emits content-hashed filenames under assets/ (e.g.
-        // index-xkSiPCqs.js), so those are safe to cache forever — a new
-        // build changes the hash and thus the URL. Everything else
-        // (index.html, favicon) stays uncached so a redeploy is picked up
-        // immediately.
-        let cache_control = if path.starts_with("assets/") {
-            "public, max-age=31536000, immutable"
-        } else {
-            "no-cache"
+    #[layout("/")]
+    async fn document_layout(cx: &topcoat::context::Cx, slot: Slot<'_>) -> Result<impl View> {
+        let uri = topcoat::router::request::uri(cx);
+        let route_target = uri
+            .path_and_query()
+            .map_or_else(|| uri.path(), |path| path.as_str());
+        let route = super::topcoat_frontend::shell::ParsedRoute::parse(route_target);
+        let title = route.page.title();
+        let scope = match (route.layout, route.project) {
+            (super::topcoat_frontend::shell::Layout::Public, Some(project)) => {
+                super::topcoat_frontend::session::Scope::public(project)
+            }
+            _ => super::topcoat_frontend::session::Scope::Private,
         };
-        return (
-            StatusCode::OK,
-            [
-                (header::CONTENT_TYPE, mime),
-                (header::CACHE_CONTROL, cache_control.to_string()),
-            ],
-            file.data.to_vec(),
-        )
-            .into_response();
+        let require_session = matches!(
+            route.layout,
+            super::topcoat_frontend::shell::Layout::Private
+        );
+        let session_attributes =
+            super::topcoat_frontend::session::bootstrap_attributes(cx, &scope, require_session);
+        Ok(view! {
+            <!DOCTYPE html>
+            <html lang="en">
+                <head>
+                    <meta charset="utf-8">
+                    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+                    <title>(title)</title>
+                    <link rel="icon" type="image/png" href="/favicon.png">
+                    <link rel="manifest" href="/manifest.webmanifest">
+                    <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+                    <meta name="apple-mobile-web-app-title" content="Lific">
+                    <meta name="theme-color" content="#fafcfb" media="(prefers-color-scheme: light)">
+                    <meta name="theme-color" content="#1c221f" media="(prefers-color-scheme: dark)">
+                    <link rel="stylesheet" href="/__topcoat-app.css">
+                    <link rel="stylesheet" href=(super::topcoat_frontend::shell::STYLESHEET_PATH)>
+                    <link rel="stylesheet" href=(super::topcoat_frontend::shell::mobile::STYLESHEET_PATH)>
+                    <link rel="stylesheet" href=(super::topcoat_frontend::shell::projects::STYLESHEET_PATH)>
+                    <link rel="stylesheet" href=(super::topcoat_frontend::shell::recents::STYLESHEET_PATH)>
+                    <link rel="stylesheet" href=(super::topcoat_frontend::shell::page_chrome::STYLESHEET_PATH)>
+                    <link rel="stylesheet" href=(super::topcoat_frontend::attachments::STYLESHEET_PATH)>
+                    <link rel="stylesheet" href=(super::topcoat_frontend::palette::STYLESHEET_PATH)>
+                    <link rel="stylesheet" href=(super::topcoat_frontend::dashboard::STYLESHEET_PATH)>
+                    <link rel="stylesheet" href=(super::topcoat_frontend::issue_list::STYLESHEET_PATH)>
+                    <link rel="stylesheet" href=(super::topcoat_frontend::issue_detail::route::STYLESHEET_PATH)>
+                    <link rel="stylesheet" href=(super::topcoat_frontend::issue_detail::fields::STYLESHEET_PATH)>
+                    <link rel="stylesheet" href=(super::topcoat_frontend::issue_detail::editor::STYLESHEET_PATH)>
+                    <link rel="stylesheet" href=(super::topcoat_frontend::issue_detail::collaboration::STYLESHEET_PATH)>
+                    <link rel="stylesheet" href=(super::topcoat_frontend::issue_create::STYLESHEET_PATH)>
+                    <link rel="stylesheet" href=(super::topcoat_frontend::identity::STYLESHEET_PATH)>
+                    <link rel="stylesheet" href=(super::topcoat_frontend::project_settings::STYLESHEET_PATH)>
+                    <link rel="stylesheet" href=(super::topcoat_frontend::files::STYLESHEET_PATH)>
+                    <link rel="stylesheet" href=(super::topcoat_frontend::pages::STYLESHEET_PATH)>
+                    <link rel="stylesheet" href=(super::topcoat_frontend::plans::STYLESHEET_PATH)>
+                    <link rel="stylesheet" href=(super::topcoat_frontend::modules::STYLESHEET_PATH)>
+                    <link rel="stylesheet" href=(super::topcoat_frontend::activity_insights::STYLESHEET_PATH)>
+                    <link rel="stylesheet" href=(super::topcoat_frontend::public::STYLESHEET_PATH)>
+                    <script type="module" src="/__topcoat-runtime.js"></script>
+                    <script defer="defer" src=(super::topcoat_frontend::shell::ROUTE_SCRIPT_PATH)></script>
+                    <script defer="defer" src=(super::topcoat_frontend::session::SCRIPT_PATH)></script>
+                    <script defer="defer" src=(super::topcoat_frontend::attachments::SCRIPT_PATH)></script>
+                    <script defer="defer" src=(super::topcoat_frontend::sync::SCRIPT_PATH)></script>
+                    <script defer="defer" src=(super::topcoat_frontend::shell::mobile::SCRIPT_PATH)></script>
+                    <script defer="defer" src=(super::topcoat_frontend::shell::projects::SCRIPT_PATH)></script>
+                    <script defer="defer" src=(super::topcoat_frontend::shell::recents::SCRIPT_PATH)></script>
+                    <script defer="defer" src=(super::topcoat_frontend::shell::page_chrome::SCRIPT_PATH)></script>
+                    <script defer="defer" src=(super::topcoat_frontend::shell::BOOTSTRAP_SCRIPT_PATH)></script>
+                    <script defer="defer" src=(super::topcoat_frontend::palette::SCRIPT_PATH)></script>
+                    <script defer="defer" src=(super::topcoat_frontend::dashboard::SCRIPT_PATH)></script>
+                    <script defer="defer" src=(super::topcoat_frontend::issue_list::SCRIPT_PATH)></script>
+                    <script defer="defer" src=(super::topcoat_frontend::issue_detail::fields::SCRIPT_PATH)></script>
+                    <script defer="defer" src=(super::topcoat_frontend::issue_detail::editor::SCRIPT_PATH)></script>
+                    <script defer="defer" src=(super::topcoat_frontend::issue_detail::collaboration::SCRIPT_PATH)></script>
+                    <script defer="defer" src=(super::topcoat_frontend::issue_detail::route::SCRIPT_PATH)></script>
+                    <script defer="defer" src=(super::topcoat_frontend::issue_create::SCRIPT_PATH)></script>
+                    <script defer="defer" src=(super::topcoat_frontend::identity::SCRIPT_PATH)></script>
+                    <script defer="defer" src=(super::topcoat_frontend::project_settings::SCRIPT_PATH)></script>
+                    <script defer="defer" src=(super::topcoat_frontend::files::SCRIPT_PATH)></script>
+                    <script defer="defer" src=(super::topcoat_frontend::pages::SCRIPT_PATH)></script>
+                    <script defer="defer" src=(super::topcoat_frontend::plans::SCRIPT_PATH)></script>
+                    <script defer="defer" src=(super::topcoat_frontend::modules::SCRIPT_PATH)></script>
+                    <script defer="defer" src=(super::topcoat_frontend::activity_insights::SCRIPT_PATH)></script>
+                    <script defer="defer" src=(super::topcoat_frontend::public::SCRIPT_PATH)></script>
+                    <script type="module" src="/__topcoat-preferences.js"></script>
+                </head>
+                <body (session_attributes)>
+                    (slot)
+                </body>
+            </html>
+        })
     }
 
-    // SPA fallback: serve index.html for all unmatched routes. Same
-    // no-cache as the exact-file branch above: this IS index.html, so a
-    // cached copy pins the browser to the previous build's asset URLs and a
-    // redeploy is invisible until a hard refresh.
-    match WebAssets::get("index.html") {
-        Some(file) => (
-            StatusCode::OK,
-            [
-                (header::CONTENT_TYPE, "text/html".to_string()),
-                (header::CACHE_CONTROL, "no-cache".to_string()),
-            ],
-            file.data.to_vec(),
-        )
-            .into_response(),
-        None => (
-            StatusCode::NOT_FOUND,
-            "Frontend not built. Run: cd web && bun run build",
-        )
-            .into_response(),
+    #[page("/")]
+    async fn shell_home(cx: &topcoat::context::Cx) -> Result<impl View> {
+        shell_page(cx)
+    }
+
+    #[page("/{*path}")]
+    async fn shell_route(cx: &topcoat::context::Cx) -> Result<impl View> {
+        shell_page(cx)
+    }
+
+    fn shell_page<'a>(cx: &'a topcoat::context::Cx) -> Result<topcoat::view::BoxView<'a>> {
+        let uri = topcoat::router::request::uri(cx);
+        let route_target = uri
+            .path_and_query()
+            .map_or_else(|| uri.path(), |path| path.as_str());
+        let route = super::topcoat_frontend::shell::ParsedRoute::parse(route_target);
+        if let Some(destination) = route.redirect.as_deref() {
+            return Err(topcoat::router::error::redirect_permanent(destination).into());
+        }
+        use super::topcoat_frontend::shell::{Layout, Page};
+        let content = match route.layout {
+            Layout::Private => match route.page {
+                Page::Home => super::topcoat_frontend::dashboard::home(cx),
+                Page::Overview => route.project.map_or_else(
+                    || super::topcoat_frontend::shell::placeholder(cx, &route),
+                    |identifier| {
+                        view! { cx =>
+                            <div class="tc-project-overview">
+                                (super::topcoat_frontend::dashboard::overview(cx, identifier))
+                                (super::topcoat_frontend::project_settings::administration(cx, identifier))
+                            </div>
+                        }
+                        .boxed()
+                    },
+                ),
+                Page::ProjectNew => super::topcoat_frontend::project_settings::new_project(cx),
+                Page::ProjectImport => {
+                    super::topcoat_frontend::project_settings::archive_import(cx)
+                }
+                Page::Settings => super::topcoat_frontend::identity::settings(cx),
+                Page::InstanceSettings => super::topcoat_frontend::identity::instance_settings(cx),
+                Page::Issues => super::topcoat_frontend::issue_list::screen(
+                    cx,
+                    route.project,
+                    super::topcoat_frontend::issue_list::Layout::List,
+                ),
+                Page::IssueNew => super::topcoat_frontend::issue_create::screen(
+                    cx,
+                    route.project.unwrap_or_default(),
+                ),
+                Page::Board => super::topcoat_frontend::issue_list::screen(
+                    cx,
+                    route.project,
+                    super::topcoat_frontend::issue_list::Layout::Board,
+                ),
+                Page::IssueDetail(identifier) => super::topcoat_frontend::issue_detail::route::screen(
+                    cx,
+                    route.project.unwrap_or_default(),
+                    identifier,
+                    false,
+                ),
+                Page::Pages => route.project.map_or_else(
+                    || super::topcoat_frontend::shell::placeholder(cx, &route),
+                    |project| super::topcoat_frontend::pages::list(cx, project, false),
+                ),
+                Page::Record(page_id) => route.project.map_or_else(
+                    || super::topcoat_frontend::shell::placeholder(cx, &route),
+                    |project| {
+                        super::topcoat_frontend::pages::detail(
+                            cx,
+                            project,
+                            page_id.parse().expect("page routes contain numeric ids"),
+                            false,
+                        )
+                    },
+                ),
+                Page::Files => route.project.map_or_else(
+                    || super::topcoat_frontend::shell::placeholder(cx, &route),
+                    |project| super::topcoat_frontend::files::screen(cx, project),
+                ),
+                Page::Plans => route.project.map_or_else(
+                    || super::topcoat_frontend::shell::placeholder(cx, &route),
+                    |project| super::topcoat_frontend::plans::list(cx, project),
+                ),
+                Page::PlanDetail(plan_id) => route.project.map_or_else(
+                    || super::topcoat_frontend::shell::placeholder(cx, &route),
+                    |project| {
+                        super::topcoat_frontend::plans::detail(
+                            cx,
+                            project,
+                            plan_id.parse().expect("plan routes contain numeric ids"),
+                        )
+                    },
+                ),
+                Page::Modules => route.project.map_or_else(
+                    || super::topcoat_frontend::shell::placeholder(cx, &route),
+                    |project| super::topcoat_frontend::modules::list(cx, project),
+                ),
+                Page::ModuleDetail(module_id) => route.project.map_or_else(
+                    || super::topcoat_frontend::shell::placeholder(cx, &route),
+                    |project| {
+                        super::topcoat_frontend::modules::detail(
+                            cx,
+                            project,
+                            module_id.parse().expect("module routes contain numeric ids"),
+                        )
+                    },
+                ),
+                Page::Activity => route.project.map_or_else(
+                    || super::topcoat_frontend::shell::placeholder(cx, &route),
+                    |project| super::topcoat_frontend::activity_insights::activity(cx, project),
+                ),
+                Page::Insights => route.project.map_or_else(
+                    || super::topcoat_frontend::shell::placeholder(cx, &route),
+                    |project| super::topcoat_frontend::activity_insights::insights(cx, project),
+                ),
+                Page::Graph => route.project.map_or_else(
+                    || super::topcoat_frontend::shell::placeholder(cx, &route),
+                    |project| super::topcoat_frontend::activity_insights::graph(cx, project),
+                ),
+                _ => super::topcoat_frontend::shell::placeholder(cx, &route),
+            },
+            Layout::Public => {
+                let public_route = super::topcoat_frontend::public::resolve(uri.path());
+                match public_route {
+                    Some(super::topcoat_frontend::public::Route::Redirect(destination)) => {
+                        return Err(topcoat::router::error::redirect_permanent(&destination).into());
+                    }
+                    Some(public_route) => super::topcoat_frontend::public::screen(cx, public_route)
+                        .ok_or_else(topcoat::router::error::not_found)?,
+                    None => return Err(topcoat::router::error::not_found().into()),
+                }
+            }
+            Layout::Auth => match route.page {
+                Page::Login => super::topcoat_frontend::identity::login(cx),
+                Page::Signup => super::topcoat_frontend::identity::signup(cx),
+                _ => super::topcoat_frontend::shell::placeholder(cx, &route),
+            },
+        };
+        Ok(super::topcoat_frontend::shell::shell(cx, &route, content))
+    }
+
+    #[cfg(test)]
+    #[page("/__topcoat-runtime-test")]
+    async fn runtime_test_page(cx: &topcoat::context::Cx) -> Result<impl View> {
+        let mut increment = super::topcoat_frontend::controls::Button::new("Increment");
+        increment.attrs = attributes! { cx =>
+            id="increment"
+            @click="() => { const count = document.querySelector('#click-count'); count.textContent = String(Number(count.textContent) + 1); }"
+        };
+        let mut disabled = super::topcoat_frontend::controls::Button::new("Disabled");
+        disabled.disabled = true;
+        disabled.attrs = attributes! { cx =>
+            id="disabled"
+            @click="() => { const count = document.querySelector('#click-count'); count.textContent = String(Number(count.textContent) + 100); }"
+        };
+        Ok(view! { cx =>
+            <section>
+                (super::topcoat_frontend::controls::button(cx, increment))
+                (super::topcoat_frontend::controls::button(cx, disabled))
+                <output id="click-count">"0"</output>
+            </section>
+        })
+    }
+
+    #[route(GET "/__topcoat-app.css")]
+    async fn stylesheet() -> Result<Response> {
+        let css = format!(
+            "{}\n{}\n{}",
+            include_str!("topcoat/assets/base.css"),
+            super::topcoat_frontend::controls::STYLESHEET,
+            super::topcoat_frontend::shell::STYLESHEET
+        );
+        Ok(Response::builder()
+            .header("content-type", "text/css; charset=utf-8")
+            .body(topcoat::router::Body::from(css))?)
+    }
+
+    #[route(GET "/__topcoat-shell.css")]
+    async fn shell_stylesheet() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "text/css; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::shell::STYLESHEET,
+            ))?)
+    }
+
+    #[route(GET "/__topcoat-shell.js")]
+    async fn shell_script() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "text/javascript; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::shell::ROUTE_SCRIPT,
+            ))?)
+    }
+
+    #[route(GET "/__topcoat-mobile.css")]
+    async fn mobile_stylesheet() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "text/css; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::shell::mobile::STYLESHEET,
+            ))?)
+    }
+
+    #[route(GET "/__topcoat-projects.css")]
+    async fn projects_stylesheet() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "text/css; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::shell::projects::STYLESHEET,
+            ))?)
+    }
+
+    #[route(GET "/__topcoat-recents.css")]
+    async fn recents_stylesheet() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "text/css; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::shell::recents::STYLESHEET,
+            ))?)
+    }
+
+    #[route(GET "/__topcoat-page-chrome.css")]
+    async fn page_chrome_stylesheet() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "text/css; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::shell::page_chrome::STYLESHEET,
+            ))?)
+    }
+
+    #[route(GET "/__topcoat-mobile.js")]
+    async fn mobile_script() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "text/javascript; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::shell::mobile::SCRIPT,
+            ))?)
+    }
+
+    #[route(GET "/__topcoat-projects.js")]
+    async fn projects_script() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "text/javascript; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::shell::projects::SCRIPT,
+            ))?)
+    }
+
+    #[route(GET "/__topcoat-recents.js")]
+    async fn recents_script() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "text/javascript; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::shell::recents::SCRIPT,
+            ))?)
+    }
+
+    #[route(GET "/__topcoat-page-chrome.js")]
+    async fn page_chrome_script() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "text/javascript; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::shell::page_chrome::SCRIPT,
+            ))?)
+    }
+
+    #[route(GET "/__topcoat-bootstrap.js")]
+    async fn bootstrap_script() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "text/javascript; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::shell::BOOTSTRAP_SCRIPT,
+            ))?)
+    }
+
+    #[route(GET "/__topcoat-palette.css")]
+    async fn palette_stylesheet() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "text/css; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::palette::STYLESHEET,
+            ))?)
+    }
+
+    #[route(GET "/__topcoat-palette.js")]
+    async fn palette_script() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "text/javascript; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::palette::SCRIPT,
+            ))?)
+    }
+
+    #[route(GET "/__topcoat-attachments.css")]
+    async fn attachments_stylesheet() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "text/css; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::attachments::STYLESHEET,
+            ))?)
+    }
+
+    #[route(GET "/__topcoat-attachments.js")]
+    async fn attachments_script() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "text/javascript; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::attachments::SCRIPT,
+            ))?)
+    }
+
+    #[route(GET "/__topcoat-project-settings.css")]
+    async fn project_settings_stylesheet() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "text/css; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::project_settings::STYLESHEET,
+            ))?)
+    }
+
+    #[route(GET "/__topcoat-project-settings.js")]
+    async fn project_settings_script() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "text/javascript; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::project_settings::SCRIPT,
+            ))?)
+    }
+
+    #[route(GET "/__topcoat-dashboard.css")]
+    async fn dashboard_stylesheet() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "text/css; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::dashboard::STYLESHEET,
+            ))?)
+    }
+
+    #[route(GET "/__topcoat-dashboard.js")]
+    async fn dashboard_script() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "text/javascript; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::dashboard::SCRIPT,
+            ))?)
+    }
+
+    #[route(GET "/__topcoat-dashboard-mascot.png")]
+    async fn dashboard_mascot() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "image/png")
+            .header("cache-control", "public, max-age=86400")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::dashboard::MASCOT.to_vec(),
+            ))?)
+    }
+
+    #[route(GET "/__topcoat-issue-list.css")]
+    async fn issue_list_stylesheet() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "text/css; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::issue_list::STYLESHEET,
+            ))?)
+    }
+
+    #[route(GET "/__topcoat-issue-list.js")]
+    async fn issue_list_script() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "text/javascript; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::issue_list::SCRIPT,
+            ))?)
+    }
+
+    #[route(GET "/__topcoat-issue-detail.css")]
+    async fn issue_detail_stylesheet() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "text/css; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::issue_detail::route::STYLESHEET,
+            ))?)
+    }
+
+    #[route(GET "/__topcoat-issue-detail.js")]
+    async fn issue_detail_script() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "text/javascript; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::issue_detail::route::SCRIPT,
+            ))?)
+    }
+
+    #[route(GET "/__topcoat-issue-fields.css")]
+    async fn issue_fields_stylesheet() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "text/css; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::issue_detail::fields::STYLESHEET,
+            ))?)
+    }
+
+    #[route(GET "/__topcoat-issue-fields.js")]
+    async fn issue_fields_script() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "text/javascript; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::issue_detail::fields::SCRIPT,
+            ))?)
+    }
+
+    #[route(GET "/__topcoat-issue-editor.css")]
+    async fn issue_editor_stylesheet() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "text/css; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::issue_detail::editor::STYLESHEET,
+            ))?)
+    }
+
+    #[route(GET "/__topcoat-issue-editor.js")]
+    async fn issue_editor_script() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "text/javascript; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::issue_detail::editor::SCRIPT,
+            ))?)
+    }
+
+    #[route(GET "/__topcoat-issue-collaboration.css")]
+    async fn issue_collaboration_stylesheet() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "text/css; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::issue_detail::collaboration::STYLESHEET,
+            ))?)
+    }
+
+    #[route(GET "/__topcoat-issue-collaboration.js")]
+    async fn issue_collaboration_script() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "text/javascript; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::issue_detail::collaboration::SCRIPT,
+            ))?)
+    }
+
+    #[route(GET "/__topcoat-issue-create.css")]
+    async fn issue_create_stylesheet() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "text/css; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::issue_create::STYLESHEET,
+            ))?)
+    }
+
+    #[route(GET "/__topcoat-issue-create.js")]
+    async fn issue_create_script() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "text/javascript; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::issue_create::SCRIPT,
+            ))?)
+    }
+
+    #[route(GET "/__topcoat-identity.css")]
+    async fn identity_stylesheet() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "text/css; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::identity::STYLESHEET,
+            ))?)
+    }
+
+    #[route(GET "/__topcoat-identity.js")]
+    async fn identity_script() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "text/javascript; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::identity::SCRIPT,
+            ))?)
+    }
+
+    #[route(GET "/__topcoat-pages.css")]
+    async fn pages_stylesheet() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "text/css; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::pages::STYLESHEET,
+            ))?)
+    }
+
+    #[route(GET "/__topcoat-pages.js")]
+    async fn pages_script() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "text/javascript; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::pages::SCRIPT,
+            ))?)
+    }
+
+    #[route(GET "/__topcoat-files.css")]
+    async fn files_stylesheet() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "text/css; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::files::STYLESHEET,
+            ))?)
+    }
+
+    #[route(GET "/__topcoat-files.js")]
+    async fn files_script() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "text/javascript; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::files::SCRIPT,
+            ))?)
+    }
+
+    #[route(GET "/__topcoat-plans.css")]
+    async fn plans_stylesheet() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "text/css; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::plans::STYLESHEET,
+            ))?)
+    }
+
+    #[route(GET "/__topcoat-plans.js")]
+    async fn plans_script() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "text/javascript; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::plans::SCRIPT,
+            ))?)
+    }
+
+    #[route(GET "/__topcoat-modules.css")]
+    async fn modules_stylesheet() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "text/css; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::modules::STYLESHEET,
+            ))?)
+    }
+
+    #[route(GET "/__topcoat-modules.js")]
+    async fn modules_script() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "text/javascript; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::modules::SCRIPT,
+            ))?)
+    }
+
+    #[route(GET "/__topcoat-activity-insights.css")]
+    async fn activity_insights_stylesheet() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "text/css; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::activity_insights::STYLESHEET,
+            ))?)
+    }
+
+    #[route(GET "/__topcoat-activity-insights.js")]
+    async fn activity_insights_script() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "text/javascript; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::activity_insights::SCRIPT,
+            ))?)
+    }
+
+    #[route(GET "/__topcoat-public.css")]
+    async fn public_stylesheet() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "text/css; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::public::STYLESHEET,
+            ))?)
+    }
+
+    #[route(GET "/__topcoat-public.js")]
+    async fn public_script() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "text/javascript; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::public::SCRIPT,
+            ))?)
+    }
+
+    #[route(GET "/__topcoat-public-media.js")]
+    async fn public_media_worker() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "text/javascript; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::public::MEDIA_WORKER,
+            ))?)
+    }
+
+    #[route(GET "/__topcoat-preferences.js")]
+    async fn preferences_script() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "text/javascript; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::controls::PREFERENCES_SCRIPT,
+            ))?)
+    }
+
+    #[route(GET "/__topcoat-runtime.js")]
+    async fn runtime_script() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "text/javascript; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(include_str!(
+                "topcoat/assets/runtime.js"
+            )))?)
+    }
+
+    pub(super) fn router() -> topcoat::router::Router {
+        use topcoat::router::RouterBuilderDiscoverExt;
+        use topcoat::runtime::RouterBuilderRuntimeExt;
+
+        topcoat::router::Router::builder()
+            .discover()
+            .runtime()
+            .build()
+    }
+}
+
+#[cfg(test)]
+mod topcoat_app_tests {
+    use super::topcoat_app;
+    use axum::{body::Body, http::Request};
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn topcoat_page_uses_the_shared_document_layout() {
+        let response = topcoat::router::tower::TowerService::new(topcoat_app::router())
+            .oneshot(
+                Request::builder()
+                    .uri("/login")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let body = String::from_utf8_lossy(&body);
+        assert!(body.contains("/__topcoat-app.css"));
+        assert!(body.contains("/__topcoat-attachments.css"));
+        assert!(body.contains("/__topcoat-attachments.js"));
+        assert!(body.contains("/__topcoat-dashboard.css"));
+        assert!(body.contains("/__topcoat-dashboard.js"));
+        assert!(body.contains("/__topcoat-issue-list.css"));
+        assert!(body.contains("/__topcoat-issue-list.js"));
+        assert!(body.contains("/__topcoat-issue-detail.css"));
+        assert!(body.contains("/__topcoat-issue-detail.js"));
+        assert!(body.contains("/__topcoat-issue-fields.js"));
+        assert!(body.contains("/__topcoat-issue-editor.js"));
+        assert!(body.contains("/__topcoat-issue-collaboration.js"));
+        assert!(body.contains("/__topcoat-issue-create.js"));
+        assert!(body.contains("/__topcoat-files.css"));
+        assert!(body.contains("/__topcoat-files.js"));
+        assert!(body.contains("/__topcoat-pages.css"));
+        assert!(body.contains("/__topcoat-pages.js"));
+        assert!(body.contains("/__topcoat-plans.css"));
+        assert!(body.contains("/__topcoat-plans.js"));
+        assert!(body.contains("/__topcoat-modules.css"));
+        assert!(body.contains("/__topcoat-modules.js"));
+        assert!(body.contains("/__topcoat-activity-insights.css"));
+        assert!(body.contains("/__topcoat-activity-insights.js"));
+        assert!(body.contains("/__topcoat-public.css"));
+        assert!(body.contains("/__topcoat-public.js"));
+        assert!(body.contains("/__topcoat-identity.css"));
+        assert!(body.contains("/__topcoat-identity.js"));
+        assert!(body.contains("/__topcoat-project-settings.css"));
+        assert!(body.contains("/__topcoat-project-settings.js"));
+        assert!(body.contains("/__topcoat-runtime.js"));
+        assert!(body.contains("class=\"tc-shell__main\""));
+    }
+
+    #[tokio::test]
+    async fn topcoat_shell_routes_keep_private_public_and_auth_chrome_scoped() {
+        let router = topcoat::router::tower::TowerService::new(topcoat_app::router());
+        for (path, layout, expected, title) in [
+            (
+                "/LIF/issues?assignee=me",
+                "private",
+                "/LIF/issues",
+                "Issues",
+            ),
+            (
+                "/public/LIF/issues/LIF-42",
+                "public",
+                "/public/LIF/issues",
+                "Issue detail",
+            ),
+            ("/login", "auth", "/signup", "Log in"),
+            ("/signup", "auth", "/login", "Sign up"),
+            ("/settings", "private", "/settings/instance", "Settings"),
+            (
+                "/settings/instance",
+                "private",
+                "data-topcoat-identity=\"instance\"",
+                "Instance settings",
+            ),
+        ] {
+            let response = router
+                .clone()
+                .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            let body = String::from_utf8_lossy(&body);
+            assert!(
+                body.contains(&format!("data-layout=\"{layout}\"")),
+                "{path}"
+            );
+            assert_eq!(body.matches("id=\"main-content\"").count(), 1, "{path}");
+            assert_eq!(
+                body.matches("class=\"tc-shell__header\"").count(),
+                1,
+                "{path}"
+            );
+            assert!(body.contains(&format!("<title>{title}</title>")), "{path}");
+            assert!(body.contains(expected), "{path}");
+            assert!(
+                body.contains(&format!(
+                    "data-lific-require-session=\"{}\"",
+                    layout == "private"
+                )),
+                "{path}"
+            );
+            if path == "/login" {
+                assert!(body.contains("data-topcoat-identity=\"login\""));
+            } else if path == "/signup" {
+                assert!(body.contains("data-topcoat-identity=\"signup\""));
+            } else if path == "/settings" {
+                assert!(body.contains("data-topcoat-identity=\"settings\""));
+            }
+            if layout == "public" {
+                assert!(body.contains("data-lific-public-project=\"LIF\""));
+                assert!(!body.contains("/settings"));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn topcoat_shell_redirects_legacy_public_issue_urls() {
+        let response = topcoat::router::tower::TowerService::new(topcoat_app::router())
+            .oneshot(
+                Request::builder()
+                    .uri("/public/LIF/LIF-42?tab=comments")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::PERMANENT_REDIRECT
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::LOCATION)
+                .unwrap(),
+            "/public/LIF/issues/LIF-42?tab=comments"
+        );
+    }
+
+    #[tokio::test]
+    async fn topcoat_public_issue_routes_mount_the_read_only_public_screens() {
+        let router = topcoat::router::tower::TowerService::new(topcoat_app::router());
+        for (path, kind) in [
+            ("/public/LIF/issues", "issues"),
+            ("/public/LIF/board", "board"),
+        ] {
+            let response = router
+                .clone()
+                .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            let body = String::from_utf8_lossy(&body);
+            assert!(body.contains("data-lific-public-project=\"LIF\""), "{path}");
+            assert!(
+                body.contains(&format!("data-topcoat-public=\"{kind}\"")),
+                "{path}"
+            );
+        }
+        let missing = router
+            .oneshot(
+                Request::builder()
+                    .uri("/public/LIF/plans")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), axum::http::StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn topcoat_private_issue_and_page_routes_mount_their_feature_slices() {
+        let router = topcoat::router::tower::TowerService::new(topcoat_app::router());
+        for (path, expected) in [
+            (
+                "/LIF/issues/new?status=active&module=7",
+                "data-topcoat-issue-create=\"\"",
+            ),
+            ("/LIF/issues/LIF-42", "data-topcoat-issue-detail=\"\""),
+        ] {
+            let response = router
+                .clone()
+                .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            let body = String::from_utf8_lossy(&body);
+            assert!(body.contains(expected), "{path}");
+            if path.contains("issues/LIF-42") {
+                assert!(body.contains("data-topcoat-issue-editor=\"\""), "{path}");
+                assert!(body.contains("data-topcoat-collaboration=\"\""), "{path}");
+            }
+        }
+        for (path, expected, scope) in [
+            ("/LIF/pages", "data-topcoat-pages=\"list\"", "private"),
+            ("/LIF/pages/7", "data-topcoat-pages=\"detail\"", "private"),
+        ] {
+            let response = router
+                .clone()
+                .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            let body = String::from_utf8_lossy(&body);
+            assert!(body.contains(expected), "{path}");
+            assert!(
+                body.contains(&format!("data-page-scope=\"{scope}\"")),
+                "{path}"
+            );
+        }
+        for (path, kind) in [
+            ("/public/LIF/issues/LIF-42", "issue-detail"),
+            ("/public/LIF/pages", "pages"),
+            ("/public/LIF/pages/7", "page-detail"),
+        ] {
+            let response = router
+                .clone()
+                .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            let body = String::from_utf8_lossy(&body);
+            assert!(
+                body.contains(&format!("data-topcoat-public=\"{kind}\"")),
+                "{path}"
+            );
+            assert!(body.contains("aria-readonly=\"true\""), "{path}");
+            assert!(!body.contains("data-topcoat-issue-editor"), "{path}");
+            assert!(!body.contains("data-topcoat-collaboration"), "{path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn topcoat_dashboard_mascot_is_served_without_vite() {
+        let response = topcoat::router::tower::TowerService::new(topcoat_app::router())
+            .oneshot(
+                Request::builder()
+                    .uri("/__topcoat-dashboard-mascot.png")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::CONTENT_TYPE)
+                .unwrap(),
+            "image/png"
+        );
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert!(body.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]));
+    }
+
+    #[tokio::test]
+    async fn topcoat_project_overview_and_settings_alias_share_one_composed_screen() {
+        let router = topcoat::router::tower::TowerService::new(topcoat_app::router());
+        for path in ["/LIF/overview", "/LIF/settings"] {
+            let response = router
+                .clone()
+                .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            let body = String::from_utf8_lossy(&body);
+            assert!(
+                body.contains("data-topcoat-dashboard=\"overview\""),
+                "{path}"
+            );
+            assert!(
+                body.contains("data-topcoat-project-settings=\"settings\""),
+                "{path}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn topcoat_project_setup_routes_mount_create_and_archive_import_modes() {
+        let router = topcoat::router::tower::TowerService::new(topcoat_app::router());
+        for (path, mode) in [("/projects/new", "new"), ("/projects/import", "archive")] {
+            let response = router
+                .clone()
+                .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            assert!(
+                String::from_utf8_lossy(&body)
+                    .contains(&format!("data-topcoat-project-settings=\"{mode}\"")),
+                "{path}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn topcoat_files_plans_and_modules_routes_mount_their_feature_slices() {
+        let router = topcoat::router::tower::TowerService::new(topcoat_app::router());
+        for (path, marker) in [
+            ("/LIF/files", "data-topcoat-files=\"\""),
+            ("/LIF/plans", "data-topcoat-plans=\"list\""),
+            ("/LIF/plans/9", "data-topcoat-plans=\"detail\""),
+            ("/LIF/modules", "data-topcoat-modules=\"list\""),
+            ("/LIF/modules/8", "data-topcoat-modules=\"detail\""),
+        ] {
+            let response = router
+                .clone()
+                .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            assert!(String::from_utf8_lossy(&body).contains(marker), "{path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn topcoat_activity_insights_graph_and_public_routes_mount_isolated_screens() {
+        let router = topcoat::router::tower::TowerService::new(topcoat_app::router());
+        for (path, marker) in [
+            ("/LIF/activity", "data-topcoat-analytics=\"activity\""),
+            ("/LIF/insights", "data-topcoat-analytics=\"insights\""),
+            ("/LIF/graph", "data-topcoat-analytics=\"graph\""),
+            ("/public/LIF/issues", "data-topcoat-public=\"issues\""),
+            ("/public/LIF/board", "data-topcoat-public=\"board\""),
+            (
+                "/public/LIF/issues/LIF-42",
+                "data-topcoat-public=\"issue-detail\"",
+            ),
+            ("/public/LIF/pages", "data-topcoat-public=\"pages\""),
+            ("/public/LIF/pages/7", "data-topcoat-public=\"page-detail\""),
+        ] {
+            let response = router
+                .clone()
+                .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            assert!(String::from_utf8_lossy(&body).contains(marker), "{path}");
+        }
+        for path in ["/public/LIF", "/public/LIF/LIF-42"] {
+            let response = router
+                .clone()
+                .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                axum::http::StatusCode::PERMANENT_REDIRECT,
+                "{path}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn topcoat_shell_and_sync_assets_are_discovered_without_vite() {
+        let router = topcoat::router::tower::TowerService::new(topcoat_app::router());
+        for (path, content_type, expected) in [
+            (
+                "/__topcoat-shell.css",
+                "text/css; charset=utf-8",
+                ".tc-shell__navigation",
+            ),
+            (
+                "/__topcoat-shell.js",
+                "text/javascript; charset=utf-8",
+                "restoreRoute",
+            ),
+            (
+                "/__topcoat-sync.js",
+                "text/javascript; charset=utf-8",
+                "lificSync",
+            ),
+            (
+                "/__topcoat-mobile.css",
+                "text/css; charset=utf-8",
+                ".tc-mobile",
+            ),
+            (
+                "/__topcoat-projects.js",
+                "text/javascript; charset=utf-8",
+                "LificTopcoatProjects",
+            ),
+            (
+                "/__topcoat-recents.js",
+                "text/javascript; charset=utf-8",
+                "LificTopcoatRecents",
+            ),
+            (
+                "/__topcoat-page-chrome.js",
+                "text/javascript; charset=utf-8",
+                "LificTopcoatPageChrome",
+            ),
+            (
+                "/__topcoat-bootstrap.js",
+                "text/javascript; charset=utf-8",
+                "LificTopcoatProjects",
+            ),
+            (
+                "/__topcoat-palette.js",
+                "text/javascript; charset=utf-8",
+                "LificTopcoatPalette",
+            ),
+            (
+                "/__topcoat-palette.css",
+                "text/css; charset=utf-8",
+                ".tc-palette",
+            ),
+            (
+                "/__topcoat-attachments.js",
+                "text/javascript; charset=utf-8",
+                "LificTopcoatAttachments",
+            ),
+            (
+                "/__topcoat-attachments.css",
+                "text/css; charset=utf-8",
+                ".tc-attachments",
+            ),
+            (
+                "/__topcoat-dashboard.js",
+                "text/javascript; charset=utf-8",
+                "LificTopcoatDashboard",
+            ),
+            (
+                "/__topcoat-dashboard.css",
+                "text/css; charset=utf-8",
+                ".tc-dashboard",
+            ),
+            (
+                "/__topcoat-issue-list.js",
+                "text/javascript; charset=utf-8",
+                "LificTopcoatIssueList",
+            ),
+            (
+                "/__topcoat-issue-list.css",
+                "text/css; charset=utf-8",
+                ".tc-issues",
+            ),
+            (
+                "/__topcoat-issue-detail.js",
+                "text/javascript; charset=utf-8",
+                "LificTopcoatIssueDetail",
+            ),
+            (
+                "/__topcoat-issue-detail.css",
+                "text/css; charset=utf-8",
+                ".tc-issue-detail",
+            ),
+            (
+                "/__topcoat-issue-fields.js",
+                "text/javascript; charset=utf-8",
+                "LificTopcoatIssueFields",
+            ),
+            (
+                "/__topcoat-issue-editor.js",
+                "text/javascript; charset=utf-8",
+                "lificIssueEditor",
+            ),
+            (
+                "/__topcoat-issue-collaboration.js",
+                "text/javascript; charset=utf-8",
+                "LificTopcoatIssueCollaboration",
+            ),
+            (
+                "/__topcoat-issue-create.js",
+                "text/javascript; charset=utf-8",
+                "LificTopcoatIssueCreate",
+            ),
+            (
+                "/__topcoat-issue-create.css",
+                "text/css; charset=utf-8",
+                ".tc-issue-create",
+            ),
+            (
+                "/__topcoat-project-settings.js",
+                "text/javascript; charset=utf-8",
+                "LificTopcoatProjectSettings",
+            ),
+            (
+                "/__topcoat-project-settings.css",
+                "text/css; charset=utf-8",
+                ".tc-project-settings",
+            ),
+            (
+                "/__topcoat-identity.js",
+                "text/javascript; charset=utf-8",
+                "LificTopcoatIdentity",
+            ),
+            (
+                "/__topcoat-identity.css",
+                "text/css; charset=utf-8",
+                ".tc-identity",
+            ),
+            (
+                "/__topcoat-pages.js",
+                "text/javascript; charset=utf-8",
+                "LificTopcoatPages",
+            ),
+            (
+                "/__topcoat-pages.css",
+                "text/css; charset=utf-8",
+                ".tc-pages",
+            ),
+            (
+                "/__topcoat-files.js",
+                "text/javascript; charset=utf-8",
+                "LificTopcoatFiles",
+            ),
+            (
+                "/__topcoat-files.css",
+                "text/css; charset=utf-8",
+                ".tc-files",
+            ),
+            (
+                "/__topcoat-plans.js",
+                "text/javascript; charset=utf-8",
+                "LificTopcoatPlans",
+            ),
+            (
+                "/__topcoat-plans.css",
+                "text/css; charset=utf-8",
+                ".tc-plans",
+            ),
+            (
+                "/__topcoat-modules.js",
+                "text/javascript; charset=utf-8",
+                "LificTopcoatModules",
+            ),
+            (
+                "/__topcoat-modules.css",
+                "text/css; charset=utf-8",
+                ".tc-modules",
+            ),
+            (
+                "/__topcoat-activity-insights.js",
+                "text/javascript; charset=utf-8",
+                "LificTopcoatAnalytics",
+            ),
+            (
+                "/__topcoat-activity-insights.css",
+                "text/css; charset=utf-8",
+                ".tc-analytics",
+            ),
+            (
+                "/__topcoat-public.js",
+                "text/javascript; charset=utf-8",
+                "LificTopcoatPublic",
+            ),
+            (
+                "/__topcoat-public.css",
+                "text/css; charset=utf-8",
+                ".tc-public",
+            ),
+        ] {
+            let response = router
+                .clone()
+                .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(
+                response
+                    .headers()
+                    .get(axum::http::header::CONTENT_TYPE)
+                    .unwrap(),
+                content_type
+            );
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            assert!(String::from_utf8_lossy(&body).contains(expected), "{path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn topcoat_preferences_script_serves_as_a_javascript_module() {
+        let response = topcoat::router::tower::TowerService::new(topcoat_app::router())
+            .oneshot(
+                Request::builder()
+                    .uri("/__topcoat-preferences.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::CONTENT_TYPE)
+                .unwrap(),
+            "text/javascript; charset=utf-8"
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::CACHE_CONTROL)
+                .unwrap(),
+            "no-cache"
+        );
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let body = String::from_utf8_lossy(&body);
+        assert!(body.contains("lific.topcoat.preferences"));
+        assert!(body.contains("data-tc-preference"));
+    }
+
+    #[tokio::test]
+    async fn topcoat_runtime_script_serves_as_a_javascript_module() {
+        let response = topcoat::router::tower::TowerService::new(topcoat_app::router())
+            .oneshot(
+                Request::builder()
+                    .uri("/__topcoat-runtime.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::CONTENT_TYPE)
+                .unwrap(),
+            "text/javascript; charset=utf-8"
+        );
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(
+            body.as_ref(),
+            include_str!("topcoat/assets/runtime.js").as_bytes()
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires devenv --profile topcoat-e2e with repository Playwright/Chromium"]
+    async fn controls_runtime_executes_control_handlers_from_the_shared_layout() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = axum::Router::new()
+            .route(
+                "/api/auth/me",
+                axum::routing::get(|| async {
+                    axum::Json(serde_json::json!({"id": 1, "username": "runtime-fixture"}))
+                }),
+            )
+            .fallback_service(topcoat::router::tower::TowerService::new(
+                topcoat_app::router(),
+            ));
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let playwright = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("e2e/node_modules/playwright/index.mjs");
+        let script = r#"
+            import assert from 'node:assert/strict';
+            const { chromium } = await import(process.env.LIFIC_PLAYWRIGHT_MODULE);
+            const browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH });
+            try {
+                const page = await browser.newPage();
+                await page.addInitScript(() => localStorage.setItem('lific_token', 'runtime-fixture'));
+                const failures = [];
+                page.on('pageerror', error => failures.push(error.message));
+                await page.goto(process.env.LIFIC_TOPCOAT_RUNTIME_URL);
+                await page.getByRole('button', { name: 'Increment' }).click();
+                await page.waitForFunction(() => document.querySelector('#click-count').textContent === '1');
+                await page.getByRole('button', { name: 'Disabled' }).click({ force: true });
+                assert.equal(await page.locator('#click-count').textContent(), '1');
+                assert.deepEqual(failures, []);
+                console.log('Topcoat runtime dispatched the enabled button handler and kept the disabled control inert');
+            } finally { await browser.close(); }
+        "#;
+        let output = tokio::task::spawn_blocking(move || {
+            std::process::Command::new("bun")
+                .args(["--eval", script])
+                .env("LIFIC_PLAYWRIGHT_MODULE", playwright)
+                .env(
+                    "LIFIC_TOPCOAT_RUNTIME_URL",
+                    format!("http://{address}/__topcoat-runtime-test"),
+                )
+                .output()
+                .unwrap()
+        })
+        .await
+        .unwrap();
+        server.abort();
+        assert!(
+            output.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }
 
@@ -97,7 +1514,47 @@ async fn serve_frontend(uri: axum::http::Uri) -> impl IntoResponse {
 /// pages and CORS preflights. Route-specific policies such as the attachment
 /// sandbox win when they are already present.
 async fn add_security_headers(request: Request<Body>, next: middleware::Next) -> Response {
+    let prefix = trusted_forwarded_prefix(&request).map(str::to_owned);
     let mut response = next.run(request).await;
+    if let Some(prefix) = prefix {
+        if let Some(location) = response
+            .headers()
+            .get(header::LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|location| prefix_same_origin_location(&prefix, location))
+        {
+            response
+                .headers_mut()
+                .insert(header::LOCATION, HeaderValue::from_str(&location).unwrap());
+        }
+
+        if response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with("text/html"))
+        {
+            let body = std::mem::replace(response.body_mut(), Body::empty());
+            match axum::body::to_bytes(body, usize::MAX).await {
+                Ok(body) => {
+                    let document = String::from_utf8_lossy(&body);
+                    let prefixed = prefix_topcoat_document(&prefix, &document);
+                    response
+                        .headers_mut()
+                        .insert(header::CONTENT_LENGTH, HeaderValue::from(prefixed.len()));
+                    *response.body_mut() = Body::from(prefixed);
+                }
+                Err(error) => {
+                    tracing::error!(%error, "failed to apply the trusted proxy path prefix");
+                    response = (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "failed to render document",
+                    )
+                        .into_response();
+                }
+            }
+        }
+    }
     let headers = response.headers_mut();
     for (name, value) in [
         (header::X_FRAME_OPTIONS, "DENY"),
@@ -116,6 +1573,48 @@ async fn add_security_headers(request: Request<Body>, next: middleware::Next) ->
         .entry(HeaderName::from_static("cross-origin-resource-policy"))
         .or_insert(HeaderValue::from_static("same-origin"));
     response
+}
+
+fn trusted_forwarded_prefix(request: &Request<Body>) -> Option<&str> {
+    let peer = request
+        .extensions()
+        .get::<axum::extract::ConnectInfo<SocketAddr>>()?;
+    let trusted_proxies = request.extensions().get::<Arc<[ratelimit::IpNetwork]>>()?;
+    if !trusted_proxies
+        .iter()
+        .any(|network| network.contains(peer.0.ip()))
+    {
+        return None;
+    }
+
+    request
+        .headers()
+        .get("x-forwarded-prefix")
+        .and_then(|value| value.to_str().ok())
+        .and_then(topcoat_frontend::session::forwarded_prefix)
+}
+
+fn prefix_same_origin_location(prefix: &str, location: &str) -> Option<String> {
+    if !location.starts_with('/') || location.starts_with("//") {
+        return None;
+    }
+    Some(format!("{prefix}{location}"))
+}
+
+fn prefix_topcoat_document(prefix: &str, document: &str) -> String {
+    let mut prefixed = document.to_owned();
+    for attribute in ["href", "src", "action"] {
+        for quote in ['"', '\''] {
+            let root_url = format!("{attribute}={quote}/");
+            let prefixed_url = format!("{attribute}={quote}{prefix}/");
+            prefixed = prefixed.replace(&root_url, &prefixed_url);
+        }
+    }
+    prefixed.replacen(
+        "<body",
+        &format!("<body data-lific-base-path=\"{prefix}\""),
+        1,
+    )
 }
 
 /// How far this instance can be reached from, as configured.
@@ -460,9 +1959,19 @@ pub(crate) fn build_app_with_store(
     // neither is layered onto this router. Only
     // published projects are reachable through it (the flag is checked in the
     // SQL of every read), and only with `GET`.
-    let app = app.merge(api::public::router(pool, attachment_store, trusted_proxies));
+    let app = app.merge(api::public::router(
+        pool,
+        attachment_store,
+        trusted_proxies.clone(),
+    ));
+    let app = app
+        .route("/assets/{*path}", any(|| async { StatusCode::NOT_FOUND }))
+        .fallback_service(topcoat::router::tower::TowerService::new(
+            topcoat_app::router(),
+        ));
+
     with_compression(
-        app.fallback(get(serve_frontend))
+        app
             // Top-level CORS layer.
             //
             // This wraps EVERYTHING (REST API, /mcp, OAuth, frontend). Two
@@ -491,7 +2000,8 @@ pub(crate) fn build_app_with_store(
             // Compression's DefaultPredicate already skips SSE
             // (text/event-stream — so MCP streaming is untouched), gRPC,
             // already-compressed images, and bodies under 32 bytes.
-            .layer(middleware::from_fn(add_security_headers)),
+            .layer(middleware::from_fn(add_security_headers))
+            .layer(axum::Extension(trusted_proxies)),
     )
 }
 
@@ -1378,64 +2888,132 @@ mod compression_tests {
     }
 }
 
-#[cfg(test)]
-mod frontend_security_headers_tests {
-    use super::*;
-    use tower::ServiceExt;
-
-    #[tokio::test]
-    async fn frontend_responses_cannot_be_framed_or_mime_sniffed() {
-        let app = Router::new()
-            .fallback(get(serve_frontend))
-            .layer(middleware::from_fn(add_security_headers));
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/public/PUB")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let headers = response.headers();
-
-        assert_eq!(
-            headers
-                .get(header::X_FRAME_OPTIONS)
-                .and_then(|v| v.to_str().ok()),
-            Some("DENY")
-        );
-        assert_eq!(
-            headers
-                .get(header::X_CONTENT_TYPE_OPTIONS)
-                .and_then(|v| v.to_str().ok()),
-            Some("nosniff")
-        );
-        assert_eq!(
-            headers
-                .get(header::CONTENT_SECURITY_POLICY)
-                .and_then(|v| v.to_str().ok()),
-            Some("frame-ancestors 'none'; base-uri 'self'; object-src 'none'")
-        );
-        assert_eq!(
-            headers
-                .get(header::REFERRER_POLICY)
-                .and_then(|v| v.to_str().ok()),
-            Some("no-referrer")
-        );
-        assert_eq!(
-            headers
-                .get("cross-origin-resource-policy")
-                .and_then(|v| v.to_str().ok()),
-            Some("same-origin")
-        );
-    }
-}
-
 /// LIF-465: the anonymous project view through the router `lific start`
 /// builds. `api::public`'s own tests prove the handlers and the SQL; only the
 /// assembled app can prove that mounting it did not put it behind the auth
 /// middleware, or the authenticated API in front of it.
+#[cfg(test)]
+mod topcoat_prefix_tests {
+    use super::*;
+    use tower::ServiceExt;
+
+    #[test]
+    fn topcoat_documents_keep_root_urls_inside_the_forwarded_prefix() {
+        let html = concat!(
+            "<html><head></head><body>",
+            "<link href=\"/__topcoat-app.css\">",
+            "<script src=\"/__topcoat-shell.js\"></script>",
+            "<form action=\"/login\"></form>",
+            "<a href=\"/LIF/issues\">Issues</a>",
+            "</body></html>"
+        );
+
+        assert_eq!(
+            prefix_topcoat_document("/app", html),
+            concat!(
+                "<html><head></head><body data-lific-base-path=\"/app\">",
+                "<link href=\"/app/__topcoat-app.css\">",
+                "<script src=\"/app/__topcoat-shell.js\"></script>",
+                "<form action=\"/app/login\"></form>",
+                "<a href=\"/app/LIF/issues\">Issues</a>",
+                "</body></html>"
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn trusted_proxy_prefix_rewrites_documents_but_ignores_untrusted_headers() {
+        let proxies = Arc::<[ratelimit::IpNetwork]>::from(vec![
+            ratelimit::IpNetwork::parse("127.0.0.1").unwrap(),
+        ]);
+        let app = Router::new()
+            .route(
+                "/",
+                axum::routing::get(|| async {
+                    axum::response::Html(
+                        "<html><head></head><body><a href=\"/login\">Log in</a></body></html>",
+                    )
+                }),
+            )
+            .route(
+                "/redirect",
+                axum::routing::get(|| async {
+                    axum::response::Redirect::permanent("/public/LIF/issues/LIF-42")
+                }),
+            )
+            .route(
+                "/external",
+                axum::routing::get(|| async {
+                    axum::response::Redirect::temporary("https://identity.example/callback")
+                }),
+            )
+            .layer(middleware::from_fn(add_security_headers))
+            .layer(axum::Extension(proxies));
+
+        let mut trusted = Request::builder()
+            .uri("/")
+            .header("x-forwarded-prefix", "/app")
+            .body(Body::empty())
+            .unwrap();
+        trusted.extensions_mut().insert(axum::extract::ConnectInfo(
+            "127.0.0.1:3000".parse::<SocketAddr>().unwrap(),
+        ));
+        let response = app.clone().oneshot(trusted).await.unwrap();
+        let trusted_document = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let trusted_document = String::from_utf8(trusted_document.to_vec()).unwrap();
+        assert!(trusted_document.contains("data-lific-base-path=\"/app\""));
+        assert!(trusted_document.contains("href=\"/app/login\""));
+
+        let mut untrusted = Request::builder()
+            .uri("/")
+            .header("x-forwarded-prefix", "/app")
+            .body(Body::empty())
+            .unwrap();
+        untrusted
+            .extensions_mut()
+            .insert(axum::extract::ConnectInfo(
+                "198.51.100.8:3000".parse::<SocketAddr>().unwrap(),
+            ));
+        let response = app.clone().oneshot(untrusted).await.unwrap();
+        let untrusted_document = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let untrusted_document = String::from_utf8(untrusted_document.to_vec()).unwrap();
+        assert!(!untrusted_document.contains("data-lific-base-path="));
+        assert!(untrusted_document.contains("href=\"/login\""));
+
+        let mut redirect = Request::builder()
+            .uri("/redirect")
+            .header("x-forwarded-prefix", "/app")
+            .body(Body::empty())
+            .unwrap();
+        redirect.extensions_mut().insert(axum::extract::ConnectInfo(
+            "127.0.0.1:3000".parse::<SocketAddr>().unwrap(),
+        ));
+        let response = app.clone().oneshot(redirect).await.unwrap();
+        assert_eq!(
+            response.headers().get(header::LOCATION).unwrap(),
+            "/app/public/LIF/issues/LIF-42"
+        );
+
+        let mut external = Request::builder()
+            .uri("/external")
+            .header("x-forwarded-prefix", "/app")
+            .body(Body::empty())
+            .unwrap();
+        external.extensions_mut().insert(axum::extract::ConnectInfo(
+            "127.0.0.1:3000".parse::<SocketAddr>().unwrap(),
+        ));
+        let response = app.oneshot(external).await.unwrap();
+        assert_eq!(
+            response.headers().get(header::LOCATION).unwrap(),
+            "https://identity.example/callback"
+        );
+    }
+}
+
 #[cfg(test)]
 mod public_surface_tests {
     use super::*;
@@ -1552,6 +3130,7 @@ mod public_surface_tests {
         let mut cfg = Config::default();
         cfg.auth.required = true;
         cfg.server.host = "127.0.0.1".into();
+        cfg.server.trusted_proxies = vec!["127.0.0.1".into()];
         let trusted_proxies = Arc::<[ratelimit::IpNetwork]>::from(
             cfg.server.trusted_proxy_ranges().expect("proxy ranges"),
         );
@@ -1737,6 +3316,86 @@ mod public_surface_tests {
         let d = deploy();
         let response = anonymous(&d.app, "GET", "/public/PUB").await;
         assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn production_frontend_serves_topcoat_routes_and_keeps_api_boundaries() {
+        let d = deploy();
+        for path in [
+            "/login",
+            "/",
+            "/LIF/issues",
+            "/LIF/issues/LIF-1",
+            "/LIF/pages",
+            "/LIF/plans",
+            "/public/PUB/issues",
+        ] {
+            let response = anonymous(&d.app, "GET", path).await;
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+            if path == "/login" {
+                assert_eq!(
+                    response.headers().get(header::X_FRAME_OPTIONS).unwrap(),
+                    "DENY"
+                );
+                assert_eq!(
+                    response
+                        .headers()
+                        .get(header::X_CONTENT_TYPE_OPTIONS)
+                        .unwrap(),
+                    "nosniff"
+                );
+                assert_eq!(
+                    response
+                        .headers()
+                        .get(header::CONTENT_SECURITY_POLICY)
+                        .unwrap(),
+                    "frame-ancestors 'none'; base-uri 'self'; object-src 'none'"
+                );
+            }
+            let body = body_string(response).await;
+            assert!(body.contains("class=\"tc-shell\""), "{path}: {body}");
+            assert!(body.contains("/__topcoat-runtime.js"), "{path}: {body}");
+        }
+
+        let mut proxied_document = Request::builder()
+            .uri("/login")
+            .header("x-forwarded-prefix", "/app")
+            .body(Body::empty())
+            .unwrap();
+        proxied_document
+            .extensions_mut()
+            .insert(axum::extract::ConnectInfo(
+                "127.0.0.1:3000".parse::<SocketAddr>().unwrap(),
+            ));
+        let response = d.app.clone().oneshot(proxied_document).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_string(response).await;
+        assert!(body.contains("data-lific-base-path=\"/app\""));
+        assert!(body.contains("href=\"/app/__topcoat-app.css\""));
+
+        let mut proxied_api = Request::builder()
+            .uri("/api/health")
+            .header("x-forwarded-prefix", "/app")
+            .body(Body::empty())
+            .unwrap();
+        proxied_api
+            .extensions_mut()
+            .insert(axum::extract::ConnectInfo(
+                "127.0.0.1:3000".parse::<SocketAddr>().unwrap(),
+            ));
+        let response = d.app.clone().oneshot(proxied_api).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_string(response).await, "ok");
+
+        let health = anonymous(&d.app, "GET", "/api/health").await;
+        assert_eq!(health.status(), StatusCode::OK);
+        assert_eq!(body_string(health).await, "ok");
+
+        let private_api = anonymous(&d.app, "GET", "/api/projects").await;
+        assert_eq!(private_api.status(), StatusCode::UNAUTHORIZED);
+
+        let retired_bundle = anonymous(&d.app, "GET", "/assets/index-retired.js").await;
+        assert_eq!(retired_bundle.status(), StatusCode::NOT_FOUND);
     }
 }
 
