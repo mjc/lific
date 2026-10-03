@@ -19,10 +19,21 @@ function createConcurrencyQueue(limit) {
    let operation;
    try{operation=Promise.resolve(entry.task());}catch(error){operation=Promise.reject(error);}
    const result=operation.then(value=>({ok:true,data:{id:entry.id,filename:file.name,mime:'text/plain',size:1,value}}),error=>({ok:false,error:error.message}));
-   operation.then(value=>settle().then(()=>entry.resolve(value)),error=>settle().then(()=>entry.reject(error)));
    return {result,abort(){}};
  }};
- const composer=attachments.createComposer({root,client,concurrency:limit,win});
+ const composer=attachments.createComposer({root,client,concurrency:limit,win,
+  onUploaded(attachment){
+   const entry=entries.get(attachment.filename);
+   entry.uploaded=attachment;
+  },
+  onStatus(message){
+   for(const [name,entry] of entries){
+    if(entry.settled)continue;
+    const failed=composer.items.find(item=>item.file.name===name&&item.status==='error');
+    if(failed){entry.settled=true;entry.reject(new Error(failed.error));}
+    else if(entry.uploaded&&message===`Uploaded ${name}.`){entry.settled=true;entry.resolve(entry.uploaded.value);}
+   }
+  }});
  return {limit,get active(){return composer.items.filter(item=>item.status==='uploading').length;},
   get waiting(){return composer.items.filter(item=>['queued','preparing'].includes(item.status)).length;},
   add(task){const current=++id,name=`task-${current}.txt`;let resolve,reject;

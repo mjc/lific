@@ -5,6 +5,32 @@ pages and embedded assets live under `src/topcoat`; Axum owns the HTTP listener
 and sends frontend requests to Topcoat's Tower adapter. Cargo and devenv pin
 Rust 1.99.0.
 
+The current implementation still uses browser JavaScript controllers and the
+existing JSON API. This is an intermediate port: native server data access,
+complete behavior parity, and visual parity remain unfinished.
+
+## Target data flow
+
+Async Topcoat components should read authorized application data through the
+shared Rust services. Initial HTML should contain that data. Browser actions
+should call native Rust procedures; shards should render changed regions on
+the server. Neither components nor procedures should make loopback HTTP calls.
+
+Topcoat 0.9.0 procedures and shards use framework-managed HTTP endpoints. This
+removes the frontend's dependency on the existing JSON API while retaining
+browser-server communication. File uploads/downloads still transfer bytes.
+Realtime updates need a prototype before choosing between the existing
+WebSocket and native streaming. Preserve reconnect, account isolation, and
+public-scope behavior whichever transport is used.
+
+Reuse the same domain services and authorization as the external API. Keep
+REST available for its other clients. Extract shared behavior from handlers
+where needed, and preserve transactions, conflict handling, recent
+authentication, and side effects. Do not duplicate those rules in the frontend.
+
+See the pinned [procedure documentation](https://docs.rs/topcoat/0.9.0/topcoat/runtime/attr.procedure.html)
+and [shard documentation](https://docs.rs/topcoat/0.9.0/topcoat/runtime/attr.shard.html).
+
 ## Build and development
 
 ```sh
@@ -30,7 +56,7 @@ The install task uses `cargo install --locked --version 0.9.0 topcoat-cli`
 and stores its executable in devenv's Cargo install root. The formatter task
 uses that executable directly.
 
-## API adapter
+## Current API adapter
 
 `src/topcoat/api.rs` provides a typed HTTP client for the existing `/api`
 routes. Its DTOs mirror the JSON contract and remain separate from database
