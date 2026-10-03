@@ -35,6 +35,7 @@ pub(crate) const MAX_BATCH_MESSAGES: usize = 1024;
 pub(crate) const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 pub(crate) const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 pub(crate) const BATCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+const BATCH_DELIVERY_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
 
 pub(crate) fn error(id: Value, code: i64, message: &str) -> Value {
     json!({"jsonrpc":"2.0", "id":id, "error":{"code":code,"message":message}})
@@ -950,21 +951,10 @@ impl<S: ServerHandler + Send + 'static> HttpService<S> {
         tokio::spawn(async move {
             // Disconnect stops delivery, not accepted March work. Each member
             // still dispatches within the configured batch time budget.
-            let result = tokio::time::timeout_at(
-                deadline,
-                process_http_batch(service, sessions, parts, items, &sender),
-            )
-            .await;
-            let error = match result {
-                Ok(Ok(())) => None,
-                Ok(Err(error)) => Some(error),
-                Err(_) => Some(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "MCP batch time budget exceeded",
-                )),
-            };
-            if let Some(error) = error {
-                let _ = sender.send(Err(error)).await;
+            if let Err(error) =
+                process_http_batch(service, sessions, parts, items, &sender, deadline).await
+            {
+                let _ = tokio::time::timeout(BATCH_DELIVERY_GRACE, sender.send(Err(error))).await;
             }
         });
         let stream = futures_util::stream::unfold(receiver, |mut receiver| async move {
@@ -986,160 +976,235 @@ fn record_response(replies: &mut Vec<Value>, bytes: &mut usize, reply: Value) ->
     Ok(())
 }
 
+fn member_error(item: &Value) -> Value {
+    error(
+        item.get("id").cloned().unwrap_or(Value::Null),
+        -32603,
+        "MCP batch member failed",
+    )
+}
+
+fn member_reply_reserve(item: &Value) -> usize {
+    if valid_message(item) && item.get("id").is_none() {
+        return 0;
+    }
+    // Include exact serialized IDs (and escaping), separators, and every
+    // synthetic error that this member can produce before dispatch.
+    [
+        member_error(item),
+        error(Value::Null, -32600, "Invalid Request"),
+        error(Value::Null, -32600, "Duplicate batch request ID"),
+        error(Value::Null, -32600, "Request ID is already active"),
+        error(
+            item.get("id").cloned().unwrap_or(Value::Null),
+            -32602,
+            "Invalid params",
+        ),
+    ]
+    .into_iter()
+    .map(|reply| reply.to_string().len() + 1)
+    .max()
+    .unwrap_or(0)
+}
+
 async fn process_http_batch<S: ServerHandler + Send + 'static>(
     service: Arc<StreamableHttpService<S, Sessions>>,
     sessions: Arc<Sessions>,
     parts: axum::http::request::Parts,
     items: Vec<Value>,
     sender: &tokio::sync::mpsc::Sender<Result<Bytes, io::Error>>,
+    deadline: tokio::time::Instant,
 ) -> io::Result<()> {
     let mut replies = vec![];
-    let mut response_bytes = 2usize;
+    // Array brackets plus SSE framing, also shared with immediate notifications.
+    let mut response_bytes = "data: []\n\n".len();
+    let mut reserved: usize = items.iter().map(member_reply_reserve).sum();
     let mut ids = HashSet::new();
     let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     for item in items {
-        if !valid_message(&item) {
-            record_response(
-                &mut replies,
-                &mut response_bytes,
-                error(Value::Null, -32600, "Invalid Request"),
-            )?;
-            continue;
-        }
-        if item.get("method").is_some()
+        reserved -= member_reply_reserve(&item);
+        let reply = if !valid_message(&item) {
+            Some(error(Value::Null, -32600, "Invalid Request"))
+        } else if item.get("method").is_some()
             && let Some(id) = item.get("id")
             && !ids.insert(id.to_string())
         {
-            record_response(
-                &mut replies,
-                &mut response_bytes,
-                error(Value::Null, -32600, "Duplicate batch request ID"),
-            )?;
-            continue;
-        }
-        if serde_json::from_value::<ClientJsonRpcMessage>(item.clone()).is_err() {
-            if let Some(id) = item.get("id") {
-                record_response(
-                    &mut replies,
-                    &mut response_bytes,
-                    error(id.clone(), -32602, "Invalid params"),
-                )?;
-            }
-            continue;
-        }
-        let key = if item.get("method").is_some()
-            && let Some(id) = item.get("id")
-        {
-            Some((
-                SessionId::from(
-                    parts.headers["Mcp-Session-Id"]
-                        .to_str()
-                        .map_err(io::Error::other)?
-                        .to_owned(),
-                ),
-                id.to_string(),
-            ))
+            Some(error(Value::Null, -32600, "Duplicate batch request ID"))
+        } else if serde_json::from_value::<ClientJsonRpcMessage>(item.clone()).is_err() {
+            item.get("id")
+                .map(|id| error(id.clone(), -32602, "Invalid params"))
         } else {
-            None
-        };
-        if key.as_ref().is_some_and(|key| {
-            sessions
-                .batch_requests
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .contains_key(key)
-        }) {
-            record_response(
-                &mut replies,
-                &mut response_bytes,
-                error(Value::Null, -32600, "Request ID is already active"),
-            )?;
-            continue;
-        }
-        let response = service
-            .handle(Request::from_parts(
-                parts.clone(),
-                Body::from(item.to_string()),
-            ))
-            .await
-            .into_response();
-        if !response.status().is_success() {
-            return Err(io::Error::other(format!(
-                "MCP batch member returned HTTP {}",
-                response.status()
-            )));
-        }
-        if item.get("method").is_none() || item.get("id").is_none() {
-            continue;
-        }
-        let cancelled = key.as_ref().and_then(|key| {
-            sessions
-                .batch_requests
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .get(key)
-                .cloned()
-        });
-        let bytes = response.into_body().into_data_stream();
-        let limited = futures_util::stream::try_unfold(
-            (bytes, seen.clone()),
-            |(mut bytes, seen)| async move {
-                match bytes.next().await {
-                    Some(Ok(chunk))
-                        if chunk.len()
-                            <= MAX_RESPONSE_BYTES.saturating_sub(
-                                seen.load(std::sync::atomic::Ordering::Relaxed),
-                            ) =>
-                    {
-                        seen.fetch_add(chunk.len(), std::sync::atomic::Ordering::Relaxed);
-                        Ok(Some((chunk, (bytes, seen))))
-                    }
-                    Some(Ok(_)) => Err(io::Error::other("MCP batch response exceeded byte limit")),
-                    Some(Err(error)) => Err(io::Error::other(error)),
-                    None => Ok(None),
-                }
-            },
-        );
-        let events = sse_stream::SseStream::from_bytes_stream(limited);
-        tokio::pin!(events);
-        let mut replied = false;
-        while let Some(event) = events.next().await {
-            let Some(data) = event
-                .map_err(io::Error::other)?
-                .data
-                .filter(|data| !data.is_empty())
-            else {
-                continue;
+            let key = if item.get("method").is_some()
+                && let Some(id) = item.get("id")
+            {
+                Some((
+                    SessionId::from(
+                        parts.headers["Mcp-Session-Id"]
+                            .to_str()
+                            .map_err(io::Error::other)?
+                            .to_owned(),
+                    ),
+                    id.to_string(),
+                ))
+            } else {
+                None
             };
-            let value: Value = serde_json::from_str(&data).map_err(io::Error::other)?;
-            if value.get("id") == item.get("id") && value.get("method").is_none() {
-                record_response(&mut replies, &mut response_bytes, value)?;
-                replied = true;
-                break;
+            if key.as_ref().is_some_and(|key| {
+                sessions
+                    .batch_requests
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .contains_key(key)
+            }) {
+                Some(error(Value::Null, -32600, "Request ID is already active"))
+            } else if tokio::time::Instant::now() >= deadline
+                || (item.get("method").is_some()
+                    && item.get("id").is_some()
+                    && seen.load(std::sync::atomic::Ordering::Relaxed) >= MAX_RESPONSE_BYTES)
+            {
+                // Expiry or an exhausted read budget prevents more calls whose
+                // replies cannot be read. Completed replies remain available.
+                item.get("id")
+                    .filter(|_| item.get("method").is_some())
+                    .map(|_| member_error(&item))
+            } else {
+                match tokio::time::timeout_at(
+                    deadline,
+                    service.handle(Request::from_parts(
+                        parts.clone(),
+                        Body::from(item.to_string()),
+                    )),
+                )
+                .await
+                {
+                    Ok(response) => {
+                        let response = response.into_response();
+                        if item.get("method").is_none() || item.get("id").is_none() {
+                            None
+                        } else if !response.status().is_success() {
+                            Some(member_error(&item))
+                        } else {
+                            let cancelled = key.as_ref().and_then(|key| {
+                                sessions
+                                    .batch_requests
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                    .get(key)
+                                    .cloned()
+                            });
+                            match read_http_batch_reply(
+                                response,
+                                &item,
+                                sender,
+                                deadline,
+                                seen.clone(),
+                                &mut response_bytes,
+                                reserved,
+                            )
+                            .await
+                            {
+                                Ok(Some(reply)) => Some(reply),
+                                Ok(None) | Err(_)
+                                    if cancelled.as_ref().is_some_and(|cancelled| {
+                                        cancelled.load(std::sync::atomic::Ordering::Relaxed)
+                                    }) =>
+                                {
+                                    None
+                                }
+                                Ok(None) | Err(_) => Some(member_error(&item)),
+                            }
+                        }
+                    }
+                    Err(_) => item
+                        .get("id")
+                        .filter(|_| item.get("method").is_some())
+                        .map(|_| member_error(&item)),
+                }
             }
-            let _ = sender
-                .send(Ok(Bytes::from(format!("data: {value}\n\n"))))
-                .await;
+        };
+        if let Some(reply) = reply {
+            let reply = if reply.to_string().len().saturating_add(1)
+                > MAX_RESPONSE_BYTES.saturating_sub(response_bytes.saturating_add(reserved))
+            {
+                member_error(&item)
+            } else {
+                reply
+            };
+            // The input cap and up-front per-member reserve guarantee this
+            // fallback fits, even after a large earlier result or notification.
+            record_response(&mut replies, &mut response_bytes, reply)?;
         }
-        if !replied
-            && !cancelled
-                .as_ref()
-                .is_some_and(|cancelled| cancelled.load(std::sync::atomic::Ordering::Relaxed))
-        {
-            return Err(io::Error::other("MCP batch member returned no response"));
-        }
     }
-    if replies.is_empty() {
-        return Ok(());
-    }
-    let value = Value::Array(replies);
-    if value.to_string().len() > MAX_RESPONSE_BYTES {
-        return Err(io::Error::other("MCP batch response exceeded byte limit"));
-    }
-    let _ = sender
-        .send(Ok(Bytes::from(format!("data: {value}\n\n"))))
+    if !replies.is_empty() {
+        let value = Value::Array(replies);
+        // Delivery has its own grace: an expired dispatch deadline must not
+        // discard completed replies, while unread output cannot retain them forever.
+        let _ = tokio::time::timeout(
+            BATCH_DELIVERY_GRACE,
+            sender.send(Ok(Bytes::from(format!("data: {value}\n\n")))),
+        )
         .await;
+    }
     Ok(())
+}
+
+async fn read_http_batch_reply(
+    response: Response,
+    item: &Value,
+    sender: &tokio::sync::mpsc::Sender<Result<Bytes, io::Error>>,
+    deadline: tokio::time::Instant,
+    seen: Arc<std::sync::atomic::AtomicUsize>,
+    response_bytes: &mut usize,
+    reserved: usize,
+) -> io::Result<Option<Value>> {
+    let bytes = response.into_body().into_data_stream();
+    let limited = futures_util::stream::try_unfold((bytes, seen), |(mut bytes, seen)| async move {
+        match bytes.next().await {
+            Some(Ok(chunk))
+                if chunk.len()
+                    <= MAX_RESPONSE_BYTES
+                        .saturating_sub(seen.load(std::sync::atomic::Ordering::Relaxed)) =>
+            {
+                seen.fetch_add(chunk.len(), std::sync::atomic::Ordering::Relaxed);
+                Ok(Some((chunk, (bytes, seen))))
+            }
+            Some(Ok(_)) => {
+                // A rejected chunk exhausts this batch's shared read budget;
+                // subsequent response-bearing calls must not run blind.
+                seen.store(MAX_RESPONSE_BYTES, std::sync::atomic::Ordering::Relaxed);
+                Err(io::Error::other("MCP batch response exceeded byte limit"))
+            }
+            Some(Err(error)) => Err(io::Error::other(error)),
+            None => Ok(None),
+        }
+    });
+    let events = sse_stream::SseStream::from_bytes_stream(limited);
+    tokio::pin!(events);
+    while let Some(event) = tokio::time::timeout_at(deadline, events.next())
+        .await
+        .map_err(io::Error::other)?
+    {
+        let Some(data) = event
+            .map_err(io::Error::other)?
+            .data
+            .filter(|data| !data.is_empty())
+        else {
+            continue;
+        };
+        let value: Value = serde_json::from_str(&data).map_err(io::Error::other)?;
+        if value.get("id") == item.get("id") && value.get("method").is_none() {
+            return Ok(Some(value));
+        }
+        let frame = format!("data: {value}\n\n");
+        let reserve = reserved.saturating_add(member_reply_reserve(item));
+        if frame.len() > MAX_RESPONSE_BYTES.saturating_sub(response_bytes.saturating_add(reserve)) {
+            return Err(io::Error::other("MCP batch response exceeded byte limit"));
+        }
+        *response_bytes += frame.len();
+        // Channel sends are atomic frames; timing out cannot write half a frame.
+        let _ = tokio::time::timeout_at(deadline, sender.send(Ok(Bytes::from(frame)))).await;
+    }
+    Ok(None)
 }
 
 pub(crate) fn stdio() -> StdioTransport<BufReader<tokio::io::Stdin>, tokio::io::Stdout> {
@@ -1843,5 +1908,288 @@ mod cancellation_tests {
                 .keys()
                 .all(|(id, _)| id != &first_id)
         );
+    }
+    type TestSession = Arc<std::sync::Mutex<Option<(Arc<Sessions>, SessionId)>>>;
+    #[derive(Clone)]
+    struct PartialReplies {
+        mutations: Arc<std::sync::atomic::AtomicUsize>,
+        session: TestSession,
+        exhaust_after_mutation: bool,
+        close_on_wait: bool,
+        waiting: Arc<tokio::sync::Notify>,
+    }
+    impl ServerHandler for PartialReplies {
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(rmcp::model::ServerCapabilities::default())
+                .with_protocol_version(ProtocolVersion::V_2025_03_26)
+        }
+        async fn on_custom_request(
+            &self,
+            request: rmcp::model::CustomRequest,
+            context: RequestContext<RoleServer>,
+        ) -> Result<rmcp::model::CustomResult, rmcp::ErrorData> {
+            let result = match request.method.as_str() {
+                "mutate" => {
+                    let count = self
+                        .mutations
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                        + 1;
+                    if self.exhaust_after_mutation {
+                        let (sessions, id) = self.session.lock().unwrap().clone().unwrap();
+                        let mut registry = sessions.batch_requests.lock().unwrap();
+                        for index in 0..MAX_BATCH_MESSAGES {
+                            registry.insert(
+                                (id.clone(), format!("cancelled-{index}")),
+                                Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                            );
+                        }
+                    }
+                    json!({"mutation":count})
+                }
+                "near_limit" => json!({"payload":"x".repeat(MAX_RESPONSE_BYTES - 600)}),
+                "oversized" => json!({"payload":"x".repeat(MAX_RESPONSE_BYTES + 1024)}),
+                "wait" => {
+                    self.waiting.notify_one();
+                    if self.close_on_wait {
+                        let (sessions, id) = self.session.lock().unwrap().clone().unwrap();
+                        tokio::spawn(async move {
+                            sessions.close_session(&id).await.unwrap();
+                        });
+                    }
+                    context.ct.cancelled().await;
+                    json!({})
+                }
+                _ => json!({}),
+            };
+            Ok(rmcp::model::CustomResult(result))
+        }
+    }
+    async fn partial_service(
+        exhaust_after_mutation: bool,
+        close_on_wait: bool,
+    ) -> (
+        HttpService<PartialReplies>,
+        String,
+        Arc<std::sync::atomic::AtomicUsize>,
+        Arc<tokio::sync::Notify>,
+    ) {
+        let mutations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let waiting = Arc::new(tokio::sync::Notify::new());
+        let handler = PartialReplies {
+            mutations: mutations.clone(),
+            waiting: waiting.clone(),
+            session: Arc::default(),
+            exhaust_after_mutation,
+            close_on_wait,
+        };
+        let session_slot = handler.session.clone();
+        let service = HttpService::new(
+            move || Ok(handler.clone()),
+            crate::mcp::streamable_http_config(["localhost"]),
+        );
+        let response = service.handle(request(initialize(), None)).await;
+        let id = response.headers()["Mcp-Session-Id"]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let _ = values(response).await;
+        *session_slot.lock().unwrap() =
+            Some((service.sessions.clone(), SessionId::from(id.clone())));
+        (service, id, mutations, waiting)
+    }
+    #[tokio::test]
+    async fn march_http_member_failures_preserve_prior_mutations_and_remaining_replies() {
+        for failure in ["capacity", "near_limit", "oversized", "no_reply"] {
+            let (service, session, mutations, _) =
+                partial_service(failure == "capacity", failure == "no_reply").await;
+            let method = match failure {
+                "capacity" => "ping",
+                "no_reply" => "wait",
+                other => other,
+            };
+            let last_method = if failure == "near_limit" {
+                "ping"
+            } else {
+                "mutate"
+            };
+            let mut items = vec![
+                json!({"jsonrpc":"2.0","id":10,"method":"mutate"}),
+                json!({"jsonrpc":"2.0","id":20,"method":method}),
+                json!({"jsonrpc":"2.0","id":30,"method":last_method}),
+            ];
+            if failure == "near_limit" {
+                items.extend(std::iter::repeat_n(Value::Null, 16));
+            }
+            let response = service
+                .handle(request(Value::Array(items), Some(&session)))
+                .await;
+            let output = values(response).await;
+            let replies = output[0].as_array().unwrap();
+            assert_eq!(
+                replies[0],
+                json!({"jsonrpc":"2.0","id":10,"result":{"mutation":1}}),
+                "{failure}"
+            );
+            assert_eq!(replies[1]["id"], 20, "{failure}");
+            assert_eq!(replies[1]["error"]["code"], -32603, "{failure}");
+            assert_eq!(replies[2]["id"], 30, "{failure}");
+            if failure == "near_limit" {
+                assert!(replies[2].get("result").is_some(), "{failure}");
+            } else {
+                assert_eq!(replies[2]["error"]["code"], -32603, "{failure}");
+            }
+            if failure == "near_limit" {
+                assert_eq!(replies.len(), 19);
+                assert!(
+                    replies[3..]
+                        .iter()
+                        .all(|reply| reply["error"]["code"] == -32600)
+                );
+            }
+            assert_eq!(
+                mutations.load(std::sync::atomic::Ordering::Relaxed),
+                1,
+                "{failure}"
+            );
+            service
+                .sessions
+                .close_session(&SessionId::from(session))
+                .await
+                .unwrap();
+        }
+    }
+    #[tokio::test]
+    async fn march_http_deadline_preserves_completed_mutation_and_marks_unfinished_members() {
+        let (service, session, mutations, _) = partial_service(false, false).await;
+        let items = vec![
+            json!({"jsonrpc":"2.0","id":10,"method":"mutate"}),
+            json!({"jsonrpc":"2.0","id":"quoted\"\\id","method":"wait"}),
+            json!({"jsonrpc":"2.0","id":30,"method":"mutate"}),
+        ];
+        let (parts, _) = request(Value::Null, Some(&session)).into_parts();
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+        process_http_batch(
+            service.service.clone(),
+            service.sessions.clone(),
+            parts,
+            items,
+            &sender,
+            tokio::time::Instant::now() + std::time::Duration::from_millis(100),
+        )
+        .await
+        .unwrap();
+        let frame = receiver.recv().await.unwrap().unwrap();
+        let replies: Value = serde_json::from_str(
+            std::str::from_utf8(&frame)
+                .unwrap()
+                .strip_prefix("data: ")
+                .unwrap()
+                .trim(),
+        )
+        .unwrap();
+        assert_eq!(replies[0]["result"]["mutation"], 1);
+        assert_eq!(replies[1]["id"], "quoted\"\\id");
+        assert_eq!(replies[1]["error"]["code"], -32603);
+        assert_eq!(replies[2]["id"], 30);
+        assert_eq!(replies[2]["error"]["code"], -32603);
+        assert_eq!(mutations.load(std::sync::atomic::Ordering::Relaxed), 1);
+        service
+            .sessions
+            .close_session(&SessionId::from(session))
+            .await
+            .unwrap();
+    }
+    #[tokio::test]
+    async fn march_http_member_stream_errors_are_bounded_and_leave_existing_replies_available() {
+        for bytes in ["", "data: not json\n\n"] {
+            let response = Response::new(Body::from(bytes));
+            let item = json!({"jsonrpc":"2.0","id":"quoted\"\\id","method":"ping"});
+            let (sender, _) = tokio::sync::mpsc::channel(1);
+            let mut used = "data: []\n\n".len();
+            let reply = read_http_batch_reply(
+                response,
+                &item,
+                &sender,
+                tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+                Arc::default(),
+                &mut used,
+                0,
+            )
+            .await;
+            assert!(!matches!(reply, Ok(Some(_))));
+            let mut replies = vec![json!({"jsonrpc":"2.0","id":10,"result":{"mutation":1}})];
+            record_response(&mut replies, &mut used, member_error(&item)).unwrap();
+            assert_eq!(replies[0]["result"]["mutation"], 1);
+            assert_eq!(replies[1]["id"], item["id"]);
+            assert_eq!(replies[1]["error"]["code"], -32603);
+            assert!(member_reply_reserve(&item) > member_error(&item).to_string().len());
+        }
+    }
+    #[tokio::test(start_paused = true)]
+    async fn march_http_delivery_grace_bounds_unread_output_and_preserves_partial_replies() {
+        for resume in [false, true] {
+            let (service, session, mutations, waiting) = partial_service(false, false).await;
+            let items = vec![
+                json!({"jsonrpc":"2.0","id":10,"method":"mutate"}),
+                json!({"jsonrpc":"2.0","id":20,"method":"wait"}),
+                json!({"jsonrpc":"2.0","id":30,"method":"mutate"}),
+            ];
+            let (parts, _) = request(Value::Null, Some(&session)).into_parts();
+            let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+            // Represent an already-forwarded notification occupying the same
+            // bounded output channel used by the final aggregate response.
+            let notification = Bytes::from_static(b"data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\"params\":{}}\n\n");
+            sender.send(Ok(notification.clone())).await.unwrap();
+            let deadline = tokio::time::Instant::now() + BATCH_TIMEOUT;
+            let inner = service.service.clone();
+            let sessions = service.sessions.clone();
+            let producer = tokio::spawn(async move {
+                process_http_batch(inner, sessions, parts, items, &sender, deadline)
+                    .await
+                    .unwrap();
+            });
+            // The second handler starting proves the first mutation's reply was
+            // collected before the dispatch deadline expires.
+            waiting.notified().await;
+            tokio::time::advance(BATCH_TIMEOUT).await;
+            tokio::task::yield_now().await;
+            assert!(!producer.is_finished());
+            tokio::time::advance(BATCH_DELIVERY_GRACE - std::time::Duration::from_secs(1)).await;
+            assert!(!producer.is_finished());
+            if resume {
+                assert_eq!(receiver.recv().await.unwrap().unwrap(), notification);
+                let frame = receiver.recv().await.unwrap().unwrap();
+                let replies: Value = serde_json::from_str(
+                    std::str::from_utf8(&frame)
+                        .unwrap()
+                        .strip_prefix("data: ")
+                        .unwrap()
+                        .trim(),
+                )
+                .unwrap();
+                assert_eq!(
+                    replies[0],
+                    json!({"jsonrpc":"2.0","id":10,"result":{"mutation":1}})
+                );
+                assert_eq!(replies[1]["id"], 20);
+                assert_eq!(replies[1]["error"]["code"], -32603);
+                assert_eq!(replies[2]["id"], 30);
+                assert_eq!(replies[2]["error"]["code"], -32603);
+                producer.await.unwrap();
+                assert!(tokio::time::Instant::now() < deadline + BATCH_DELIVERY_GRACE);
+            } else {
+                tokio::time::advance(std::time::Duration::from_secs(1)).await;
+                producer.await.unwrap();
+                assert_eq!(tokio::time::Instant::now(), deadline + BATCH_DELIVERY_GRACE);
+                assert_eq!(receiver.recv().await.unwrap().unwrap(), notification);
+                assert!(receiver.recv().await.is_none());
+            }
+            assert_eq!(mutations.load(std::sync::atomic::Ordering::Relaxed), 1);
+            service
+                .sessions
+                .close_session(&SessionId::from(session))
+                .await
+                .unwrap();
+        }
     }
 }

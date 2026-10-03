@@ -571,11 +571,9 @@ impl HttpBackends {
             }
         }
         let body = encode(&value);
-        let mut limits =
-            super::mcp_http::Limits::with_timeout(MAX_RESPONSE_BYTES, backend.request_timeout);
-        if let Some(deadline) = deadline {
-            limits.deadline = Some(limits.deadline.map_or(deadline, |own| own.min(deadline)));
-        }
+        let limits =
+            super::mcp_http::Limits::with_timeout(MAX_RESPONSE_BYTES, backend.request_timeout)
+                .with_deadline(deadline);
         super::mcp_http::post_with_notifications(
             &backend.client,
             &backend.endpoint,

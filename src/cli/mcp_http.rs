@@ -21,7 +21,7 @@ pub(super) struct Session {
 #[derive(Clone, Copy)]
 pub(super) struct Limits {
     max_bytes: usize,
-    pub(super) deadline: Option<tokio::time::Instant>,
+    deadline: Option<tokio::time::Instant>,
 }
 
 impl Limits {
@@ -37,6 +37,13 @@ impl Limits {
             max_bytes,
             deadline: Some(tokio::time::Instant::now() + timeout),
         }
+    }
+
+    pub(super) fn with_deadline(mut self, deadline: Option<tokio::time::Instant>) -> Self {
+        if let Some(deadline) = deadline {
+            self.deadline = Some(self.deadline.map_or(deadline, |own| own.min(deadline)));
+        }
+        self
     }
 }
 
@@ -543,6 +550,20 @@ mod tests {
     use axum::http::{HeaderMap, StatusCode};
     use axum::response::{IntoResponse, Response};
     use serde_json::json;
+
+    #[test]
+    fn shared_deadline_keeps_the_earliest_existing_budget() {
+        let limits = Limits::with_timeout(4096, std::time::Duration::from_secs(60));
+        let own = limits.deadline.unwrap();
+        let earlier = own - std::time::Duration::from_secs(30);
+        let later = own + std::time::Duration::from_secs(30);
+        assert_eq!(limits.with_deadline(None).deadline, Some(own));
+        assert_eq!(limits.with_deadline(Some(earlier)).deadline, Some(earlier));
+        assert_eq!(limits.with_deadline(Some(later)).deadline, Some(own));
+        let bounded = Limits::new(4096).with_deadline(Some(earlier));
+        assert_eq!(bounded.deadline, Some(earlier));
+        assert_eq!(bounded.max_bytes, 4096);
+    }
 
     #[tokio::test]
     async fn sse_initialization_retains_session_and_protocol_errors() {

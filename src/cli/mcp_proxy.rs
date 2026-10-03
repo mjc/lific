@@ -137,16 +137,7 @@ impl Forwarder for HttpForwarder {
         body: String,
         notifications: &mut S,
     ) -> Result<String, ForwardError> {
-        super::mcp_http::post_with_notifications(
-            &self.client,
-            &self.endpoint,
-            self.credential.as_deref(),
-            &self.session,
-            body,
-            super::mcp_http::Limits::with_timeout(4 * 1024 * 1024, self.request_timeout),
-            notifications,
-        )
-        .await
+        self.forward_with_deadline(body, notifications, None).await
     }
 
     async fn forward_with_deadline<S: super::mcp_http::NotificationSink>(
@@ -155,11 +146,8 @@ impl Forwarder for HttpForwarder {
         notifications: &mut S,
         deadline: Option<tokio::time::Instant>,
     ) -> Result<String, ForwardError> {
-        let mut limits =
-            super::mcp_http::Limits::with_timeout(4 * 1024 * 1024, self.request_timeout);
-        if let Some(deadline) = deadline {
-            limits.deadline = Some(limits.deadline.map_or(deadline, |own| own.min(deadline)));
-        }
+        let limits = super::mcp_http::Limits::with_timeout(4 * 1024 * 1024, self.request_timeout)
+            .with_deadline(deadline);
         super::mcp_http::post_with_notifications(
             &self.client,
             &self.endpoint,
