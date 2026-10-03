@@ -93,13 +93,14 @@ pub(crate) fn mobile_navigation<'a>(cx: &'a Cx, context: &ShellContext<'_>) -> B
                     <div data-mobile-project-list=""></div>
                     <p class="tc-mobile__hint" data-mobile-empty="" hidden="hidden">"No projects available."</p>
                     if private {
-                        <a href="/projects/new" data-mobile-destination="">"New project"</a>
-                        <a href="/projects/import" data-mobile-destination="">"Import project"</a>
+                        <button type="button" data-mobile-create="" aria-haspopup="menu">"New project or group"</button>
                     }
                 </nav>
                 <footer class="tc-mobile__footer">
                     if private {
                         <a href="/settings" data-mobile-destination="">(account_name.unwrap_or_else(|| "Settings".to_owned()))</a>
+                        <button type="button" data-mobile-theme="" aria-haspopup="menu"
+                            aria-label="Choose theme, current: system" title="Choose theme, current: system">"Theme"</button>
                     } else {
                         <span class="tc-mobile__hint">"Public project · Read only"</span>
                     }

@@ -426,6 +426,9 @@
     restoreFocus(root, focus);
   }
 
+  const projectIcon = (document, value) => (typeof module !== 'undefined' && module.exports
+    ? require('./project-icons.js') : window.LificProjectIcons)?.projectIcon(document, value) ?? null;
+
   function projectLink(document, project, activeIdentifier) {
     const link = element(document, 'a', 'tc-projects__project');
     const href = `/${encodeURIComponent(project.identifier)}/overview`;
@@ -435,8 +438,11 @@
     if (project.identifier.toUpperCase() === activeIdentifier?.toUpperCase()) {
       link.setAttribute('aria-current', 'page');
     }
-    const label = project.emoji ? `${project.emoji} ${project.name}` : project.name;
-    link.textContent = label;
+    const icon = projectIcon(document, project.emoji);
+    link.textContent = typeof icon === 'string' ? `${icon} ${project.name}` : project.name;
+    if (icon && typeof icon !== 'string') {
+      if (link.prepend) link.prepend(icon); else link.append(icon);
+    }
     link.setAttribute('aria-label', `Open ${project.name}`);
     return link;
   }
