@@ -173,6 +173,7 @@ mod topcoat_spike {
                     <link rel="stylesheet" href=(super::topcoat_frontend::issue_detail::editor::STYLESHEET_PATH)>
                     <link rel="stylesheet" href=(super::topcoat_frontend::issue_detail::collaboration::STYLESHEET_PATH)>
                     <link rel="stylesheet" href=(super::topcoat_frontend::issue_create::STYLESHEET_PATH)>
+                    <link rel="stylesheet" href=(super::topcoat_frontend::identity::STYLESHEET_PATH)>
                     <link rel="stylesheet" href=(super::topcoat_frontend::project_settings::STYLESHEET_PATH)>
                     <script type="module" src="/__topcoat-runtime.js"></script>
                     <script defer="defer" src=(super::topcoat_frontend::shell::ROUTE_SCRIPT_PATH)></script>
@@ -192,6 +193,7 @@ mod topcoat_spike {
                     <script defer="defer" src=(super::topcoat_frontend::issue_detail::collaboration::SCRIPT_PATH)></script>
                     <script defer="defer" src=(super::topcoat_frontend::issue_detail::route::SCRIPT_PATH)></script>
                     <script defer="defer" src=(super::topcoat_frontend::issue_create::SCRIPT_PATH)></script>
+                    <script defer="defer" src=(super::topcoat_frontend::identity::SCRIPT_PATH)></script>
                     <script defer="defer" src=(super::topcoat_frontend::project_settings::SCRIPT_PATH)></script>
                     <script type="module" src="/__topcoat-preferences.js"></script>
                 </head>
@@ -255,6 +257,8 @@ mod topcoat_spike {
                 Page::ProjectImport => {
                     super::topcoat_frontend::project_settings::archive_import(cx)
                 }
+                Page::Settings => super::topcoat_frontend::identity::settings(cx),
+                Page::InstanceSettings => super::topcoat_frontend::identity::instance_settings(cx),
                 Page::Issues => super::topcoat_frontend::issue_list::screen(
                     cx,
                     route.project,
@@ -296,7 +300,11 @@ mod topcoat_spike {
                 ),
                 _ => super::topcoat_frontend::shell::placeholder(cx, &route),
             },
-            Layout::Auth => super::topcoat_frontend::shell::placeholder(cx, &route),
+            Layout::Auth => match route.page {
+                Page::Login => super::topcoat_frontend::identity::login(cx),
+                Page::Signup => super::topcoat_frontend::identity::signup(cx),
+                _ => super::topcoat_frontend::shell::placeholder(cx, &route),
+            },
         };
         Ok(super::topcoat_frontend::shell::shell(cx, &route, content))
     }
@@ -657,6 +665,26 @@ mod topcoat_spike {
             ))?)
     }
 
+    #[route(GET "/__topcoat-identity.css")]
+    async fn identity_stylesheet() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "text/css; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::identity::STYLESHEET,
+            ))?)
+    }
+
+    #[route(GET "/__topcoat-identity.js")]
+    async fn identity_script() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "text/javascript; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::identity::SCRIPT,
+            ))?)
+    }
+
     #[route(GET "/__topcoat-preferences.js")]
     async fn preferences_script() -> Result<Response> {
         Ok(Response::builder()
@@ -738,6 +766,8 @@ mod topcoat_spike_tests {
         assert!(body.contains("/__topcoat-issue-editor.js"));
         assert!(body.contains("/__topcoat-issue-collaboration.js"));
         assert!(body.contains("/__topcoat-issue-create.js"));
+        assert!(body.contains("/__topcoat-identity.css"));
+        assert!(body.contains("/__topcoat-identity.js"));
         assert!(body.contains("/__topcoat-project-settings.css"));
         assert!(body.contains("/__topcoat-project-settings.js"));
         assert!(body.contains("/__topcoat-runtime.js"));
@@ -763,6 +793,14 @@ mod topcoat_spike_tests {
                 "Issue detail",
             ),
             ("/login", "auth", "/signup", "Log in"),
+            ("/signup", "auth", "/login", "Sign up"),
+            ("/settings", "private", "/settings/instance", "Settings"),
+            (
+                "/settings/instance",
+                "private",
+                "data-topcoat-identity=\"instance\"",
+                "Instance settings",
+            ),
         ] {
             let response = router
                 .clone()
@@ -783,6 +821,13 @@ mod topcoat_spike_tests {
             );
             assert!(body.contains(&format!("<title>{title}</title>")), "{path}");
             assert!(body.contains(expected), "{path}");
+            if path == "/login" {
+                assert!(body.contains("data-topcoat-identity=\"login\""));
+            } else if path == "/signup" {
+                assert!(body.contains("data-topcoat-identity=\"signup\""));
+            } else if path == "/settings" {
+                assert!(body.contains("data-topcoat-identity=\"settings\""));
+            }
             if layout == "public" {
                 assert!(body.contains("data-lific-public-project=\"LIF\""));
                 assert!(!body.contains("/settings"));
@@ -1059,6 +1104,16 @@ mod topcoat_spike_tests {
                 "/__topcoat-project-settings.css",
                 "text/css; charset=utf-8",
                 ".tc-project-settings",
+            ),
+            (
+                "/__topcoat-identity.js",
+                "text/javascript; charset=utf-8",
+                "LificTopcoatIdentity",
+            ),
+            (
+                "/__topcoat-identity.css",
+                "text/css; charset=utf-8",
+                ".tc-identity",
             ),
         ] {
             let response = router
