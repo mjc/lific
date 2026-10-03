@@ -5,7 +5,7 @@
       "source": "e2e/context-menu.ts",
       "target": "src/topcoat/tests/main/issues/context-menu.browser.test.js",
       "cases": [],
-      "notes": "Original component fixture is translated to the shipped two-action issue reference menu. Callback actions use Open preview; native gestures use a real issue anchor and popup destination. Keyboard, focus restoration, touch geometry, visual focus, Escape propagation, replacement, read-only/no-action state, mobile palette ownership, theme/OS/storage and Settings/session assertions are retained. Current DOM names replace obsolete configurable menu labels. Appearance uses current applyPreferences(savePreferences()) boundary and data-theme/colorScheme rather than retired reactive stores/class names. Preference OS/storage case loads the actual preferences module and production stylesheet on an isolated real-origin document, matching original component isolation; full clear does not accidentally test authenticated navigation.",
+      "notes": "Original component fixture is translated to the shipped two-action issue reference menu. Callback actions use Open preview; native gestures use a real issue anchor and popup destination. Keyboard, focus restoration, touch geometry, visual focus, Escape propagation, replacement, read-only/no-action state, mobile palette ownership, theme/OS/storage and Settings/session assertions are retained. Current DOM names replace obsolete configurable menu labels. Appearance uses current applyPreferences(savePreferences()) boundary and data-theme/colorScheme rather than retired reactive stores/class names. Preference OS/storage case loads the actual preferences module and production stylesheet on an isolated real-origin document, matching original component isolation; full clear does not accidentally test authenticated navigation. Original disabled-only and empty configurations also run as explicit DOM boundaries on the real two-action menu with unchanged handlers: stay open/inert under ArrowDown/Home/Enter, never invoke callbacks, Escape restores trigger. They are unsupported configurable-menu contracts and not independently reachable product regressions. Settings and isolated preference component capture actual pageerrors.",
       "assertionGroups": [
         "context menu: actionable items have 44px touch targets",
         "context menu: arrows/Home/End wrap and one item owns the roving tab stop",
@@ -23,7 +23,9 @@
         "context menu: Shift+Tab closes and restores trigger",
         "context menu: Escape closes and restores trigger",
         "context menu: native Control reference opens real destination and bypasses action callback",
-        "context menu: native middle reference opens real destination and bypasses action callback"
+        "context menu: native middle reference opens real destination and bypasses action callback",
+        "context menu: unsupported disabled contract stays open and inert until Escape",
+        "context menu: unsupported empty contract stays open and inert until Escape"
       ]
     },
     {
@@ -509,7 +511,7 @@
         "the detail headline names the state",
         "the chip shows the most pressing wait and counts the rest"
       ],
-      "notes": "Original eight titles retain calendar/state/text/summary requirements at real REST, native date input and live collaboration/list renderer. Calendar arithmetic maps to unchanged ISO date input and Dec31-Jan1 wire payload. Server-day authority is checked in Chicago/UTC/Kolkata browser zones, rather than restoring retired client UTC-offset arithmetic helper."
+      "notes": "Original eight titles retain calendar/state/text/summary requirements at real REST, native date input and live collaboration/list renderer. Calendar arithmetic maps to unchanged ISO date input and Dec31-Jan1 wire payload. Server-day authority is checked in Chicago/UTC/Kolkata browser zones, rather than restoring retired client UTC-offset arithmetic helper. Summary case includes independent empty/no-chip, single-user exact username, and multiwait most-pressing/count/accessibility browser assertions."
     }
   ]
 }
