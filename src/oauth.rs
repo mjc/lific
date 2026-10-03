@@ -68,7 +68,10 @@ fn validate_csrf_token(token: &str, binding: &str) -> bool {
     };
     // Check expiry (10 minutes)
     let now = chrono::Utc::now().timestamp();
-    if now - ts > 600 || ts > now + 60 {
+    let Some(age) = now.checked_sub(ts) else {
+        return false;
+    };
+    if !(-60..=600).contains(&age) {
         return false;
     }
     // Verify HMAC over (timestamp || binding). LIF-208: use the MAC's own
@@ -3982,6 +3985,22 @@ mod tests {
     }
 
     #[test]
+    fn csrf_rejects_extreme_timestamps_without_panicking() {
+        for timestamp in [i64::MIN, i64::MAX, -1, 0] {
+            assert!(!validate_csrf_token(
+                &format!("{timestamp}.{}", "0".repeat(64)),
+                "sess"
+            ));
+        }
+        for timestamp in ["-9223372036854775809", "9223372036854775808"] {
+            assert!(!validate_csrf_token(
+                &format!("{timestamp}.{}", "0".repeat(64)),
+                "sess"
+            ));
+        }
+    }
+
+    #[test]
     fn hex_decode_roundtrips_and_rejects_bad_input() {
         assert_eq!(hex_decode("00ff10").unwrap(), vec![0x00, 0xff, 0x10]);
         assert_eq!(hex_decode(&hex_encode(b"lific")).unwrap(), b"lific");
@@ -3992,25 +4011,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn device_rejects_a_unicode_csrf_signature_before_authentication() {
+    async fn device_rejects_malformed_csrf_before_authentication() {
         let (app, _) = test_oauth_app();
         let timestamp = chrono::Utc::now().timestamp();
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/oauth/device")
-                    .header("content-type", "application/x-www-form-urlencoded")
-                    .body(axum::body::Body::from(format!(
-                        "user_code=X&csrf_token={timestamp}.%E2%82%ACa"
-                    )))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
-        let body = response.into_body().collect().await.unwrap().to_bytes();
-        assert!(String::from_utf8_lossy(&body).contains("Invalid or expired form"));
+        for token in [
+            format!("{timestamp}.%E2%82%ACa"),
+            format!("{}.{}", i64::MIN, "0".repeat(64)),
+            format!("{}.{}", i64::MAX, "0".repeat(64)),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/oauth/device")
+                        .header("content-type", "application/x-www-form-urlencoded")
+                        .body(axum::body::Body::from(format!(
+                            "user_code=X&csrf_token={token}"
+                        )))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            assert!(String::from_utf8_lossy(&body).contains("Invalid or expired form"));
+        }
     }
 
     // ── LIF-49: metadata does not advertise refresh_token ────
