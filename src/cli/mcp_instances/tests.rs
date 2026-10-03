@@ -118,6 +118,10 @@ impl MockServer {
                 }
             }
 
+            if parsed["method"] == "notifications/initialized" {
+                return axum::http::StatusCode::ACCEPTED.into_response();
+            }
+
             if ctx.behaviour == Behaviour::Redirect {
                 return (
                     axum::http::StatusCode::TEMPORARY_REDIRECT,
@@ -378,6 +382,8 @@ fn http_backends(entries: &[(&str, &str, Option<&str>)]) -> HttpBackends {
                 (
                     (*alias).to_owned(),
                     HttpBackend {
+                        request_timeout: std::time::Duration::from_secs(10),
+                        session: std::sync::Arc::default(),
                         client: reqwest::Client::builder()
                             .redirect(reqwest::redirect::Policy::none())
                             .connect_timeout(CONNECT_TIMEOUT)
@@ -1558,8 +1564,8 @@ async fn initialize_is_answered_locally_and_describes_the_routing_rules() {
     .await;
 
     assert_eq!(
-        out[0]["result"]["protocolVersion"], "2025-03-26",
-        "a version the proxy knows is echoed back"
+        out[0]["result"]["protocolVersion"], "2025-11-25",
+        "an unsupported legacy version falls back to November"
     );
     let instructions = out[0]["result"]["instructions"].as_str().unwrap();
     assert!(instructions.contains(LIST_INSTANCES), "got: {instructions}");
@@ -1568,6 +1574,143 @@ async fn initialize_is_answered_locally_and_describes_the_routing_rules() {
         instructions.contains("PRIV"),
         "per-instance binding: {instructions}"
     );
+}
+
+#[tokio::test]
+async fn july_discovery_and_lists_need_no_initialize_or_client_info() {
+    let router = router_bound(&[("private", Some("PRIV"))], Some("private"));
+    for method in ["server/discover", "tools/list", "ping"] {
+        let request = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": method,
+            "params": {"_meta": {
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientCapabilities": {},
+            }}
+        });
+        let out = run_pump(&format!("{request}\n"), &router, &NeverCalled).await;
+        assert_eq!(out[0]["result"]["resultType"], "complete", "{out:?}");
+        assert_eq!(
+            out[0]["result"]["_meta"]["io.modelcontextprotocol/serverInfo"]["name"],
+            "lific-multi-instance-proxy"
+        );
+        if method == "server/discover" {
+            serde_json::from_value::<rmcp::model::DiscoverResult>(out[0]["result"].clone())
+                .expect("discovery conforms to the SDK schema");
+            assert_eq!(
+                out[0]["result"]["supportedVersions"],
+                serde_json::json!(["2025-06-18", "2025-11-25", "2026-07-28"])
+            );
+        }
+        if matches!(method, "server/discover" | "tools/list") {
+            assert_eq!(out[0]["result"]["ttlMs"], 0);
+            assert_eq!(out[0]["result"]["cacheScope"], "private");
+        }
+    }
+    let unsupported = serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list",
+        "params": {"_meta": {"io.modelcontextprotocol/protocolVersion": "2099-01-01"}}
+    });
+    let out = run_pump(&format!("{unsupported}\n"), &router, &NeverCalled).await;
+    assert_eq!(out[0]["error"]["code"], -32022);
+    assert_eq!(out[0]["error"]["data"]["requested"], "2099-01-01");
+    assert_eq!(
+        out[0]["error"]["data"]["supported"],
+        serde_json::json!(["2025-06-18", "2025-11-25", "2026-07-28"])
+    );
+}
+
+#[tokio::test]
+async fn july_selector_validation_is_a_tool_error_and_invalid_envelopes_do_not_run() {
+    let router = router_bound(&[("private", None)], Some("private"));
+    let request = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "list_instances", "arguments": {"extra": true}, "_meta": {
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientCapabilities": {},
+        }}
+    });
+    let out = run_pump(&format!("{request}\n"), &router, &NeverCalled).await;
+    assert_eq!(out[0]["result"]["isError"], true);
+    assert_eq!(out[0]["result"]["resultType"], "complete");
+    for invalid in [
+        serde_json::json!({"jsonrpc": "1.0", "id": 1, "method": "tools/list"}),
+        serde_json::json!({"jsonrpc": "2.0", "id": null, "method": "tools/list"}),
+        serde_json::json!({"jsonrpc": "2.0", "id": [], "method": "tools/list"}),
+        serde_json::json!({"jsonrpc": "2.0", "id": {}, "method": "tools/list"}),
+        serde_json::json!([]),
+    ] {
+        let out = run_pump(&format!("{invalid}\n"), &router, &NeverCalled).await;
+        assert_eq!(out[0]["error"]["code"], -32600);
+    }
+}
+
+#[tokio::test]
+async fn july_metadata_uses_sdk_capability_and_implementation_types() {
+    let router = router(&["private"], Some("private"));
+    for method in ["server/discover", "tools/list", "tools/call"] {
+        for (capabilities, info) in [
+            (serde_json::json!({"sampling": false}), None),
+            (serde_json::json!({"roots": {"listChanged": "yes"}}), None),
+            (serde_json::json!({}), Some(serde_json::json!({}))),
+            (
+                serde_json::json!({}),
+                Some(serde_json::json!({"name": "client", "version": 1})),
+            ),
+        ] {
+            let mut meta = serde_json::json!({
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientCapabilities": capabilities,
+            });
+            if let Some(info) = info {
+                meta["io.modelcontextprotocol/clientInfo"] = info;
+            }
+            let request = serde_json::json!({"jsonrpc": "2.0", "id": 1,
+                "method": method, "params": {
+                    "name": "get_issue", "arguments": {"identifier": "LIF-42"}, "_meta": meta,
+                }
+            });
+            let out = run_pump(&format!("{request}\n"), &router, &NeverCalled).await;
+            assert_eq!(out[0]["error"]["code"], -32602, "{out:?}");
+            assert!(out[0].get("result").is_none());
+        }
+    }
+}
+
+#[tokio::test]
+async fn malformed_protocol_versions_do_not_fall_back_to_legacy() {
+    let router = router(&["private"], Some("private"));
+    for version in [serde_json::json!(42), Value::Null, serde_json::json!({})] {
+        for method in ["server/discover", "tools/list", "tools/call"] {
+            let request = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": method,
+                "params": {"name": "get_issue", "arguments": {}, "_meta": {
+                    "io.modelcontextprotocol/protocolVersion": version,
+                    "io.modelcontextprotocol/clientCapabilities": {},
+                }}
+            });
+            let out = run_pump(&format!("{request}\n"), &router, &NeverCalled).await;
+            assert_eq!(out[0]["error"]["code"], -32602, "{out:?}");
+            assert!(out[0].get("result").is_none());
+        }
+    }
+}
+
+#[tokio::test]
+async fn malformed_july_tool_envelopes_are_protocol_errors_before_routing() {
+    let router = router(&["private"], Some("private"));
+    for name in ["get_issue", "list_instances"] {
+        for (key, value) in [
+            ("inputResponses", serde_json::json!(false)),
+            ("requestState", serde_json::json!({})),
+        ] {
+            let mut request = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": name, "arguments": {}, "_meta": {
+                    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                    "io.modelcontextprotocol/clientCapabilities": {},
+                }}
+            });
+            request["params"][key] = value;
+            let out = run_pump(&format!("{request}\n"), &router, &NeverCalled).await;
+            assert_eq!(out[0]["error"]["code"], -32602, "{out:?}");
+            assert!(out[0].get("result").is_none());
+        }
+    }
 }
 
 #[tokio::test]
@@ -1712,7 +1855,11 @@ async fn assert_total_startup_deadline(exhaust_during_binding: bool) {
     async fn mcp(
         State((gate, paginate)): State<(Gate, bool)>,
         axum::Json(request): axum::Json<Value>,
-    ) -> axum::Json<Value> {
+    ) -> axum::response::Response {
+        use axum::response::IntoResponse;
+        if request["method"] == "notifications/initialized" {
+            return StatusCode::ACCEPTED.into_response();
+        }
         wait(&gate, false).await;
         let result = if request["method"] == "initialize" {
             serde_json::json!({ "protocolVersion": PROTOCOL_VERSION, "capabilities": {}, "serverInfo": { "name": "mock", "version": "0" } })
@@ -1722,6 +1869,7 @@ async fn assert_total_startup_deadline(exhaust_during_binding: bool) {
             serde_json::json!({ "tools": [tool_value("get_issue", serde_json::json!({ "type": "object" }))] })
         };
         axum::Json(serde_json::json!({ "jsonrpc": "2.0", "id": request["id"], "result": result }))
+            .into_response()
     }
     async fn binding(State((gate, _)): State<(Gate, bool)>) -> axum::Json<Value> {
         wait(&gate, true).await;
@@ -2367,6 +2515,100 @@ impl InstanceTransport for FixedReply {
         self.seen.lock().unwrap().push(alias.to_owned());
         Ok(self.raw.clone())
     }
+}
+
+#[tokio::test]
+async fn july_translates_legacy_business_failures_without_changing_legacy_results() {
+    let router = router(&["private"], Some("private"));
+    for (modern, text, expected_error) in [
+        (true, "Error: Not found: issue LIF-42 not found", true),
+        (false, "Error: Not found: issue LIF-42 not found", false),
+        (true, "LIF-42 found", false),
+    ] {
+        let transport = FixedReply::new(
+            serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {
+                "content": [{"type": "text", "text": text}], "isError": false,
+            }})
+            .to_string(),
+        );
+        let mut request: Value = serde_json::from_str(&call(
+            "get_issue",
+            serde_json::json!({"identifier": "LIF-42"}),
+        ))
+        .unwrap();
+        if modern {
+            request["params"]["_meta"] = serde_json::json!({
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientCapabilities": {},
+            });
+        }
+        let out = run_pump(&format!("{request}\n"), &router, &transport).await;
+        assert_eq!(out[0]["result"]["isError"], expected_error, "{out:?}");
+        assert_eq!(out[0]["result"].get("resultType").is_some(), modern);
+        assert_eq!(*transport.seen.lock().unwrap(), vec!["private"]);
+    }
+}
+
+#[tokio::test]
+async fn july_translates_backend_argument_errors_but_preserves_protocol_errors() {
+    let router = router(&["private"], Some("private"));
+    for (modern, code, tool_error) in [
+        (true, -32602, true),
+        (false, -32602, false),
+        (true, -32601, false),
+        (true, -32603, false),
+    ] {
+        let transport = FixedReply::new(
+            serde_json::json!({"jsonrpc": "2.0", "id": 1,
+                "error": {"code": code, "message": "missing field `identifier`"}
+            })
+            .to_string(),
+        );
+        let mut request: Value =
+            serde_json::from_str(&call("get_issue", serde_json::json!({}))).unwrap();
+        if modern {
+            request["params"]["_meta"] = serde_json::json!({
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientCapabilities": {},
+            });
+        }
+        let out = run_pump(&format!("{request}\n"), &router, &transport).await;
+        if tool_error {
+            assert_eq!(out[0]["result"]["isError"], true, "{out:?}");
+            assert_eq!(out[0]["result"]["resultType"], "complete");
+            assert!(
+                out[0]["result"]["content"][0]["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains("missing field `identifier`")
+            );
+        } else {
+            assert_eq!(out[0]["error"]["code"], code, "{out:?}");
+            assert!(out[0].get("result").is_none());
+        }
+        assert_eq!(*transport.seen.lock().unwrap(), vec!["private"]);
+    }
+}
+
+#[tokio::test]
+async fn unknown_tools_keep_backend_protocol_errors_for_july_clients() {
+    let router = router(&["private"], Some("private"));
+    let transport = FixedReply::new(
+        serde_json::json!({"jsonrpc": "2.0", "id": 1,
+            "error": {"code": -32602, "message": "tool not found"}
+        })
+        .to_string(),
+    );
+    let request = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "does_not_exist", "arguments": {"instance": "private"}, "_meta": {
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientCapabilities": {},
+        }}
+    });
+    let out = run_pump(&format!("{request}\n"), &router, &transport).await;
+    assert_eq!(out[0]["error"]["code"], -32602, "{out:?}");
+    assert!(out[0].get("result").is_none());
+    assert_eq!(*transport.seen.lock().unwrap(), vec!["private"]);
 }
 
 async fn assert_safe_backend_refusal(raw: String, reason: &str) {
@@ -3343,4 +3585,62 @@ async fn an_omitted_selector_still_reaches_the_default() {
     .await;
 
     assert_eq!(transport.seen()[0].0, "community");
+}
+
+#[tokio::test]
+async fn sse_notifications_are_prompt_scrubbed_and_stamped_by_the_routed_instance() {
+    use tokio::io::AsyncBufReadExt;
+    let secret = "private-backend-secret";
+    let release = std::sync::Arc::new(tokio::sync::Notify::new());
+    let notification = serde_json::json!({"jsonrpc": "2.0", "method": "notifications/message",
+        "params": {"level": "info", "data": secret, "_meta": {"dev.lific/instance": "forged"}}});
+    let (endpoint, server) =
+        super::super::mcp_http::sse_test_backend(notification, release.clone()).await;
+    let transport = http_backends(&[(
+        "private",
+        endpoint.strip_suffix("/mcp").unwrap(),
+        Some(secret),
+    )]);
+    let mut router = router(&["private"], None);
+    router.redactor = Redactor::new([secret.to_owned()]);
+    let input = call("get_issue", serde_json::json!({}));
+    let (output, reader) = tokio::io::duplex(4096);
+    let task = tokio::spawn(async move {
+        pump(
+            BufReader::new(input.as_bytes()),
+            output,
+            &router,
+            &transport,
+        )
+        .await
+        .unwrap();
+    });
+    let mut lines = BufReader::new(reader).lines();
+    let first = tokio::time::timeout(std::time::Duration::from_secs(3), lines.next_line())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(!first.contains(secret));
+    let first: Value = serde_json::from_str(&first).unwrap();
+    assert_eq!(first["method"], "notifications/message");
+    assert_eq!(first["params"]["_meta"]["dev.lific/instance"], "private");
+    release.notify_one();
+    let final_reply: Value =
+        serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+    assert_eq!(final_reply["id"], 1);
+    assert_eq!(
+        final_reply["result"]["_meta"]["dev.lific/instance"],
+        "private"
+    );
+    assert!(lines.next_line().await.unwrap().is_none());
+    task.await.unwrap();
+    server.abort();
+}
+
+#[test]
+fn response_envelopes_cannot_contain_a_request_method() {
+    let value = serde_json::json!({"jsonrpc": "2.0", "id": 1,
+        "method": "server/request", "result": {}});
+    assert!(validate_envelope(&value, &serde_json::json!(1)).is_err());
 }

@@ -281,6 +281,11 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "HWP attachment MIME",
         include_str!("../../migrations/057_hwp_attachment_mime.sql"),
     ),
+    (
+        58,
+        "OAuth resource binding",
+        include_str!("../../migrations/058_oauth_resource_binding.sql"),
+    ),
 ];
 
 /// Migrations that rebuild a table other tables reference by foreign key.

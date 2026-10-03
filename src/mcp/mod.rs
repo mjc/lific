@@ -1,10 +1,10 @@
 mod arguments;
 pub(crate) mod page_reads;
-pub(crate) mod preinit;
 pub(crate) mod schemas;
 pub(crate) mod tools;
 mod waits;
 
+use std::borrow::Cow;
 #[cfg(test)]
 use std::cell::Cell;
 use std::sync::Arc;
@@ -14,7 +14,8 @@ use std::sync::Mutex;
 use rmcp::{
     ServerHandler,
     handler::server::router::tool::ToolRouter,
-    model::{ProtocolVersion, ServerCapabilities, ServerInfo},
+    model::{ProtocolVersion, ServerCapabilities, ServerConfig},
+    transport::streamable_http_server::tower::StreamableHttpServerConfig,
 };
 
 use crate::db::DbPool;
@@ -22,6 +23,21 @@ use crate::db::models::AuthUser;
 use crate::links::IssueLinkContext;
 use crate::realtime::{RealtimeEvent, RealtimeHub};
 use crate::storage::AttachmentStore;
+
+/// Build the shared Streamable HTTP transport policy used by the server and
+/// doctor probe.
+#[must_use]
+pub(crate) fn streamable_http_config(
+    allowed_hosts: impl IntoIterator<Item = impl Into<String>>,
+) -> StreamableHttpServerConfig {
+    StreamableHttpServerConfig::default()
+        .with_legacy_session_mode(true)
+        .with_json_response(true)
+        .with_stateless_protocol_metadata_required(true)
+        .with_allowed_hosts(allowed_hosts)
+        .with_allowed_origins(["http://localhost:*", "http://127.0.0.1:*", "http://[::1]:*"])
+        .enforce_origin_validation()
+}
 
 /// Direct-call tests still use process-wide context; production HTTP requests
 /// carry their context through rmcp's request extensions instead.
@@ -269,7 +285,7 @@ impl StdioAuthFailed {
          restart the MCP server.";
 
     fn into_tool_result(self) -> rmcp::model::CallToolResult {
-        rmcp::model::CallToolResult::error(vec![rmcp::model::Content::text(Self::MESSAGE)])
+        rmcp::model::CallToolResult::error(vec![rmcp::model::ContentBlock::text(Self::MESSAGE)])
     }
 }
 
@@ -470,14 +486,16 @@ impl LificMcp {
     async fn dispatch_tool<F, Fut>(
         &self,
         f: F,
-    ) -> Result<rmcp::model::CallToolResult, rmcp::ErrorData>
+    ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData>
     where
         F: FnOnce() -> Fut,
-        Fut: std::future::Future<Output = Result<rmcp::model::CallToolResult, rmcp::ErrorData>>,
+        Fut: std::future::Future<Output = Result<rmcp::model::CallToolResponse, rmcp::ErrorData>>,
     {
         match self.with_stdio_auth(f).await {
             Ok(result) => result,
-            Err(StdioAuthFailed) => Ok(StdioAuthFailed.into_tool_result()),
+            Err(StdioAuthFailed) => Ok(rmcp::model::CallToolResponse::Complete(
+                StdioAuthFailed.into_tool_result(),
+            )),
         }
     }
 
@@ -620,12 +638,31 @@ impl LificMcp {
     }
 }
 
+fn server_result_meta() -> rmcp::model::JsonObject {
+    serde_json::json!({
+        "io.modelcontextprotocol/serverInfo": {
+            "name": "lific", "version": env!("CARGO_PKG_VERSION"),
+        },
+    })
+    .as_object()
+    .expect("server metadata is an object")
+    .clone()
+}
+
 impl ServerHandler for LificMcp {
-    fn get_info(&self) -> ServerInfo {
-        // Pin to 2025-03-26: rmcp defaults to 2025-06-18 which many clients
-        // (including Zed) skipped, going straight from 2025-03-26 to 2025-11-25.
-        let info = ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_protocol_version(ProtocolVersion::V_2025_03_26)
+    fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
+        Cow::Borrowed(&[
+            ProtocolVersion::V_2025_06_18,
+            ProtocolVersion::V_2025_11_25,
+            ProtocolVersion::V_2026_07_28,
+        ])
+    }
+
+    fn get_info(&self) -> ServerConfig {
+        // Legacy negotiation falls back to November 2025; July requests
+        // negotiate independently using per-request metadata.
+        let info = ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+            .with_protocol_version(ProtocolVersion::V_2025_11_25)
             // Identify as lific, not rmcp's build-env default — this name is
             // what connected clients (and `lific doctor`) display.
             .with_server_info(rmcp::model::Implementation::new(
@@ -650,10 +687,11 @@ impl ServerHandler for LificMcp {
     ) -> impl std::future::Future<Output = Result<rmcp::model::ListToolsResult, rmcp::ErrorData>>
     + rmcp::service::MaybeSendFuture
     + '_ {
-        std::future::ready(Ok(rmcp::model::ListToolsResult {
-            tools: self.tool_router.list_all(),
-            ..Default::default()
-        }))
+        let mut result = rmcp::model::ListToolsResult::with_all_items(self.tool_router.list_all())
+            .with_ttl_ms(3_600_000)
+            .with_cache_scope(rmcp::model::CacheScope::Public);
+        result.meta = Some(server_result_meta().into());
+        std::future::ready(Ok(result))
     }
 
     /// The one place every MCP tool call passes through, whatever the
@@ -669,7 +707,7 @@ impl ServerHandler for LificMcp {
         &self,
         request: rmcp::model::CallToolRequestParams,
         mut context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
-    ) -> impl std::future::Future<Output = Result<rmcp::model::CallToolResult, rmcp::ErrorData>>
+    ) -> impl std::future::Future<Output = Result<rmcp::model::CallToolResponse, rmcp::ErrorData>>
     + rmcp::service::MaybeSendFuture
     + '_ {
         async move {
@@ -705,16 +743,53 @@ impl ServerHandler for LificMcp {
                 }
                 None => dispatch().await,
             };
-            result.map_err(|error| {
-                let top_level = self.tool_router.get(&tool).map(|tool| {
-                    tool.input_schema
-                        .get("properties")
-                        .and_then(serde_json::Value::as_object)
-                        .map(|properties| properties.keys().cloned().collect::<Vec<_>>())
-                        .unwrap_or_default()
-                });
-                arguments::explain_unknown_parameter(&tool, top_level.as_deref(), error)
-            })
+            result
+                .map_err(|error| {
+                    let top_level = self.tool_router.get(&tool).map(|tool| {
+                        tool.input_schema
+                            .get("properties")
+                            .and_then(serde_json::Value::as_object)
+                            .map(|properties| properties.keys().cloned().collect::<Vec<_>>())
+                            .unwrap_or_default()
+                    });
+                    arguments::explain_unknown_parameter(&tool, top_level.as_deref(), error)
+                })
+                .map(|response| match response {
+                    rmcp::model::CallToolResponse::Complete(mut result) => {
+                        let top_level = self.tool_router.get(&tool).and_then(|tool| {
+                            tool.input_schema
+                                .get("properties")
+                                .and_then(serde_json::Value::as_object)
+                                .map(|properties| properties.keys().cloned().collect::<Vec<_>>())
+                        });
+                        for content in &mut result.content {
+                            if let rmcp::model::ContentBlock::Text(text) = content {
+                                // All text tool wrappers stamp failures with this prefix.
+                                if text.text.starts_with("Error: ") {
+                                    result.is_error = Some(true);
+                                }
+                                if result.is_error == Some(true)
+                                    && let Some(message) =
+                                        arguments::describe(&tool, top_level.as_deref(), &text.text)
+                                {
+                                    text.text = message;
+                                }
+                            }
+                        }
+                        let mut meta = result.meta.unwrap_or_default();
+                        meta.insert(
+                            "io.modelcontextprotocol/serverInfo".into(),
+                            serde_json::to_value(rmcp::model::Implementation::new(
+                                "lific",
+                                env!("CARGO_PKG_VERSION"),
+                            ))
+                            .expect("MCP server info serialization cannot fail"),
+                        );
+                        result.meta = Some(meta);
+                        rmcp::model::CallToolResponse::Complete(result)
+                    }
+                    response => response,
+                })
         }
     }
 
@@ -776,6 +851,29 @@ mod tests {
         assert!(alice_link.contains("alice.example"), "{alice_link}");
         assert!(bob_link.contains("bob.example"), "{bob_link}");
         assert!(current_auth_user().is_none());
+    }
+
+    #[test]
+    fn streamable_http_policy_requires_stateless_metadata_and_keeps_legacy_sessions() {
+        let config = streamable_http_config(["localhost"]);
+
+        assert!(config.stateless_protocol_metadata_required);
+        assert!(config.legacy_session_mode);
+        assert!(config.json_response);
+    }
+
+    #[test]
+    fn server_advertises_only_supported_protocol_versions() {
+        let server = LificMcp::new(crate::db::open_memory().unwrap());
+
+        assert_eq!(
+            server.supported_protocol_versions().as_ref(),
+            &[
+                ProtocolVersion::V_2025_06_18,
+                ProtocolVersion::V_2025_11_25,
+                ProtocolVersion::V_2026_07_28,
+            ]
+        );
     }
 
     // ── LIF-204: OAuth-token user_id -> resolved AuthUser (MCP path) ─────
@@ -893,6 +991,7 @@ mod tests {
         let token = insert_oauth_token(&pool, "mcp", Some(user_id));
 
         let auth_state = crate::auth::AuthState {
+            public_url_is_explicit: false,
             db: pool.clone(),
             public_url: "https://example.com".into(),
             required: true,
@@ -1032,6 +1131,7 @@ mod tests {
         }
 
         let auth_state = crate::auth::AuthState {
+            public_url_is_explicit: false,
             db: pool.clone(),
             public_url: "https://example.com".into(),
             required: true,
@@ -1256,7 +1356,7 @@ mod tests {
     /// real `ToolRouter::call` produces.
     type ToolBody = std::pin::Pin<
         Box<
-            dyn std::future::Future<Output = Result<rmcp::model::CallToolResult, rmcp::ErrorData>>
+            dyn std::future::Future<Output = Result<rmcp::model::CallToolResponse, rmcp::ErrorData>>
                 + Send,
         >,
     >;
@@ -1283,12 +1383,21 @@ mod tests {
                     [],
                 )
                 .unwrap();
-                Ok(rmcp::model::CallToolResult::success(vec![
-                    rmcp::model::Content::text("ran"),
-                ]))
+                Ok(rmcp::model::CallToolResponse::Complete(
+                    rmcp::model::CallToolResult::success(vec![rmcp::model::ContentBlock::text(
+                        "ran",
+                    )]),
+                ))
             }) as ToolBody
         };
         (body, ran)
+    }
+
+    fn completed_result(response: rmcp::model::CallToolResponse) -> rmcp::model::CallToolResult {
+        match response {
+            rmcp::model::CallToolResponse::Complete(result) => result,
+            _ => panic!("expected a complete tool response"),
+        }
     }
 
     #[tokio::test]
@@ -1330,6 +1439,7 @@ mod tests {
             .dispatch_tool(body)
             .await
             .expect("a dead credential is a tool failure, not a protocol failure");
+        let result = completed_result(result);
 
         assert_eq!(
             result.is_error,
@@ -1373,7 +1483,7 @@ mod tests {
         let server = server_for(&pool, Some(StdioAuth::new(token)));
 
         let (body, ran) = mutating_tool(&pool);
-        let result = server.dispatch_tool(body).await.expect("dispatches");
+        let result = completed_result(server.dispatch_tool(body).await.expect("dispatches"));
 
         assert_eq!(result.is_error, Some(false));
         assert!(ran.load(std::sync::atomic::Ordering::SeqCst));

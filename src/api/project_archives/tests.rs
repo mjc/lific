@@ -47,6 +47,7 @@ impl Instance {
         let (store, guard) = test_attachment_store();
         let realtime = RealtimeHub::new();
         let auth_state = crate::auth::AuthState {
+            public_url_is_explicit: false,
             db: db.clone(),
             public_url: "https://archive.test".into(),
             required,

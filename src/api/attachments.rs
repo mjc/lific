@@ -3577,6 +3577,7 @@ mod cookie_fallback_tests {
     /// app and the shared DbPool.
     fn real_middleware_app(db: crate::db::DbPool) -> axum::Router {
         let auth_state = crate::auth::AuthState {
+            public_url_is_explicit: false,
             db: db.clone(),
             public_url: "https://example.com".into(),
             required: true,

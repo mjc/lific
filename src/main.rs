@@ -413,10 +413,10 @@ use rmcp::ServiceExt;
 use tracing::info;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    build_runtime()?.block_on(async_main())
-}
-
-async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
+    let runtime = build_runtime()?;
+    // Clap's generated argument builders need substantial debug-build stack.
+    // Parse before polling the command future so their frames do not overlap
+    // with the async dispatcher's temporaries on Windows's smaller stack.
     // Via `ArgMatches` rather than `Cli::parse()` so a value's source stays
     // answerable: `lific mcp --instances` rejects a typed `--url` but ignores
     // an exported `LIFIC_URL`. Behaviour is otherwise identical.
@@ -449,6 +449,10 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    runtime.block_on(async_main(cli, matches))
+}
+
+async fn async_main(cli: Cli, matches: clap::ArgMatches) -> Result<(), Box<dyn std::error::Error>> {
     // Resolve config once. Normal commands fail closed on a selected config
     // error; doctor receives the same typed result and reports the failure
     // while continuing independent diagnostics.
@@ -710,6 +714,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
             url,
             non_interactive,
             complete,
+            client_id,
             label,
             no_store,
         } => {
@@ -718,6 +723,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                 url,
                 non_interactive,
                 complete,
+                client_id,
                 label,
                 no_store,
             };
@@ -983,16 +989,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
 
             info!("lific MCP server started (stdio)");
 
-            // Tolerate SEP-2575 stateless discovery: rmcp 1.x's serving loop
-            // answers only `ping` before `initialize`, and a modern client's
-            // `server/discover` probe makes it abort the session with no reply,
-            // so the client reads EOF mid-handshake instead of a JSON-RPC error
-            // it could fall back from. The guard transport answers unsupported
-            // pre-initialize requests with -32601 and only forwards once a real
-            // `initialize` arrives.
-            let (reader, writer) = rmcp::transport::io::stdio();
-            let transport = mcp::preinit::guard_stdio(reader, writer);
-            let handle = server.serve(transport).await?;
+            let handle = server.serve(rmcp::transport::io::stdio()).await?;
             if let Some(u) = &token_user {
                 info!(user = %u.username, "stdio session bound to agent");
             }

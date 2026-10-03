@@ -45,6 +45,9 @@ pub fn resolve_base_url(url: Option<&str>, cfg: &Config) -> String {
 /// The response from `POST /oauth/device_authorization`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct DeviceAuthResponse {
+    /// The client sent with this grant request, retained locally for polling.
+    #[serde(skip)]
+    pub client_id: Option<String>,
     pub device_code: String,
     pub user_code: String,
     pub verification_uri: String,
@@ -85,7 +88,7 @@ pub trait DeviceFlow {
     fn request_device_code(&self, label: Option<&str>) -> Result<DeviceAuthResponse, String>;
     /// One `POST {base}/oauth/token` with the device grant. Maps the RFC 8628
     /// error/status into a [`PollSignal`].
-    fn poll_token(&self, device_code: &str) -> Result<PollSignal, String>;
+    fn poll_token(&self, device_code: &str, client_id: Option<&str>) -> Result<PollSignal, String>;
     /// Best-effort `POST {base}/oauth/revoke` (used by logout). Returns Ok even
     /// if the server rejects it; only transport errors surface.
     fn revoke(&self, token: &str) -> Result<(), String>;
@@ -105,6 +108,7 @@ pub fn poll_backoff(base_interval: u64, slow_downs: u32) -> u64 {
 pub fn poll_loop<F, S>(
     flow: &F,
     device_code: &str,
+    client_id: Option<&str>,
     interval: u64,
     deadline_secs: u64,
     mut sleep: S,
@@ -119,7 +123,7 @@ where
         if start.elapsed().as_secs() >= deadline_secs {
             return Ok(PollOutcome::Expired);
         }
-        match flow.poll_token(device_code)? {
+        match flow.poll_token(device_code, client_id)? {
             PollSignal::Terminal(outcome) => return Ok(outcome),
             PollSignal::Pending => {
                 sleep(Duration::from_secs(poll_backoff(interval, slow_downs)));
@@ -133,16 +137,44 @@ where
 }
 
 /// Build the non-interactive JSON payload printed by `--non-interactive`.
+/// Arbitrary client IDs requiring quoting mark `next_step_shell` as `posix`;
+/// consumers using another shell can pass the separate `client_id` directly.
 pub fn non_interactive_json(resp: &DeviceAuthResponse, base: &str) -> serde_json::Value {
-    serde_json::json!({
+    let mut next_step = format!("lific login --complete {} --url {}", resp.device_code, base);
+    let mut needs_posix_shell = false;
+    if let Some(client_id) = &resp.client_id {
+        next_step.push_str(" --client-id=");
+        // Lific issues UUIDs. This restricted alphabet needs no quoting in
+        // POSIX shells, PowerShell or cmd.exe (where single quotes are literal).
+        if !client_id.is_empty()
+            && client_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+        {
+            next_step.push_str(client_id);
+        } else {
+            needs_posix_shell = true;
+            next_step.push('\'');
+            next_step.push_str(&client_id.replace('\'', "'\\''"));
+            next_step.push('\'');
+        }
+    }
+    let mut payload = serde_json::json!({
         "verification_uri": resp.verification_uri,
         "verification_uri_complete": resp.verification_uri_complete,
         "user_code": resp.user_code,
         "device_code": resp.device_code,
         "interval": resp.interval,
         "expires_in": resp.expires_in,
-        "next_step": format!("lific login --complete {} --url {}", resp.device_code, base),
-    })
+        "next_step": next_step,
+    });
+    if let Some(client_id) = &resp.client_id {
+        payload["client_id"] = client_id.clone().into();
+    }
+    if needs_posix_shell {
+        payload["next_step_shell"] = "posix".into();
+    }
+    payload
 }
 
 // ── reqwest-backed implementation ────────────────────────────────────────
@@ -237,9 +269,13 @@ impl HttpDeviceFlow {
                 status.as_u16()
             )));
         }
-        resp.json::<DeviceAuthResponse>().map_err(|e| {
+        let mut authorization = resp.json::<DeviceAuthResponse>().map_err(|e| {
             DeviceAuthFailure::Other(format!("invalid device authorization response: {e}"))
-        })
+        })?;
+        authorization.client_id = form
+            .iter()
+            .find_map(|(key, value)| (*key == "client_id").then(|| (*value).to_string()));
+        Ok(authorization)
     }
 }
 
@@ -302,12 +338,15 @@ impl DeviceFlow for HttpDeviceFlow {
             })
     }
 
-    fn poll_token(&self, device_code: &str) -> Result<PollSignal, String> {
+    fn poll_token(&self, device_code: &str, client_id: Option<&str>) -> Result<PollSignal, String> {
         let url = format!("{}/oauth/token", self.base);
-        let form = [
+        let mut form = vec![
             ("grant_type", DEVICE_CODE_GRANT),
             ("device_code", device_code),
         ];
+        if let Some(client_id) = client_id {
+            form.push(("client_id", client_id));
+        }
         let resp = self
             .client
             .post(&url)
@@ -364,6 +403,7 @@ pub struct LoginArgs {
     pub url: Option<String>,
     pub non_interactive: bool,
     pub complete: Option<String>,
+    pub client_id: Option<String>,
     pub label: Option<String>,
     pub no_store: bool,
 }
@@ -386,9 +426,24 @@ pub fn run_login_with_flow<F: DeviceFlow>(
 ) -> Result<(), String> {
     // `--complete <device_code>`: skip requesting a new code; poll the given one.
     if let Some(device_code) = &args.complete {
+        // New next_step commands carry the exact registration for this grant.
+        // Older manual completions can use the remembered server registration.
+        let client_id = match &args.client_id {
+            Some(client_id) => Some(client_id.clone()),
+            None => {
+                crate::cli::credentials::load_client_id(base).map_err(|error| error.to_string())?
+            }
+        };
         // Interval unknown here (we didn't request the code), so use the RFC
         // default of 5s and a generous 15-minute deadline.
-        let outcome = poll_loop(flow, device_code, 5, 900, std::thread::sleep)?;
+        let outcome = poll_loop(
+            flow,
+            device_code,
+            client_id.as_deref(),
+            5,
+            900,
+            std::thread::sleep,
+        )?;
         return finish(args, base, outcome, json);
     }
 
@@ -425,6 +480,7 @@ pub fn run_login_with_flow<F: DeviceFlow>(
     let outcome = poll_loop(
         flow,
         &resp.device_code,
+        resp.client_id.as_deref(),
         resp.interval.max(1),
         resp.expires_in,
         std::thread::sleep,
@@ -566,6 +622,7 @@ mod tests {
     #[test]
     fn non_interactive_json_shape() {
         let resp = DeviceAuthResponse {
+            client_id: None,
             device_code: "DEV123".into(),
             user_code: "BCDF-GHJK".into(),
             verification_uri: "http://h/oauth/device".into(),
@@ -586,6 +643,63 @@ mod tests {
             v["next_step"],
             "lific login --complete DEV123 --url http://h"
         );
+        assert!(v.get("client_id").is_none());
+        assert!(v.get("next_step_shell").is_none());
+
+        let mut registered = resp;
+        registered.client_id = Some("grant-client".into());
+        let v = non_interactive_json(&registered, "http://h");
+        assert_eq!(v["client_id"], "grant-client");
+        assert!(v.get("next_step_shell").is_none());
+        assert_eq!(
+            v["next_step"],
+            "lific login --complete DEV123 --url http://h --client-id=grant-client"
+        );
+
+        registered.client_id = Some("client with 'quotes'".into());
+        let v = non_interactive_json(&registered, "http://h");
+        assert_eq!(v["next_step_shell"], "posix");
+        assert_eq!(
+            v["next_step"],
+            "lific login --complete DEV123 --url http://h --client-id='client with '\\''quotes'\\'''"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn completion_client_id_survives_cmd_parsing() {
+        let resp = FakeFlow::new(vec![]).device;
+        let next_step = non_interactive_json(&resp, "http://h")["next_step"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        // Echo the generated arguments through the native shell so literal
+        // apostrophes cannot hide behind a string-only expectation.
+        let command = format!("echo {}", next_step.strip_prefix("lific ").unwrap());
+        let output = std::process::Command::new("cmd.exe")
+            .args(["/D", "/C", &command])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap().trim(),
+            "login --complete DEV --url http://h --client-id=grant-client"
+        );
+    }
+
+    #[test]
+    fn completion_command_preserves_a_leading_hyphen_client_id() {
+        use clap::Parser;
+
+        let mut resp = FakeFlow::new(vec![]).device;
+        resp.client_id = Some("-registered-client".into());
+        let payload = non_interactive_json(&resp, "http://h");
+        let command = payload["next_step"].as_str().unwrap();
+        let parsed = super::super::Cli::try_parse_from(command.split_whitespace()).unwrap();
+        let super::super::Command::Login { client_id, .. } = parsed.command else {
+            panic!("expected login command");
+        };
+        assert_eq!(client_id.as_deref(), Some("-registered-client"));
     }
 
     // ── scripted fake for the polling loop ───────────────────
@@ -594,6 +708,7 @@ mod tests {
     struct FakeFlow {
         signals: RefCell<Vec<PollSignal>>,
         polls: RefCell<u32>,
+        poll_clients: RefCell<Vec<Option<String>>>,
         device: DeviceAuthResponse,
     }
 
@@ -602,7 +717,9 @@ mod tests {
             Self {
                 signals: RefCell::new(signals),
                 polls: RefCell::new(0),
+                poll_clients: RefCell::new(Vec::new()),
                 device: DeviceAuthResponse {
+                    client_id: Some("grant-client".into()),
                     device_code: "DEV".into(),
                     user_code: "BCDF-GHJK".into(),
                     verification_uri: "http://h/oauth/device".into(),
@@ -620,8 +737,15 @@ mod tests {
         fn request_device_code(&self, _label: Option<&str>) -> Result<DeviceAuthResponse, String> {
             Ok(self.device.clone())
         }
-        fn poll_token(&self, _device_code: &str) -> Result<PollSignal, String> {
+        fn poll_token(
+            &self,
+            _device_code: &str,
+            client_id: Option<&str>,
+        ) -> Result<PollSignal, String> {
             *self.polls.borrow_mut() += 1;
+            self.poll_clients
+                .borrow_mut()
+                .push(client_id.map(str::to_string));
             let mut sigs = self.signals.borrow_mut();
             if sigs.is_empty() {
                 Ok(PollSignal::Terminal(PollOutcome::Expired))
@@ -642,7 +766,7 @@ mod tests {
             PollSignal::Terminal(PollOutcome::Approved("lific_at_xyz".into())),
         ]);
         let sleeps = RefCell::new(0u32);
-        let outcome = poll_loop(&flow, "DEV", 5, 900, |_| {
+        let outcome = poll_loop(&flow, "DEV", None, 5, 900, |_| {
             *sleeps.borrow_mut() += 1;
         })
         .unwrap();
@@ -660,7 +784,7 @@ mod tests {
             PollSignal::Terminal(PollOutcome::Approved("t".into())),
         ]);
         let durations = RefCell::new(Vec::<u64>::new());
-        let outcome = poll_loop(&flow, "DEV", 5, 900, |d| {
+        let outcome = poll_loop(&flow, "DEV", None, 5, 900, |d| {
             durations.borrow_mut().push(d.as_secs());
         })
         .unwrap();
@@ -675,7 +799,7 @@ mod tests {
             PollSignal::Pending,
             PollSignal::Terminal(PollOutcome::Denied),
         ]);
-        let outcome = poll_loop(&flow, "DEV", 5, 900, |_| {}).unwrap();
+        let outcome = poll_loop(&flow, "DEV", None, 5, 900, |_| {}).unwrap();
         assert_eq!(outcome, PollOutcome::Denied);
     }
 
@@ -683,8 +807,110 @@ mod tests {
     fn poll_loop_honors_deadline() {
         // All-pending script with a zero-second deadline → immediate Expired.
         let flow = FakeFlow::new(vec![PollSignal::Pending; 3]);
-        let outcome = poll_loop(&flow, "DEV", 5, 0, |_| {}).unwrap();
+        let outcome = poll_loop(&flow, "DEV", None, 5, 0, |_| {}).unwrap();
         assert_eq!(outcome, PollOutcome::Expired);
+    }
+
+    #[test]
+    fn poll_loop_keeps_the_grants_client_across_retries() {
+        let flow = FakeFlow::new(vec![
+            PollSignal::Pending,
+            PollSignal::Terminal(PollOutcome::Approved("token".into())),
+        ]);
+        poll_loop(&flow, "DEV", Some("grant-client"), 5, 900, |_| {}).unwrap();
+        assert_eq!(
+            *flow.poll_clients.borrow(),
+            vec![Some("grant-client".into()), Some("grant-client".into())]
+        );
+    }
+
+    #[test]
+    fn completion_uses_the_client_from_its_next_step() {
+        let flow = FakeFlow::new(vec![PollSignal::Terminal(PollOutcome::Approved(
+            "token".into(),
+        ))]);
+        let args = LoginArgs {
+            url: None,
+            non_interactive: false,
+            complete: Some("DEV".into()),
+            client_id: Some("original-client".into()),
+            label: None,
+            no_store: true,
+        };
+        run_login_with_flow(&args, "http://h", &flow, true, false).unwrap();
+        assert_eq!(
+            *flow.poll_clients.borrow(),
+            vec![Some("original-client".into())]
+        );
+    }
+
+    #[tokio::test]
+    async fn http_device_poll_sends_the_requested_client_and_preserves_legacy_omission() {
+        use axum::{Form, Json, Router, routing::post};
+        use std::collections::HashMap;
+        use std::sync::{Arc, Mutex};
+
+        let captured = Arc::new(Mutex::new(Vec::<HashMap<String, String>>::new()));
+        let requests = captured.clone();
+        let app = Router::new()
+            .route(
+                "/oauth/device_authorization",
+                post(|| async {
+                    Json(serde_json::json!({
+                        "device_code": "DEV",
+                        "user_code": "BCDF-GHJK",
+                        "verification_uri": "http://localhost/oauth/device",
+                        "expires_in": 900,
+                        "interval": 5,
+                        // A server-supplied field cannot override the local client.
+                        "client_id": "unrelated-server-value"
+                    }))
+                }),
+            )
+            .route(
+                "/oauth/token",
+                post(move |Form(form): Form<HashMap<String, String>>| {
+                    let requests = requests.clone();
+                    async move {
+                        requests.lock().unwrap().push(form);
+                        Json(serde_json::json!({"access_token": "token"}))
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        tokio::task::spawn_blocking(move || {
+            let flow = HttpDeviceFlow::new(&base).unwrap();
+            for client_id in [Some("original-client"), None] {
+                let mut form = vec![("scope", "mcp")];
+                if let Some(client_id) = client_id {
+                    form.push(("client_id", client_id));
+                }
+                let grant = flow
+                    .device_authorization(&form)
+                    .unwrap_or_else(|_| panic!("device authorization failed"));
+                assert_eq!(grant.client_id.as_deref(), client_id);
+                assert_eq!(
+                    flow.poll_token(&grant.device_code, grant.client_id.as_deref())
+                        .unwrap(),
+                    PollSignal::Terminal(PollOutcome::Approved("token".into()))
+                );
+            }
+        })
+        .await
+        .unwrap();
+        server.abort();
+        let requests = captured.lock().unwrap();
+        assert_eq!(
+            requests[0].get("client_id").map(String::as_str),
+            Some("original-client")
+        );
+        assert_eq!(
+            requests[0].get("device_code").map(String::as_str),
+            Some("DEV")
+        );
+        assert!(!requests[1].contains_key("client_id"));
     }
 
     #[test]
@@ -694,6 +920,7 @@ mod tests {
             url: None,
             non_interactive: true,
             complete: None,
+            client_id: None,
             label: None,
             no_store: true,
         };
@@ -713,6 +940,7 @@ mod tests {
             url: None,
             non_interactive: false,
             complete: None,
+            client_id: None,
             label: None,
             no_store: true,
         };

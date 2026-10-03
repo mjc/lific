@@ -47,9 +47,11 @@
 //!    while dependent checks continue. Not running warns and skips them.
 //! 5. **oauth_discovery** — `GET {base}/.well-known/oauth-protected-resource/mcp`
 //!    → 200 + JSON containing `resource`. Skipped when the server is unreachable.
-//! 6. **mcp** — `POST {base}/mcp` JSON-RPC `initialize`. No key → expect 401 with
+//! 6. **mcp** — `POST {base}/mcp` JSON-RPC `server/discover`, with legacy
+//!    `initialize` only when July is explicitly unsupported. No key → expect 401 with
 //!    a `WWW-Authenticate` header (auth enforced, discovery advertised) = pass.
-//!    With a key → expect 200 + a `serverInfo` result = pass; wrong key = fail.
+//!    With a key → expect July discovery or a valid legacy initialization = pass;
+//!    wrong key = fail.
 //!    Skipped when the server is unreachable.
 //! 7. **public_url** — only when `server.public_url` is set. `GET
 //!    {public_url}/.well-known/oauth-protected-resource/mcp` reachable = pass;
@@ -786,26 +788,29 @@ fn check_oauth_discovery_body(body: serde_json::Value) -> Check {
 
 // ── Check 6: MCP round-trip ──────────────────────────────────────────────
 
-/// The JSON-RPC `initialize` request body. Protocol version pinned to the one
-/// the server supports (`V_2025_03_26`).
-fn initialize_body() -> serde_json::Value {
+/// The JSON-RPC `server/discover` request body for the July 2026 contract.
+fn discovery_body() -> serde_json::Value {
     serde_json::json!({
         "jsonrpc": "2.0",
         "id": 1,
-        "method": "initialize",
+        "method": "server/discover",
         "params": {
-            "protocolVersion": "2025-03-26",
-            "capabilities": {},
-            "clientInfo": { "name": "lific-doctor", "version": env!("CARGO_PKG_VERSION") }
+            "_meta": {
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientInfo": {
+                    "name": "lific-doctor",
+                    "version": env!("CARGO_PKG_VERSION")
+                },
+                "io.modelcontextprotocol/clientCapabilities": {}
+            }
         }
     })
 }
 
-/// `POST {base}/mcp` an `initialize`. Without a key we expect a 401 carrying a
-/// `WWW-Authenticate` header (auth enforced, discovery advertised). With a key
-/// we expect a 200 whose JSON-RPC result contains `serverInfo`.
+/// Probe the current stateless protocol. Without a key we expect a 401 carrying
+/// `WWW-Authenticate`; with a key we expect server discovery to advertise July.
 async fn check_mcp(client: &reqwest::Client, base: &str, key: Option<&str>) -> Check {
-    let response = match send_mcp_initialize(client, base, key).await {
+    let response = match send_mcp_discover(client, base, key).await {
         Ok(response) => response,
         Err(error) => {
             return Check::new("mcp", Status::Fail, format!("request failed: {error}"));
@@ -814,11 +819,11 @@ async fn check_mcp(client: &reqwest::Client, base: &str, key: Option<&str>) -> C
 
     match key {
         None => check_mcp_auth_response(&response),
-        Some(_) => check_mcp_authorized_response(response).await,
+        Some(key) => check_mcp_authorized_response(client, base, key, response).await,
     }
 }
 
-async fn send_mcp_initialize(
+async fn send_mcp_discover(
     client: &reqwest::Client,
     base: &str,
     key: Option<&str>,
@@ -828,7 +833,9 @@ async fn send_mcp_initialize(
         .post(&url)
         .header("Accept", "application/json, text/event-stream")
         .header("Content-Type", "application/json")
-        .json(&initialize_body());
+        .header("MCP-Protocol-Version", "2026-07-28")
+        .header("Mcp-Method", "server/discover")
+        .json(&discovery_body());
     if let Some(k) = key {
         req = req.bearer_auth(k);
     }
@@ -867,7 +874,12 @@ fn check_mcp_auth_response(response: &reqwest::Response) -> Check {
     }
 }
 
-async fn check_mcp_authorized_response(response: reqwest::Response) -> Check {
+async fn check_mcp_authorized_response(
+    client: &reqwest::Client,
+    base: &str,
+    key: &str,
+    response: reqwest::Response,
+) -> Check {
     let status = response.status();
     if status == reqwest::StatusCode::UNAUTHORIZED {
         return Check::new(
@@ -876,16 +888,50 @@ async fn check_mcp_authorized_response(response: reqwest::Response) -> Check {
             "provided key was rejected (401) — wrong or revoked key",
         );
     }
-    if !status.is_success() {
+    if status == reqwest::StatusCode::FORBIDDEN {
         return Check::new(
             "mcp",
             Status::Fail,
-            format!("initialize returned HTTP {}", status.as_u16()),
+            "provided key was rejected (403) — access forbidden",
         );
     }
 
-    // json_response mode: the body is a plain JSON-RPC envelope.
-    match response.json::<serde_json::Value>().await {
+    if status.is_success() && response.headers().contains_key("mcp-session-id") {
+        return Check::new(
+            "mcp",
+            Status::Fail,
+            "July 2026 server/discover unexpectedly returned a legacy session id",
+        );
+    }
+
+    let text = match super::mcp_http::read_capped(response, 1024 * 1024).await {
+        Ok(text) => text,
+        Err(error) => return Check::new("mcp", Status::Fail, error.to_string()),
+    };
+    if discovery_needs_legacy(status, &text) {
+        return check_mcp_legacy(client, base, key).await;
+    }
+    if !status.is_success() {
+        if let Ok(body) = serde_json::from_str::<serde_json::Value>(&text)
+            && super::mcp_instances::validate_envelope(&body, &serde_json::json!(1)).is_ok()
+            && let Some(error) = body.get("error")
+        {
+            return Check::new(
+                "mcp",
+                Status::Fail,
+                format!(
+                    "server/discover returned HTTP {} with a JSON-RPC error: {error}",
+                    status.as_u16()
+                ),
+            );
+        }
+        return Check::new(
+            "mcp",
+            Status::Fail,
+            format!("server/discover returned HTTP {}", status.as_u16()),
+        );
+    }
+    match serde_json::from_str::<serde_json::Value>(&text) {
         Ok(body) => check_mcp_json_response(body),
         Err(error) => Check::new(
             "mcp",
@@ -895,29 +941,196 @@ async fn check_mcp_authorized_response(response: reqwest::Response) -> Check {
     }
 }
 
-fn check_mcp_json_response(body: serde_json::Value) -> Check {
-    if body
-        .get("result")
-        .and_then(|result| result.get("serverInfo"))
-        .is_some()
+/// A failed discovery permits a retry only when it explicitly identifies a
+/// protocol mismatch or an absent discovery method. Other failures retain their
+/// diagnostic meaning instead of being hidden by a successful legacy call.
+fn discovery_needs_legacy(status: reqwest::StatusCode, text: &str) -> bool {
+    if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+        return false;
+    }
+    // The legacy rmcp HTTP transport rejects unknown protocol headers before
+    // parsing JSON-RPC, so it cannot return a correlated error envelope.
+    if status == reqwest::StatusCode::BAD_REQUEST
+        && text.trim() == "Bad Request: Unsupported MCP-Protocol-Version: 2026-07-28"
     {
-        let name = body
-            .pointer("/result/serverInfo/name")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("lific");
+        return true;
+    }
+    let Ok(mut body) = serde_json::from_str::<serde_json::Value>(text) else {
+        return false;
+    };
+    let code = body["error"]["code"].as_i64();
+    if !matches!(code, Some(-32022 | -32601))
+        || !(status.is_success()
+            || status == reqwest::StatusCode::BAD_REQUEST
+            || (status == reqwest::StatusCode::NOT_FOUND && code == Some(-32601)))
+    {
+        return false;
+    }
+    // HTTP version rejection can precede JSON-RPC parsing. A null or omitted
+    // id on that 400 response belongs to this request; another non-null id does not.
+    if status == reqwest::StatusCode::BAD_REQUEST
+        && body.get("id").is_none_or(serde_json::Value::is_null)
+        && let Some(envelope) = body.as_object_mut()
+    {
+        envelope.insert("id".to_owned(), serde_json::json!(1));
+    }
+    super::mcp_instances::validate_envelope(&body, &serde_json::json!(1)).is_ok()
+}
+
+async fn check_mcp_legacy(client: &reqwest::Client, base: &str, key: &str) -> Check {
+    let endpoint = format!("{}/mcp", base.trim_end_matches('/'));
+    let session = std::sync::Mutex::new(super::mcp_http::Session::default());
+    let initialize = serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-06-18", "capabilities": {},
+            "clientInfo": {"name": "lific-doctor", "version": env!("CARGO_PKG_VERSION")}
+        }
+    });
+    let reply = match super::mcp_http::post(
+        client,
+        &endpoint,
+        Some(key),
+        &session,
+        initialize.to_string(),
+        1024 * 1024,
+    )
+    .await
+    {
+        Ok(reply) => reply,
+        Err(error) => {
+            return Check::new(
+                "mcp",
+                Status::Fail,
+                format!("legacy initialize failed: {error}"),
+            );
+        }
+    };
+    let body: serde_json::Value = match serde_json::from_str(&reply) {
+        Ok(body) => body,
+        Err(error) => {
+            return Check::new(
+                "mcp",
+                Status::Fail,
+                format!("legacy initialize was not JSON: {error}"),
+            );
+        }
+    };
+    if let Some(error) = body.get("error") {
+        return Check::new(
+            "mcp",
+            Status::Fail,
+            format!("legacy initialize returned a JSON-RPC error: {error}"),
+        );
+    }
+    let result: rmcp::model::InitializeResult = match serde_json::from_value(body["result"].clone())
+    {
+        Ok(result) => result,
+        Err(error) => {
+            return Check::new(
+                "mcp",
+                Status::Fail,
+                format!("legacy initialize returned an invalid result: {error}"),
+            );
+        }
+    };
+    let version = &result.protocol_version;
+    // Older Lific releases pin March even when the client requests June.
+    if *version != rmcp::model::ProtocolVersion::V_2025_03_26
+        && *version != rmcp::model::ProtocolVersion::V_2025_06_18
+        && *version != rmcp::model::ProtocolVersion::V_2025_11_25
+    {
+        return Check::new(
+            "mcp",
+            Status::Fail,
+            "legacy initialize returned an unsupported protocol version",
+        );
+    }
+    // Complete the legacy handshake using the negotiated session and version.
+    let initialized = serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"});
+    match super::mcp_http::post(
+        client,
+        &endpoint,
+        Some(key),
+        &session,
+        initialized.to_string(),
+        1024 * 1024,
+    )
+    .await
+    {
+        Ok(reply) if reply.is_empty() => {}
+        Ok(_) => {
+            return Check::new(
+                "mcp",
+                Status::Fail,
+                "legacy initialization notification returned an unexpected response body",
+            );
+        }
+        Err(error) => {
+            return Check::new(
+                "mcp",
+                Status::Fail,
+                format!("legacy initialization notification failed: {error}"),
+            );
+        }
+    }
+    Check::new(
+        "mcp",
+        Status::Pass,
+        format!(
+            "authorized legacy initialize succeeded ({version}; serverInfo: {})",
+            result.server_info.name
+        ),
+    )
+}
+
+fn check_mcp_json_response(body: serde_json::Value) -> Check {
+    if let Err(error) = super::mcp_instances::validate_envelope(&body, &serde_json::json!(1)) {
+        return Check::new(
+            "mcp",
+            Status::Fail,
+            format!("invalid server/discover response: {error}"),
+        );
+    }
+    if let Some(error) = body.get("error") {
+        return Check::new(
+            "mcp",
+            Status::Fail,
+            format!("server/discover returned a JSON-RPC error: {error}"),
+        );
+    }
+    let result: rmcp::model::DiscoverResult = match serde_json::from_value(body["result"].clone()) {
+        Ok(result) => result,
+        Err(error) => {
+            return Check::new(
+                "mcp",
+                Status::Fail,
+                format!("invalid server/discover result: {error}"),
+            );
+        }
+    };
+    if result.result_type != rmcp::model::ResultType::COMPLETE {
+        return Check::new(
+            "mcp",
+            Status::Fail,
+            "server/discover did not return a complete result",
+        );
+    }
+    if result
+        .supported_versions
+        .contains(&rmcp::model::ProtocolVersion::V_2026_07_28)
+    {
         Check::new(
             "mcp",
             Status::Pass,
-            format!("authorized initialize succeeded (serverInfo: {name})"),
+            "authorized server/discover supports 2026-07-28",
         )
-    } else if let Some(error) = body.get("error") {
+    } else {
         Check::new(
             "mcp",
             Status::Fail,
-            format!("initialize returned a JSON-RPC error: {error}"),
+            "200 but server/discover did not advertise 2026-07-28",
         )
-    } else {
-        Check::new("mcp", Status::Fail, "200 but result had no serverInfo")
     }
 }
 
@@ -1730,12 +1943,61 @@ mod tests {
             .map(|check| check.status)
     }
 
-    fn initialize_response() -> axum::Json<serde_json::Value> {
+    fn discovery_response() -> axum::Json<serde_json::Value> {
+        let result = rmcp::model::DiscoverResult::new(
+            vec![rmcp::model::ProtocolVersion::V_2026_07_28],
+            rmcp::model::ServerCapabilities::default(),
+        )
+        .with_server_info(rmcp::model::Implementation::new("test", "1"));
         axum::Json(serde_json::json!({
             "jsonrpc": "2.0",
             "id": 1,
-            "result": { "serverInfo": { "name": "test" } }
+            "result": result,
         }))
+    }
+
+    #[test]
+    fn mcp_discovery_requires_a_valid_complete_result() {
+        let valid = discovery_response().0;
+        assert_eq!(check_mcp_json_response(valid.clone()).status, Status::Pass);
+        for required in [
+            "resultType",
+            "supportedVersions",
+            "capabilities",
+            "ttlMs",
+            "cacheScope",
+        ] {
+            let mut body = valid.clone();
+            body["result"].as_object_mut().unwrap().remove(required);
+            let check = check_mcp_json_response(body);
+            assert_eq!(
+                check.status,
+                Status::Fail,
+                "missing {required}: {}",
+                check.detail
+            );
+        }
+        for (field, value) in [
+            ("resultType", serde_json::json!("pending")),
+            ("ttlMs", serde_json::json!("stale")),
+            ("cacheScope", serde_json::json!("shared")),
+            ("capabilities", serde_json::json!({"tools": true})),
+            ("supportedVersions", serde_json::json!(["2025-11-25"])),
+        ] {
+            let mut body = valid.clone();
+            body["result"][field] = value;
+            let check = check_mcp_json_response(body);
+            assert_eq!(
+                check.status,
+                Status::Fail,
+                "invalid {field}: {}",
+                check.detail
+            );
+        }
+        let check = check_mcp_json_response(serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "result": {"supportedVersions": ["2026-07-28"]}
+        }));
+        assert_eq!(check.status, Status::Fail, "{}", check.detail);
     }
 
     #[tokio::test]
@@ -1763,7 +2025,7 @@ mod tests {
             )
             .route(
                 "/mcp",
-                axum::routing::post(|| async { initialize_response() }),
+                axum::routing::post(|| async { discovery_response() }),
             );
         let base = serve_ephemeral(app).await;
         let config = config_at(&base);
@@ -1787,7 +2049,7 @@ mod tests {
             )
             .route(
                 "/mcp",
-                axum::routing::post(|| async { initialize_response() }),
+                axum::routing::post(|| async { discovery_response() }),
             );
         let base = serve_ephemeral(app).await;
 
@@ -1838,7 +2100,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mcp_with_real_key_completes_initialize() {
+    async fn mcp_with_real_key_completes_server_discovery() {
         let pool = crate::db::open_memory().unwrap();
         let key = crate::auth::create_api_key(&pool, "doctor-test", None).unwrap();
         let app = build_test_app(pool, "http://127.0.0.1");
@@ -1846,7 +2108,399 @@ mod tests {
 
         let c = check_mcp(&test_client(), &base, Some(&key)).await;
         assert_eq!(c.status, Status::Pass, "detail: {}", c.detail);
-        assert!(c.detail.contains("serverInfo"), "detail: {}", c.detail);
+        assert!(c.detail.contains("2026-07-28"), "detail: {}", c.detail);
+    }
+
+    #[tokio::test]
+    async fn mcp_explicit_july_rejection_falls_back_to_legacy_handshake() {
+        use axum::response::IntoResponse;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let unsupported = serde_json::json!({
+            "jsonrpc": "2.0", "id": null,
+            "error": {"code": -32022, "message": "Unsupported protocol version"}
+        });
+        let absent = serde_json::json!({
+            "jsonrpc": "2.0", "id": 1,
+            "error": {"code": -32601, "message": "Method not found"}
+        });
+        for (rejection_status, rejection, version, sse) in [
+            (
+                reqwest::StatusCode::BAD_REQUEST,
+                "Bad Request: Unsupported MCP-Protocol-Version: 2026-07-28".to_owned(),
+                "2025-03-26",
+                false,
+            ),
+            (
+                reqwest::StatusCode::BAD_REQUEST,
+                "Bad Request: Unsupported MCP-Protocol-Version: 2026-07-28".to_owned(),
+                "2025-06-18",
+                false,
+            ),
+            (
+                reqwest::StatusCode::BAD_REQUEST,
+                unsupported.to_string(),
+                "2025-11-25",
+                true,
+            ),
+            (
+                reqwest::StatusCode::OK,
+                absent.to_string(),
+                "2025-11-25",
+                false,
+            ),
+        ] {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let recorded_calls = Arc::clone(&calls);
+            let app = axum::Router::new().route(
+                "/mcp",
+                axum::routing::post(
+                    move |headers: axum::http::HeaderMap,
+                          axum::Json(body): axum::Json<serde_json::Value>| {
+                        let rejection = rejection.clone();
+                        let calls = Arc::clone(&recorded_calls);
+                        async move {
+                            calls.fetch_add(1, Ordering::SeqCst);
+                            assert_eq!(headers["authorization"], "Bearer doctor-legacy-key");
+                            match body["method"].as_str().unwrap() {
+                                "server/discover" => {
+                                    assert_eq!(headers["MCP-Protocol-Version"], "2026-07-28");
+                                    assert!(!headers.contains_key("Mcp-Session-Id"));
+                                    (rejection_status, rejection).into_response()
+                                }
+                                "initialize" => {
+                                    assert_eq!(body["params"]["protocolVersion"], "2025-06-18");
+                                    assert_eq!(headers["MCP-Protocol-Version"], "2025-06-18");
+                                    assert!(!headers.contains_key("Mcp-Session-Id"));
+                                    let reply = serde_json::json!({
+                                        "jsonrpc": "2.0", "id": 1,
+                                        "result": {"protocolVersion": version, "capabilities": {},
+                                            "serverInfo": {"name": "legacy", "version": "1"}}
+                                    });
+                                    if sse {
+                                        (
+                                            [
+                                                ("content-type", "text/event-stream"),
+                                                ("mcp-session-id", "doctor-session"),
+                                            ],
+                                            format!("event: message\ndata: {reply}\n\n"),
+                                        )
+                                            .into_response()
+                                    } else {
+                                        ([("mcp-session-id", "doctor-session")], axum::Json(reply))
+                                            .into_response()
+                                    }
+                                }
+                                "notifications/initialized" => {
+                                    assert_eq!(headers["Mcp-Session-Id"], "doctor-session");
+                                    assert_eq!(headers["MCP-Protocol-Version"], version);
+                                    assert!(body.get("id").is_none());
+                                    reqwest::StatusCode::ACCEPTED.into_response()
+                                }
+                                method => panic!("unexpected doctor method: {method}"),
+                            }
+                        }
+                    },
+                ),
+            );
+            let base = serve_ephemeral(app).await;
+            let check = check_mcp(&test_client(), &base, Some("doctor-legacy-key")).await;
+            assert_eq!(check.status, Status::Pass, "{}", check.detail);
+            assert!(check.detail.contains(version), "{}", check.detail);
+            assert_eq!(calls.load(Ordering::SeqCst), 3);
+        }
+    }
+
+    #[tokio::test]
+    async fn mcp_discovery_failures_do_not_hide_behind_legacy_initialization() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        for (status, body) in [
+            (reqwest::StatusCode::BAD_REQUEST, serde_json::json!({"jsonrpc": "2.0", "id": 1, "error": {"code": -32602, "message": "Missing July metadata"}}).to_string()),
+            (reqwest::StatusCode::BAD_REQUEST, serde_json::json!({"jsonrpc": "2.0", "id": 1, "error": {"code": -32020, "message": "Missing July metadata"}}).to_string()),
+            (reqwest::StatusCode::OK, "not JSON".to_owned()),
+            (reqwest::StatusCode::OK, serde_json::json!({"jsonrpc": "2.0", "id": 2, "error": {"code": -32601, "message": "Method not found"}}).to_string()),
+            (reqwest::StatusCode::OK, serde_json::json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32022, "message": "Unsupported version"}}).to_string()),
+            (reqwest::StatusCode::OK, serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {}, "error": {"code": -32601, "message": "Method not found"}}).to_string()),
+            (reqwest::StatusCode::UNAUTHORIZED, "Bad Request: Unsupported MCP-Protocol-Version: 2026-07-28".to_owned()),
+            (reqwest::StatusCode::FORBIDDEN, serde_json::json!({"jsonrpc": "2.0", "id": 1, "error": {"code": -32022, "message": "Unsupported version"}}).to_string()),
+            (reqwest::StatusCode::BAD_REQUEST, "Bad Request".to_owned()),
+            (reqwest::StatusCode::INTERNAL_SERVER_ERROR, "Bad Request: Unsupported MCP-Protocol-Version: 2026-07-28".to_owned()),
+            (reqwest::StatusCode::INTERNAL_SERVER_ERROR, serde_json::json!({"jsonrpc": "2.0", "id": 1, "error": {"code": -32022, "message": "Unsupported version"}}).to_string()),
+            (reqwest::StatusCode::OK, serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {"supportedVersions": ["2025-11-25"]}}).to_string()),
+        ] {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let recorded_calls = Arc::clone(&calls);
+            let app = axum::Router::new().route("/mcp", axum::routing::post(move || {
+                let body = body.clone();
+                let calls = Arc::clone(&recorded_calls);
+                async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    (status, body)
+                }
+            }));
+            let base = serve_ephemeral(app).await;
+            let check = check_mcp(&test_client(), &base, Some("doctor-legacy-key")).await;
+            assert_eq!(check.status, Status::Fail, "{}", check.detail);
+            assert_eq!(calls.load(Ordering::SeqCst), 1, "{}", check.detail);
+        }
+    }
+
+    #[tokio::test]
+    async fn mcp_discovery_timeout_does_not_attempt_legacy_initialization() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let recorded_calls = Arc::clone(&calls);
+        let app = axum::Router::new().route(
+            "/mcp",
+            axum::routing::post(move || {
+                let calls = Arc::clone(&recorded_calls);
+                async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    discovery_response()
+                }
+            }),
+        );
+        let base = serve_ephemeral(app).await;
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_millis(100))
+            .build()
+            .unwrap();
+        let check = check_mcp(&client, &base, Some("doctor-legacy-key")).await;
+        assert_eq!(check.status, Status::Fail, "{}", check.detail);
+        assert!(check.detail.contains("request failed"), "{}", check.detail);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn mcp_legacy_fallback_rejects_failed_initialization_notifications() {
+        use axum::response::IntoResponse;
+
+        for status in [
+            reqwest::StatusCode::BAD_REQUEST,
+            reqwest::StatusCode::OK,
+            reqwest::StatusCode::ACCEPTED,
+        ] {
+            let app = axum::Router::new().route(
+                "/mcp",
+                axum::routing::post(
+                    move |axum::Json(body): axum::Json<serde_json::Value>| async move {
+                        match body["method"].as_str().unwrap() {
+                            "server/discover" => (
+                                reqwest::StatusCode::BAD_REQUEST,
+                                "Bad Request: Unsupported MCP-Protocol-Version: 2026-07-28",
+                            )
+                                .into_response(),
+                            "initialize" => axum::Json(serde_json::json!({
+                                "jsonrpc": "2.0", "id": 1,
+                                "result": {"protocolVersion": "2025-06-18", "capabilities": {},
+                                    "serverInfo": {"name": "legacy", "version": "1"}}
+                            }))
+                            .into_response(),
+                            "notifications/initialized" => (
+                                status,
+                                axum::Json(serde_json::json!({
+                                    "jsonrpc": "2.0", "id": null,
+                                    "error": {"code": -32600, "message": "Initialization rejected"}
+                                })),
+                            )
+                                .into_response(),
+                            method => panic!("unexpected doctor method: {method}"),
+                        }
+                    },
+                ),
+            );
+            let base = serve_ephemeral(app).await;
+            let check = check_mcp(&test_client(), &base, Some("doctor-legacy-key")).await;
+            assert_eq!(
+                check.status,
+                Status::Fail,
+                "HTTP {status}: {}",
+                check.detail
+            );
+            assert!(check.detail.contains("notification"), "{}", check.detail);
+        }
+    }
+
+    #[tokio::test]
+    async fn mcp_legacy_fallback_rejects_invalid_initialization_results() {
+        use axum::response::IntoResponse;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        for reply in [
+            serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "2026-07-28", "capabilities": {}, "serverInfo": {"name": "legacy", "version": "1"}}}),
+            serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "2025-06-18", "capabilities": {}}}),
+            serde_json::json!({"jsonrpc": "2.0", "id": 2, "result": {"protocolVersion": "2025-06-18", "capabilities": {}, "serverInfo": {"name": "legacy", "version": "1"}}}),
+            serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "2025-06-18", "capabilities": {"tools": true}, "serverInfo": {"name": "legacy", "version": "1"}}}),
+        ] {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let recorded_calls = Arc::clone(&calls);
+            let app = axum::Router::new().route(
+                "/mcp",
+                axum::routing::post(move |axum::Json(body): axum::Json<serde_json::Value>| {
+                    let reply = reply.clone();
+                    let calls = Arc::clone(&recorded_calls);
+                    async move {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        if body["method"] == "server/discover" {
+                            (
+                                reqwest::StatusCode::BAD_REQUEST,
+                                "Bad Request: Unsupported MCP-Protocol-Version: 2026-07-28",
+                            )
+                                .into_response()
+                        } else {
+                            assert_eq!(body["method"], "initialize");
+                            axum::Json(reply).into_response()
+                        }
+                    }
+                }),
+            );
+            let base = serve_ephemeral(app).await;
+            let check = check_mcp(&test_client(), &base, Some("doctor-legacy-key")).await;
+            assert_eq!(check.status, Status::Fail, "{}", check.detail);
+            assert_eq!(calls.load(Ordering::SeqCst), 2);
+        }
+    }
+
+    #[tokio::test]
+    async fn mcp_server_discovery_advertises_july_protocol() {
+        let pool = crate::db::open_memory().unwrap();
+        let key = crate::auth::create_api_key(&pool, "doctor-discovery", None).unwrap();
+        let app = build_test_app(pool, "http://127.0.0.1");
+        let base = serve_ephemeral(app).await;
+
+        let body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "server/discover",
+            "params": {
+                "_meta": {
+                    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                    "io.modelcontextprotocol/clientInfo": {
+                        "name": "lific-doctor",
+                        "version": "0.1.0"
+                    },
+                    "io.modelcontextprotocol/clientCapabilities": {}
+                }
+            }
+        });
+        let response = test_client()
+            .post(format!("{base}/mcp"))
+            .bearer_auth(key)
+            .header("Accept", "application/json, text/event-stream")
+            .header("Content-Type", "application/json")
+            .header("MCP-Protocol-Version", "2026-07-28")
+            .header("Mcp-Method", "server/discover")
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+
+        let status = response.status();
+        let response_body = response.text().await.unwrap();
+        assert_eq!(status, reqwest::StatusCode::OK, "body: {response_body}");
+        let body: serde_json::Value = serde_json::from_str(&response_body).unwrap();
+        assert!(
+            body["result"]["supportedVersions"]
+                .as_array()
+                .is_some_and(|versions| versions.iter().any(|v| v == "2026-07-28")),
+            "discovery response did not advertise July 2026: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_tools_call_uses_july_complete_result_type() {
+        let pool = crate::db::open_memory().unwrap();
+        let key = crate::auth::create_api_key(&pool, "doctor-result-type", None).unwrap();
+        let app = build_test_app(pool, "http://127.0.0.1");
+        let base = serve_ephemeral(app).await;
+        let body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "search",
+                "arguments": {"query": "no-such-result"},
+                "_meta": {
+                    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                    "io.modelcontextprotocol/clientInfo": {
+                        "name": "lific-doctor",
+                        "version": "0.1.0"
+                    },
+                    "io.modelcontextprotocol/clientCapabilities": {}
+                }
+            }
+        });
+
+        let response = test_client()
+            .post(format!("{base}/mcp"))
+            .bearer_auth(key)
+            .header("Accept", "application/json, text/event-stream")
+            .header("Content-Type", "application/json")
+            .header("MCP-Protocol-Version", "2026-07-28")
+            .header("Mcp-Method", "tools/call")
+            .header("Mcp-Name", "search")
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+
+        let status = response.status();
+        let response_body = response.text().await.unwrap();
+        assert_eq!(status, reqwest::StatusCode::OK, "body: {response_body}");
+        let body: serde_json::Value = serde_json::from_str(&response_body).unwrap();
+        assert_eq!(body["result"]["resultType"], "complete", "body: {body}");
+        assert!(body["result"]["content"].is_array(), "body: {body}");
+        assert_eq!(
+            body["result"]["_meta"]["io.modelcontextprotocol/serverInfo"]["name"], "lific",
+            "body: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_tools_list_includes_july_cache_metadata() {
+        let pool = crate::db::open_memory().unwrap();
+        let key = crate::auth::create_api_key(&pool, "doctor-tools-cache", None).unwrap();
+        let app = build_test_app(pool, "http://127.0.0.1");
+        let base = serve_ephemeral(app).await;
+        let body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/list",
+            "params": {
+                "_meta": {
+                    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                    "io.modelcontextprotocol/clientInfo": {
+                        "name": "lific-doctor",
+                        "version": "0.1.0"
+                    },
+                    "io.modelcontextprotocol/clientCapabilities": {}
+                }
+            }
+        });
+
+        let response = test_client()
+            .post(format!("{base}/mcp"))
+            .bearer_auth(key)
+            .header("Accept", "application/json, text/event-stream")
+            .header("Content-Type", "application/json")
+            .header("MCP-Protocol-Version", "2026-07-28")
+            .header("Mcp-Method", "tools/list")
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+
+        let status = response.status();
+        let response_body = response.text().await.unwrap();
+        assert_eq!(status, reqwest::StatusCode::OK, "body: {response_body}");
+        let body: serde_json::Value = serde_json::from_str(&response_body).unwrap();
+        assert_eq!(body["result"]["resultType"], "complete", "body: {body}");
+        assert_eq!(body["result"]["ttlMs"], 3_600_000, "body: {body}");
+        assert_eq!(body["result"]["cacheScope"], "public", "body: {body}");
+        assert!(body["result"]["tools"].is_array(), "body: {body}");
     }
 
     #[tokio::test]

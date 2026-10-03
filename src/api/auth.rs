@@ -1540,6 +1540,7 @@ mod tests {
 
         fn real_stack(db: &DbPool) -> axum::Router {
             let auth_state = crate::auth::AuthState {
+                public_url_is_explicit: false,
                 db: db.clone(),
                 public_url: "https://example.com".into(),
                 required: true,

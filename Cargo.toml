@@ -44,6 +44,7 @@ unused_async = "deny"
 axum = { version = "0.8", features = ["json", "multipart", "ws"] }
 tokio = { version = "1", features = ["full"] }
 futures-util = "0.3"
+sse-stream = "0.2.6"
 tower-http = { version = "0.6", features = ["cors", "compression-gzip", "compression-br"] }
 # HTTP client — used by `lific doctor` to probe a running server (reachability,
 # OAuth discovery, MCP round-trip). rustls-tls (no OpenSSL linkage) so the
@@ -60,13 +61,9 @@ serde_json = "1"
 serde_yaml = "0.9"
 
 # MCP
-# rmcp breaks its API within minor versions (1.7 changed the JSON-RPC error
-# constructor; 1.8 changed version negotiation and tool argument errors), and
-# `cargo install` ignores Cargo.lock. Upgrade deliberately, not by resolution.
-# rmcp-macros is listed only to hold it to the same minor as rmcp.
-rmcp = { version = "~1.4", features = ["server", "transport-io", "transport-streamable-http-server", "macros"] }
-rmcp-macros = "~1.4"
-schemars = "0.8"
+rmcp = { version = "~3.5.0", features = ["server", "transport-io", "transport-streamable-http-server", "macros"] }
+rmcp-macros = "~3.5.0"
+schemars = "1"
 anyhow = "1"
 
 # CLI
