@@ -438,7 +438,9 @@ pub(crate) const BROWSER_SCRIPT: &str = r#"
     function routeScope() {
         const route = currentRoute();
         const match = route.match(/^\/public\/([^/]+)/);
-        return match ? decodeURIComponent(match[1]) : null;
+        if (!match) return null;
+        try { return decodeURIComponent(match[1]); }
+        catch { return match[1]; } // Invalid public identifiers must stay in public scope.
     }
     function routeChanged() {
         setPublicProject(routeScope());
@@ -891,6 +893,31 @@ mod tests {
     }
 
     #[test]
+    fn browser_malformed_public_routes_keep_the_session_public_and_finish_bootstrap() {
+        browser_contract(
+            r#"
+            localStorage.setItem('lific_token', 'private');
+            location.pathname = '/public/%E0/issues';
+            assert.doesNotThrow(() => dispatchEvent(new CustomEvent('DOMContentLoaded')));
+            assert.equal(lificSession.state.publicProject, '%E0');
+            assert.equal(lificSession.state.loading, false);
+            assert.equal(lificSession.resolve('/issues/9').url, '/public/api/projects/%25E0/issues/9');
+            assert.equal(lificSession.resolve('/issues/9', 'PATCH').kind, 'refused');
+            assert.equal(calls.length, 0);
+            location.pathname = '/public/LIF/issues';
+            dispatchEvent(new CustomEvent('popstate'));
+            assert.equal(lificSession.state.publicProject, 'LIF');
+            location.hash = '#/public/%/issues';
+            assert.doesNotThrow(() => dispatchEvent(new CustomEvent('hashchange')));
+            assert.equal(lificSession.state.publicProject, '%');
+            assert.equal(lificSession.state.loading, false);
+            assert.equal(calls.length, 0);
+            assert.equal(localStorage.getItem('lific_token'), 'private');
+        "#,
+        );
+    }
+
+    #[test]
     fn role_visibility_never_authorizes_or_blocks_private_api_requests() {
         browser_contract(
             r#"
@@ -1046,7 +1073,7 @@ mod tests {
         global.localStorage = {getItem:key => store.get(key) ?? null, setItem:(key,value) => store.set(key,value), removeItem:key => store.delete(key)};
         global.location = {pathname:'/LIF/issues',hash:'',replace(path) { this.pathname=path; }};
         const controls = Object.fromEntries(['edit','manage','comment','publish','admin'].map(capability => [capability,{dataset:{lificCapability:capability},hidden:false,disabled:false}]));
-        global.document = {readyState:'loading',body:{dataset:{lificRequireSession:'true'}},querySelectorAll:selector => selector === '[data-lific-capability]' ? Object.values(controls) : [],addEventListener() {}};
+        global.document = {readyState:'loading',body:{dataset:{lificRequireSession:'true'}},querySelectorAll:selector => selector === '[data-lific-capability]' ? Object.values(controls) : [],addEventListener:global.addEventListener};
         const calls=[], replies=[];
         global.fetch = async (url,options) => { calls.push({url,options}); const result = replies.shift(); if (result === undefined) throw new Error('unexpected fetch '+url); return await result; };
         const reply = (status,body,headers={}) => ({ok:status>=200&&status<300,status,headers:new Headers(headers),json:async () => body});

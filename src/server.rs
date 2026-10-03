@@ -782,6 +782,7 @@ mod topcoat_app {
     async fn preferences_script() -> Result<Response> {
         Ok(Response::builder()
             .header("content-type", "text/javascript; charset=utf-8")
+            .header("cache-control", "no-cache")
             .body(topcoat::router::Body::from(
                 super::topcoat_frontend::controls::PREFERENCES_SCRIPT,
             ))?)
@@ -1392,6 +1393,13 @@ mod topcoat_app_tests {
                 .get(axum::http::header::CONTENT_TYPE)
                 .unwrap(),
             "text/javascript; charset=utf-8"
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::CACHE_CONTROL)
+                .unwrap(),
+            "no-cache"
         );
         let body = response.into_body().collect().await.unwrap().to_bytes();
         let body = String::from_utf8_lossy(&body);

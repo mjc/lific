@@ -140,16 +140,17 @@ test('socket closes reconnect with bounded backoff and resume from applied REST 
     f.client.dispose();
 });
 function sharedTransport() {
-    const channels=new Map();const queue=[];let held=false;
+    const channels=new Map();const queue=[];let held=null,latestChannel=null;
     function grant() {
         if(held||!queue.length)return;
-        const entry=queue.shift();held=true;
-        Promise.resolve(entry.callback()).finally(()=>{held=false;entry.resolve();grant();});
+        const entry=queue.shift();held=entry;
+        Promise.resolve(entry.callback()).finally(()=>{if(held===entry){held=null;grant();}entry.resolve();});
     }
     return {
         fingerprint:async()=> 'same-audience',
+        crashLeader(){held.channel.close();held.resolve();held=null;grant();},
         locks:{request:(_name,options,callback)=>new Promise(resolve=>{
-            const entry={callback,resolve};queue.push(entry);
+            const entry={callback,resolve,channel:latestChannel};queue.push(entry);
             options.signal.addEventListener('abort',()=>{const at=queue.indexOf(entry);if(at>=0){queue.splice(at,1);resolve();}});
             grant();
         })},
@@ -158,7 +159,7 @@ function sharedTransport() {
             const channel={listener:null,addEventListener:(_name,listener)=>channel.listener=listener,
                 postMessage:data=>{for(const peer of members)if(peer!==channel)peer.listener?.({data});},
                 close:()=>members.delete(channel)};
-            members.add(channel);return channel;
+            members.add(channel);latestChannel=channel;return channel;
         }
     };
 }
@@ -190,4 +191,28 @@ test('browser websocket URLs retain the trusted mount and same origin for both t
   win.LificTopcoatRouting={href:path=>`${base}${path}`};
   assert.equal(websocketUrl(win),expected);
  }
+});
+
+
+test('a crashed leader takeover stays disconnected until its replacement socket opens',async t=>{
+    const shared=sharedTransport(),tabs=[],transitions=[];
+    const request=async()=>({ok:true,data:{}});
+    t.after(()=>{for(const tab of tabs.reverse())tab.client.dispose();});
+    const a=fixture(request,shared);tabs.push(a);
+    const b=fixture(request,{...shared,notify:()=>transitions.push({...b.client.state})});tabs.push(b);
+    await a.client.connect();await b.client.connect();
+    a.sockets[0].readyState=1;a.sockets[0].emit('open');
+    assert.equal(b.client.state.connected,true);
+    // A crashed tab cannot broadcast close; only its channel and Web Lock disappear.
+    shared.crashLeader();await tick();
+    assert.equal(b.sockets.length,1);
+    assert.equal(b.sockets[0].readyState,0);
+    assert.equal(b.client.state.leader,true);
+    assert.equal(b.client.state.connected,false);
+    assert.ok(transitions.some(state=>state.leader&&!state.connected));
+    const c=fixture(request,shared);tabs.push(c);await c.client.connect();
+    assert.equal(c.client.state.connected,false,'a hello during CONNECTING must not produce an open broadcast');
+    b.sockets[0].readyState=1;b.sockets[0].emit('open');
+    assert.equal(b.client.state.connected,true);
+    assert.equal(c.client.state.connected,true);
 });

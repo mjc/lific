@@ -111,6 +111,9 @@ test('production documents preserve browser install metadata and fragment links 
       browser = await chromium.launch({headless: true, executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH});
       const page = await browser.newPage();
       await page.goto(`${origin}/app/login`);
+      const preferencesResponse = await fetch(`${origin}/app/__topcoat-preferences.js`);
+      assert.equal(preferencesResponse.status, 200);
+      assert.equal(preferencesResponse.headers.get('cache-control'), 'no-cache');
       const viewport = await page.locator('meta[name="viewport"]').getAttribute('content');
       assert.match(viewport, /viewport-fit=cover/);
       assert.equal(await page.locator('meta[name="apple-mobile-web-app-title"]').getAttribute('content'), 'Lific');
