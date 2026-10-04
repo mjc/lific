@@ -6,6 +6,7 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
+use scraper::{Html, Selector};
 use sha2::{Digest, Sha256};
 use tower::ServiceExt;
 
@@ -35,22 +36,10 @@ async fn native_stylesheet_document_url_fingerprints_the_exact_uncached_producti
             .await
             .unwrap();
         let html = String::from_utf8(html.to_vec()).unwrap();
-        let stylesheets = html
-            .split("<link")
-            .filter(|tag| {
-                tag.split('>')
-                    .next()
-                    .unwrap()
-                    .contains("rel=\"stylesheet\"")
-            })
-            .map(|tag| {
-                tag.split("href=\"")
-                    .nth(1)
-                    .unwrap()
-                    .split('"')
-                    .next()
-                    .unwrap()
-            })
+        let document = Html::parse_document(&html);
+        let stylesheets = document
+            .select(&Selector::parse("link[rel='stylesheet']").unwrap())
+            .map(|element| element.attr("href").expect("stylesheet href"))
             .collect::<Vec<_>>();
         assert_eq!(
             stylesheets.len(),
@@ -106,10 +95,10 @@ async fn native_runtime_document_url_fingerprints_the_shipped_framework_runtime(
             .await
             .unwrap();
         let html = String::from_utf8(html.to_vec()).unwrap();
-        let scripts = html
-            .split("<script")
-            .filter_map(|tag| tag.split('>').next().unwrap().split("src=\"").nth(1))
-            .map(|source| source.split('"').next().unwrap())
+        let document = Html::parse_document(&html);
+        let scripts = document
+            .select(&Selector::parse("script[src]").unwrap())
+            .map(|element| element.attr("src").unwrap())
             .collect::<Vec<_>>();
         assert_eq!(
             scripts.len(),

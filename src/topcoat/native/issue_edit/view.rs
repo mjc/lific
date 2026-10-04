@@ -15,6 +15,7 @@ mod tests {
         db::models::{Priority, Status},
         ratelimit::IpNetwork,
     };
+    use scraper::{Html, Node, Selector};
     use std::{net::SocketAddr, sync::Arc};
     use topcoat::{context::CxTestBuilder, router::RemoteAddr, view::ViewExt};
 
@@ -106,50 +107,68 @@ mod tests {
         snapshot.description = "--> --!></textarea><script>alert(1)</script> & body".into();
         for can_edit in [true, false] {
             let html = render(&Cx::default(), &snapshot, can_edit).await;
-            // Signal declarations are inert protocol comments, not rendered elements.
-            let mut visible_markup = String::new();
-            let mut remaining = html.as_str();
+            // Parse the same HTML tree the browser consumes. Protocol framing
+            // and its serialized terminator escapes remain separate assertions.
+            let document = Html::parse_fragment(&html);
             let mut hostile_signal_comments = 0;
-            while let Some(start) = remaining.find("<!--::topcoat::") {
-                visible_markup.push_str(&remaining[..start]);
-                let comment = &remaining[start + 4..];
-                let end = comment.find("-->").expect("complete framework comment");
-                assert!(
-                    !comment[..end].contains("--!>"),
-                    "alternate comment terminator escaped"
-                );
-                let payload = &comment[..end];
-                if payload.starts_with("::topcoat::signal(") {
-                    assert!(
-                        payload.ends_with(')'),
-                        "complete signal declaration framing"
-                    );
-                    if payload.contains("<img src=") || payload.contains("<script") {
-                        hostile_signal_comments += 1;
-                        assert!(payload.contains("--&gt;"));
-                        assert!(payload.contains("--!&gt;"));
+            for node in document.tree.nodes() {
+                if let Node::Comment(comment) = node.value() {
+                    let payload: &str = comment.as_ref();
+                    if payload.starts_with("::topcoat::") {
+                        assert!(
+                            !payload.contains("--!>"),
+                            "alternate comment terminator escaped"
+                        );
+                    }
+                    if payload.starts_with("::topcoat::signal(") {
+                        assert!(
+                            payload.ends_with(')'),
+                            "complete signal declaration framing"
+                        );
+                        if payload.contains("<img src=") || payload.contains("<script") {
+                            hostile_signal_comments += 1;
+                            assert!(payload.contains("--&gt;"));
+                            assert!(payload.contains("--!&gt;"));
+                        }
                     }
                 }
-                remaining = &comment[end + 3..];
             }
-            visible_markup.push_str(remaining);
+            let visible_text = document.root_element().text().collect::<String>();
+            assert!(visible_text.contains(&snapshot.title));
+            assert!(visible_text.contains(&snapshot.description));
+            assert_eq!(
+                document
+                    .select(&Selector::parse("img, script").unwrap())
+                    .count(),
+                0
+            );
             assert!(
                 hostile_signal_comments > 0,
                 "hostile signal payloads checked"
             );
             assert!(
-                visible_markup.contains(
+                html.contains(
                     "--&gt; --!&gt;&lt;img src=\"x\" onerror=\"alert(1)\"&gt; &amp; title"
                 )
             );
-            assert!(visible_markup.contains(
+            assert!(html.contains(
                 "--&gt; --!&gt;&lt;/textarea&gt;&lt;script&gt;alert(1)&lt;/script&gt; &amp; body"
             ));
             if can_edit {
+                let input = document
+                    .select(&Selector::parse("input").unwrap())
+                    .next()
+                    .unwrap();
+                assert_eq!(input.value().attr("value"), Some(snapshot.title.as_str()));
+                let textarea = document
+                    .select(&Selector::parse("textarea").unwrap())
+                    .next()
+                    .unwrap();
+                assert_eq!(textarea.text().collect::<String>(), snapshot.description);
                 // Attribute values have a separate context: quotes and '&' are
                 // escaped; '<' is inert inside the quoted value. Browser tests
                 // assert that these exact values never create img/script nodes.
-                assert!(visible_markup.contains(
+                assert!(html.contains(
                     "value=\"--> --!><img src=&quot;x&quot; onerror=&quot;alert(1)&quot;> &amp; title\""
                 ));
             }
@@ -162,6 +181,62 @@ mod tests {
             let html = render(&context(prefix), &snapshot(), true).await;
             assert!(html.contains(&format!("href=\"{prefix}/ACC/issues/ACC-2\"")));
             assert!(html.contains("ACC-2"));
+        }
+    }
+    #[tokio::test]
+    async fn native_issue_edit_relations_follow_original_order_and_duplicate_direction() {
+        let mut saved = snapshot();
+        saved.blocked_by = vec!["ACC-2".into()];
+        saved.blocks = vec!["ACC-3".into()];
+        saved.relates_to = vec!["ACC-4".into()];
+        saved.duplicates = vec!["ACC-5".into()];
+        saved.duplicated_by = vec!["ACC-6".into()];
+        let section = Selector::parse("section.native-issue-editor__relations").unwrap();
+        let heading = Selector::parse("h2").unwrap();
+        let link = Selector::parse("a").unwrap();
+        for prefix in ["", "/app", "/ACC"] {
+            for can_edit in [true, false] {
+                let html = render(&context(prefix), &saved, can_edit).await;
+                let document = Html::parse_fragment(&html);
+                let actual = document
+                    .select(&section)
+                    .map(|section| {
+                        let heading = section.select(&heading).next().unwrap();
+                        let links = section
+                            .select(&link)
+                            .map(|link| {
+                                (
+                                    link.text().collect::<String>(),
+                                    link.value().attr("href").unwrap().to_owned(),
+                                )
+                            })
+                            .collect::<Vec<_>>();
+                        (heading.text().collect::<String>(), links)
+                    })
+                    .collect::<Vec<_>>();
+                let expected = [
+                    ("Blocked by", "ACC-2"),
+                    ("Blocks", "ACC-3"),
+                    ("Related", "ACC-4"),
+                    ("Duplicate of", "ACC-5"),
+                    ("Duplicated by", "ACC-6"),
+                ]
+                .into_iter()
+                .map(|(heading, identifier)| {
+                    (
+                        heading.to_owned(),
+                        vec![(
+                            identifier.to_owned(),
+                            format!("{prefix}/ACC/issues/{identifier}"),
+                        )],
+                    )
+                })
+                .collect::<Vec<_>>();
+                assert_eq!(
+                    actual, expected,
+                    "original directional relations at {prefix:?}, can_edit={can_edit}"
+                );
+            }
         }
     }
 }

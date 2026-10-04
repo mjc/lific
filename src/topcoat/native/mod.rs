@@ -11,7 +11,7 @@ pub(crate) mod home_activity;
 mod home_browser_edges;
 pub(crate) mod home_data;
 #[cfg(test)]
-mod home_fixture;
+pub(crate) mod home_fixture;
 pub(crate) mod home_live;
 #[cfg(test)]
 mod home_live_production;
@@ -28,6 +28,7 @@ pub(crate) mod icons;
 pub(crate) mod issue_edit;
 #[cfg(test)]
 mod limit_contract;
+pub(crate) mod markdown;
 #[cfg(test)]
 mod markdown_edit;
 pub(crate) mod palette_reference;

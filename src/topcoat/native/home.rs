@@ -28,8 +28,6 @@ fn authorized_snapshot(cx: &Cx) -> topcoat::Result<home_data::Snapshot> {
 
 pub(crate) fn screen(cx: &Cx) -> topcoat::Result<BoxView<'_>> {
     let snapshot = authorized_snapshot(cx)?;
-    let account_id = snapshot.user.id;
-    let account_admin = snapshot.user.is_admin;
     let initialized = signal(cx, || false);
     let inputs = signal(cx, String::new);
     let palette_open = signal(cx, || false);
@@ -37,7 +35,6 @@ pub(crate) fn screen(cx: &Cx) -> topcoat::Result<BoxView<'_>> {
     let content = view! { cx =>
         <section data-native-home="" class="tc-native-home"
             (super::browser_inputs::mount(cx, initialized, inputs.clone(), "lific_recents".into()))>
-            <span hidden="hidden" (super::session::account_mount(cx, account_id, account_admin))></span>
             <span hidden="hidden" (super::bookmark::mount(cx))></span>
             native_home_content(browser_inputs: $(inputs.get()), palette_open: content_palette)
         </section>

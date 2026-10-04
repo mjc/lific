@@ -318,7 +318,38 @@ async fn native_raw_stopped_reader_bounds_send_and_aborts_its_live_render() {
     let fixture = Fixture::new(policy(2_000, 10_000, 200)).await;
     let title = "raw stopped reader ".to_owned() + &"x".repeat(16 * 1024 * 1024);
     fixture.rename(&title);
-    let mut socket = fixture.open().await;
+    // Bound this peer's buffering before TCP negotiation instead of assuming
+    // the platform's default receive window cannot absorb the large render.
+    let peer = tokio::net::TcpSocket::new_v4().unwrap();
+    peer.set_recv_buffer_size(4_096).unwrap();
+    let receive_buffer = peer.recv_buffer_size().unwrap();
+    // Linux reports twice the requested size for kernel bookkeeping.
+    assert!(
+        receive_buffer > 0 && receive_buffer <= 8_192,
+        "stopped reader requires a bounded receive buffer, got {receive_buffer}"
+    );
+    let address = fixture
+        .origin
+        .strip_prefix("http://")
+        .unwrap()
+        .parse()
+        .unwrap();
+    let (mut socket, response) = tokio::time::timeout(DEADLINE, async {
+        let stream = peer.connect(address).await.unwrap();
+        tokio_tungstenite::client_async(
+            fixture.request_at("", "/", &fixture.seed.token),
+            MaybeTlsStream::Plain(stream),
+        )
+        .await
+        .unwrap()
+    })
+    .await
+    .expect("real stopped-reader native handshake timed out");
+    assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+    assert_eq!(
+        response.headers()[header::SEC_WEBSOCKET_PROTOCOL],
+        "topcoat-runtime"
+    );
     request_render(&mut socket, 1).await;
     let announced = frame(&mut socket).await;
     assert_eq!(announced["t"], "run");
@@ -371,7 +402,9 @@ async fn native_raw_peer_close_aborts_connected_render_and_releases_receiver_and
 
 #[tokio::test]
 async fn native_raw_latest_render_cancels_previous_body_before_next_run_announcement() {
-    let fixture = Fixture::new(policy(100, 600, 200)).await;
+    // Replacement ordering uses the production policy. Short idle deadlines
+    // belong to the dedicated timeout tests, not this resource ownership proof.
+    let fixture = Fixture::new(SocketPolicy::default()).await;
     let mut socket = fixture.open().await;
     for run in 1..=4u64 {
         let title = format!("Raw current render {run}");

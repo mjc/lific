@@ -1,0 +1,23 @@
+/* Native Markdown read surface, matching the pinned master's prose rules. */
+.native-issue-editor__preview.tc-markdown{white-space:normal;font:14px/1.7 var(--tc-font)}
+.tc-markdown :is(h1,h2,h3,h4){font-family:var(--tc-font-display);font-weight:600;letter-spacing:-.02em;color:var(--tc-text);margin:1.5em 0 .5em;line-height:1.3}
+.tc-markdown h1{font-size:1.375rem}.tc-markdown h2{font-size:1.125rem}.tc-markdown h3{font-size:1rem}.tc-markdown h4{font-size:.875rem}
+.tc-markdown :is(h1,h2,h3,h4):first-child{margin-top:0}
+.tc-markdown p{margin:0 0 .75em}.tc-markdown p:last-child{margin-bottom:0}
+.tc-markdown strong{font-weight:600;color:var(--tc-text)}.tc-markdown em{font-style:italic}
+.tc-markdown a{color:var(--tc-accent);text-decoration:underline;text-decoration-color:var(--tc-accent);text-underline-offset:2px}.tc-markdown a:hover{text-decoration-thickness:2px}
+.tc-markdown code{font-family:ui-monospace,"Cascadia Code","Fira Code",monospace;font-size:.8125em;background:var(--tc-bg-subtle);border:1px solid var(--tc-border);border-radius:4px;padding:.15em .4em;color:var(--tc-text)}
+.tc-markdown pre{white-space:pre;overflow-wrap:normal;background:var(--tc-bg-subtle);border:1px solid var(--tc-border);border-radius:6px;padding:.875rem 1rem;overflow-x:auto;margin:.75em 0;line-height:1.5}
+.tc-markdown pre code{background:transparent;border:0;padding:0;font-size:.8125rem}
+.tc-markdown :is(ul,ol){margin:.5em 0 .75em;padding-left:1.5em}.tc-markdown ul{list-style-type:disc}.tc-markdown ol{list-style-type:decimal}.tc-markdown li{margin-bottom:.25em}.tc-markdown li>:is(ul,ol){margin-top:.25em;margin-bottom:0}
+.tc-markdown blockquote{border-left:3px solid var(--tc-border);padding-left:1em;margin:.75em 0;color:var(--tc-muted);font-style:italic}
+.tc-markdown hr{border:0;border-top:1px solid var(--tc-border);margin:1.5em 0}
+.tc-markdown table{display:block;width:max-content;max-width:100%;overflow-x:auto;border-collapse:collapse;margin:.75em 0;font-size:.8125rem}.tc-markdown :is(th,td){border:1px solid var(--tc-border);padding:.4em .75em;text-align:left}.tc-markdown th{background:var(--tc-bg-subtle);font-weight:600}
+.tc-markdown .identifier-link{display:inline-flex;align-items:center;gap:.3em;font-family:ui-monospace,"Cascadia Code","Fira Code",monospace;font-size:.8125em;font-weight:500;color:var(--tc-accent);background:var(--tc-accent-subtle);border:1px solid transparent;padding:.1em .4em;border-radius:4px;text-decoration:none;white-space:nowrap;vertical-align:middle}
+.tc-markdown .mention-chip{font-weight:500;color:var(--tc-accent);background:var(--tc-accent-subtle);padding:.05em .35em;border-radius:4px;white-space:normal;overflow-wrap:anywhere}
+.tc-markdown .code-block-wrapper{position:relative}
+/* Copy controls, diagram interactions and lightbox ownership require native components. */
+.tc-markdown img{max-width:100%;height:auto}.tc-markdown img.attachment-image{max-height:32rem;border-radius:.5rem;border:1px solid var(--tc-border)}
+.tc-markdown a.attachment-chip{display:inline-flex;align-items:center;gap:.4375rem;max-width:100%;padding:.25rem .5rem .25rem .4375rem;border:1px solid var(--tc-border);border-radius:.5rem;background:var(--tc-bg-subtle);color:var(--tc-text);font-size:.8125rem;line-height:1.2;text-decoration:none;vertical-align:middle}.tc-markdown a.attachment-chip:hover{border-color:var(--tc-accent);background:var(--tc-surface)}
+.tc-markdown .attachment-chip :is(.attachment-chip__icon,.attachment-chip__dl){display:inline-flex;align-items:center;color:var(--tc-muted);flex-shrink:0}.tc-markdown .attachment-chip__name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}.tc-markdown a.attachment-chip:hover .attachment-chip__dl{color:var(--tc-accent)}
+.tc-markdown .attachment-view-host{display:block}

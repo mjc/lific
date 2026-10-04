@@ -55,8 +55,15 @@ mod topcoat_app {
             .map_or_else(|| uri.path(), |path| path.as_str());
         let route = super::topcoat_frontend::shell::ParsedRoute::parse(route_target);
         let title = route.page.title();
-        let native_home = matches!(route.page, super::topcoat_frontend::shell::Page::Home);
-        if native_home {
+        let native_page = matches!(
+            (route.layout, route.page),
+            (
+                super::topcoat_frontend::shell::Layout::Private,
+                super::topcoat_frontend::shell::Page::Home
+                    | super::topcoat_frontend::shell::Page::IssueDetail(_)
+            )
+        );
+        if native_page {
             super::topcoat_frontend::native::home::authorize(cx)?;
         }
         let scope = match (route.layout, route.project) {
@@ -69,7 +76,7 @@ mod topcoat_app {
             route.layout,
             super::topcoat_frontend::shell::Layout::Private
         );
-        let session_attributes = if native_home {
+        let session_attributes = if native_page {
             topcoat::view::Attributes::with_capacity(0)
         } else {
             super::topcoat_frontend::session::bootstrap_attributes(cx, &scope, require_session)
@@ -88,7 +95,7 @@ mod topcoat_app {
                     <meta name="theme-color" content="#fafcfb" media="(prefers-color-scheme: light)">
                     <meta name="theme-color" content="#1c221f" media="(prefers-color-scheme: dark)">
                     <link rel="stylesheet" href=(mounted_url(cx, super::topcoat_frontend::assets::app_stylesheet_url()))>
-                    if !native_home {
+                    if !native_page {
                     <link rel="stylesheet" href=(mounted_url(cx, super::topcoat_frontend::shell::STYLESHEET_PATH))>
                     <link rel="stylesheet" href=(mounted_url(cx, super::topcoat_frontend::shell::mobile::STYLESHEET_PATH))>
                     <link rel="stylesheet" href=(mounted_url(cx, super::topcoat_frontend::shell::projects::STYLESHEET_PATH))>
@@ -113,7 +120,7 @@ mod topcoat_app {
                     <link rel="stylesheet" href=(mounted_url(cx, super::topcoat_frontend::public::STYLESHEET_PATH))>
                     }
                     <script type="module" src=(mounted_url(cx, super::topcoat_frontend::assets::runtime_url()))></script>
-                    if !native_home {
+                    if !native_page {
                     <script defer="defer" src=(mounted_url(cx, super::topcoat_frontend::shell::ROUTE_SCRIPT_PATH))></script>
                     <script defer="defer" src=(mounted_url(cx, super::topcoat_frontend::session::SCRIPT_PATH))></script>
                     <script defer="defer" src=(mounted_url(cx, super::topcoat_frontend::attachments::SCRIPT_PATH))></script>
@@ -170,6 +177,13 @@ mod topcoat_app {
             return Err(topcoat::router::error::redirect_permanent(destination).into());
         }
         use super::topcoat_frontend::shell::{Layout, Page};
+        if let (Layout::Private, Some(project), Page::IssueDetail(identifier)) =
+            (route.layout, route.project, route.page)
+        {
+            return super::topcoat_frontend::native::issue_edit::route::screen(
+                cx, &route, project, identifier,
+            );
+        }
         let content = match route.layout {
             Layout::Private => match route.page {
                 Page::Home => return super::topcoat_frontend::native::home::screen(cx),
@@ -205,12 +219,9 @@ mod topcoat_app {
                     route.project,
                     super::topcoat_frontend::issue_list::Layout::Board,
                 ),
-                Page::IssueDetail(identifier) => super::topcoat_frontend::issue_detail::route::screen(
-                    cx,
-                    route.project.unwrap_or_default(),
-                    identifier,
-                    false,
-                ),
+                Page::IssueDetail(_) => {
+                    return Err(topcoat::router::error::not_found().into());
+                }
                 Page::Pages => route.project.map_or_else(
                     || super::topcoat_frontend::shell::placeholder(cx, &route),
                     |project| super::topcoat_frontend::pages::list(cx, project, false),
@@ -1021,13 +1032,10 @@ mod topcoat_app_tests {
     #[tokio::test]
     async fn topcoat_private_issue_and_page_routes_mount_their_feature_slices() {
         let router = topcoat::router::tower::TowerService::new(topcoat_app::router());
-        for (path, expected) in [
-            (
-                "/LIF/issues/new?status=active&module=7",
-                "data-topcoat-issue-create=\"\"",
-            ),
-            ("/LIF/issues/LIF-42", "data-topcoat-issue-detail=\"\""),
-        ] {
+        for (path, expected) in [(
+            "/LIF/issues/new?status=active&module=7",
+            "data-topcoat-issue-create=\"\"",
+        )] {
             let response = router
                 .clone()
                 .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
@@ -1036,11 +1044,52 @@ mod topcoat_app_tests {
             let body = response.into_body().collect().await.unwrap().to_bytes();
             let body = String::from_utf8_lossy(&body);
             assert!(body.contains(expected), "{path}");
-            if path.contains("issues/LIF-42") {
-                assert!(body.contains("data-topcoat-issue-editor=\"\""), "{path}");
-                assert!(body.contains("data-topcoat-collaboration=\"\""), "{path}");
-            }
         }
+        // Native detail now resolves the real issue before rendering; an empty
+        // scaffold router cannot provide its authorization or database context.
+        let fixture = super::topcoat_frontend::native::home_fixture::fixture();
+        {
+            let conn = fixture.db.write().unwrap();
+            let actor = crate::db::queries::users::validate_session(&conn, &fixture.token).unwrap();
+            let issue_id = crate::db::queries::resolve_identifier(&conn, "ACC-1").unwrap();
+            let issue = crate::db::queries::get_issue(&conn, issue_id).unwrap();
+            crate::db::queries::members::upsert_member(
+                &conn,
+                issue.project_id,
+                actor.id,
+                crate::db::models::Role::Maintainer,
+            )
+            .unwrap();
+        }
+        let mut request = Request::builder()
+            .uri("/ACC/issues/ACC-1")
+            .header(
+                axum::http::header::COOKIE,
+                format!("lific_token={}", fixture.token),
+            )
+            .body(Body::empty())
+            .unwrap();
+        request.extensions_mut().insert(axum::extract::ConnectInfo(
+            "127.0.0.1:3000".parse::<std::net::SocketAddr>().unwrap(),
+        ));
+        let response = fixture.app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let body = String::from_utf8_lossy(&body);
+        for expected in [
+            "data-native-issue-editor=\"ACC-1\"",
+            "Visible active initial work",
+            "aria-label=\"Issue title\"",
+            "aria-label=\"Issue description\"",
+            "/__native_issue_edit/save/title",
+        ] {
+            assert!(
+                body.contains(expected),
+                "missing production detail: {expected}"
+            );
+        }
+        assert!(!body.contains("data-topcoat-issue-editor"));
+        assert!(!body.contains("data-topcoat-collaboration"));
         for (path, expected, scope) in [
             ("/LIF/pages", "data-topcoat-pages=\"list\"", "private"),
             ("/LIF/pages/7", "data-topcoat-pages=\"detail\"", "private"),
@@ -3464,7 +3513,6 @@ mod public_surface_tests {
         for path in [
             "/login",
             "/LIF/issues",
-            "/LIF/issues/LIF-1",
             "/LIF/pages",
             "/LIF/plans",
             "/public/PUB/issues",
@@ -3495,6 +3543,46 @@ mod public_surface_tests {
             assert!(body.contains("class=\"tc-shell\""), "{path}: {body}");
             assert!(body.contains("/__topcoat-runtime.js"), "{path}: {body}");
         }
+
+        let issue_path = "/PRIV/issues/PRIV-1";
+        let anonymous_issue = anonymous(&d.app, "GET", issue_path).await;
+        assert_eq!(anonymous_issue.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(anonymous_issue.headers()[header::LOCATION], "/login");
+        assert!(!body_string(anonymous_issue).await.contains("classified"));
+
+        let mut document = Request::builder()
+            .uri(issue_path)
+            .header(header::COOKIE, format!("lific_token={}", d.session_token))
+            .body(Body::empty())
+            .unwrap();
+        document.extensions_mut().insert(axum::extract::ConnectInfo(
+            "127.0.0.1:3000".parse::<SocketAddr>().unwrap(),
+        ));
+        let response = d.app.clone().oneshot(document).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_string(response).await;
+        let document = scraper::Html::parse_document(&body);
+        assert_eq!(
+            document
+                .select(&scraper::Selector::parse(".native-home-shell").unwrap())
+                .count(),
+            1,
+            "the native issue owns one application shell",
+        );
+        for expected in [
+            "/__topcoat-runtime.js",
+            "data-native-issue-editor=\"PRIV-1\"",
+            "Private issue",
+            "classified",
+            "native-issue-body-input-PRIV-1",
+        ] {
+            assert!(
+                body.contains(expected),
+                "authenticated native issue: {body}"
+            );
+        }
+        assert!(!body.contains("issue-detail.js"));
+        assert!(!body.contains("bootstrap.js"));
 
         let mut proxied_document = Request::builder()
             .uri("/login")
