@@ -45,3 +45,9 @@ pub(crate) mod socket_admission;
 #[cfg(test)]
 mod stylesheet;
 pub(crate) mod transport;
+
+#[cfg(test)]
+mod workspace_production;
+
+pub(crate) mod issue_list;
+pub(crate) mod workspace;

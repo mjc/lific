@@ -100,11 +100,77 @@ pub(crate) fn shell_with_palette_for_page_and_topbar<'a>(
     palette_open: Signal<bool>,
     topbar: Option<BoxView<'a>>,
 ) -> BoxView<'a> {
+    render_shell(
+        cx,
+        user,
+        projects,
+        route,
+        PageRegion::Wrapped { content, topbar },
+        palette_open,
+    )
+}
+
+/// The shell survives replacement of the page region beneath it.
+pub(crate) fn shell_with_workspace<'a>(
+    cx: &'a Cx,
+    user: &AuthUser,
+    projects: &[Project],
+    route: &ParsedRoute<'_>,
+    region: BoxView<'a>,
+    palette_open: Signal<bool>,
+) -> BoxView<'a> {
+    render_shell(
+        cx,
+        user,
+        projects,
+        route,
+        PageRegion::Workspace(region),
+        palette_open,
+    )
+}
+
+enum PageRegion<'a> {
+    Wrapped {
+        content: BoxView<'a>,
+        topbar: Option<BoxView<'a>>,
+    },
+    Workspace(BoxView<'a>),
+}
+
+/// Preserve one header/panel layout across full pages and disposable regions.
+pub(crate) fn page_region<'a>(
+    cx: &'a Cx,
+    content: BoxView<'a>,
+    topbar: Option<BoxView<'a>>,
+    page_label: String,
+) -> BoxView<'a> {
     let topbar_class = if topbar.is_some() {
         "native-home-topbar native-issue-detail__topbar"
     } else {
         "native-home-topbar"
     };
+    view! { cx =>
+        <header class=(topbar_class)>
+            if let Some(topbar) = topbar { (topbar) }
+            else { <span>(page_label)</span> }
+        </header>
+        <div class="native-home-panel-wrap">
+            <main id="main-content" tabindex="-1" class="native-home-panel">(content)</main>
+            <div class="native-home-shadow-top" aria-hidden="true"></div>
+            <div class="native-home-shadow-left" aria-hidden="true"></div>
+        </div>
+    }
+    .boxed()
+}
+
+fn render_shell<'a>(
+    cx: &'a Cx,
+    user: &AuthUser,
+    projects: &[Project],
+    route: &ParsedRoute<'_>,
+    region: PageRegion<'a>,
+    palette_open: Signal<bool>,
+) -> BoxView<'a> {
     let home_active = route.page == Page::Home;
     let active_page = route.page.navigation_page().title();
     let current_project = route.project.map(str::to_owned);
@@ -173,6 +239,12 @@ pub(crate) fn shell_with_palette_for_page_and_topbar<'a>(
         .take(2)
         .flat_map(char::to_uppercase)
         .collect::<String>();
+    let content = match region {
+        PageRegion::Wrapped { content, topbar } => {
+            page_region(cx, content, topbar, page_label.clone())
+        }
+        PageRegion::Workspace(region) => region,
+    };
     view! { cx =>
         <div class="native-home-shell" (super::session::mount(cx)) :data-collapsed=$(if collapsed.get() { "true" } else { "false" })>
             <span hidden="hidden" (super::session::account_mount(cx, account_id, account_admin))></span>
@@ -228,18 +300,7 @@ pub(crate) fn shell_with_palette_for_page_and_topbar<'a>(
                     </button>
                     <img src=(super::transport::mounted_url(cx, "/logo.webp")) alt="" width="22" height="22"/><span>(page_label.clone())</span>
                 </header>
-                <header class=(topbar_class)>
-                    if let Some(topbar) = topbar {
-                        (topbar)
-                    } else {
-                        <span>(page_label)</span>
-                    }
-                </header>
-                <div class="native-home-panel-wrap">
-                    <main id="main-content" tabindex="-1" class="native-home-panel">(content)</main>
-                    <div class="native-home-shadow-top" aria-hidden="true"></div>
-                    <div class="native-home-shadow-left" aria-hidden="true"></div>
-                </div>
+                (content)
             </div>
             <section data-native-mobile-nav="" role="dialog" aria-modal="true" aria-label="Workspace navigation" :hidden=$(!mobile_open.get())>
                 <div data-native-mobile-root="" :hidden=$(mobile_pane.get() != "root")>

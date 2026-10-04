@@ -8,7 +8,7 @@ use crate::db::{DbPool, models::*};
 use crate::error::LificError;
 use crate::realtime::{RealtimeEvent, RealtimeHub};
 
-use super::{filter_visible, retain_visible_relations, with_read, with_write};
+use super::{retain_visible_relations, with_read, with_write};
 
 pub(super) async fn list_issues(
     State(db): State<DbPool>,
@@ -18,21 +18,7 @@ pub(super) async fn list_issues(
     if q.assignee.is_some() {
         q.caller_user_id = caller_id(&db, &identity)?;
     }
-    if let Some(pid) = q.project_id {
-        authz::require_role(&db, &identity, pid, Role::Viewer)?;
-        let mut issues = with_read(&db, |conn| crate::db::queries::list_issues(conn, &q))?;
-        retain_visible_relations(&db, &identity, &mut issues)?;
-        return Ok(Json(issues));
-    }
-    // Cross-project list: filter instead of denying (LIF-197 scope item 2).
-    let visible = authz::visible_project_ids(&db, &identity)?;
-    let mut issues = with_read(&db, |conn| {
-        let mut issues = crate::db::queries::list_issues(conn, &q)?;
-        crate::db::queries::retain_visible_relations(conn, &mut issues, visible.as_ref());
-        Ok(issues)
-    })?;
-    issues = filter_visible(issues, &visible, |i| Some(i.project_id));
-    Ok(Json(issues))
+    crate::services::issues::list_issues(&db, &identity, &q).map(Json)
 }
 
 /// LIF-147: the account `me` means. A bot's "me" is its owner, as in MCP.
