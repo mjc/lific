@@ -27,7 +27,7 @@
 .native-issue-detail__breadcrumbs :is(a,[aria-current]){display:flex;align-items:center;gap:6px;min-width:0;color:var(--tc-text);font:500 13px/1.6 var(--tc-font);text-decoration:none}
 .native-issue-detail__breadcrumbs a{color:var(--tc-muted)}
 .native-issue-detail__breadcrumbs a:hover{color:var(--tc-text)}
-.native-issue-detail__breadcrumbs [data-mono]{font-family:ui-monospace,monospace}
+.native-issue-detail__breadcrumbs [data-mono]{font-family:ui-monospace,"Cascadia Code","Fira Code",monospace}
 .native-issue-detail__breadcrumbs [data-separator]{flex-shrink:0;color:var(--tc-faint)}
 .native-issue-detail__breadcrumbs [data-label]{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:224px}
 .native-issue-detail__copy{width:0;opacity:0;overflow:hidden;padding:0;border:0;background:transparent;color:var(--tc-faint)}

@@ -57,7 +57,7 @@ jobs:
           cache-bin: false
           cache-workspace-crates: true
       - name: Install original frontend reference dependencies
-        run: devenv --profile topcoat shell -- bun --cwd "$LIFIC_SVELTE_SNAPSHOT" install --frozen-lockfile
+        run: devenv --profile topcoat shell -- bun install --cwd "$LIFIC_SVELTE_SNAPSHOT" --frozen-lockfile
       - name: Run Topcoat browser tests
         run: devenv --profile e2e tasks run lific:e2e
       - name: Run translated frontend unit tests
@@ -111,7 +111,7 @@ jobs:
           cache-bin: false
           cache-workspace-crates: true
       - name: Install original frontend reference dependencies
-        run: devenv --profile topcoat shell -- bun --cwd "$LIFIC_SVELTE_SNAPSHOT" install --frozen-lockfile
+        run: devenv --profile topcoat shell -- bun install --cwd "$LIFIC_SVELTE_SNAPSHOT" --frozen-lockfile
       - name: Check the packaged application
         run: devenv shell -- cargo package --locked
       - name: Run project, hook, and documentation checks

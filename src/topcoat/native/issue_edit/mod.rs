@@ -4,6 +4,7 @@ pub(crate) mod actions;
 #[cfg(test)]
 mod browser_production;
 pub(crate) mod controls;
+pub(crate) mod delete;
 pub(crate) mod export;
 mod model;
 pub(crate) mod route;
