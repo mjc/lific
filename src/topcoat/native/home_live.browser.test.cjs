@@ -31,7 +31,7 @@ function control(action, fields = {}) {
 async function resources(sockets, receivers) {
   const result = await control('wait_count', {sockets, receivers});
   assert.equal(result.sockets, sockets, 'The real server owns exactly the expected native socket permits.');
-  assert.equal(result.receivers, receivers, 'The current content lifetime owns exactly the expected session receiver.');
+  assert.equal(result.receivers, receivers, 'The physical sockets own exactly the expected session authority receivers.');
   return result;
 }
 function contentSockets(sockets) {
@@ -102,7 +102,7 @@ test(`native Home live production ${scenario}`, async t => {
           await page.waitForFunction(() =>
             document.querySelector('.tc-native-home__page')?.getAttribute('data-native-home-connected') === 'true' &&
             document.querySelector('.native-home-palette-results')?.getAttribute('data-native-home-connected') === 'true');
-          await resources(2, 1);
+          await resources(2, 2);
           assert.deepEqual(sockets.map(socket => new URL(socket.url).pathname).sort(),
             [`${prefix}/__native_home/content`, `${prefix}/__native_home/palette`].sort());
           assert.deepEqual(await page.locator('script[src]').evaluateAll(elements => elements.map(element => new URL(element.src).pathname)),
@@ -147,7 +147,7 @@ test(`native Home live production ${scenario}`, async t => {
             assert.ok(sockets.every(socket => !socket.closed), 'Membership projection refresh preserves both existing connections.');
             assert.ok(requests.every(request => !new URL(request.url()).pathname.split('/').includes('api')));
             assert.deepEqual(errors, []);
-            const connected = await resources(2, 1);
+            const connected = await resources(2, 2);
             assert.equal(connected.eventReceivers, 2);
             return;
           }
@@ -177,7 +177,7 @@ test(`native Home live production ${scenario}`, async t => {
             await page.waitForFunction(() =>
               document.querySelector('.tc-native-home__page')?.getAttribute('data-native-home-connected') === 'true' &&
               document.querySelector('.native-home-palette-results')?.getAttribute('data-native-home-connected') === 'true');
-            const connected = await resources(2, 1);
+            const connected = await resources(2, 2);
             assert.equal(connected.viewerSockets, 0, 'The expired account releases both old socket permits.');
             assert.equal(connected.replacementSockets, 2, 'The fresh document owns only current account B sockets.');
             assert.equal(connected.eventReceivers, 2);
@@ -199,7 +199,7 @@ test(`native Home live production ${scenario}`, async t => {
             assert.ok(!palette.closed, 'Content recovery keeps the sibling palette connection alive.');
             assert.equal(await work.getByText(initialTitle, {exact: true}).count(), 0);
             await assertActivity(work, edit.titleRows);
-            await resources(2, 1);
+            await resources(2, 2);
           }
 
           const title = `Visible live canary ${scenario}-${index}`;
@@ -219,7 +219,7 @@ test(`native Home live production ${scenario}`, async t => {
           const active = sockets.filter(socket => !socket.closed);
           assert.deepEqual(active.map(socket => new URL(socket.url).pathname).sort(),
             [`${prefix}/__native_home/content`, `${prefix}/__native_home/palette`].sort());
-          const connected = await resources(2, 1);
+          const connected = await resources(2, 2);
           assert.equal(connected.eventReceivers, 2, 'One content-owned live subscription joins the fixture observer.');
         } finally {
           try {

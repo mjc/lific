@@ -8,8 +8,8 @@ There is no request-aware URL attribute visitor in the pinned view renderer.
 
 The vendored framework runtime therefore has one transport helper and three
 changed call sites: procedure requests, shard requests, and shard socket URLs.
-It also includes the tuple, mount lifecycle, comment decoding, and
-connected-render patches described below. The rest of the upstream runtime is preserved. Page request URLs already
+It also includes the tuple, mount lifecycle, comment decoding, connected-render,
+and document navigation patches described below. The rest of the upstream runtime is preserved. Page request URLs already
 use the current mounted browser location.
 
 ## Rust document boundary
@@ -55,7 +55,7 @@ continue to use their existing framework conversion. Stored procedure URLs
 remain logical. Tagged Vec, Array, and Slice surrogates retain their existing
 implementations.
 
-Together these patches prepend 27 helper/comment lines and change eight
+Together these patches prepend 27 helper/comment lines and change thirteen
 sites in the pinned asset. To reconstruct upstream, remove those first 27
 lines and reverse the following substitutions:
 
@@ -68,6 +68,11 @@ lines and reverse the following substitutions:
 | `function f(t){if(t==null)return null;if(Array.isArray(t))return t.map(f);` | `function f(t){if(t==null)return null;` | 1 |
 | ``let r=e.name.substring(ke.length);if(r==="mount"){topcoatMount(t,()=>T(e.value,`event @${r}`)(Object.assign(Object.create(n.runtime.context),{abortSignal:n.abortSignal})),n);return}let o=T(e.value,`event @${r}`)(n.runtime.context);`` | ``let r=e.name.substring(ke.length),o=T(e.value,`event @${r}`)(n.runtime.context);`` | 1 |
 | `refresh(){if(this.isDisposed)return Promise.resolve();if(this.connection!==null)return this.connection.requestRun(),Promise.resolve();if(this.requiresConnection){for(let n of this.ancestors())if(n.connection!==null\|\|n.requiresConnection)return n.refresh();return this.connectIfRequired(),Promise.resolve()}` | `refresh(){if(this.connection?.isOpen)return this.connection.requestRun(),Promise.resolve();if(this.requiresConnection){for(let n of this.ancestors())if(n.connection?.isOpen)return n.refresh()}` | 1 |
+| `case"redirect":t.runtime.redirect(e.location);break;` | `case"redirect":location.assign(e.location);break;` | 1 |
+| `constructor(e,n,r){this.lifetime=e;this.reportError=n;this.redirect=r;e.addEventListener` | `constructor(e,n){this.lifetime=e;this.reportError=n;e.addEventListener` | 1 |
+| `if(s.redirected){this.redirect(s.url);return}` | `if(s.redirected){location.assign(s.url);return}` | 1 |
+| `new H(this.lifetime.abortSignal,r=>n.reportError(r),r=>n.redirect(r))` | `new H(this.lifetime.abortSignal,r=>n.reportError(r))` | 1 |
+| `var ne=class{navigating=!1;redirect(e){if(this.navigating)return;this.navigating=!0;location.assign(e)}registry=new te;` | `var ne=class{registry=new te;` | 1 |
 
 The reconstructed bytes match the upstream SHA-256 recorded in
 `../assets/runtime.LICENSE.txt`.
@@ -133,6 +138,16 @@ Disposed units stop immediately, and the existing lifetime abort signal cancels
 load listeners, socket ownership, and reconnect timers. Shards without a
 connection requirement continue to use their existing HTTP transport.
 
+## Document navigation
+
+Sibling connected render units can receive redirects for the same document.
+The document Runtime claims its first redirect before calling `location.assign`.
+Socket protocol redirects and redirected HTTP render responses share that claim,
+so a second connection cannot initiate another navigation while the first is
+pending. The claim remains terminal for that Runtime; a new document creates a
+new Runtime. Error reporting and transport lifetimes retain their existing paths.
+This coordination contains no application session, destination or route policy.
+
 ## Private raw socket admission
 
 The production router registers Rust `SocketAdmission` after `.runtime()`.
@@ -190,6 +205,10 @@ The connected-render case holds document loading and socket handshakes for both
 own and ancestor connections. It proves that mount and later signal updates
 wait without HTTP fallback, that initial open and reconnect send the freshest
 inputs, and that HTTP-only shards continue to POST their current arguments.
+The navigation unit test evaluates the actual asset with only document startup
+replaced by test exports. Its real frame handler and HTTP request controller
+prove one navigation across sibling sockets, mixed HTTP/socket redirects and
+sibling HTTP controllers, then a fresh claim for a new document Runtime.
 The reconstruction test reverses all declared substitutions and checks the
 exact pinned upstream SHA-256. Lifecycle browser tests cover later signal
 declarations, one refresh with a persistent sentinel, reused DOM elements,

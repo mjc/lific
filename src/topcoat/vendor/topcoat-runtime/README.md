@@ -29,12 +29,15 @@ Context retention and policy selection in the upgrade callback:
 ```diff
      let target = Arc::new(ConnectionTarget::from_handshake(cx));
 +    let policy = try_app_context::<SocketPolicy>(cx).copied().unwrap_or_default();
++    let retirement = try_request_context::<SocketLifetime>(cx)
++        .and_then(SocketLifetime::take)
++        .unwrap_or_else(|| Box::pin(std::future::pending()));
 +    let connection_context = cx.clone();
      upgrade
          .protocols([RUNTIME_PROTOCOL])
 -        .on_upgrade(move |socket| run(target, socket))
 +        .on_upgrade(move |socket| async move {
-+            run(target, socket, policy).await;
++            run(target, socket, policy, retirement).await;
 +            drop(connection_context);
 +        })
 ```
@@ -57,6 +60,19 @@ aborts on drop if the socket owner is cancelled. Render replacement retains
 the upstream abort-and-await ordering before the next run announcement, and
 the existing output channel capacity of 16 is preserved.
 
+The socket layer also exports `SocketLifetime` and `SocketRetirement`. The
+application installs one `Send` retirement future in the upgrade request context.
+`accept` takes it once, before the upgrade callback captures that context. A
+missing hook remains pending. Its future is polled independently of the input,
+output and progress pumps; completing it cancels those pumps and aborts/awaits
+the active render before retirement output. A `Redirect` uses the existing
+protocol frame, followed by a close; each operation has the configured send
+bound, so retirement output can take up to two send intervals. `Close` sends
+only the close. The driver contains no application authority decisions.
+The application must capture its parent context before installing the lifetime
+on a child, so its future cannot hold a reference cycle to itself. The original
+render request construction and browser distribution remain unchanged.
+
 The normalized `Cargo.toml` adds the native Tokio `time` and `macros` features
 needed by this coordinator. It also restores the upstream test-only Topcoat
 dependency omitted by the packaged manifest, using registry version `=0.9.0`,
@@ -75,5 +91,10 @@ Only this README, those two Rust files, the normalized Cargo manifest and lock
 differ; LICENSE and this checksum list are additions. Reversing the declared
 policy, lifecycle, context retention and manifest changes reproduces the
 upstream source hashes.
+Unit tests cover one-shot consumption, exact Close outcomes and retaining a
+Send-only future in the Send + Sync request context. Actual application TCP
+tests cover request-scoped Redirect lifetimes, idle session retirement,
+periodic revalidation, stable ownership across rerenders and peer cleanup.
 The browser source and distribution are unchanged. Lific's existing
-`src/topcoat/assets/runtime.js` transport patches remain separate and unchanged.
+`src/topcoat/assets/runtime.js` transport patches remain separate. Its document
+runtime claims navigation once across sibling framework redirects.

@@ -32,7 +32,7 @@ const SERVER_PING_INTERVAL: Duration = Duration::from_secs(30);
 const SOCKET_SEND_TIMEOUT: Duration = Duration::from_secs(5);
 // Retire idle revoked sockets too. Protected deliveries revalidate separately,
 // so cross-process recovery does not wait for this timer to stop data access.
-const SESSION_REVALIDATE_INTERVAL: Duration = Duration::from_secs(60);
+pub(crate) const SESSION_REVALIDATE_INTERVAL: Duration = Duration::from_secs(60);
 /// Per-user cap on concurrent event sockets. Generous for real browser tabs,
 /// but stops one authenticated client from accumulating unbounded server
 /// tasks + broadcast receivers.
@@ -213,20 +213,32 @@ impl RealtimeHub {
     /// `MAX_SOCKETS_TOTAL`. The returned permit releases the slot on drop, so a
     /// slot can never leak past its socket task.
     pub(crate) fn try_acquire_socket(&self, user_id: i64) -> Option<SocketPermit> {
+        self.try_acquire_socket_owner(SocketOwner::Account(user_id))
+    }
+
+    /// Published sockets share the instance budget without consuming any
+    /// account's connection slots.
+    pub(crate) fn try_acquire_published_socket(&self) -> Option<SocketPermit> {
+        self.try_acquire_socket_owner(SocketOwner::Published)
+    }
+
+    fn try_acquire_socket_owner(&self, owner: SocketOwner) -> Option<SocketPermit> {
         let mut connections = self.connections.lock().expect("connections lock poisoned");
         if connections.total >= MAX_SOCKETS_TOTAL {
             return None;
         }
-        let count = connections.per_user.entry(user_id).or_insert(0);
-        if *count >= MAX_SOCKETS_PER_USER {
-            return None;
+        if let SocketOwner::Account(user_id) = owner {
+            let count = connections.per_user.entry(user_id).or_insert(0);
+            if *count >= MAX_SOCKETS_PER_USER {
+                return None;
+            }
+            *count += 1;
         }
-        *count += 1;
         connections.total += 1;
         drop(connections);
         Some(SocketPermit {
             connections: Arc::clone(&self.connections),
-            user_id,
+            owner,
         })
     }
 
@@ -258,7 +270,7 @@ impl RealtimeHub {
         let _ = self.revocations.send(user_id);
     }
 
-    /// Subscribe to account retirement notifications for a native render lifetime.
+    /// Subscribe to account retirement notifications for a native socket lifetime.
     pub(crate) fn subscribe_revocations(&self) -> broadcast::Receiver<i64> {
         self.revocations.subscribe()
     }
@@ -277,6 +289,14 @@ impl RealtimeHub {
     pub(crate) fn socket_count(&self, user_id: i64) -> usize {
         let connections = self.connections.lock().expect("connections lock poisoned");
         connections.per_user.get(&user_id).copied().unwrap_or(0)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn total_socket_count(&self) -> usize {
+        self.connections
+            .lock()
+            .expect("connections lock poisoned")
+            .total
     }
 
     fn send_message(&self, event: RealtimeEvent, seq: Option<i64>, audience: RealtimeAudience) {
@@ -343,23 +363,34 @@ struct EventEnvelope<'a> {
     seq: Option<i64>,
 }
 
-/// RAII guard for one live socket's slot in the per-user and instance-wide
-/// connection counts.
+#[derive(Clone, Copy)]
+enum SocketOwner {
+    Account(i64),
+    Published,
+}
+
+/// RAII guard for one live socket's instance slot and, for an account socket,
+/// its per-user slot.
 #[must_use = "dropping the permit releases the socket slot"]
 pub(crate) struct SocketPermit {
     connections: Arc<Mutex<SocketCounts>>,
-    user_id: i64,
+    owner: SocketOwner,
 }
 
 impl Drop for SocketPermit {
     fn drop(&mut self) {
         let mut connections = self.connections.lock().expect("connections lock poisoned");
-        if let Some(count) = connections.per_user.get_mut(&self.user_id) {
-            *count -= 1;
-            if *count == 0 {
-                connections.per_user.remove(&self.user_id);
+        match self.owner {
+            SocketOwner::Account(user_id) => {
+                if let Some(count) = connections.per_user.get_mut(&user_id) {
+                    *count -= 1;
+                    if *count == 0 {
+                        connections.per_user.remove(&user_id);
+                    }
+                    connections.total = connections.total.saturating_sub(1);
+                }
             }
-            connections.total = connections.total.saturating_sub(1);
+            SocketOwner::Published => connections.total = connections.total.saturating_sub(1),
         }
     }
 }
@@ -578,13 +609,13 @@ macro_rules! next_socket_input {
 use next_socket_input;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum RevocationFlow {
+pub(crate) enum RevocationFlow {
     Ignore,
     Revalidate,
     Close,
 }
 
-fn revocation_flow(revoked: Result<i64, RecvError>, user_id: i64) -> RevocationFlow {
+pub(crate) fn revocation_flow(revoked: Result<i64, RecvError>, user_id: i64) -> RevocationFlow {
     match revoked {
         Ok(id) if id != user_id => RevocationFlow::Ignore,
         Ok(_) | Err(RecvError::Closed) => RevocationFlow::Close,
