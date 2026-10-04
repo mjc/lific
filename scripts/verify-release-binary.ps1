@@ -74,15 +74,15 @@ allow_signup = false
     $page = Invoke-WebRequest "http://127.0.0.1:$port/" -TimeoutSec 5
     if ($page.StatusCode -ne 200 -or $page.Content -notmatch "<html") { throw "Embedded web UI did not respond with HTML" }
     if ($page.Content -match '(?:src|href)="/assets/') { throw "Web UI references a retired frontend bundle" }
-    $assets = [regex]::Matches($page.Content, '/__topcoat-[A-Za-z0-9._~%+-]+\.(?:js|css)') |
+    $assets = [regex]::Matches($page.Content, '/__topcoat-[A-Za-z0-9._~%+-]+\.(?:js|css)(?:\?[^"<>\s]*)?') |
         ForEach-Object { $_.Value } | Sort-Object -Unique
-    if ($assets -notcontains "/__topcoat-runtime.js" -or -not ($assets | Where-Object { $_.EndsWith(".css") })) {
+    if (-not ($assets | Where-Object { $_ -match '^/__topcoat-runtime\.js(?:\?v=[0-9a-f]{64})?$' }) -or -not ($assets | Where-Object { $_ -match '^[^?]+\.css(?:\?.*)?$' })) {
         throw "Web UI is missing the Topcoat runtime or stylesheet"
     }
     foreach ($asset in $assets) {
         $response = Invoke-WebRequest "http://127.0.0.1:$port$asset" -TimeoutSec 5
         $mime = $response.Headers["Content-Type"] -join ","
-        $expectedMime = if ($asset.EndsWith(".js")) { "(?:java|ecma)script" } else { "text/css" }
+        $expectedMime = if ($asset -match '^[^?]+\.js(?:\?.*)?$') { "(?:java|ecma)script" } else { "text/css" }
         $assetStart = $response.Content.Substring(0, [Math]::Min(200, $response.Content.Length))
         if ($response.StatusCode -ne 200 -or $response.RawContentLength -eq 0 -or $mime -notmatch $expectedMime -or $assetStart -match "<!doctype html|<html") {
             throw "Embedded asset $asset was empty or returned the wrong content type: $mime"

@@ -3,14 +3,15 @@
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const http = require('node:http');
-const net = require('node:net');
+const {createHash} = require('node:crypto');
 const path = require('node:path');
 const {pathToFileURL} = require('node:url');
+const {mountedProxy} = require('./browser_fixture.cjs');
 
 const snapshot = process.argv[4];
 const output = '/tmp/lific-native-home-production';
 const fixedTime = '2026-10-03T16:00:00Z';
+const runtimeVersion = createHash('sha256').update(fs.readFileSync(path.resolve(__dirname, '../assets/runtime.js'))).digest('hex');
 function checkpoint(message) {
   const line = `${new Date().toISOString()} ${message}\n`;
   process.stderr.write(line);
@@ -37,56 +38,6 @@ const recents = [
   {type: 'plan', routeId: '1', identifier: 'ACC-PLAN-1', project: 'ACC', ts: Date.parse(fixedTime) - 2000,
     title: 'Plan "quote" & <b>text</b>'},
 ];
-
-async function mountedProxy(upstream, prefix) {
-  const requests = [], sockets = [], connections = new Set();
-  const logicalPath = url => !prefix ? url : url.startsWith(`${prefix}/`) ? url.slice(prefix.length) : null;
-  const headersFor = request => {
-    const headers = {...request.headers};
-    for (const name of ['forwarded', 'x-forwarded-for', 'x-forwarded-host', 'x-forwarded-proto', 'x-forwarded-prefix']) delete headers[name];
-    if (prefix) headers['x-forwarded-prefix'] = prefix;
-    return headers;
-  };
-  const server = http.createServer((request, response) => {
-    const logical = logicalPath(request.url);
-    if (!logical) {response.writeHead(404); response.end(); return;}
-    requests.push({method: request.method, path: request.url});
-    const forwarded = http.request(upstream, {path: logical, method: request.method, headers: headersFor(request)}, incoming => {
-      response.writeHead(incoming.statusCode, incoming.headers);
-      incoming.pipe(response);
-    });
-    forwarded.on('error', () => {if (!response.headersSent) response.writeHead(502); response.end();});
-    request.pipe(forwarded);
-  });
-  server.on('upgrade', (request, socket, head) => {
-    const logical = logicalPath(request.url);
-    if (!logical) {socket.destroy(); return;}
-    sockets.push(request.url);
-    const backend = net.connect(Number(upstream.port || 80), upstream.hostname, () => {
-      const headers = headersFor(request);
-      backend.write(`${request.method} ${logical} HTTP/${request.httpVersion}\r\n${Object.entries(headers).map(([name, value]) => `${name}: ${value}`).join('\r\n')}\r\n\r\n`);
-      if (head.length) backend.write(head);
-      socket.pipe(backend); backend.pipe(socket);
-    });
-    connections.add(socket); connections.add(backend);
-    socket.on('close', () => {connections.delete(socket); backend.destroy();});
-    socket.on('error', () => backend.destroy());
-    backend.on('close', () => {connections.delete(backend); socket.destroy();});
-    backend.on('error', () => socket.destroy());
-  });
-  await new Promise((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', resolve);
-  });
-  return {
-    origin: `http://127.0.0.1:${server.address().port}`, requests, sockets,
-    async close() {
-      for (const connection of connections) connection.destroy();
-      server.closeAllConnections();
-      await new Promise(resolve => server.close(resolve));
-    },
-  };
-}
 
 async function newContext(browser, origin, token, viewport, theme, master = false) {
   const context = await browser.newContext({
@@ -162,7 +113,7 @@ async function assertNativeHome(state, proxy, prefix) {
   assert.equal(initial.includes('Private hidden'), false, 'Initial HTML must not contain inaccessible project or issue data.');
   assert.equal(initial.includes('Loading your dashboard'), false);
   assert.deepEqual(await page.locator('script[src]').evaluateAll(elements => elements.map(element => element.getAttribute('src'))),
-    [`${prefix}/__topcoat-runtime.js`], 'The production Home loads only the framework runtime.');
+    [`${prefix}/__topcoat-runtime.js?v=${runtimeVersion}`], 'The production Home loads only the framework runtime.');
   await page.locator('#native-home-greeting').filter({hasText: 'Good morning, viewer'}).waitFor();
   assert.equal(await page.locator('#native-home-greeting').textContent(), 'Good morning, viewer');
   assert.equal(await page.locator('#native-home-date').textContent(), 'Saturday, October 3');

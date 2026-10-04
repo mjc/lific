@@ -48,6 +48,7 @@ const UPLOAD_BODY_LIMIT: usize = 64 * 1024 * 1024;
 use crate::authz::filter_visible;
 use crate::db::{DbPool, models::*, queries};
 use crate::error::LificError;
+use crate::services::issues::retain_visible_relations;
 
 pub use attachments::{AttachmentConfig, AttachmentUploadLimiter};
 
@@ -629,20 +630,6 @@ where
 {
     let conn = db.read()?;
     f(&conn)
-}
-
-/// LIF-488: drop relation identifiers into projects the caller cannot view
-/// before issues are returned. See [`queries::retain_visible_relations`].
-fn retain_visible_relations(
-    db: &DbPool,
-    identity: &Option<crate::resolve_caller::ResolvedIdentity>,
-    issues: &mut [Issue],
-) -> Result<(), LificError> {
-    let visible = crate::authz::visible_project_ids(db, identity)?;
-    with_read(db, |conn| {
-        queries::retain_visible_relations(conn, issues, visible.as_ref());
-        Ok(())
-    })
 }
 
 /// Execute a write operation against the exclusive write connection.

@@ -2,6 +2,7 @@
 
 pub(crate) mod activity_insights;
 pub(crate) mod api;
+pub(crate) mod assets;
 pub(crate) mod attachments;
 pub(crate) mod browser_assets;
 pub(crate) mod controls;

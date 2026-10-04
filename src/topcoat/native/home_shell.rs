@@ -28,7 +28,8 @@ pub(crate) fn shell_with_palette<'a>(
         snapshot.user.display_name.clone()
     };
     view! { cx =>
-        <div class="native-home-shell" :data-collapsed=$(if collapsed.get() { "true" } else { "false" })>
+        <div class="native-home-shell" (super::session::mount(cx)) :data-collapsed=$(if collapsed.get() { "true" } else { "false" })>
+            <a class="tc-shell__skip" href="#main-content">"Skip to content"</a>
             <aside class="native-home-sidebar" aria-label="Workspace sidebar">
                 <a class="native-home-brand" href=(super::transport::mounted_url(cx, "/"))>"Lific"</a>
                 <button id="native-home-palette-open" class="native-home-launcher" @click=$(|_event| palette_open.set(true))>
@@ -66,7 +67,7 @@ pub(crate) fn shell_with_palette<'a>(
                     </button>
                     <span>"Home"</span>
                 </header>
-                <main class="native-home-panel">(content)</main>
+                <main id="main-content" tabindex="-1" class="native-home-panel">(content)</main>
             </div>
             <div class="native-home-palette-backdrop" :hidden=$(!palette_open.get())>
                 <section class="native-home-palette" role="dialog" aria-modal="true" aria-labelledby="native-home-palette-title">
@@ -113,8 +114,13 @@ async fn native_home_palette_results(
     let connected = connected(cx);
     // A closed dialog renders no catalog. Opening and every query resolve current authority.
     let projects = if open {
-        let caller = super::context::caller(cx)?;
-        crate::api::require_user(&caller.identity)?;
+        let caller = super::session::read(
+            cx,
+            super::context::caller(cx).and_then(|caller| {
+                crate::api::require_user(&caller.identity)?;
+                Ok(caller)
+            }),
+        )?;
         crate::services::projects::list_visible_projects(super::context::db(cx), &caller.identity)?
     } else {
         Vec::new()

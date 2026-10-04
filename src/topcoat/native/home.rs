@@ -9,24 +9,19 @@ use topcoat::{
 use super::{
     home_data, home_local, home_model, home_sections, home_shell, home_view, transport::mounted_url,
 };
-use crate::error::LificError;
 
 pub(crate) const STYLESHEET: &str = include_str!("assets/home-page.css");
 
 pub(crate) fn authorize(cx: &Cx) -> topcoat::Result<()> {
-    match super::context::caller(cx).and_then(|caller| crate::api::require_user(&caller.identity)) {
-        Ok(_) => Ok(()),
-        Err(LificError::Forbidden(_)) => Err(topcoat::router::error::redirect("/login").into()),
-        Err(error) => Err(error.into()),
-    }
+    super::session::read(
+        cx,
+        super::context::caller(cx).and_then(|caller| crate::api::require_user(&caller.identity)),
+    )
+    .map(|_| ())
 }
 
 fn authorized_snapshot(cx: &Cx) -> topcoat::Result<home_data::Snapshot> {
-    match home_data::snapshot(cx) {
-        Ok(snapshot) => Ok(snapshot),
-        Err(LificError::Forbidden(_)) => Err(topcoat::router::error::redirect("/login").into()),
-        Err(error) => Err(error.into()),
-    }
+    super::session::read(cx, home_data::snapshot(cx))
 }
 
 pub(crate) fn screen(cx: &Cx) -> topcoat::Result<BoxView<'_>> {

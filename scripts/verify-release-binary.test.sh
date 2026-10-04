@@ -44,6 +44,11 @@ cat >"$fixture_server" <<'TS'
 import {appendFileSync, existsSync} from "node:fs";
 import {createServer} from "node:net";
 const mode = process.env.MODE ?? "full";
+const versioned = mode.startsWith("versioned");
+const fingerprint = "ab".repeat(32);
+const runtimeQuery = versioned ? `?v=${mode === "versioned-runtime-short" ? "ab" : fingerprint}` : "";
+const cssQuery = versioned ? `?v=${fingerprint}` : "";
+const cssPath = versioned ? "/__topcoat-app.css" : "/__topcoat-runtime.css";
 let blocker;
 if (["collision-once", "collision-always", "invalid-startup"].includes(mode)) {
   const attempts = `${import.meta.dir}/${mode}-ports`;
@@ -59,8 +64,8 @@ if (["collision-once", "collision-always", "invalid-startup"].includes(mode)) {
 const shell = (withAssets: boolean) =>
   `<!doctype html><html lang="en"><head><title>Lific</title>` +
   (withAssets
-    ? `<script type="module" crossorigin src="/__topcoat-runtime.js"></script>` +
-      `<link rel="stylesheet" crossorigin href="/__topcoat-runtime.css">`
+    ? `<script type="module" crossorigin src="/__topcoat-runtime.js${runtimeQuery}"></script>` +
+      `<link rel="stylesheet" crossorigin href="${cssPath}${cssQuery}">`
     : "") +
   (mode === "legacy" ? `<script src="/assets/index-legacy.js"></script>` : "") +
   `</head><body><div id="app"></div></body></html>`;
@@ -74,7 +79,8 @@ try { Bun.serve({
   port: Number(process.env.PORT),
   hostname: "127.0.0.1",
   fetch(request) {
-    const path = new URL(request.url).pathname;
+    const url = new URL(request.url);
+    const path = url.pathname;
     if (path === "/api/health") {
       return new Response("ok", { headers: { "content-type": "text/plain" } });
     }
@@ -95,11 +101,14 @@ try { Bun.serve({
       });
     }
     if (!["no-assets", "spa"].includes(mode) && path === "/__topcoat-runtime.js") {
+      if (url.search !== runtimeQuery) return new Response("Wrong runtime fingerprint", {status: 404});
       return new Response("export const ok = 1;\n", {
         headers: { "content-type": "text/javascript" },
       });
     }
-    if (!["no-assets", "spa"].includes(mode) && path === "/__topcoat-runtime.css") {
+    if (!["no-assets", "spa"].includes(mode) && path === cssPath) {
+      if (url.search !== cssQuery) return new Response("Wrong stylesheet fingerprint", {status: 404});
+      if (mode === "versioned-css-fallback") return html(true);
       return new Response(":root{--ok:1}\n", {
         headers: { "content-type": "text/css" },
       });
@@ -203,6 +212,22 @@ if ! grep -Fq "release binary serves its API and the embedded web UI" "$scratch/
   fail "verifier passed without reporting what it proved"
 fi
 echo "a complete build passes, addressed by a relative path"
+
+# Only the document's complete fingerprinted URLs serve bytes. Dropping either
+# query therefore fails instead of silently checking an unversioned asset.
+status="$(run_verifier "$scratch" "$fixture_binary" FIXTURE_MODE=versioned)"
+if [[ $status -ne 0 ]]; then
+  fail "verifier discarded a full content fingerprint from a document asset URL"
+fi
+echo "full stylesheet and runtime fingerprints are fetched exactly as documented"
+
+for mode in versioned-runtime-short versioned-css-fallback; do
+  status="$(run_verifier "$scratch" "$fixture_binary" FIXTURE_MODE="$mode")"
+  if [[ $status -eq 0 || $status -eq 124 ]]; then
+    fail "verifier accepted an invalid versioned asset ($mode) or hung while rejecting it"
+  fi
+  echo "invalid versioned assets ($mode) are rejected"
+done
 
 # An automatic port can become occupied between the probe and the real bind.
 status="$(run_verifier "$scratch" "$fixture_binary" FIXTURE_MODE=collision-once)"

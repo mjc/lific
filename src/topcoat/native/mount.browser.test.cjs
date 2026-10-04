@@ -238,3 +238,58 @@ test('a synchronous early mount event cannot consume initialization before later
     assert.deepEqual(pageErrors, []);
   });
 });
+
+test('mount context exposes its owning AbortSignal and disposes global subscriptions', async () => {
+  const mount = `(() => {
+    if (!(cx.abortSignal instanceof AbortSignal)) throw new Error('Missing owning AbortSignal');
+    window.mountSignals.push(cx.abortSignal);
+    window.mountedValue = cx.signal('a').get().toString();
+    window.addEventListener('scope-ping', () => { window.pings++; }, {signal: cx.abortSignal});
+    return () => { window.mountCalls++; };
+  })()`;
+  const normal = `(() => {
+    window.sharedContextHasSignal = 'abortSignal' in cx;
+    return () => { window.clickCalls++; };
+  })()`;
+  const content = `<section id="mount" ${handler('mount', mount)}>Retained subscription owner</section>
+    ${signal('a', 'later declaration')}
+    <button ${handler('click', normal)}>Normal event</button>`;
+  await fixture(content, {mountSignals: [], mountCalls: 0, pings: 0, clickCalls: 0}, async ({page, requests, errors, pageErrors}) => {
+    assert.equal(await page.evaluate(() => window.mountCalls), 1, 'The factory receives the owning scope signal.');
+    assert.equal(await page.evaluate(() => window.mountedValue), 'later declaration');
+    assert.equal(await page.evaluate(() => window.sharedContextHasSignal), false, 'The shared runtime context must not be mutated.');
+    await page.evaluate(() => {
+      window.initialOwner = document.querySelector('#mount');
+      window.dispatchEvent(new Event('scope-ping'));
+    });
+    assert.equal(await page.evaluate(() => window.pings), 1);
+    for (const replacements of [2, 1]) {
+      await page.evaluate(replacements => {
+        const detail = {};
+        window.dispatchEvent(new CustomEvent('topcoat:dev-runtime:v1', {detail}));
+        for (let i = 0; i < replacements; i++) detail.runtime.replace(() => {});
+      }, replacements);
+      await settle(page);
+      const state = await page.evaluate(() => {
+        window.dispatchEvent(new Event('scope-ping'));
+        return {
+          liveSignals: window.mountSignals.filter(signal => !signal.aborted).length,
+          pings: window.pings,
+          calls: window.mountCalls,
+          retained: window.initialOwner === document.querySelector('#mount') && window.initialOwner.isConnected,
+          sharedContextHasSignal: window.sharedContextHasSignal,
+        };
+      });
+      assert.equal(state.liveSignals, 1, 'Released scopes abort their global listeners even when the DOM node survives.');
+      assert.equal(state.pings, state.calls, 'Each ping reaches exactly the current subscription.');
+      assert.equal(state.retained, true);
+      assert.equal(state.sharedContextHasSignal, false);
+    }
+    assert.equal(await page.evaluate(() => window.mountCalls), 3, 'The disposed intermediate scope never creates a subscription.');
+    await page.getByRole('button', {name: 'Normal event'}).click();
+    assert.equal(await page.evaluate(() => window.clickCalls), 1);
+    assert.equal(requests.length, 0);
+    assert.deepEqual(errors, []);
+    assert.deepEqual(pageErrors, []);
+  });
+});

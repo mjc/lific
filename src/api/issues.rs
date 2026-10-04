@@ -37,10 +37,7 @@ pub(super) async fn get_issue(
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
     Path(id): Path<i64>,
 ) -> Result<Json<Issue>, LificError> {
-    let mut issue = with_read(&db, |conn| crate::db::queries::get_issue(conn, id))?;
-    authz::require_role(&db, &identity, issue.project_id, Role::Viewer)?;
-    retain_visible_relations(&db, &identity, std::slice::from_mut(&mut issue))?;
-    Ok(Json(issue))
+    crate::services::issues::get_issue(&db, &identity, id).map(Json)
 }
 
 pub(super) async fn resolve_issue(
@@ -48,14 +45,7 @@ pub(super) async fn resolve_issue(
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
     Path(identifier): Path<String>,
 ) -> Result<Json<Issue>, LificError> {
-    let issue = with_read(&db, |conn| {
-        let id = crate::db::queries::resolve_identifier(conn, &identifier)?;
-        crate::db::queries::get_issue(conn, id)
-    })?;
-    authz::require_role(&db, &identity, issue.project_id, Role::Viewer)?;
-    let mut issue = issue;
-    retain_visible_relations(&db, &identity, std::slice::from_mut(&mut issue))?;
-    Ok(Json(issue))
+    crate::services::issues::resolve_issue(&db, &identity, &identifier).map(Json)
 }
 
 pub(super) async fn create_issue(

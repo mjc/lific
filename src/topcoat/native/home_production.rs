@@ -3,92 +3,20 @@
 use std::{net::SocketAddr, sync::Arc};
 
 use axum::{
-    Router,
     body::Body,
     http::{Request, StatusCode},
 };
 use tower::ServiceExt;
 
+use super::home_fixture::{self, Fixture, fixture, fixture_with_auth};
+
 use crate::{
     config::Config,
-    db::{
-        self,
-        models::{CreateIssue, CreateProject, Status},
-        queries,
-    },
-    ratelimit::IpNetwork,
+    db::{self, queries},
     realtime::RealtimeHub,
     server::build_app_with_store,
     storage::AttachmentStore,
 };
-
-struct Fixture {
-    app: Router,
-    db: db::DbPool,
-    token: String,
-    _store: tempfile::TempDir,
-}
-
-fn fixture() -> Fixture {
-    fixture_with_auth(true)
-}
-
-fn fixture_with_auth(required: bool) -> Fixture {
-    let (db, _, _, _, viewer, _, project_id) = crate::api::test_helpers::setup_membership_test();
-    let token = {
-        let conn = db.write().unwrap();
-        conn.execute(
-            "UPDATE projects SET identifier = 'ACC', name = 'Visible project' WHERE id = ?1",
-            [project_id],
-        )
-        .unwrap();
-        let hidden = queries::create_project(
-            &conn,
-            &CreateProject {
-                identifier: "HIDE".into(),
-                name: "Private hidden project".into(),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        for (project_id, status, title) in [
-            (project_id, Status::Active, "Visible active initial work"),
-            (project_id, Status::Todo, "Visible todo initial work"),
-            (hidden.id, Status::Active, "Private hidden initial work"),
-        ] {
-            queries::create_issue(
-                &conn,
-                &CreateIssue {
-                    project_id,
-                    title: title.into(),
-                    status,
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-        }
-        queries::users::create_session(&conn, viewer.id, None)
-            .unwrap()
-            .token
-    };
-    let mut cfg = Config::default();
-    cfg.auth.required = required;
-    let store = tempfile::tempdir().unwrap();
-    let proxies: Arc<[IpNetwork]> = vec![IpNetwork::parse("127.0.0.1").unwrap()].into();
-    let app = build_app_with_store(
-        &cfg,
-        db.clone(),
-        RealtimeHub::new(),
-        proxies,
-        AttachmentStore::new(store.path().to_owned()),
-    );
-    Fixture {
-        app,
-        db,
-        token,
-        _store: store,
-    }
-}
 
 async fn get(
     fixture: &Fixture,
@@ -138,7 +66,10 @@ async fn native_home_production_initial_html_contains_visible_work_without_hybri
         assert!(!html.contains("Loading your dashboard"));
         let prefix = prefix.unwrap_or("");
         assert!(html.contains(&format!("href=\"{prefix}/ACC/issues/ACC-1\"")));
-        assert!(html.contains(&format!("src=\"{prefix}/__topcoat-runtime.js\"")));
+        assert!(html.contains(&format!(
+            "src=\"{prefix}{}\"",
+            super::super::assets::runtime_url()
+        )));
         for script in html.split("<script").skip(1) {
             let tag = script.split('>').next().unwrap();
             if tag.contains(" src=") {
@@ -227,49 +158,17 @@ async fn native_home_production_missing_identity_redirects_instead_of_rendering_
 #[tokio::test]
 async fn native_home_production_browser_reads_and_interacts_without_rest() {
     let fixture = fixture();
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let app = fixture.app.clone();
-    let task = tokio::spawn(async move {
-        axum::serve(
-            listener,
-            app.into_make_service_with_connect_info::<SocketAddr>(),
-        )
-        .await
-        .unwrap();
-    });
-    let origin = format!("http://{address}");
-    let script = "src/topcoat/native/home.browser.test.cjs";
-    let mut command = if std::env::var_os("PLAYWRIGHT_EXECUTABLE_PATH").is_some() {
-        let mut command = tokio::process::Command::new("node");
-        command.args([script, &origin, &fixture.token]);
-        command
-    } else {
-        let mut command = tokio::process::Command::new("devenv");
-        command.args([
-            "--profile",
-            "topcoat-e2e",
-            "shell",
-            "bash",
-            "--noprofile",
-            "--norc",
-            "-c",
-            "node \"$1\" \"$2\" \"$3\" \"$4\"",
-            "lific-native-home",
-            script,
-            &origin,
-            &fixture.token,
-        ]);
-        command
-    };
+    let (origin, task) = home_fixture::serve(&fixture).await;
+    let mut command = home_fixture::browser_command(
+        "src/topcoat/native/home.browser.test.cjs",
+        &origin,
+        &fixture.token,
+    );
     // The existing visual capture option supplies the installed, pinned master.
     // Native browser coverage runs without this optional screenshot reference.
     if let Some(snapshot) = std::env::var_os("LIFIC_SVELTE_SNAPSHOT") {
         command.arg(snapshot);
     }
-    command
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .kill_on_drop(true);
     let result = tokio::time::timeout(std::time::Duration::from_secs(240), command.output()).await;
     task.abort();
     let output = result.expect("production Home browser timed out").unwrap();
