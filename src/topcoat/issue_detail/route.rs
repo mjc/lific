@@ -1,5 +1,7 @@
 //! Issue-detail route composition and the browser-owned issue read model.
 
+use super::super::native::transport::mounted_url;
+
 use topcoat::{
     context::Cx,
     view::{BoxView, ViewExt, view},
@@ -28,7 +30,7 @@ pub(crate) fn screen<'a>(
                 <div class="tc-issue-detail__error" data-detail-error="" role="alert" hidden="hidden"></div>
                 <div class="tc-issue-detail__content" data-detail-content="" hidden="hidden">
                     <header class="tc-issue-detail__heading">
-                        <a class="tc-issue-detail__back" data-detail-back="" href=(format!("/{project_identifier}/issues"))>"← Issues"</a>
+                        <a class="tc-issue-detail__back" data-detail-back="" href=(mounted_url(cx, &format!("/{project_identifier}/issues")))>"← Issues"</a>
                         <p data-detail-identifier=""></p>
                         <h1 data-detail-title=""></h1>
                     </header>

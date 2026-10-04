@@ -1,5 +1,7 @@
 //! Project catalog navigation shared by authenticated desktop shell pages.
 
+use super::super::native::transport::mounted_url;
+
 use topcoat::{
     context::Cx,
     view::{BoxView, ViewExt, view},
@@ -77,7 +79,7 @@ pub(crate) fn project_tree<'a>(
                         </h3>
                         <div class="tc-projects__project-list">
                             for (project_id, identifier, name, emoji, active) in projects {
-                                <a class="tc-projects__project" href=(format!("/{identifier}/overview"))
+                                <a class="tc-projects__project" href=(mounted_url(cx, &format!("/{identifier}/overview")))
                                     data-project-id=(project_id.to_string()) draggable="true"
                                     aria-current=(active.then_some("page"))>
                                     if let Some(emoji) = emoji { (format!("{emoji} ")) }
@@ -91,7 +93,7 @@ pub(crate) fn project_tree<'a>(
                     <h3 class="tc-projects__group-name">"Ungrouped"</h3>
                     <div class="tc-projects__project-list">
                         for (project_id, identifier, name, emoji, active) in ungrouped {
-                            <a class="tc-projects__project" href=(format!("/{identifier}/overview"))
+                            <a class="tc-projects__project" href=(mounted_url(cx, &format!("/{identifier}/overview")))
                                 data-project-id=(project_id.to_string()) draggable="true"
                                 aria-current=(active.then_some("page"))>
                                 if let Some(emoji) = emoji { (format!("{emoji} ")) }

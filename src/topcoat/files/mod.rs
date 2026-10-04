@@ -1,5 +1,7 @@
 //! Project files browser and attachment management.
 
+use super::native::transport::mounted_url;
+
 use topcoat::{
     context::Cx,
     view::{BoxView, ViewExt, view},
@@ -18,7 +20,7 @@ pub(crate) fn screen<'a>(cx: &'a Cx, project: &'a str) -> BoxView<'a> {
         <section class="tc-files" data-topcoat-files="" data-project-identifier=(project)
             aria-busy="true">
             <header class="tc-files__header">
-                <nav aria-label="Breadcrumb"><a href=(format!("/{project}/overview"))>"Project"</a><span>" / "</span></nav>
+                <nav aria-label="Breadcrumb"><a href=(mounted_url(cx, &format!("/{project}/overview")))>"Project"</a><span>" / "</span></nav>
                 <h1>"Files"</h1>
                 <p data-files-status="" role="status" aria-live="polite">"Loading files…"</p>
             </header>

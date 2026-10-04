@@ -1,5 +1,7 @@
 //! Reusable breadcrumbs, sub-tabs, and route-scoped trailing actions.
 
+use super::super::native::transport::mounted_url;
+
 use topcoat::{
     context::Cx,
     view::{BoxView, ViewExt, view},
@@ -92,7 +94,7 @@ pub(crate) fn page_chrome<'a>(
                         for crumb in breadcrumbs {
                             <li class="tc-page-chrome__crumb">
                                 if let Some(href) = crumb.href.as_deref() {
-                                    <a href=(href) title=(crumb.label.as_str())>(crumb.label.as_str())</a>
+                                    <a href=(mounted_url(cx, href)) title=(crumb.label.as_str())>(crumb.label.as_str())</a>
                                 } else {
                                     <span title=(crumb.label.as_str())
                                         aria-current=(crumb.current.then_some("page"))>
@@ -111,7 +113,7 @@ pub(crate) fn page_chrome<'a>(
                 <div class="tc-page-chrome__actions" data-page-actions="">
                     for action in actions {
                         if let Some(href) = action.href.as_deref() {
-                            <a class="tc-page-chrome__action" href=(href)
+                            <a class="tc-page-chrome__action" href=(mounted_url(cx, href))
                                 data-page-action-id=(action.id.as_str())
                                 data-history-mode=(action.history.unwrap_or("push"))>
                                 (action.label.as_str())

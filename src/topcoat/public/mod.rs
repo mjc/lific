@@ -1,5 +1,7 @@
 //! Anonymous, read-only public project route family.
 
+use super::native::transport::mounted_url;
+
 use topcoat::{
     context::Cx,
     view::{BoxView, ViewExt, view},
@@ -116,7 +118,7 @@ pub(crate) fn screen<'a>(cx: &'a Cx, route: Route) -> Option<BoxView<'a>> {
             data-public-project=(public_project.as_str()) data-public-identifier=(identifier.as_deref())
             aria-busy="true" aria-readonly="true">
             <header class="tc-public__header">
-                <a href=(project_href.as_str()) aria-label="Public project issues">(project.as_str())</a>
+                <a href=(mounted_url(cx, project_href.as_str())) aria-label="Public project issues">(project.as_str())</a>
                 <h1>(heading)</h1>
                 <span class="tc-public__badge">"Public · read only"</span>
             </header>

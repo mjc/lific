@@ -346,7 +346,7 @@ async fn unknown() -> LificError {
 // table is touched.
 
 /// Run `f` against the published project named in the path, in one snapshot.
-fn with_public<T>(
+pub(crate) fn with_public<T>(
     db: &DbPool,
     identifier: &str,
     f: impl FnOnce(&rusqlite::Connection, &Project) -> Result<T, LificError>,

@@ -2,6 +2,8 @@
 //! This module renders named placeholders; domain screens can replace the
 //! content slot without changing the public/private navigation boundary.
 
+use super::native::transport::mounted_url;
+
 use topcoat::{
     context::Cx,
     view::{BoxView, ViewExt, view},
@@ -300,17 +302,17 @@ fn navigation<'a>(cx: &'a Cx, route: &ParsedRoute<'_>, label: &'static str) -> B
         view! { cx =>
             <nav class="tc-shell__navigation" aria-label=(label)>
                 if private {
-                    <a href="/">"Home"</a>
-                    <a href="/projects/new">"New project"</a>
-                    <a href="/projects/import">"Import project"</a>
+                    <a href=(mounted_url(cx, "/"))>"Home"</a>
+                    <a href=(mounted_url(cx, "/projects/new"))>"New project"</a>
+                    <a href=(mounted_url(cx, "/projects/import"))>"Import project"</a>
                 }
                 <h2 class="tc-shell__project">(project)</h2>
                 for link in links {
-                    <a href=(link.href) aria-current=(link.active.then_some("page"))>(link.label)</a>
+                    <a href=(mounted_url(cx, &link.href)) aria-current=(link.active.then_some("page"))>(link.label)</a>
                 }
                 if private {
-                    <a href="/settings">"Settings"</a>
-                    <a href="/settings/instance">"Instance settings"</a>
+                    <a href=(mounted_url(cx, "/settings"))>"Settings"</a>
+                    <a href=(mounted_url(cx, "/settings/instance"))>"Instance settings"</a>
                 }
             </nav>
         }
@@ -339,10 +341,10 @@ fn navigation<'a>(cx: &'a Cx, route: &ParsedRoute<'_>, label: &'static str) -> B
             <nav class="tc-shell__navigation" aria-label=(label)>
                 if private {
                     for link in links {
-                        <a href=(link.href) aria-current=(link.active.then_some("page"))>(link.label)</a>
+                        <a href=(mounted_url(cx, &link.href)) aria-current=(link.active.then_some("page"))>(link.label)</a>
                     }
-                    <a href="/settings">"Settings"</a>
-                    <a href="/settings/instance">"Instance settings"</a>
+                    <a href=(mounted_url(cx, "/settings"))>"Settings"</a>
+                    <a href=(mounted_url(cx, "/settings/instance"))>"Instance settings"</a>
                     <p class="tc-shell__hint">"Choose a project from Home."</p>
                 }
             </nav>
@@ -410,7 +412,7 @@ pub(crate) fn shell<'a>(cx: &'a Cx, route: &ParsedRoute<'_>, content: BoxView<'a
         <div class="tc-shell" data-layout=(layout_name)>
             <a class="tc-shell__skip" href="#main-content">"Skip to content"</a>
             <header class="tc-shell__header">
-                <a class="tc-shell__brand" href=(brand_href)>
+                <a class="tc-shell__brand" href=(mounted_url(cx, &brand_href))>
                     <span class="tc-shell__brand-desktop">"Lific"</span>
                     <span class="tc-shell__brand-mobile">(mobile_brand)</span>
                 </a>
@@ -425,8 +427,8 @@ pub(crate) fn shell<'a>(cx: &'a Cx, route: &ParsedRoute<'_>, content: BoxView<'a
                 }
                 if is_auth {
                     <nav class="tc-shell__auth-links" aria-label="Account">
-                        <a href="/login" aria-current=(auth_link.then_some("page"))>"Log in"</a>
-                        <a href="/signup" aria-current=(signup_link.then_some("page"))>"Sign up"</a>
+                        <a href=(mounted_url(cx, "/login")) aria-current=(auth_link.then_some("page"))>"Log in"</a>
+                        <a href=(mounted_url(cx, "/signup")) aria-current=(signup_link.then_some("page"))>"Sign up"</a>
                     </nav>
                 } else {
                     <button type="button" class="tc-shell__sidebar-toggle" data-sidebar-toggle=""
