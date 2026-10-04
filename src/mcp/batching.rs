@@ -92,19 +92,100 @@ pub(crate) struct BatchWriter<'a, W> {
     frame: Vec<u8>,
     pending: Vec<u8>,
     written: usize,
-    pub replies: Vec<Value>,
+    replies: Vec<Value>,
     bytes: usize,
+    reserved: usize,
+    fallbacks: Vec<Option<Value>>,
+    current: Option<Value>,
+    replied: bool,
+    exhausted: bool,
+    current_bytes: usize,
 }
 impl<'a, W> BatchWriter<'a, W> {
-    pub(crate) fn new(output: &'a mut W) -> Self {
+    pub(crate) fn new(output: &'a mut W, items: &[Value]) -> Self {
+        let mut ids = HashSet::new();
+        let fallbacks: Vec<_> = items
+            .iter()
+            .map(|item| {
+                if !valid_message(item) {
+                    Some(error(Value::Null, -32600, "Invalid Request"))
+                } else if item.get("method").is_none() {
+                    None
+                } else {
+                    item.get("id").map(|id| {
+                        if ids.insert(id.to_string()) {
+                            error(id.clone(), -32603, "MCP batch response exceeded byte limit")
+                        } else {
+                            error(Value::Null, -32600, "Duplicate batch request ID")
+                        }
+                    })
+                }
+            })
+            .collect();
+        let count = fallbacks.iter().flatten().count();
+        let reserved = fallbacks
+            .iter()
+            .flatten()
+            .map(|value| value.to_string().len())
+            .sum();
         Self {
             output,
             frame: vec![],
             pending: vec![],
             written: 0,
             replies: vec![],
-            bytes: 0,
+            // Reserve array brackets, newline and all response separators.
+            bytes: 3 + count.saturating_sub(1),
+            reserved,
+            fallbacks,
+            current: None,
+            replied: false,
+            exhausted: false,
+            current_bytes: 0,
         }
+    }
+
+    /// Apply the caller's output policy before measuring reserved errors.
+    pub(crate) fn map_fallbacks(
+        mut self,
+        mut prepare: impl FnMut(&Value) -> io::Result<Value>,
+    ) -> io::Result<Self> {
+        self.reserved = 0;
+        for fallback in self.fallbacks.iter_mut().flatten() {
+            *fallback = prepare(fallback)?;
+            self.reserved += fallback.to_string().len();
+        }
+        Ok(self)
+    }
+
+    /// Reserve a bounded error for every later member before dispatching this
+    /// one. Once output capacity is exhausted, do not run further mutations.
+    pub(crate) fn begin_member(&mut self, index: usize) -> bool {
+        self.finish_member();
+        self.current = self.fallbacks[index].take();
+        self.current_bytes = self
+            .current
+            .as_ref()
+            .map_or(0, |value| value.to_string().len());
+        self.reserved -= self.current_bytes;
+        self.replied = false;
+        !self.exhausted
+    }
+
+    fn finish_member(&mut self) {
+        if let Some(fallback) = self.current.take()
+            && !self.replied
+        {
+            self.bytes += self.current_bytes;
+            self.replies.push(fallback);
+        }
+        self.frame.clear();
+        self.current_bytes = 0;
+    }
+
+    pub(crate) fn take_replies(&mut self) -> Vec<Value> {
+        self.finish_member();
+        std::mem::take(&mut self.replies)
     }
 }
 impl<W: AsyncWrite + Unpin> AsyncWrite for BatchWriter<'_, W> {
@@ -113,18 +194,22 @@ impl<W: AsyncWrite + Unpin> AsyncWrite for BatchWriter<'_, W> {
         _cx: &mut Context<'_>,
         data: &[u8],
     ) -> Poll<io::Result<usize>> {
-        if data.len()
-            > MAX_RESPONSE_BYTES
-                .saturating_sub(self.bytes)
-                .saturating_sub(2)
-        {
-            return Poll::Ready(Err(io::Error::other(
-                "MCP batch response exceeded byte limit",
-            )));
-        }
-        self.bytes += data.len();
         for byte in data {
+            if self.exhausted {
+                // Logical quota failures are completed by the reserved error;
+                // only a genuine stdout failure should tear down the pump.
+                continue;
+            }
             self.frame.push(*byte);
+            // Notifications consume the same budget, but must leave room for
+            // the current request's error if its eventual response cannot fit.
+            let current_reserve = self.current_bytes;
+            let available = MAX_RESPONSE_BYTES.saturating_sub(self.bytes + self.reserved);
+            if self.frame.len() > available.saturating_add(1) {
+                self.frame.clear();
+                self.exhausted = true;
+                continue;
+            }
             if *byte == b'\n' {
                 let frame = std::mem::take(&mut self.frame);
                 let value: Value = match serde_json::from_slice(&frame) {
@@ -132,8 +217,18 @@ impl<W: AsyncWrite + Unpin> AsyncWrite for BatchWriter<'_, W> {
                     Err(error) => return Poll::Ready(Err(io::Error::other(error))),
                 };
                 if value.get("id").is_some() && value.get("method").is_none() {
-                    self.replies.push(value);
+                    let size = value.to_string().len();
+                    if size > available {
+                        self.exhausted = true;
+                    } else {
+                        self.bytes += size;
+                        self.replies.push(value);
+                        self.replied = true;
+                    }
+                } else if frame.len() > available.saturating_sub(current_reserve) {
+                    self.exhausted = true;
                 } else {
+                    self.bytes += frame.len();
                     self.pending.extend(frame);
                 }
             }
@@ -1226,6 +1321,70 @@ mod tests {
     use super::*;
     use rmcp::ServiceExt;
     use tokio::io::AsyncBufReadExt;
+
+    #[tokio::test]
+    async fn proxy_batch_writer_reserves_escaped_ids_invalid_members_and_notifications() {
+        let escaped_id = "\\\"\n".repeat(1024);
+        let items = vec![
+            json!({"jsonrpc":"2.0","id":1,"method":"tools/call"}),
+            json!({"jsonrpc":"2.0","id":escaped_id,"method":"tools/call"}),
+            json!({"jsonrpc":"2.0","id":escaped_id,"method":"ping"}),
+            json!(false),
+        ];
+        for failure in ["response", "notification", "late-error"] {
+            let mut output = vec![];
+            let mut writer = BatchWriter::new(&mut output, &items);
+            assert!(writer.begin_member(0));
+            let mut first = json!({"jsonrpc":"2.0","id":1,"result":{"text":""}});
+            let padding =
+                MAX_RESPONSE_BYTES - writer.bytes - writer.reserved - first.to_string().len();
+            first["result"]["text"] = Value::String("x".repeat(padding));
+            write(&mut writer, &first).await.unwrap();
+            assert!(writer.begin_member(1));
+            let second = match failure {
+                "notification" => {
+                    json!({"jsonrpc":"2.0","method":"notifications/progress","params":{"progress":1}})
+                }
+                "late-error" => error(json!(escaped_id), -32603, &"failure".repeat(100)),
+                _ => json!({"jsonrpc":"2.0","id":escaped_id,"result":{"text":"x".repeat(1024)}}),
+            };
+            // Exhaustion is a correlated protocol error, not a stdout failure.
+            write(&mut writer, &second).await.unwrap();
+            assert!(!writer.begin_member(2));
+            assert!(!writer.begin_member(3));
+            let replies = writer.take_replies();
+            drop(writer);
+            assert_eq!(replies.len(), 4, "{failure}");
+            assert_eq!(replies[0], first);
+            assert_eq!(replies[1]["id"], escaped_id);
+            assert_eq!(replies[1]["error"]["code"], -32603);
+            assert_eq!(replies[2]["error"]["code"], -32600);
+            assert_eq!(replies[3]["error"]["code"], -32600);
+            assert!(output.len() + Value::Array(replies).to_string().len() < MAX_RESPONSE_BYTES);
+        }
+    }
+
+    #[tokio::test]
+    async fn proxy_batch_writer_counts_flushed_notifications_in_response_budget() {
+        let items = vec![json!({"jsonrpc":"2.0","id":1,"method":"ping"})];
+        let mut output = vec![];
+        let mut writer = BatchWriter::new(&mut output, &items);
+        assert!(writer.begin_member(0));
+        let notification =
+            json!({"jsonrpc":"2.0","method":"notifications/progress","params":{"progress":1}});
+        write(&mut writer, &notification).await.unwrap();
+        let mut response = json!({"jsonrpc":"2.0","id":1,"result":{"text":""}});
+        let padding = MAX_RESPONSE_BYTES - writer.bytes - response.to_string().len();
+        response["result"]["text"] = Value::String("x".repeat(padding));
+        write(&mut writer, &response).await.unwrap();
+        let replies = writer.take_replies();
+        drop(writer);
+        assert_eq!(replies, vec![response]);
+        assert_eq!(
+            output.len() + Value::Array(replies).to_string().len() + 1,
+            MAX_RESPONSE_BYTES
+        );
+    }
 
     fn initialize(version: &str) -> Value {
         json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":version,"capabilities":{},"clientInfo":{"name":"batch-test","version":"1"}}})

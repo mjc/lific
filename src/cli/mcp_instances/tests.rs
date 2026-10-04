@@ -3739,6 +3739,131 @@ async fn march_multi_instance_batches_route_individual_calls_and_keep_protocol_e
 }
 
 #[tokio::test]
+async fn march_multi_batch_overflow_preserves_success_and_skips_remaining_mutations() {
+    #[derive(Default)]
+    struct LargeReplies(Mutex<Vec<Value>>);
+    impl InstanceTransport for LargeReplies {
+        async fn call(&self, _alias: &str, body: String) -> Result<String, ForwardError> {
+            let request: Value = serde_json::from_str(&body).unwrap();
+            self.0.lock().unwrap().push(request["id"].clone());
+            let size = match request["id"].as_i64().unwrap() {
+                2 => 3 * 1024 * 1024,
+                3 => 2 * 1024 * 1024,
+                _ => 0,
+            };
+            Ok(serde_json::json!({"jsonrpc":"2.0","id":request["id"],"result":{"content":[{"type":"text","text":"x".repeat(size)}]}}).to_string())
+        }
+    }
+    let mut router = router_bound(&[("private", None)], Some("private"));
+    router.tools.push(tool_value(
+        "create_issue",
+        serde_json::json!({"type":"object","properties":{}}),
+    ));
+    let transport = LargeReplies::default();
+    let init = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}});
+    let batch = Value::Array((2..=4).map(|id| serde_json::json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"create_issue","arguments":{"project":"LIF","title":"mutation"}}})).collect());
+    let next = serde_json::json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"create_issue","arguments":{"project":"LIF","title":"next"}}});
+    let out = run_pump(&format!("{init}\n{batch}\n{next}\n"), &router, &transport).await;
+    assert_eq!(out.len(), 3);
+    assert_eq!(out[1][0]["id"], 2);
+    assert_eq!(
+        out[1][0]["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .len(),
+        3 * 1024 * 1024
+    );
+    assert_eq!(out[1][0]["result"]["_meta"][PROVENANCE_META_KEY], "private");
+    for (index, id) in [(1, 3), (2, 4)] {
+        assert_eq!(out[1][index]["id"], id);
+        assert_eq!(out[1][index]["error"]["code"], -32603);
+    }
+    assert!(out[1].to_string().len() < crate::mcp::batching::MAX_RESPONSE_BYTES);
+    assert_eq!(out[2]["id"], 5);
+    assert!(out[2].get("result").is_some());
+    assert_eq!(
+        *transport.0.lock().unwrap(),
+        vec![
+            serde_json::json!(2),
+            serde_json::json!(3),
+            serde_json::json!(5)
+        ]
+    );
+}
+
+#[tokio::test]
+async fn march_multi_batch_budget_uses_final_redaction_and_preserves_only_caller_ids() {
+    struct Replies(Value);
+    impl InstanceTransport for Replies {
+        async fn call(&self, _alias: &str, body: String) -> Result<String, ForwardError> {
+            let request: Value = serde_json::from_str(&body).unwrap();
+            if request["id"] == self.0["id"] {
+                Ok(self.0.to_string())
+            } else {
+                Ok(serde_json::json!({"jsonrpc":"2.0","id":request["id"],"result":{"content":[{"type":"text","text":"x".repeat(1024)}]}}).to_string())
+            }
+        }
+    }
+    let mut router = router_bound(&[("private", None)], Some("private"));
+    router.redactor = Redactor::new(["redacted".to_owned(), "response".to_owned()]);
+    let first_id = serde_json::json!("caller-redacted-response");
+    let second_id = serde_json::json!("next-redacted-response");
+    let fallback = safe_frame(
+        &router,
+        &crate::mcp::batching::error(
+            second_id.clone(),
+            -32603,
+            "MCP batch response exceeded byte limit",
+        ),
+    )
+    .unwrap();
+    assert!(
+        !fallback["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("response")
+    );
+    let mut raw = serde_json::json!({"jsonrpc":"2.0","id":first_id,"result":{"content":[{"type":"text","text":"redacted".repeat(4096)}],"_meta":{"id":"payload-response"}}});
+    let prepare = |value: &Value| {
+        let mut safe = value.clone();
+        router.redactor.scrub_value(&mut safe);
+        safe["id"] = first_id.clone();
+        stamp_provenance(&mut safe, "private");
+        safe_frame(&router, &safe).unwrap()
+    };
+    let padding = crate::mcp::batching::MAX_RESPONSE_BYTES
+        - 4
+        - fallback.to_string().len()
+        - prepare(&raw).to_string().len();
+    raw["result"]["content"][0]["text"] = serde_json::json!(format!(
+        "{}{}",
+        "x".repeat(padding),
+        "redacted".repeat(4096)
+    ));
+    let expected = prepare(&raw);
+    let init = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}});
+    let batch = serde_json::json!([
+        {"jsonrpc":"2.0","id":first_id,"method":"tools/call","params":{"name":"get_issue","arguments":{"identifier":"LIF-1"}}},
+        {"jsonrpc":"2.0","id":second_id,"method":"tools/call","params":{"name":"get_issue","arguments":{"identifier":"LIF-2"}}}
+    ]);
+    let out = run_pump(&format!("{init}\n{batch}\n"), &router, &Replies(raw)).await;
+    assert_eq!(out[1][0], expected);
+    assert_eq!(out[1][1], fallback);
+    assert_eq!(out[1][0]["id"], first_id);
+    assert_eq!(out[1][1]["id"], second_id);
+    assert!(
+        !out[1][0]["result"]["_meta"]["id"]
+            .as_str()
+            .unwrap()
+            .contains("response")
+    );
+    assert_eq!(
+        out[1].to_string().len() + 1,
+        crate::mcp::batching::MAX_RESPONSE_BYTES
+    );
+}
+
+#[tokio::test]
 async fn march_caller_ids_containing_credentials_survive_local_forwarded_and_batch_redaction() {
     let secret = "secret-token-value";
     let mut router = router_bound(&[("private", None)], Some("private"));

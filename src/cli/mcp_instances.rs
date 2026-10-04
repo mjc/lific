@@ -1484,9 +1484,13 @@ where
                 }
                 let deadline =
                     Some(tokio::time::Instant::now() + crate::mcp::batching::BATCH_TIMEOUT);
-                let mut writer = crate::mcp::batching::BatchWriter::new(&mut output);
+                let mut writer = crate::mcp::batching::BatchWriter::new(&mut output, items)
+                    .map_fallbacks(|fallback| safe_frame(router, fallback))?;
                 let mut ids = std::collections::HashSet::new();
-                for item in items {
+                for (index, item) in items.iter().enumerate() {
+                    if !writer.begin_member(index) {
+                        continue;
+                    }
                     if !crate::mcp::batching::valid_message(item) {
                         write_frame(
                             &mut writer,
@@ -1517,10 +1521,12 @@ where
                     let frame = format!("{item}\n");
                     pump_inner(frame.as_bytes(), &mut writer, router, transport, deadline).await?;
                 }
-                let replies = std::mem::take(&mut writer.replies);
+                let replies = writer.take_replies();
                 drop(writer);
                 if !replies.is_empty() {
-                    write_frame(&mut output, router, &Value::Array(replies)).await?;
+                    // Member frames and reserved errors are already scrubbed.
+                    // Another redaction pass can expand markers beyond the cap.
+                    write_line(&mut output, &encode(&Value::Array(replies))).await?;
                 }
                 continue;
             }
@@ -1700,18 +1706,20 @@ where
     })
 }
 
-/// The single exit for everything written to stdout. Scrubbing here makes the
-/// no-token-on-stdout guarantee a property of one function.
+/// Prepare every payload before stdout serialization. Scrub both decoded
+/// strings and encoded bytes, while preserving trusted caller correlation IDs.
+fn safe_frame(router: &Router, payload: &Value) -> std::io::Result<Value> {
+    let mut safe: Value = serde_json::from_str(&router.redactor.encode_scrubbed(payload))
+        .map_err(std::io::Error::other)?;
+    preserve_response_ids(&mut safe, payload);
+    Ok(safe)
+}
+
 async fn write_frame<W>(output: &mut W, router: &Router, payload: &Value) -> std::io::Result<()>
 where
     W: AsyncWrite + Unpin + Send,
 {
-    // Caller IDs are opaque correlation data. Preserve only IDs belonging to
-    // responses we constructed or validated; all payload fields still scrub.
-    let mut safe: Value = serde_json::from_str(&router.redactor.encode_scrubbed(payload))
-        .map_err(std::io::Error::other)?;
-    preserve_response_ids(&mut safe, payload);
-    write_line(output, &encode(&safe)).await
+    write_line(output, &encode(&safe_frame(router, payload)?)).await
 }
 
 fn preserve_response_ids(scrubbed: &mut Value, original: &Value) {

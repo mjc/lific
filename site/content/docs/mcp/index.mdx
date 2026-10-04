@@ -47,6 +47,8 @@ Legacy HTTP allows up to 1,024 non-cancelled outstanding requests across session
 
 Concurrent explicit cancellation over HTTP or local stdio omits the cancelled member while remaining replies complete. Remote and multi-instance proxies retain their serial request processing: a cancellation cannot interrupt a call already being forwarded.
 
+If a remote or multi-instance batch exhausts its output budget, earlier completed replies are retained. Later calls receive errors without being forwarded; notifications receive no replies. The proxy continues accepting subsequent requests.
+
 Requests with an `Origin` header must match `server.cors_origins`, the public server origin, or a local loopback origin. Other origins receive HTTP 403. Configured browser origins remain specific to their scheme, host and port.
 
 A request must carry a `Host` the server recognizes, as a guard against DNS rebinding: `localhost`, `127.0.0.1`, `::1`, or the hostname of `server.public_url` when that is set. Behind a reverse proxy, set [`server.public_url`](/docs/configuration) to the address agents use, or requests are refused with `403 Forbidden: Host header is not allowed`.

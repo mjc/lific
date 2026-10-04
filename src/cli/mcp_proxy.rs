@@ -471,9 +471,12 @@ where
                 }
                 let deadline =
                     Some(tokio::time::Instant::now() + crate::mcp::batching::BATCH_TIMEOUT);
-                let mut writer = crate::mcp::batching::BatchWriter::new(&mut output);
+                let mut writer = crate::mcp::batching::BatchWriter::new(&mut output, items);
                 let mut ids = std::collections::HashSet::new();
-                for item in items {
+                for (index, item) in items.iter().enumerate() {
+                    if !writer.begin_member(index) {
+                        continue;
+                    }
                     if !crate::mcp::batching::valid_message(item) {
                         write_line(
                             &mut writer,
@@ -506,7 +509,7 @@ where
                     let frame = format!("{item}\n");
                     pump_inner(frame.as_bytes(), &mut writer, forwarder, bound, deadline).await?;
                 }
-                let replies = std::mem::take(&mut writer.replies);
+                let replies = writer.take_replies();
                 drop(writer);
                 if !replies.is_empty() {
                     write_line(&mut output, &encode(&Value::Array(replies))).await?;
@@ -712,6 +715,59 @@ mod tests {
             assert_eq!(out[1]["error"]["code"], -32600);
             assert_eq!(forwarder.received().len(), 1);
         }
+    }
+
+    #[tokio::test]
+    async fn march_remote_batch_overflow_preserves_success_and_skips_remaining_mutations() {
+        let forwarder = MockForwarder::new(|body| {
+            let value: Value = serde_json::from_str(body).unwrap();
+            let result = if value["method"] == "initialize" {
+                serde_json::json!({"protocolVersion":"2025-03-26"})
+            } else {
+                let size = match value["id"].as_i64().unwrap() {
+                    2 => 3 * 1024 * 1024,
+                    3 => 2 * 1024 * 1024,
+                    _ => 0,
+                };
+                serde_json::json!({"content":[{"type":"text","text":"x".repeat(size)}]})
+            };
+            Ok(serde_json::json!({"jsonrpc":"2.0","id":value["id"],"result":result}).to_string())
+        });
+        let init = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}});
+        let batch: Vec<_> = (2..=4).map(|id| serde_json::json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"create_issue","arguments":{}}})).collect();
+        let next = serde_json::json!({"jsonrpc":"2.0","id":5,"method":"ping"});
+        let batch = Value::Array(batch);
+        let out = run_pump(&format!("{init}\n{batch}\n{next}\n"), &forwarder).await;
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[1][0]["id"], 2);
+        assert_eq!(
+            out[1][0]["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .len(),
+            3 * 1024 * 1024
+        );
+        for (index, id) in [(1, 3), (2, 4)] {
+            assert_eq!(out[1][index]["id"], id);
+            assert_eq!(out[1][index]["error"]["code"], -32603);
+        }
+        assert!(out[1].to_string().len() < crate::mcp::batching::MAX_RESPONSE_BYTES);
+        assert_eq!(out[2]["id"], 5);
+        assert!(out[2].get("result").is_some());
+        let ids: Vec<_> = forwarder
+            .received()
+            .iter()
+            .map(|body| serde_json::from_str::<Value>(body).unwrap()["id"].clone())
+            .collect();
+        assert_eq!(
+            ids,
+            vec![
+                serde_json::json!(1),
+                serde_json::json!(2),
+                serde_json::json!(3),
+                serde_json::json!(5)
+            ]
+        );
     }
 
     #[tokio::test]
