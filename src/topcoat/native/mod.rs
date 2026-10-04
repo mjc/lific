@@ -1,4 +1,6 @@
 #[cfg(test)]
+mod admission_contract;
+#[cfg(test)]
 mod assembled;
 pub(crate) mod bookmark;
 pub(crate) mod browser_inputs;
@@ -25,9 +27,15 @@ pub(crate) mod issue_edit;
 mod limit_contract;
 #[cfg(test)]
 mod markdown_edit;
+pub(crate) mod palette_reference;
+#[cfg(test)]
+mod palette_reference_production;
 #[cfg(test)]
 pub(crate) mod probe;
 pub(crate) mod session;
+#[cfg(test)]
+mod session_idle;
+pub(crate) mod socket_admission;
 #[cfg(test)]
 mod stylesheet;
 pub(crate) mod transport;

@@ -829,7 +829,10 @@ mod topcoat_app {
         use topcoat::router::RouterBuilderDiscoverExt;
         use topcoat::runtime::RouterBuilderRuntimeExt;
 
-        topcoat::router::Router::builder().discover().runtime()
+        topcoat::router::Router::builder()
+            .discover()
+            .runtime()
+            .layer(super::topcoat_frontend::native::socket_admission::SocketAdmission)
     }
 
     #[cfg(test)]

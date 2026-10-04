@@ -1990,6 +1990,7 @@ dependencies = [
  "futures-util",
  "hmac",
  "http-body-util",
+ "hyper",
  "image",
  "keyring",
  "libc",
@@ -3961,8 +3962,6 @@ dependencies = [
 [[package]]
 name = "topcoat-runtime"
 version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c4c4dc39a1c6ef6f0f604ecba3949baf401a30b5b44e7b3f830c3509e6b560dd"
 dependencies = [
  "futures-util",
  "pin-project-lite",

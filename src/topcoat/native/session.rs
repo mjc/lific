@@ -1,12 +1,13 @@
 //! Session outcomes shared by native pages and connected reads.
 
 use topcoat::{
-    context::Cx,
+    context::{Cx, app_context},
     runtime::{Event, connected_untracked, expr, procedure, signal},
-    view::Attributes,
+    view::{Attributes, BoxView, ViewExt, emit, live},
 };
 
 use crate::error::LificError;
+use tokio::sync::broadcast::{Receiver, error::RecvError};
 
 pub(crate) fn read<T>(cx: &Cx, result: Result<T, LificError>) -> topcoat::Result<T> {
     match result {
@@ -97,8 +98,50 @@ fn current_account(cx: &Cx) -> Result<Option<(i64, bool)>, LificError> {
     }
 }
 
+/// Register before the render's fresh authorization read so no retirement is missed.
+pub(crate) fn subscribe_revocations(cx: &Cx) -> Receiver<i64> {
+    app_context::<crate::realtime::RealtimeHub>(cx).subscribe_revocations()
+}
+
+/// The content connection owns this future and drops its receiver on replacement.
+pub(crate) fn revocation_lifetime(
+    cx: &Cx,
+    mut revoked: Receiver<i64>,
+    account_id: i64,
+    is_admin: bool,
+    connected: bool,
+) -> BoxView<'static> {
+    let context = cx.clone();
+    live! { cx =>
+        let token = emit! { <span hidden="hidden"></span> }?;
+        if !connected {
+            return Ok(token);
+        }
+        loop {
+            let retire = match revoked.recv().await {
+                Ok(user_id) => user_id == account_id,
+                Err(RecvError::Lagged(_)) => {
+                    // Lost notifications require fresh bound-credential authority.
+                    // An unavailable authority cannot keep private content live.
+                    current_account(&context)
+                        .map_or(true, |account| account != Some((account_id, is_admin)))
+                }
+                Err(RecvError::Closed) => true,
+            };
+            if retire {
+                // Socket headers retain their original cookie. A fresh document
+                // can recover a replacement cookie or reach the existing login boundary.
+                return Err(topcoat::router::error::redirect(
+                    super::transport::mounted_url(&context, "/"),
+                ).into());
+            }
+        }
+    }
+    .boxed()
+}
+
 #[procedure("/__native_home/session")]
-async fn native_home_session(cx: &Cx) -> topcoat::Result<(Option<i64>, bool)> {
+pub(super) async fn native_home_session(cx: &Cx) -> topcoat::Result<(Option<i64>, bool)> {
     // Pinned Topcoat cannot serialize a tuple nested inside Option by reference.
     // Absence is explicit; the flag carries no authority when the ID is absent.
     Ok(match current_account(cx)? {

@@ -16,6 +16,27 @@ the current HTTP cookie; connected shard credentials and stored token text
 cannot replace that baseline. Session and theme listeners belong to their
 rendered scopes and are removed when those scopes are disposed.
 
+The connected Home content scope subscribes to session revocations before
+reading its authorization snapshot. A matching revocation retires that scope
+and reloads Home through the current HTTP cookie. Unrelated revocations do not
+interrupt it. The receiver follows the content scope; document teardown also
+releases the physical sockets.
+
+Private native sockets share the existing REST socket quotas. Admission checks
+the current credentials before upgrading, and a pinned Rust runtime patch
+retains the request context for the entire physical connection. Idle sockets
+consume quota before their first render; rerenders do not acquire another slot.
+Published routes bypass this private admission boundary and still need a
+separate native socket policy.
+
+Home's native palette resolves qualified and bare issue references through
+shared Rust services, with per-result authorization and personal project order.
+Before publishing a query, a current-cookie check compares the rendered account
+and admin flag. An owner change reloads Home; a missing session reaches login.
+Rust owns selection, query reset, and pending Enter state. Project search remains
+available. Other search domains, modifier+Enter, shard failure recovery, and
+delayed-result browser proofs remain open.
+
 Reusable native issue controls cover title, exact description text, status,
 priority, sequence conflicts, draft retention, and retries. Their production
 component tests do not establish complete issue-detail parity. Pure Rust
@@ -25,9 +46,11 @@ a native Markdown composer.
 Other route families still use browser JavaScript controllers and the existing
 JSON API. The full native port remains unfinished. Home still needs project
 management and grouping, sidebar resizing, the complete command palette and
-appearance preferences, live refresh, idle session revocation, and reconnect
-proofs. Paired screenshots cover selected Home geometry and theme details;
-they do not establish complete visual parity.
+appearance preferences, live refresh, and reconnect proofs. Idle revocation
+still needs coverage across the remaining route families. Home's content-owned
+idle revocation has browser coverage at root and both mounted paths. Paired
+screenshots cover selected Home geometry and theme details; they do not
+establish complete visual parity.
 
 ## Target data flow
 
@@ -62,8 +85,14 @@ devenv --profile topcoat-e2e tasks run lific:topcoat:e2e
 
 The normal application build includes Topcoat. Runtime scripts, feature
 scripts, stylesheets, vendored Markdown/diagram libraries, and the mascot are
-embedded with `include_str!` or `include_bytes!`. Release packages and Cargo
-installs carry those sources and compile the same interface into one binary.
+embedded with `include_str!` or `include_bytes!`. Checkout builds compile the
+interface and these assets into one binary.
+
+The native socket context-retention fix currently uses a pinned path patch.
+Cargo registry packaging excludes nested crates and removes patch declarations,
+so registry installation would lose that fix. Registry release remains gated on
+a dependency strategy that preserves the patched runtime. Checkout and Git
+installation builds retain it.
 
 Format Rust with `cargo fmt`. The macro formatter uses the pinned CLI:
 

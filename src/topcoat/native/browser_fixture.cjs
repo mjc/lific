@@ -10,7 +10,7 @@ async function launchBrowser() {
     'Use the repository Chromium environment.');
   const moduleUrl = pathToFileURL(path.resolve(__dirname, '../../../e2e/node_modules/playwright/index.mjs'));
   const {chromium} = await import(moduleUrl.href);
-  return chromium.launch({headless: true, executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH});
+  return chromium.launch({headless: true, channel: 'chromium', executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH});
 }
 
 async function mountedProxy(upstream, prefix) {

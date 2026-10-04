@@ -19,6 +19,7 @@ pub(super) struct Fixture {
     pub(super) app: Router,
     pub(super) db: db::DbPool,
     pub(super) token: String,
+    pub(super) realtime: RealtimeHub,
     _store: tempfile::TempDir,
 }
 
@@ -68,10 +69,11 @@ pub(super) fn fixture_with_auth(required: bool) -> Fixture {
     cfg.auth.required = required;
     let store = tempfile::tempdir().unwrap();
     let proxies: Arc<[IpNetwork]> = vec![IpNetwork::parse("127.0.0.1").unwrap()].into();
+    let realtime = RealtimeHub::new();
     let app = build_app_with_store(
         &cfg,
         db.clone(),
-        RealtimeHub::new(),
+        realtime.clone(),
         proxies,
         AttachmentStore::new(store.path().to_owned()),
     );
@@ -79,6 +81,7 @@ pub(super) fn fixture_with_auth(required: bool) -> Fixture {
         app,
         db,
         token,
+        realtime,
         _store: store,
     }
 }
