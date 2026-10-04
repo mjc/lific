@@ -307,10 +307,11 @@ mod topcoat_app {
     #[route(GET "/__topcoat-app.css")]
     async fn stylesheet() -> Result<Response> {
         let css = format!(
-            "{}\n{}\n{}",
+            "{}\n{}\n{}\n{}",
             include_str!("topcoat/assets/base.css"),
             super::topcoat_frontend::controls::STYLESHEET,
-            super::topcoat_frontend::shell::STYLESHEET
+            super::topcoat_frontend::shell::STYLESHEET,
+            super::topcoat_frontend::native::home_view::STYLESHEET
         );
         Ok(Response::builder()
             .header("content-type", "text/css; charset=utf-8")

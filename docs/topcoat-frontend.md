@@ -9,6 +9,16 @@ The current implementation still uses browser JavaScript controllers and the
 existing JSON API. This is an intermediate port: native server data access,
 complete behavior parity, and visual parity remain unfinished.
 
+The native Home checkpoint now has a shared catalog of visible projects in
+the user's order, used by REST and native readers, cookie-based identity
+snapshots, and bounded reads for active work and project activity. Its prepared
+model and renderer cover grouped active work, a short project digest, mounted
+links, safe text, project icons, and the empty state. This is not yet wired as
+the production Home: local clock and recents, the complete shell, live refresh,
+locale-aware ordering, and full issue editing remain open. The native
+components and readers are preparation for that integration, not complete
+production route families.
+
 ## Target data flow
 
 Async Topcoat components should read authorized application data through the
