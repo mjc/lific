@@ -1,0 +1,15 @@
+.tc-native-home { height: 100%; overflow-y: auto; }
+.tc-native-home__page { width: 100%; max-width: 1280px; margin: 0 auto; padding: 2rem 1.5rem; }
+.tc-native-home__hero { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 1rem; margin-bottom: 2rem; }
+.tc-native-home__greeting { display: flex; align-items: center; gap: .75rem; }
+.tc-native-home__greeting-icon { width: 44px; height: 44px; flex-shrink: 0; border-radius: .75rem; background: var(--tc-accent-subtle); color: var(--tc-accent); display: flex; align-items: center; justify-content: center; }
+.tc-native-home__greeting h1 { margin: 0; font-size: 1.5rem; font-weight: 600; line-height: 1; letter-spacing: -.025em; }
+.tc-native-home__greeting p { margin: .25rem 0 0; font-size: .8125rem; color: var(--tc-muted); }
+.tc-native-home__actions { display: flex; align-items: center; gap: .5rem; }
+.tc-native-home__actions a, .tc-native-home__actions button { display: inline-flex; align-items: center; gap: .375rem; padding: .375rem .75rem; font-size: .8125rem; line-height: 1.5; border: 1px solid var(--tc-border); border-radius: .375rem; color: var(--tc-muted); background: transparent; text-decoration: none; cursor: pointer; }
+.tc-native-home__actions .tc-native-home__new { color: #fff; background: var(--tc-btn-success); border-color: transparent; font-weight: 500; }
+.tc-native-home__actions button:hover { color: var(--tc-text); background: var(--tc-bg-subtle); }
+.tc-native-home__columns { display: flex; flex-direction: column; align-items: flex-start; gap: 2rem; }
+.tc-native-home__columns > .tc-home-active { flex: 1; }
+@media (min-width: 768px) { .tc-native-home__page { padding: 2.5rem 2rem; } }
+@media (min-width: 1024px) { .tc-native-home__columns { flex-direction: row; } }

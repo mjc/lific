@@ -20,6 +20,8 @@ test('vendored patches reconstruct the exact pinned upstream runtime', () => {
     ['function f(t){if(t==null)return null;if(Array.isArray(t))return t.map(f);', 'function f(t){if(t==null)return null;', 1],
     ['let r=e.name.substring(ke.length);if(r==="mount"){topcoatMount(t,()=>T(e.value,`event @${r}`)(n.runtime.context),n);return}let o=T(e.value,`event @${r}`)(n.runtime.context);',
       'let r=e.name.substring(ke.length),o=T(e.value,`event @${r}`)(n.runtime.context);', 1],
+    ['refresh(){if(this.isDisposed)return Promise.resolve();if(this.connection!==null)return this.connection.requestRun(),Promise.resolve();if(this.requiresConnection){for(let n of this.ancestors())if(n.connection!==null||n.requiresConnection)return n.refresh();return this.connectIfRequired(),Promise.resolve()}',
+      'refresh(){if(this.connection?.isOpen)return this.connection.requestRun(),Promise.resolve();if(this.requiresConnection){for(let n of this.ancestors())if(n.connection?.isOpen)return n.refresh()}', 1],
   ]) {
     assert.equal(original.split(patched).length - 1, count, 'Each declared patch has its expected occurrence count.');
     original = original.replaceAll(patched, upstream);
@@ -30,6 +32,120 @@ test('vendored patches reconstruct the exact pinned upstream runtime', () => {
 
 // This fixture speaks the pinned framework transport protocol. Domain/auth
 // integration is exercised separately against the actual Lific executable.
+test('connected renders wait for load, socket open and reconnect using fresh inputs', async t => {
+  assert.ok(process.env.PLAYWRIGHT_EXECUTABLE_PATH, 'Use the repository e2e Chromium environment.');
+  const {chromium} = await import(path.resolve(__dirname, '../../../e2e/node_modules/playwright/index.mjs'));
+  const browser = await chromium.launch({headless: true, executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH});
+  try {
+    for (const ancestor of [false, true]) await t.test(ancestor ? 'ancestor connection' : 'own connection', async () => {
+      const requests = [], runs = [], upgrades = [], pendingSockets = new Set();
+      let heldImage;
+      const connectedContent = value => `<p id="socket-result">Socket ${value}</p><!-- ::topcoat::connect -->`;
+      const documentBody = value => `
+        <!-- ::topcoat::signal({"t":"signal","id":"a","v":0}) -->
+        <!-- ::topcoat::signal({"t":"signal","id":"b","v":0}) -->
+        ${ancestor ? '<!-- ::topcoat::connect -->' : ''}
+        <button id="mount" data-topcoat-on:mount="${escape('()=>{if(cx.signal("a").get().v===0)cx.signal("a").increment()}')}">Mounted</button>
+        <button data-topcoat-on:click="${escape('()=>cx.signal("a").increment()')}">Update connected</button>
+        <button data-topcoat-on:click="${escape('()=>cx.signal("b").increment()')}">Update HTTP</button>
+        <!-- ::topcoat::shard::start("/native/connected", "1", ["${escape('cx.signal("a").get()')}"]) -->
+        ${connectedContent(value)}
+        <!-- ::topcoat::shard::end("1") -->
+        <!-- ::topcoat::shard::start("/native/http", "2", ["${escape('cx.signal("b").get()')}"]) -->
+        <p id="http-result">Initial HTTP</p>
+        <!-- ::topcoat::shard::end("2") -->`;
+      // Page.prepare parses a complete HTML document. Keep leading signal and
+      // connection comments inside its body, as real page snapshots do.
+      const pageContent = value => `<html><body>${documentBody(value)}</body></html>`;
+      const server = http.createServer(async (request, response) => {
+        if (request.url === '/ACC/runtime.js') {
+          response.setHeader('Content-Type', 'text/javascript'); response.end(runtime); return;
+        }
+        if (request.url === '/ACC/held.svg') { heldImage = response; return; }
+        if (request.method === 'POST') {
+          const chunks = [];
+          for await (const chunk of request) chunks.push(chunk);
+          const body = JSON.parse(Buffer.concat(chunks).toString());
+          requests.push({path: request.url, body});
+          const html = request.url === '/ACC/native/http'
+            ? `<p id="http-result">HTTP ${body.args[0]}</p>`
+            : request.url === '/ACC/fixture' ? pageContent('fallback') : connectedContent('fallback');
+          response.setHeader('Content-Type', 'application/x-ndjson');
+          response.end(`${JSON.stringify({t: 'snapshot', html})}\n`); return;
+        }
+        response.setHeader('Content-Type', 'text/html');
+        response.end(`<html data-topcoat-runtime-prefix="/ACC"><body><img src="/ACC/held.svg">${documentBody(0)}<script type="module" src="/ACC/runtime.js"></script></body></html>`);
+      });
+      const ws = new WebSocketServer({noServer: true});
+      server.on('upgrade', (request, socket, head) => {
+        pendingSockets.add(socket);
+        upgrades.push(() => {
+          pendingSockets.delete(socket);
+          ws.handleUpgrade(request, socket, head, client => {
+            client.on('message', message => {
+              const run = JSON.parse(message.toString());
+              runs.push({path: request.url, run});
+              const value = ancestor ? run.signals.a : run.args[0];
+              client.send(JSON.stringify({t: 'run', id: run.run}));
+              client.send(JSON.stringify({t: 'snapshot', html: ancestor ? pageContent(value) : connectedContent(value)}));
+            });
+          });
+        });
+        server.emit('held-upgrade');
+      });
+      await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+      const page = await browser.newPage(), failures = [];
+      page.setDefaultTimeout(5000);
+      page.on('pageerror', error => failures.push(error.message));
+      try {
+        await page.goto(`http://127.0.0.1:${server.address().port}/ACC/fixture`, {waitUntil: 'domcontentloaded'});
+        await page.getByRole('button', {name: 'Update connected', exact: true}).click();
+        await page.getByRole('button', {name: 'Update connected', exact: true}).click();
+        await page.getByRole('button', {name: 'Update HTTP', exact: true}).click();
+        await page.getByText('HTTP 1', {exact: true}).waitFor();
+        assert.equal(await page.evaluate(() => document.readyState), 'interactive');
+        assert.deepEqual(requests.map(request => request.path), ['/ACC/native/http'],
+          'A connected render waits for document load while HTTP-only shards still POST.');
+        const upgrading = new Promise(resolve => server.once('held-upgrade', resolve));
+        heldImage.setHeader('Content-Type', 'image/svg+xml');
+        heldImage.end('<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>');
+        await upgrading;
+        await page.getByRole('button', {name: 'Update connected', exact: true}).click();
+        await page.getByRole('button', {name: 'Update HTTP', exact: true}).click();
+        await page.getByText('HTTP 2', {exact: true}).waitFor();
+        assert.deepEqual(requests.map(request => request.path), ['/ACC/native/http', '/ACC/native/http'],
+          'A connected render waits for the pending socket handshake.');
+        upgrades.shift()();
+        await page.getByText('Socket 4', {exact: true}).waitFor();
+        assert.equal(runs[0].path, ancestor ? '/ACC/fixture' : '/ACC/native/connected');
+        assert.equal(ancestor ? runs[0].run.signals.a : runs[0].run.args[0], 4,
+          'Opening the socket reads the newest inputs, including mount initialization.');
+        const reconnecting = new Promise(resolve => server.once('held-upgrade', resolve));
+        for (const client of ws.clients) client.terminate();
+        await reconnecting;
+        await page.getByRole('button', {name: 'Update connected', exact: true}).click();
+        await page.getByRole('button', {name: 'Update connected', exact: true}).click();
+        await page.getByRole('button', {name: 'Update HTTP', exact: true}).click();
+        await page.getByText('HTTP 3', {exact: true}).waitFor();
+        assert.ok(requests.every(request => request.path === '/ACC/native/http'),
+          'Reconnect never falls back to a connected HTTP render.');
+        upgrades.shift()();
+        await page.getByText('Socket 6', {exact: true}).waitFor();
+        assert.equal(ancestor ? runs.at(-1).run.signals.a : runs.at(-1).run.args[0], 6);
+        assert.deepEqual(requests.map(request => request.body.args), [[1], [2], [3]]);
+        assert.deepEqual(failures, []);
+      } finally {
+        heldImage?.end();
+        await page.close();
+        for (const socket of pendingSockets) socket.destroy();
+        for (const client of ws.clients) client.terminate();
+        await new Promise(resolve => ws.close(resolve));
+        await new Promise(resolve => server.close(resolve));
+      }
+    });
+  } finally { await browser.close(); }
+});
+
 test('framework procedures, returned surrogates, shards and sockets stay within the Rust-rendered mount', async t => {
   assert.ok(process.env.PLAYWRIGHT_EXECUTABLE_PATH, 'Use the repository e2e Chromium environment.');
   const {chromium} = await import(path.resolve(__dirname, '../../../e2e/node_modules/playwright/index.mjs'));
