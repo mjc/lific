@@ -53,7 +53,9 @@ SOFTWARE.
 - Lific generic vector signal patch: add immutable typed push/remove writes to
   WriteSignal and cloning Vec helpers. Index validation preserves usize width
   and bounds; no application policy is included.
+- Lific native-event patch: expose Context.event using the existing Event
+  surrogate for DOM event primitives; wire hydration remains unchanged.
 - All remaining upstream framework code is unchanged. Removing the 27
-  prepended helper/comment lines and reversing these sixteen substitutions
+  prepended helper/comment lines and reversing these seventeen substitutions
   reproduces the unmodified upstream bytes. See `../native/TRANSPORT.md`.
-- Patched file SHA-256: `5f54b2969ee22e93d722b4e81226923a2cc3d03c469066942dac09833ebdd7e6`
+- Patched file SHA-256: `0f356d63f7feb730d925f782c00edd002767e0affb11e296fefd5f3d9bf77e94`

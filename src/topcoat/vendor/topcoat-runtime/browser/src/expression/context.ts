@@ -1,5 +1,5 @@
 import type { SignalId, SignalRegistry } from "../signal-registry";
-import { Option, Result, WriteSignal } from "../surrogate";
+import { Event, Option, Result, WriteSignal } from "../surrogate";
 import { hydrate } from "./hydrate";
 import type { DehydratedSurrogate } from "./serialized";
 
@@ -10,6 +10,11 @@ import type { DehydratedSurrogate } from "./serialized";
  */
 export class Context {
 	constructor(private readonly registry: SignalRegistry) {}
+
+	/** Wraps a native DOM event with the same adapter used by framework listeners. */
+	event(event: globalThis.Event): Event {
+		return new Event(event);
+	}
 
 	hydrate(s: unknown) {
 		return hydrate(s as DehydratedSurrogate, this);

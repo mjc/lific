@@ -246,6 +246,12 @@ storage remains nonfatal, and hostile stored text stays text. This fixture does
 not establish production Home initialization or recents behavior.
 
 
+## Native event adapter
+
+`Context.event(nativeEvent)` wraps native DOM events with the existing framework
+Event surrogate. Rust expressions can read keys, targets and modifiers or cancel
+the original event. Serialized wire hydration keeps its original contract.
+
 ## Generic procedure keepalive
 
 The procedure transport exposes `call_keepalive` and a callable

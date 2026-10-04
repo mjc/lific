@@ -5,7 +5,9 @@ pub(crate) mod actions;
 mod browser_production;
 pub(crate) mod controls;
 pub(crate) mod delete;
+pub(crate) mod delete_menu;
 pub(crate) mod export;
+pub(crate) mod list_return;
 mod model;
 pub(crate) mod route;
 pub(crate) mod view;
@@ -23,3 +25,6 @@ mod export_production;
 
 #[cfg(test)]
 mod decoration_production;
+
+#[cfg(test)]
+mod menu_production;

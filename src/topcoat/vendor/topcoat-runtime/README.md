@@ -120,8 +120,8 @@ Close outcomes and retaining a
 Send-only future in the Send + Sync request context. Actual application TCP
 tests cover request-scoped Redirect lifetimes, idle session retirement,
 periodic revalidation, stable ownership across rerenders and peer cleanup.
-Except for the generic procedure and vector signal adapters described below, the browser
-source and distribution are unchanged. Lific's existing
+The browser source includes the generic procedure, vector signal and native
+event adapters described below. The vendor distribution is unchanged. Lific's existing
 `src/topcoat/assets/runtime.js` transport patches remain separate. Its document
 runtime claims navigation once across sibling framework redirects.
 
@@ -148,3 +148,12 @@ The application uses the registry signal types through the typed extension in
 decisions. The packaged runtime carries the same two reversible substitutions;
 its reconstruction test still proves the exact pinned upstream SHA-256. The
 vendor distribution remains unchanged.
+
+
+## Native event adapter
+
+`browser/src/expression/context.ts` adds `Context.event(nativeEvent)` using
+the existing browser Event surrogate, matching framework DOM event listeners.
+Wire hydration remains restricted to serialized runtime values. The packaged
+application asset carries the matching reversible Context method addition;
+the vendor distribution remains unchanged.

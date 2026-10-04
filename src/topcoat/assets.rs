@@ -6,11 +6,26 @@ use sha2::{Digest, Sha256};
 
 pub(crate) const RUNTIME: &str = include_str!("assets/runtime.js");
 
+pub(crate) const DM_SANS_ITALIC_LATIN_EXT: &[u8] =
+    include_bytes!("assets/fonts/dm-sans-italic-latin-ext.woff2");
+pub(crate) const DM_SANS_ITALIC_LATIN: &[u8] =
+    include_bytes!("assets/fonts/dm-sans-italic-latin.woff2");
+pub(crate) const DM_SANS_NORMAL_LATIN_EXT: &[u8] =
+    include_bytes!("assets/fonts/dm-sans-normal-latin-ext.woff2");
+pub(crate) const DM_SANS_NORMAL_LATIN: &[u8] =
+    include_bytes!("assets/fonts/dm-sans-normal-latin.woff2");
+pub(crate) const SPACE_GROTESK_NORMAL_VIETNAMESE: &[u8] =
+    include_bytes!("assets/fonts/space-grotesk-normal-vietnamese.woff2");
+pub(crate) const SPACE_GROTESK_NORMAL_LATIN_EXT: &[u8] =
+    include_bytes!("assets/fonts/space-grotesk-normal-latin-ext.woff2");
+pub(crate) const SPACE_GROTESK_NORMAL_LATIN: &[u8] =
+    include_bytes!("assets/fonts/space-grotesk-normal-latin.woff2");
+
 pub(crate) fn app_stylesheet() -> &'static str {
     static CSS: OnceLock<String> = OnceLock::new();
     CSS.get_or_init(|| {
         format!(
-            "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+            "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
             include_str!("assets/base.css"),
             super::controls::STYLESHEET,
             super::shell::STYLESHEET,
@@ -20,8 +35,11 @@ pub(crate) fn app_stylesheet() -> &'static str {
             super::native::home::STYLESHEET,
             super::native::issue_edit::controls::STYLESHEET,
             super::native::issue_list::STYLESHEET,
+            super::native::board::STYLESHEET,
             include_str!("native/markdown/styles.css"),
             include_str!("native/issue_edit/detail.css"),
+            super::native::issue_edit::delete_menu::STYLESHEET,
+            include_str!("native/assets/deferred-delete.css"),
         )
     })
 }

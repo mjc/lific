@@ -482,35 +482,20 @@ async fn editor_component(
     ))
 }
 
-/// The production document owns one field state for both chrome and body.
-pub(crate) fn document<'a>(
-    cx: &'a Cx,
-    snapshot: &Snapshot,
-    can_edit: bool,
-    user: &crate::db::models::AuthUser,
-    projects: &[crate::db::models::Project],
-    route: &super::super::super::shell::ParsedRoute<'_>,
-) -> BoxView<'a> {
-    let snapshot = snapshot.clone();
-    let user = user.clone();
-    let projects = projects.to_vec();
-    let project = route
-        .project
-        .expect("authorized private issue route")
-        .to_owned();
-    view! { cx => document_component(snapshot: snapshot, can_edit: can_edit, user: user, projects: projects, project: project) }.boxed()
-}
-
 /// A disposable issue scope inside the persistent workspace shell.
 pub(crate) fn document_region<'a>(
     cx: &'a Cx,
     snapshot: &Snapshot,
     can_edit: bool,
     project: &str,
+    delete_request: &super::delete_menu::Request,
 ) -> BoxView<'a> {
     let snapshot = snapshot.clone();
     let project = project.to_owned();
-    view! { cx => document_region_component(snapshot: snapshot, can_edit: can_edit, project: project) }.boxed()
+    let delete_request = delete_request.clone();
+    // Preserve drafts for this issue while giving another issue fresh field state.
+    let issue_cx = cx.keyed(&snapshot.identifier);
+    view! { issue_cx => document_region_component(snapshot: snapshot, can_edit: can_edit, project: project, delete_request: delete_request) }.boxed()
 }
 
 fn document_views<'a>(
@@ -518,10 +503,11 @@ fn document_views<'a>(
     snapshot: &Snapshot,
     can_edit: bool,
     project: &str,
+    delete_request: &super::delete_menu::Request,
 ) -> (BoxView<'a>, BoxView<'a>) {
     let controls = Controls::new(cx, snapshot);
     (
-        document_topbar(cx, &controls, project, can_edit),
+        document_topbar(cx, &controls, project, can_edit, delete_request),
         render_editor(cx, snapshot, can_edit, true, &controls, true),
     )
 }
@@ -532,39 +518,15 @@ async fn document_region_component(
     snapshot: Snapshot,
     can_edit: bool,
     project: String,
+    delete_request: super::delete_menu::Request,
 ) -> topcoat::Result<impl View> {
-    let (topbar, content) = document_views(cx, &snapshot, can_edit, &project);
+    let (topbar, content) = document_views(cx, &snapshot, can_edit, &project, &delete_request);
     Ok(super::super::home_shell::page_region(
         cx,
         content,
         Some(topbar),
         String::new(),
     ))
-}
-
-#[component]
-async fn document_component(
-    cx: &Cx,
-    snapshot: Snapshot,
-    can_edit: bool,
-    user: crate::db::models::AuthUser,
-    projects: Vec<crate::db::models::Project>,
-    project: String,
-) -> topcoat::Result<impl View> {
-    let (topbar, content) = document_views(cx, &snapshot, can_edit, &project);
-    let path = format!("/{project}/issues/{}", snapshot.identifier);
-    let route = super::super::super::shell::ParsedRoute::parse(&path);
-    Ok(
-        super::super::home_shell::shell_with_palette_for_page_and_topbar(
-            cx,
-            &user,
-            &projects,
-            &route,
-            content,
-            signal(cx, || false),
-            Some(topbar),
-        ),
-    )
 }
 
 fn body_edit_attributes(cx: &Cx, controls: &Controls) -> Attributes {
@@ -717,10 +679,10 @@ fn document_topbar<'a>(
     controls: &Controls,
     project: &str,
     can_edit: bool,
+    delete_request: &super::delete_menu::Request,
 ) -> BoxView<'a> {
     let project_label = project.to_owned();
     let overview = super::super::transport::mounted_url(cx, &format!("/{project}/overview"));
-    let issues = super::super::transport::mounted_url(cx, &format!("/{project}/issues"));
     let identifier = controls.identifier.clone();
     let copy_project = project.to_owned();
     let copy_identifier = identifier.clone();
@@ -737,8 +699,17 @@ fn document_topbar<'a>(
     let status_options = status_options(cx, controls);
     let edit_id = format!("native-issue-body-edit-{}", controls.identifier);
     let (export_error, export_button) = super::export::toolbar_fragments(cx, &controls.identifier);
+    let breadcrumb = super::list_return::breadcrumb(cx, project, &controls.identifier);
+    let delete_menu = super::delete_menu::toolbar(cx, delete_request.clone(), can_edit, project);
+    let keyboard = super::list_return::keyboard_mount(
+        cx,
+        project,
+        &controls.identifier,
+        controls.description_editing.clone(),
+        controls.properties_open.clone(),
+    );
     view! { cx =>
-        <div class="native-issue-detail__topbar">
+        <div class="native-issue-detail__topbar" (keyboard)>
             <div class="native-issue-detail__scope">
                 <nav class="native-issue-detail__breadcrumbs" aria-label="Breadcrumb"><ol>
                     <li data-hide-phone=""><a data-mono="" href=(overview) title=(project_label.clone())><span data-label="">(project_label)</span></a>
@@ -747,7 +718,7 @@ fn document_topbar<'a>(
                         </button>
                     </li>
                     <li data-separator="" data-hide-phone="" aria-hidden="true">(super::super::icons::project_icon(cx, Some("lucide:ChevronRight"), 12))</li>
-                    <li data-hide-phone=""><a href=(issues) title="Issues"><span data-label="">"Issues"</span></a></li>
+                    <li data-hide-phone="">(breadcrumb)</li>
                     <li data-separator="" data-hide-phone="" aria-hidden="true">(super::super::icons::project_icon(cx, Some("lucide:ChevronRight"), 12))</li>
                     <li><span data-mono="" aria-current="page" title=(identifier.clone())><span data-label="">(identifier)</span></span>
                         <button class="native-issue-detail__copy" type="button" aria-label=(format!("Copy {copy_identifier}")) @click=$(|_event: Event| {raw!("navigator.clipboard.writeText(${copy_identifier}.toString()).catch(() => {})", ());})>
@@ -781,6 +752,7 @@ fn document_topbar<'a>(
                 }
                 <span class="native-issue-detail__save-status"><span :hidden=$(!busy.get())>"Saving..."</span></span>
                 (export_button)
+                (delete_menu)
                 <button id="native-issue-details-open" class="native-issue-detail__properties-toggle" type="button" aria-label="Show details" :aria-expanded=$(if properties_open.get() { "true" } else { "false" }) @click=$(|_event: Event| properties_open.set(true))>
                     (super::super::icons::project_icon(cx, Some("lucide:PanelRight"), 16))
                 </button>

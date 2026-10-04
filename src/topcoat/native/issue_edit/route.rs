@@ -11,9 +11,8 @@ use crate::{
     services,
 };
 
-use super::super::super::shell::ParsedRoute;
 use super::super::{context, session};
-use super::{actions, controls};
+use super::{actions, controls, delete_menu};
 
 pub(crate) struct DocumentMetadata {
     pub(crate) module_id: Option<i64>,
@@ -51,9 +50,8 @@ pub(crate) fn metadata(
 }
 
 struct AuthorizedDocument {
-    caller: context::Caller,
-    user: crate::db::models::AuthUser,
     snapshot: actions::Snapshot,
+    delete_request: delete_menu::Request,
     can_edit: bool,
 }
 
@@ -85,10 +83,16 @@ fn authorized_document(
             Err(LificError::Forbidden(_)) => false,
             Err(error) => return session::read(cx, Err(error)),
         };
+    let delete_request = delete_menu::Request {
+        account_id: user.id,
+        issue_id: issue.id,
+        identifier: issue.identifier.clone(),
+        list_path: format!("/{project}/issues"),
+        detail_path: format!("/{project}/issues/{}", issue.identifier),
+    };
     Ok(AuthorizedDocument {
-        caller,
-        user,
         snapshot: actions::snapshot(issue),
+        delete_request,
         can_edit,
     })
 }
@@ -105,26 +109,6 @@ pub(crate) fn content<'a>(
         &document.snapshot,
         document.can_edit,
         project,
-    ))
-}
-
-pub(crate) fn screen<'a>(
-    cx: &'a Cx,
-    route: &ParsedRoute<'_>,
-    project: &str,
-    identifier: &str,
-) -> topcoat::Result<BoxView<'a>> {
-    let document = authorized_document(cx, project, identifier)?;
-    let projects = session::read(
-        cx,
-        services::projects::list_visible_projects(context::db(cx), &document.caller.identity),
-    )?;
-    Ok(controls::document(
-        cx,
-        &document.snapshot,
-        document.can_edit,
-        &document.user,
-        &projects,
-        route,
+        &document.delete_request,
     ))
 }

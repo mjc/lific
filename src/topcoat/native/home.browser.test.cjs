@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const {createHash} = require('node:crypto');
 const path = require('node:path');
 const {pathToFileURL} = require('node:url');
+const {tmpdir} = require('node:os');
 const {mountedProxy, launchBrowser} = require('./browser_fixture.cjs');
 
 const snapshot = process.argv[4];
@@ -178,7 +179,7 @@ test('production native Home uses Rust state and mounted transport; capture pair
   const desktop = {name: 'desktop', width: 1440, height: 900};
   const phone = {name: 'phone', width: 390, height: 844};
   const report = [];
-  let vite;
+  let vite, referenceCache;
   const viteProxySockets = new Set();
   try {
     for (const prefix of ['', '/app', '/ACC']) await t.test(prefix || 'root', async () => {
@@ -247,7 +248,8 @@ test('production native Home uses Rust state and mounted transport; capture pair
         viteProxySockets.add(socket);
         socket.once('close', () => viteProxySockets.delete(socket));
       });
-      vite = await createServer({root: snapshot, logLevel: 'silent', configFile: path.join(snapshot, 'vite.config.ts'), server: {
+      referenceCache = fs.mkdtempSync(path.join(tmpdir(), 'lific-pinned-vite-'));
+      vite = await createServer({cacheDir:referenceCache,root: snapshot, logLevel: 'silent', configFile: path.join(snapshot, 'vite.config.ts'), server: {
         host: '127.0.0.1', port: 0, strictPort: false, proxy: {
           '/api': {target: upstream.origin, ws: true, configure},
           '/public/api': {target: upstream.origin, ws: true, configure},
@@ -285,9 +287,9 @@ test('production native Home uses Rust state and mounted transport; capture pair
     fs.writeFileSync(path.join(output, 'geometry.json'), JSON.stringify(report, null, 2));
     checkpoint('capture report saved; cleanup begins');
     for (const socket of viteProxySockets) socket.destroy();
-    try {
-      if (vite) await bounded('close pinned Vite', () => vite.close());
-    } finally {await bounded('close Chromium', () => browser.close());}
+    try {await bounded('close Chromium', () => browser.close());}
+    finally {try {if (vite) await bounded('close pinned Vite', () => vite.close());}
+      finally {if (referenceCache) fs.rmSync(referenceCache,{recursive:true,force:true});}}
     checkpoint(`cleanup done; active resource types ${JSON.stringify(process.getActiveResourcesInfo())}`);
   }
 });

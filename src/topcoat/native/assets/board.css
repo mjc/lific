@@ -1,0 +1,20 @@
+/* Pinned master: status columns 300px desktop / 85vw mobile, 8px card gap,
+   12px/10px column header padding and 10px card padding. */
+.native-board{display:flex;flex:1;min-width:0;min-height:0;color:var(--tc-text)}
+.native-board__columns{display:flex;flex:1;min-width:0;min-height:0;overflow-x:auto;overflow-y:hidden}
+.native-board__column{display:flex;flex-direction:column;flex:0 0 300px;min-height:0;border-right:1px solid var(--tc-border)}
+.native-board__column:last-child{border-right:0}
+.native-board__header{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--tc-border)}
+.native-board__header h2{margin:0;font:600 12px/1.4 var(--tc-font);text-transform:uppercase;letter-spacing:.1em;color:var(--tc-muted)}
+.native-board__count{font:12px/1.4 var(--tc-font);font-variant-numeric:tabular-nums;color:var(--tc-faint)}
+.native-board__cards{display:flex;flex:1;flex-direction:column;gap:8px;min-height:0;overflow-y:auto;padding:8px}
+.native-board__card{display:block;padding:10px;border:1px solid var(--tc-border);border-radius:6px;background:var(--tc-surface);color:var(--tc-text);text-decoration:none}
+.native-board__card:hover{border-color:var(--tc-faint)}
+.native-board__card:focus-visible{outline:2px solid var(--tc-accent);outline-offset:2px}
+.native-board__card-top{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px}
+.native-board__identifier{font:11px/1.4 var(--tc-font-mono);color:var(--tc-faint)}
+.native-board__title{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;margin:0;font:400 13px/1.4 var(--tc-font)}
+.native-board__title--closed{text-decoration:line-through;color:var(--tc-muted)}
+.native-board__empty{margin:16px 0 8px;text-align:center;color:var(--tc-faint);font:12px/1.4 var(--tc-font)}
+@media(max-width:767px){.native-board__columns{scroll-snap-type:x mandatory;scroll-behavior:smooth}.native-board__column{flex-basis:85vw;scroll-snap-align:start}}
+@media(prefers-reduced-motion:reduce){.native-board__columns{scroll-behavior:auto}}

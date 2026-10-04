@@ -1,0 +1,19 @@
+/* Original DeleteMenu composition inside the native issue toolbar. */
+.native-issue-detail__delete{position:relative}
+.native-issue-detail__more{font:inherit;display:flex;align-items:center;justify-content:center;flex-shrink:0;width:28px;height:28px;padding:0;border:0;border-radius:6px;background:transparent;color:var(--tc-faint);cursor:pointer;transition:color .15s,background .15s}
+.native-issue-detail__more:hover{color:var(--tc-text);background:var(--tc-bg-subtle)}
+.native-issue-detail__delete-menu,.native-issue-detail__delete-confirm{position:absolute;right:0;top:100%;z-index:30;margin-top:6px;border:1px solid var(--tc-border);border-radius:6px;background:var(--tc-surface);box-shadow:0 10px 15px -3px #0000001a,0 4px 6px -4px #0000001a}
+.native-issue-detail__delete-menu{width:180px;padding:4px 0}
+.native-issue-detail__delete-option{display:flex;align-items:center;gap:8px;width:100%;padding:6px 12px;border:0;background:transparent;color:var(--tc-danger);font:13px/1.6 var(--tc-font);text-align:left;cursor:pointer}
+.native-issue-detail__delete-option:hover{background:var(--tc-error-bg)}
+.native-issue-detail__delete-confirm{width:260px;padding:12px}
+.native-issue-detail__delete-title{margin:0 0 4px;color:var(--tc-text);font:500 13px/1.6 var(--tc-font)}
+.native-issue-detail__delete-body{margin:0 0 12px;color:var(--tc-muted);font:12px/1.6 var(--tc-font)}
+.native-issue-detail__delete-buttons{display:flex;align-items:center;gap:8px}
+.native-issue-detail__delete-run,.native-issue-detail__delete-cancel{padding:6px 12px;border:0;border-radius:6px;font:13px/1.6 var(--tc-font);cursor:pointer}
+.native-issue-detail__delete-run{color:var(--tc-danger-text);background:var(--tc-danger);font-weight:500;transition:opacity .15s}
+.native-issue-detail__delete-run:hover{opacity:.9}
+.native-issue-detail__delete-run:disabled{opacity:.5;cursor:not-allowed}
+.native-issue-detail__delete-cancel{color:var(--tc-muted);background:transparent;transition:background .15s}
+.native-issue-detail__delete-cancel:hover{background:var(--tc-bg-subtle)}
+@media(pointer:coarse){.native-issue-detail__more{position:relative}.native-issue-detail__more::after{content:"";position:absolute;top:50%;left:50%;width:max(100%,44px);height:max(100%,44px);transform:translate(-50%,-50%)}}

@@ -384,15 +384,33 @@ test('normal native issue Export downloads exact scoped bytes',async t=>{
     for(const prefix of ['', '/app', '/ACC']) await t.test(prefix||'root',async()=>{
       const proxy=await mountedProxy(upstream,prefix);
       const context=await browser.newContext({viewport:{width:1440,height:900},acceptDownloads:true});
-      const requests=[],errors=[],consoleErrors=[];
+      const requests=[],fontRequests=[],errors=[],consoleErrors=[];
       try {
         await context.addCookies([{name:'lific_token',value:token,url:proxy.origin,httpOnly:true,sameSite:'Lax'}]);
-        context.on('request',request=>requests.push(new URL(request.url()).pathname));
+        await context.route(/^https:\/\/fonts\.(googleapis|gstatic)\.com\//,route=>route.abort());
+        context.on('request',request=>{
+          requests.push(new URL(request.url()).pathname);
+          if(request.resourceType()==='font')fontRequests.push(new URL(request.url()));
+        });
         const page=await context.newPage(); page.setDefaultTimeout(15000);
         page.on('pageerror',error=>errors.push(error.message));
         page.on('console',message=>{if(message.type()==='error') consoleErrors.push({message:message.text(),path:new URL(message.location().url).pathname});});
         assert.equal((await page.goto(`${proxy.origin}${prefix}/ACC/issues/ACC-1`)).status(),200);
         await page.getByRole('button',{name:'Native export',exact:true}).or(page.getByRole('heading',{name:'Native export',exact:true})).waitFor();
+        const loadedFonts=await page.evaluate(async()=>{
+          const fonts=await Promise.all([
+            document.fonts.load('14px "DM Sans"'),
+            document.fonts.load('italic 14px "DM Sans"'),
+            document.fonts.load('700 14px "Space Grotesk"'),
+          ]);
+          await document.fonts.ready;
+          return fonts.map(group=>group.map(font=>({family:font.family,status:font.status})));
+        });
+        assert.ok(loadedFonts.every(group=>group.length>0&&group.every(font=>font.status==='loaded')),
+          'The original normal, italic and display fonts load with Google requests blocked.');
+        assert.ok(fontRequests.length>=3);
+        assert.ok(fontRequests.every(url=>url.origin===proxy.origin&&url.pathname.startsWith(`${prefix}/__topcoat-font-`)),
+          'Production font requests use only the current same-origin mount.');
         const exportButton=page.getByRole('button',{name:'Export',exact:true});
         await exportButton.waitFor();
         const exportPath=`${prefix}/__native_issue_export/ACC-1`;

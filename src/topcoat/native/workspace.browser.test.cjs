@@ -18,6 +18,7 @@ const rename = title => control('rename', {title});
 const membership = role => control('membership', {role});
 async function retainedParent(page) {
   assert.ok(await page.evaluate(() => document.querySelector('.native-home-shell') === window.workspaceParent && window.workspaceParent.testParentToken === window.workspaceToken));
+  assert.equal(await page.title(),'Lific','Native navigation retains the pinned master document title.');
 }
 async function list(page, origin, prefix) {
   await page.waitForURL(`${origin}${prefix}/ACC/issues`);
@@ -44,6 +45,64 @@ function nativeDocument(html, list) {
     assert.ok(!html.includes('Private hidden initial work') && !html.includes('HIDE-1'));
   }
 }
+test('real native Board SSR and saved Board return retain the workspace', async t => {
+  const browser = await launchBrowser();
+  try {
+    for (const prefix of ['', '/app', '/ACC']) {
+      await t.test(`populated Board SSR ${prefix || 'root'}`, async () => {
+        const proxy = await mountedProxy(upstream,prefix);
+        const context = await browser.newContext();
+        try {
+          await context.addCookies([{name:'lific_token',value:token,url:proxy.origin,httpOnly:true,sameSite:'Lax'}]);
+          await membership('viewer');
+          const response = await context.request.get(`${proxy.origin}${prefix}/ACC/board`);
+          assert.equal(response.status(),200);
+          const html = await response.text();
+          assert.ok(html.includes('data-native-board="ACC"'),'Canonical production Board contains genuine native status-column content.');
+          assert.ok(html.includes('native-home-shell') && html.includes(`href="${prefix}/ACC/issues/ACC-1"`));
+          assert.ok(!html.includes('Private hidden initial work') && !html.includes('data-lific-session-state'));
+          const scripts = [...html.matchAll(/<script\b[^>]*\bsrc="([^"]+)"/g)].map(match=>match[1]);
+          assert.equal(scripts.length,1);assert.ok(scripts[0].includes('__topcoat-runtime'));
+        } finally {await membership('maintainer');await context.close();await proxy.close();}
+      });
+      await t.test(`saved Board return ${prefix || 'root'}`,async () => {
+        const proxy = await mountedProxy(upstream,prefix);
+        const context = await browser.newContext({viewport:{width:1440,height:900},reducedMotion:'reduce'});
+        try {
+          await context.addCookies([{name:'lific_token',value:token,url:proxy.origin,httpOnly:true,sameSite:'Lax'}]);
+          await context.addInitScript(()=>localStorage.setItem('lific:list:layout:ACC','board'));
+          const page = await context.newPage(), documents=[];
+          page.on('request',request=>{if(request.resourceType()==='document')documents.push(request.url());});
+          await page.goto(`${proxy.origin}${prefix}/ACC/issues/ACC-1`);
+          await page.locator('[data-native-issue-editor="ACC-1"]').waitFor();
+          await page.evaluate(()=>{window.workspaceParent=document.querySelector('.native-home-shell');window.workspaceToken=Symbol('saved Board');window.workspaceParent.testParentToken=window.workspaceToken;});
+          const crumb=page.locator('.native-issue-detail__breadcrumbs a[title="Board"]');
+          await crumb.waitFor();assert.equal(await crumb.getAttribute('href'),`${prefix}/ACC/board`);
+          const before=documents.length;
+          await crumb.click();await page.waitForURL(`${proxy.origin}${prefix}/ACC/board`);
+          await page.locator('[data-native-board="ACC"]').waitFor();await retainedParent(page);
+          assert.equal(await page.locator('[data-native-issue-editor]').count(),0);
+          assert.deepEqual(await page.locator('[data-native-board-status]').evaluateAll(nodes=>nodes.map(node=>node.dataset.nativeBoardStatus)),['backlog','todo','active','done','cancelled']);
+          for(const status of ['backlog','todo','active','done','cancelled']){
+            const column=page.locator(`[data-native-board-status="${status}"]`);
+            assert.equal(Number(await column.locator('[data-native-board-count]').textContent()),await column.locator('[data-native-board-card]').count());
+            const width=await column.evaluate(node=>node.getBoundingClientRect().width);assert.ok(Math.abs(width-300)<1,`Desktop column300px: ${width}`);
+          }
+          const card=page.locator('[data-native-board-card]').filter({hasText:'ACC-1'});
+          assert.equal(await card.getAttribute('href'),`${prefix}/ACC/issues/ACC-1`);
+          await page.setViewportSize({width:390,height:844});
+          const width=await page.locator('[data-native-board-status="active"]').evaluate(node=>node.getBoundingClientRect().width);
+          assert.ok(Math.abs(width-390*.85)<1,`Phone column85vw: ${width}`);
+          await page.setViewportSize({width:1440,height:900});
+          await card.click();await page.waitForURL(`${proxy.origin}${prefix}/ACC/issues/ACC-1`);
+          await page.locator('[data-native-issue-editor="ACC-1"]').waitFor();await retainedParent(page);
+          assert.equal(documents.length,before,'Actual Board/card navigation retains parent document.');
+        }finally{await context.close();await proxy.close();}
+      });
+    }
+  }finally{await browser.close();}
+});
+
 test('normal native issue → Issues → actual row keeps workspace owner', async t => {
   const browser = await launchBrowser();
   try {

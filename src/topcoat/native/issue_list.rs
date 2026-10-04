@@ -18,32 +18,11 @@ pub(crate) const STYLESHEET: &str = include_str!("assets/issue-list.css");
 pub(crate) fn content<'a>(
     cx: &'a Cx,
     project: &str,
-    pending_issue_id: i64,
+    pending_issue_ids: &[i64],
 ) -> topcoat::Result<BoxView<'a>> {
-    let caller = session::read(cx, context::caller(cx))?;
-    session::read(cx, crate::api::require_user(&caller.identity))?;
-    let project = session::read(
-        cx,
-        (|| {
-            let conn = context::db(cx).read()?;
-            let id = queries::resolve_project_identifier(&conn, project)?;
-            queries::get_project(&conn, id)
-        })(),
-    )?;
-    let issues = session::read(
-        cx,
-        services::issues::list_issues(
-            context::db(cx),
-            &caller.identity,
-            &ListIssuesQuery {
-                project_id: Some(project.id),
-                ..Default::default()
-            },
-        ),
-    )?;
+    let (project, issues) = authorized_rows(cx, project, pending_issue_ids)?;
     let rows = issues
         .into_iter()
-        .filter(|issue| issue.id != pending_issue_id)
         .map(|issue| {
             let href = mounted_url(
                 cx,
@@ -81,4 +60,39 @@ pub(crate) fn content<'a>(
         None,
         "Issues".to_owned(),
     ))
+}
+
+/// Current authorized rows shared by list and Board regions.
+/// Membership hides a row until its pending operations release every occurrence.
+pub(super) fn authorized_rows(
+    cx: &Cx,
+    project: &str,
+    pending_issue_ids: &[i64],
+) -> topcoat::Result<(crate::db::models::Project, Vec<crate::db::models::Issue>)> {
+    let caller = session::read(cx, context::caller(cx))?;
+    session::read(cx, crate::api::require_user(&caller.identity))?;
+    let project = session::read(
+        cx,
+        (|| {
+            let conn = context::db(cx).read()?;
+            let id = queries::resolve_project_identifier(&conn, project)?;
+            queries::get_project(&conn, id)
+        })(),
+    )?;
+    let issues = session::read(
+        cx,
+        services::issues::list_issues(
+            context::db(cx),
+            &caller.identity,
+            &ListIssuesQuery {
+                project_id: Some(project.id),
+                ..Default::default()
+            },
+        ),
+    )?;
+    let issues = issues
+        .into_iter()
+        .filter(|issue| !pending_issue_ids.contains(&issue.id))
+        .collect();
+    Ok((project, issues))
 }
