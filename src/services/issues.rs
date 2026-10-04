@@ -1,11 +1,38 @@
 use crate::authz;
 use crate::db::{
     DbPool,
-    models::{AttachmentActor, CommentActor, Issue, Role, UpdateIssue},
+    models::{AttachmentActor, CommentActor, Issue, ListIssuesQuery, Role, UpdateIssue},
 };
 use crate::error::LificError;
 use crate::realtime::{RealtimeEvent, RealtimeHub};
 use crate::resolve_caller::ResolvedIdentity;
+
+/// Private issue listing shared by REST and native views, retaining the
+/// existing project gate, cross-project filtering and relation visibility.
+pub(crate) fn list_issues(
+    db: &DbPool,
+    identity: &Option<ResolvedIdentity>,
+    query: &ListIssuesQuery,
+) -> Result<Vec<Issue>, LificError> {
+    if let Some(project_id) = query.project_id {
+        authz::require_role(db, identity, project_id, Role::Viewer)?;
+        let mut issues = {
+            let conn = db.read()?;
+            crate::db::queries::list_issues(&conn, query)?
+        };
+        retain_visible_relations(db, identity, &mut issues)?;
+        return Ok(issues);
+    }
+    let visible = authz::visible_project_ids(db, identity)?;
+    let mut issues = {
+        let conn = db.read()?;
+        let mut issues = crate::db::queries::list_issues(&conn, query)?;
+        crate::db::queries::retain_visible_relations(&conn, &mut issues, visible.as_ref());
+        issues
+    };
+    issues = authz::filter_visible(issues, &visible, |issue| Some(issue.project_id));
+    Ok(issues)
+}
 
 /// Read the private issue shape through the same Viewer and relation scope
 /// rules as REST. Published-project reads use their separate public boundary.

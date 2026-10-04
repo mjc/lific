@@ -501,6 +501,47 @@ pub(crate) fn document<'a>(
     view! { cx => document_component(snapshot: snapshot, can_edit: can_edit, user: user, projects: projects, project: project) }.boxed()
 }
 
+/// A disposable issue scope inside the persistent workspace shell.
+pub(crate) fn document_region<'a>(
+    cx: &'a Cx,
+    snapshot: &Snapshot,
+    can_edit: bool,
+    project: &str,
+) -> BoxView<'a> {
+    let snapshot = snapshot.clone();
+    let project = project.to_owned();
+    view! { cx => document_region_component(snapshot: snapshot, can_edit: can_edit, project: project) }.boxed()
+}
+
+fn document_views<'a>(
+    cx: &'a Cx,
+    snapshot: &Snapshot,
+    can_edit: bool,
+    project: &str,
+) -> (BoxView<'a>, BoxView<'a>) {
+    let controls = Controls::new(cx, snapshot);
+    (
+        document_topbar(cx, &controls, project, can_edit),
+        render_editor(cx, snapshot, can_edit, true, &controls, true),
+    )
+}
+
+#[component]
+async fn document_region_component(
+    cx: &Cx,
+    snapshot: Snapshot,
+    can_edit: bool,
+    project: String,
+) -> topcoat::Result<impl View> {
+    let (topbar, content) = document_views(cx, &snapshot, can_edit, &project);
+    Ok(super::super::home_shell::page_region(
+        cx,
+        content,
+        Some(topbar),
+        String::new(),
+    ))
+}
+
 #[component]
 async fn document_component(
     cx: &Cx,
@@ -510,9 +551,7 @@ async fn document_component(
     projects: Vec<crate::db::models::Project>,
     project: String,
 ) -> topcoat::Result<impl View> {
-    let controls = Controls::new(cx, &snapshot);
-    let topbar = document_topbar(cx, &controls, &project, can_edit);
-    let content = render_editor(cx, &snapshot, can_edit, true, &controls, true);
+    let (topbar, content) = document_views(cx, &snapshot, can_edit, &project);
     let path = format!("/{project}/issues/{}", snapshot.identifier);
     let route = super::super::super::shell::ParsedRoute::parse(&path);
     Ok(

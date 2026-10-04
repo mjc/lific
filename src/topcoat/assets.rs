@@ -10,7 +10,7 @@ pub(crate) fn app_stylesheet() -> &'static str {
     static CSS: OnceLock<String> = OnceLock::new();
     CSS.get_or_init(|| {
         format!(
-            "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+            "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
             include_str!("assets/base.css"),
             super::controls::STYLESHEET,
             super::shell::STYLESHEET,
@@ -19,6 +19,7 @@ pub(crate) fn app_stylesheet() -> &'static str {
             super::native::home_shell::STYLESHEET,
             super::native::home::STYLESHEET,
             super::native::issue_edit::controls::STYLESHEET,
+            super::native::issue_list::STYLESHEET,
             include_str!("native/markdown/styles.css"),
             include_str!("native/issue_edit/detail.css"),
         )

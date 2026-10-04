@@ -63,6 +63,15 @@ mod topcoat_app {
                     | super::topcoat_frontend::shell::Page::IssueDetail(_)
             )
         );
+        let native_page = native_page
+            || matches!(
+                (route.layout, route.project, route.page),
+                (
+                    super::topcoat_frontend::shell::Layout::Private,
+                    Some(_),
+                    super::topcoat_frontend::shell::Page::Issues
+                )
+            ) && uri.query().is_none();
         if native_page {
             super::topcoat_frontend::native::home::authorize(cx)?;
         }
@@ -180,9 +189,20 @@ mod topcoat_app {
         if let (Layout::Private, Some(project), Page::IssueDetail(identifier)) =
             (route.layout, route.project, route.page)
         {
-            return super::topcoat_frontend::native::issue_edit::route::screen(
-                cx, &route, project, identifier,
-            );
+            return if uri.query().is_none() {
+                super::topcoat_frontend::native::workspace::screen(cx, &route)
+            } else {
+                super::topcoat_frontend::native::issue_edit::route::screen(
+                    cx, &route, project, identifier,
+                )
+            };
+        }
+        if matches!(
+            (route.layout, route.project, route.page),
+            (Layout::Private, Some(_), Page::Issues)
+        ) && uri.query().is_none()
+        {
+            return super::topcoat_frontend::native::workspace::screen(cx, &route);
         }
         let content = match route.layout {
             Layout::Private => match route.page {
@@ -3092,12 +3112,10 @@ mod topcoat_prefix_tests {
         let proxies = Arc::<[ratelimit::IpNetwork]>::from(vec![
             ratelimit::IpNetwork::parse("127.0.0.1").unwrap(),
         ]);
-        let app = Router::new()
-            .fallback_service(topcoat::router::tower::TowerService::new(
-                topcoat_app::router_builder()
-                    .app_context(proxies.clone())
-                    .build(),
-            ))
+        let fixture = super::topcoat_frontend::native::home_fixture::fixture();
+        let app = fixture
+            .app
+            .clone()
             .route(
                 "/redirect",
                 axum::routing::get(|| async {
@@ -3154,6 +3172,7 @@ mod topcoat_prefix_tests {
 
         let mut collision = Request::builder()
             .uri("/ACC/issues")
+            .header(header::COOKIE, format!("lific_token={}", fixture.token))
             .header("x-forwarded-prefix", "/ACC")
             .body(Body::empty())
             .unwrap();
@@ -3163,11 +3182,16 @@ mod topcoat_prefix_tests {
                 "127.0.0.1:3000".parse::<SocketAddr>().unwrap(),
             ));
         let response = app.clone().oneshot(collision).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
         let document = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
         let document = String::from_utf8(document.to_vec()).unwrap();
         assert!(document.contains("href=\"/ACC/ACC/issues\""));
+        assert!(document.contains("data-native-issue-list=\"ACC\""));
+        assert!(document.contains("Visible active initial work"));
+        assert!(document.contains("href=\"/ACC/ACC/issues/ACC-1\""));
+        assert!(!document.contains("Private hidden initial work"));
         assert!(document.contains(&format!(
             "href=\"/ACC{}\"",
             super::topcoat_frontend::assets::app_stylesheet_url()
@@ -3510,13 +3534,7 @@ mod public_surface_tests {
     #[tokio::test]
     async fn production_frontend_serves_topcoat_routes_and_keeps_api_boundaries() {
         let d = deploy();
-        for path in [
-            "/login",
-            "/LIF/issues",
-            "/LIF/pages",
-            "/LIF/plans",
-            "/public/PUB/issues",
-        ] {
+        for path in ["/login", "/LIF/pages", "/LIF/plans", "/public/PUB/issues"] {
             let response = anonymous(&d.app, "GET", path).await;
             assert_eq!(response.status(), StatusCode::OK, "{path}");
             if path == "/login" {
@@ -3542,6 +3560,49 @@ mod public_surface_tests {
             let body = body_string(response).await;
             assert!(body.contains("class=\"tc-shell\""), "{path}: {body}");
             assert!(body.contains("/__topcoat-runtime.js"), "{path}: {body}");
+        }
+
+        // The canonical private list now resolves current native authority.
+        // Retain the original route's anonymous coverage, including nonexistent
+        // projects, without rendering protected list content before sign-in.
+        for path in ["/LIF/issues", "/PRIV/issues"] {
+            let response = anonymous(&d.app, "GET", path).await;
+            assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT, "{path}");
+            assert_eq!(response.headers()[header::LOCATION], "/login");
+            let body = body_string(response).await;
+            assert!(!body.contains("classified"));
+            assert!(!body.contains("data-native-issue-list"));
+        }
+        let response = with_session(&d.app, &d.session_token, "/PRIV/issues").await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_string(response).await;
+        let list_document = scraper::Html::parse_document(&body);
+        assert_eq!(
+            list_document
+                .select(&scraper::Selector::parse(".native-home-shell").unwrap())
+                .count(),
+            1
+        );
+        assert_eq!(
+            list_document
+                .select(&scraper::Selector::parse("[data-native-issue-list=\"PRIV\"]").unwrap())
+                .count(),
+            1
+        );
+        assert!(body.contains("Private issue"));
+        assert!(body.contains("href=\"/PRIV/issues/PRIV-1\""));
+        assert!(!body.contains("data-lific-session-state"));
+        assert_eq!(
+            list_document
+                .select(&scraper::Selector::parse("script[src]").unwrap())
+                .count(),
+            1
+        );
+        for script in list_document.select(&scraper::Selector::parse("script[src]").unwrap()) {
+            assert_eq!(
+                script.value().attr("src"),
+                Some(super::topcoat_frontend::assets::runtime_url())
+            );
         }
 
         let issue_path = "/PRIV/issues/PRIV-1";

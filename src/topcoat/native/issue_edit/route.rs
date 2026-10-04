@@ -50,12 +50,18 @@ pub(crate) fn metadata(
     })
 }
 
-pub(crate) fn screen<'a>(
-    cx: &'a Cx,
-    route: &ParsedRoute<'_>,
+struct AuthorizedDocument {
+    caller: context::Caller,
+    user: crate::db::models::AuthUser,
+    snapshot: actions::Snapshot,
+    can_edit: bool,
+}
+
+fn authorized_document(
+    cx: &Cx,
     project: &str,
     identifier: &str,
-) -> topcoat::Result<BoxView<'a>> {
+) -> topcoat::Result<AuthorizedDocument> {
     let caller = session::read(cx, context::caller(cx))?;
     let user = session::read(cx, crate::api::require_user(&caller.identity))?;
     let db = context::db(cx);
@@ -79,12 +85,46 @@ pub(crate) fn screen<'a>(
             Err(LificError::Forbidden(_)) => false,
             Err(error) => return session::read(cx, Err(error)),
         };
+    Ok(AuthorizedDocument {
+        caller,
+        user,
+        snapshot: actions::snapshot(issue),
+        can_edit,
+    })
+}
+
+/// Fresh authority for a replaceable issue region in the workspace shell.
+pub(crate) fn content<'a>(
+    cx: &'a Cx,
+    project: &str,
+    identifier: &str,
+) -> topcoat::Result<BoxView<'a>> {
+    let document = authorized_document(cx, project, identifier)?;
+    Ok(controls::document_region(
+        cx,
+        &document.snapshot,
+        document.can_edit,
+        project,
+    ))
+}
+
+pub(crate) fn screen<'a>(
+    cx: &'a Cx,
+    route: &ParsedRoute<'_>,
+    project: &str,
+    identifier: &str,
+) -> topcoat::Result<BoxView<'a>> {
+    let document = authorized_document(cx, project, identifier)?;
     let projects = session::read(
         cx,
-        services::projects::list_visible_projects(db, &caller.identity),
+        services::projects::list_visible_projects(context::db(cx), &document.caller.identity),
     )?;
-    let snapshot = actions::snapshot(issue);
     Ok(controls::document(
-        cx, &snapshot, can_edit, &user, &projects, route,
+        cx,
+        &document.snapshot,
+        document.can_edit,
+        &document.user,
+        &projects,
+        route,
     ))
 }
