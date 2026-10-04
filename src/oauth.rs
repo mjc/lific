@@ -2949,6 +2949,8 @@ fn resolve_oauth_credential_inner(
         owner_is_active: Option<bool>,
     }
 
+    // NULL-resource tokens intentionally bypass audience filtering for
+    // compatibility with tokens predating migration 058, until they expire.
     let row = conn
         .query_row(
             "SELECT token.user_id,
