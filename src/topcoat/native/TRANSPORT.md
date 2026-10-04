@@ -244,3 +244,16 @@ The assembled probe also uses the Rust-authored input adapter at root, `/app`
 and `/ACC`. A fixed browser clock and timezone prove primitive values, denied
 storage remains nonfatal, and hostile stored text stays text. This fixture does
 not establish production Home initialization or recents behavior.
+
+
+## Generic procedure keepalive
+
+The procedure transport exposes `call_keepalive` and a callable
+`with_keepalive` adapter for typed Rust expressions. Both use the existing
+argument array, endpoint mounting, hydration and lazy Future behavior.
+Keepalive adds only the Fetch flag; ordinary calls keep their original options
+and same-origin cookie defaults. The adapter does not set an abort signal or
+an Authorization header. Browser keepalive remains subject to browser request
+limits and does not promise successful delivery. Calling the method constructs
+a lazy Future; consuming it starts the request. This framework transport owns
+no application deletion, timer, authorization, or toast policy.

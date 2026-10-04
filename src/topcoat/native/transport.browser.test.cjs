@@ -50,6 +50,8 @@ test('vendored patches reconstruct the exact pinned upstream runtime', () => {
   assert.ok(start >= 0, 'The pinned upstream body is present.');
   let original = runtime.slice(start);
   for (const [patched, upstream, count] of [
+    ['call(...e){return this.request(e,!1)}call_keepalive(...e){return this.request(e,!0)}with_keepalive(){return{call:(...e)=>this.call_keepalive(...e)}}request(e,n){return new X(async()=>{let r=await fetch(topcoatMountedEndpoint(this.path),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(e.map(f)),...(n?{keepalive:!0}:{})});if(!r.ok)throw new Error(`Procedure call failed: ${r.status} ${r.statusText}`);return this.cx.hydrate(await r.json())})}',
+      'call(...e){return new X(async()=>{let n=await fetch(topcoatMountedEndpoint(this.path),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(e.map(f))});if(!n.ok)throw new Error(`Procedure call failed: ${n.status} ${n.statusText}`);return this.cx.hydrate(await n.json())})}', 1],
     ['function pe(t){let e=new DOMParser().parseFromString(t.replaceAll("<","&lt;"),"text/html")',
       'function pe(t){let e=new DOMParser().parseFromString(t,"text/html")', 1],
     ['fetch(topcoatMountedEndpoint(this.path)', 'fetch(this.path', 2],
@@ -334,4 +336,66 @@ test('Rust tuple arrays hydrate, index and round-trip nested framework values', 
     await browser.close();
     await new Promise(resolve => server.close(resolve));
   }
+});
+
+
+test('generic keepalive procedures retain mounted cookie transport and ordinary calls', async () => {
+  const browser = await launchBrowser();
+  try {
+    for (const prefix of ['', '/app', '/ACC']) {
+      const requests = [];
+      const server = http.createServer(async (request, response) => {
+        if (request.url === `${prefix}/runtime.js`) {
+          response.setHeader('Content-Type', 'text/javascript'); response.end(runtime); return;
+        }
+        if (request.method === 'POST') {
+          const chunks = [];
+          for await (const chunk of request) chunks.push(chunk);
+          requests.push({path: request.url, body: JSON.parse(Buffer.concat(chunks).toString()), cookie: request.headers.cookie, authorization: request.headers.authorization});
+          response.setHeader('Content-Type', 'application/json');
+          if (request.url.endsWith('/denied')) {response.statusCode = 403; response.statusMessage = 'Forbidden'; response.end('not JSON');}
+          else response.end('true');
+          return;
+        }
+        const run = `async()=>{try{
+          const p=cx.hydrate(${JSON.stringify(procedure('/ACC/native/example'))});
+          for(const args of [[],[undefined],[cx.hydrate(true),cx.hydrate('hello')]]){
+            const f=p.call_keepalive(...args); const value=await f; await f;
+            if(!value.v)throw new Error('Hydration');
+          }
+          const adapted=p.with_keepalive().call(cx.hydrate('adapter'));
+          if(!(await adapted).v)throw new Error('Adapter hydration');
+          await adapted;
+          await p.call(cx.hydrate('ordinary'));
+          try {await cx.hydrate(${JSON.stringify(procedure('/native/denied'))}).call_keepalive();throw new Error('Expected denial');}
+          catch(error){if(error.message!=='Procedure call failed: 403 Forbidden')throw error;}
+          document.querySelector('output').textContent='ok';
+        }catch(error){document.querySelector('output').textContent=error.message;}}`;
+        response.setHeader('Content-Type', 'text/html');
+        response.end(`<html data-topcoat-runtime-prefix="${prefix}"><body><button data-topcoat-on:click="${escape(run)}">Run procedures</button><output></output><script>window.originalFetch=window.fetch;</script><script type="module" src="${prefix}/runtime.js"></script></body></html>`);
+      });
+      await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+      const context = await browser.newContext();
+      try {
+        const origin = `http://127.0.0.1:${server.address().port}`;
+        await context.addCookies([{name:'lific_session',value:'fixture-session',url:origin}]);
+        const page = await context.newPage(), failures = [];
+        page.on('pageerror', error => failures.push(error.message));
+        await page.goto(`${origin}${prefix}/ACC/issues`);
+        await page.getByRole('button', {name:'Run procedures',exact:true}).click();
+        await page.waitForFunction(() => document.querySelector('output').textContent !== '');
+        assert.equal(await page.locator('output').textContent(), 'ok');
+        assert.deepEqual(requests.map(({path,body}) => ({path,body})), [
+          ...[[],[null],[true,'hello'],['adapter'],['ordinary']].map(body => ({path:`${prefix}/ACC/native/example`,body})),
+          {path:`${prefix}/native/denied`,body:[]},
+        ]);
+        for(const request of requests){assert.equal(request.cookie,'lific_session=fixture-session');assert.equal(request.authorization,undefined);}
+        assert.equal(await page.evaluate(() => window.fetch === window.originalFetch),true);
+        assert.deepEqual(failures,[]);
+      } finally {
+        await context.close();
+        await new Promise(resolve => server.close(resolve));
+      }
+    }
+  } finally {await browser.close();}
 });
