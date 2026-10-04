@@ -108,22 +108,7 @@ pub(super) async fn delete_issue_handler(
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
     Path(id): Path<i64>,
 ) -> Result<Json<serde_json::Value>, LificError> {
-    let project_id = with_read(&db, |conn| crate::db::queries::get_issue(conn, id))?.project_id;
-    authz::require_role(&db, &identity, project_id, Role::Maintainer)?;
-    let (issue, seq) = with_write(&db, |conn| {
-        let issue = crate::db::queries::get_issue(conn, id)?;
-        crate::db::queries::delete_issue(conn, id)?;
-        // The tombstone's seq, not the pre-delete one (LIF-440).
-        let seq = crate::db::queries::issue_seq(conn, id)?;
-        Ok((issue, seq))
-    })?;
-    realtime.send_with_seq(
-        RealtimeEvent::IssueDeleted {
-            project_id: issue.project_id,
-            issue_id: issue.id,
-        },
-        seq,
-    );
+    crate::services::issues::commit_issue_delete(&db, &realtime, &identity, id)?;
     Ok(Json(serde_json::json!({"deleted": true})))
 }
 

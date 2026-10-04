@@ -10,6 +10,7 @@ use super::{
     actions::{self, SaveOutcome, Snapshot},
     model::Field,
 };
+use crate::db::models::{Priority, Status};
 
 pub(crate) const STYLESHEET: &str = include_str!("controls.css");
 
@@ -626,6 +627,52 @@ fn document_mount(cx: &Cx, controls: &Controls) -> Attributes {
     attributes
 }
 
+fn status_decoration(cx: &Cx, selected: Signal<String>, size: u32) -> BoxView<'_> {
+    let variants = [
+        Status::Backlog,
+        Status::Todo,
+        Status::Active,
+        Status::Done,
+        Status::Cancelled,
+    ]
+    .into_iter()
+    .map(|status| {
+        (
+            status.as_str(),
+            super::super::icons::status_icon(cx, status, size),
+        )
+    })
+    .collect::<Vec<_>>();
+    view! { cx =>
+        for (value, icon) in variants {
+            <span class="native-issue-detail__decoration" :hidden=$(selected.get() != value)>(icon)</span>
+        }
+    }.boxed()
+}
+
+fn priority_decoration(cx: &Cx, selected: Signal<String>, size: u32) -> BoxView<'_> {
+    let variants = [
+        Priority::Urgent,
+        Priority::High,
+        Priority::Medium,
+        Priority::Low,
+        Priority::None,
+    ]
+    .into_iter()
+    .map(|priority| {
+        (
+            priority.as_str(),
+            super::super::icons::priority_icon(cx, priority, size),
+        )
+    })
+    .collect::<Vec<_>>();
+    view! { cx =>
+        for (value, icon) in variants {
+            <span class="native-issue-detail__decoration" :hidden=$(selected.get() != value)>(icon)</span>
+        }
+    }.boxed()
+}
+
 fn document_topbar<'a>(
     cx: &'a Cx,
     controls: &Controls,
@@ -674,10 +721,10 @@ fn document_topbar<'a>(
                     if can_edit {
                         <button class="native-issue-detail__field-value" type="button" title="Change status" aria-haspopup="menu" :aria-expanded=$(if header_status_open.get() { "true" } else { "false" }) @click=$(|_event: Event| {
                             header_status_open.set(!header_status_open.get()); status_open.set(false); priority_open.set(false);
-                        })><span :data-status=$(status.get())>$(status.get())</span>(super::super::icons::project_icon(cx, Some("lucide:ChevronDown"), 11))</button>
+                        })>(status_decoration(cx, status.clone(), 13))<span :data-status=$(status.get())>$(status.get())</span>(super::super::icons::project_icon(cx, Some("lucide:ChevronDown"), 11))</button>
                         <div class="native-issue-detail__menu" role="menu" :hidden=$(!header_status_open.get())>(status_options)</div>
                     } else {
-                        <span :data-status=$(status.get())>$(status.get())</span><span class="native-issue-detail__readonly">"Read-only"</span>
+                        (status_decoration(cx, status.clone(), 13))<span :data-status=$(status.get())>$(status.get())</span><span class="native-issue-detail__readonly">"Read-only"</span>
                     }
                 </div>
             </div>
@@ -777,9 +824,9 @@ fn metadata_view<'a>(
                 <section><h2>"Created"</h2><p class="native-issue-detail__date">(date_text(cx, metadata.created_at))</p></section>
                 <section><h2>"Updated"</h2><p class="native-issue-detail__date">(date_text(cx, metadata.updated_at))</p></section>
             } else {
-                <section><h2>"Module"</h2><span>(metadata.module)</span></section>
+                <section><h2>"Module"</h2><span class=(if metadata.module_id.is_none() { "native-issue-detail__empty-value" } else { "" })>(metadata.module)</span></section>
                 <section><h2>"Labels"</h2>
-                    if metadata.labels.is_empty() { <span>"None"</span> }
+                    if metadata.labels.is_empty() { <span class="native-issue-detail__empty-value">"None"</span> }
                     else { for label in metadata.labels { <span>(label)</span> } }
                 </section>
                 <div class="native-issue-detail__divider" aria-hidden="true"></div>
@@ -1070,8 +1117,10 @@ fn render_editor<'a>(
                     if document && can_edit {
                         <div class="native-issue-detail__picker"><button class="native-issue-detail__field-value" type="button" aria-label="Change issue status" aria-haspopup="menu" :aria-expanded=$(if status_open.get() { "true" } else { "false" }) @click=$(|_event: Event| {
                             status_open.set(!status_open.get()); priority_open.set(false); header_status_open.set(false);
-                        })><span data-native-issue-status="">$(status.get())</span></button>
+                        })>(status_decoration(cx, status.clone(), 14))<span data-native-issue-status="">$(status.get())</span></button>
                         <div class="native-issue-detail__menu" role="menu" :hidden=$(!status_open.get())>(status_options(cx, &controls))</div></div>
+                    } else if document {
+                        <span class="native-issue-detail__field-value">(status_decoration(cx, status.clone(), 14))<span data-native-issue-status="">$(status.get())</span></span>
                     } else {
                         <span data-native-issue-status="">$(status.get())</span>
                     }
@@ -1086,13 +1135,15 @@ fn render_editor<'a>(
                     if document && can_edit {
                         <div class="native-issue-detail__picker"><button class="native-issue-detail__field-value" type="button" aria-label="Change issue priority" aria-haspopup="menu" :aria-expanded=$(if priority_open.get() { "true" } else { "false" }) @click=$(|_event: Event| {
                             priority_open.set(!priority_open.get()); status_open.set(false); header_status_open.set(false);
-                        })><span data-native-issue-priority="">$(if priority.get() == "none" { "No priority".to_owned() } else { priority.get() })</span></button>
+                        })>(priority_decoration(cx, priority.clone(), 14))<span data-native-issue-priority="" :data-priority=$(priority.get())>$(if priority.get() == "none" { "No priority".to_owned() } else { priority.get() })</span></button>
                         <div class="native-issue-detail__menu" role="menu" :hidden=$(!priority_open.get())>
                             for (value, label) in [("urgent", "Urgent"), ("high", "High"), ("medium", "Medium"), ("low", "Low"), ("none", "No priority")] {
                                 <button type="button" role="menuitemradio" data-native-issue-priority-option=(value) :aria-checked=$(if priority.get() == value { "true" } else { "false" }) :disabled=$(busy.get())
                                     (save_attributes(cx, &controls, Field::Priority, "click", Some(value.into())))>(label)</button>
                             }
                         </div></div>
+                    } else if document {
+                        <span class="native-issue-detail__field-value">(priority_decoration(cx, priority.clone(), 14))<span data-native-issue-priority="" :data-priority=$(priority.get())>$(if priority.get() == "none" { "No priority".to_owned() } else { priority.get() })</span></span>
                     } else {
                         <span data-native-issue-priority="">$(priority.get())</span>
                     }

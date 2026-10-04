@@ -16,6 +16,7 @@ use super::super::{context, session};
 use super::{actions, controls};
 
 pub(crate) struct DocumentMetadata {
+    pub(crate) module_id: Option<i64>,
     pub(crate) module: String,
     pub(crate) labels: Vec<String>,
     pub(crate) waits: Vec<crate::db::models::IssueWait>,
@@ -40,6 +41,7 @@ pub(crate) fn metadata(
         }
     };
     Ok(DocumentMetadata {
+        module_id: issue.module_id,
         module,
         labels: issue.labels.clone(),
         waits: issue.waits.clone(),

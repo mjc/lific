@@ -19,3 +19,6 @@ mod detail_production;
 
 #[cfg(test)]
 mod export_production;
+
+#[cfg(test)]
+mod decoration_production;
