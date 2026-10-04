@@ -50,6 +50,8 @@ test('vendored patches reconstruct the exact pinned upstream runtime', () => {
   assert.ok(start >= 0, 'The pinned upstream body is present.');
   let original = runtime.slice(start);
   for (const [patched, upstream, count] of [
+    ["push(e){this.inner.set(n=>n.clone_with_push(e))}remove(e){this.inner.set(n=>n.clone_without_index(e))}push_str(e){this.inner.set(n=>new v(`${n}${e}`))}", "push_str(e){this.inner.set(n=>new v(`${n}${e}`))}", 1],
+    ["clone(){return this.to_vec()}clone_with_push(e){let n=this.items.map(b);return n.push(b(e)),new F(n,this.usizeType)}clone_without_index(e){let n=e.toIndex(this.items.length,this.usizeType.bits);if(n===void 0)throw new RangeError(\"Vec index out of bounds\");let r=this.items.map(b);return r.splice(n,1),new F(r,this.usizeType)}dehydrate(){return{t:\"Vec\",bits:this.usizeType.bits,v:this.items.map(f)}}", "clone(){return this.to_vec()}dehydrate(){return{t:\"Vec\",bits:this.usizeType.bits,v:this.items.map(f)}}", 1],
     ['call(...e){return this.request(e,!1)}call_keepalive(...e){return this.request(e,!0)}with_keepalive(){return{call:(...e)=>this.call_keepalive(...e)}}request(e,n){return new X(async()=>{let r=await fetch(topcoatMountedEndpoint(this.path),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(e.map(f)),...(n?{keepalive:!0}:{})});if(!r.ok)throw new Error(`Procedure call failed: ${r.status} ${r.statusText}`);return this.cx.hydrate(await r.json())})}',
       'call(...e){return new X(async()=>{let n=await fetch(topcoatMountedEndpoint(this.path),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(e.map(f))});if(!n.ok)throw new Error(`Procedure call failed: ${n.status} ${n.statusText}`);return this.cx.hydrate(await n.json())})}', 1],
     ['function pe(t){let e=new DOMParser().parseFromString(t.replaceAll("<","&lt;"),"text/html")',
@@ -398,4 +400,59 @@ test('generic keepalive procedures retain mounted cookie transport and ordinary 
       }
     }
   } finally {await browser.close();}
+});
+
+test('packaged vector signal writes preserve typed snapshots and notify subscribers', async () => {
+  const bootstrap = 'var Ve=new ne;Ve.start(document);Ve.page.listenForDevRefresh();';
+  assert.equal(runtime.split(bootstrap).length - 1, 1);
+  const fixtureRuntime = runtime.replace(bootstrap,
+    'globalThis.vectorFixture={Context:Z,Registry:te,Effect:$,flush:Ue};');
+  const server = http.createServer((request, response) => {
+    if (request.url === '/runtime.js') {
+      response.setHeader('Content-Type', 'text/javascript'); response.end(fixtureRuntime); return;
+    }
+    response.setHeader('Content-Type', 'text/html');
+    response.end('<html><body><script type="module" src="/runtime.js"></script></body></html>');
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const browser = await launchBrowser();
+  try {
+    const page = await browser.newPage();
+    await page.goto(`http://127.0.0.1:${server.address().port}/`);
+    await page.waitForFunction(() => !!window.vectorFixture);
+    const results = await page.evaluate(() => {
+      const {Context, Registry, Effect, flush} = window.vectorFixture;
+      return [16,32,64].map(bits => {
+        const registry = new Registry(), cx = new Context(registry);
+        const vector = value => cx.hydrate({t:'Vec',bits,v:value});
+        const index = (value,width=bits,kind='usize') => cx.hydrate({t:kind,bits:width,v:String(value)});
+        const before = vector(['same','same']); registry.insert('vector',before);
+        const s = cx.signal('vector'), snapshot = s.get();
+        let runs=0; const effect=new Effect(()=>{s.get();runs++;});
+        try {
+          effect.run(); s.push(cx.hydrate('last')); flush();
+          const afterPush=s.dehydrate(), pushRuns=runs;
+          s.remove(index(0)); flush();
+          const afterRemove=s.dehydrate(), removeRuns=runs;
+          const errors=[];
+          for(const invalid of [index(2),index(0,64,'i64'),index(0,bits===64?32:64)]) {
+            try{s.remove(invalid);errors.push(false);}catch{errors.push(true);}
+          }
+          flush();
+          registry.insert('empty',vector([]));
+          let emptyRejected=false;try{cx.signal('empty').remove(index(0));}catch{emptyRejected=true;}
+          return {bits,before:before.dehydrate(),snapshot:snapshot.dehydrate(),afterPush,afterRemove,pushRuns,removeRuns,runs,errors,emptyRejected,final:s.dehydrate()};
+        } finally {effect.dispose();}
+      });
+    });
+    for (const r of results) {
+      assert.deepEqual(r.before,{t:'Vec',bits:r.bits,v:['same','same']});
+      assert.deepEqual(r.snapshot,r.before);
+      assert.deepEqual(r.afterPush,{t:'Signal',id:'vector',v:{t:'Vec',bits:r.bits,v:['same','same','last']}});
+      assert.deepEqual(r.afterRemove,{t:'Signal',id:'vector',v:{t:'Vec',bits:r.bits,v:['same','last']}});
+      assert.equal(r.pushRuns,2); assert.equal(r.removeRuns,3); assert.equal(r.runs,3);
+      assert.deepEqual(r.errors,[true,true,true]); assert.equal(r.emptyRejected,true);
+      assert.deepEqual(r.final,r.afterRemove);
+    }
+  } finally { await browser.close(); await new Promise(resolve=>server.close(resolve)); }
 });

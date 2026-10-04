@@ -6,6 +6,7 @@ import type { Bool } from "./bool";
 import { F64 } from "./f64";
 import { Integer } from "./integer";
 import { cloneValue, Ref } from "./ref";
+import { Vec } from "./sequence";
 import { String as RuntimeString, type Str } from "./string";
 
 export class WriteSignal<T> {
@@ -49,6 +50,14 @@ export class WriteSignal<T> {
 					? prev.decrement()
 					: (prev as F64).sub(new F64(1))) as T,
 		);
+	}
+
+	push(value: unknown): void {
+		this.inner.set((prev) => (prev as Vec<unknown>).clone_with_push(value) as T);
+	}
+
+	remove(index: Integer): void {
+		this.inner.set((prev) => (prev as Vec<unknown>).clone_without_index(index) as T);
 	}
 
 	push_str(s: Str): void {

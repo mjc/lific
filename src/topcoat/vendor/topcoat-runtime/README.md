@@ -120,7 +120,7 @@ Close outcomes and retaining a
 Send-only future in the Send + Sync request context. Actual application TCP
 tests cover request-scoped Redirect lifetimes, idle session retirement,
 periodic revalidation, stable ownership across rerenders and peer cleanup.
-Except for the generic procedure browser adapter described below, the browser
+Except for the generic procedure and vector signal adapters described below, the browser
 source and distribution are unchanged. Lific's existing
 `src/topcoat/assets/runtime.js` transport patches remain separate. Its document
 runtime claims navigation once across sibling framework redirects.
@@ -138,3 +138,13 @@ The packaged application browser asset carries a matching reversible patch;
 its license provenance and reconstruction oracle describe that addition.
 The browser source therefore differs from the original package in this file;
 the checked-in vendor distribution has not been rebuilt by this change.
+
+## Generic vector signal writes
+
+The browser signal and sequence sources add immutable `push` and `remove`
+writes, preserving earlier snapshots and validating index width and bounds.
+The application uses the registry signal types through the typed extension in
+`src/topcoat/runtime/signal_vec.rs`. These primitives contain no application
+decisions. The packaged runtime carries the same two reversible substitutions;
+its reconstruction test still proves the exact pinned upstream SHA-256. The
+vendor distribution remains unchanged.

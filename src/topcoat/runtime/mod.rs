@@ -11,6 +11,8 @@ use topcoat_router::{Body, Layer, LayerFuture, Next, Path};
 mod connection;
 #[cfg(test)]
 pub(crate) mod procedure;
+#[cfg(test)]
+pub(crate) mod signal_vec;
 mod socket;
 
 pub(crate) use connection::{ConnectedRender, connected, connected_untracked};
