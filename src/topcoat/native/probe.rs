@@ -180,6 +180,8 @@ async fn native_probe_page(cx: &Cx) -> topcoat::Result<impl View> {
     let expected = signal(cx, || issue.seq);
     let revision = signal(cx, || 0usize);
     let saved = signal(cx, || false);
+    let browser_ready = signal(cx, || false);
+    let browser_inputs = signal(cx, String::new);
     let mount = transport::trusted_mount(cx).unwrap_or("");
     let runtime = transport::mounted_url(cx, "/__topcoat-runtime.js");
 
@@ -201,6 +203,10 @@ async fn native_probe_page(cx: &Cx) -> topcoat::Result<impl View> {
                     revision.increment();
                 })>"Save through native procedure"</button>
                 <output id="native-probe-saved">$(saved.get())</output>
+                <section (super::browser_inputs::mount(cx, browser_ready.clone(), browser_inputs.clone(), "lific_recents".into()))>
+                    <output id="native-probe-browser-ready">$(browser_ready.get())</output>
+                    <output id="native-probe-browser-inputs">$(browser_inputs.get())</output>
+                </section>
                 native_probe_issue(revision: $(revision.get()))
             </body>
         </html>

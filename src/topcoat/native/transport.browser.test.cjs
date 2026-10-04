@@ -9,6 +9,25 @@ const runtime = fs.readFileSync(path.join(__dirname, '../assets/runtime.js'), 'u
 const escape = value => value.replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;');
 const procedure = endpoint => ({t: 'Procedure', path: endpoint});
 
+test('vendored patches reconstruct the exact pinned upstream runtime', () => {
+  const start = runtime.indexOf('function A(t,e,n,r,i={})');
+  assert.ok(start >= 0, 'The pinned upstream body is present.');
+  let original = runtime.slice(start);
+  for (const [patched, upstream, count] of [
+    ['fetch(topcoatMountedEndpoint(this.path)', 'fetch(this.path', 2],
+    ['url(){return topcoatMountedEndpoint(this.path)}', 'url(){return this.path}', 1],
+    ['function V(t,e){if(Array.isArray(t))return topcoatHydrateTuple(t,e);if(t!==null)', 'function V(t,e){if(t!==null)', 1],
+    ['function f(t){if(t==null)return null;if(Array.isArray(t))return t.map(f);', 'function f(t){if(t==null)return null;', 1],
+    ['let r=e.name.substring(ke.length);if(r==="mount"){topcoatMount(t,()=>T(e.value,`event @${r}`)(n.runtime.context),n);return}let o=T(e.value,`event @${r}`)(n.runtime.context);',
+      'let r=e.name.substring(ke.length),o=T(e.value,`event @${r}`)(n.runtime.context);', 1],
+  ]) {
+    assert.equal(original.split(patched).length - 1, count, 'Each declared patch has its expected occurrence count.');
+    original = original.replaceAll(patched, upstream);
+  }
+  const digest = require('node:crypto').createHash('sha256').update(original).digest('hex');
+  assert.equal(digest, '980dd1be1962006b98b8c1646b0e6a4f86a78ec721e2739f59ddf4c4c1c5c8b4');
+});
+
 // This fixture speaks the pinned framework transport protocol. Domain/auth
 // integration is exercised separately against the actual Lific executable.
 test('framework procedures, returned surrogates, shards and sockets stay within the Rust-rendered mount', async t => {

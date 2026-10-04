@@ -56,13 +56,22 @@ test('assembled native page, procedure, shard and socket preserve the mounted se
         backend.on('error', () => socket.destroy());
       });
       await new Promise(resolve => proxy.listen(0, '127.0.0.1', resolve));
-      const context = await browser.newContext();
+      const context = await browser.newContext({locale: 'en-US', timezoneId: 'America/Denver'});
       try {
         const browserRequests = [];
         context.on('request', request => browserRequests.push(request.url()));
         const origin = `http://127.0.0.1:${proxy.address().port}`;
         await context.addCookies([{name: cookie.slice(0, separator), value: cookie.slice(separator + 1), url: origin, httpOnly: true}]);
         const page = await context.newPage(), failures = [], consoleErrors = [], saveResponses = [];
+        const clock = '2026-10-03T16:00:00Z';
+        const stored = JSON.stringify([{title: '<script>local input</script>', project: 'ACC'}]);
+        await page.clock.setFixedTime(clock);
+        await page.addInitScript(({stored, denied}) => {
+          if (denied) Object.defineProperty(Storage.prototype, 'getItem', {
+            value() { throw new DOMException('Storage is unavailable', 'SecurityError'); },
+          });
+          else localStorage.setItem('lific_recents', stored);
+        }, {stored, denied: prefix === '/ACC'});
         page.setDefaultTimeout(10000);
         page.on('pageerror', error => failures.push(error.message));
         page.on('console', message => {
@@ -81,6 +90,13 @@ test('assembled native page, procedure, shard and socket preserve the mounted se
         const initial = await page.goto(`${origin}${prefix}/ACC/__native_probe`);
         assert.equal(initial.status(), 200);
         assert.ok((await initial.text()).includes('native-probe-title'), 'The server renders the authorized issue in initial HTML.');
+        assert.equal(await page.locator('#native-probe-browser-inputs').count(), 1,
+          'The real Rust page mounts primitive browser inputs.');
+        await page.locator('#native-probe-browser-ready').filter({hasText: 'true'}).waitFor();
+        assert.deepEqual(JSON.parse(await page.locator('#native-probe-browser-inputs').textContent()), {
+          epochMilliseconds: Date.parse(clock), timezoneOffsetMinutes: 360,
+          locale: 'en-US', storedValue: prefix === '/ACC' ? null : stored,
+        });
         await page.locator('#native-probe-issue[data-connected="true"]').waitFor();
         const initialFrame = frames.filter(({path}) => path === `${prefix}/__native_probe/issue`).at(-1).frame;
         const initialRun = initialFrame.run;
@@ -115,6 +131,9 @@ test('assembled native page, procedure, shard and socket preserve the mounted se
         const nativeRequests = requests.filter(request => request.path.includes('__native_probe'));
         assert.ok(nativeRequests.some(request => request.method === 'POST' && request.path === `${prefix}/__native_probe/save`));
         assert.ok(sockets.includes(`${prefix}/__native_probe/issue`));
+        assert.deepEqual(requests.filter(request => request.method === 'POST').map(request => request.path),
+          [`${prefix}/__native_probe/save`, `${prefix}/__native_probe/save`],
+          'Browser input initialization needs no procedure or page-render request.');
         assert.equal(browserRequests.some(url => new URL(url).pathname.split('/').includes('api')), false,
           'All browser requests, including unmounted and other-origin URLs, remain outside REST.');
         assert.deepEqual(failures, []);

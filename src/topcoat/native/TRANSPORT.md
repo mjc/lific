@@ -8,7 +8,7 @@ There is no request-aware URL attribute visitor in the pinned view renderer.
 
 The vendored framework runtime therefore has one transport helper and three
 changed call sites: procedure requests, shard requests, and shard socket URLs.
-It also has the tuple compatibility patch described below. The rest of the
+It also has the tuple and mount lifecycle patches described below. The rest of the
 upstream runtime is preserved. Page reruns already use the current mounted
 browser location and are unchanged.
 
@@ -55,8 +55,8 @@ continue to use their existing framework conversion. Stored procedure URLs
 remain logical. Tagged Vec, Array, and Slice surrogates retain their existing
 implementations.
 
-Together these patches prepend five helper/comment lines and change five
-sites in the pinned asset. To reconstruct upstream, remove those first five
+Together these patches prepend 27 helper/comment lines and change six
+sites in the pinned asset. To reconstruct upstream, remove those first 27
 lines and reverse the following substitutions:
 
 | Patched expression | Upstream expression | Occurrences |
@@ -65,9 +65,33 @@ lines and reverse the following substitutions:
 | `url(){return topcoatMountedEndpoint(this.path)}` | `url(){return this.path}` | 1 |
 | `function V(t,e){if(Array.isArray(t))return topcoatHydrateTuple(t,e);if(t!==null)` | `function V(t,e){if(t!==null)` | 1 |
 | `function f(t){if(t==null)return null;if(Array.isArray(t))return t.map(f);` | `function f(t){if(t==null)return null;` | 1 |
+| ``let r=e.name.substring(ke.length);if(r==="mount"){topcoatMount(t,()=>T(e.value,`event @${r}`)(n.runtime.context),n);return}let o=T(e.value,`event @${r}`)(n.runtime.context);`` | ``let r=e.name.substring(ke.length),o=T(e.value,`event @${r}`)(n.runtime.context);`` | 1 |
 
 The reconstructed bytes match the upstream SHA-256 recorded in
 `../assets/runtime.LICENSE.txt`.
+
+## Browser initialization
+
+The pinned runtime treats every event name as an ordinary DOM listener. It has
+no mount lifecycle. Native components need one to obtain browser-owned clock,
+locale and storage inputs without a separate application controller.
+
+The event setup site delegates `@mount` to a generic scope-owned helper. Its
+factory and callback run in a microtask after hydration and watcher setup.
+An element mounts once per owning scope; a new scope can mount a retained DOM
+element after a render. Released scopes and detached elements never start.
+A transient listener receives only the runtime's own native event, preserving
+event targets while preventing early or bubbling synthetic events from
+consuming initialization. Callback errors go through the runtime reporter.
+
+Rust consumers retain an initialization sentinel across renders. The primitive
+adapter reads one supplied storage key, epoch time, local timezone offset and
+browser collation locale into a string signal. It catches denied storage as
+absence. Consumers must bound and validate these browser values before using
+them; they confer no authority. Rust owns parsing, projections and rendering.
+
+This hook does not cancel asynchronous work that a callback has already
+started. Timers, global subscriptions and their cleanup remain separate work.
 
 ## Tests and integration scope
 
@@ -79,6 +103,10 @@ absolute URLs; same-origin cookies; and an unchanged global `fetch` function.
 The tuple case covers indexing and explicit dehydration, nested tuple values
 inside tagged collections, exact large integer values, returned procedures,
 and passing hydrated or constructed tuples back to a procedure.
+The reconstruction test reverses all declared substitutions and checks the
+exact pinned upstream SHA-256. Lifecycle browser tests cover later signal
+declarations, one refresh with a persistent sentinel, reused DOM elements,
+scope cancellation, error isolation and early synthetic event dispatch.
 
 Rust unit tests exercise trusted proxy context, prefix validation and missing
 configuration, and logical URL mounting. These framework-focused tests do not
@@ -95,3 +123,7 @@ errors; raw `LificError` conversion would otherwise produce a generic 500.
 Production native handlers need the same classification. The fixture does not
 establish product UI parity, socket recovery, or complete authentication
 acceptance.
+The assembled probe also uses the Rust-authored input adapter at root, `/app`
+and `/ACC`. A fixed browser clock and timezone prove primitive values, denied
+storage remains nonfatal, and hostile stored text stays text. This fixture does
+not establish production Home initialization or recents behavior.
