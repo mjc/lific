@@ -12,6 +12,9 @@ mod home_browser_edges;
 pub(crate) mod home_data;
 #[cfg(test)]
 mod home_fixture;
+pub(crate) mod home_live;
+#[cfg(test)]
+mod home_live_production;
 pub(crate) mod home_local;
 pub(crate) mod home_model;
 #[cfg(test)]
@@ -32,6 +35,8 @@ pub(crate) mod palette_reference;
 mod palette_reference_production;
 #[cfg(test)]
 pub(crate) mod probe;
+#[cfg(test)]
+mod raw_lifecycle;
 pub(crate) mod session;
 #[cfg(test)]
 mod session_idle;

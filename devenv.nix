@@ -419,6 +419,11 @@ in
       cwd = repoRoot;
       exec = "cargo build --locked";
     };
+    "lific:topcoat:runtime-test" = {
+      cwd = repoRoot;
+      exec = "cargo test --locked --manifest-path src/topcoat/vendor/topcoat-runtime/Cargo.toml --features router --target-dir target";
+      after = [ "lific:rust-test" ];
+    };
     "lific:topcoat:test" = {
       cwd = repoRoot;
       exec = ''
@@ -496,6 +501,7 @@ in
       before = lib.optionals config.devenv.isTesting [ "devenv:enterTest" ];
       after = [
         "lific:rust-test"
+        "lific:topcoat:runtime-test"
         "lific:topcoat:test"
         "lific:release-test"
         "lific:community-proxy:check"
