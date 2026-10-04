@@ -1,6 +1,11 @@
 //! Renders a page or shard over a WebSocket opened at its URL.
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -9,7 +14,7 @@ use tokio::{
     time::{self, Instant, MissedTickBehavior},
 };
 use topcoat_core::{
-    context::{Cx, try_app_context},
+    context::{Cx, try_app_context, try_request_context},
     error::Result,
 };
 use topcoat_router::{
@@ -25,6 +30,41 @@ use topcoat_router::{
 };
 
 use crate::{ConnectedRender, RUNTIME_PROTOCOL, SignalValues};
+
+/// The action requested when an application's socket lifetime completes.
+#[derive(Debug, PartialEq, Eq)]
+pub enum SocketRetirement {
+    /// Retire the physical connection without navigating the browser.
+    Close,
+    /// Retire the connection and ask the browser to navigate to this URL.
+    Redirect(String),
+}
+
+type RetirementFuture = Pin<Box<dyn Future<Output = SocketRetirement> + Send + 'static>>;
+
+/// A one-shot application lifetime registered on the upgrade request context.
+///
+/// The mutex lets the context share a `Send` future without requiring `Sync`.
+pub struct SocketLifetime {
+    retirement: Mutex<Option<RetirementFuture>>,
+}
+
+impl SocketLifetime {
+    /// Retains the future for the physical connection's lifetime.
+    #[must_use]
+    pub fn new(retirement: impl Future<Output = SocketRetirement> + Send + 'static) -> Self {
+        Self {
+            retirement: Mutex::new(Some(Box::pin(retirement))),
+        }
+    }
+
+    fn take(&self) -> Option<RetirementFuture> {
+        self.retirement
+            .lock()
+            .expect("socket lifetime lock poisoned")
+            .take()
+    }
+}
 
 /// Protocol liveness and outbound deadlines for a runtime connection.
 ///
@@ -92,11 +132,14 @@ pub(super) async fn accept(cx: &Cx, body: Body) -> Result<Response> {
     let policy = try_app_context::<SocketPolicy>(cx)
         .copied()
         .unwrap_or_default();
+    let retirement = try_request_context::<SocketLifetime>(cx)
+        .and_then(SocketLifetime::take)
+        .unwrap_or_else(|| Box::pin(std::future::pending()));
     let connection_context = cx.clone();
     upgrade
         .protocols([RUNTIME_PROTOCOL])
         .on_upgrade(move |socket| async move {
-            run(target, socket, policy).await;
+            run(target, socket, policy, retirement).await;
             drop(connection_context);
         })
 }
@@ -285,14 +328,19 @@ impl ConnectionTarget {
 /// starting another. Aborting alone is not enough because a task running
 /// on another worker can still send output until it yields. Waiting keeps
 /// that output ahead of the next run announcement in the queue.
-async fn run(target: Arc<ConnectionTarget>, socket: WebSocket, policy: SocketPolicy) {
+async fn run(
+    target: Arc<ConnectionTarget>,
+    socket: WebSocket,
+    policy: SocketPolicy,
+    mut retirement: RetirementFuture,
+) {
     let (mut sink, mut stream) = socket.split();
     let (out, mut queue) = mpsc::channel::<Message>(16);
     let (progress, deadline) = watch::channel(Instant::now() + policy.progress_timeout);
     let mut current = RenderTask::default();
 
-    {
-        let forward = async move {
+    let action = {
+        let forward = async {
             let mut ping =
                 time::interval_at(Instant::now() + policy.ping_interval, policy.ping_interval);
             ping.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -350,14 +398,25 @@ async fn run(target: Arc<ConnectionTarget>, socket: WebSocket, policy: SocketPol
 
         tokio::select! {
             biased;
-            () = liveness => {},
-            () = forward => {},
-            () = receive => {},
+            action = &mut retirement => Some(action),
+            () = liveness => None,
+            () = forward => None,
+            () = receive => None,
         }
-    }
+    };
 
     // Either pump ending retires the whole socket, including the live body.
     current.stop().await;
+    if let Some(action) = action {
+        if let SocketRetirement::Redirect(location) = action {
+            let message = ConnectionMessage::Redirect {
+                location: &location,
+            }
+            .to_message();
+            let _ = time::timeout(policy.send_timeout, sink.send(message)).await;
+        }
+        let _ = time::timeout(policy.send_timeout, sink.close()).await;
+    }
 }
 
 async fn progress_lifetime(mut deadline: watch::Receiver<Instant>) {
@@ -399,6 +458,34 @@ mod tests {
     use topcoat_router::HeaderValue;
 
     use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn socket_lifetime_consumes_close_future_exactly_once() {
+        let lifetime = SocketLifetime::new(async { SocketRetirement::Close });
+        let retirement = lifetime.take().expect("the registered future is available");
+        assert!(lifetime.take().is_none(), "taking the future consumes it");
+        assert_eq!(retirement.await, SocketRetirement::Close);
+        assert!(
+            lifetime.take().is_none(),
+            "completion does not restore the future"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn socket_lifetime_context_accepts_send_future_without_sync() {
+        fn assert_send_sync<T: Send + Sync>(_: &T) {}
+
+        // Cell is Send but not Sync, and remains owned across suspension.
+        let state = std::cell::Cell::new(false);
+        let lifetime = SocketLifetime::new(async move {
+            state.set(true);
+            tokio::task::yield_now().await;
+            assert!(state.get());
+            SocketRetirement::Close
+        });
+        assert_send_sync(&lifetime);
+        assert_eq!(lifetime.take().unwrap().await, SocketRetirement::Close);
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn pending_progress_update_precedes_expired_cached_deadline() {

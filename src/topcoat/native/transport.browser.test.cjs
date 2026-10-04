@@ -10,6 +10,41 @@ const runtime = fs.readFileSync(path.join(__dirname, '../assets/runtime.js'), 'u
 const escape = value => value.replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;');
 const procedure = endpoint => ({t: 'Procedure', path: endpoint});
 
+test('one document navigation is claimed across sibling socket and HTTP redirects', async () => {
+  const bootstrap = 'var Ve=new ne;Ve.start(document);Ve.page.listenForDevRefresh();';
+  assert.equal(runtime.split(bootstrap).length - 1, 1, 'The production document startup is replaced exactly once.');
+  const locations = [], failures = [];
+  const context = {
+    AbortController, queueMicrotask, TextEncoder, TextDecoder,
+    location: {assign: destination => locations.push(destination)},
+    console: {error: error => failures.push(error)},
+  };
+  require('node:vm').runInNewContext(runtime.replace(bootstrap,
+    'globalThis.fixture={create:()=>new ne,frame:z,Request:H};'), context);
+  const {create, frame, Request} = context.fixture;
+  const redirect = (document, destination) => frame({runtime: document},
+    {t: 'redirect', location: destination}, 'Connected', Symbol('render'));
+  const httpRedirect = async (document, destination) => {
+    const controller = new Request(new AbortController().signal,
+      error => failures.push(error), location => document.redirect(location));
+    await controller.run(async () => ({redirected: true, url: destination}),
+      () => assert.fail('An HTTP redirect must not produce render frames.'), 'HTTP');
+  };
+  for (const source of ['sibling sockets', 'socket then HTTP', 'HTTP then socket', 'sibling HTTP']) {
+    locations.length = 0;
+    const document = create();
+    if (source.startsWith('HTTP') || source === 'sibling HTTP') await httpRedirect(document, '/mounted/first');
+    else redirect(document, '/mounted/first');
+    if (source.endsWith('HTTP')) await httpRedirect(document, '/mounted/second');
+    else redirect(document, '/mounted/second');
+    assert.deepEqual(locations, ['/mounted/first'], `${source} shares one document navigation claim.`);
+    redirect(create(), '/mounted/new-document');
+    assert.deepEqual(locations, ['/mounted/first', '/mounted/new-document'],
+      'A new document Runtime owns a fresh navigation claim.');
+  }
+  assert.deepEqual(failures, []);
+});
+
 test('vendored patches reconstruct the exact pinned upstream runtime', () => {
   const start = runtime.indexOf('function A(t,e,n,r,i={})');
   assert.ok(start >= 0, 'The pinned upstream body is present.');
@@ -25,6 +60,14 @@ test('vendored patches reconstruct the exact pinned upstream runtime', () => {
       'let r=e.name.substring(ke.length),o=T(e.value,`event @${r}`)(n.runtime.context);', 1],
     ['refresh(){if(this.isDisposed)return Promise.resolve();if(this.connection!==null)return this.connection.requestRun(),Promise.resolve();if(this.requiresConnection){for(let n of this.ancestors())if(n.connection!==null||n.requiresConnection)return n.refresh();return this.connectIfRequired(),Promise.resolve()}',
       'refresh(){if(this.connection?.isOpen)return this.connection.requestRun(),Promise.resolve();if(this.requiresConnection){for(let n of this.ancestors())if(n.connection?.isOpen)return n.refresh()}', 1],
+    ['case"redirect":t.runtime.redirect(e.location);break;', 'case"redirect":location.assign(e.location);break;', 1],
+    ['constructor(e,n,r){this.lifetime=e;this.reportError=n;this.redirect=r;e.addEventListener',
+      'constructor(e,n){this.lifetime=e;this.reportError=n;e.addEventListener', 1],
+    ['if(s.redirected){this.redirect(s.url);return}', 'if(s.redirected){location.assign(s.url);return}', 1],
+    ['new H(this.lifetime.abortSignal,r=>n.reportError(r),r=>n.redirect(r))',
+      'new H(this.lifetime.abortSignal,r=>n.reportError(r))', 1],
+    ['var ne=class{navigating=!1;redirect(e){if(this.navigating)return;this.navigating=!0;location.assign(e)}registry=new te;',
+      'var ne=class{registry=new te;', 1],
   ]) {
     assert.equal(original.split(patched).length - 1, count, 'Each declared patch has its expected occurrence count.');
     original = original.replaceAll(patched, upstream);

@@ -182,17 +182,32 @@ async function waitForPromise(promise, message) {
             assert.match(await hit('ACC', 1).textContent(), /ACC-1/);
           }
           for (const query of ['1', ' #1 ']) {
+            const previousRevision = await results.getAttribute('data-native-palette-revision');
             await input.fill(query);
+            // These queries return identical rows. Await this query's projection
+            // before treating those rows as the ready keyboard result list.
+            await page.waitForFunction(previous => {
+              const revision = document.querySelector('.native-home-palette-results')
+                ?.getAttribute('data-native-palette-revision');
+              return Boolean(revision) && revision !== previous;
+            }, previousRevision);
             await hit('SEC', 1).waitFor();
             await hit('ACC', 1).waitFor();
             assert.deepEqual(await issueRows().evaluateAll(rows => rows.map(row => row.getAttribute('href'))),
               [`${prefix}/SEC/issues/SEC-1`, `${prefix}/ACC/issues/ACC-1`],
               'Home has no current project; even /ACC as a mount keeps personal catalog order.');
           }
-          await input.press('ArrowUp');
-          await input.press('ArrowUp');
-          await input.press('ArrowDown');
-          await input.press('ArrowDown');
+          for (const [key, project] of [
+            ['ArrowUp', 'SEC'], ['ArrowUp', 'SEC'],
+            ['ArrowDown', 'ACC'], ['ArrowDown', 'ACC'],
+          ]) {
+            await input.press(key);
+            await results.locator(
+              `a[data-native-palette-selected="true"][href="${prefix}/${project}/issues/${project}-1"]`,
+            ).waitFor();
+            assert.equal(await results.locator('a[data-native-palette-selected="true"]').count(), 1,
+              `${key} selects exactly one row and clamps at the result-list boundary.`);
+          }
           await navigation(() => input.press('Enter', {noWaitAfter: true}), '/ACC/issues/ACC-1');
         } else if (scenario === 'modified-ready') {
           for (const modifier of ['Control', 'Meta']) {

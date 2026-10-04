@@ -56,19 +56,11 @@ async fn native_home_content(
     browser_inputs: String,
     palette_open: Signal<bool>,
 ) -> topcoat::Result<impl View> {
-    let revocations = super::session::subscribe_revocations(cx);
     // Subscribe before reading so an edit committed during the snapshot cannot
     // be missed between the initial read and the live content lifetime.
     let events = app_context::<crate::realtime::RealtimeHub>(cx).subscribe();
     let snapshot = authorized_snapshot(cx)?;
     let connected = connected(cx);
-    let session_lifetime = super::session::revocation_lifetime(
-        cx,
-        revocations,
-        snapshot.user.id,
-        snapshot.user.is_admin,
-        connected,
-    );
     let content = home_live::body(
         cx,
         events,
@@ -77,9 +69,8 @@ async fn native_home_content(
         palette_open,
         connected,
     );
-    // Refresh only the body region. Session retirement and the palette-owning
-    // shell keep their original owning scopes and existing sibling sockets.
-    Ok(view! { (session_lifetime)(content) })
+    // The physical sockets retain their authority; only this body is refreshed.
+    Ok(content)
 }
 
 pub(super) fn content_view<'a>(

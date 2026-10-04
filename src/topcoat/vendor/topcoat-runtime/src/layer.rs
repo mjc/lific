@@ -2,7 +2,7 @@ mod rerun;
 #[cfg(not(target_family = "wasm"))]
 mod socket;
 #[cfg(not(target_family = "wasm"))]
-pub use socket::SocketPolicy;
+pub use socket::{SocketLifetime, SocketPolicy, SocketRetirement};
 
 pub use rerun::*;
 use topcoat_core::context::Cx;

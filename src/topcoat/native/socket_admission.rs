@@ -1,8 +1,7 @@
-//! Shared quota admission for private native runtime WebSockets.
+//! Shared quota and authority admission for native runtime WebSockets.
 //!
 //! Register after RuntimeLayer so this runs before its early upgrade return.
-//! Published scope bypasses private identity resolution; its credential-free
-//! transport policy needs separate implementation and acceptance proof.
+//! Published scope validates publication without resolving private credentials.
 
 use std::sync::Arc;
 
@@ -37,11 +36,35 @@ impl Layer for SocketAdmission {
             if !runtime_socket {
                 return next.run(cx, body).await;
             }
-            let route = super::super::shell::ParsedRoute::parse(uri(cx).path());
-            if matches!(route.layout, super::super::shell::Layout::Public) {
-                return next.run(cx, body).await;
+            let hub = app_context::<RealtimeHub>(cx);
+            let path = uri(cx).path();
+            if path.starts_with("/public/") {
+                use super::super::public::Route;
+                let project = match super::super::public::resolve(path) {
+                    Some(
+                        Route::Issues { project }
+                        | Route::Board { project }
+                        | Route::IssueDetail { project, .. }
+                        | Route::Pages { project }
+                        | Route::PageDetail { project, .. },
+                    ) => project,
+                    Some(Route::Redirect(_)) | None => {
+                        return Err(topcoat::router::error::not_found().into());
+                    }
+                };
+                super::session::read(
+                    cx,
+                    super::context::with_published(cx, &project, |_, _| Ok(())),
+                )?;
+                let Some(permit) = hub.try_acquire_published_socket() else {
+                    return connection_limit();
+                };
+                let socket_context = cx.with(Arc::new(permit));
+                return next.run(&socket_context, body).await;
             }
 
+            // Subscribe before authorization so admission cannot miss retirement.
+            let revocations = super::session::subscribe_revocations(cx);
             // Resolve fresh request credentials, before the runtime captures them.
             // Private optional local-operator behavior stays in the existing caller.
             let user = super::context::caller(cx)
@@ -50,19 +73,29 @@ impl Layer for SocketAdmission {
                     LificError::Forbidden(_) => topcoat::router::error::forbidden().into(),
                     error => topcoat::Error::from(error),
                 })?;
-            let hub = app_context::<RealtimeHub>(cx);
             let Some(permit) = hub.try_acquire_socket(user.id) else {
-                return Ok(Response::builder()
-                    .status(429)
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        r#"{"error":"websocket connection limit reached"}"#,
-                    ))?);
+                return connection_limit();
             };
             // The generic runtime patch retains this child context through its
             // raw socket task, including idle-before-first-render and failed upgrade.
-            let socket_context = cx.with(Arc::new(permit));
+            let session_context = cx.with(Arc::new(permit));
+            let lifetime = super::session::socket_lifetime(
+                &session_context,
+                revocations,
+                user.id,
+                user.is_admin,
+            );
+            let socket_context = session_context.with(lifetime);
             next.run(&socket_context, body).await
         })
     }
+}
+
+fn connection_limit() -> topcoat::Result<Response> {
+    Ok(Response::builder()
+        .status(429)
+        .header("content-type", "application/json")
+        .body(Body::from(
+            r#"{"error":"websocket connection limit reached"}"#,
+        ))?)
 }

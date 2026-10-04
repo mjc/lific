@@ -2,12 +2,17 @@
 
 use topcoat::{
     context::{Cx, app_context},
-    runtime::{Event, connected_untracked, expr, procedure, signal},
-    view::{Attributes, BoxView, ViewExt, emit, live},
+    runtime::{
+        Event, SocketLifetime, SocketRetirement, connected_untracked, expr, procedure, signal,
+    },
+    view::Attributes,
 };
 
 use crate::error::LificError;
-use tokio::sync::broadcast::{Receiver, error::RecvError};
+use tokio::{
+    sync::broadcast::Receiver,
+    time::{self, Instant, MissedTickBehavior},
+};
 
 pub(crate) fn read<T>(cx: &Cx, result: Result<T, LificError>) -> topcoat::Result<T> {
     read_with_auth_destination(cx, result, "/login")
@@ -112,46 +117,44 @@ fn current_account(cx: &Cx) -> Result<Option<(i64, bool)>, LificError> {
     }
 }
 
-/// Register before the render's fresh authorization read so no retirement is missed.
+/// Register before fresh socket admission so no retirement is missed.
 pub(crate) fn subscribe_revocations(cx: &Cx) -> Receiver<i64> {
     app_context::<crate::realtime::RealtimeHub>(cx).subscribe_revocations()
 }
 
-/// The content connection owns this future and drops its receiver on replacement.
-pub(crate) fn revocation_lifetime(
+/// The physical connection owns authority independently of page renders.
+pub(crate) fn socket_lifetime(
     cx: &Cx,
     mut revoked: Receiver<i64>,
     account_id: i64,
     is_admin: bool,
-    connected: bool,
-) -> BoxView<'static> {
+) -> SocketLifetime {
+    // Capture the parent before registering the hook on its child, so the
+    // retained request context cannot hold a cycle back to this future.
     let context = cx.clone();
-    live! { cx =>
-        let token = emit! { <span hidden="hidden"></span> }?;
-        if !connected {
-            return Ok(token);
-        }
+    let admitted_at = Instant::now();
+    SocketLifetime::new(async move {
+        let interval = crate::realtime::SESSION_REVALIDATE_INTERVAL;
+        let mut revalidate = time::interval_at(admitted_at + interval, interval);
+        revalidate.set_missed_tick_behavior(MissedTickBehavior::Delay);
         loop {
-            let retire = match revoked.recv().await {
-                Ok(user_id) => user_id == account_id,
-                Err(RecvError::Lagged(_)) => {
-                    // Lost notifications require fresh bound-credential authority.
-                    // An unavailable authority cannot keep private content live.
-                    current_account(&context)
-                        .map_or(true, |account| account != Some((account_id, is_admin)))
-                }
-                Err(RecvError::Closed) => true,
+            let flow = tokio::select! {
+                biased;
+                revoked = revoked.recv() => crate::realtime::revocation_flow(revoked, account_id),
+                _ = revalidate.tick() => crate::realtime::RevocationFlow::Revalidate,
+            };
+            let retire = match flow {
+                crate::realtime::RevocationFlow::Ignore => false,
+                crate::realtime::RevocationFlow::Close => true,
+                crate::realtime::RevocationFlow::Revalidate => current_account(&context)
+                    .map_or(true, |account| account != Some((account_id, is_admin))),
             };
             if retire {
-                // Socket headers retain their original cookie. A fresh document
-                // can recover a replacement cookie or reach the existing login boundary.
-                return Err(topcoat::router::error::redirect(
-                    super::transport::mounted_url(&context, "/"),
-                ).into());
+                // Fresh HTTP credentials can recover a replacement account.
+                return SocketRetirement::Redirect(super::transport::mounted_url(&context, "/"));
             }
         }
-    }
-    .boxed()
+    })
 }
 
 #[procedure("/__native_home/session")]
