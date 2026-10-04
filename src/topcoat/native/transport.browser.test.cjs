@@ -97,3 +97,63 @@ test('framework procedures, returned surrogates, shards and sockets stay within 
     });
   } finally {await browser.close();}
 });
+
+test('Rust tuple arrays hydrate, index and round-trip nested framework values', async () => {
+  assert.ok(process.env.PLAYWRIGHT_EXECUTABLE_PATH, 'Use the repository e2e Chromium environment.');
+  const {chromium} = await import(path.resolve(__dirname, '../../../e2e/node_modules/playwright/index.mjs'));
+  const wire = [
+    {t: 'Result', ok: 'saved'},
+    {t: 'Option', v: {t: 'i64', bits: 64, v: '9007199254740993'}},
+    {t: 'Option', v: [{t: 'usize', bits: 64, v: '7'}, procedure('/ACC/native/returned')]},
+    {t: 'Result', err: {t: 'Option', v: null}},
+    false, 'web', [true, null, 'draft'],
+    {t: 'Vec', bits: 64, v: [[{t: 'Option', v: {t: 'i64', bits: 64, v: '-9223372036854775808'}}, 42]]},
+  ];
+  const requests = [];
+  const server = http.createServer(async (request, response) => {
+    if (request.url === '/ACC/runtime.js') {
+      response.setHeader('Content-Type', 'text/javascript'); response.end(runtime); return;
+    }
+    if (request.method === 'POST') {
+      const chunks = [];
+      for await (const chunk of request) chunks.push(chunk);
+      requests.push({path: request.url, body: JSON.parse(Buffer.concat(chunks).toString())});
+      response.setHeader('Content-Type', 'application/json');
+      response.end(JSON.stringify(request.url === '/ACC/native/tuple-factory' ? wire : true)); return;
+    }
+    const call = `async()=>{try{
+      const tuple=await cx.hydrate(${JSON.stringify(procedure('/native/tuple-factory'))}).call();
+      if(!Array.isArray(tuple)||tuple.length!==8)throw new Error('Tuple shape');
+      if(!tuple[0].is_ok().v||tuple[0].unwrap().v!=='saved')throw new Error('Result indexing');
+      if(tuple[1].unwrap().v.toString()!=='9007199254740993')throw new Error('Integer precision');
+      const nested=tuple[2].unwrap();
+      if(nested[0].v.toString()!=='7'||typeof tuple.dehydrate!=='function'||typeof nested.dehydrate!=='function')throw new Error('Nested tuple methods');
+      await nested[1].call();
+      document.querySelector('#wire').textContent=JSON.stringify(tuple.dehydrate());
+      await cx.hydrate(${JSON.stringify(procedure('/native/tuple-echo'))}).call(tuple,[tuple[1],[nested[0],tuple[3]]]);
+      document.querySelector('#result').textContent='ok';
+    }catch(error){document.querySelector('#result').textContent=error.message;}}`;
+    response.setHeader('Content-Type', 'text/html');
+    response.end(`<html data-topcoat-runtime-prefix="/ACC"><body><button data-topcoat-on:click="${escape(call)}">Round-trip tuple</button><output id="result"></output><output id="wire"></output><script type="module" src="/ACC/runtime.js"></script></body></html>`);
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const browser = await chromium.launch({headless: true, executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH});
+  try {
+    const page = await browser.newPage(), failures = [];
+    page.on('pageerror', error => failures.push(error.message));
+    await page.goto(`http://127.0.0.1:${server.address().port}/ACC/ACC/overview`);
+    await page.getByRole('button', {name: 'Round-trip tuple', exact: true}).click();
+    await page.waitForFunction(() => document.querySelector('#result').textContent !== '');
+    assert.equal(await page.locator('#result').textContent(), 'ok');
+    assert.deepEqual(JSON.parse(await page.locator('#wire').textContent()), wire);
+    assert.deepEqual(requests, [
+      {path: '/ACC/native/tuple-factory', body: []},
+      {path: '/ACC/ACC/native/returned', body: []},
+      {path: '/ACC/native/tuple-echo', body: [wire, [wire[1], [wire[2].v[0], wire[3]]]]},
+    ]);
+    assert.deepEqual(failures, []);
+  } finally {
+    await browser.close();
+    await new Promise(resolve => server.close(resolve));
+  }
+});
