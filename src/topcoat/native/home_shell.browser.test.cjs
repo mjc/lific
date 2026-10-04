@@ -1,6 +1,7 @@
 // Original Layout.svelte at master 9683d38 is the shell contract.
 // node home_shell.browser.test.cjs <fixture-origin> <token> <scenario> [pinned-master-web-directory] [hostile-project-name]
 const {test} = require('node:test');
+const {installOriginalFonts, captureOriginalFonts} = require('./original_fonts_fixture.cjs');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -37,6 +38,7 @@ async function reference(browser, referenceOrigin, name, theme, viewport) {
   const context = await browser.newContext({viewport, isMobile: viewport.width < 768, hasTouch: viewport.width < 768, colorScheme: theme, locale: 'en-US',
     timezoneId: 'America/Denver', reducedMotion: 'reduce'});
   try {
+    await installOriginalFonts(context);
     await context.addInitScript(({token, theme}) => {
       localStorage.setItem('lific_token', token);
       localStorage.setItem('lific_theme', theme);
@@ -47,6 +49,7 @@ async function reference(browser, referenceOrigin, name, theme, viewport) {
     await page.goto(`${referenceOrigin}/#/`);
     await page.getByText('Visible active initial work', {exact: true}).waitFor();
     await page.evaluate(() => document.fonts.ready);
+    await captureOriginalFonts(page,path.join(output,`${name}-original-fonts.json`));
     await page.screenshot({path: path.join(output, `${name}-original.png`), fullPage: true});
     const actionForeground = await page.getByRole('button', {name: 'New issue', exact: true}).evaluate(foreground);
     const activityAlign = await page.getByText('system', {exact: true}).first().evaluate(element => getComputedStyle(element).textAlign);
@@ -205,8 +208,11 @@ test(`native Home original shell: ${scenario}`, async t => {
               assert.equal(await nav.locator('[data-native-mobile-root]').isVisible(), false);
               assert.deepEqual(await nav.locator('[data-native-mobile-project]').getByRole('link').allTextContents(), destinations);
               await page.keyboard.press('Escape');
+              await nav.locator('[data-native-mobile-root]').waitFor({state: 'visible'});
               assert.equal(await nav.locator('[data-native-mobile-root]').isVisible(), true, 'Escape pops project detail before closing root.');
               await page.keyboard.press('Escape');
+              await nav.waitFor({state: 'hidden'});
+              await page.waitForFunction(() => document.getElementById('native-home-mobile-open') === document.activeElement);
               assert.equal(await nav.isVisible(), false);
               assert.equal(await open.evaluate(element => element === document.activeElement), true);
             } else if (scenario === 'mobile_lifetime') {
