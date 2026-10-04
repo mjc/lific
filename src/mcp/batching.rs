@@ -164,6 +164,7 @@ struct BatchState {
     march: bool,
     pending: HashSet<String>,
     active: HashSet<String>,
+    cancelled: HashSet<String>,
     replies: Vec<Value>,
     bytes: usize,
 }
@@ -205,6 +206,9 @@ impl<R, W> StdioTransport<R, W> {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         // Keep cancelled IDs active until this stdio session ends; a late
         // handler result must never be attributed to a reused ID.
+        if state.active.contains(&key) {
+            state.cancelled.insert(key.clone());
+        }
         if state.pending.remove(&key) && state.pending.is_empty() {
             state.bytes = 0;
             let replies = std::mem::take(&mut state.replies);
@@ -255,6 +259,12 @@ where
                 if value.get("method").is_none()
                     && let Some(key) = &key
                 {
+                    // A queued SDK response future may run after receive()
+                    // records cancellation. Keep that ID reserved and omit
+                    // the late response even though it is no longer pending.
+                    if state.cancelled.contains(key) {
+                        return Ok(());
+                    }
                     state.active.remove(key);
                 }
                 if value.get("method").is_none()
@@ -1454,6 +1464,47 @@ mod tests {
             Some(JsonRpcMessage::Response(_))
         ));
         assert!(transport.receive().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn stdio_cancellation_before_response_send_preserves_id_and_suppresses_reply() {
+        for frame in [
+            json!({"jsonrpc":"2.0","id":2,"method":"ping"}),
+            json!([{"jsonrpc":"2.0","id":2,"method":"ping"}]),
+        ] {
+            let input = format!(
+                "{frame}\n{}\n{frame}\n{}\n",
+                json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":2}}),
+                json!({"jsonrpc":"2.0","id":3,"method":"ping"}),
+            );
+            let mut transport = StdioTransport::new(input.as_bytes(), Vec::<u8>::new());
+            transport.state.lock().unwrap().march = true;
+            assert!(matches!(
+                transport.receive().await,
+                Some(JsonRpcMessage::Request(_))
+            ));
+            // The SDK can construct a send future, then receive a cancellation
+            // before its spawned response task polls that future.
+            let response =
+                serde_json::from_value(json!({"jsonrpc":"2.0","id":2,"result":{}})).unwrap();
+            let send = transport.send(response);
+            assert!(matches!(
+                transport.receive().await,
+                Some(JsonRpcMessage::Notification(_))
+            ));
+            send.await.unwrap();
+            assert!(transport.writer.lock().await.is_empty());
+            assert!(transport.state.lock().unwrap().active.contains("2"));
+            let Some(JsonRpcMessage::Request(next)) = transport.receive().await else {
+                panic!("the next unused request ID should remain available");
+            };
+            assert_eq!(serde_json::to_value(next.id).unwrap(), 3);
+            let output = transport.writer.lock().await.clone();
+            let reply: Value = serde_json::from_slice(&output).unwrap();
+            let reply = reply.as_array().map_or(&reply, |items| &items[0]);
+            assert!(reply["id"].is_null());
+            assert_eq!(reply["error"]["code"], -32600);
+        }
     }
 }
 
