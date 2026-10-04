@@ -99,21 +99,11 @@ pub(super) async fn serve(fixture: &Fixture) -> (String, tokio::task::JoinHandle
 }
 
 pub(super) fn browser_command(script: &str, origin: &str, token: &str) -> tokio::process::Command {
-    let mut command = if std::env::var_os("PLAYWRIGHT_EXECUTABLE_PATH").is_some() {
+    let mut command = if cfg!(windows) || std::env::var_os("PLAYWRIGHT_EXECUTABLE_PATH").is_some() {
         tokio::process::Command::new("node")
     } else {
         let mut command = tokio::process::Command::new("devenv");
-        command.args([
-            "--profile",
-            "topcoat-e2e",
-            "shell",
-            "bash",
-            "--noprofile",
-            "--norc",
-            "-c",
-            "node \"$@\"",
-            "lific-native-browser",
-        ]);
+        command.args(["--profile", "topcoat-e2e", "shell", "node"]);
         command
     };
     command.args([script, origin, token]);

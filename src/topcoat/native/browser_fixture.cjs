@@ -1,6 +1,17 @@
 // Mounted HTTP and WebSocket proxy for real native production-server tests.
 const http = require('node:http');
 const net = require('node:net');
+const path = require('node:path');
+const {pathToFileURL} = require('node:url');
+const assert = require('node:assert/strict');
+
+async function launchBrowser() {
+  assert.ok(process.platform === 'win32' || process.env.PLAYWRIGHT_EXECUTABLE_PATH,
+    'Use the repository Chromium environment.');
+  const moduleUrl = pathToFileURL(path.resolve(__dirname, '../../../e2e/node_modules/playwright/index.mjs'));
+  const {chromium} = await import(moduleUrl.href);
+  return chromium.launch({headless: true, executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH});
+}
 
 async function mountedProxy(upstream, prefix) {
   const requests = [], sockets = [], connections = new Set();
@@ -52,4 +63,4 @@ async function mountedProxy(upstream, prefix) {
   };
 }
 
-module.exports = {mountedProxy};
+module.exports = {mountedProxy, launchBrowser};

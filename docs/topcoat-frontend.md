@@ -5,19 +5,29 @@ pages and embedded assets live under `src/topcoat`; Axum owns the HTTP listener
 and sends frontend requests to Topcoat's Tower adapter. Cargo and devenv pin
 Rust 1.99.0.
 
-The current implementation still uses browser JavaScript controllers and the
-existing JSON API. This is an intermediate port: native server data access,
-complete behavior parity, and visual parity remain unfinished.
+Production Home renders authorized initial HTML through shared Rust services.
+Its Rust components handle local clock and recents, active work, project
+activity, project disclosure and navigation, sidebar collapse, theme selection,
+and phone focus and history ownership. Native Home reads and actions use
+Topcoat transport without browser REST requests or loopback HTTP.
 
-The native Home checkpoint now has a shared catalog of visible projects in
-the user's order, used by REST and native readers, cookie-based identity
-snapshots, and bounded reads for active work and project activity. Its prepared
-model and renderer cover grouped active work, a short project digest, mounted
-links, safe text, project icons, and the empty state. This is not yet wired as
-the production Home: local clock and recents, the complete shell, live refresh,
-locale-aware ordering, and full issue editing remain open. The native
-components and readers are preparation for that integration, not complete
-production route families.
+Home captures its initial account as the session baseline. Focus checks use
+the current HTTP cookie; connected shard credentials and stored token text
+cannot replace that baseline. Session and theme listeners belong to their
+rendered scopes and are removed when those scopes are disposed.
+
+Reusable native issue controls cover title, exact description text, status,
+priority, sequence conflicts, draft retention, and retries. Their production
+component tests do not establish complete issue-detail parity. Pure Rust
+attachment-snippet helpers are tested separately and are not yet connected to
+a native Markdown composer.
+
+Other route families still use browser JavaScript controllers and the existing
+JSON API. The full native port remains unfinished. Home still needs project
+management and grouping, sidebar resizing, the complete command palette and
+appearance preferences, live refresh, idle session revocation, and reconnect
+proofs. Paired screenshots cover selected Home geometry and theme details;
+they do not establish complete visual parity.
 
 ## Target data flow
 

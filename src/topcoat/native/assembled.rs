@@ -351,33 +351,11 @@ async fn native_assembled_page_and_shard_classify_session_denials_and_missing_is
 #[tokio::test]
 async fn native_assembled_browser_page_save_shard_and_socket_never_call_rest() {
     let fixture = deploy().await;
-    let browser_environment = std::env::var_os("PLAYWRIGHT_EXECUTABLE_PATH").is_some();
-    let mut command = if browser_environment {
-        let mut command = tokio::process::Command::new("node");
-        command.args(["--test", "src/topcoat/native/probe.browser.test.cjs"]);
-        command
-    } else {
-        let mut command = tokio::process::Command::new("devenv");
-        command.args([
-            "--profile",
-            "topcoat-e2e",
-            "shell",
-            "bash",
-            "--noprofile",
-            "--norc",
-            "-c",
-            "node --test src/topcoat/native/probe.browser.test.cjs",
-        ]);
-        command
-    };
-    command
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .env("LIFIC_NATIVE_PROBE_UPSTREAM", &fixture.origin)
-        .env(
-            "LIFIC_NATIVE_PROBE_COOKIE",
-            format!("lific_token={}", fixture.token),
-        )
-        .kill_on_drop(true);
+    let mut command = super::home_fixture::browser_command(
+        "src/topcoat/native/probe.browser.test.cjs",
+        &fixture.origin,
+        &fixture.token,
+    );
     let output = tokio::time::timeout(std::time::Duration::from_secs(90), command.output())
         .await
         .expect("native browser test timed out")

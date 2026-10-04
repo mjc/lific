@@ -1,3 +1,4 @@
+const {launchBrowser} = require('./browser_fixture.cjs');
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -17,9 +18,8 @@ const settle = page => page.evaluate(() => new Promise(resolve => {
 // Exercise the shipped framework in Chromium over HTTP. No replacement runtime,
 // private scope exports, synthetic AbortController, or application controller.
 async function fixture(content, initialState, run, onPost) {
-  assert.ok(process.env.PLAYWRIGHT_EXECUTABLE_PATH, 'Use the repository e2e Chromium environment.');
-  const {chromium} = await import(path.resolve(__dirname, '../../../e2e/node_modules/playwright/index.mjs'));
-  const browser = await chromium.launch({headless: true, executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH});
+
+  const browser = await launchBrowser();
   const requests = [], errors = [], pageErrors = [], serverErrors = [];
   const server = http.createServer(async (request, response) => {
     try {

@@ -4,7 +4,7 @@ const {test} = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const {mountedProxy} = require('../browser_fixture.cjs');
+const {mountedProxy, launchBrowser} = require('../browser_fixture.cjs');
 const upstream = new URL(process.argv[2]);
 const token = process.argv[3];
 const scenario = process.argv[4];
@@ -51,10 +51,10 @@ async function startBody(page) {
 
 test(`native issue component ${scenario}`, async t => {
   assert.ok(['fields', 'conflict', 'failure'].includes(scenario));
-  assert.ok(process.env.PLAYWRIGHT_EXECUTABLE_PATH, 'Use repository Chromium.');
+
   fs.mkdirSync(output, {recursive: true});
-  const {chromium} = await import(path.resolve(__dirname, '../../../../e2e/node_modules/playwright/index.mjs'));
-  const browser = await chromium.launch({headless: true, executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH});
+
+  const browser = await launchBrowser();
   try {
     for (const prefix of ['', '/app', '/ACC']) await t.test(prefix || 'root', async () => {
       const proxy = await mountedProxy(upstream, prefix);

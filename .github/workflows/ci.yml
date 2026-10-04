@@ -108,6 +108,13 @@ jobs:
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      - name: Install browser test dependencies
+        working-directory: e2e
+        run: bun install --frozen-lockfile
+      - name: Install headless Chromium
+        working-directory: e2e
+        run: bunx --no-install playwright install chromium
       - name: Test
         run: cargo test --all-targets
 
