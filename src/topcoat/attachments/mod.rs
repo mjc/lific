@@ -2,6 +2,8 @@
 //!
 //! Browser transfers use the dedicated script, never the buffered JSON client's
 //! download helper. Screen owners supply entity ids, permissions and destinations.
+use super::native::transport::mounted_url;
+
 use super::session::Scope;
 use serde::{Deserialize, Serialize};
 use topcoat::{
@@ -232,21 +234,21 @@ pub(crate) fn list<'a>(
             for (attachment, kind, original, alt, can_delete) in rows {
                 <li class="tc-attachment" data-attachment-id=(attachment.id.to_string()) data-attachment-kind=(kind)>
                     <div class="tc-attachment__actions">
-                        <a href=(original.as_str()) download=(attachment.filename.as_str())>(attachment.filename.as_str())</a>
+                        <a href=(mounted_url(cx, original.as_str())) download=(attachment.filename.as_str())>(attachment.filename.as_str())</a>
                         <span>(format!("{} bytes", attachment.size_bytes))</span>
                         if can_delete {
                             <button class="tc-button" type="button" data-attachment-delete=(attachment.id.to_string())>"Delete"</button>
                         }
                     </div>
                     if kind == "image" {
-                        <a href=(original.as_str()) aria-label="Open original image">
+                        <a href=(mounted_url(cx, original.as_str())) aria-label="Open original image">
                             <img data-attachment-image=(attachment.id.to_string()) alt=(alt.as_str()) loading="lazy"
                                 width=(attachment.width.map(|value| value.to_string())) height=(attachment.height.map(|value| value.to_string())) />
                         </a>
                     } else if kind == "video" {
-                        <video controls="controls" preload="metadata" src=(original.as_str()) aria-label=(attachment.filename.as_str())></video>
+                        <video controls="controls" preload="metadata" src=(mounted_url(cx, original.as_str())) aria-label=(attachment.filename.as_str())></video>
                     } else if kind == "audio" {
-                        <audio controls="controls" preload="metadata" src=(original.as_str()) aria-label=(attachment.filename.as_str())></audio>
+                        <audio controls="controls" preload="metadata" src=(mounted_url(cx, original.as_str())) aria-label=(attachment.filename.as_str())></audio>
                     } else if kind != "file" {
                         <button class="tc-button" type="button" data-attachment-preview="">"Preview"</button>
                         <pre data-attachment-content="" hidden="hidden"></pre>

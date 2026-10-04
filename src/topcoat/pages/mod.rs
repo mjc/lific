@@ -1,5 +1,7 @@
 //! Project and workspace page routes.
 
+use super::native::transport::mounted_url;
+
 use topcoat::{
     context::Cx,
     view::{BoxView, ViewExt, view},
@@ -77,7 +79,7 @@ pub(crate) fn detail<'a>(cx: &'a Cx, project: &'a str, page_id: i64, public: boo
             <p class="tc-pages__status" data-page-status-message="" role="status" aria-live="polite">"Loading page…"</p>
             <div class="tc-pages__error" data-page-error="" role="alert" hidden="hidden"></div>
             <article data-page-content="" hidden="hidden">
-                <nav aria-label="Breadcrumb"><a href=(format!("/{}/pages", if public { format!("public/{project}") } else { project.to_owned() }))>"Pages"</a><span data-page-folder-crumb=""></span></nav>
+                <nav aria-label="Breadcrumb"><a href=(mounted_url(cx, &format!("/{}/pages", if public { format!("public/{project}") } else { project.to_owned() })))>"Pages"</a><span data-page-folder-crumb=""></span></nav>
                 <header class="tc-page-detail__heading">
                     <input class="tc-page-detail__title" data-page-title="" aria-label="Page title" disabled="disabled" />
                     <div class="tc-page-detail__actions">

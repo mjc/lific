@@ -717,7 +717,7 @@ fn require_project_delete(
 /// resolves a `ResolvedIdentity` (first-admin fallback) even for a
 /// credential-less request, so this passes — fixing the auth-off bug where
 /// `/api/projects/reorder` previously 403'd.
-pub(super) fn require_user(
+pub(crate) fn require_user(
     identity: &Option<crate::resolve_caller::ResolvedIdentity>,
 ) -> Result<AuthUser, LificError> {
     identity

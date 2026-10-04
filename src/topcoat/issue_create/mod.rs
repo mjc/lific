@@ -1,5 +1,7 @@
 //! Topcoat issue creation using the shared project, session and attachment APIs.
 
+use super::native::transport::mounted_url;
+
 use topcoat::{
     context::Cx,
     view::{BoxView, ViewExt, view},
@@ -20,11 +22,11 @@ pub(crate) fn screen<'a>(cx: &'a Cx, project_identifier: &str) -> BoxView<'a> {
             <div data-issue-create-denied="" hidden="hidden">
                 <h1>"You can't create issues here"</h1>
                 <p>"Only project maintainers, leads and admins can create issues."</p>
-                <a data-issue-create-back="" href=(issues_href.as_str())>"Back to issues"</a>
+                <a data-issue-create-back="" href=(mounted_url(cx, issues_href.as_str()))>"Back to issues"</a>
             </div>
             <form data-issue-create-form="" hidden="hidden">
                 <header class="tc-issue-create__header">
-                    <a data-issue-create-back="" href=(issues_href.as_str())>"‹ Issues"</a>
+                    <a data-issue-create-back="" href=(mounted_url(cx, issues_href.as_str()))>"‹ Issues"</a>
                     <span aria-hidden="true">"/"</span><h1>"New issue"</h1>
                     <p data-issue-create-error="" role="alert" aria-live="assertive"></p>
                     <button type="button" data-issue-create-discard="">"Discard"</button>

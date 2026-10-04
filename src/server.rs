@@ -37,8 +37,10 @@ use crate::{
 #[path = "topcoat/mod.rs"]
 mod topcoat_frontend;
 mod topcoat_app {
+    use super::topcoat_frontend::native::transport::{mounted_url, trusted_mount};
     #[cfg(test)]
     use topcoat::view::attributes;
+
     use topcoat::{
         Result,
         router::{Slot, layout, page, response::Response, route},
@@ -67,70 +69,70 @@ mod topcoat_app {
             super::topcoat_frontend::session::bootstrap_attributes(cx, &scope, require_session);
         Ok(view! {
             <!DOCTYPE html>
-            <html lang="en">
+            <html lang="en" data-topcoat-runtime-prefix=(trusted_mount(cx))>
                 <head>
                     <meta charset="utf-8">
                     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
                     <title>(title)</title>
-                    <link rel="icon" type="image/png" href="/favicon.png">
-                    <link rel="manifest" href="/manifest.webmanifest">
-                    <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+                    <link rel="icon" type="image/png" href=(mounted_url(cx, "/favicon.png"))>
+                    <link rel="manifest" href=(mounted_url(cx, "/manifest.webmanifest"))>
+                    <link rel="apple-touch-icon" href=(mounted_url(cx, "/apple-touch-icon.png"))>
                     <meta name="apple-mobile-web-app-title" content="Lific">
                     <meta name="theme-color" content="#fafcfb" media="(prefers-color-scheme: light)">
                     <meta name="theme-color" content="#1c221f" media="(prefers-color-scheme: dark)">
-                    <link rel="stylesheet" href="/__topcoat-app.css">
-                    <link rel="stylesheet" href=(super::topcoat_frontend::shell::STYLESHEET_PATH)>
-                    <link rel="stylesheet" href=(super::topcoat_frontend::shell::mobile::STYLESHEET_PATH)>
-                    <link rel="stylesheet" href=(super::topcoat_frontend::shell::projects::STYLESHEET_PATH)>
-                    <link rel="stylesheet" href=(super::topcoat_frontend::shell::recents::STYLESHEET_PATH)>
-                    <link rel="stylesheet" href=(super::topcoat_frontend::shell::page_chrome::STYLESHEET_PATH)>
-                    <link rel="stylesheet" href=(super::topcoat_frontend::attachments::STYLESHEET_PATH)>
-                    <link rel="stylesheet" href=(super::topcoat_frontend::palette::STYLESHEET_PATH)>
-                    <link rel="stylesheet" href=(super::topcoat_frontend::dashboard::STYLESHEET_PATH)>
-                    <link rel="stylesheet" href=(super::topcoat_frontend::issue_list::STYLESHEET_PATH)>
-                    <link rel="stylesheet" href=(super::topcoat_frontend::issue_detail::route::STYLESHEET_PATH)>
-                    <link rel="stylesheet" href=(super::topcoat_frontend::issue_detail::fields::STYLESHEET_PATH)>
-                    <link rel="stylesheet" href=(super::topcoat_frontend::issue_detail::editor::STYLESHEET_PATH)>
-                    <link rel="stylesheet" href=(super::topcoat_frontend::issue_detail::collaboration::STYLESHEET_PATH)>
-                    <link rel="stylesheet" href=(super::topcoat_frontend::issue_create::STYLESHEET_PATH)>
-                    <link rel="stylesheet" href=(super::topcoat_frontend::identity::STYLESHEET_PATH)>
-                    <link rel="stylesheet" href=(super::topcoat_frontend::project_settings::STYLESHEET_PATH)>
-                    <link rel="stylesheet" href=(super::topcoat_frontend::files::STYLESHEET_PATH)>
-                    <link rel="stylesheet" href=(super::topcoat_frontend::pages::STYLESHEET_PATH)>
-                    <link rel="stylesheet" href=(super::topcoat_frontend::plans::STYLESHEET_PATH)>
-                    <link rel="stylesheet" href=(super::topcoat_frontend::modules::STYLESHEET_PATH)>
-                    <link rel="stylesheet" href=(super::topcoat_frontend::activity_insights::STYLESHEET_PATH)>
-                    <link rel="stylesheet" href=(super::topcoat_frontend::public::STYLESHEET_PATH)>
-                    <script type="module" src="/__topcoat-runtime.js"></script>
-                    <script defer="defer" src=(super::topcoat_frontend::shell::ROUTE_SCRIPT_PATH)></script>
-                    <script defer="defer" src=(super::topcoat_frontend::session::SCRIPT_PATH)></script>
-                    <script defer="defer" src=(super::topcoat_frontend::attachments::SCRIPT_PATH)></script>
-                    <script defer="defer" src=(super::topcoat_frontend::sync::SCRIPT_PATH)></script>
-                    <script defer="defer" src=(super::topcoat_frontend::shell::PROJECT_ICONS_SCRIPT_PATH)></script>
-                    <script defer="defer" src=(super::topcoat_frontend::shell::mobile::SCRIPT_PATH)></script>
-                    <script defer="defer" src=(super::topcoat_frontend::shell::projects::SCRIPT_PATH)></script>
-                    <script defer="defer" src=(super::topcoat_frontend::shell::recents::SCRIPT_PATH)></script>
-                    <script defer="defer" src=(super::topcoat_frontend::shell::page_chrome::SCRIPT_PATH)></script>
-                    <script defer="defer" src=(super::topcoat_frontend::shell::BOOTSTRAP_SCRIPT_PATH)></script>
-                    <script defer="defer" src=(super::topcoat_frontend::palette::SCRIPT_PATH)></script>
-                    <script defer="defer" src=(super::topcoat_frontend::dashboard::SCRIPT_PATH)></script>
-                    <script defer="defer" src=(super::topcoat_frontend::issue_list::SCRIPT_PATH)></script>
-                    <script defer="defer" src=(super::topcoat_frontend::issue_detail::fields::SCRIPT_PATH)></script>
-                    <script defer="defer" src=(super::topcoat_frontend::issue_detail::editor::SCRIPT_PATH)></script>
-                    <script defer="defer" src=(super::topcoat_frontend::issue_detail::collaboration::SCRIPT_PATH)></script>
-                    <script defer="defer" src=(super::topcoat_frontend::issue_detail::route::SCRIPT_PATH)></script>
-                    <script defer="defer" src=(super::topcoat_frontend::issue_create::SCRIPT_PATH)></script>
-                    <script defer="defer" src=(super::topcoat_frontend::identity::SCRIPT_PATH)></script>
-                    <script defer="defer" src=(super::topcoat_frontend::project_settings::SCRIPT_PATH)></script>
-                    <script defer="defer" src=(super::topcoat_frontend::files::SCRIPT_PATH)></script>
-                    <script defer="defer" src=(super::topcoat_frontend::pages::SCRIPT_PATH)></script>
-                    <script defer="defer" src=(super::topcoat_frontend::plans::SCRIPT_PATH)></script>
-                    <script defer="defer" src=(super::topcoat_frontend::modules::SCRIPT_PATH)></script>
-                    <script defer="defer" src=(super::topcoat_frontend::activity_insights::SCRIPT_PATH)></script>
-                    <script defer="defer" src=(super::topcoat_frontend::public::SCRIPT_PATH)></script>
-                    <script type="module" src="/__topcoat-preferences.js"></script>
+                    <link rel="stylesheet" href=(mounted_url(cx, "/__topcoat-app.css"))>
+                    <link rel="stylesheet" href=(mounted_url(cx, super::topcoat_frontend::shell::STYLESHEET_PATH))>
+                    <link rel="stylesheet" href=(mounted_url(cx, super::topcoat_frontend::shell::mobile::STYLESHEET_PATH))>
+                    <link rel="stylesheet" href=(mounted_url(cx, super::topcoat_frontend::shell::projects::STYLESHEET_PATH))>
+                    <link rel="stylesheet" href=(mounted_url(cx, super::topcoat_frontend::shell::recents::STYLESHEET_PATH))>
+                    <link rel="stylesheet" href=(mounted_url(cx, super::topcoat_frontend::shell::page_chrome::STYLESHEET_PATH))>
+                    <link rel="stylesheet" href=(mounted_url(cx, super::topcoat_frontend::attachments::STYLESHEET_PATH))>
+                    <link rel="stylesheet" href=(mounted_url(cx, super::topcoat_frontend::palette::STYLESHEET_PATH))>
+                    <link rel="stylesheet" href=(mounted_url(cx, super::topcoat_frontend::dashboard::STYLESHEET_PATH))>
+                    <link rel="stylesheet" href=(mounted_url(cx, super::topcoat_frontend::issue_list::STYLESHEET_PATH))>
+                    <link rel="stylesheet" href=(mounted_url(cx, super::topcoat_frontend::issue_detail::route::STYLESHEET_PATH))>
+                    <link rel="stylesheet" href=(mounted_url(cx, super::topcoat_frontend::issue_detail::fields::STYLESHEET_PATH))>
+                    <link rel="stylesheet" href=(mounted_url(cx, super::topcoat_frontend::issue_detail::editor::STYLESHEET_PATH))>
+                    <link rel="stylesheet" href=(mounted_url(cx, super::topcoat_frontend::issue_detail::collaboration::STYLESHEET_PATH))>
+                    <link rel="stylesheet" href=(mounted_url(cx, super::topcoat_frontend::issue_create::STYLESHEET_PATH))>
+                    <link rel="stylesheet" href=(mounted_url(cx, super::topcoat_frontend::identity::STYLESHEET_PATH))>
+                    <link rel="stylesheet" href=(mounted_url(cx, super::topcoat_frontend::project_settings::STYLESHEET_PATH))>
+                    <link rel="stylesheet" href=(mounted_url(cx, super::topcoat_frontend::files::STYLESHEET_PATH))>
+                    <link rel="stylesheet" href=(mounted_url(cx, super::topcoat_frontend::pages::STYLESHEET_PATH))>
+                    <link rel="stylesheet" href=(mounted_url(cx, super::topcoat_frontend::plans::STYLESHEET_PATH))>
+                    <link rel="stylesheet" href=(mounted_url(cx, super::topcoat_frontend::modules::STYLESHEET_PATH))>
+                    <link rel="stylesheet" href=(mounted_url(cx, super::topcoat_frontend::activity_insights::STYLESHEET_PATH))>
+                    <link rel="stylesheet" href=(mounted_url(cx, super::topcoat_frontend::public::STYLESHEET_PATH))>
+                    <script type="module" src=(mounted_url(cx, "/__topcoat-runtime.js"))></script>
+                    <script defer="defer" src=(mounted_url(cx, super::topcoat_frontend::shell::ROUTE_SCRIPT_PATH))></script>
+                    <script defer="defer" src=(mounted_url(cx, super::topcoat_frontend::session::SCRIPT_PATH))></script>
+                    <script defer="defer" src=(mounted_url(cx, super::topcoat_frontend::attachments::SCRIPT_PATH))></script>
+                    <script defer="defer" src=(mounted_url(cx, super::topcoat_frontend::sync::SCRIPT_PATH))></script>
+                    <script defer="defer" src=(mounted_url(cx, super::topcoat_frontend::shell::PROJECT_ICONS_SCRIPT_PATH))></script>
+                    <script defer="defer" src=(mounted_url(cx, super::topcoat_frontend::shell::mobile::SCRIPT_PATH))></script>
+                    <script defer="defer" src=(mounted_url(cx, super::topcoat_frontend::shell::projects::SCRIPT_PATH))></script>
+                    <script defer="defer" src=(mounted_url(cx, super::topcoat_frontend::shell::recents::SCRIPT_PATH))></script>
+                    <script defer="defer" src=(mounted_url(cx, super::topcoat_frontend::shell::page_chrome::SCRIPT_PATH))></script>
+                    <script defer="defer" src=(mounted_url(cx, super::topcoat_frontend::shell::BOOTSTRAP_SCRIPT_PATH))></script>
+                    <script defer="defer" src=(mounted_url(cx, super::topcoat_frontend::palette::SCRIPT_PATH))></script>
+                    <script defer="defer" src=(mounted_url(cx, super::topcoat_frontend::dashboard::SCRIPT_PATH))></script>
+                    <script defer="defer" src=(mounted_url(cx, super::topcoat_frontend::issue_list::SCRIPT_PATH))></script>
+                    <script defer="defer" src=(mounted_url(cx, super::topcoat_frontend::issue_detail::fields::SCRIPT_PATH))></script>
+                    <script defer="defer" src=(mounted_url(cx, super::topcoat_frontend::issue_detail::editor::SCRIPT_PATH))></script>
+                    <script defer="defer" src=(mounted_url(cx, super::topcoat_frontend::issue_detail::collaboration::SCRIPT_PATH))></script>
+                    <script defer="defer" src=(mounted_url(cx, super::topcoat_frontend::issue_detail::route::SCRIPT_PATH))></script>
+                    <script defer="defer" src=(mounted_url(cx, super::topcoat_frontend::issue_create::SCRIPT_PATH))></script>
+                    <script defer="defer" src=(mounted_url(cx, super::topcoat_frontend::identity::SCRIPT_PATH))></script>
+                    <script defer="defer" src=(mounted_url(cx, super::topcoat_frontend::project_settings::SCRIPT_PATH))></script>
+                    <script defer="defer" src=(mounted_url(cx, super::topcoat_frontend::files::SCRIPT_PATH))></script>
+                    <script defer="defer" src=(mounted_url(cx, super::topcoat_frontend::pages::SCRIPT_PATH))></script>
+                    <script defer="defer" src=(mounted_url(cx, super::topcoat_frontend::plans::SCRIPT_PATH))></script>
+                    <script defer="defer" src=(mounted_url(cx, super::topcoat_frontend::modules::SCRIPT_PATH))></script>
+                    <script defer="defer" src=(mounted_url(cx, super::topcoat_frontend::activity_insights::SCRIPT_PATH))></script>
+                    <script defer="defer" src=(mounted_url(cx, super::topcoat_frontend::public::SCRIPT_PATH))></script>
+                    <script type="module" src=(mounted_url(cx, "/__topcoat-preferences.js"))></script>
                 </head>
-                <body (session_attributes)>
+                <body data-lific-base-path=(trusted_mount(cx)) (session_attributes)>
                     (slot)
                 </body>
             </html>
@@ -815,14 +817,16 @@ mod topcoat_app {
             )))?)
     }
 
-    pub(super) fn router() -> topcoat::router::Router {
+    pub(super) fn router_builder() -> topcoat::router::RouterBuilder {
         use topcoat::router::RouterBuilderDiscoverExt;
         use topcoat::runtime::RouterBuilderRuntimeExt;
 
-        topcoat::router::Router::builder()
-            .discover()
-            .runtime()
-            .build()
+        topcoat::router::Router::builder().discover().runtime()
+    }
+
+    #[cfg(test)]
+    pub(super) fn router() -> topcoat::router::Router {
+        router_builder().build()
     }
 }
 
@@ -1524,8 +1528,19 @@ mod topcoat_app_tests {
 /// Apply browser security policy to every response, including OAuth consent
 /// pages and CORS preflights. Route-specific policies such as the attachment
 /// sandbox win when they are already present.
-async fn add_security_headers(request: Request<Body>, next: middleware::Next) -> Response {
+async fn add_security_headers(mut request: Request<Body>, next: middleware::Next) -> Response {
     let prefix = trusted_forwarded_prefix(&request).map(str::to_owned);
+    // The framework carries the server's verified peer into native requests and sockets.
+    if let Some(peer) = request
+        .extensions()
+        .get::<axum::extract::ConnectInfo<SocketAddr>>()
+        .map(|peer| peer.0)
+    {
+        request
+            .extensions_mut()
+            .insert(topcoat::router::RemoteAddr(peer));
+    }
+    let oauth_document = request.uri().path().starts_with("/oauth/");
     let mut response = next.run(request).await;
     if let Some(prefix) = prefix {
         if let Some(location) = response
@@ -1539,17 +1554,20 @@ async fn add_security_headers(request: Request<Body>, next: middleware::Next) ->
                 .insert(header::LOCATION, HeaderValue::from_str(&location).unwrap());
         }
 
-        if response
-            .headers()
-            .get(header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .is_some_and(|value| value.starts_with("text/html"))
+        // OAuth's existing finite templates retain their mounting behavior.
+        // Native components generate mounted URLs while rendering; leave their body streaming.
+        if oauth_document
+            && response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| value.starts_with("text/html"))
         {
             let body = std::mem::replace(response.body_mut(), Body::empty());
             match axum::body::to_bytes(body, usize::MAX).await {
                 Ok(body) => {
                     let document = String::from_utf8_lossy(&body);
-                    let prefixed = prefix_topcoat_document(&prefix, &document);
+                    let prefixed = prefix_oauth_document(&prefix, &document);
                     response
                         .headers_mut()
                         .insert(header::CONTENT_LENGTH, HeaderValue::from(prefixed.len()));
@@ -1612,7 +1630,7 @@ fn prefix_same_origin_location(prefix: &str, location: &str) -> Option<String> {
     Some(format!("{prefix}{location}"))
 }
 
-fn prefix_topcoat_document(prefix: &str, document: &str) -> String {
+fn prefix_oauth_document(prefix: &str, document: &str) -> String {
     let mut prefixed = document.to_owned();
     for attribute in ["href", "src", "action"] {
         for quote in ['"', '\''] {
@@ -1885,7 +1903,7 @@ pub(crate) fn build_app_with_store(
         // guard before it may turn web auto-login on.
         .layer(axum::Extension(Reachability::from_config(cfg)))
         .layer(middleware::from_fn_with_state(
-            auth_state,
+            auth_state.clone(),
             auth_middleware_wrapper,
         ));
 
@@ -1972,13 +1990,19 @@ pub(crate) fn build_app_with_store(
     // SQL of every read), and only with `GET`.
     let app = app.merge(api::public::router(
         pool,
-        attachment_store,
+        attachment_store.clone(),
         trusted_proxies.clone(),
     ));
     let app = app
         .route("/assets/{*path}", any(|| async { StatusCode::NOT_FOUND }))
         .fallback_service(topcoat::router::tower::TowerService::new(
-            topcoat_app::router(),
+            topcoat_app::router_builder()
+                .app_context(auth_state)
+                .app_context(realtime)
+                .app_context(attachment_store)
+                .app_context(trusted_proxies.clone())
+                .app_context(cfg.clone())
+                .build(),
         ));
 
     with_compression(
@@ -2908,8 +2932,57 @@ mod topcoat_prefix_tests {
     use super::*;
     use tower::ServiceExt;
 
+    #[tokio::test]
+    async fn trusted_native_html_streams_before_its_body_finishes() {
+        use futures_util::StreamExt;
+        use http_body_util::BodyExt;
+
+        let proxies = Arc::<[ratelimit::IpNetwork]>::from(vec![
+            ratelimit::IpNetwork::parse("127.0.0.1").unwrap(),
+        ]);
+        let app = Router::new()
+            .route(
+                "/stream",
+                axum::routing::get(|| async {
+                    let first = futures_util::stream::once(async {
+                        Ok::<_, std::convert::Infallible>(axum::body::Bytes::from_static(
+                            b"<!doctype html><html><body>streaming",
+                        ))
+                    });
+                    Response::builder()
+                        .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+                        .body(Body::from_stream(
+                            first.chain(futures_util::stream::pending()),
+                        ))
+                        .unwrap()
+                }),
+            )
+            .layer(middleware::from_fn(add_security_headers))
+            .layer(axum::Extension(proxies));
+        let mut request = Request::builder()
+            .uri("/stream")
+            .header("x-forwarded-prefix", "/app")
+            .body(Body::empty())
+            .unwrap();
+        request.extensions_mut().insert(axum::extract::ConnectInfo(
+            "127.0.0.1:3000".parse::<SocketAddr>().unwrap(),
+        ));
+        let response =
+            tokio::time::timeout(std::time::Duration::from_millis(250), app.oneshot(request))
+                .await
+                .expect("native HTML response waited for the streaming body to end")
+                .unwrap();
+        assert_eq!(
+            response.headers().get(header::X_FRAME_OPTIONS).unwrap(),
+            "DENY"
+        );
+        let mut body = response.into_body();
+        let first = body.frame().await.unwrap().unwrap().into_data().unwrap();
+        assert_eq!(&first[..], b"<!doctype html><html><body>streaming");
+    }
+
     #[test]
-    fn topcoat_documents_keep_root_urls_inside_the_forwarded_prefix() {
+    fn finite_oauth_documents_keep_root_urls_inside_the_forwarded_prefix() {
         let html = concat!(
             "<html><head></head><body>",
             "<link href=\"/__topcoat-app.css\">",
@@ -2920,7 +2993,7 @@ mod topcoat_prefix_tests {
         );
 
         assert_eq!(
-            prefix_topcoat_document("/app", html),
+            prefix_oauth_document("/app", html),
             concat!(
                 "<html><head></head><body data-lific-base-path=\"/app\">",
                 "<link href=\"/app/__topcoat-app.css\">",
@@ -2933,19 +3006,16 @@ mod topcoat_prefix_tests {
     }
 
     #[tokio::test]
-    async fn trusted_proxy_prefix_rewrites_documents_but_ignores_untrusted_headers() {
+    async fn native_rendering_mounts_documents_and_ignores_untrusted_headers() {
         let proxies = Arc::<[ratelimit::IpNetwork]>::from(vec![
             ratelimit::IpNetwork::parse("127.0.0.1").unwrap(),
         ]);
         let app = Router::new()
-            .route(
-                "/",
-                axum::routing::get(|| async {
-                    axum::response::Html(
-                        "<html><head></head><body><a href=\"/login\">Log in</a></body></html>",
-                    )
-                }),
-            )
+            .fallback_service(topcoat::router::tower::TowerService::new(
+                topcoat_app::router_builder()
+                    .app_context(proxies.clone())
+                    .build(),
+            ))
             .route(
                 "/redirect",
                 axum::routing::get(|| async {
@@ -2962,7 +3032,7 @@ mod topcoat_prefix_tests {
             .layer(axum::Extension(proxies));
 
         let mut trusted = Request::builder()
-            .uri("/")
+            .uri("/login")
             .header("x-forwarded-prefix", "/app")
             .body(Body::empty())
             .unwrap();
@@ -2975,10 +3045,12 @@ mod topcoat_prefix_tests {
             .unwrap();
         let trusted_document = String::from_utf8(trusted_document.to_vec()).unwrap();
         assert!(trusted_document.contains("data-lific-base-path=\"/app\""));
+        assert!(trusted_document.contains("data-topcoat-runtime-prefix=\"/app\""));
         assert!(trusted_document.contains("href=\"/app/login\""));
+        assert!(trusted_document.contains("src=\"/app/__topcoat-runtime.js\""));
 
         let mut untrusted = Request::builder()
-            .uri("/")
+            .uri("/login")
             .header("x-forwarded-prefix", "/app")
             .body(Body::empty())
             .unwrap();
@@ -2994,6 +3066,24 @@ mod topcoat_prefix_tests {
         let untrusted_document = String::from_utf8(untrusted_document.to_vec()).unwrap();
         assert!(!untrusted_document.contains("data-lific-base-path="));
         assert!(untrusted_document.contains("href=\"/login\""));
+
+        let mut collision = Request::builder()
+            .uri("/ACC/issues")
+            .header("x-forwarded-prefix", "/ACC")
+            .body(Body::empty())
+            .unwrap();
+        collision
+            .extensions_mut()
+            .insert(axum::extract::ConnectInfo(
+                "127.0.0.1:3000".parse::<SocketAddr>().unwrap(),
+            ));
+        let response = app.clone().oneshot(collision).await.unwrap();
+        let document = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let document = String::from_utf8(document.to_vec()).unwrap();
+        assert!(document.contains("href=\"/ACC/ACC/issues\""));
+        assert!(document.contains("href=\"/ACC/__topcoat-app.css\""));
 
         let mut redirect = Request::builder()
             .uri("/redirect")

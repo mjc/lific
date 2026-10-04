@@ -12,6 +12,7 @@ pub(crate) mod issue_create;
 pub(crate) mod issue_detail;
 pub(crate) mod issue_list;
 pub(crate) mod modules;
+pub(crate) mod native;
 pub(crate) mod pages;
 pub(crate) mod palette;
 pub(crate) mod plans;
