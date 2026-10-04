@@ -42,7 +42,9 @@ SOFTWARE.
   while loading, handshaking, or reconnecting; route connection-required children
   to an ancestor with an existing or requested connection. Opening the socket
   reads fresh inputs through the existing upstream handler.
+- Lific comment decoding patch: treat literal `<` in marker payloads as text
+  before decoding HTML entities, preserving string values during hydration.
 - All remaining upstream framework code is unchanged. Removing the 27
-  prepended helper/comment lines and reversing these seven substitutions
+  prepended helper/comment lines and reversing these eight substitutions
   reproduces the unmodified upstream bytes. See `../native/TRANSPORT.md`.
-- Patched file SHA-256: `2755061b833a882f4a2282e705e6a980a39cfc7f83c2669bc76f7a3ae21d872e`
+- Patched file SHA-256: `1a214df36d83cdbb9ba0807eeffe1150c88f78dd93cbea2c510bd64da260f465`

@@ -115,7 +115,8 @@ async fn native_home_content(
                         <a class="tc-native-home__new" href=(url)>(super::icons::project_icon(cx, Some("lucide:Plus"), 14)) "New issue"</a>
                     }
                     <button type="button" id="native-home-quick-jump" @click=$(|_event| palette_open.set(true))>
-                        (super::icons::project_icon(cx, Some("lucide:Search"), 14)) "Jump to…"
+                        (super::icons::project_icon(cx, Some("lucide:Command"), 13)) "Jump to…"
+                        <kbd>"⌘K"</kbd>
                     </button>
                 </div>
             </header>

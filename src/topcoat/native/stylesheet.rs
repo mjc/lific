@@ -86,6 +86,7 @@ async fn native_stylesheet_document_url_fingerprints_the_exact_uncached_producti
             ".tc-home-active",
             ".tc-home-sections",
             ".tc-native-home__page",
+            ".native-issue-editor",
         ] {
             assert!(
                 css.contains(selector),

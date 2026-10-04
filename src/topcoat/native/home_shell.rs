@@ -3,11 +3,19 @@
 use super::home_data::Snapshot;
 use topcoat::{
     context::Cx,
-    runtime::{Event, Signal, connected, shard, signal},
-    view::{BoxView, View, ViewExt, view},
+    runtime::{Event, Signal, connected, expr, shard, signal},
+    view::{Attributes, BoxView, View, ViewExt, view},
 };
 
 pub(crate) const STYLESHEET: &str = include_str!("assets/home-shell.css");
+
+#[derive(Clone)]
+struct MobileNavigation {
+    open: Signal<bool>,
+    project: Signal<String>,
+    owner: Signal<String>,
+    href: Signal<String>,
+}
 
 pub(crate) fn shell<'a>(cx: &'a Cx, snapshot: &Snapshot, content: BoxView<'a>) -> BoxView<'a> {
     shell_with_palette(cx, snapshot, content, signal(cx, || false))
@@ -21,53 +29,139 @@ pub(crate) fn shell_with_palette<'a>(
 ) -> BoxView<'a> {
     let collapsed = signal(cx, || false);
     let query = signal(cx, String::new);
+    let mobile_open = signal(cx, || false);
+    let mobile_project = signal(cx, String::new);
+    let navigation = MobileNavigation {
+        open: mobile_open.clone(),
+        project: mobile_project.clone(),
+        owner: signal(cx, String::new),
+        href: signal(cx, String::new),
+    };
+    let theme = signal(cx, || "system".to_owned());
+    let theme_menu = signal(cx, || false);
     let projects = snapshot.projects.clone();
+    let mobile_projects = projects.clone();
     let display_name = if snapshot.user.display_name.is_empty() {
         snapshot.user.username.clone()
     } else {
         snapshot.user.display_name.clone()
     };
+    let initials = display_name
+        .split([' ', '_', '-'])
+        .filter_map(|part| part.chars().next())
+        .take(2)
+        .flat_map(char::to_uppercase)
+        .collect::<String>();
     view! { cx =>
         <div class="native-home-shell" (super::session::mount(cx)) :data-collapsed=$(if collapsed.get() { "true" } else { "false" })>
-            <a class="tc-shell__skip" href="#main-content">"Skip to content"</a>
-            <aside class="native-home-sidebar" aria-label="Workspace sidebar">
-                <a class="native-home-brand" href=(super::transport::mounted_url(cx, "/"))>"Lific"</a>
+            <a class="tc-shell__skip" href="#main-content" :inert=$(mobile_open.get())>"Skip to content"</a>
+            <span hidden="hidden" (shell_mount(cx, collapsed.clone(), theme.clone(), theme_menu.clone(), navigation.clone()))></span>
+            <button id="native-home-collapse" class="native-home-fold native-home-icon-button"
+                :aria-label=$(if collapsed.get() { "Expand sidebar" } else { "Collapse sidebar" })
+                :aria-expanded=$(if collapsed.get() { "false" } else { "true" }) :inert=$(mobile_open.get())
+                @click=$(|_event| {
+                    collapsed.set(!collapsed.get());
+                    let _value = if collapsed.get() { "1" } else { "0" };
+                    raw!("(() => {try {localStorage.setItem('lific:sidebar:collapsed', ${_value}.toString());} catch {}})()", ());
+                })>
+                (super::icons::project_icon(cx, Some("lucide:PanelLeftClose"), 15))
+            </button>
+            <aside class="native-home-sidebar" aria-label="Workspace sidebar" :inert=$(mobile_open.get())>
+                <div class="native-home-brand-row">
+                    <a class="native-home-brand" href="https://github.com/VoidNullable/lific" target="_blank" rel="noopener noreferrer" title="View Lific on GitHub">
+                        <img src=(super::transport::mounted_url(cx, "/logo.webp")) alt="" width="26" height="26"/>
+                        <span>"Lific"</span><small>(concat!("v", env!("CARGO_PKG_VERSION")))</small>
+                    </a>
+                </div>
+                <div class="native-home-launcher-wrap">
                 <button id="native-home-palette-open" class="native-home-launcher" @click=$(|_event| palette_open.set(true))>
-                    (super::icons::project_icon(cx, Some("lucide:Search"), 16)) "Jump to…"
+                    (super::icons::project_icon(cx, Some("lucide:Search"), 14)) <span>"Jump to…"</span><kbd>"⌘K"</kbd>
                 </button>
-                <nav aria-label="Workspace">
-                    <a class="native-home-destination" href=(super::transport::mounted_url(cx, "/")) aria-current="page">
-                        (super::icons::project_icon(cx, Some("lucide:House"), 16)) "Home"
+                </div>
+                <nav class="native-home-workspace" aria-label="Workspace">
+                    <a class="native-home-destination native-home-home-link" href=(super::transport::mounted_url(cx, "/")) aria-current="page">
+                        (super::icons::project_icon(cx, Some("lucide:House"), 14)) "Home"
                     </a>
                     <div class="native-home-project-heading">"Projects"</div>
+                    #[key(project.id)]
                     for project in projects {
-                        <section class="native-home-project">
-                            <a class="native-home-destination native-home-project-title" href=(super::transport::mounted_url(cx, &format!("/{}/overview", project.identifier)))>
-                                (super::icons::project_icon(cx, project.emoji.as_deref().filter(|value| !value.is_empty()).or(Some("lucide:Folder")), 16))
-                                <span>(project.name)</span>
-                            </a>
-                            <div class="native-home-project-links">
-                                for (suffix, title, icon) in [("issues", "Issues", "lucide:CircleDot"), ("pages", "Pages", "lucide:FileText"), ("plans", "Plans", "lucide:Map")] {
-                                    <a class="native-home-destination" href=(super::transport::mounted_url(cx, &format!("/{}/{suffix}", project.identifier)))>
-                                        (super::icons::project_icon(cx, Some(icon), 14)) (title)
-                                    </a>
-                                }
-                            </div>
-                        </section>
+                        (project_tree(cx, &project))
                     }
                 </nav>
-                <a class="native-home-account native-home-destination" href=(super::transport::mounted_url(cx, "/settings"))>
-                    (super::icons::project_icon(cx, Some("lucide:UserRound"), 18)) <span>(display_name)</span>
-                </a>
+                <footer class="native-home-footer">
+                    <a class="native-home-account-link" href=(super::transport::mounted_url(cx, "/settings")) title="Account settings">
+                        <span class="native-home-avatar">(initials.clone())</span>
+                        <span class="native-home-account-copy"><span class="native-home-account">(display_name.clone())</span>
+                            <small>(super::icons::project_icon(cx, Some("lucide:Settings"), 9)) "Settings"</small>
+                        </span>
+                    </a>
+                    (theme_button(cx, theme.clone(), theme_menu.clone()))
+                </footer>
             </aside>
-            <div class="native-home-body">
-                <header class="native-home-topbar">
-                    <button id="native-home-collapse" class="native-home-icon-button" aria-label="Toggle sidebar" :aria-expanded=$(if collapsed.get() { "false" } else { "true" }) @click=$(|_event| collapsed.set(!collapsed.get()))>
-                        (super::icons::project_icon(cx, Some("lucide:PanelLeft"), 18))
+            <div class="native-home-body" :inert=$(mobile_open.get())>
+                <header class="native-home-mobile-header">
+                    <button id="native-home-mobile-open" class="native-home-icon-button" aria-label="Open navigation" :aria-expanded=$(if mobile_open.get() { "true" } else { "false" })
+                        (mobile_action(cx, &navigation, "open", String::new()))>
+                        (super::icons::project_icon(cx, Some("lucide:Menu"), 20))
                     </button>
+                    <img src=(super::transport::mounted_url(cx, "/logo.webp")) alt="" width="22" height="22"/><span>"Home"</span>
+                </header>
+                <header class="native-home-topbar">
                     <span>"Home"</span>
                 </header>
-                <main id="main-content" tabindex="-1" class="native-home-panel">(content)</main>
+                <div class="native-home-panel-wrap">
+                    <main id="main-content" tabindex="-1" class="native-home-panel">(content)</main>
+                    <div class="native-home-shadow-top" aria-hidden="true"></div>
+                    <div class="native-home-shadow-left" aria-hidden="true"></div>
+                </div>
+            </div>
+            <section data-native-mobile-nav="" role="dialog" aria-modal="true" aria-label="Workspace navigation" :hidden=$(!mobile_open.get())>
+                <div data-native-mobile-root="" :hidden=$(!mobile_project.get().is_empty())>
+                    <header class="native-home-mobile-nav-header">
+                        <img src=(super::transport::mounted_url(cx, "/logo.webp")) alt="" width="28" height="28"/>
+                        <strong>"Lific"</strong><small>(concat!("v", env!("CARGO_PKG_VERSION")))</small>
+                        <button class="native-home-icon-button" aria-label="Close navigation" (mobile_action(cx, &navigation, "close", String::new()))>
+                            (super::icons::project_icon(cx, Some("lucide:X"), 20))
+                        </button>
+                    </header>
+                    <button class="native-home-mobile-search" @click=$(|_event| { mobile_open.set(false); palette_open.set(true); })>
+                        (super::icons::project_icon(cx, Some("lucide:Search"), 18)) "Search issues, pages, projects…"
+                    </button>
+                    <nav aria-label="Phone workspace">
+                        <a class="native-home-mobile-link" href=(super::transport::mounted_url(cx, "/")) aria-current="page">
+                            (super::icons::project_icon(cx, Some("lucide:House"), 20)) "Home"
+                        </a>
+                        <div class="native-home-project-heading">"Projects"</div>
+                        #[key(project.id)]
+                        for project in mobile_projects.clone() {
+                            (mobile_project_row(cx, &project, &navigation))
+                        }
+                    </nav>
+                    <footer class="native-home-mobile-footer">
+                        <a href=(super::transport::mounted_url(cx, "/settings")) class="native-home-mobile-account-link">
+                            <span class="native-home-mobile-avatar">(initials)</span><span>(display_name)<small>"Settings"</small></span>
+                        </a>
+                        (theme_button(cx, theme.clone(), theme_menu.clone()))
+                    </footer>
+                </div>
+                #[key(project.id)]
+                for project in mobile_projects {
+                    (mobile_project_panel(cx, &project, &navigation))
+                }
+            </section>
+            <div class="native-home-theme-menu" role="menu" aria-label="Theme" :hidden=$(!theme_menu.get())>
+                for (preference, label) in [("light", "Light"), ("dark", "Dark"), ("system", "System")] {
+                    <button role="menuitemradio" :aria-checked=$(if theme.get() == preference { "true" } else { "false" }) @click=$(|_event| {
+                        theme.set(preference.to_owned());
+                        theme_menu.set(false);
+                        if preference == "system" {
+                            raw!("(() => {try {localStorage.removeItem('lific_theme');} catch {}})()", ());
+                        } else {
+                            raw!("(() => {try {localStorage.setItem('lific_theme', ${preference}.toString());} catch {}})()", ());
+                        }
+                        raw!("document.documentElement.setAttribute('data-theme', ${preference}.toString())", ());
+                    })>(label)</button>
+                }
             </div>
             <div class="native-home-palette-backdrop" :hidden=$(!palette_open.get())>
                 <section class="native-home-palette" role="dialog" aria-modal="true" aria-labelledby="native-home-palette-title">
@@ -83,6 +177,476 @@ pub(crate) fn shell_with_palette<'a>(
             </div>
         </div>
     }.boxed()
+}
+
+const PROJECT_DESTINATIONS: [(&str, &str, &str); 10] = [
+    ("overview", "Overview", "lucide:LayoutDashboard"),
+    ("issues", "Issues", "lucide:List"),
+    ("board", "Board", "lucide:LayoutGrid"),
+    ("graph", "Graph", "lucide:Waypoints"),
+    ("modules", "Modules", "lucide:Layers"),
+    ("pages", "Pages", "lucide:FileText"),
+    ("files", "Files", "lucide:Paperclip"),
+    ("plans", "Plans", "lucide:ListChecks"),
+    ("activity", "Activity", "lucide:History"),
+    ("insights", "Insights", "lucide:TrendingUp"),
+];
+
+fn project_mark<'a>(cx: &'a Cx, project: &crate::db::models::Project, size: u32) -> BoxView<'a> {
+    let icon = project.emoji.as_deref().filter(|value| !value.is_empty());
+    if icon.is_some() {
+        super::icons::project_icon(cx, icon, size)
+    } else {
+        let initials = project.identifier.chars().take(2).collect::<String>();
+        view! { cx => <span class="native-home-project-initials">(initials)</span> }.boxed()
+    }
+}
+
+fn project_destinations<'a>(cx: &'a Cx, identifier: &str, class: &str) -> BoxView<'a> {
+    let links = PROJECT_DESTINATIONS.map(|(slug, title, icon)| {
+        (
+            super::transport::mounted_url(cx, &format!("/{identifier}/{slug}")),
+            title,
+            icon,
+        )
+    });
+    let class = class.to_owned();
+    view! { cx =>
+        for (href, title, icon) in links {
+            <a class=(class.clone()) href=(href)>(super::icons::project_icon(cx, Some(icon), 14)) (title)</a>
+        }
+    }.boxed()
+}
+
+fn project_tree<'a>(cx: &'a Cx, project: &crate::db::models::Project) -> BoxView<'a> {
+    let open = signal(cx, || false);
+    let expand = format!("Expand {}", project.name);
+    let collapse = format!("Collapse {}", project.name);
+    let id = format!("native-project-nav-{}", project.id);
+    let name = project.name.clone();
+    let overview = super::transport::mounted_url(cx, &format!("/{}/overview", project.identifier));
+    let mark = project_mark(cx, project, 16);
+    let destinations = project_destinations(cx, &project.identifier, "native-home-destination");
+    view! { cx =>
+        <section class="native-home-project">
+            <div class="native-home-project-row">
+                <button class="native-home-project-toggle native-home-icon-button" :aria-label=$(if open.get() { collapse.clone() } else { expand.clone() })
+                    :aria-expanded=$(if open.get() { "true" } else { "false" }) aria-controls=(id.clone()) @click=$(|_event| open.set(!open.get()))>
+                    (super::icons::project_icon(cx, Some("lucide:ChevronRight"), 13))
+                </button>
+                <a class="native-home-project-title" href=(overview) title=(name.clone())>
+                    (mark)<span>(name)</span>
+                </a>
+            </div>
+            <div id=(id) class="native-home-project-links" :hidden=$(!open.get())>
+                (destinations)
+            </div>
+        </section>
+    }.boxed()
+}
+
+fn mobile_project_row<'a>(
+    cx: &'a Cx,
+    project: &crate::db::models::Project,
+    navigation: &MobileNavigation,
+) -> BoxView<'a> {
+    let identifier = project.identifier.clone();
+    let name = project.name.clone();
+    let mark = project_mark(cx, project, 18);
+    let action = mobile_action(cx, navigation, "project", identifier.clone());
+    view! { cx =>
+        <button class="native-home-mobile-link" aria-label=(name.clone()) data-native-project-trigger=(identifier.clone())
+            (action)>
+            (mark)<span>(name)</span>(super::icons::project_icon(cx, Some("lucide:ChevronRight"), 16))
+        </button>
+    }.boxed()
+}
+
+fn mobile_project_panel<'a>(
+    cx: &'a Cx,
+    project: &crate::db::models::Project,
+    navigation: &MobileNavigation,
+) -> BoxView<'a> {
+    let identifier = project.identifier.clone();
+    let name = project.name.clone();
+    let destinations = project_destinations(cx, &identifier, "native-home-mobile-link");
+    let selected = navigation.project.clone();
+    let id = format!("native-mobile-project-{identifier}");
+    let back = mobile_action(cx, navigation, "back", String::new());
+    let close = mobile_action(cx, navigation, "close", String::new());
+    view! { cx =>
+        <div id=(id) data-native-mobile-project="" :hidden=$(selected.get() != identifier)>
+            <header class="native-home-mobile-nav-header">
+                <button class="native-home-icon-button" aria-label="Back to projects" (back)>
+                    (super::icons::project_icon(cx, Some("lucide:ArrowLeft"), 20))
+                </button>
+                <strong>(name)</strong>
+                <button class="native-home-icon-button" aria-label="Close navigation" (close)>
+                    (super::icons::project_icon(cx, Some("lucide:X"), 20))
+                </button>
+            </header>
+            (destinations)
+        </div>
+    }
+    .boxed()
+}
+
+fn mobile_action(
+    cx: &Cx,
+    navigation: &MobileNavigation,
+    action: &str,
+    identifier: String,
+) -> Attributes {
+    let MobileNavigation {
+        open,
+        project,
+        owner,
+        href,
+    } = navigation.clone();
+    let action = action.to_owned();
+    let handler = expr!(|_event: Event| {
+        if action == "back" {
+            raw!("history.back();", ());
+        } else {
+            if action == "close" {
+                if project.get().is_empty() {
+                    raw!("history.back();", ());
+                } else {
+                    raw!("history.go(-2);", ());
+                }
+            } else {
+                let _owner = owner.get();
+                let _href = href.get();
+                if action == "open" {
+                    raw!(
+                        "history.replaceState({...history.state,lificNativeHomeNav:{version:'1',owner:${_owner}.toString(),href:${_href}.toString(),pane:'closed',project:''}},'');",
+                        ()
+                    );
+                    let _pane = "root";
+                    let _project = "";
+                    raw!(
+                        "history.pushState({...history.state,lificNativeHomeNav:{version:'1',owner:${_owner}.toString(),href:${_href}.toString(),pane:${_pane}.toString(),project:${_project}.toString()}},'');",
+                        ()
+                    );
+                    project.set("".to_owned());
+                } else {
+                    let _pane = "project";
+                    raw!(
+                        "history.pushState({...history.state,lificNativeHomeNav:{version:'1',owner:${_owner}.toString(),href:${_href}.toString(),pane:${_pane}.toString(),project:${identifier}.toString()}},'');",
+                        ()
+                    );
+                    project.set(identifier.clone());
+                }
+                open.set(true);
+                raw!(
+                    "queueMicrotask(() => document.querySelector('[data-native-mobile-nav] :is([data-native-mobile-root],[data-native-mobile-project]):not([hidden]) button')?.focus());",
+                    ()
+                );
+            }
+        }
+    });
+    let mut attributes = Attributes::with_capacity(1);
+    attributes.insert(
+        cx,
+        "data-topcoat-on:click",
+        handler.into_evaluated_and_js().1,
+    );
+    attributes
+}
+
+fn theme_button<'a>(cx: &'a Cx, theme: Signal<String>, open: Signal<bool>) -> BoxView<'a> {
+    view! { cx =>
+        <button class="native-home-theme-button native-home-icon-button" aria-haspopup="menu"
+            :aria-expanded=$(if open.get() { "true" } else { "false" })
+            :aria-label=$(if theme.get() == "light" { "Choose theme, current: light" } else {
+                if theme.get() == "dark" { "Choose theme, current: dark" } else { "Choose theme, current: system" }
+            }) @click=$(|_event| {
+                open.set(!open.get());
+                raw!("queueMicrotask(() => document.querySelector('.native-home-theme-menu:not([hidden]) button')?.focus())", ());
+            })>
+            <span :hidden=$(theme.get() != "system")>(super::icons::project_icon(cx, Some("lucide:Monitor"), 15))</span>
+            <span :hidden=$(theme.get() != "light")>(super::icons::project_icon(cx, Some("lucide:Sun"), 15))</span>
+            <span :hidden=$(theme.get() != "dark")>(super::icons::project_icon(cx, Some("lucide:Moon"), 15))</span>
+        </button>
+    }.boxed()
+}
+
+fn shell_mount(
+    cx: &Cx,
+    collapsed: Signal<bool>,
+    theme: Signal<String>,
+    theme_menu: Signal<bool>,
+    navigation: MobileNavigation,
+) -> Attributes {
+    let MobileNavigation {
+        open: mobile_open,
+        project: mobile_project,
+        owner,
+        href,
+    } = navigation;
+    let present_open = mobile_open.clone();
+    let present_project = mobile_project.clone();
+    let resize_open = mobile_open.clone();
+    let resize_project = mobile_project.clone();
+    let keyboard_open = mobile_open.clone();
+    let keyboard_project = mobile_project.clone();
+    let keyboard_menu = theme_menu.clone();
+    let focus_open = mobile_open;
+    let focus_project = mobile_project;
+    let focus_menu = theme_menu;
+    let handler = expr!(|_mount: Event| {
+        let _refresh_theme = || {
+            let stored = raw!(
+                r#"cx.hydrate((() => {try {return localStorage.getItem('lific_theme') || '';} catch {return '';}})())"#,
+                String::new()
+            );
+            let preference = if stored == "light" {
+                "light"
+            } else {
+                if stored == "dark" { "dark" } else { "system" }
+            };
+            theme.set(preference.to_owned());
+            raw!(
+                "document.documentElement.setAttribute('data-theme', ${preference}.toString())",
+                ()
+            );
+        };
+        raw!("${_refresh_theme}();", ());
+        let folded = raw!(
+            r#"cx.hydrate((() => {try {return localStorage.getItem('lific:sidebar:collapsed') || '';} catch {return '';}})())"#,
+            String::new()
+        );
+        collapsed.set(folded == "1");
+        let _storage = |_event: Event| {
+            raw!("${_refresh_theme}();", ());
+        };
+        href.set(raw!("cx.hydrate(window.location.href)", String::new()));
+        let previous_owner = raw!(
+            r#"cx.hydrate((() => {const value=history.state?.lificNativeHomeNav?.owner;return typeof value==='string'?value:'';})())"#,
+            String::new()
+        );
+        let previous_href = raw!(
+            r#"cx.hydrate((() => {const value=history.state?.lificNativeHomeNav?.href;return typeof value==='string'?value:'';})())"#,
+            String::new()
+        );
+        let previous_version = raw!(
+            r#"cx.hydrate((() => {const value=history.state?.lificNativeHomeNav?.version;return typeof value==='string'?value:'';})())"#,
+            String::new()
+        );
+        let restore = if previous_version == "1" {
+            if previous_href == href.get() {
+                !previous_owner.is_empty()
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        if restore {
+            owner.set(previous_owner);
+        } else {
+            owner.set(raw!("cx.hydrate(Array.from(crypto.getRandomValues(new Uint8Array(16)), byte=>byte.toString(16).padStart(2,'0')).join(''))", String::new()));
+        }
+        let _present = || {
+            let record_owner = raw!(
+                r#"cx.hydrate((() => {const value=history.state?.lificNativeHomeNav?.owner;return typeof value==='string'?value:'';})())"#,
+                String::new()
+            );
+            let record_href = raw!(
+                r#"cx.hydrate((() => {const value=history.state?.lificNativeHomeNav?.href;return typeof value==='string'?value:'';})())"#,
+                String::new()
+            );
+            let record_version = raw!(
+                r#"cx.hydrate((() => {const value=history.state?.lificNativeHomeNav?.version;return typeof value==='string'?value:'';})())"#,
+                String::new()
+            );
+            let record_pane = raw!(
+                r#"cx.hydrate((() => {const value=history.state?.lificNativeHomeNav?.pane;return typeof value==='string'?value:'';})())"#,
+                String::new()
+            );
+            let record_project = raw!(
+                r#"cx.hydrate((() => {const value=history.state?.lificNativeHomeNav?.project;return typeof value==='string'?value:'';})())"#,
+                String::new()
+            );
+            let current_href = raw!("cx.hydrate(window.location.href)", String::new());
+            let owned = if record_version == "1" {
+                if record_owner == owner.get() {
+                    if record_href == href.get() {
+                        current_href == href.get()
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+            let was_open = present_open.get();
+            let _before = present_project.get();
+            let desktop = raw!(
+                "cx.hydrate(window.matchMedia('(min-width: 768px)').matches)",
+                false
+            );
+            let pane = if desktop {
+                "closed"
+            } else {
+                if owned {
+                    if record_pane == "root" {
+                        "root"
+                    } else {
+                        if record_pane == "project" {
+                            "project"
+                        } else {
+                            "closed"
+                        }
+                    }
+                } else {
+                    "closed"
+                }
+            };
+            if pane == "closed" {
+                present_open.set(false);
+                present_project.set("".to_owned());
+                if was_open {
+                    raw!(
+                        "queueMicrotask(() => document.getElementById('native-home-mobile-open')?.focus());",
+                        ()
+                    );
+                }
+            } else {
+                present_open.set(true);
+                if pane == "project" {
+                    present_project.set(record_project);
+                    raw!(
+                        "queueMicrotask(() => document.querySelector('[data-native-mobile-project]:not([hidden]) button')?.focus());",
+                        ()
+                    );
+                } else {
+                    present_project.set("".to_owned());
+                    raw!(
+                        "queueMicrotask(() => (Array.from(document.querySelectorAll('[data-native-project-trigger]')).find(element=>element.getAttribute('data-native-project-trigger')===${_before}.toString()) || document.querySelector('[data-native-mobile-root] button'))?.focus());",
+                        ()
+                    );
+                }
+            }
+            if desktop {
+                if owned {
+                    if record_pane == "root" {
+                        raw!("history.back();", ());
+                    } else {
+                        if record_pane == "project" {
+                            raw!("history.go(-2);", ());
+                        }
+                    }
+                }
+            }
+        };
+        raw!("${_present}();", ());
+        let _history = |_event: Event| {
+            raw!("${_present}();", ());
+        };
+        let _resize = |_event: Event| {
+            let desktop = raw!(
+                "cx.hydrate(window.matchMedia('(min-width: 768px)').matches)",
+                false
+            );
+            if desktop {
+                if resize_open.get() {
+                    resize_open.set(false);
+                    if resize_project.get().is_empty() {
+                        raw!("history.back();", ());
+                    } else {
+                        raw!("history.go(-2);", ());
+                    }
+                }
+            }
+        };
+        raw!("${_resize}(null);", ());
+        let _keyboard = |_event: Event| {
+            let key = raw!("cx.hydrate(${_event}.key)", String::new());
+            if key == "Escape" {
+                if keyboard_menu.get() {
+                    keyboard_menu.set(false);
+                } else {
+                    if keyboard_open.get() {
+                        raw!("${_event}.preventDefault(); history.back();", ());
+                    }
+                }
+            } else {
+                if key == "Tab" {
+                    if keyboard_open.get() {
+                        if !keyboard_menu.get() {
+                            let _pane = if keyboard_project.get().is_empty() {
+                                "[data-native-mobile-root]"
+                            } else {
+                                "[data-native-mobile-project]:not([hidden])"
+                            };
+                            raw!(
+                                r#"(() => {
+                                const pane=document.querySelector(${_pane}.toString());
+                                const items=Array.from(pane.querySelectorAll('button:not(:disabled),a[href],input:not(:disabled),[tabindex="0"]')).filter(element=>element.getClientRects().length && !element.closest('[inert]'));
+                                const first=items[0],last=items.at(-1),active=document.activeElement;
+                                if (${_event}.shiftKey ? active===first || !pane.contains(active) : active===last || !pane.contains(active)) {
+                                    ${_event}.preventDefault(); (${_event}.shiftKey ? last : first)?.focus();
+                                }
+                            })();"#,
+                                ()
+                            );
+                        }
+                    }
+                }
+            }
+        };
+        let _focus = |_event: Event| {
+            if focus_open.get() {
+                if !focus_menu.get() {
+                    let _pane = if focus_project.get().is_empty() {
+                        "[data-native-mobile-root]"
+                    } else {
+                        "[data-native-mobile-project]:not([hidden])"
+                    };
+                    let inside = raw!(
+                        "cx.hydrate(document.querySelector(${_pane}.toString())?.contains(${_event}.target) || false)",
+                        false
+                    );
+                    if !inside {
+                        raw!(
+                            "document.querySelector(${_pane}.toString()+' button')?.focus();",
+                            ()
+                        );
+                    }
+                }
+            }
+        };
+        raw!(
+            "window.addEventListener('storage', ${_storage}, {signal:cx.abortSignal});",
+            ()
+        );
+        raw!(
+            "window.addEventListener('keydown', ${_keyboard}, {signal:cx.abortSignal});",
+            ()
+        );
+        raw!(
+            "window.addEventListener('focusin', ${_focus}, {signal:cx.abortSignal});",
+            ()
+        );
+        raw!(
+            "window.addEventListener('popstate', ${_history}, {signal:cx.abortSignal});",
+            ()
+        );
+        raw!(
+            "window.matchMedia('(min-width: 768px)').addEventListener('change', ${_resize}, {signal:cx.abortSignal});",
+            ()
+        );
+    });
+    let mut attributes = Attributes::with_capacity(1);
+    attributes.insert(
+        cx,
+        "data-topcoat-on:mount",
+        handler.into_evaluated_and_js().1,
+    );
+    attributes
 }
 
 fn matching_projects<'a>(
@@ -219,12 +783,12 @@ mod tests {
         let outer = view! { cx => shell_fixture(empty_name: true) };
         let html = outer.single().await.unwrap().render(&cx);
         let account = html
-            .split("native-home-account")
+            .split("class=\"native-home-account-link\"")
             .nth(1)
             .expect("account link");
         let account = account.split("</a>").next().unwrap();
         assert!(
-            account.contains("member"),
+            account.contains("<span class=\"native-home-account\">member</span>"),
             "account link must name the member: {account}"
         );
     }
@@ -249,7 +813,11 @@ mod tests {
         ] {
             assert!(html.contains(expected), "missing {expected}");
         }
-        assert!(!html.contains("<script>"));
+        assert!(html.contains("<span>Accounts &lt;script&gt;</span>"));
+        // The pinned serializer leaves '<' inert within quoted attributes;
+        // visible text and attribute values have distinct escaping contexts.
+        assert!(html.contains("title=\"Accounts <script>\""));
+        assert!(html.contains("aria-label=\"Accounts <script>\""));
         assert!(!html.contains("data-lific-"));
     }
 }
