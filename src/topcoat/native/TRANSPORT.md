@@ -133,6 +133,49 @@ Disposed units stop immediately, and the existing lifetime abort signal cancels
 load listeners, socket ownership, and reconnect timers. Shards without a
 connection requirement continue to use their existing HTTP transport.
 
+## Private raw socket admission
+
+The production router registers Rust `SocketAdmission` after `.runtime()`.
+Topcoat executes pathless layers in reverse registration order, so admission
+runs before `RuntimeLayer` can return an upgrade response. Only `GET` requests
+asking for the exact `topcoat-runtime` subprotocol enter this boundary. Ordinary
+documents, procedures, shard HTTP requests, and other socket protocols keep
+their existing dispatch.
+
+The existing Rust route parser identifies published `Public` scope before any
+private caller lookup. Those routes bypass this private admission boundary.
+Private requests resolve their current credentials through the existing caller,
+require a user, and acquire the same `RealtimeHub::SocketPermit` used by REST
+events sockets. Genuine configured private local-operator behavior remains in
+that caller; invalid or revoked credentials cannot select its fallback. A quota
+refusal returns HTTP 429 with the existing socket-limit JSON message. Admission
+does not grant project access; each native read and write keeps its own current
+authorization checks.
+
+Pinned runtime `socket::accept` previously kept only copied headers and the
+verified peer in its `ConnectionTarget`. Request extensions did not survive as
+socket lifetime owners, and a live region could not account for a socket that
+had not sent its first render. The repository-owned pinned crate at
+`../vendor/topcoat-runtime` therefore has one generic Rust patch: `accept`
+clones its incoming `Cx`, moves the clone into its upgrade callback, and drops
+it explicitly after the raw `run` future completes. The admission layer passes
+a child context containing `Arc<SocketPermit>` into that callback. No permit is
+acquired by subsequent synthetic render requests. Disconnect ends the raw task;
+a failed upgrade drops its callback; both release the context and permit.
+Two sibling Home connections consume two physical socket slots.
+
+The full pinned crate retains its MIT license and upstream provenance, with
+the exact patch and original file hashes in its README and
+`UPSTREAM-SHA256SUMS`. Its browser source and distribution are unchanged; the
+separately recorded application runtime asset remains unchanged by this patch.
+
+This private quota slice does not complete public credential isolation, a
+credential-free native public socket policy, raw idle socket credential
+retirement, streaming recovery, or the full native product port.
+Published application/domain requests
+need their separate Rust-driven credentials policy. Document navigation and
+static resources retain normal same-origin browser cookie behavior.
+
 ## Tests and integration scope
 
 `transport.browser.test.cjs` loads the actual vendored runtime in headless

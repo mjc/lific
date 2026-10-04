@@ -237,6 +237,9 @@ test('native session discovers account replacements under the current cookie and
           if (!replacementVerified) return;
           await t.test('a revoked connected palette read navigates to mounted login and clears private Home', async () => {
             const state = await privatePage(browser, proxy, prefix, fixture.revocationTokens[index]);
+            let releaseSessionCheck;
+            let heldTimer;
+            let closing = false;
             try {
               const {page} = state;
               await page.locator('#native-home-palette-open').click();
@@ -247,7 +250,21 @@ test('native session discovers account replacements under the current cookie and
               });
               process.stdout.write(`@lific-fixture:revoke:${index}\n`);
               await acknowledged;
+              let observedSessionCheck;
+              const heldSessionCheck = new Promise(resolve => {observedSessionCheck = resolve;});
+              const released = new Promise(resolve => {releaseSessionCheck = resolve;});
+              await page.route(url => url.pathname === `${prefix}/__native_home/session`, async route => {
+                observedSessionCheck();
+                // Hold the real HTTP credential check so only the connected
+                // socket can retire Home. No authority outcome is fabricated.
+                await released;
+                try {await route.continue();} catch (error) {if (!closing) throw error;}
+              });
               await page.locator('#native-home-palette-query').fill('after revocation');
+              await Promise.race([heldSessionCheck, new Promise((_, reject) => {
+                heldTimer = setTimeout(() => reject(new Error('The fresh HTTP session check was not held within 5 seconds.')), 5000);
+              })]);
+              clearTimeout(heldTimer);
               await page.waitForURL(`${proxy.origin}${prefix}/login`);
               await page.waitForLoadState('domcontentloaded');
               assert.ok(state.frames.some(frame => frame.t === 'redirect' && frame.location === `${prefix}/login`),
@@ -255,7 +272,12 @@ test('native session discovers account replacements under the current cookie and
               assert.equal(await page.locator('[data-native-home]').count(), 0);
               assert.equal(await page.getByText('Visible active initial work', {exact: true}).count(), 0);
               assertNativeOnly(state);
-            } finally {await state.context.close();}
+            } finally {
+              clearTimeout(heldTimer);
+              closing = true;
+              releaseSessionCheck?.();
+              await state.context.close();
+            }
           });
         } finally {await proxy.close();}
       });

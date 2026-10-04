@@ -1,6 +1,7 @@
 //! Native Home chrome. Display snapshots never authorize palette reads.
 
 use super::home_data::Snapshot;
+use super::session::native_home_session;
 use topcoat::{
     context::Cx,
     runtime::{BoolSurrogate, Event, Signal, connected, expr, shard, signal},
@@ -19,6 +20,37 @@ struct MobileNavigation {
     pending_palette: Signal<bool>,
 }
 
+#[derive(Clone)]
+struct PaletteState {
+    open: Signal<bool>,
+    query: Signal<String>,
+    searched: Signal<String>,
+    revision: Signal<usize>,
+    authorized: Signal<usize>,
+    rendered: Signal<usize>,
+    selected: Signal<usize>,
+    selected_href: Signal<String>,
+    cursor_moved: Signal<bool>,
+    count: Signal<usize>,
+    pending_enter: Signal<bool>,
+    waiting: Signal<bool>,
+    error: Signal<String>,
+    account_id: i64,
+    is_admin: bool,
+}
+
+type PaletteSignals = (
+    Signal<usize>,
+    Signal<usize>,
+    Signal<String>,
+    Signal<bool>,
+    Signal<usize>,
+    Signal<usize>,
+    Signal<bool>,
+    Signal<bool>,
+    Signal<bool>,
+);
+
 pub(crate) fn shell<'a>(cx: &'a Cx, snapshot: &Snapshot, content: BoxView<'a>) -> BoxView<'a> {
     shell_with_palette(cx, snapshot, content, signal(cx, || false))
 }
@@ -31,6 +63,28 @@ pub(crate) fn shell_with_palette<'a>(
 ) -> BoxView<'a> {
     let collapsed = signal(cx, || false);
     let query = signal(cx, String::new);
+    let palette = PaletteState {
+        open: palette_open.clone(),
+        query: query.clone(),
+        searched: signal(cx, String::new),
+        revision: signal(cx, || 0usize),
+        authorized: signal(cx, || usize::MAX),
+        rendered: signal(cx, || usize::MAX),
+        selected: signal(cx, || 0usize),
+        selected_href: signal(cx, String::new),
+        cursor_moved: signal(cx, || false),
+        count: signal(cx, || 0usize),
+        pending_enter: signal(cx, || false),
+        waiting: signal(cx, || false),
+        error: signal(cx, String::new),
+        account_id: snapshot.user.id,
+        is_admin: snapshot.user.is_admin,
+    };
+    let searched = palette.searched.clone();
+    let revision = palette.revision.clone();
+    let authorized = palette.authorized.clone();
+    let palette_error = palette.error.clone();
+    let palette_waiting = palette.waiting.clone();
     let mobile_open = signal(cx, || false);
     let mobile_pane = signal(cx, || "root".to_owned());
     let mobile_project = signal(cx, String::new);
@@ -68,7 +122,7 @@ pub(crate) fn shell_with_palette<'a>(
     view! { cx =>
         <div class="native-home-shell" (super::session::mount(cx)) :data-collapsed=$(if collapsed.get() { "true" } else { "false" })>
             <a class="tc-shell__skip" href="#main-content" :inert=$(mobile_open.get())>"Skip to content"</a>
-            <span hidden="hidden" (shell_mount(cx, collapsed.clone(), theme.clone(), theme_menu.clone(), navigation.clone(), mobile_catalog, palette_open.clone()))></span>
+            <span hidden="hidden" (shell_mount(cx, collapsed.clone(), theme.clone(), theme_menu.clone(), navigation.clone(), mobile_catalog, palette.clone()))></span>
             <button id="native-home-collapse" class="native-home-fold native-home-icon-button"
                 :aria-label=$(if collapsed.get() { "Expand sidebar" } else { "Collapse sidebar" })
                 :aria-expanded=$(if collapsed.get() { "false" } else { "true" }) :inert=$(mobile_open.get())
@@ -184,9 +238,20 @@ pub(crate) fn shell_with_palette<'a>(
                             (super::icons::project_icon(cx, Some("lucide:X"), 18))
                         </button>
                     </header>
-                    <label for="native-home-palette-query">"Search visible projects"</label>
+                    <label for="native-home-palette-query">"Search visible projects and issue references"</label>
                     <input id="native-home-palette-query" type="search" maxlength="128" autocomplete="off" :value=$(query.get()) @input=$(|event: Event| query.set(event.target.value))>
-                    native_home_palette_results(query: $(query.get()), open: $(palette_open.get()))
+                    <p class="native-home-palette-error" role="alert" :hidden=$(palette_error.get().is_empty())>$(palette_error.get())</p>
+                    <p class="native-home-palette-searching" :hidden=$(!palette_waiting.get())>"Searching…"</p>
+                    native_home_palette_results(
+                        query: $(searched.get()), open: $(palette_open.get()),
+                        revision: $(revision.get()), authorized: $(authorized.get()),
+                        state: (
+                            palette.revision.clone(), palette.selected.clone(),
+                            palette.selected_href.clone(), palette.cursor_moved.clone(),
+                            palette.count.clone(), palette.rendered.clone(),
+                            palette.pending_enter.clone(), palette.waiting.clone(), palette.open.clone()
+                        )
+                    )
                 </section>
             </div>
         </div>
@@ -427,7 +492,7 @@ fn shell_mount(
     theme_menu: Signal<bool>,
     navigation: MobileNavigation,
     mobile_catalog: String,
-    palette_open: Signal<bool>,
+    palette: PaletteState,
 ) -> Attributes {
     let MobileNavigation {
         open: mobile_open,
@@ -446,7 +511,44 @@ fn shell_mount(
     let keyboard_open = mobile_open.clone();
     let keyboard_pane = mobile_pane.clone();
     let keyboard_menu = theme_menu.clone();
-    let keyboard_palette = palette_open.clone();
+    let keyboard_palette = palette.open.clone();
+    let start_revision = palette.revision.clone();
+    let start_query = palette.query.clone();
+    let start_count = palette.count.clone();
+    let start_href = palette.selected_href.clone();
+    let start_selected = palette.selected.clone();
+    let start_cursor = palette.cursor_moved.clone();
+    let start_enter = palette.pending_enter.clone();
+    let start_error = palette.error.clone();
+    let start_waiting = palette.waiting.clone();
+    let request_revision = palette.revision.clone();
+    let request_searched = palette.searched.clone();
+    let request_authorized = palette.authorized.clone();
+    let failed_revision = palette.revision.clone();
+    let failed_error = palette.error.clone();
+    let failed_waiting = palette.waiting.clone();
+    let failed_enter = palette.pending_enter.clone();
+    let open_query = palette.query.clone();
+    let open_palette = palette.open.clone();
+    let focus_palette_open = palette.open.clone();
+    let focus_palette_revision = palette.revision.clone();
+    let close_open = palette.open.clone();
+    let close_revision = palette.revision.clone();
+    let close_enter = palette.pending_enter.clone();
+    let close_waiting = palette.waiting.clone();
+    let input_query = palette.query;
+    let keyboard_selected = palette.selected;
+    let keyboard_count = palette.count;
+    let keyboard_href = palette.selected_href;
+    let keyboard_cursor = palette.cursor_moved;
+    let keyboard_waiting = palette.waiting;
+    let keyboard_enter = palette.pending_enter;
+    let keyboard_revision = palette.revision.clone();
+    let keyboard_rendered = palette.rendered;
+    let dispose_revision = palette.revision;
+    let account_id = palette.account_id;
+    let is_admin = palette.is_admin;
+    let login = super::transport::mounted_url(cx, "/login");
     let palette_return_focus = signal(cx, || "native-home-palette-open".to_owned());
     let present_return_focus = palette_return_focus.clone();
     let click_return_focus = palette_return_focus.clone();
@@ -456,6 +558,91 @@ fn shell_mount(
     let handler = expr!(|_mount: Event| {
         // A replacement owning scope never inherits a queued browser action.
         mount_pending.set(false);
+        let _dispose_palette = || {
+            dispose_revision.increment();
+        };
+        let _start_query = || {
+            start_revision.increment();
+            let sent_revision = start_revision.get();
+            let value = start_query.get();
+            start_count.set(0usize);
+            start_selected.set(0usize);
+            start_href.set("".to_owned());
+            start_cursor.set(false);
+            start_enter.set(false);
+            start_error.set("".to_owned());
+            start_waiting.set(true);
+            let _failed = || {
+                if !raw!("cx.hydrate(cx.abortSignal.aborted)", false) {
+                    if failed_revision.get() == sent_revision {
+                        failed_error.set("Unable to search. Try again.".to_owned());
+                        failed_waiting.set(false);
+                        failed_enter.set(false);
+                    }
+                }
+            };
+            let _request = async || {
+                if !raw!("cx.hydrate(cx.abortSignal.aborted)", false) {
+                    let current = native_home_session().await;
+                    if !raw!("cx.hydrate(cx.abortSignal.aborted)", false) {
+                        if request_revision.get() == sent_revision {
+                            if current.0.is_none() {
+                                raw!("window.location.assign(${login}.toString())", ());
+                            } else {
+                                let current_id = current.0.unwrap();
+                                let changed = if current_id != account_id {
+                                    true
+                                } else {
+                                    current.1 != is_admin
+                                };
+                                if changed {
+                                    raw!("window.location.reload()", ());
+                                } else {
+                                    request_searched.set(value);
+                                    request_authorized.set(sent_revision);
+                                }
+                            }
+                        }
+                    }
+                }
+            };
+            raw!(
+                "Promise.resolve().then(() => ${_request}()).catch(() => ${_failed}());",
+                ()
+            );
+        };
+        let _open_palette = || {
+            open_query.set("".to_owned());
+            open_palette.set(true);
+            raw!("${_start_query}();", ());
+            let opened_revision = focus_palette_revision.get();
+            let _focus_palette = || {
+                if !raw!("cx.hydrate(cx.abortSignal.aborted)", false) {
+                    if focus_palette_open.get() {
+                        if focus_palette_revision.get() == opened_revision {
+                            raw!(
+                                "document.getElementById('native-home-palette-query')?.focus();",
+                                ()
+                            );
+                        }
+                    }
+                }
+            };
+            raw!("queueMicrotask(() => ${_focus_palette}());", ());
+        };
+        let _close_palette = || {
+            close_revision.increment();
+            close_open.set(false);
+            close_enter.set(false);
+            close_waiting.set(false);
+        };
+        let _palette_input = |_event: Event| {
+            let id = raw!("cx.hydrate(${_event}.target.id || '')", String::new());
+            if id == "native-home-palette-query" {
+                input_query.set(_event.target.value);
+                raw!("${_start_query}();", ());
+            }
+        };
         let _refresh_theme = || {
             let stored = raw!(
                 r#"cx.hydrate((() => {try {return localStorage.getItem('lific_theme') || '';} catch {return '';}})())"#,
@@ -625,7 +812,7 @@ fn shell_mount(
                     if owned {
                         if record_pane == "closed" {
                             present_return_focus.set("native-home-mobile-open".to_owned());
-                            palette_open.set(true);
+                            raw!("${_open_palette}();", ());
                         }
                     }
                 } else {
@@ -660,11 +847,16 @@ fn shell_mount(
         raw!("${_resize}(null);", ());
         let _palette_opener = |_event: Event| {
             let opener = raw!(
-                "cx.hydrate(${_event}.target.closest('#native-home-palette-open,#native-home-quick-jump')?.id || '')",
+                "cx.hydrate(${_event}.target.closest('#native-home-palette-open,#native-home-quick-jump,#native-home-palette-close')?.id || '')",
                 String::new()
             );
-            if !opener.is_empty() {
-                click_return_focus.set(opener);
+            if opener == "native-home-palette-close" {
+                raw!("${_close_palette}();", ());
+            } else {
+                if !opener.is_empty() {
+                    click_return_focus.set(opener);
+                    raw!("${_open_palette}();", ());
+                }
             }
         };
         let _keyboard = |_event: Event| {
@@ -677,7 +869,7 @@ fn shell_mount(
                         raw!("${_event}.preventDefault(); history.back();", ());
                     } else {
                         if keyboard_palette.get() {
-                            keyboard_palette.set(false);
+                            raw!("${_close_palette}();", ());
                             let _opener = palette_return_focus.get();
                             raw!(
                                 "${_event}.preventDefault(); ${_event}.stopPropagation(); queueMicrotask(() => document.getElementById(${_opener}.toString())?.focus());",
@@ -687,6 +879,62 @@ fn shell_mount(
                     }
                 }
             } else {
+                if keyboard_palette.get() {
+                    let id = raw!("cx.hydrate(${_event}.target.id || '')", String::new());
+                    if id == "native-home-palette-query" {
+                        if key == "ArrowDown" {
+                            raw!("${_event}.preventDefault();", ());
+                            keyboard_cursor.set(true);
+                            if keyboard_count.get() > 0usize {
+                                if keyboard_selected.get() + 1usize < keyboard_count.get() {
+                                    keyboard_selected.increment();
+                                }
+                            }
+                        } else {
+                            if key == "ArrowUp" {
+                                raw!("${_event}.preventDefault();", ());
+                                keyboard_cursor.set(true);
+                                if keyboard_selected.get() > 0usize {
+                                    keyboard_selected.decrement();
+                                }
+                            } else {
+                                if key == "Enter" {
+                                    raw!("${_event}.preventDefault();", ());
+                                    if keyboard_waiting.get() {
+                                        keyboard_enter.set(true);
+                                    } else {
+                                        if keyboard_rendered.get() == keyboard_revision.get() {
+                                            let _destination = keyboard_href.get();
+                                            if !_destination.is_empty() {
+                                                raw!(
+                                                    "${_close_palette}(); window.location.assign(${_destination}.toString());",
+                                                    ()
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        let arrow = if key == "ArrowDown" {
+                            true
+                        } else {
+                            key == "ArrowUp"
+                        };
+                        if arrow {
+                            let _index = keyboard_selected.get();
+                            let destination = raw!(
+                                "cx.hydrate(document.querySelector('.native-home-palette-results a[data-palette-index=\"'+${_index}.toString()+'\"]')?.getAttribute('href') || '')",
+                                String::new()
+                            );
+                            keyboard_href.set(destination);
+                            raw!(
+                                "document.querySelector('.native-home-palette-results a[data-palette-index=\"'+${_index}.toString()+'\"]')?.scrollIntoView({block:'nearest'});",
+                                ()
+                            );
+                        }
+                    }
+                }
                 if key == "Tab" {
                     if keyboard_open.get() {
                         if !keyboard_menu.get() {
@@ -753,6 +1001,14 @@ fn shell_mount(
             ()
         );
         raw!(
+            "window.addEventListener('input', ${_palette_input}, {signal:cx.abortSignal});",
+            ()
+        );
+        raw!(
+            "cx.abortSignal.addEventListener('abort', ${_dispose_palette}, {once:true});",
+            ()
+        );
+        raw!(
             "window.addEventListener('focusin', ${_focus}, {signal:cx.abortSignal});",
             ()
         );
@@ -803,31 +1059,169 @@ async fn native_home_palette_results(
     cx: &Cx,
     query: String,
     open: bool,
+    revision: usize,
+    authorized: usize,
+    state: PaletteSignals,
 ) -> topcoat::Result<impl View> {
+    let (
+        live_revision,
+        selected,
+        selected_href,
+        cursor_moved,
+        count,
+        rendered,
+        pending_enter,
+        waiting,
+        live_open,
+    ) = state;
     let connected = connected(cx);
-    // A closed dialog renders no catalog. Opening and every query resolve current authority.
-    let projects = if open {
-        let caller = super::session::read(
+    // An open connected palette validates its bound session even while the
+    // fresh HTTP query gate is pending. The gate controls query data only.
+    let caller = if open {
+        Some(super::session::read(
             cx,
             super::context::caller(cx).and_then(|caller| {
                 crate::api::require_user(&caller.identity)?;
                 Ok(caller)
             }),
-        )?;
-        crate::services::projects::list_visible_projects(super::context::db(cx), &caller.identity)?
+        )?)
     } else {
-        Vec::new()
+        None
     };
-    let matches = matching_projects(&projects, &query)
+    let allowed = open && revision == authorized;
+    let (projects, issues) = if let Some(caller) = caller.filter(|_| allowed) {
+        let projects = crate::services::projects::list_visible_projects(
+            super::context::db(cx),
+            &caller.identity,
+        )?;
+        // Home has no current project. A mount prefix cannot supply one.
+        let issues = super::palette_reference::issue_hits(
+            super::context::db(cx),
+            &caller.identity,
+            &query,
+            None,
+        )?;
+        (projects, issues)
+    } else {
+        (Vec::new(), Vec::new())
+    };
+    let mut rows = issues
         .into_iter()
-        .map(|project| (project.identifier.clone(), project.name.clone()))
+        .map(|issue| {
+            let icon = match issue.status.as_str() {
+                "active" => "lucide:CircleDot",
+                "todo" => "lucide:Circle",
+                "done" => "lucide:CircleCheckBig",
+                "cancelled" => "lucide:CircleX",
+                _ => "lucide:CircleDashed",
+            };
+            (
+                super::transport::mounted_url(cx, &issue.logical_destination),
+                issue.title,
+                issue.identifier,
+                issue.project_name,
+                icon,
+            )
+        })
         .collect::<Vec<_>>();
+    rows.extend(
+        matching_projects(&projects, &query)
+            .into_iter()
+            .map(|project| {
+                (
+                    super::transport::mounted_url(cx, &format!("/{}/overview", project.identifier)),
+                    project.name.clone(),
+                    project.identifier.clone(),
+                    String::new(),
+                    "lucide:Folder",
+                )
+            }),
+    );
+    let total = rows.len();
+    let empty_text = if super::palette_reference::parse_reference(&query).is_some() {
+        format!("Nothing matches “{}”", query.trim())
+    } else {
+        "No matching projects".to_owned()
+    };
+    let previous_href = selected_href.get_untracked();
+    let previous_index = selected.get_untracked();
+    let next_index = rows
+        .iter()
+        .position(|row| row.0 == previous_href)
+        .unwrap_or_else(|| previous_index.min(total.saturating_sub(1)));
+    let selected_style = selected.clone();
+    let hover_selected = selected.clone();
+    let hover_href = selected_href.clone();
+    let hover_cursor = cursor_moved.clone();
+    let hover_revision = live_revision.clone();
+    let click_open = live_open.clone();
+    let click_revision = live_revision.clone();
+    let click_enter = pending_enter.clone();
+    let mounted = expr!(|_mount: Event| {
+        if !raw!("cx.hydrate(cx.abortSignal.aborted)", false) {
+            if live_revision.get() == revision {
+                if allowed {
+                    if live_open.get() {
+                        count.set(total);
+                        if cursor_moved.get() {
+                            if selected_href.get() == previous_href {
+                                selected.set(next_index);
+                            }
+                        } else {
+                            selected.set(0usize);
+                        }
+                        if total == 0usize {
+                            selected.set(0usize);
+                        } else {
+                            if selected.get() >= total {
+                                selected.set(total - 1usize);
+                            }
+                        }
+                        let _index = selected.get();
+                        let destination = raw!(
+                            "cx.hydrate(document.querySelector('.native-home-palette-results a[data-palette-index=\"'+${_index}.toString()+'\"]')?.getAttribute('href') || '')",
+                            String::new()
+                        );
+                        selected_href.set(destination);
+                        rendered.set(revision);
+                        waiting.set(false);
+                        if pending_enter.get() {
+                            pending_enter.set(false);
+                            let _destination = selected_href.get();
+                            if !_destination.is_empty() {
+                                live_open.set(false);
+                                live_revision.increment();
+                                raw!("window.location.assign(${_destination}.toString());", ());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    });
     Ok(view! {
-        <nav class="native-home-palette-results" aria-label="Project search results" data-native-home-connected=(if connected { "true" } else { "false" })>
-            if open && matches.is_empty() { <p>"No matching projects"</p> }
-            for (identifier, name) in matches {
-                <a class="native-home-destination" href=(super::transport::mounted_url(cx, &format!("/{identifier}/overview")))>
-                    (super::icons::project_icon(cx, Some("lucide:Folder"), 16)) <span>(name)</span><small>(identifier)</small>
+        <nav class="native-home-palette-results" aria-label="Project search results" data-native-home-connected=(if connected { "true" } else { "false" }) @mount=(mounted)>
+            if allowed && rows.is_empty() { <p>(empty_text)</p> }
+            #[key(destination.clone())]
+            for (index, (destination, title, identifier, project_name, icon)) in rows.into_iter().enumerate() {
+                <a class="native-home-destination" href=(destination.clone()) data-palette-index=(index.to_string())
+                    :data-native-palette-selected=$(if selected_style.get() == index { "true" } else { "false" })
+                    @mouseenter=$(|_event| {
+                        if hover_revision.get() == revision {
+                            hover_selected.set(index);
+                            hover_href.set(destination.clone());
+                            hover_cursor.set(true);
+                        }
+                    })
+                    @click=$(|_event| {
+                        click_open.set(false);
+                        click_revision.increment();
+                        click_enter.set(false);
+                    })>
+                    (super::icons::project_icon(cx, Some(icon), 16))
+                    <span class="native-home-palette-row-copy"><span>(title)</span>
+                        if !project_name.is_empty() { <span class="native-home-palette-row-project">(project_name)</span> }
+                    </span><small>(identifier)</small>
                 </a>
             }
         </nav>

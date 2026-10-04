@@ -258,10 +258,20 @@ impl RealtimeHub {
         let _ = self.revocations.send(user_id);
     }
 
-    /// Subscribe to the revocation stream, for tests that assert who was told.
-    #[cfg(test)]
+    /// Subscribe to account retirement notifications for a native render lifetime.
     pub(crate) fn subscribe_revocations(&self) -> broadcast::Receiver<i64> {
         self.revocations.subscribe()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn revocation_receiver_count(&self) -> usize {
+        self.revocations.receiver_count()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn socket_count(&self, user_id: i64) -> usize {
+        let connections = self.connections.lock().expect("connections lock poisoned");
+        connections.per_user.get(&user_id).copied().unwrap_or(0)
     }
 
     fn send_message(&self, event: RealtimeEvent, seq: Option<i64>, audience: RealtimeAudience) {

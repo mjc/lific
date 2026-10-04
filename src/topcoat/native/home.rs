@@ -55,8 +55,16 @@ async fn native_home_content(
     browser_inputs: String,
     palette_open: Signal<bool>,
 ) -> topcoat::Result<impl View> {
+    let revocations = super::session::subscribe_revocations(cx);
     let snapshot = authorized_snapshot(cx)?;
     let connected = connected(cx);
+    let session_lifetime = super::session::revocation_lifetime(
+        cx,
+        revocations,
+        snapshot.user.id,
+        snapshot.user.is_admin,
+        connected,
+    );
     let local = if browser_inputs.is_empty() {
         None
     } else {
@@ -108,6 +116,7 @@ async fn native_home_content(
     );
     Ok(view! {
         <div class="tc-native-home__page" data-native-home-connected=(if connected { "true" } else { "false" })>
+            (session_lifetime)
             <header class="tc-native-home__hero">
                 <div class="tc-native-home__greeting">
                     <span class="tc-native-home__greeting-icon" aria-hidden="true">(super::icons::project_icon(cx, Some(icon), 20))</span>
