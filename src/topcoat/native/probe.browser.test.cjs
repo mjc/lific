@@ -51,6 +51,7 @@ test('assembled native page, procedure, shard and socket preserve the mounted se
         });
         connections.add(socket); connections.add(backend);
         socket.on('close', () => {connections.delete(socket); backend.destroy();});
+        socket.on('error', () => backend.destroy());
         backend.on('close', () => {connections.delete(backend); socket.destroy();});
         backend.on('error', () => socket.destroy());
       });

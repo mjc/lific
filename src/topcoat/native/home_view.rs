@@ -1,0 +1,220 @@
+//! Home presentation derived from the original Svelte page.
+
+use topcoat::{
+    context::Cx,
+    view::{BoxView, ViewExt, view},
+};
+
+use super::{home_model::HomeModel, transport::mounted_url};
+use crate::db::models::{Priority, Status};
+
+pub(crate) const STYLESHEET: &str = include_str!("assets/home.css");
+
+pub(crate) fn active_work<'a>(cx: &'a Cx, model: HomeModel<'_>) -> BoxView<'a> {
+    let count = model.active_issue_count;
+    let groups = model
+        .issue_groups
+        .into_iter()
+        .map(|group| {
+            let rows = group
+                .visible
+                .into_iter()
+                .map(|issue| {
+                    (
+                        issue.identifier.clone(),
+                        issue.title.clone(),
+                        issue.status,
+                        issue.priority,
+                    )
+                })
+                .collect::<Vec<_>>();
+            (
+                group.project.identifier.clone(),
+                group.project.name.clone(),
+                group
+                    .project
+                    .emoji
+                    .clone()
+                    .filter(|value| !value.is_empty()),
+                group.total,
+                rows,
+            )
+        })
+        .collect::<Vec<_>>();
+    view! { cx =>
+        <div class="tc-dashboard__main tc-home-active">
+            <div class="tc-home-active__heading">
+                <h2>"My active issues"</h2>
+                <span data-home-active-count=(count.to_string())>(count)</span>
+            </div>
+            if groups.is_empty() {
+                <div class="tc-home-active__empty">
+                    <span class="tc-home-active__mascot" aria-hidden="true"
+                        style=(format!("mask-image:url('{}')", mounted_url(cx, super::super::dashboard::MASCOT_PATH)))></span>
+                    <p>"All quiet here"</p>
+                    <p>"Nothing active or todo assigned to you across your projects right now."</p>
+                </div>
+            } else {
+                for (project_identifier, name, emoji, total, rows) in groups {
+                    <section class="tc-dashboard__card">
+                        <a class="tc-home-active__project" href=(mounted_url(cx, &format!("/{project_identifier}/overview")))>
+                            if let Some(emoji) = emoji {
+                                (super::icons::project_icon(cx, Some(&emoji), 15))
+                            } else {
+                                <span class="tc-home-active__initials">(project_identifier.chars().take(2).collect::<String>())</span>
+                            }
+                            <span class="tc-home-active__project-name">(name)</span>
+                            <span class="tc-home-active__total">(total)</span>
+                        </a>
+                        for (identifier, title, status, priority) in rows {
+                            <a class="tc-dashboard__issue" href=(mounted_url(cx, &format!("/{project_identifier}/issues/{identifier}")))>
+                                (status_icon(cx, status))
+                                <span class="tc-dashboard__identifier">(identifier)</span>
+                                <span class="tc-dashboard__issue-title">(title)</span>
+                                (priority_icon(cx, priority))
+                            </a>
+                        }
+                        if total > 6 {
+                            <a class="tc-home-active__overflow" href=(mounted_url(cx, &format!("/{project_identifier}/issues")))>
+                                (format!("View all {total} in {project_identifier}"))
+                                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                    <path d="M7 7h10v10"></path><path d="M7 17 17 7"></path>
+                                </svg>
+                            </a>
+                        }
+                    </section>
+                }
+            }
+        </div>
+    }.boxed()
+}
+
+fn status_icon(cx: &Cx, status: Status) -> BoxView<'_> {
+    let (icon, color) = match status {
+        Status::Active => ("lucide:CircleDot", "var(--tc-accent)"),
+        Status::Todo => ("lucide:Circle", "var(--tc-muted)"),
+        Status::Done => ("lucide:CircleCheckBig", "var(--tc-success)"),
+        Status::Backlog => ("lucide:CircleDashed", "var(--tc-faint)"),
+        Status::Cancelled => ("lucide:CircleX", "var(--tc-faint)"),
+    };
+    view! { cx =>
+        <span data-status=(status.to_string()) style=(format!("color:{color};display:inline-flex;flex-shrink:0"))>
+            (super::icons::project_icon(cx, Some(icon), 14))
+        </span>
+    }.boxed()
+}
+
+fn priority_icon(cx: &Cx, priority: Priority) -> BoxView<'_> {
+    let (color, bars): (_, &[u8]) = match priority {
+        Priority::Urgent => ("var(--tc-danger)", &[]),
+        Priority::High => ("var(--tc-warn)", &[12, 6, 18]),
+        Priority::Medium => ("var(--tc-accent)", &[9, 15]),
+        Priority::Low => ("var(--tc-muted)", &[12]),
+        Priority::None => ("inherit", &[]),
+    };
+    view! { cx =>
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" data-priority=(priority.to_string()) style=(format!("color:{color};flex-shrink:0"))>
+            if matches!(priority, Priority::Urgent) {
+                <circle cx="12" cy="12" r="10"></circle>
+                <line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line>
+            }
+            for y in bars { <line x1="5" y1=(y.to_string()) x2="19" y2=(y.to_string())></line> }
+        </svg>
+    }.boxed()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{net::SocketAddr, sync::Arc};
+
+    use topcoat::{context::CxTestBuilder, router::RemoteAddr, view::ViewExt};
+
+    use super::super::home_model::derive_home;
+    use super::*;
+    use crate::{
+        db::{self, models::*, queries},
+        ratelimit::IpNetwork,
+    };
+
+    #[tokio::test]
+    async fn active_work_renders_initial_rows_with_counts_safe_text_and_mounted_links() {
+        let db = db::open_memory().unwrap();
+        let (project, issues) = {
+            let conn = db.write().unwrap();
+            let project = queries::create_project(
+                &conn,
+                &CreateProject {
+                    name: "Project <script>".into(),
+                    identifier: "ACC".into(),
+                    emoji: Some(String::new()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let issues = (0..7)
+                .map(|index| {
+                    let mut issue = queries::create_issue(
+                        &conn,
+                        &CreateIssue {
+                            project_id: project.id,
+                            title: format!("Work {index} <script>"),
+                            status: Status::Active,
+                            priority: Priority::High,
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap();
+                    // Render ordering uses a fixed input clock; read ordering is tested separately.
+                    issue.updated_at = "2026-10-03 16:00:00".into();
+                    issue
+                })
+                .collect::<Vec<_>>();
+            (project, issues)
+        };
+        let projects = [project];
+        let (mut parts, ()) = axum::http::Request::builder()
+            .header("x-forwarded-prefix", "/ACC")
+            .body(())
+            .unwrap()
+            .into_parts();
+        parts
+            .extensions
+            .insert(RemoteAddr("127.0.0.1:5000".parse::<SocketAddr>().unwrap()));
+        let proxies: Arc<[IpNetwork]> = vec![IpNetwork::parse("127.0.0.1").unwrap()].into();
+        let cx = CxTestBuilder::new()
+            .request_context(parts)
+            .app_context(proxies)
+            .build();
+        let html = active_work(&cx, derive_home(&projects, &issues))
+            .single()
+            .await
+            .unwrap()
+            .render(&cx);
+        assert!(html.contains("My active issues"));
+        assert!(html.contains("data-home-active-count=\"7\""));
+        assert!(html.contains("Project &lt;script&gt;"));
+        assert!(html.contains("class=\"tc-home-active__initials\">AC</span>"));
+        assert!(!html.contains("<script>"));
+        assert_eq!(html.matches("class=\"tc-dashboard__issue\"").count(), 6);
+        assert!(html.contains("href=\"/ACC/ACC/issues/ACC-1\""));
+        assert!(html.contains("href=\"/ACC/ACC/overview\""));
+        assert!(html.contains("href=\"/ACC/ACC/issues\""));
+        assert!(html.contains("View all 7 in ACC"));
+        assert!(!html.contains("Loading your dashboard"));
+    }
+
+    #[tokio::test]
+    async fn empty_work_keeps_original_copy_and_mascot_without_issue_links() {
+        let cx = Cx::default();
+        let html = active_work(&cx, derive_home(&[], &[]))
+            .single()
+            .await
+            .unwrap()
+            .render(&cx);
+        assert!(html.contains("All quiet here"));
+        assert!(html.contains("Nothing active or todo assigned to you across your projects"));
+        assert!(html.contains("data-home-active-count=\"0\""));
+        assert!(html.contains("/__topcoat-dashboard-mascot.png"));
+        assert!(!html.contains("class=\"tc-dashboard__issue\""));
+    }
+}

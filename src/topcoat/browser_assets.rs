@@ -9,6 +9,14 @@ fn png(bytes: &'static [u8]) -> topcoat::Result<Response> {
         .body(Body::from(bytes))?)
 }
 
+#[route(GET "/logo.webp")]
+async fn logo() -> topcoat::Result<Response> {
+    Ok(Response::builder()
+        .header("content-type", "image/webp")
+        .header("cache-control", "public, max-age=86400")
+        .body(Body::from(include_bytes!("assets/logo.webp").as_slice()))?)
+}
+
 #[route(GET "/favicon.png")]
 async fn favicon() -> topcoat::Result<Response> {
     png(include_bytes!("assets/favicon.png"))
@@ -40,4 +48,30 @@ async fn manifest() -> topcoat::Result<Response> {
         .header("content-type", "application/manifest+json")
         .header("cache-control", "no-cache")
         .body(Body::from(include_str!("assets/manifest.webmanifest")))?)
+}
+
+#[cfg(test)]
+mod tests {
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn original_logo_is_an_embedded_webp_asset() {
+        let response =
+            topcoat::router::tower::TowerService::new(crate::server::topcoat_app::router())
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri("/logo.webp")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        assert_eq!(response.headers()["content-type"], "image/webp");
+        let bytes = axum::body::to_bytes(axum::body::Body::new(response.into_body()), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(&bytes[..4], b"RIFF");
+        assert_eq!(&bytes[8..12], b"WEBP");
+    }
 }

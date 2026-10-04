@@ -11,9 +11,7 @@ use crate::db::{DbPool, models::*};
 use crate::error::LificError;
 use crate::realtime::{RealtimeEvent, RealtimeHub};
 
-use super::{
-    filter_visible, require_project_delete, require_project_lead, require_user, with_read,
-};
+use super::{require_project_delete, require_project_lead, require_user, with_read};
 
 /// Connection-scoped counterpart of authz::visible_project_ids for sidebar
 /// snapshots. The credential user owns preferences, as with project groups;
@@ -22,52 +20,21 @@ pub(super) fn sidebar_visibility(
     conn: &rusqlite::Connection,
     user_id: i64,
 ) -> Result<Option<HashSet<i64>>, LificError> {
-    let fresh = crate::auth::fresh_caller(conn, user_id)?;
-    let effective = authz::effective_user(conn, &Some(crate::auth::fresh_auth_user(&fresh)));
-    if matches!(&effective, Some(user) if user.is_admin) || !authz::authz_enforced_conn(conn)? {
-        return Ok(None);
-    }
-    let Some(user) = effective else {
-        return Ok(Some(HashSet::new()));
-    };
-    Ok(Some(
-        crate::db::queries::members::list_project_ids_for_user(conn, user.id)?
-            .into_iter()
-            .collect(),
-    ))
+    crate::services::projects::sidebar_visibility(conn, user_id)
 }
 
 /// REST ranks describe positions in the visible response, not storage ranks.
 /// Filtering may remove stored positions and newly visible rows use legacy
 /// ranks internally, so normalize only after the final ordering and filtering.
-fn normalize_sidebar_ranks(mut projects: Vec<Project>) -> Vec<Project> {
-    for (position, project) in projects.iter_mut().enumerate() {
-        project.sort_order = position as i64;
-    }
-    projects
+fn normalize_sidebar_ranks(projects: Vec<Project>) -> Vec<Project> {
+    crate::services::projects::normalize_sidebar_ranks(projects)
 }
 
 pub(super) async fn list_projects(
     State(db): State<DbPool>,
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
 ) -> Result<Json<Vec<Project>>, LificError> {
-    // A valid unbound key can precede the first user. There is no preference
-    // owner in that case; preserve the existing visibility-filtered listing.
-    if identity.is_none() {
-        let visible = authz::visible_project_ids(&db, &identity)?;
-        let projects = with_read(&db, crate::db::queries::list_projects)?;
-        return Ok(Json(filter_visible(projects, &visible, |p| Some(p.id))));
-    }
-    let user = require_user(&identity)?;
-    let projects = with_read(&db, |conn| {
-        let tx = conn.unchecked_transaction()?;
-        let visible = sidebar_visibility(&tx, user.id)?;
-        let projects = crate::db::queries::list_projects_for_user(&tx, user.id)?;
-        let projects = normalize_sidebar_ranks(filter_visible(projects, &visible, |p| Some(p.id)));
-        tx.commit()?;
-        Ok(projects)
-    })?;
-    Ok(Json(projects))
+    crate::services::projects::list_visible_projects(&db, &identity).map(Json)
 }
 
 pub(super) async fn get_project(
