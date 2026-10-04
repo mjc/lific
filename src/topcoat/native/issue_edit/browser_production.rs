@@ -54,19 +54,31 @@ async fn component_page(cx: &Cx) -> topcoat::Result<Response> {
 
 async fn browser(scenario: &str) {
     let fixture = home_fixture::fixture();
-    let (actor, first_audit) = {
+    let (actor, first_audit, first_seq) = {
         let conn = fixture.db.write().unwrap();
         let user = queries::users::validate_session(&conn, &fixture.token).unwrap();
         let issue_id = queries::resolve_identifier(&conn, "ACC-1").unwrap();
         let issue = queries::get_issue(&conn, issue_id).unwrap();
         queries::members::upsert_member(&conn, issue.project_id, user.id, Role::Maintainer)
             .unwrap();
+        if scenario == "unchanged-description" {
+            queries::update_issue(
+                &conn,
+                issue_id,
+                &crate::db::models::UpdateIssue {
+                    description: Some("Unchanged **description** with trailing spaces  \n".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        let first_seq = queries::get_issue(&conn, issue_id).unwrap().seq;
         let audit: i64 = conn
             .query_row("SELECT COALESCE(MAX(id), 0) FROM audit_log", [], |row| {
                 row.get(0)
             })
             .unwrap();
-        (user.id, audit)
+        (user.id, audit, first_seq)
     };
     let (origin, server) = home_fixture::serve(&fixture).await;
     let mut command = home_fixture::browser_command(
@@ -87,6 +99,10 @@ async fn browser(scenario: &str) {
         String::from_utf8_lossy(&output.stderr)
     );
     let conn = fixture.db.read().unwrap();
+    if scenario == "unchanged-description" {
+        let issue_id = queries::resolve_identifier(&conn, "ACC-1").unwrap();
+        assert_eq!(queries::get_issue(&conn, issue_id).unwrap().seq, first_seq);
+    }
     let expected = match scenario {
         "fields" => [
             ("title", 3),
@@ -103,6 +119,12 @@ async fn browser(scenario: &str) {
         "failure" => [
             ("title", 6),
             ("description", 6),
+            ("status", 0),
+            ("priority", 0),
+        ],
+        "unchanged-description" => [
+            ("title", 0),
+            ("description", 0),
             ("status", 0),
             ("priority", 0),
         ],
@@ -146,4 +168,9 @@ async fn native_issue_edit_browser_conflict_preserves_dirty_body_and_retries_obs
 #[tokio::test]
 async fn native_issue_edit_browser_failed_requests_preserve_drafts_release_pending_and_retry() {
     browser("failure").await;
+}
+
+#[tokio::test]
+async fn native_issue_unchanged_description_commit_exits_without_request_or_audit_at_every_mount() {
+    browser("unchanged-description").await;
 }

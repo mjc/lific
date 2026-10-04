@@ -50,7 +50,7 @@ async function startBody(page) {
 }
 
 test(`native issue component ${scenario}`, async t => {
-  assert.ok(['fields', 'conflict', 'failure'].includes(scenario));
+  assert.ok(['fields', 'conflict', 'failure', 'unchanged-description'].includes(scenario));
 
   fs.mkdirSync(output, {recursive: true});
 
@@ -72,12 +72,31 @@ test(`native issue component ${scenario}`, async t => {
         page.setDefaultTimeout(15000);
       });
       const page = await context.newPage();
-      const url = `${proxy.origin}${prefix}/ACC/__native_issue_editor`;
+      const url = scenario === 'unchanged-description'
+        ? `${proxy.origin}${prefix}/ACC/issues/ACC-1`
+        : `${proxy.origin}${prefix}/ACC/__native_issue_editor`;
       try {
         await ready(page, url);
         assert.equal(await page.locator('script[src]').count(), 1, 'Only the native framework runtime loads.');
         assert.equal(await page.evaluate(() => localStorage.getItem('lific_token')), null, 'Cookie-only session.');
-        if (scenario === 'fields') {
+        if (scenario === 'unchanged-description') {
+          const before = await seq(page), beforePosts = posts.length;
+          for (const trigger of ['Save', 'Preview', 'Control+s', 'Meta+s']) {
+            await startBody(page);
+            const unchanged = await page.locator(selector.body).inputValue();
+            if (trigger === 'Save') await page.locator(selector.save).click();
+            else if (trigger === 'Preview') await page.getByRole('radio', {name:'Preview', exact:true}).click();
+            else await page.locator(selector.body).press(trigger);
+            await page.locator(selector.body).waitFor({state:'hidden'});
+            // The real DOM transition is the commit boundary; no fabricated response.
+            assert.equal(posts.length, beforePosts, `${trigger}: unchanged body sends no save procedure.`);
+            assert.equal(await seq(page), before, `${trigger}: sequence remains unchanged.`);
+            await startBody(page);
+            assert.equal(await page.locator(selector.body).inputValue(), unchanged);
+            await page.locator(selector.body).press('Escape');
+            await page.locator(selector.body).waitFor({state:'hidden'});
+          }
+        } else if (scenario === 'fields') {
           const title = `Native title ${prefix || 'root'} --> --!><img src=x onerror=window.nativeHostile=1><script>window.nativeHostile=1</script>`;
           const beforePosts = posts.length;
           await startTitle(page);
@@ -224,7 +243,11 @@ test(`native issue component ${scenario}`, async t => {
         assert.equal(requests.some(request => new URL(request.url).pathname.split('/').includes('api')), false,
           'Every origin and unmounted path stays outside REST.');
         assert.equal(requests.some(request => request.authorization), false, 'Native actions use actual cookie identity.');
-        assert.ok(posts.length > 0);
+        if (scenario === 'unchanged-description') {
+          assert.equal(posts.length, 0, 'Unchanged commits never dispatch a save.');
+        } else {
+          assert.ok(posts.length > 0);
+        }
         assert.ok(posts.every(url => new URL(url).pathname.startsWith(`${prefix}${endpoint}`)), 'Native procedure paths mount once.');
         assert.deepEqual(errors, []);
         assert.deepEqual(dialogs, [], 'Hostile text never opens a dialog.');

@@ -312,8 +312,17 @@ fn save_attributes(
                             trimmed != before_title
                         }
                     } else {
-                        true
+                        if field == "description" {
+                            value != before_description
+                        } else {
+                            true
+                        }
                     };
+                    if !changed {
+                        if field == "description" {
+                            description_editing.set(false);
+                        }
+                    }
                     if changed {
                         busy.set(true);
                         message.set("".to_owned());
