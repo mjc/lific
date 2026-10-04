@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const {pathToFileURL} = require('node:url');
+const {tmpdir} = require('node:os');
 const {mountedProxy, launchBrowser} = require(process.argv[4]);
 const upstream = new URL(process.argv[2]), token = process.argv[3], snapshot = process.argv[5];
 const fixtureTitle = 'Production issue initial title';
@@ -45,14 +46,15 @@ test('native issue document matches pinned master composition at every mount',as
   assert.ok(snapshot,'Pinned master web directory is mandatory; no reference fallback.');
   assert.ok(fs.existsSync(path.join(snapshot,'src/routes/IssueDetail.svelte')));
   fs.mkdirSync(output,{recursive:true});
-  const browser = await launchBrowser(); let vite;
+  const browser = await launchBrowser(); let vite, referenceCache;
   const proxySockets = new Set();
   try {
     const {createServer} = await import(pathToFileURL(path.join(snapshot,'node_modules/vite/dist/node/index.js')).href);
     const configure = proxy=>proxy.on('open',socket=>{
       proxySockets.add(socket); socket.once('close',()=>proxySockets.delete(socket));
     });
-    vite = await createServer({root:snapshot,logLevel:'silent',configFile:path.join(snapshot,'vite.config.ts'),
+    referenceCache = fs.mkdtempSync(path.join(tmpdir(), 'lific-pinned-vite-'));
+    vite = await createServer({cacheDir:referenceCache,root:snapshot,logLevel:'silent',configFile:path.join(snapshot,'vite.config.ts'),
       server:{host:'127.0.0.1',port:0,strictPort:false,proxy:{
         '/api':{target:upstream.origin,ws:true,configure},
         '/public/api':{target:upstream.origin,ws:true,configure},
@@ -180,7 +182,7 @@ test('native issue document matches pinned master composition at every mount',as
           if (mode==='phone') {
             for (const [kind,session] of [['original',original],['native',native]]) {
               await session.page.screenshot({path:path.join(output,`${name}-${kind}-details.png`),fullPage:true});
-              await session.page.getByRole('button',{name:'Close details',exact:true}).last().click();
+              await session.page.getByRole('button',{name:'Close details',exact:true}).last().click({position:{x:1,y:1}});
             }
             assert.equal(await native.page.getByRole('button',{name:'Show details',exact:true}).getAttribute('aria-expanded'),'false');
           }
@@ -192,6 +194,9 @@ test('native issue document matches pinned master composition at every mount',as
       });
     }
   } finally {
-    await browser.close(); for (const socket of proxySockets) socket.destroy(); if(vite) await vite.close();
+    for (const socket of proxySockets) socket.destroy();
+    try {await browser.close();}
+    finally {try {if (vite) await vite.close();}
+      finally {if (referenceCache) fs.rmSync(referenceCache,{recursive:true,force:true});}}
   }
 });

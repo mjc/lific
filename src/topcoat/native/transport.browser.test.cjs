@@ -50,6 +50,7 @@ test('vendored patches reconstruct the exact pinned upstream runtime', () => {
   assert.ok(start >= 0, 'The pinned upstream body is present.');
   let original = runtime.slice(start);
   for (const [patched, upstream, count] of [
+    ['registry;event(e){return new j(e)}hydrate(e){return V(e,this)}', 'registry;hydrate(e){return V(e,this)}', 1],
     ["push(e){this.inner.set(n=>n.clone_with_push(e))}remove(e){this.inner.set(n=>n.clone_without_index(e))}push_str(e){this.inner.set(n=>new v(`${n}${e}`))}", "push_str(e){this.inner.set(n=>new v(`${n}${e}`))}", 1],
     ["clone(){return this.to_vec()}clone_with_push(e){let n=this.items.map(b);return n.push(b(e)),new F(n,this.usizeType)}clone_without_index(e){let n=e.toIndex(this.items.length,this.usizeType.bits);if(n===void 0)throw new RangeError(\"Vec index out of bounds\");let r=this.items.map(b);return r.splice(n,1),new F(r,this.usizeType)}dehydrate(){return{t:\"Vec\",bits:this.usizeType.bits,v:this.items.map(f)}}", "clone(){return this.to_vec()}dehydrate(){return{t:\"Vec\",bits:this.usizeType.bits,v:this.items.map(f)}}", 1],
     ['call(...e){return this.request(e,!1)}call_keepalive(...e){return this.request(e,!0)}with_keepalive(){return{call:(...e)=>this.call_keepalive(...e)}}request(e,n){return new X(async()=>{let r=await fetch(topcoatMountedEndpoint(this.path),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(e.map(f)),...(n?{keepalive:!0}:{})});if(!r.ok)throw new Error(`Procedure call failed: ${r.status} ${r.statusText}`);return this.cx.hydrate(await r.json())})}',
@@ -455,4 +456,31 @@ test('packaged vector signal writes preserve typed snapshots and notify subscrib
       assert.deepEqual(r.final,r.afterRemove);
     }
   } finally { await browser.close(); await new Promise(resolve=>server.close(resolve)); }
+});
+
+
+test('expression context adapts real keyboard events using the framework Event vocabulary', async () => {
+  const handler = `()=>{document.addEventListener('keydown', native => {
+    const event=cx.event(native);
+    event.prevent_default();
+    document.querySelector('output').textContent=JSON.stringify({key:event.key.v,code:event.code.v,
+      shift:event.shift_key.v,target:event.target.id.v,value:event.target.value.v,
+      prevented:event.default_prevented.v,nativePrevented:native.defaultPrevented});
+  },{signal:cx.abortSignal});}`;
+  const server=http.createServer((request,response)=>{
+    if(request.url==='/runtime.js'){response.setHeader('Content-Type','text/javascript');response.end(runtime);return;}
+    response.setHeader('Content-Type','text/html');
+    response.end(`<html><body><input id="actual-keyboard-target" value="draft" data-topcoat-on:mount="${escape(handler)}"><output></output><script type="module" src="/runtime.js"></script></body></html>`);
+  });
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  const browser=await launchBrowser();
+  try{
+    const page=await browser.newPage(),errors=[];page.on('pageerror',error=>errors.push(error.message));
+    await page.goto(`http://127.0.0.1:${server.address().port}/`);
+    await page.locator('input').focus();await page.keyboard.press('Shift+Tab');
+    await page.waitForFunction(()=>document.querySelector('output').textContent.includes('"key":"Tab"'));
+    assert.deepEqual(JSON.parse(await page.locator('output').textContent()),{key:'Tab',code:'Tab',shift:true,target:'actual-keyboard-target',value:'draft',prevented:true,nativePrevented:true});
+    assert.equal(await page.evaluate(()=>document.activeElement.id),'actual-keyboard-target');
+    assert.deepEqual(errors,[]);
+  }finally{await browser.close();await new Promise(resolve=>server.close(resolve));}
 });

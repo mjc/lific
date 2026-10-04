@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const {pathToFileURL} = require('node:url');
+const {tmpdir} = require('node:os');
 const {mountedProxy, launchBrowser} = require('./browser_fixture.cjs');
 
 const upstream = new URL(process.argv[2]), token = process.argv[3], scenario = process.argv[4];
@@ -66,7 +67,7 @@ test(`native Home original shell: ${scenario}`, async t => {
   if (scenario === 'hostile_project') assert.ok(hostileProjectName, 'The real database fixture supplies the exact hostile name.');
   fs.mkdirSync(output, {recursive: true});
   const browser = await launchBrowser();
-  let vite, referenceOrigin;
+  let vite, referenceOrigin, referenceCache;
   const proxySockets = new Set();
   try {
     if (snapshot && scenario === 'geometry') {
@@ -75,7 +76,8 @@ test(`native Home original shell: ${scenario}`, async t => {
         proxySockets.add(socket);
         socket.once('close', () => proxySockets.delete(socket));
       });
-      vite = await createServer({root: snapshot, logLevel: 'silent', configFile: path.join(snapshot, 'vite.config.ts'), server: {
+      referenceCache = fs.mkdtempSync(path.join(tmpdir(), 'lific-pinned-vite-'));
+      vite = await createServer({cacheDir:referenceCache,root: snapshot, logLevel: 'silent', configFile: path.join(snapshot, 'vite.config.ts'), server: {
         host: '127.0.0.1', port: 0, strictPort: false, proxy: {
           '/api': {target: upstream.origin, ws: true, configure},
           '/public/api': {target: upstream.origin, ws: true, configure},
@@ -408,6 +410,8 @@ test(`native Home original shell: ${scenario}`, async t => {
     });
   } finally {
     for (const socket of proxySockets) socket.destroy();
-    try {if (vite) await vite.close();} finally {await browser.close();}
+    try {await browser.close();}
+    finally {try {if (vite) await vite.close();}
+      finally {if (referenceCache) fs.rmSync(referenceCache,{recursive:true,force:true});}}
   }
 });

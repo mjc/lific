@@ -2,9 +2,11 @@
 mod admission_contract;
 #[cfg(test)]
 mod assembled;
+pub(crate) mod board;
 pub(crate) mod bookmark;
 pub(crate) mod browser_inputs;
 pub(crate) mod context;
+pub(crate) mod deferred_delete;
 pub(crate) mod home;
 pub(crate) mod home_activity;
 #[cfg(test)]
@@ -51,3 +53,6 @@ mod workspace_production;
 
 pub(crate) mod issue_list;
 pub(crate) mod workspace;
+
+#[cfg(test)]
+mod workspace_delete_production;

@@ -47,6 +47,26 @@ mod topcoat_app {
         view::{View, ViewExt, view},
     };
 
+    enum NativeRoute {
+        Home,
+        Workspace,
+    }
+
+    fn native_route(
+        route: &super::topcoat_frontend::shell::ParsedRoute<'_>,
+        has_query: bool,
+    ) -> Option<NativeRoute> {
+        use super::topcoat_frontend::shell::{Layout, Page};
+        match (route.layout, route.project, route.page) {
+            (Layout::Private, _, Page::Home) => Some(NativeRoute::Home),
+            (Layout::Private, Some(_), Page::IssueDetail(_)) => Some(NativeRoute::Workspace),
+            (Layout::Private, Some(_), Page::Issues | Page::Board) if !has_query => {
+                Some(NativeRoute::Workspace)
+            }
+            _ => None,
+        }
+    }
+
     #[layout("/")]
     async fn document_layout(cx: &topcoat::context::Cx, slot: Slot<'_>) -> Result<impl View> {
         let uri = topcoat::router::request::uri(cx);
@@ -54,24 +74,12 @@ mod topcoat_app {
             .path_and_query()
             .map_or_else(|| uri.path(), |path| path.as_str());
         let route = super::topcoat_frontend::shell::ParsedRoute::parse(route_target);
-        let title = route.page.title();
-        let native_page = matches!(
-            (route.layout, route.page),
-            (
-                super::topcoat_frontend::shell::Layout::Private,
-                super::topcoat_frontend::shell::Page::Home
-                    | super::topcoat_frontend::shell::Page::IssueDetail(_)
-            )
-        );
-        let native_page = native_page
-            || matches!(
-                (route.layout, route.project, route.page),
-                (
-                    super::topcoat_frontend::shell::Layout::Private,
-                    Some(_),
-                    super::topcoat_frontend::shell::Page::Issues
-                )
-            ) && uri.query().is_none();
+        let native_page = native_route(&route, uri.query().is_some()).is_some();
+        let title = if native_page {
+            "Lific"
+        } else {
+            route.page.title()
+        };
         if native_page {
             super::topcoat_frontend::native::home::authorize(cx)?;
         }
@@ -186,23 +194,14 @@ mod topcoat_app {
             return Err(topcoat::router::error::redirect_permanent(destination).into());
         }
         use super::topcoat_frontend::shell::{Layout, Page};
-        if let (Layout::Private, Some(project), Page::IssueDetail(identifier)) =
-            (route.layout, route.project, route.page)
-        {
-            return if uri.query().is_none() {
-                super::topcoat_frontend::native::workspace::screen(cx, &route)
-            } else {
-                super::topcoat_frontend::native::issue_edit::route::screen(
-                    cx, &route, project, identifier,
-                )
-            };
-        }
-        if matches!(
-            (route.layout, route.project, route.page),
-            (Layout::Private, Some(_), Page::Issues)
-        ) && uri.query().is_none()
-        {
-            return super::topcoat_frontend::native::workspace::screen(cx, &route);
+        match native_route(&route, uri.query().is_some()) {
+            Some(NativeRoute::Home) => {
+                return super::topcoat_frontend::native::home::screen(cx);
+            }
+            Some(NativeRoute::Workspace) => {
+                return super::topcoat_frontend::native::workspace::screen(cx, &route);
+            }
+            None => {}
         }
         let content = match route.layout {
             Layout::Private => match route.page {
@@ -344,6 +343,48 @@ mod topcoat_app {
                 <output id="click-count">"0"</output>
             </section>
         })
+    }
+
+    fn font_response(bytes: &'static [u8]) -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "font/woff2")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(bytes))?)
+    }
+
+    #[route(GET "/__topcoat-font-dm-sans-italic-latin-ext.woff2")]
+    async fn font_dm_sans_italic_latin_ext() -> Result<Response> {
+        font_response(super::topcoat_frontend::assets::DM_SANS_ITALIC_LATIN_EXT)
+    }
+
+    #[route(GET "/__topcoat-font-dm-sans-italic-latin.woff2")]
+    async fn font_dm_sans_italic_latin() -> Result<Response> {
+        font_response(super::topcoat_frontend::assets::DM_SANS_ITALIC_LATIN)
+    }
+
+    #[route(GET "/__topcoat-font-dm-sans-normal-latin-ext.woff2")]
+    async fn font_dm_sans_normal_latin_ext() -> Result<Response> {
+        font_response(super::topcoat_frontend::assets::DM_SANS_NORMAL_LATIN_EXT)
+    }
+
+    #[route(GET "/__topcoat-font-dm-sans-normal-latin.woff2")]
+    async fn font_dm_sans_normal_latin() -> Result<Response> {
+        font_response(super::topcoat_frontend::assets::DM_SANS_NORMAL_LATIN)
+    }
+
+    #[route(GET "/__topcoat-font-space-grotesk-normal-vietnamese.woff2")]
+    async fn font_space_grotesk_normal_vietnamese() -> Result<Response> {
+        font_response(super::topcoat_frontend::assets::SPACE_GROTESK_NORMAL_VIETNAMESE)
+    }
+
+    #[route(GET "/__topcoat-font-space-grotesk-normal-latin-ext.woff2")]
+    async fn font_space_grotesk_normal_latin_ext() -> Result<Response> {
+        font_response(super::topcoat_frontend::assets::SPACE_GROTESK_NORMAL_LATIN_EXT)
+    }
+
+    #[route(GET "/__topcoat-font-space-grotesk-normal-latin.woff2")]
+    async fn font_space_grotesk_normal_latin() -> Result<Response> {
+        font_response(super::topcoat_frontend::assets::SPACE_GROTESK_NORMAL_LATIN)
     }
 
     #[route(GET "/__topcoat-app.css")]
@@ -879,6 +920,80 @@ mod topcoat_app_tests {
     use axum::{body::Body, http::Request};
     use http_body_util::BodyExt;
     use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn production_fonts_are_embedded_at_every_mount() {
+        for prefix in ["", "/app", "/ACC"] {
+            let service = topcoat::router::tower::TowerService::new(topcoat_app::router());
+            let inner = axum::Router::new().fallback_service(service);
+            let router = if prefix.is_empty() {
+                inner
+            } else {
+                axum::Router::new().nest(prefix, inner)
+            };
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("{prefix}/__topcoat-app.css"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), axum::http::StatusCode::OK);
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            let css = std::str::from_utf8(&bytes).unwrap();
+            assert!(
+                !css.contains("fonts.googleapis.com"),
+                "production CSS must not fetch external font stylesheets"
+            );
+            assert!(!css.contains("fonts.gstatic.com"));
+            assert!(css.contains("@font-face"));
+            let fonts: std::collections::BTreeSet<_> = css
+                .split("url(")
+                .skip(1)
+                .filter_map(|part| part.split_once(')').map(|(url, _)| url))
+                .filter(|url| url.ends_with(".woff2"))
+                .collect();
+            assert_eq!(
+                fonts.len(),
+                7,
+                "all returned Unicode subsets of all three font styles"
+            );
+            for font in fonts {
+                assert!(
+                    font.starts_with("__topcoat-font-"),
+                    "relative URL preserves mounted stylesheet base"
+                );
+                let response = router
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .uri(format!("{prefix}/{font}"))
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    response.status(),
+                    axum::http::StatusCode::OK,
+                    "{prefix}/{font}"
+                );
+                assert_eq!(
+                    response
+                        .headers()
+                        .get(axum::http::header::CONTENT_TYPE)
+                        .unwrap(),
+                    "font/woff2"
+                );
+                let bytes = response.into_body().collect().await.unwrap().to_bytes();
+                assert!(bytes.starts_with(b"wOF2"));
+                assert!(bytes.len() > 1_000);
+            }
+        }
+    }
 
     #[tokio::test]
     async fn topcoat_page_uses_the_shared_document_layout() {

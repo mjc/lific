@@ -13,6 +13,34 @@ async function launchBrowser() {
   return chromium.launch({headless: true, channel: 'chromium', executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH});
 }
 
+// Playwright's normal page initialization forces focus/visibility. This mode
+// uses its public CDP noDefaults option and Chrome's real default-context tabs.
+async function launchVisibilityBrowser() {
+  assert.ok(process.platform === 'win32' || process.env.PLAYWRIGHT_EXECUTABLE_PATH,
+    'Use the repository Chromium environment.');
+  const moduleUrl = pathToFileURL(path.resolve(__dirname, '../../../e2e/node_modules/playwright/index.mjs'));
+  const {chromium} = await import(moduleUrl.href);
+  const server = await chromium.launchServer({headless: true, channel: 'chromium',
+    executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH, args: ['--remote-debugging-port=0']});
+  let browser;
+  try {
+    const profile = server.process().spawnargs.find(arg => arg.startsWith('--user-data-dir='));
+    assert.ok(profile, 'Playwright owns the temporary Chrome profile.');
+    const activePort = path.join(profile.slice('--user-data-dir='.length), 'DevToolsActivePort');
+    const [port] = (await require('node:fs/promises').readFile(activePort, 'utf8')).split('\n');
+    assert.match(port, /^[0-9]+$/);
+    browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`, {noDefaults: true});
+    const context = browser.contexts()[0];
+    assert.ok(context, 'Actual default context preserves real tab visibility.');
+    return {browser, context, close: async () => {
+      try {await browser.close();} finally {await server.close();}
+    }};
+  } catch (error) {
+    try {if (browser) await browser.close();} finally {await server.close();}
+    throw error;
+  }
+}
+
 async function mountedProxy(upstream, prefix) {
   const requests = [], sockets = [], connections = new Set();
   const logicalPath = url => !prefix ? url : url.startsWith(`${prefix}/`) ? url.slice(prefix.length) : null;
@@ -25,11 +53,15 @@ async function mountedProxy(upstream, prefix) {
   const server = http.createServer((request, response) => {
     const logical = logicalPath(request.url);
     if (!logical) {response.writeHead(404); response.end(); return;}
-    requests.push({method: request.method, path: request.url});
+    requests.push({method: request.method, path: request.url, headers: {...request.headers}});
     const forwarded = http.request(upstream, {path: logical, method: request.method, headers: headersFor(request)}, incoming => {
       response.writeHead(incoming.statusCode, incoming.headers);
       incoming.pipe(response);
     });
+    connections.add(forwarded);
+    forwarded.on('close', () => connections.delete(forwarded));
+    request.on('aborted', () => forwarded.destroy());
+    response.on('close', () => {if (!response.writableFinished) forwarded.destroy();});
     forwarded.on('error', () => {if (!response.headersSent) response.writeHead(502); response.end();});
     request.pipe(forwarded);
   });
@@ -63,4 +95,4 @@ async function mountedProxy(upstream, prefix) {
   };
 }
 
-module.exports = {mountedProxy, launchBrowser};
+module.exports = {mountedProxy, launchBrowser, launchVisibilityBrowser};

@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const {pathToFileURL} = require('node:url');
+const {tmpdir} = require('node:os');
 const {mountedProxy, launchBrowser} = require(process.argv[4]);
 const upstream = new URL(process.argv[2]), token = process.argv[3], snapshot = process.argv[5];
 const output = path.join(require('node:os').tmpdir(),'lific-native-issue-detail');
@@ -28,14 +29,15 @@ test('native issue decorations match pinned master at every mount',async t=>{
   assert.ok(snapshot,'Pinned master web directory is mandatory; no reference fallback.');
   assert.ok(fs.existsSync(path.join(snapshot,'src/routes/IssueDetail.svelte')));
   fs.mkdirSync(output,{recursive:true});
-  const browser = await launchBrowser(); let vite;
+  const browser = await launchBrowser(); let vite, referenceCache;
   const proxySockets = new Set();
   try {
     const {createServer} = await import(pathToFileURL(path.join(snapshot,'node_modules/vite/dist/node/index.js')).href);
     const configure = proxy=>proxy.on('open',socket=>{
       proxySockets.add(socket); socket.once('close',()=>proxySockets.delete(socket));
     });
-    vite = await createServer({root:snapshot,logLevel:'silent',configFile:path.join(snapshot,'vite.config.ts'),
+    referenceCache = fs.mkdtempSync(path.join(tmpdir(), 'lific-pinned-vite-'));
+    vite = await createServer({cacheDir:referenceCache,root:snapshot,logLevel:'silent',configFile:path.join(snapshot,'vite.config.ts'),
       server:{host:'127.0.0.1',port:0,strictPort:false,proxy:{
         '/api':{target:upstream.origin,ws:true,configure},
         '/public/api':{target:upstream.origin,ws:true,configure},
@@ -124,6 +126,9 @@ test('native issue decorations match pinned master at every mount',async t=>{
       });
     }
   } finally {
-    await browser.close(); for (const socket of proxySockets) socket.destroy(); if(vite) await vite.close();
+    for (const socket of proxySockets) socket.destroy();
+    try {await browser.close();}
+    finally {try {if (vite) await vite.close();}
+      finally {if (referenceCache) fs.rmSync(referenceCache,{recursive:true,force:true});}}
   }
 });

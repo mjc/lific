@@ -9,9 +9,7 @@ use topcoat_core::context::Cx;
 use topcoat_router::{Body, Layer, LayerFuture, Next, Path};
 
 mod connection;
-#[cfg(test)]
 pub(crate) mod procedure;
-#[cfg(test)]
 pub(crate) mod signal_vec;
 mod socket;
 
