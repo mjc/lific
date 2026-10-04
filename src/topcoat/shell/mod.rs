@@ -112,7 +112,7 @@ impl<'a> Page<'a> {
         )
     }
 
-    fn navigation_page(self) -> Self {
+    pub(crate) fn navigation_page(self) -> Self {
         match self {
             Self::Board | Self::IssueNew | Self::IssueDetail(_) => Self::Issues,
             Self::Record(_) => Self::Pages,

@@ -1,8 +1,10 @@
-//! Native Home chrome. Display snapshots never authorize palette reads.
+//! Shared native private chrome. Display data never authorizes palette reads.
 
 use super::super::runtime::connected;
+use super::super::shell::{Page, ParsedRoute};
 use super::home_data::Snapshot;
 use super::session::native_home_session;
+use crate::db::models::{AuthUser, Project};
 use topcoat::{
     context::Cx,
     runtime::{BoolSurrogate, Event, Signal, Surrogated, expr, shard, signal},
@@ -52,6 +54,7 @@ type PaletteSignals = (
     Signal<bool>,
     Signal<bool>,
     Signal<bool>,
+    Option<String>,
 );
 
 pub(crate) fn shell<'a>(cx: &'a Cx, snapshot: &Snapshot, content: BoxView<'a>) -> BoxView<'a> {
@@ -64,6 +67,53 @@ pub(crate) fn shell_with_palette<'a>(
     content: BoxView<'a>,
     palette_open: Signal<bool>,
 ) -> BoxView<'a> {
+    shell_with_palette_for_page(
+        cx,
+        &snapshot.user,
+        &snapshot.projects,
+        &ParsedRoute::parse("/"),
+        content,
+        palette_open,
+    )
+}
+
+/// Compose an authorized private page with the shared native workspace chrome.
+/// The caller supplies fresh display data; palette reads authorize independently.
+pub(crate) fn shell_with_palette_for_page<'a>(
+    cx: &'a Cx,
+    user: &AuthUser,
+    projects: &[Project],
+    route: &ParsedRoute<'_>,
+    content: BoxView<'a>,
+    palette_open: Signal<bool>,
+) -> BoxView<'a> {
+    shell_with_palette_for_page_and_topbar(cx, user, projects, route, content, palette_open, None)
+}
+
+/// The page supplies its header and content from the same state owner.
+pub(crate) fn shell_with_palette_for_page_and_topbar<'a>(
+    cx: &'a Cx,
+    user: &AuthUser,
+    projects: &[Project],
+    route: &ParsedRoute<'_>,
+    content: BoxView<'a>,
+    palette_open: Signal<bool>,
+    topbar: Option<BoxView<'a>>,
+) -> BoxView<'a> {
+    let topbar_class = if topbar.is_some() {
+        "native-home-topbar native-issue-detail__topbar"
+    } else {
+        "native-home-topbar"
+    };
+    let home_active = route.page == Page::Home;
+    let active_page = route.page.navigation_page().title();
+    let current_project = route.project.map(str::to_owned);
+    let page_label = match route.project {
+        Some(project) => format!("{project}  {}", active_page),
+        None => route.page.title().to_owned(),
+    };
+    let account_id = user.id;
+    let account_admin = user.is_admin;
     let collapsed = signal(cx, || false);
     let query = signal(cx, String::new);
     let palette = PaletteState {
@@ -81,8 +131,8 @@ pub(crate) fn shell_with_palette<'a>(
         pending_new_tab: signal(cx, || false),
         waiting: signal(cx, || false),
         error: signal(cx, String::new),
-        account_id: snapshot.user.id,
-        is_admin: snapshot.user.is_admin,
+        account_id,
+        is_admin: account_admin,
     };
     let searched = palette.searched.clone();
     let revision = palette.revision.clone();
@@ -102,7 +152,7 @@ pub(crate) fn shell_with_palette<'a>(
     };
     let theme = signal(cx, || "system".to_owned());
     let theme_menu = signal(cx, || false);
-    let projects = snapshot.projects.clone();
+    let projects = projects.to_vec();
     let mobile_projects = projects.clone();
     // Quoted token boundaries retain exact membership, including unusual identifiers.
     // The runtime supports Rust string membership but not collection iteration.
@@ -112,10 +162,10 @@ pub(crate) fn shell_with_palette<'a>(
         mobile_catalog.push_str(&serde_json::to_string(&project.identifier).unwrap());
         mobile_catalog.push('|');
     }
-    let display_name = if snapshot.user.display_name.is_empty() {
-        snapshot.user.username.clone()
+    let display_name = if user.display_name.is_empty() {
+        user.username.clone()
     } else {
-        snapshot.user.display_name.clone()
+        user.display_name.clone()
     };
     let initials = display_name
         .split([' ', '_', '-'])
@@ -125,6 +175,7 @@ pub(crate) fn shell_with_palette<'a>(
         .collect::<String>();
     view! { cx =>
         <div class="native-home-shell" (super::session::mount(cx)) :data-collapsed=$(if collapsed.get() { "true" } else { "false" })>
+            <span hidden="hidden" (super::session::account_mount(cx, account_id, account_admin))></span>
             <a class="tc-shell__skip" href="#main-content" :inert=$(mobile_open.get())>"Skip to content"</a>
             <span hidden="hidden" (shell_mount(cx, collapsed.clone(), theme.clone(), theme_menu.clone(), navigation.clone(), mobile_catalog, palette.clone()))></span>
             <button id="native-home-collapse" class="native-home-fold native-home-icon-button"
@@ -150,13 +201,13 @@ pub(crate) fn shell_with_palette<'a>(
                 </button>
                 </div>
                 <nav class="native-home-workspace" aria-label="Workspace">
-                    <a class="native-home-destination native-home-home-link" href=(super::transport::mounted_url(cx, "/")) aria-current="page">
+                    <a class="native-home-destination native-home-home-link" href=(super::transport::mounted_url(cx, "/")) aria-current=(home_active.then_some("page"))>
                         (super::icons::project_icon(cx, Some("lucide:House"), 14)) "Home"
                     </a>
                     <div class="native-home-project-heading">"Projects"</div>
                     #[key(project.id)]
                     for project in projects {
-                        (project_tree(cx, &project))
+                        (project_tree(cx, &project, current_project.as_deref(), active_page))
                     }
                 </nav>
                 <footer class="native-home-footer">
@@ -175,10 +226,14 @@ pub(crate) fn shell_with_palette<'a>(
                         (mobile_action(cx, &navigation, "open", String::new()))>
                         (super::icons::project_icon(cx, Some("lucide:Menu"), 20))
                     </button>
-                    <img src=(super::transport::mounted_url(cx, "/logo.webp")) alt="" width="22" height="22"/><span>"Home"</span>
+                    <img src=(super::transport::mounted_url(cx, "/logo.webp")) alt="" width="22" height="22"/><span>(page_label.clone())</span>
                 </header>
-                <header class="native-home-topbar">
-                    <span>"Home"</span>
+                <header class=(topbar_class)>
+                    if let Some(topbar) = topbar {
+                        (topbar)
+                    } else {
+                        <span>(page_label)</span>
+                    }
                 </header>
                 <div class="native-home-panel-wrap">
                     <main id="main-content" tabindex="-1" class="native-home-panel">(content)</main>
@@ -199,7 +254,7 @@ pub(crate) fn shell_with_palette<'a>(
                         (super::icons::project_icon(cx, Some("lucide:Search"), 18)) "Search issues, pages, projects…"
                     </button>
                     <nav aria-label="Phone workspace">
-                        <a class="native-home-mobile-link" href=(super::transport::mounted_url(cx, "/")) aria-current="page">
+                        <a class="native-home-mobile-link" href=(super::transport::mounted_url(cx, "/")) aria-current=(home_active.then_some("page"))>
                             (super::icons::project_icon(cx, Some("lucide:House"), 20)) "Home"
                         </a>
                         <div class="native-home-project-heading">"Projects"</div>
@@ -217,7 +272,7 @@ pub(crate) fn shell_with_palette<'a>(
                 </div>
                 #[key(project.id)]
                 for project in mobile_projects {
-                    (mobile_project_panel(cx, &project, &navigation))
+                    (mobile_project_panel(cx, &project, &navigation, current_project.as_deref(), active_page))
                 }
                 (mobile_unavailable_panel(cx, &navigation))
             </section>
@@ -254,7 +309,8 @@ pub(crate) fn shell_with_palette<'a>(
                             palette.selected_href.clone(), palette.cursor_moved.clone(),
                             palette.count.clone(), palette.rendered.clone(),
                             palette.pending_enter.clone(), palette.pending_new_tab.clone(),
-                            palette.waiting.clone(), palette.open.clone()
+                            palette.waiting.clone(), palette.open.clone(),
+                            current_project.clone()
                         )
                     )
                 </section>
@@ -286,31 +342,49 @@ fn project_mark<'a>(cx: &'a Cx, project: &crate::db::models::Project, size: u32)
     }
 }
 
-fn project_destinations<'a>(cx: &'a Cx, identifier: &str, class: &str) -> BoxView<'a> {
+fn project_destinations<'a>(
+    cx: &'a Cx,
+    identifier: &str,
+    class: &str,
+    current_project: Option<&str>,
+    active_page: &'static str,
+) -> BoxView<'a> {
     let links = PROJECT_DESTINATIONS.map(|(slug, title, icon)| {
         (
             super::transport::mounted_url(cx, &format!("/{identifier}/{slug}")),
             title,
             icon,
+            current_project == Some(identifier) && active_page == title,
         )
     });
     let class = class.to_owned();
     view! { cx =>
-        for (href, title, icon) in links {
-            <a class=(class.clone()) href=(href)>(super::icons::project_icon(cx, Some(icon), 14)) (title)</a>
+        for (href, title, icon, active) in links {
+            <a class=(class.clone()) href=(href) aria-current=(active.then_some("page"))>(super::icons::project_icon(cx, Some(icon), 14)) (title)</a>
         }
     }.boxed()
 }
 
-fn project_tree<'a>(cx: &'a Cx, project: &crate::db::models::Project) -> BoxView<'a> {
-    let open = signal(cx, || false);
+fn project_tree<'a>(
+    cx: &'a Cx,
+    project: &Project,
+    current_project: Option<&str>,
+    active_page: &'static str,
+) -> BoxView<'a> {
+    let open = signal(cx, || current_project == Some(project.identifier.as_str()));
     let expand = format!("Expand {}", project.name);
     let collapse = format!("Collapse {}", project.name);
     let id = format!("native-project-nav-{}", project.id);
     let name = project.name.clone();
     let overview = super::transport::mounted_url(cx, &format!("/{}/overview", project.identifier));
     let mark = project_mark(cx, project, 16);
-    let destinations = project_destinations(cx, &project.identifier, "native-home-destination");
+    let destinations = project_destinations(
+        cx,
+        &project.identifier,
+        "native-home-destination",
+        current_project,
+        active_page,
+    );
     view! { cx =>
         <section class="native-home-project">
             <div class="native-home-project-row">
@@ -350,10 +424,18 @@ fn mobile_project_panel<'a>(
     cx: &'a Cx,
     project: &crate::db::models::Project,
     navigation: &MobileNavigation,
+    current_project: Option<&str>,
+    active_page: &'static str,
 ) -> BoxView<'a> {
     let identifier = project.identifier.clone();
     let name = project.name.clone();
-    let destinations = project_destinations(cx, &identifier, "native-home-mobile-link");
+    let destinations = project_destinations(
+        cx,
+        &identifier,
+        "native-home-mobile-link",
+        current_project,
+        active_page,
+    );
     let selected = navigation.project.clone();
     let id = format!("native-mobile-project-{identifier}");
     let back = mobile_action(cx, navigation, "back", String::new());
@@ -1133,6 +1215,7 @@ async fn native_home_palette_results(
         pending_new_tab,
         waiting,
         live_open,
+        current_project,
     ) = state;
     let connected = connected(cx);
     // An open connected palette validates its bound session even while the
@@ -1154,12 +1237,12 @@ async fn native_home_palette_results(
             super::context::db(cx),
             &caller.identity,
         )?;
-        // Home has no current project. A mount prefix cannot supply one.
+        // Only the parsed logical page supplies a current project, never its mount.
         let issues = super::palette_reference::issue_hits(
             super::context::db(cx),
             &caller.identity,
             &query,
-            None,
+            current_project.as_deref(),
         )?;
         (projects, issues)
     } else {

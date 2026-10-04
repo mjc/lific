@@ -15,15 +15,15 @@ use crate::{
 use axum::Router;
 use std::{net::SocketAddr, sync::Arc};
 
-pub(super) struct Fixture {
-    pub(super) app: Router,
-    pub(super) db: db::DbPool,
-    pub(super) token: String,
-    pub(super) realtime: RealtimeHub,
+pub(crate) struct Fixture {
+    pub(crate) app: Router,
+    pub(crate) db: db::DbPool,
+    pub(crate) token: String,
+    pub(crate) realtime: RealtimeHub,
     _store: tempfile::TempDir,
 }
 
-pub(super) fn fixture() -> Fixture {
+pub(crate) fn fixture() -> Fixture {
     fixture_with_auth(true)
 }
 
