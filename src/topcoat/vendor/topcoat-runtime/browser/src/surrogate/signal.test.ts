@@ -3,6 +3,8 @@ import { expect, it } from "vitest";
 import { Effect, flushEffects, signal } from "../reactivity";
 import { Bool } from "./bool";
 import { F64 } from "./f64";
+import { Integer, integerType } from "./integer";
+import { Vec } from "./sequence";
 import { WriteSignal } from "./signal";
 import { String as RuntimeString, Str } from "./string";
 
@@ -81,3 +83,39 @@ it("each write notifies subscribers exactly once", () => {
 		effect.dispose();
 	}
 });
+
+for (const bits of [16, 32, 64] as const) {
+	it(`vector writes preserve snapshots, duplicates and usize width (${bits})`, () => {
+		const type = integerType("usize", bits);
+		const index = (value: bigint) => new Integer(value, type);
+		const before = new Vec([new RuntimeString("same"), new RuntimeString("same")], type);
+		const inner = signal(before);
+		const s = new WriteSignal("vector", inner);
+		const snapshot = s.get();
+		let runs = 0;
+		const effect = new Effect(() => { inner(); runs += 1; });
+		try {
+			effect.run();
+			s.push(new RuntimeString("last"));
+			flushEffects();
+			expect(runs).toBe(2);
+			expect(before.dehydrate().v).toEqual(["same", "same"]);
+			expect(snapshot.dehydrate().v).toEqual(["same", "same"]);
+			s.remove(index(0n));
+			flushEffects();
+			expect(runs).toBe(3);
+			expect(s.dehydrate()).toEqual({t: "Signal", id: "vector", v: {t: "Vec", bits, v: ["same", "last"]}});
+			expect(() => s.remove(index(2n))).toThrow();
+			expect(() => s.remove(new Integer(0n, integerType("i64", 64)))).toThrow();
+			expect(s.get().dehydrate().v).toEqual(["same", "last"]);
+			flushEffects();
+			expect(runs).toBe(3);
+		} finally { effect.dispose(); }
+	});
+	it(`removing from an empty vector rejects without mutation (${bits})`, () => {
+		const type = integerType("usize", bits);
+		const s = write(new Vec<RuntimeString>([], type));
+		expect(() => s.remove(new Integer(0n, type))).toThrow();
+		expect(s.get().dehydrate()).toEqual({t: "Vec", bits, v: []});
+	});
+}
