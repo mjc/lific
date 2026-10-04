@@ -63,21 +63,24 @@ pub(crate) fn batch_error(items: &[Value], march: bool) -> Option<Value> {
     }
 }
 
+pub(crate) fn valid_request_id(id: &Value) -> bool {
+    id.is_string() || id.as_i64().is_some() || id.as_u64().is_some()
+}
+
 pub(crate) fn valid_message(value: &Value) -> bool {
     if !value.is_object() || value["jsonrpc"] != "2.0" {
         return false;
     }
-    let valid_id = |id: &Value| id.is_string() || id.as_i64().is_some();
     if value.get("method").is_some() {
         value["method"].is_string()
             && value.get("params").is_none_or(Value::is_object)
-            && value.get("id").is_none_or(valid_id)
+            && value.get("id").is_none_or(valid_request_id)
             && value.get("result").is_none()
             && value.get("error").is_none()
     } else {
         value
             .get("id")
-            .is_some_and(|id| valid_id(id) || id.is_null())
+            .is_some_and(|id| valid_request_id(id) || id.is_null())
             && (value.get("result").is_some() ^ value.get("error").is_some())
             && value.get("error").is_none_or(|error| {
                 error["code"].as_i64().is_some() && error["message"].is_string()
@@ -286,6 +289,7 @@ struct BatchState {
     pending: HashSet<String>,
     active: HashSet<String>,
     cancelled: HashSet<String>,
+    error_ids: HashSet<String>,
     replies: Vec<Value>,
     bytes: usize,
 }
@@ -310,7 +314,7 @@ impl<R, W> StdioTransport<R, W> {
     }
 }
 impl<R, W> StdioTransport<R, W> {
-    fn cancel_pending(&self, message: &ClientJsonRpcMessage) -> Option<Value> {
+    fn cancel_pending(&self, message: &ClientJsonRpcMessage) -> Option<(Value, HashSet<String>)> {
         let JsonRpcMessage::Notification(notification) = message else {
             return None;
         };
@@ -327,14 +331,14 @@ impl<R, W> StdioTransport<R, W> {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         // Keep cancelled IDs active until this stdio session ends; a late
         // handler result must never be attributed to a reused ID.
-        if state.active.contains(&key) {
+        if state.active.contains(&key) && !state.error_ids.contains(&key) {
             state.cancelled.insert(key.clone());
         }
         if state.pending.remove(&key) && state.pending.is_empty() {
             state.bytes = 0;
             let replies = std::mem::take(&mut state.replies);
             if !replies.is_empty() {
-                return Some(Value::Array(replies));
+                return Some((Value::Array(replies), state.error_ids.clone()));
             }
         }
         None
@@ -346,6 +350,25 @@ async fn write<W: AsyncWrite + Unpin>(writer: &mut W, value: &Value) -> io::Resu
     writer.write_all(b"\n").await?;
     writer.flush().await
 }
+async fn write_completed<W: AsyncWrite + Unpin>(
+    writer: &Arc<Mutex<W>>,
+    state: &Arc<std::sync::Mutex<BatchState>>,
+    value: &Value,
+    error_ids: HashSet<String>,
+) -> io::Result<()> {
+    let result = write(&mut *writer.lock().await, value).await;
+    if !error_ids.is_empty() {
+        let mut state = state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for id in error_ids {
+            state.error_ids.remove(&id);
+            state.active.remove(&id);
+        }
+    }
+    result
+}
+
 impl<R, W> Transport<RoleServer> for StdioTransport<R, W>
 where
     R: AsyncBufRead + Send + Unpin,
@@ -388,7 +411,7 @@ where
                     }
                     state.active.remove(key);
                 }
-                if value.get("method").is_none()
+                let emit = if value.get("method").is_none()
                     && key.is_some_and(|key| state.pending.remove(&key))
                 {
                     let reserve = state
@@ -423,10 +446,18 @@ where
                     }
                 } else {
                     Some(value)
-                }
+                };
+                emit.map(|value| {
+                    let error_ids = if value.is_array() {
+                        state.error_ids.clone()
+                    } else {
+                        HashSet::new()
+                    };
+                    (value, error_ids)
+                })
             };
-            if let Some(value) = emit {
-                write(&mut *writer.lock().await, &value).await?;
+            if let Some((value, error_ids)) = emit {
+                write_completed(&writer, &state, &value, error_ids).await?;
             }
             Ok(())
         }
@@ -434,10 +465,12 @@ where
     async fn receive(&mut self) -> Option<ClientJsonRpcMessage> {
         loop {
             if let Some(message) = self.queue.pop_front() {
-                if let Some(emit) = self.cancel_pending(&message) {
+                if let Some((emit, error_ids)) = self.cancel_pending(&message) {
                     let writer = self.writer.clone();
+                    let state = self.state.clone();
                     tokio::spawn(async move {
-                        if let Err(error) = write(&mut *writer.lock().await, &emit).await {
+                        if let Err(error) = write_completed(&writer, &state, &emit, error_ids).await
+                        {
                             tracing::warn!(%error,"could not write completed MCP batch");
                         }
                     });
@@ -486,6 +519,8 @@ where
                 let mut replies = vec![];
                 let mut bytes = 2usize;
                 let mut pending = HashSet::new();
+                let mut error_ids = HashSet::new();
+                let mut ids = HashSet::new();
                 let mut messages = VecDeque::new();
                 let already_active = self
                     .state
@@ -503,24 +538,29 @@ where
                         .ok()?;
                         continue;
                     }
+                    let request_id = item.get("id").filter(|_| item.get("method").is_some());
+                    if let Some(id) = request_id {
+                        let key = id.to_string();
+                        if already_active.contains(&key) || !ids.insert(key) {
+                            record_response(
+                                &mut replies,
+                                &mut bytes,
+                                error(Value::Null, -32600, "Duplicate batch request ID"),
+                            )
+                            .ok()?;
+                            continue;
+                        }
+                    }
                     match serde_json::from_value::<ClientJsonRpcMessage>(item.clone()) {
                         Ok(message) => {
-                            if let JsonRpcMessage::Request(request) = &message {
-                                let key = serde_json::to_value(&request.id).ok()?.to_string();
-                                if already_active.contains(&key) || !pending.insert(key) {
-                                    record_response(
-                                        &mut replies,
-                                        &mut bytes,
-                                        error(Value::Null, -32600, "Duplicate batch request ID"),
-                                    )
-                                    .ok()?;
-                                    continue;
-                                }
+                            if let Some(id) = request_id {
+                                pending.insert(id.to_string());
                             }
                             messages.push_back(message);
                         }
                         Err(_) => {
-                            if let Some(id) = item.get("id") {
+                            if let Some(id) = request_id {
+                                error_ids.insert(id.to_string());
                                 record_response(
                                     &mut replies,
                                     &mut bytes,
@@ -538,11 +578,18 @@ where
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
                     if !pending.is_empty() {
                         if !state.pending.is_empty()
-                            || state.active.len().saturating_add(pending.len()) > MAX_BATCH_MESSAGES
+                            || !state.error_ids.is_empty()
+                            || state
+                                .active
+                                .len()
+                                .saturating_add(pending.len())
+                                .saturating_add(error_ids.len())
+                                > MAX_BATCH_MESSAGES
                             || state
                                 .active
                                 .iter()
                                 .chain(pending.iter())
+                                .chain(error_ids.iter())
                                 .map(String::len)
                                 .sum::<usize>()
                                 > MAX_RESPONSE_BYTES
@@ -566,7 +613,10 @@ where
                             }
                             Some(Value::Array(refused))
                         } else {
-                            state.active.extend(pending.iter().cloned());
+                            state
+                                .active
+                                .extend(pending.iter().chain(error_ids.iter()).cloned());
+                            state.error_ids = error_ids;
                             state.pending = pending;
                             state.replies = replies;
                             state.bytes = bytes;
@@ -589,31 +639,36 @@ where
                 let valid = valid_message(&value);
                 let method = value.get("method").is_some();
                 let id = value.get("id").cloned();
+                // Claim the wire ID before typed decoding: even a malformed
+                // request must not emit a reply for an outstanding request.
+                if !valid {
+                    write(
+                        &mut *self.writer.lock().await,
+                        &error(Value::Null, -32600, "Invalid Request"),
+                    )
+                    .await
+                    .ok()?;
+                    continue;
+                }
+                let collision = method
+                    && id.as_ref().is_some_and(|id| {
+                        self.state
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .active
+                            .contains(&id.to_string())
+                    });
+                if collision {
+                    write(
+                        &mut *self.writer.lock().await,
+                        &error(Value::Null, -32600, "Request ID belongs to an active batch"),
+                    )
+                    .await
+                    .ok()?;
+                    continue;
+                }
                 match serde_json::from_value::<ClientJsonRpcMessage>(value) {
                     Ok(message) => {
-                        let collision = if let JsonRpcMessage::Request(request) = &message {
-                            let key = serde_json::to_value(&request.id).ok()?.to_string();
-                            self.state
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                .active
-                                .contains(&key)
-                        } else {
-                            false
-                        };
-                        if collision {
-                            write(
-                                &mut *self.writer.lock().await,
-                                &error(
-                                    Value::Null,
-                                    -32600,
-                                    "Request ID belongs to an active batch",
-                                ),
-                            )
-                            .await
-                            .ok()?;
-                            continue;
-                        }
                         if let JsonRpcMessage::Request(request) = &message {
                             let key = serde_json::to_value(&request.id).ok()?.to_string();
                             let capacity = {
@@ -645,10 +700,13 @@ where
                                 continue;
                             }
                         }
-                        if let Some(emit) = self.cancel_pending(&message) {
+                        if let Some((emit, error_ids)) = self.cancel_pending(&message) {
                             let writer = self.writer.clone();
+                            let state = self.state.clone();
                             tokio::spawn(async move {
-                                if let Err(error) = write(&mut *writer.lock().await, &emit).await {
+                                if let Err(error) =
+                                    write_completed(&writer, &state, &emit, error_ids).await
+                                {
                                     tracing::warn!(%error,"could not write completed MCP batch");
                                 }
                             });
@@ -683,6 +741,79 @@ struct Sessions {
     batch_requests: RequestRegistry,
 }
 
+impl Sessions {
+    fn register_request(
+        &self,
+        id: &SessionId,
+        request_id: String,
+        keep_cancelled: bool,
+    ) -> Result<RequestRegistration, SessionError> {
+        let key = (id.clone(), request_id);
+        let mut active = self
+            .batch_requests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if active.contains_key(&key) {
+            return Err(SessionError::DuplicateRequest);
+        }
+        let mut active_count = 0usize;
+        let mut active_bytes = 0usize;
+        let mut session_count = 0usize;
+        let mut session_bytes = 0usize;
+        for ((session, request), cancelled) in &*active {
+            let bytes = session.len().saturating_add(request.len());
+            if !cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+                active_count += 1;
+                active_bytes = active_bytes.saturating_add(bytes);
+            }
+            if session == id {
+                session_count += 1;
+                session_bytes = session_bytes.saturating_add(bytes);
+            }
+        }
+        let bytes = key.0.len().saturating_add(key.1.len());
+        if session_count >= MAX_BATCH_MESSAGES
+            || bytes > MAX_RESPONSE_BYTES.saturating_sub(session_bytes)
+        {
+            return Err(SessionError::SessionCapacity);
+        }
+        if active_count >= MAX_BATCH_MESSAGES
+            || bytes > MAX_RESPONSE_BYTES.saturating_sub(active_bytes)
+        {
+            return Err(SessionError::Capacity);
+        }
+        active.insert(
+            key.clone(),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        Ok(RequestRegistration {
+            registry: self.batch_requests.clone(),
+            key,
+            keep_cancelled,
+        })
+    }
+
+    fn invalid_params(
+        &self,
+        session: &SessionId,
+        id: &Value,
+    ) -> (Value, Option<RequestRegistration>) {
+        // Decode errors participate in the same atomic reservation as dispatch.
+        // They release after delivery even if a cancellation arrived meanwhile.
+        match self.register_request(session, id.to_string(), false) {
+            Ok(registration) => (
+                error(id.clone(), -32602, "Invalid params"),
+                Some(registration),
+            ),
+            Err(SessionError::DuplicateRequest) => (
+                error(Value::Null, -32600, "Request ID is already active"),
+                None,
+            ),
+            Err(error_data) => (error(id.clone(), -32000, &error_data.to_string()), None),
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 enum SessionError {
     #[error(transparent)]
@@ -701,6 +832,7 @@ type RequestRegistry =
 struct RequestRegistration {
     registry: RequestRegistry,
     key: (SessionId, String),
+    keep_cancelled: bool,
 }
 impl Drop for RequestRegistration {
     fn drop(&mut self) {
@@ -708,10 +840,9 @@ impl Drop for RequestRegistration {
             .registry
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if registry
-            .get(&self.key)
-            .is_some_and(|cancelled| !cancelled.load(std::sync::atomic::Ordering::Relaxed))
-        {
+        if registry.get(&self.key).is_some_and(|cancelled| {
+            !self.keep_cancelled || !cancelled.load(std::sync::atomic::Ordering::Relaxed)
+        }) {
             registry.remove(&self.key);
         }
     }
@@ -815,55 +946,10 @@ impl SessionManager for Sessions {
         Self::Error,
     > {
         let registration = if let JsonRpcMessage::Request(request) = &message {
-            let key = (
-                id.clone(),
-                serde_json::to_value(&request.id)
-                    .expect("serializable request ID")
-                    .to_string(),
-            );
-            {
-                let mut active = self
-                    .batch_requests
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if active.contains_key(&key) {
-                    return Err(SessionError::DuplicateRequest);
-                }
-                let mut active_count = 0usize;
-                let mut active_bytes = 0usize;
-                let mut session_count = 0usize;
-                let mut session_bytes = 0usize;
-                for ((session, request), cancelled) in &*active {
-                    let bytes = session.len().saturating_add(request.len());
-                    if !cancelled.load(std::sync::atomic::Ordering::Relaxed) {
-                        active_count += 1;
-                        active_bytes = active_bytes.saturating_add(bytes);
-                    }
-                    if session == id {
-                        session_count += 1;
-                        session_bytes = session_bytes.saturating_add(bytes);
-                    }
-                }
-                let bytes = key.0.len().saturating_add(key.1.len());
-                if session_count >= MAX_BATCH_MESSAGES
-                    || bytes > MAX_RESPONSE_BYTES.saturating_sub(session_bytes)
-                {
-                    return Err(SessionError::SessionCapacity);
-                }
-                if active_count >= MAX_BATCH_MESSAGES
-                    || bytes > MAX_RESPONSE_BYTES.saturating_sub(active_bytes)
-                {
-                    return Err(SessionError::Capacity);
-                }
-                active.insert(
-                    key.clone(),
-                    Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                );
-            }
-            Some(RequestRegistration {
-                registry: self.batch_requests.clone(),
-                key,
-            })
+            let key = serde_json::to_value(&request.id)
+                .expect("serializable request ID")
+                .to_string();
+            Some(self.register_request(id, key, true)?)
         } else {
             None
         };
@@ -968,13 +1054,6 @@ impl<S: ServerHandler + Send + 'static> HttpService<S> {
                     .into_response();
             }
         };
-        let Some(items) = value.as_array() else {
-            return self
-                .service
-                .handle(Request::from_parts(parts, Body::from(bytes)))
-                .await
-                .into_response();
-        };
         let march = if parts
             .headers
             .get("MCP-Protocol-Version")
@@ -996,6 +1075,19 @@ impl<S: ServerHandler + Send + 'static> HttpService<S> {
                 None => false,
             }
         };
+        let items = value.as_array();
+        let malformed_request = march
+            && valid_message(&value)
+            && value.get("method").is_some()
+            && value.get("id").is_some()
+            && serde_json::from_value::<ClientJsonRpcMessage>(value.clone()).is_err();
+        if items.is_none() && !malformed_request {
+            return self
+                .service
+                .handle(Request::from_parts(parts, Body::from(bytes)))
+                .await
+                .into_response();
+        }
         // Validate the original transport policy with an ignored SDK custom
         // notification. It allocates no request ID or response correlation.
         let ping = json!({"jsonrpc":"2.0","method":"notifications/lific/batch-validation"});
@@ -1022,6 +1114,24 @@ impl<S: ServerHandler + Send + 'static> HttpService<S> {
             Ok(Err(_)) => return StatusCode::BAD_GATEWAY.into_response(),
             Err(_) => return StatusCode::GATEWAY_TIMEOUT.into_response(),
         }
+        let Some(items) = items else {
+            let session = SessionId::from(
+                parts.headers["Mcp-Session-Id"]
+                    .to_str()
+                    .expect("validated March session header")
+                    .to_owned(),
+            );
+            let (reply, registration) = self.sessions.invalid_params(&session, &value["id"]);
+            let stream =
+                futures_util::stream::iter([Ok::<_, io::Error>(Bytes::from(reply.to_string()))]);
+            return Response::builder()
+                .header("content-type", "application/json")
+                .body(Body::from_stream(RegisteredStream {
+                    stream: Some(Box::pin(stream)),
+                    registration,
+                }))
+                .expect("valid response");
+        };
         if !march {
             return self
                 .service
@@ -1079,18 +1189,34 @@ impl<S: ServerHandler + Send + 'static> HttpService<S> {
         let (sender, receiver) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(1);
         let service = self.service.clone();
         let sessions = self.sessions.clone();
+        let registrations = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let worker_registrations = registrations.clone();
         tokio::spawn(async move {
             // Disconnect stops delivery, not accepted March work. Each member
             // still dispatches within the configured batch time budget.
-            if let Err(error) =
-                process_http_batch(service, sessions, parts, items, &sender, deadline).await
+            if let Err(error) = process_http_batch(
+                service,
+                sessions,
+                parts,
+                items,
+                &sender,
+                deadline,
+                worker_registrations,
+            )
+            .await
             {
                 let _ = tokio::time::timeout(BATCH_DELIVERY_GRACE, sender.send(Err(error))).await;
             }
         });
-        let stream = futures_util::stream::unfold(receiver, |mut receiver| async move {
-            receiver.recv().await.map(|item| (item, receiver))
-        });
+        let stream = futures_util::stream::unfold(
+            (receiver, registrations),
+            |(mut receiver, registrations)| async move {
+                receiver
+                    .recv()
+                    .await
+                    .map(|item| (item, (receiver, registrations)))
+            },
+        );
         Response::builder()
             .header("content-type", "text/event-stream")
             .body(Body::from_stream(stream))
@@ -1128,6 +1254,11 @@ fn member_reply_reserve(item: &Value) -> usize {
         error(Value::Null, -32600, "Request ID is already active"),
         error(
             item.get("id").cloned().unwrap_or(Value::Null),
+            -32000,
+            "MCP session request ID limit reached; reconnect",
+        ),
+        error(
+            item.get("id").cloned().unwrap_or(Value::Null),
             -32602,
             "Invalid params",
         ),
@@ -1145,6 +1276,7 @@ async fn process_http_batch<S: ServerHandler + Send + 'static>(
     items: Vec<Value>,
     sender: &tokio::sync::mpsc::Sender<Result<Bytes, io::Error>>,
     deadline: tokio::time::Instant,
+    registrations: Arc<std::sync::Mutex<Vec<RequestRegistration>>>,
 ) -> io::Result<()> {
     let mut replies = vec![];
     // Array brackets plus SSE framing, also shared with immediate notifications.
@@ -1161,9 +1293,6 @@ async fn process_http_batch<S: ServerHandler + Send + 'static>(
             && !ids.insert(id.to_string())
         {
             Some(error(Value::Null, -32600, "Duplicate batch request ID"))
-        } else if serde_json::from_value::<ClientJsonRpcMessage>(item.clone()).is_err() {
-            item.get("id")
-                .map(|id| error(id.clone(), -32602, "Invalid params"))
         } else {
             let key = if item.get("method").is_some()
                 && let Some(id) = item.get("id")
@@ -1188,6 +1317,17 @@ async fn process_http_batch<S: ServerHandler + Send + 'static>(
                     .contains_key(key)
             }) {
                 Some(error(Value::Null, -32600, "Request ID is already active"))
+            } else if serde_json::from_value::<ClientJsonRpcMessage>(item.clone()).is_err() {
+                key.as_ref().map(|(session, _)| {
+                    let (reply, registration) = sessions.invalid_params(session, &item["id"]);
+                    if let Some(registration) = registration {
+                        registrations
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(registration);
+                    }
+                    reply
+                })
             } else if tokio::time::Instant::now() >= deadline
                 || (item.get("method").is_some()
                     && item.get("id").is_some()
@@ -1378,6 +1518,26 @@ mod tests {
             };
             assert_eq!(writer.fallbacks[index].as_ref(), Some(error));
             assert!(error["id"].is_null());
+        }
+    }
+
+    #[test]
+    fn wire_request_ids_accept_unsigned_integer_domain() {
+        for id in [
+            json!(i64::MIN),
+            json!(i64::MAX),
+            json!(u64::MAX),
+            json!("id"),
+        ] {
+            assert!(valid_request_id(&id));
+            assert!(valid_message(
+                &json!({"jsonrpc":"2.0","id":id,"method":"ping"})
+            ));
+            assert!(valid_message(&json!({"jsonrpc":"2.0","id":id,"result":{}})));
+            assert!(valid_message(&error(id.clone(), -32603, "error")));
+        }
+        for id in [json!(null), json!(true), json!(1.5), json!([]), json!({})] {
+            assert!(!valid_request_id(&id));
         }
     }
 
@@ -1987,6 +2147,382 @@ mod cancellation_tests {
         );
         drop(original);
     }
+    fn malformed_request(id: i64) -> Value {
+        json!({"jsonrpc":"2.0","id":id,"method":"ping","params":{"_meta":9}})
+    }
+
+    #[tokio::test]
+    async fn stdio_typed_decode_errors_cannot_capture_active_or_cancelled_ids() {
+        for original_batch in [false, true] {
+            for malformed_batch in [false, true] {
+                for cancelled in [false, true] {
+                    let original = json!({"jsonrpc":"2.0","id":2,"method":"ping"});
+                    let original = if original_batch {
+                        json!([original])
+                    } else {
+                        original
+                    };
+                    let malformed = malformed_request(2);
+                    let malformed = if malformed_batch {
+                        json!([malformed])
+                    } else {
+                        malformed
+                    };
+                    let input = format!(
+                        "{original}\n{}{malformed}\n{}\n",
+                        if cancelled {
+                            format!("{}\n", cancel())
+                        } else {
+                            String::new()
+                        },
+                        json!({"jsonrpc":"2.0","id":3,"method":"ping"}),
+                    );
+                    let mut transport = StdioTransport::new(input.as_bytes(), Vec::<u8>::new());
+                    transport.state.lock().unwrap().march = true;
+                    assert!(matches!(
+                        transport.receive().await,
+                        Some(JsonRpcMessage::Request(_))
+                    ));
+                    if cancelled {
+                        assert!(matches!(
+                            transport.receive().await,
+                            Some(JsonRpcMessage::Notification(_))
+                        ));
+                    }
+                    let Some(JsonRpcMessage::Request(next)) = transport.receive().await else {
+                        panic!("malformed collisions must not dispatch");
+                    };
+                    assert_eq!(serde_json::to_value(next.id).unwrap(), 3);
+                    let bytes = transport.writer.lock().await.clone();
+                    let reply: Value = serde_json::from_slice(&bytes).unwrap();
+                    let reply = reply.as_array().map_or(&reply, |items| &items[0]);
+                    assert!(reply["id"].is_null());
+                    assert_eq!(reply["error"]["code"], -32600);
+                    let state = transport.state.lock().unwrap();
+                    assert!(state.active.contains("2"));
+                    assert_eq!(state.cancelled.contains("2"), cancelled);
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn stdio_malformed_batch_member_claims_id_without_stranding_it() {
+        let input = format!(
+            "{}\n{}\n",
+            json!([malformed_request(42),
+                {"jsonrpc":"2.0","id":42,"method":"ping"},
+                {"jsonrpc":"2.0","id":43,"method":"ping"}]),
+            json!({"jsonrpc":"2.0","id":42,"method":"ping"}),
+        );
+        let mut transport = StdioTransport::new(input.as_bytes(), Vec::<u8>::new());
+        transport.state.lock().unwrap().march = true;
+        let Some(JsonRpcMessage::Request(request)) = transport.receive().await else {
+            panic!("only the fresh ID should dispatch");
+        };
+        assert_eq!(serde_json::to_value(request.id).unwrap(), 43);
+        assert_eq!(
+            transport.state.lock().unwrap().pending,
+            HashSet::from(["43".to_owned()])
+        );
+        transport
+            .send(serde_json::from_value(json!({"jsonrpc":"2.0","id":43,"result":{}})).unwrap())
+            .await
+            .unwrap();
+        let replies: Value = serde_json::from_slice(&transport.writer.lock().await).unwrap();
+        assert_eq!(replies.as_array().unwrap().len(), 3);
+        assert_eq!(replies[0]["id"], 42);
+        assert_eq!(replies[0]["error"]["code"], -32602);
+        assert!(replies[1]["id"].is_null());
+        assert_eq!(replies[1]["error"]["code"], -32600);
+        assert_eq!(replies[2]["id"], 43);
+        let Some(JsonRpcMessage::Request(request)) = transport.receive().await else {
+            panic!("a decode failure must not leave its ID permanently reserved");
+        };
+        assert_eq!(serde_json::to_value(request.id).unwrap(), 42);
+    }
+
+    #[tokio::test]
+    async fn stdio_decode_error_id_stays_reserved_until_aggregate_delivery() {
+        let input = format!(
+            "{}\n{}\n{}\n{}\n{}\n",
+            json!([malformed_request(42), {"jsonrpc":"2.0","id":2,"method":"ping"}]),
+            json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":42}}),
+            json!({"jsonrpc":"2.0","id":42,"method":"ping"}),
+            json!({"jsonrpc":"2.0","id":3,"method":"ping"}),
+            json!({"jsonrpc":"2.0","id":42,"method":"ping"}),
+        );
+        let mut transport = StdioTransport::new(input.as_bytes(), Vec::<u8>::new());
+        transport.state.lock().unwrap().march = true;
+        assert!(matches!(
+            transport.receive().await,
+            Some(JsonRpcMessage::Request(_))
+        ));
+        assert!(transport.state.lock().unwrap().active.contains("42"));
+        assert!(matches!(
+            transport.receive().await,
+            Some(JsonRpcMessage::Notification(_))
+        ));
+        assert!(!transport.state.lock().unwrap().cancelled.contains("42"));
+        let Some(JsonRpcMessage::Request(request)) = transport.receive().await else {
+            panic!("a pending malformed reply must block reuse of its ID");
+        };
+        assert_eq!(serde_json::to_value(request.id).unwrap(), 3);
+        let collision: Value = serde_json::from_slice(&transport.writer.lock().await).unwrap();
+        assert!(collision["id"].is_null());
+        transport
+            .send(serde_json::from_value(json!({"jsonrpc":"2.0","id":2,"result":{}})).unwrap())
+            .await
+            .unwrap();
+        assert!(!transport.state.lock().unwrap().active.contains("42"));
+        let Some(JsonRpcMessage::Request(request)) = transport.receive().await else {
+            panic!("delivered malformed replies must release their IDs");
+        };
+        assert_eq!(serde_json::to_value(request.id).unwrap(), 42);
+    }
+
+    #[tokio::test]
+    async fn stdio_completed_write_releases_only_its_own_decode_error_claims() {
+        let writer = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let state = Arc::new(std::sync::Mutex::new(BatchState::default()));
+        let locked = writer.lock().await;
+        let output = writer.clone();
+        let completed = state.clone();
+        let task = tokio::spawn(async move {
+            // This older aggregate had no decode errors when it completed.
+            write_completed(
+                &output,
+                &completed,
+                &json!([{"jsonrpc":"2.0","id":2,"result":{}}]),
+                HashSet::new(),
+            )
+            .await
+            .unwrap();
+        });
+        tokio::task::yield_now().await;
+        {
+            let mut state = state.lock().unwrap();
+            state.active.insert("42".into());
+            state.error_ids.insert("42".into());
+        }
+        drop(locked);
+        task.await.unwrap();
+        assert!(state.lock().unwrap().active.contains("42"));
+        assert!(state.lock().unwrap().error_ids.contains("42"));
+        write_completed(
+            &writer,
+            &state,
+            &json!([error(json!(42), -32602, "Invalid params")]),
+            HashSet::from(["42".to_owned()]),
+        )
+        .await
+        .unwrap();
+        assert!(state.lock().unwrap().active.is_empty());
+        assert!(state.lock().unwrap().error_ids.is_empty());
+    }
+
+    #[tokio::test]
+    async fn stdio_decode_error_cancellation_during_blocked_delivery_leaves_no_tombstone() {
+        let input = format!(
+            "{}\n",
+            json!([malformed_request(42), {"jsonrpc":"2.0","id":2,"method":"ping"}])
+        );
+        let mut transport = StdioTransport::new(input.as_bytes(), Vec::<u8>::new());
+        transport.state.lock().unwrap().march = true;
+        assert!(matches!(
+            transport.receive().await,
+            Some(JsonRpcMessage::Request(_))
+        ));
+        let writer = transport.writer.clone();
+        let locked = writer.lock().await;
+        let sending = transport
+            .send(serde_json::from_value(json!({"jsonrpc":"2.0","id":2,"result":{}})).unwrap());
+        tokio::pin!(sending);
+        assert!(futures_util::poll!(&mut sending).is_pending());
+        assert!(transport.state.lock().unwrap().pending.is_empty());
+        let cancellation = serde_json::from_value(
+            json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":42}}),
+        )
+        .unwrap();
+        assert!(transport.cancel_pending(&cancellation).is_none());
+        {
+            let state = transport.state.lock().unwrap();
+            assert!(state.active.contains("42"));
+            assert!(state.error_ids.contains("42"));
+            assert!(!state.cancelled.contains("42"));
+        }
+        drop(locked);
+        sending.await.unwrap();
+        let state = transport.state.lock().unwrap();
+        assert!(!state.active.contains("42"));
+        assert!(!state.cancelled.contains("42"));
+        assert!(state.error_ids.is_empty());
+    }
+
+    #[tokio::test]
+    async fn march_http_decode_error_reservations_release_after_delivery_even_if_cancelled() {
+        for batch in [false, true] {
+            let handler = SlowPing {
+                started: Arc::new(tokio::sync::Notify::new()),
+            };
+            let service = HttpService::new(
+                move || Ok(handler.clone()),
+                crate::mcp::streamable_http_config(["localhost"]),
+            );
+            let initialized = service.handle(request(initialize(), None)).await;
+            let session = initialized.headers()["Mcp-Session-Id"]
+                .to_str()
+                .unwrap()
+                .to_owned();
+            let _ = values(initialized).await;
+            let malformed = malformed_request(42);
+            let response = service
+                .handle(request(
+                    if batch { json!([malformed]) } else { malformed },
+                    Some(&session),
+                ))
+                .await;
+            let mut body = response.into_body().into_data_stream();
+            // Receiving the data frame does not finish the response body.
+            assert!(body.next().await.unwrap().is_ok());
+            assert_eq!(
+                service
+                    .handle(request(
+                        json!({"jsonrpc":"2.0","id":42,"method":"ping"}),
+                        Some(&session)
+                    ))
+                    .await
+                    .status(),
+                StatusCode::INTERNAL_SERVER_ERROR
+            );
+            assert_eq!(service.handle(request(json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":42}}), Some(&session))).await.status(), StatusCode::ACCEPTED);
+            assert!(body.next().await.is_none());
+            let response = service
+                .handle(request(
+                    json!({"jsonrpc":"2.0","id":42,"method":"ping"}),
+                    Some(&session),
+                ))
+                .await;
+            assert!(response.status().is_success());
+            assert_eq!(values(response).await[0]["id"], 42);
+            assert!(service.sessions.batch_requests.lock().unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn march_http_typed_decode_errors_cannot_capture_active_or_cancelled_ids() {
+        for original_batch in [false, true] {
+            let started = Arc::new(tokio::sync::Notify::new());
+            let handler = SlowPing {
+                started: started.clone(),
+            };
+            let service = HttpService::new(
+                move || Ok(handler.clone()),
+                crate::mcp::streamable_http_config(["localhost"]),
+            );
+            let initialized = service.handle(request(initialize(), None)).await;
+            let session = initialized.headers()["Mcp-Session-Id"]
+                .to_str()
+                .unwrap()
+                .to_owned();
+            let _ = values(initialized).await;
+            let original = json!({"jsonrpc":"2.0","id":2,"method":"ping"});
+            let original = service
+                .handle(request(
+                    if original_batch {
+                        json!([original])
+                    } else {
+                        original
+                    },
+                    Some(&session),
+                ))
+                .await;
+            tokio::time::timeout(std::time::Duration::from_secs(5), started.notified())
+                .await
+                .unwrap();
+            for cancelled in [false, true] {
+                if cancelled {
+                    assert_eq!(
+                        service
+                            .handle(request(cancel(), Some(&session)))
+                            .await
+                            .status(),
+                        StatusCode::ACCEPTED
+                    );
+                }
+                for malformed_batch in [false, true] {
+                    let malformed = malformed_request(2);
+                    let response = service
+                        .handle(request(
+                            if malformed_batch {
+                                json!([malformed])
+                            } else {
+                                malformed
+                            },
+                            Some(&session),
+                        ))
+                        .await;
+                    assert_eq!(response.status(), StatusCode::OK);
+                    let reply = if malformed_batch {
+                        values(response).await[0][0].clone()
+                    } else {
+                        serde_json::from_slice(
+                            &to_bytes(response.into_body(), MAX_RESPONSE_BYTES)
+                                .await
+                                .unwrap(),
+                        )
+                        .unwrap()
+                    };
+                    assert!(reply["id"].is_null());
+                    assert_eq!(reply["error"]["code"], -32600);
+                }
+            }
+            drop(original);
+        }
+    }
+
+    #[tokio::test]
+    async fn march_http_malformed_batch_member_claims_id_without_stranding_it() {
+        let handler = SlowPing {
+            started: Arc::new(tokio::sync::Notify::new()),
+        };
+        let service = HttpService::new(
+            move || Ok(handler.clone()),
+            crate::mcp::streamable_http_config(["localhost"]),
+        );
+        let initialized = service.handle(request(initialize(), None)).await;
+        let session = initialized.headers()["Mcp-Session-Id"]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let _ = values(initialized).await;
+        let response = service
+            .handle(request(
+                json!([malformed_request(42),
+            {"jsonrpc":"2.0","id":42,"method":"ping"},
+            {"jsonrpc":"2.0","id":43,"method":"ping"}]),
+                Some(&session),
+            ))
+            .await;
+        let replies = values(response).await;
+        let replies = replies[0].as_array().unwrap();
+        assert_eq!(replies.len(), 3);
+        assert_eq!(replies[0]["id"], 42);
+        assert_eq!(replies[0]["error"]["code"], -32602);
+        assert!(replies[1]["id"].is_null());
+        assert_eq!(replies[1]["error"]["code"], -32600);
+        assert_eq!(replies[2]["id"], 43);
+        let response = service
+            .handle(request(
+                json!({"jsonrpc":"2.0","id":42,"method":"ping"}),
+                Some(&session),
+            ))
+            .await;
+        assert!(response.status().is_success());
+        assert_eq!(values(response).await[0]["id"], 42);
+        assert!(service.sessions.batch_requests.lock().unwrap().is_empty());
+    }
+
     #[tokio::test]
     async fn single_typed_decode_errors_keep_request_id_and_do_not_reply_to_notifications() {
         let input = concat!(
@@ -2344,6 +2880,7 @@ mod cancellation_tests {
             items,
             &sender,
             tokio::time::Instant::now() + std::time::Duration::from_millis(100),
+            Arc::default(),
         )
         .await
         .unwrap();
@@ -2413,9 +2950,17 @@ mod cancellation_tests {
             let inner = service.service.clone();
             let sessions = service.sessions.clone();
             let producer = tokio::spawn(async move {
-                process_http_batch(inner, sessions, parts, items, &sender, deadline)
-                    .await
-                    .unwrap();
+                process_http_batch(
+                    inner,
+                    sessions,
+                    parts,
+                    items,
+                    &sender,
+                    deadline,
+                    Arc::default(),
+                )
+                .await
+                .unwrap();
             });
             // The second handler starting proves the first mutation's reply was
             // collected before the dispatch deadline expires.

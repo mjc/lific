@@ -699,6 +699,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn march_remote_batches_preserve_unsigned_ids_and_reject_duplicates() {
+        let forwarder = MockForwarder::new(|body| {
+            let request: Value = serde_json::from_str(body).unwrap();
+            let result = if request["method"] == "initialize" {
+                serde_json::json!({"protocolVersion":"2025-03-26"})
+            } else {
+                serde_json::json!({})
+            };
+            Ok(serde_json::json!({"jsonrpc":"2.0","id":request["id"],"result":result}).to_string())
+        });
+        let init = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}});
+        let ids = [
+            serde_json::json!(u64::MAX),
+            serde_json::json!(i64::MAX as u64 + 1),
+            serde_json::json!(u64::MAX.to_string()),
+        ];
+        let mut requests: Vec<_> = ids
+            .iter()
+            .map(|id| serde_json::json!({"jsonrpc":"2.0","id":id,"method":"ping"}))
+            .collect();
+        requests.push(requests[0].clone());
+        let batch = Value::Array(requests);
+        let out = run_pump(&format!("{init}\n{batch}\n"), &forwarder).await;
+        assert_eq!(out.len(), 2);
+        let replies = out[1].as_array().unwrap();
+        assert_eq!(replies.len(), 4);
+        for (reply, id) in replies.iter().zip(&ids) {
+            assert_eq!(&reply["id"], id);
+            assert!(reply.get("result").is_some());
+        }
+        assert!(replies[3]["id"].is_null());
+        assert_eq!(replies[3]["error"]["code"], -32600);
+        let seen = forwarder.received();
+        assert_eq!(seen.len(), 4);
+        for (body, id) in seen[1..].iter().zip(&ids) {
+            assert_eq!(serde_json::from_str::<Value>(body).unwrap()["id"], *id);
+        }
+    }
+
+    #[tokio::test]
     async fn march_remote_batch_overflow_preserves_success_and_skips_remaining_mutations() {
         let forwarder = MockForwarder::new(|body| {
             let value: Value = serde_json::from_str(body).unwrap();

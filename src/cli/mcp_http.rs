@@ -62,7 +62,7 @@ pub(super) fn valid_request(message: &Value) -> bool {
         && message.get("params").is_none_or(Value::is_object)
         && message
             .get("id")
-            .is_none_or(|id| id.is_string() || id.as_i64().is_some() || id.as_u64().is_some())
+            .is_none_or(crate::mcp::batching::valid_request_id)
 }
 
 /// Receives validated request-scoped notifications as they arrive.
@@ -118,13 +118,17 @@ pub(super) async fn post_with_notifications<S: NotificationSink>(
     limits: Limits,
     notifications: &mut S,
 ) -> Result<String, ForwardError> {
+    let mut exchange = Exchange {
+        limits,
+        bytes: ResponseBudget::new(limits.max_bytes),
+    };
     if let Some(reply) = post_once(
         client,
         endpoint,
         credential,
         session,
         &body,
-        limits,
+        &mut exchange,
         notifications,
     )
     .await?
@@ -151,7 +155,7 @@ pub(super) async fn post_with_notifications<S: NotificationSink>(
             credential,
             &recovered_session,
             initialize,
-            limits,
+            &mut exchange,
             notifications,
         )
         .await?
@@ -175,7 +179,7 @@ pub(super) async fn post_with_notifications<S: NotificationSink>(
             credential,
             &recovered_session,
             r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
-            limits,
+            &mut exchange,
             notifications,
         )
         .await?
@@ -197,7 +201,7 @@ pub(super) async fn post_with_notifications<S: NotificationSink>(
         credential,
         session,
         &body,
-        limits,
+        &mut exchange,
         notifications,
     )
     .await?
@@ -212,11 +216,13 @@ async fn post_once<S: NotificationSink>(
     credential: Option<&str>,
     session: &Mutex<Session>,
     body: &str,
-    limits: Limits,
+    exchange: &mut Exchange,
     notifications: &mut S,
 ) -> Result<Option<String>, ForwardError> {
-    let max_bytes = limits.max_bytes;
     let message: Value = serde_json::from_str(body).map_err(ForwardError::unreachable)?;
+    if message.get("id").is_some() && exchange.bytes.remaining == 0 {
+        return Err(exchange.bytes.exceeded());
+    }
     let method = message["method"].as_str().unwrap_or_default();
     let state = session
         .lock()
@@ -266,7 +272,7 @@ async fn post_once<S: NotificationSink>(
     if let Some(credential) = credential {
         request = request.bearer_auth(credential);
     }
-    if let Some(deadline) = limits.deadline {
+    if let Some(deadline) = exchange.limits.deadline {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
             return Err(ForwardError::unreachable(
@@ -290,7 +296,7 @@ async fn post_once<S: NotificationSink>(
         return Err(ForwardError::rejected(status));
     }
     if !status.is_success() {
-        let detail = read_capped(response, max_bytes).await?;
+        let detail = read_budgeted(response, &mut exchange.bytes).await?;
         if status == reqwest::StatusCode::NOT_FOUND
             && !modern
             && method != "initialize"
@@ -331,7 +337,7 @@ async fn post_once<S: NotificationSink>(
                 "notification returned HTTP {status}, expected 202 Accepted"
             )));
         }
-        let body = read_capped(response, max_bytes).await?;
+        let body = read_budgeted(response, &mut exchange.bytes).await?;
         if !body.is_empty() {
             return Err(ForwardError::unreachable(
                 "notification response contained an unexpected body",
@@ -354,7 +360,7 @@ async fn post_once<S: NotificationSink>(
     let initialize_id = (method == "initialize").then_some(&message["id"]);
     let mut replies = ResponseCollector::new(&message["id"]);
     let value = if mime.starts_with(JSON_MIME_TYPE) {
-        let payload = read_capped(response, max_bytes).await?;
+        let payload = read_budgeted(response, &mut exchange.bytes).await?;
         let raw: Value = serde_json::from_str(&payload).map_err(ForwardError::unreachable)?;
         if raw.is_array() {
             replies
@@ -366,7 +372,8 @@ async fn post_once<S: NotificationSink>(
             raw
         }
     } else if mime.starts_with(EVENT_STREAM_MIME_TYPE) {
-        let stream = sse_stream::SseStream::from_bytes_stream(capped_chunks(response, max_bytes));
+        let stream =
+            sse_stream::SseStream::from_bytes_stream(capped_chunks(response, &mut exchange.bytes));
         tokio::pin!(stream);
         while let Some(event) = stream.next().await {
             let Some(data) = event
@@ -501,21 +508,44 @@ pub(crate) fn validate_envelope(response: &Value, expected_id: &Value) -> Result
     }
 }
 
-/// Both JSON and SSE count raw bytes before parsing or buffering. In
-/// particular, many small SSE events must not evade the exchange-wide cap.
+/// One budget follows the original POST, both recovery handshake POSTs, and
+/// the replay. A completed handshake can be published even if no bytes remain
+/// to safely dispatch the replay.
+struct Exchange {
+    limits: Limits,
+    bytes: ResponseBudget,
+}
+
+struct ResponseBudget {
+    maximum: usize,
+    remaining: usize,
+}
+
+impl ResponseBudget {
+    fn new(maximum: usize) -> Self {
+        Self {
+            maximum,
+            remaining: maximum,
+        }
+    }
+
+    fn exceeded(&self) -> ForwardError {
+        ForwardError::unreachable(format!("response exceeded the {} byte limit", self.maximum))
+    }
+}
+
+/// Debit raw chunks before either JSON buffering or SSE event parsing.
 fn capped_chunks(
     response: reqwest::Response,
-    max_bytes: usize,
-) -> impl futures_util::Stream<Item = Result<axum::body::Bytes, ForwardError>> + Send {
-    futures_util::stream::try_unfold((response, 0usize), move |(mut response, seen)| async move {
+    budget: &mut ResponseBudget,
+) -> impl futures_util::Stream<Item = Result<axum::body::Bytes, ForwardError>> + Send + '_ {
+    futures_util::stream::try_unfold((response, budget), |(mut response, budget)| async move {
         match response.chunk().await.map_err(ForwardError::unreachable)? {
-            Some(chunk) if chunk.len() <= max_bytes.saturating_sub(seen) => {
-                let total = seen + chunk.len();
-                Ok(Some((chunk, (response, total))))
+            Some(chunk) if chunk.len() <= budget.remaining => {
+                budget.remaining -= chunk.len();
+                Ok(Some((chunk, (response, budget))))
             }
-            Some(_) => Err(ForwardError::unreachable(format!(
-                "response exceeded the {max_bytes} byte limit"
-            ))),
+            Some(_) => Err(budget.exceeded()),
             None => Ok(None),
         }
     })
@@ -525,7 +555,14 @@ pub(super) async fn read_capped(
     response: reqwest::Response,
     max_bytes: usize,
 ) -> Result<String, ForwardError> {
-    let stream = capped_chunks(response, max_bytes);
+    read_budgeted(response, &mut ResponseBudget::new(max_bytes)).await
+}
+
+async fn read_budgeted(
+    response: reqwest::Response,
+    budget: &mut ResponseBudget,
+) -> Result<String, ForwardError> {
+    let stream = capped_chunks(response, budget);
     tokio::pin!(stream);
     let mut buffer = Vec::new();
     while let Some(chunk) = stream.next().await {
@@ -956,6 +993,180 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn standalone_read_capped_starts_a_fresh_budget_per_response() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+        let app = axum::Router::new().route("/", axum::routing::get(|| async { "abc" }));
+        let task = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = reqwest::Client::new();
+        for _ in 0..2 {
+            let response = client.get(&endpoint).send().await.unwrap();
+            assert_eq!(read_capped(response, 3).await.unwrap(), "abc");
+        }
+        let response = client.get(&endpoint).send().await.unwrap();
+        assert!(read_capped(response, 2).await.is_err());
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn recovery_json_and_sse_share_one_raw_response_byte_budget() {
+        use std::sync::Arc;
+
+        const MISSING: &str = "Not Found: Session not found";
+        for sse in [false, true] {
+            let initialize = json!({
+                "jsonrpc":"2.0", "id":41, "method":"initialize",
+                "params":{"protocolVersion":crate::mcp::batching::MARCH},
+            });
+            let notification = json!({
+                "jsonrpc":"2.0", "method":"notifications/progress",
+                "params":{"progressToken":"recovery", "progress":1},
+            });
+            let initialization = json!({
+                "jsonrpc":"2.0", "id":41,
+                "result":{
+                    "protocolVersion":crate::mcp::batching::MARCH,
+                    "capabilities":{}, "serverInfo":{"name":"mock", "version":"1"},
+                },
+            });
+            let reply = json!({"jsonrpc":"2.0", "id":19, "result":{}});
+            let frame = |response: &Value| {
+                if sse {
+                    format!("data: {notification}\n\ndata: {response}\n\n")
+                } else {
+                    json!([notification, response]).to_string()
+                }
+            };
+            let initialization_body = frame(&initialization);
+            let reply_body = frame(&reply);
+            let exact = MISSING.len() + initialization_body.len() + reply_body.len();
+            for (max, expected_requests, succeeds, published, initialized_body) in [
+                (exact, 4, true, true, ""),
+                (exact - 1, 4, false, true, ""),
+                (initialization_body.len(), 2, false, false, ""),
+                (MISSING.len(), 1, false, false, ""),
+                (
+                    MISSING.len() + initialization_body.len(),
+                    3,
+                    false,
+                    true,
+                    "",
+                ),
+                (
+                    MISSING.len() + initialization_body.len(),
+                    3,
+                    false,
+                    false,
+                    "x",
+                ),
+            ] {
+                if max >= exact - 1 {
+                    assert!(MISSING.len() < max);
+                    assert!(initialization_body.len() < max);
+                    assert!(reply_body.len() < max);
+                }
+                let requests = Arc::new(Mutex::new(Vec::<Value>::new()));
+                let observed = requests.clone();
+                let initialization_body = initialization_body.clone();
+                let reply_body = reply_body.clone();
+                let app = axum::Router::new().route(
+                    "/mcp",
+                    axum::routing::post(
+                        move |headers: HeaderMap, axum::Json(body): axum::Json<Value>| {
+                            let observed = observed.clone();
+                            let initialization_body = initialization_body.clone();
+                            let reply_body = reply_body.clone();
+                            async move {
+                                observed.lock().unwrap().push(body.clone());
+                                match body["method"].as_str().unwrap() {
+                                    "tools/call" if headers[HEADER_SESSION_ID] == "old" => {
+                                        (StatusCode::NOT_FOUND, MISSING).into_response()
+                                    }
+                                    "notifications/initialized" => {
+                                        assert_eq!(headers[HEADER_SESSION_ID], "new");
+                                        (StatusCode::ACCEPTED, initialized_body).into_response()
+                                    }
+                                    method => Response::builder()
+                                        .header(
+                                            CONTENT_TYPE,
+                                            if sse {
+                                                EVENT_STREAM_MIME_TYPE
+                                            } else {
+                                                JSON_MIME_TYPE
+                                            },
+                                        )
+                                        .header(HEADER_SESSION_ID, "new")
+                                        .body(axum::body::Body::from(if method == "initialize" {
+                                            initialization_body
+                                        } else {
+                                            assert_eq!(method, "tools/call");
+                                            assert_eq!(headers[HEADER_SESSION_ID], "new");
+                                            reply_body
+                                        }))
+                                        .unwrap(),
+                                }
+                            }
+                        },
+                    ),
+                );
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let endpoint = format!("http://{}/mcp", listener.local_addr().unwrap());
+                let task = tokio::spawn(async move {
+                    axum::serve(listener, app).await.unwrap();
+                });
+                let session = Mutex::new(Session {
+                    id: Some("old".into()),
+                    version: Some(crate::mcp::batching::MARCH.into()),
+                    initialize: Some(initialize.to_string()),
+                });
+                let mut notifications = CollectedNotifications::default();
+                let result = post_with_notifications(
+                    &reqwest::Client::new(),
+                    &endpoint,
+                    None,
+                    &session,
+                    json!({"jsonrpc":"2.0", "id":19, "method":"tools/call", "params":{"name":"mutation"}}).to_string(),
+                    Limits::with_timeout(max, std::time::Duration::from_secs(3)),
+                    &mut notifications,
+                )
+                .await;
+                assert_eq!(
+                    result.is_ok(),
+                    succeeds,
+                    "sse={sse}, limit={max}: {result:?}"
+                );
+                assert_eq!(
+                    requests.lock().unwrap().len(),
+                    expected_requests,
+                    "sse={sse}, limit={max}"
+                );
+                assert_eq!(
+                    session.lock().unwrap().id.as_deref(),
+                    Some(if published { "new" } else { "old" })
+                );
+                if succeeds {
+                    assert_eq!(
+                        serde_json::from_str::<Value>(&result.unwrap()).unwrap(),
+                        reply
+                    );
+                    assert_eq!(
+                        notifications.0,
+                        vec![notification.clone(), notification.clone()]
+                    );
+                } else {
+                    assert!(result.unwrap_err().to_string().contains("byte limit"));
+                    if published {
+                        assert_eq!(notifications.0.first(), Some(&notification));
+                    }
+                }
+                task.abort();
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn expired_sessions_recover_once_without_replaying_other_failures() {
         use std::sync::Arc;
 
@@ -1378,6 +1589,8 @@ mod march_batch_tests {
             for request in [
                 json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}),
                 json!({"jsonrpc":"2.0","id":"ping","method":"ping"}),
+                json!({"jsonrpc":"2.0","id":u64::MAX,"method":"ping"}),
+                json!({"jsonrpc":"2.0","id":i64::MAX as u64 + 1,"method":"ping"}),
             ] {
                 let raw = post_with_notifications(
                     &client,
@@ -1397,7 +1610,7 @@ mod march_batch_tests {
                 session.lock().unwrap().version.as_deref(),
                 Some("2025-03-26")
             );
-            assert_eq!(String::from_utf8(notifications).unwrap().lines().count(), 2);
+            assert_eq!(String::from_utf8(notifications).unwrap().lines().count(), 4);
             task.abort();
         }
     }

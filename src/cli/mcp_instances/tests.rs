@@ -3739,6 +3739,37 @@ async fn march_multi_instance_batches_route_individual_calls_and_keep_protocol_e
 }
 
 #[tokio::test]
+async fn march_multi_instance_batches_preserve_unsigned_ids_and_reject_duplicates() {
+    let router = router_bound(&[("private", None)], Some("private"));
+    let transport = RecordingTransport::default();
+    let init = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"march","version":"1"}}});
+    let ids = [
+        serde_json::json!(u64::MAX),
+        serde_json::json!(i64::MAX as u64 + 1),
+        serde_json::json!(u64::MAX.to_string()),
+    ];
+    let mut requests: Vec<_> = ids.iter().map(|id| serde_json::json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"get_issue","arguments":{"instance":"private","identifier":"LIF-42"}}})).collect();
+    requests.push(requests[0].clone());
+    let batch = Value::Array(requests);
+    let out = run_pump(&format!("{init}\n{batch}\n"), &router, &transport).await;
+    assert_eq!(out.len(), 2);
+    let replies = out[1].as_array().unwrap();
+    assert_eq!(replies.len(), 4);
+    for (reply, id) in replies.iter().zip(&ids) {
+        assert_eq!(&reply["id"], id);
+        assert_eq!(reply["result"]["_meta"][PROVENANCE_META_KEY], "private");
+    }
+    assert!(replies[3]["id"].is_null());
+    assert_eq!(replies[3]["error"]["code"], -32600);
+    let seen = transport.seen.lock().unwrap();
+    assert_eq!(seen.len(), 3);
+    for ((alias, request), id) in seen.iter().zip(&ids) {
+        assert_eq!(alias, "private");
+        assert_eq!(&request["id"], id);
+    }
+}
+
+#[tokio::test]
 async fn march_multi_batch_overflow_preserves_success_and_skips_remaining_mutations() {
     #[derive(Default)]
     struct LargeReplies(Mutex<Vec<Value>>);
