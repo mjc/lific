@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const {createHash} = require('node:crypto');
 const path = require('node:path');
 const {pathToFileURL} = require('node:url');
-const {mountedProxy} = require('./browser_fixture.cjs');
+const {mountedProxy, launchBrowser} = require('./browser_fixture.cjs');
 
 const snapshot = process.argv[4];
 const output = '/tmp/lific-native-home-production';
@@ -166,15 +166,15 @@ async function assertNativeHome(state, proxy, prefix) {
 
 test('production native Home uses Rust state and mounted transport; capture paired original Home', {timeout: 240000}, async t => {
   assert.ok(process.argv[2] && process.argv[3], 'Supply fixture-origin and session-token as arguments.');
-  assert.ok(process.env.PLAYWRIGHT_EXECUTABLE_PATH, 'Use the repository Chromium profile.');
+
   const upstream = new URL(process.argv[2]), token = process.argv[3];
   assert.equal(upstream.protocol, 'http:', 'The ephemeral fixture is a local HTTP server.');
   assert.ok(['127.0.0.1', 'localhost', '[::1]'].includes(upstream.hostname), 'Use the disposable loopback fixture.');
   fs.mkdirSync(output, {recursive: true});
   fs.writeFileSync(path.join(output, 'progress.log'), '');
   checkpoint(`start native Home; optional master ${Boolean(snapshot)}`);
-  const {chromium} = await import(path.resolve(__dirname, '../../../e2e/node_modules/playwright/index.mjs'));
-  const browser = await chromium.launch({headless: true, executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH});
+
+  const browser = await launchBrowser();
   const desktop = {name: 'desktop', width: 1440, height: 900};
   const phone = {name: 'phone', width: 390, height: 844};
   const report = [];

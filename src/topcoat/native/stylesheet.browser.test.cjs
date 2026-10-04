@@ -4,15 +4,14 @@ const {test} = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const {createHash} = require('node:crypto');
-const {mountedProxy} = require('./browser_fixture.cjs');
+const {mountedProxy, launchBrowser} = require('./browser_fixture.cjs');
 
 const upstream = new URL(process.argv[2]), token = process.argv[3];
 const stale = '/* simulated CDN cached bundle from before native Home */ body { margin: 8px; }';
 
 test('document fingerprint escapes stale bare CSS and loads production native styles', async t => {
-  assert.ok(process.env.PLAYWRIGHT_EXECUTABLE_PATH, 'Use repository Chromium.');
-  const {chromium} = await import(path.resolve(__dirname, '../../../e2e/node_modules/playwright/index.mjs'));
-  const browser = await chromium.launch({headless: true, executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH});
+
+  const browser = await launchBrowser();
   try {
     for (const prefix of ['', '/app', '/ACC']) await t.test(prefix || 'root', async () => {
       const proxy = await mountedProxy(upstream, prefix);

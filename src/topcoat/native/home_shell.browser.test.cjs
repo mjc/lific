@@ -1,14 +1,15 @@
 // Original Layout.svelte at master 9683d38 is the shell contract.
-// node home_shell.browser.test.cjs <fixture-origin> <token> <scenario> [pinned-master-web-directory]
+// node home_shell.browser.test.cjs <fixture-origin> <token> <scenario> [pinned-master-web-directory] [hostile-project-name]
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const {pathToFileURL} = require('node:url');
-const {mountedProxy} = require('./browser_fixture.cjs');
+const {mountedProxy, launchBrowser} = require('./browser_fixture.cjs');
 
 const upstream = new URL(process.argv[2]), token = process.argv[3], scenario = process.argv[4];
 const snapshot = process.argv[5];
+const hostileProjectName = process.argv[6];
 const output = '/tmp/lific-native-home-shell';
 const destinations = ['Overview', 'Issues', 'Board', 'Graph', 'Modules', 'Pages', 'Files', 'Plans', 'Activity', 'Insights'];
 
@@ -61,11 +62,10 @@ async function reference(browser, referenceOrigin, name, theme, viewport) {
 }
 
 test(`native Home original shell: ${scenario}`, async t => {
-  assert.ok(['disclosure', 'geometry', 'mobile', 'mobile_lifetime', 'preferences'].includes(scenario));
-  assert.ok(process.env.PLAYWRIGHT_EXECUTABLE_PATH, 'Use repository Chromium.');
+  assert.ok(['disclosure', 'geometry', 'mobile', 'mobile_lifetime', 'mobile_unavailable', 'mobile_search_history', 'hostile_project', 'preferences'].includes(scenario));
+  if (scenario === 'hostile_project') assert.ok(hostileProjectName, 'The real database fixture supplies the exact hostile name.');
   fs.mkdirSync(output, {recursive: true});
-  const {chromium} = await import(path.resolve(__dirname, '../../../e2e/node_modules/playwright/index.mjs'));
-  const browser = await chromium.launch({headless: true, executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH});
+  const browser = await launchBrowser();
   let vite, referenceOrigin;
   const proxySockets = new Set();
   try {
@@ -85,7 +85,7 @@ test(`native Home original shell: ${scenario}`, async t => {
       referenceOrigin = `http://127.0.0.1:${vite.httpServer.address().port}`;
     }
     for (const prefix of ['', '/app', '/ACC']) await t.test(prefix || 'root', async t => {
-      const modes = scenario === 'geometry'
+      const modes = ['geometry', 'hostile_project'].includes(scenario)
         ? [['desktop', {width: 1440, height: 900}], ['phone', {width: 390, height: 844}]]
         : [[scenario.startsWith('mobile') ? 'phone' : 'desktop', scenario.startsWith('mobile') ? {width: 390, height: 844} : {width: 1440, height: 900}]];
       for (const [mode, viewport] of modes) for (const theme of scenario === 'geometry' ? ['light', 'dark'] : ['light']) {
@@ -100,6 +100,7 @@ test(`native Home original shell: ${scenario}`, async t => {
             await context.addCookies([{name: 'lific_token', value: token, url: proxy.origin, httpOnly: true, sameSite: 'Lax'}]);
             await context.addInitScript(theme => {
               if (localStorage.getItem('lific_theme') === null) localStorage.setItem('lific_theme', theme);
+              globalThis.__nativeProjectInjected = false;
             }, theme);
             context.on('request', request => requests.push(request.url()));
             context.on('requestfailed', request => networkFailures.push({url: request.url(), error: request.failure()?.errorText}));
@@ -108,6 +109,14 @@ test(`native Home original shell: ${scenario}`, async t => {
             page.on('pageerror', error => errors.push(error.message));
             page.on('console', message => {if (message.type() === 'error') errors.push(message.text());});
             await page.clock.setFixedTime('2026-10-03T16:00:00Z');
+            // A real prior document avoids depending on Chromium retaining its initial about:blank.
+            const predecessor = `${proxy.origin}${prefix}/__native_home_shell_predecessor?nav-predecessor=${scenario}`;
+            if (['mobile_unavailable', 'mobile_search_history'].includes(scenario)) {
+              const response = await page.goto(predecessor);
+              assert.equal(response.status(), 200);
+              assert.equal(response.headers()['content-type'], 'text/html; charset=utf-8');
+              assert.equal(await page.locator('link[rel="icon"]').getAttribute('href'), `${prefix}/favicon.png`);
+            }
             assert.equal((await page.goto(`${proxy.origin}${prefix}/`)).status(), 200);
             await page.locator('[data-native-home-connected="true"]').first().waitFor();
             await page.getByText('Visible active initial work', {exact: true}).waitFor();
@@ -246,6 +255,126 @@ test(`native Home original shell: ${scenario}`, async t => {
               assert.equal(await nav.isVisible(), false,
                 'Desktop owner ignores obsolete phone Forward entries.');
               assert.equal(page.url(), current);
+            } else if (scenario === 'mobile_unavailable') {
+              const current = page.url();
+              await page.getByRole('button', {name: 'Open navigation', exact: true}).click();
+              const nav = page.getByRole('dialog', {name: 'Workspace navigation', exact: true});
+              await nav.getByRole('button', {name: 'Visible project', exact: true}).click();
+              const pane = await page.evaluate(() => {
+                const entry = history.state.lificNativeHomeNav;
+                history.replaceState({...history.state, lificNativeHomeNav: {...entry, project: 'HIDE'}}, '');
+                return entry.pane;
+              });
+              assert.equal(pane, 'project', 'Restore a genuine owned project entry, changing only its unavailable identifier.');
+              await page.reload();
+              await page.getByText('Visible active initial work', {exact: true}).waitFor();
+              // Pinned MobileNav.svelte resolves history identifiers against live visible projects.
+              await nav.getByRole('heading', {name: 'Project unavailable', exact: true}).waitFor();
+              assert.equal(await nav.getByText('This project is no longer in your project list.', {exact: true}).isVisible(), true);
+              assert.equal(await nav.locator('[data-native-mobile-root]').isVisible(), false);
+              assert.equal(await page.getByText('Private hidden project', {exact: true}).count(), 0);
+              assert.equal(await page.getByText('Private hidden initial work', {exact: true}).count(), 0);
+              assert.equal(await nav.locator(`a[href^="${prefix}/HIDE/"]`).count(), 0);
+              assert.equal(await page.locator('.native-home-body').evaluate(element => element.inert), true);
+              const back = nav.getByRole('button', {name: 'Back to projects', exact: true});
+              const close = nav.getByRole('button', {name: 'Close navigation', exact: true});
+              await page.waitForFunction(() => document.activeElement?.getAttribute('aria-label') === 'Back to projects');
+              await page.keyboard.press('Shift+Tab');
+              assert.equal(await close.evaluate(element => element === document.activeElement), true);
+              await page.keyboard.press('Tab');
+              assert.equal(await back.evaluate(element => element === document.activeElement), true);
+              await back.click();
+              await nav.getByRole('button', {name: 'Visible project', exact: true}).waitFor();
+              assert.equal(await nav.getByRole('heading', {name: 'Project unavailable', exact: true}).isVisible(), false);
+              assert.equal(page.url(), current);
+              await page.goForward();
+              await nav.getByRole('heading', {name: 'Project unavailable', exact: true}).waitFor();
+              await close.click();
+              await nav.waitFor({state: 'hidden'});
+              assert.equal(page.url(), current, 'Closing unavailable project detail unwinds both owned panes to Home.');
+              await page.waitForFunction(() => !document.querySelector('.native-home-body').inert);
+              await page.goBack();
+              await page.waitForURL(predecessor);
+            } else if (scenario === 'mobile_search_history') {
+              const current = page.url();
+              const open = page.getByRole('button', {name: 'Open navigation', exact: true});
+              const nav = page.getByRole('dialog', {name: 'Workspace navigation', exact: true});
+              for (let round = 0; round < 3; round++) {
+                if (round) {
+                  await page.goForward();
+                  await page.waitForURL(current);
+                  await page.getByText('Visible active initial work', {exact: true}).waitFor();
+                  assert.equal(await nav.isVisible(), false, 'Forward restores closed Home after Search unwinds to its base.');
+                }
+                await open.click();
+                await nav.getByRole('button', {name: 'Search issues, pages, projects…', exact: true}).click();
+                const palette = page.getByRole('dialog', {name: 'Jump to project', exact: true});
+                await palette.waitFor();
+                assert.equal(await nav.isVisible(), false);
+                assert.equal(await page.locator('.native-home-body').evaluate(element => element.inert), false);
+                if (round === 2) {
+                  // Original CommandPalette.onWindowKeydown closes root search on Escape.
+                  await page.keyboard.press('Escape');
+                  await palette.waitFor({state: 'hidden', timeout: 7000});
+                  assert.equal(await open.evaluate(element => element === document.activeElement), true,
+                    'Escape returns focus to the visible phone navigation opener after Search.');
+                } else {
+                  await palette.getByRole('button', {name: 'Close project search', exact: true}).click();
+                  await palette.waitFor({state: 'hidden'});
+                }
+                await page.goBack();
+                // controller.close(onOpenPalette) releases Search only after reaching the owned base.
+                await page.waitForURL(predecessor);
+              }
+            } else if (scenario === 'hostile_project') {
+              const assertNoAttacker = async () => {
+                assert.equal(await page.locator('img[src="/native-hostile-project"], script:not([src])').count(), 0,
+                  'Hostile project markup never creates attacker elements.');
+                assert.equal(await page.evaluate(() => globalThis.__nativeProjectInjected), false);
+                assert.equal(requests.some(url => new URL(url).pathname.endsWith('/native-hostile-project')), false);
+                assert.deepEqual(errors, [], 'Hostile labels compile without ignored hydration/console errors.');
+              };
+              const assertLinks = async container => {
+                const links = container.getByRole('link');
+                assert.deepEqual(await links.allTextContents(), destinations);
+                for (const [index, destination] of destinations.entries()) {
+                  assert.equal(await links.nth(index).getAttribute('href'), `${prefix}/ACC/${destination.toLowerCase()}`);
+                }
+              };
+              for (let hydration = 0; hydration < 2; hydration++) {
+                if (hydration) {
+                  await page.reload();
+                  await page.getByText('Visible active initial work', {exact: true}).waitFor();
+                }
+                if (mode === 'desktop') {
+                  const project = page.locator('.native-home-project').filter({has: page.locator('a[href="' + prefix + '/ACC/overview"]')});
+                  const title = project.locator('.native-home-project-title');
+                  assert.equal(await title.locator('span').last().textContent(), hostileProjectName);
+                  assert.equal(await title.getAttribute('title'), hostileProjectName);
+                  assert.equal(await title.getAttribute('href'), `${prefix}/ACC/overview`);
+                  const toggle = project.getByRole('button', {name: `Expand ${hostileProjectName}`, exact: true});
+                  assert.equal(await toggle.getAttribute('aria-label'), `Expand ${hostileProjectName}`);
+                  await toggle.click();
+                  const collapse = project.getByRole('button', {name: `Collapse ${hostileProjectName}`, exact: true});
+                  assert.equal(await collapse.getAttribute('aria-expanded'), 'true');
+                  await assertLinks(page.locator(`#${await collapse.getAttribute('aria-controls')}`));
+                } else {
+                  const nav = page.getByRole('dialog', {name: 'Workspace navigation', exact: true});
+                  if (!hydration) {
+                    await page.getByRole('button', {name: 'Open navigation', exact: true}).click();
+                    const row = nav.getByRole('button', {name: hostileProjectName, exact: true});
+                    assert.equal(await row.getAttribute('aria-label'), hostileProjectName);
+                    assert.equal(await row.locator('span').last().textContent(), hostileProjectName);
+                    await row.click();
+                  }
+                  const pane = nav.locator('[data-native-mobile-project]:not([hidden])');
+                  await pane.waitFor();
+                  assert.equal(await pane.locator('strong').textContent(), hostileProjectName);
+                  await assertLinks(pane);
+                }
+                await assertNoAttacker();
+              }
+              assert.equal(await page.getByText('Private hidden project', {exact: true}).count(), 0);
             } else {
               const chooser = page.getByRole('button', {name: 'Choose theme, current: light', exact: true});
               assert.equal(await chooser.count(), 1, 'The original account footer owns the theme preference chooser.');

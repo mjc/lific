@@ -24,6 +24,8 @@ pub(crate) mod issue_edit;
 #[cfg(test)]
 mod limit_contract;
 #[cfg(test)]
+mod markdown_edit;
+#[cfg(test)]
 pub(crate) mod probe;
 pub(crate) mod session;
 #[cfg(test)]

@@ -1,3 +1,4 @@
+const {launchBrowser} = require('./browser_fixture.cjs');
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -35,9 +36,8 @@ test('vendored patches reconstruct the exact pinned upstream runtime', () => {
 // This fixture speaks the pinned framework transport protocol. Domain/auth
 // integration is exercised separately against the actual Lific executable.
 test('connected renders wait for load, socket open and reconnect using fresh inputs', async t => {
-  assert.ok(process.env.PLAYWRIGHT_EXECUTABLE_PATH, 'Use the repository e2e Chromium environment.');
-  const {chromium} = await import(path.resolve(__dirname, '../../../e2e/node_modules/playwright/index.mjs'));
-  const browser = await chromium.launch({headless: true, executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH});
+
+  const browser = await launchBrowser();
   try {
     for (const ancestor of [false, true]) await t.test(ancestor ? 'ancestor connection' : 'own connection', async () => {
       const requests = [], runs = [], upgrades = [], pendingSockets = new Set();
@@ -149,9 +149,8 @@ test('connected renders wait for load, socket open and reconnect using fresh inp
 });
 
 test('framework procedures, returned surrogates, shards and sockets stay within the Rust-rendered mount', async t => {
-  assert.ok(process.env.PLAYWRIGHT_EXECUTABLE_PATH, 'Use the repository e2e Chromium environment.');
-  const {chromium} = await import(path.resolve(__dirname, '../../../e2e/node_modules/playwright/index.mjs'));
-  const browser = await chromium.launch({headless: true, executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH});
+
+  const browser = await launchBrowser();
   try {
     for (const prefix of ['', '/app', '/ACC']) await t.test(prefix || 'root', async () => {
       const requests = [], sockets = [];
@@ -236,8 +235,7 @@ test('framework procedures, returned surrogates, shards and sockets stay within 
 });
 
 test('Rust tuple arrays hydrate, index and round-trip nested framework values', async () => {
-  assert.ok(process.env.PLAYWRIGHT_EXECUTABLE_PATH, 'Use the repository e2e Chromium environment.');
-  const {chromium} = await import(path.resolve(__dirname, '../../../e2e/node_modules/playwright/index.mjs'));
+
   const wire = [
     {t: 'Result', ok: 'saved'},
     {t: 'Option', v: {t: 'i64', bits: 64, v: '9007199254740993'}},
@@ -274,7 +272,7 @@ test('Rust tuple arrays hydrate, index and round-trip nested framework values', 
     response.end(`<html data-topcoat-runtime-prefix="/ACC"><body><button data-topcoat-on:click="${escape(call)}">Round-trip tuple</button><output id="result"></output><output id="wire"></output><script type="module" src="/ACC/runtime.js"></script></body></html>`);
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  const browser = await chromium.launch({headless: true, executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH});
+  const browser = await launchBrowser();
   try {
     const page = await browser.newPage(), failures = [];
     page.on('pageerror', error => failures.push(error.message));

@@ -2,7 +2,7 @@
 
 use topcoat::{
     context::Cx,
-    runtime::{Event, connected_untracked, expr},
+    runtime::{Event, connected_untracked, expr, procedure, signal},
     view::Attributes,
 };
 
@@ -89,6 +89,143 @@ pub(crate) fn mount(cx: &Cx) -> Attributes {
     attributes
 }
 
+fn current_account(cx: &Cx) -> Result<Option<(i64, bool)>, LificError> {
+    match super::context::caller(cx).and_then(|caller| crate::api::require_user(&caller.identity)) {
+        Ok(user) => Ok(Some((user.id, user.is_admin))),
+        Err(LificError::Forbidden(_)) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+#[procedure("/__native_home/session")]
+async fn native_home_session(cx: &Cx) -> topcoat::Result<(Option<i64>, bool)> {
+    // Pinned Topcoat cannot serialize a tuple nested inside Option by reference.
+    // Absence is explicit; the flag carries no authority when the ID is absent.
+    Ok(match current_account(cx)? {
+        Some((id, is_admin)) => (Some(id), is_admin),
+        None => (None, false),
+    })
+}
+
+/// Compare fresh HTTP authority with the account that rendered the whole Home.
+/// Connected shard credentials and browser storage cannot replace this baseline.
+pub(crate) fn account_mount(cx: &Cx, account_id: i64, is_admin: bool) -> Attributes {
+    let busy = signal(cx, || false);
+    let pending = signal(cx, || false);
+    let revision = signal(cx, || 0usize);
+    let failed_busy = busy.clone();
+    let failed_pending = pending.clone();
+    let failed_revision = revision.clone();
+    let ready_pending = pending.clone();
+    let ready_revision = revision.clone();
+    let request_busy = busy.clone();
+    let request_pending = pending.clone();
+    let request_revision = revision.clone();
+    let check_pending = pending.clone();
+    let disposed_busy = busy.clone();
+    let disposed_pending = pending.clone();
+    let disposed_revision = revision.clone();
+    let handler = expr!(|_mount: Event| {
+        let _dispose = || {
+            disposed_revision.increment();
+            disposed_busy.set(false);
+            disposed_pending.set(false);
+        };
+        let _focus = |_event: Event| {
+            if !raw!("cx.hydrate(cx.abortSignal.aborted)", false) {
+                if busy.get() {
+                    pending.set(true);
+                } else {
+                    busy.set(true);
+                    pending.set(true);
+                    revision.increment();
+                    let sent_revision = revision.get();
+                    let _failed = || {
+                        if !raw!("cx.hydrate(cx.abortSignal.aborted)", false) {
+                            if failed_revision.get() == sent_revision {
+                                // Consume an existing focus; never retry failure on its own.
+                                if !failed_pending.get() {
+                                    failed_busy.set(false);
+                                }
+                            }
+                        }
+                    };
+                    let _ready = || {
+                        if raw!("cx.hydrate(cx.abortSignal.aborted)", false) {
+                            false
+                        } else {
+                            if ready_revision.get() != sent_revision {
+                                false
+                            } else {
+                                ready_pending.get()
+                            }
+                        }
+                    };
+                    let _request = async || {
+                        // Disposal may happen before the promise adapter starts this task.
+                        if !raw!("cx.hydrate(cx.abortSignal.aborted)", false) {
+                            if request_revision.get() == sent_revision {
+                                let current = native_home_session().await;
+                                if !raw!("cx.hydrate(cx.abortSignal.aborted)", false) {
+                                    if request_revision.get() == sent_revision {
+                                        // A newer focus needs fresh cookies, regardless of this result.
+                                        if !request_pending.get() {
+                                            let reload = if current.0.is_none() {
+                                                true
+                                            } else {
+                                                let current_id = current.0.unwrap();
+                                                if current_id != account_id {
+                                                    true
+                                                } else {
+                                                    current.1 != is_admin
+                                                }
+                                            };
+                                            if reload {
+                                                // Keep occupied until navigation retires its owner.
+                                                raw!("window.location.reload()", ());
+                                            } else {
+                                                request_busy.set(false);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    };
+                    let _check = async || {
+                        while raw!("${_ready}()", false) {
+                            check_pending.set(false);
+                            raw!(
+                                "await Promise.resolve().then(() => ${_request}()).catch(() => ${_failed}());",
+                                ()
+                            );
+                            // Keep control flow out of the macro's trailing-expression return.
+                            let _iteration_complete = false;
+                        }
+                        let _complete = false;
+                    };
+                    raw!("Promise.resolve().then(() => ${_check}());", ());
+                }
+            }
+        };
+        raw!(
+            "cx.abortSignal.addEventListener('abort', ${_dispose}, {once:true});",
+            ()
+        );
+        raw!(
+            "window.addEventListener('focus', ${_focus}, {signal:cx.abortSignal});",
+            ()
+        );
+    });
+    let mut attributes = Attributes::with_capacity(1);
+    attributes.insert(
+        cx,
+        "data-topcoat-on:mount",
+        handler.into_evaluated_and_js().1,
+    );
+    attributes
+}
+
 #[cfg(test)]
 mod tests {
     use std::{net::SocketAddr, process::Stdio, sync::Arc};
@@ -145,6 +282,75 @@ mod tests {
         queries::users::create_session(&conn, conn.last_insert_rowid(), None)
             .unwrap()
             .token
+    }
+
+    #[test]
+    fn native_session_account_check_reads_the_current_cookie_and_admin_flag() {
+        let db = db::open_memory().unwrap();
+        let admin_token = seed_operator(&db);
+        let (admin_id, viewer_id, viewer_token) = {
+            let conn = db.write().unwrap();
+            let admin_id = queries::users::validate_session(&conn, &admin_token)
+                .unwrap()
+                .id;
+            conn.execute(
+                "INSERT INTO users (username, email, password_hash, is_admin, is_bot)
+                 VALUES ('session_viewer', 'viewer@test.local', 'fixture', 0, 0)",
+                [],
+            )
+            .unwrap();
+            let viewer_id = conn.last_insert_rowid();
+            let viewer_token = queries::users::create_session(&conn, viewer_id, None)
+                .unwrap()
+                .token;
+            (admin_id, viewer_id, viewer_token)
+        };
+        let admin = context(
+            &db,
+            true,
+            Some(&format!("lific_token={admin_token}")),
+            "/ACC",
+        );
+        let viewer = context(
+            &db,
+            true,
+            Some(&format!("lific_token={viewer_token}")),
+            "/ACC",
+        );
+        assert_eq!(current_account(&admin).unwrap(), Some((admin_id, true)));
+        assert_eq!(current_account(&viewer).unwrap(), Some((viewer_id, false)));
+        db.write()
+            .unwrap()
+            .execute("UPDATE users SET is_admin = 0 WHERE id = ?1", [admin_id])
+            .unwrap();
+        assert_eq!(current_account(&admin).unwrap(), Some((admin_id, false)));
+    }
+
+    #[test]
+    fn native_session_account_check_returns_denial_without_operator_fallback() {
+        let db = db::open_memory().unwrap();
+        let token = seed_operator(&db);
+        assert_eq!(
+            current_account(&context(&db, true, None, "/app")).unwrap(),
+            None
+        );
+        assert!(
+            current_account(&context(&db, false, None, "/app"))
+                .unwrap()
+                .is_some()
+        );
+        queries::users::delete_session(&db.write().unwrap(), &token).unwrap();
+        for required in [false, true] {
+            for cookie in [
+                "lific_token=invalid".to_owned(),
+                format!("lific_token={token}"),
+            ] {
+                assert_eq!(
+                    current_account(&context(&db, required, Some(&cookie), "/app")).unwrap(),
+                    None
+                );
+            }
+        }
     }
 
     fn assert_login<T>(cx: &Cx, result: topcoat::Result<T>) {

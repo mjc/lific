@@ -2,8 +2,7 @@
 // node session.browser.test.cjs <fixture-origin> <viewer-token> <fixture-json>
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
-const {mountedProxy} = require('./browser_fixture.cjs');
-const path = require('node:path');
+const {mountedProxy, launchBrowser} = require('./browser_fixture.cjs');
 
 const upstream = new URL(process.argv[2]);
 const viewerToken = process.argv[3];
@@ -41,10 +40,8 @@ function assertNativeOnly(state) {
   assert.deepEqual(state.errors, [], 'Session outcomes remain visible instead of becoming framework console errors.');
 }
 
-test('native session reloads another-tab replacements under the current cookie and redirects revoked reads', async t => {
-  assert.ok(process.env.PLAYWRIGHT_EXECUTABLE_PATH, 'Use the repository Chromium environment.');
-  const {chromium} = await import(path.resolve(__dirname, '../../../e2e/node_modules/playwright/index.mjs'));
-  const browser = await chromium.launch({headless: true, executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH});
+test('native session discovers account replacements under the current cookie and redirects revoked reads', async t => {
+  const browser = await launchBrowser();
   try {
     for (const [index, prefix] of ['', '/app', '/ACC'].entries()) {
       let replacementVerified = false;
@@ -96,6 +93,147 @@ test('native session reloads another-tab replacements under the current cookie a
               replacementVerified = true;
             } finally {await state.context.close();}
           });
+          await t.test('protocol-emulated trusted focus discovers a cookie-only account replacement', async () => {
+            const state = await privatePage(browser, proxy, prefix, viewerToken);
+            try {
+              const {page, context} = state;
+              const other = await context.newPage();
+              await other.goto(`${proxy.origin}${prefix}/`);
+              // Playwright forces each tab focused. Disable that default, then
+              // use Chromium's focus emulation to deliver a trusted focus event.
+              // Headless visibility stays visible; this does not prove restoration.
+              const pageDriver = await context.newCDPSession(page);
+              const otherDriver = await context.newCDPSession(other);
+              await Promise.all([pageDriver, otherDriver].map(driver =>
+                driver.send('Emulation.setFocusEmulationEnabled', {enabled: false})));
+              await page.bringToFront();
+              await settle(page);
+              const events = [];
+              await page.exposeFunction('recordCookieOnlyEvent', event => events.push(event));
+              const observe = () => page.evaluate(() => {
+                window.addEventListener('focus', event => window.recordCookieOnlyEvent({
+                  type: 'focus', trusted: event.isTrusted, visibility: document.visibilityState,
+                }));
+                window.addEventListener('storage', event => window.recordCookieOnlyEvent({
+                  type: 'storage', trusted: event.isTrusted,
+                }));
+              });
+              const stored = await page.evaluate(() => localStorage.getItem('lific_token'));
+              for (const [token, account, hiddenVisible] of [
+                [fixture.replacementToken, 'admin', true],
+                [viewerToken, 'viewer', false],
+              ]) {
+                await observe();
+                const before = events.length;
+                await other.bringToFront();
+                await pageDriver.send('Emulation.setFocusEmulationEnabled', {enabled: false});
+                await page.waitForFunction(() => !document.hasFocus(),
+                  undefined, {polling: 50, timeout: 2000});
+                await context.addCookies([cookie(proxy.origin, token)]);
+                const restored = page.waitForEvent('domcontentloaded', {timeout: 5000}).then(() => true, () => false);
+                await pageDriver.send('Emulation.setFocusEmulationEnabled', {enabled: true});
+                const didRestore = await restored;
+                const restoredEvents = events.slice(before);
+                assert.ok(restoredEvents.some(event => event.type === 'focus' && event.trusted && event.visibility === 'visible'),
+                  'Chromium delivered a trusted focus event on the visible page.');
+                assert.equal(restoredEvents.some(event => event.type === 'storage'), false,
+                  'Cookie replacement produces no storage event.');
+                assert.equal(didRestore, true,
+                  'Trusted focus discovers the current HttpOnly cookie without a storage event or input action.');
+                await page.locator('[data-native-home-connected="true"]').first().waitFor();
+                await page.getByText('Visible active initial work', {exact: true}).waitFor();
+                assert.equal(await page.locator('.native-home-account').textContent(), account,
+                  'The current cookie replaces the render-authoritative account baseline.');
+                assert.equal(await page.getByText('Private hidden initial work', {exact: true}).count(), hiddenVisible ? 1 : 0,
+                  'Private content from the previous account is retired when authority changes.');
+                assert.equal(await page.evaluate(() => localStorage.getItem('lific_token')), stored,
+                  'Stored token text remains unchanged throughout cookie-only replacement.');
+              }
+              assertNativeOnly(state);
+            } finally {await state.context.close();}
+          });
+          for (const failedCheck of [false, true]) {
+            await t.test(`a focus queued behind a ${failedCheck ? 'failed request' : 'real delayed response'} rechecks the replacement cookie`, async () => {
+              const state = await privatePage(browser, proxy, prefix, viewerToken);
+              let releaseFirst;
+              try {
+                const {page, context} = state;
+                const other = await context.newPage();
+                await other.goto(`${proxy.origin}${prefix}/`);
+                const pageDriver = await context.newCDPSession(page);
+                const otherDriver = await context.newCDPSession(other);
+                await Promise.all([pageDriver, otherDriver].map(driver =>
+                  driver.send('Emulation.setFocusEmulationEnabled', {enabled: false})));
+                await other.bringToFront();
+                await page.waitForFunction(() => !document.hasFocus(), undefined, {polling: 50, timeout: 2000});
+                const events = [];
+                await page.exposeFunction('recordPendingSessionEvent', event => events.push(event));
+                await page.evaluate(() => {
+                  window.addEventListener('focus', event => window.recordPendingSessionEvent({type: 'focus', trusted: event.isTrusted}));
+                  window.addEventListener('storage', event => window.recordPendingSessionEvent({type: 'storage', trusted: event.isTrusted}));
+                });
+                const stored = await page.evaluate(() => localStorage.getItem('lific_token'));
+                const checks = [];
+                let firstReady, firstFailed;
+                const firstResponse = new Promise((resolve, reject) => {firstReady = resolve; firstFailed = reject;});
+                const released = new Promise(resolve => {releaseFirst = resolve;});
+                await page.route(url => url.pathname === `${prefix}/__native_home/session`, async route => {
+                  checks.push(await route.request().headerValue('cookie'));
+                  if (checks.length === 1) {
+                    try {
+                      // Fetch the real server outcome under A before changing the cookie.
+                      const response = await route.fetch({timeout: 5000});
+                      assert.equal(response.status(), 200);
+                      firstReady();
+                      await released;
+                      if (failedCheck) await route.abort('failed');
+                      else await route.fulfill({response});
+                    } catch (error) {
+                      firstFailed(error);
+                      await route.abort();
+                    }
+                  } else {
+                    await route.continue();
+                  }
+                });
+                await pageDriver.send('Emulation.setFocusEmulationEnabled', {enabled: true});
+                let firstTimer;
+                try {
+                  await Promise.race([firstResponse, new Promise((_, reject) => {
+                    firstTimer = setTimeout(() => reject(new Error('The first real session response did not arrive within 5 seconds.')), 5000);
+                  })]);
+                } finally {clearTimeout(firstTimer);}
+                assert.ok(checks[0].includes(`lific_token=${viewerToken}`), 'The held response was requested under account A.');
+                assert.equal(await page.locator('.native-home-account').textContent(), 'viewer');
+                await pageDriver.send('Emulation.setFocusEmulationEnabled', {enabled: false});
+                await page.waitForFunction(() => !document.hasFocus(), undefined, {polling: 50, timeout: 2000});
+                await context.addCookies([cookie(proxy.origin, fixture.replacementToken)]);
+                const restored = page.waitForEvent('domcontentloaded', {timeout: 5000}).then(() => true, () => false);
+                await pageDriver.send('Emulation.setFocusEmulationEnabled', {enabled: true});
+                await page.waitForFunction(() => document.hasFocus());
+                assert.equal(checks.length, 1, 'A second focus is coalesced while the first response is held.');
+                releaseFirst();
+                const didRestore = await restored;
+                assert.equal(events.filter(event => event.type === 'focus' && event.trusted).length, 2,
+                  'Chromium delivered both trusted focus events.');
+                assert.equal(events.some(event => event.type === 'storage'), false);
+                assert.equal(didRestore, true,
+                  failedCheck
+                    ? 'A failed A request cannot discard the queued focus after the cookie changes to B.'
+                    : 'An equal-A response cannot discard the queued focus after the cookie changes to B.');
+                await page.locator('[data-native-home-connected="true"]').first().waitFor();
+                await page.getByText('Private hidden initial work', {exact: true}).waitFor();
+                assert.equal(await page.locator('.native-home-account').textContent(), 'admin');
+                assert.equal(checks.length, 2, 'One queued focus causes one fresh followup.');
+                assert.ok(checks[1].includes(`lific_token=${fixture.replacementToken}`), 'The followup uses current account B.');
+                assert.equal(await page.evaluate(() => localStorage.getItem('lific_token')), stored);
+                assertNativeOnly(state);
+              } finally {
+                if (releaseFirst) releaseFirst();
+                await state.context.close();
+              }
+            });
+          }
           if (!replacementVerified) return;
           await t.test('a revoked connected palette read navigates to mounted login and clears private Home', async () => {
             const state = await privatePage(browser, proxy, prefix, fixture.revocationTokens[index]);

@@ -3,7 +3,7 @@
 use super::home_data::Snapshot;
 use topcoat::{
     context::Cx,
-    runtime::{Event, Signal, connected, expr, shard, signal},
+    runtime::{BoolSurrogate, Event, Signal, connected, expr, shard, signal},
     view::{Attributes, BoxView, View, ViewExt, view},
 };
 
@@ -12,9 +12,11 @@ pub(crate) const STYLESHEET: &str = include_str!("assets/home-shell.css");
 #[derive(Clone)]
 struct MobileNavigation {
     open: Signal<bool>,
+    pane: Signal<String>,
     project: Signal<String>,
     owner: Signal<String>,
     href: Signal<String>,
+    pending_palette: Signal<bool>,
 }
 
 pub(crate) fn shell<'a>(cx: &'a Cx, snapshot: &Snapshot, content: BoxView<'a>) -> BoxView<'a> {
@@ -30,17 +32,28 @@ pub(crate) fn shell_with_palette<'a>(
     let collapsed = signal(cx, || false);
     let query = signal(cx, String::new);
     let mobile_open = signal(cx, || false);
+    let mobile_pane = signal(cx, || "root".to_owned());
     let mobile_project = signal(cx, String::new);
     let navigation = MobileNavigation {
         open: mobile_open.clone(),
-        project: mobile_project.clone(),
+        pane: mobile_pane.clone(),
+        project: mobile_project,
         owner: signal(cx, String::new),
         href: signal(cx, String::new),
+        pending_palette: signal(cx, || false),
     };
     let theme = signal(cx, || "system".to_owned());
     let theme_menu = signal(cx, || false);
     let projects = snapshot.projects.clone();
     let mobile_projects = projects.clone();
+    // Quoted token boundaries retain exact membership, including unusual identifiers.
+    // The runtime supports Rust string membership but not collection iteration.
+    let mut mobile_catalog = String::new();
+    for project in &projects {
+        mobile_catalog.push('|');
+        mobile_catalog.push_str(&serde_json::to_string(&project.identifier).unwrap());
+        mobile_catalog.push('|');
+    }
     let display_name = if snapshot.user.display_name.is_empty() {
         snapshot.user.username.clone()
     } else {
@@ -55,7 +68,7 @@ pub(crate) fn shell_with_palette<'a>(
     view! { cx =>
         <div class="native-home-shell" (super::session::mount(cx)) :data-collapsed=$(if collapsed.get() { "true" } else { "false" })>
             <a class="tc-shell__skip" href="#main-content" :inert=$(mobile_open.get())>"Skip to content"</a>
-            <span hidden="hidden" (shell_mount(cx, collapsed.clone(), theme.clone(), theme_menu.clone(), navigation.clone()))></span>
+            <span hidden="hidden" (shell_mount(cx, collapsed.clone(), theme.clone(), theme_menu.clone(), navigation.clone(), mobile_catalog, palette_open.clone()))></span>
             <button id="native-home-collapse" class="native-home-fold native-home-icon-button"
                 :aria-label=$(if collapsed.get() { "Expand sidebar" } else { "Collapse sidebar" })
                 :aria-expanded=$(if collapsed.get() { "false" } else { "true" }) :inert=$(mobile_open.get())
@@ -116,7 +129,7 @@ pub(crate) fn shell_with_palette<'a>(
                 </div>
             </div>
             <section data-native-mobile-nav="" role="dialog" aria-modal="true" aria-label="Workspace navigation" :hidden=$(!mobile_open.get())>
-                <div data-native-mobile-root="" :hidden=$(!mobile_project.get().is_empty())>
+                <div data-native-mobile-root="" :hidden=$(mobile_pane.get() != "root")>
                     <header class="native-home-mobile-nav-header">
                         <img src=(super::transport::mounted_url(cx, "/logo.webp")) alt="" width="28" height="28"/>
                         <strong>"Lific"</strong><small>(concat!("v", env!("CARGO_PKG_VERSION")))</small>
@@ -124,7 +137,7 @@ pub(crate) fn shell_with_palette<'a>(
                             (super::icons::project_icon(cx, Some("lucide:X"), 20))
                         </button>
                     </header>
-                    <button class="native-home-mobile-search" @click=$(|_event| { mobile_open.set(false); palette_open.set(true); })>
+                    <button class="native-home-mobile-search" (mobile_action(cx, &navigation, "search", String::new()))>
                         (super::icons::project_icon(cx, Some("lucide:Search"), 18)) "Search issues, pages, projects…"
                     </button>
                     <nav aria-label="Phone workspace">
@@ -148,6 +161,7 @@ pub(crate) fn shell_with_palette<'a>(
                 for project in mobile_projects {
                     (mobile_project_panel(cx, &project, &navigation))
                 }
+                (mobile_unavailable_panel(cx, &navigation))
             </section>
             <div class="native-home-theme-menu" role="menu" aria-label="Theme" :hidden=$(!theme_menu.get())>
                 for (preference, label) in [("light", "Light"), ("dark", "Dark"), ("system", "System")] {
@@ -291,6 +305,28 @@ fn mobile_project_panel<'a>(
     .boxed()
 }
 
+fn mobile_unavailable_panel<'a>(cx: &'a Cx, navigation: &MobileNavigation) -> BoxView<'a> {
+    let pane = navigation.pane.clone();
+    let back = mobile_action(cx, navigation, "back", String::new());
+    let close = mobile_action(cx, navigation, "close", String::new());
+    view! { cx =>
+        <div data-native-mobile-unavailable="" :hidden=$(pane.get() != "unavailable")>
+            <header class="native-home-mobile-nav-header native-home-unavailable-header">
+                <button class="native-home-icon-button native-home-unavailable-back" aria-label="Back to projects" (back)>
+                    (super::icons::project_icon(cx, Some("lucide:ChevronLeft"), 20)) "Projects"
+                </button>
+                <button class="native-home-icon-button" aria-label="Close navigation" (close)>
+                    (super::icons::project_icon(cx, Some("lucide:X"), 20))
+                </button>
+            </header>
+            <div class="native-home-unavailable-copy">
+                <h2>"Project unavailable"</h2>
+                <p>"This project is no longer in your project list."</p>
+            </div>
+        </div>
+    }.boxed()
+}
+
 fn mobile_action(
     cx: &Cx,
     navigation: &MobileNavigation,
@@ -299,49 +335,62 @@ fn mobile_action(
 ) -> Attributes {
     let MobileNavigation {
         open,
+        pane,
         project,
         owner,
         href,
+        pending_palette,
     } = navigation.clone();
     let action = action.to_owned();
     let handler = expr!(|_event: Event| {
-        if action == "back" {
-            raw!("history.back();", ());
-        } else {
-            if action == "close" {
-                if project.get().is_empty() {
-                    raw!("history.back();", ());
-                } else {
-                    raw!("history.go(-2);", ());
-                }
+        if !pending_palette.get() {
+            if action == "back" {
+                raw!("history.back();", ());
             } else {
-                let _owner = owner.get();
-                let _href = href.get();
-                if action == "open" {
-                    raw!(
-                        "history.replaceState({...history.state,lificNativeHomeNav:{version:'1',owner:${_owner}.toString(),href:${_href}.toString(),pane:'closed',project:''}},'');",
-                        ()
-                    );
-                    let _pane = "root";
-                    let _project = "";
-                    raw!(
-                        "history.pushState({...history.state,lificNativeHomeNav:{version:'1',owner:${_owner}.toString(),href:${_href}.toString(),pane:${_pane}.toString(),project:${_project}.toString()}},'');",
-                        ()
-                    );
-                    project.set("".to_owned());
+                let closing = if action == "search" {
+                    pending_palette.set(true);
+                    open.set(false);
+                    true
                 } else {
-                    let _pane = "project";
+                    action == "close"
+                };
+                if closing {
+                    if pane.get() == "root" {
+                        raw!("history.back();", ());
+                    } else {
+                        raw!("history.go(-2);", ());
+                    }
+                } else {
+                    let _owner = owner.get();
+                    let _href = href.get();
+                    if action == "open" {
+                        raw!(
+                            "history.replaceState({...history.state,lificNativeHomeNav:{version:'1',owner:${_owner}.toString(),href:${_href}.toString(),pane:'closed',project:''}},'');",
+                            ()
+                        );
+                        let _pane = "root";
+                        let _project = "";
+                        raw!(
+                            "history.pushState({...history.state,lificNativeHomeNav:{version:'1',owner:${_owner}.toString(),href:${_href}.toString(),pane:${_pane}.toString(),project:${_project}.toString()}},'');",
+                            ()
+                        );
+                        project.set("".to_owned());
+                        pane.set("root".to_owned());
+                    } else {
+                        let _pane = "project";
+                        raw!(
+                            "history.pushState({...history.state,lificNativeHomeNav:{version:'1',owner:${_owner}.toString(),href:${_href}.toString(),pane:${_pane}.toString(),project:${identifier}.toString()}},'');",
+                            ()
+                        );
+                        project.set(identifier.clone());
+                        pane.set("project".to_owned());
+                    }
+                    open.set(true);
                     raw!(
-                        "history.pushState({...history.state,lificNativeHomeNav:{version:'1',owner:${_owner}.toString(),href:${_href}.toString(),pane:${_pane}.toString(),project:${identifier}.toString()}},'');",
+                        "queueMicrotask(() => document.querySelector('[data-native-mobile-nav] :is([data-native-mobile-root],[data-native-mobile-project]):not([hidden]) button')?.focus());",
                         ()
                     );
-                    project.set(identifier.clone());
                 }
-                open.set(true);
-                raw!(
-                    "queueMicrotask(() => document.querySelector('[data-native-mobile-nav] :is([data-native-mobile-root],[data-native-mobile-project]):not([hidden]) button')?.focus());",
-                    ()
-                );
             }
         }
     });
@@ -377,24 +426,36 @@ fn shell_mount(
     theme: Signal<String>,
     theme_menu: Signal<bool>,
     navigation: MobileNavigation,
+    mobile_catalog: String,
+    palette_open: Signal<bool>,
 ) -> Attributes {
     let MobileNavigation {
         open: mobile_open,
+        pane: mobile_pane,
         project: mobile_project,
         owner,
         href,
+        pending_palette,
     } = navigation;
+    let mount_pending = pending_palette.clone();
     let present_open = mobile_open.clone();
-    let present_project = mobile_project.clone();
+    let present_project = mobile_project;
+    let present_pane = mobile_pane.clone();
     let resize_open = mobile_open.clone();
-    let resize_project = mobile_project.clone();
+    let resize_pane = mobile_pane.clone();
     let keyboard_open = mobile_open.clone();
-    let keyboard_project = mobile_project.clone();
+    let keyboard_pane = mobile_pane.clone();
     let keyboard_menu = theme_menu.clone();
+    let keyboard_palette = palette_open.clone();
+    let palette_return_focus = signal(cx, || "native-home-palette-open".to_owned());
+    let present_return_focus = palette_return_focus.clone();
+    let click_return_focus = palette_return_focus.clone();
     let focus_open = mobile_open;
-    let focus_project = mobile_project;
+    let focus_pane = mobile_pane;
     let focus_menu = theme_menu;
     let handler = expr!(|_mount: Event| {
+        // A replacement owning scope never inherits a queued browser action.
+        mount_pending.set(false);
         let _refresh_theme = || {
             let stored = raw!(
                 r#"cx.hydrate((() => {try {return localStorage.getItem('lific_theme') || '';} catch {return '';}})())"#,
@@ -447,7 +508,7 @@ fn shell_mount(
         } else {
             owner.set(raw!("cx.hydrate(Array.from(crypto.getRandomValues(new Uint8Array(16)), byte=>byte.toString(16).padStart(2,'0')).join(''))", String::new()));
         }
-        let _present = || {
+        let _present = |history_pop: BoolSurrogate| {
             let record_owner = raw!(
                 r#"cx.hydrate((() => {const value=history.state?.lificNativeHomeNav?.owner;return typeof value==='string'?value:'';})())"#,
                 String::new()
@@ -496,7 +557,15 @@ fn shell_mount(
                         "root"
                     } else {
                         if record_pane == "project" {
-                            "project"
+                            let lookup = raw!(
+                                "cx.hydrate('|' + JSON.stringify(${record_project}.toString()) + '|')",
+                                ""
+                            );
+                            if mobile_catalog.contains(lookup) {
+                                "project"
+                            } else {
+                                "unavailable"
+                            }
                         } else {
                             "closed"
                         }
@@ -507,6 +576,7 @@ fn shell_mount(
             };
             if pane == "closed" {
                 present_open.set(false);
+                present_pane.set("root".to_owned());
                 present_project.set("".to_owned());
                 if was_open {
                     raw!(
@@ -516,6 +586,7 @@ fn shell_mount(
                 }
             } else {
                 present_open.set(true);
+                present_pane.set(pane.to_owned());
                 if pane == "project" {
                     present_project.set(record_project);
                     raw!(
@@ -524,10 +595,17 @@ fn shell_mount(
                     );
                 } else {
                     present_project.set("".to_owned());
-                    raw!(
-                        "queueMicrotask(() => (Array.from(document.querySelectorAll('[data-native-project-trigger]')).find(element=>element.getAttribute('data-native-project-trigger')===${_before}.toString()) || document.querySelector('[data-native-mobile-root] button'))?.focus());",
-                        ()
-                    );
+                    if pane == "unavailable" {
+                        raw!(
+                            "queueMicrotask(() => document.querySelector('[data-native-mobile-unavailable] button')?.focus());",
+                            ()
+                        );
+                    } else {
+                        raw!(
+                            "queueMicrotask(() => (Array.from(document.querySelectorAll('[data-native-project-trigger]')).find(element=>element.getAttribute('data-native-project-trigger')===${_before}.toString()) || document.querySelector('[data-native-mobile-root] button'))?.focus());",
+                            ()
+                        );
+                    }
                 }
             }
             if desktop {
@@ -541,10 +619,27 @@ fn shell_mount(
                     }
                 }
             }
+            if pending_palette.get() {
+                if history_pop {
+                    pending_palette.set(false);
+                    if owned {
+                        if record_pane == "closed" {
+                            present_return_focus.set("native-home-mobile-open".to_owned());
+                            palette_open.set(true);
+                        }
+                    }
+                } else {
+                    if !owned {
+                        pending_palette.set(false);
+                    }
+                }
+            }
         };
-        raw!("${_present}();", ());
+        raw!("${_present}(cx.hydrate(false));", ());
         let _history = |_event: Event| {
-            raw!("${_present}();", ());
+            let event_type = raw!("cx.hydrate(${_event}.type)", String::new());
+            let _pop = event_type == "popstate";
+            raw!("${_present}(${_pop});", ());
         };
         let _resize = |_event: Event| {
             let desktop = raw!(
@@ -554,7 +649,7 @@ fn shell_mount(
             if desktop {
                 if resize_open.get() {
                     resize_open.set(false);
-                    if resize_project.get().is_empty() {
+                    if resize_pane.get() == "root" {
                         raw!("history.back();", ());
                     } else {
                         raw!("history.go(-2);", ());
@@ -563,6 +658,15 @@ fn shell_mount(
             }
         };
         raw!("${_resize}(null);", ());
+        let _palette_opener = |_event: Event| {
+            let opener = raw!(
+                "cx.hydrate(${_event}.target.closest('#native-home-palette-open,#native-home-quick-jump')?.id || '')",
+                String::new()
+            );
+            if !opener.is_empty() {
+                click_return_focus.set(opener);
+            }
+        };
         let _keyboard = |_event: Event| {
             let key = raw!("cx.hydrate(${_event}.key)", String::new());
             if key == "Escape" {
@@ -571,16 +675,29 @@ fn shell_mount(
                 } else {
                     if keyboard_open.get() {
                         raw!("${_event}.preventDefault(); history.back();", ());
+                    } else {
+                        if keyboard_palette.get() {
+                            keyboard_palette.set(false);
+                            let _opener = palette_return_focus.get();
+                            raw!(
+                                "${_event}.preventDefault(); ${_event}.stopPropagation(); queueMicrotask(() => document.getElementById(${_opener}.toString())?.focus());",
+                                ()
+                            );
+                        }
                     }
                 }
             } else {
                 if key == "Tab" {
                     if keyboard_open.get() {
                         if !keyboard_menu.get() {
-                            let _pane = if keyboard_project.get().is_empty() {
+                            let _pane = if keyboard_pane.get() == "root" {
                                 "[data-native-mobile-root]"
                             } else {
-                                "[data-native-mobile-project]:not([hidden])"
+                                if keyboard_pane.get() == "unavailable" {
+                                    "[data-native-mobile-unavailable]"
+                                } else {
+                                    "[data-native-mobile-project]:not([hidden])"
+                                }
                             };
                             raw!(
                                 r#"(() => {
@@ -601,10 +718,14 @@ fn shell_mount(
         let _focus = |_event: Event| {
             if focus_open.get() {
                 if !focus_menu.get() {
-                    let _pane = if focus_project.get().is_empty() {
+                    let _pane = if focus_pane.get() == "root" {
                         "[data-native-mobile-root]"
                     } else {
-                        "[data-native-mobile-project]:not([hidden])"
+                        if focus_pane.get() == "unavailable" {
+                            "[data-native-mobile-unavailable]"
+                        } else {
+                            "[data-native-mobile-project]:not([hidden])"
+                        }
                     };
                     let inside = raw!(
                         "cx.hydrate(document.querySelector(${_pane}.toString())?.contains(${_event}.target) || false)",
@@ -628,11 +749,19 @@ fn shell_mount(
             ()
         );
         raw!(
+            "window.addEventListener('click', ${_palette_opener}, {capture:true,signal:cx.abortSignal});",
+            ()
+        );
+        raw!(
             "window.addEventListener('focusin', ${_focus}, {signal:cx.abortSignal});",
             ()
         );
         raw!(
             "window.addEventListener('popstate', ${_history}, {signal:cx.abortSignal});",
+            ()
+        );
+        raw!(
+            "window.addEventListener('hashchange', ${_history}, {signal:cx.abortSignal});",
             ()
         );
         raw!(

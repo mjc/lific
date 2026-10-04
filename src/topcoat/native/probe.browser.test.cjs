@@ -1,3 +1,4 @@
+const {launchBrowser} = require('./browser_fixture.cjs');
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('node:http');
@@ -7,15 +8,15 @@ const path = require('node:path');
 // The Rust test owns an ephemeral assembled app and real database/session.
 // This proxy changes only the deployment mount; every handler remains real.
 test('assembled native page, procedure, shard and socket preserve the mounted session', async t => {
-  assert.ok(process.env.LIFIC_NATIVE_PROBE_UPSTREAM, 'Rust must supply the assembled fixture URL.');
-  assert.ok(process.env.LIFIC_NATIVE_PROBE_COOKIE, 'Rust must supply a fixture session cookie.');
-  assert.ok(process.env.PLAYWRIGHT_EXECUTABLE_PATH, 'Use the repository Chromium environment.');
-  const upstream = new URL(process.env.LIFIC_NATIVE_PROBE_UPSTREAM);
-  const cookie = process.env.LIFIC_NATIVE_PROBE_COOKIE;
+  assert.ok(process.argv[2], 'Rust must supply the assembled fixture URL.');
+  assert.ok(process.argv[3], 'Rust must supply a fixture session token.');
+
+  const upstream = new URL(process.argv[2]);
+  const cookie = `lific_token=${process.argv[3]}`;
   const separator = cookie.indexOf('=');
   assert.ok(separator > 0, 'Fixture cookie must contain its name.');
-  const {chromium} = await import(path.resolve(__dirname, '../../../e2e/node_modules/playwright/index.mjs'));
-  const browser = await chromium.launch({headless: true, executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH});
+
+  const browser = await launchBrowser();
   try {
     for (const prefix of ['', '/app', '/ACC']) await t.test(prefix || 'root', async () => {
       const requests = [], sockets = [], frames = [], connections = new Set();
