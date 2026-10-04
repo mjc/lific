@@ -78,7 +78,7 @@ fn validate_csrf_token(token: &str, binding: &str) -> bool {
     // constant-time `verify_slice` rather than `expected == sig` on the hex
     // strings, which short-circuits on the first mismatched byte and leaks a
     // timing oracle. Decode the presented hex first; malformed hex is a reject.
-    let Ok(sig_bytes) = hex_decode(sig) else {
+    let Ok(sig_bytes) = hex::decode(sig) else {
         return false;
     };
     let mut mac = HmacSha256::new_from_slice(&*CSRF_SECRET).unwrap();
@@ -588,7 +588,7 @@ async fn register_client(
         warn!(%error, "failed to clean up stale OAuth clients");
         return (StatusCode::SERVICE_UNAVAILABLE, "database cleanup error").into_response();
     }
-    let client_id = uuid_v4();
+    let client_id = uuid::Uuid::new_v4().to_string();
     let client_bytes = (client_id.len() + client_name.len() + redirect_uris_json.len()) as i64;
     let storage = conn.query_row(
         "SELECT COUNT(*), COALESCE(SUM(
@@ -1233,7 +1233,7 @@ async fn authorize_approve(
         ConsentDecision::Approve => {}
     }
 
-    let code = uuid_v4();
+    let code = uuid::Uuid::new_v4().to_string();
     let expires = chrono::Utc::now() + chrono::Duration::minutes(10);
     let scope = form.scope.as_deref().unwrap_or("mcp");
 
@@ -1706,7 +1706,11 @@ fn device_authorization_inner(
     };
 
     // High-entropy device code — return raw once, store only its hash.
-    let device_code = format!("{}{}", uuid_v4(), uuid_v4()).replace('-', "");
+    let device_code = format!(
+        "{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    );
     let device_code_hash = sha256_hex(device_code.as_bytes());
 
     // Generate a unique user code (retry a few times on the rare collision).
@@ -2410,7 +2414,7 @@ fn token_exchange_inner(state: &OAuthState, req: TokenRequest, resource: &str) -
     }
 
     // Generate access token — store SHA-256 hash, return raw token only once
-    let access_token = format!("lific_at_{}", uuid_v4());
+    let access_token = format!("lific_at_{}", uuid::Uuid::new_v4());
     let token_hash = sha256_hex(access_token.as_bytes());
     let expires_in = ACCESS_TOKEN_EXPIRES_IN;
     let expires_at = chrono::Utc::now() + chrono::Duration::seconds(expires_in as i64);
@@ -2653,7 +2657,7 @@ fn device_token_exchange(state: &OAuthState, req: &TokenRequest, resource: &str)
                 );
             };
 
-            let access_token = format!("lific_at_{}", uuid_v4());
+            let access_token = format!("lific_at_{}", uuid::Uuid::new_v4());
             let token_hash = sha256_hex(access_token.as_bytes());
             let expires_in = ACCESS_TOKEN_EXPIRES_IN;
             let expires_at = now + chrono::Duration::seconds(expires_in as i64);
@@ -2849,37 +2853,10 @@ mod pkce_tests {
     }
 }
 
-/// Decode a lowercase/uppercase hex string into bytes. Returns `Err(())` on
-/// odd length or any non-hex digit. Used to parse a presented CSRF MAC before
-/// constant-time verification (LIF-208).
-fn hex_decode(s: &str) -> Result<Vec<u8>, ()> {
-    if !s.is_ascii() || !s.len().is_multiple_of(2) {
-        return Err(());
-    }
-    (0..s.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).map_err(|_| ()))
-        .collect()
-}
-
 fn base64_url_encode(bytes: &[u8]) -> String {
     use base64::Engine;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     URL_SAFE_NO_PAD.encode(bytes)
-}
-
-fn uuid_v4() -> String {
-    let bytes: [u8; 16] = rand::random();
-    format!(
-        "{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}",
-        u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
-        u16::from_be_bytes([bytes[4], bytes[5]]),
-        u16::from_be_bytes([bytes[6], bytes[7]]) & 0x0fff,
-        u16::from_be_bytes([bytes[8], bytes[9]]) & 0x3fff | 0x8000,
-        u64::from_be_bytes([
-            0, 0, bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]
-        ])
-    )
 }
 
 fn html_escape(s: &str) -> String {
@@ -3963,6 +3940,10 @@ mod tests {
         );
 
         let (ts, sig) = t.split_once('.').unwrap();
+        assert!(validate_csrf_token(
+            &format!("{ts}.{}", sig.to_uppercase()),
+            "sess"
+        ));
 
         // Flip one hex nibble in the signature → MAC mismatch, must reject.
         let mut bad = sig.to_string();
@@ -3998,16 +3979,6 @@ mod tests {
                 "sess"
             ));
         }
-    }
-
-    #[test]
-    fn hex_decode_roundtrips_and_rejects_bad_input() {
-        assert_eq!(hex_decode("00ff10").unwrap(), vec![0x00, 0xff, 0x10]);
-        assert_eq!(hex_decode(&hex_encode(b"lific")).unwrap(), b"lific");
-        assert!(hex_decode("abc").is_err(), "odd length rejected");
-        assert!(hex_decode("zz").is_err(), "non-hex rejected");
-        assert!(hex_decode("€a").is_err(), "multibyte input rejected");
-        assert_eq!(hex_decode("ABcd").unwrap(), vec![0xab, 0xcd]);
     }
 
     #[tokio::test]
@@ -4087,6 +4058,12 @@ mod tests {
             .unwrap();
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         let val: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+
+        let client_id = val["client_id"].as_str().unwrap();
+        let uuid = uuid::Uuid::parse_str(client_id).unwrap();
+        assert_eq!(uuid.get_version_num(), 4);
+        assert_eq!(uuid.get_variant(), uuid::Variant::RFC4122);
+        assert_eq!(uuid.to_string(), client_id);
 
         let grants = val["grant_types"].as_array().unwrap();
         assert!(
@@ -5751,6 +5728,17 @@ mod tests {
         let (app, db) = test_oauth_app();
         let (_, v) = request_device_code(&app, None).await;
         let device_code = v["device_code"].as_str().unwrap();
+        assert_eq!(device_code.len(), 64);
+        assert!(
+            device_code
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        );
+        for code in [&device_code[..32], &device_code[32..]] {
+            let uuid = uuid::Uuid::parse_str(code).unwrap();
+            assert_eq!(uuid.get_version_num(), 4);
+            assert_eq!(uuid.get_variant(), uuid::Variant::RFC4122);
+        }
         let hash = sha256_hex(device_code.as_bytes());
         let conn = db.read().unwrap();
         // The raw code must NOT be in the table; only its hash.
@@ -5942,7 +5930,9 @@ mod tests {
         let (status, body) = poll_device_token(&app, &device_code, Some(&device_client_id)).await;
         assert_eq!(status, StatusCode::OK, "expected token, got {body}");
         let access_token = body["access_token"].as_str().unwrap();
-        assert!(access_token.starts_with("lific_at_"));
+        let uuid = uuid::Uuid::parse_str(access_token.strip_prefix("lific_at_").unwrap()).unwrap();
+        assert_eq!(uuid.get_version_num(), 4);
+        assert_eq!(uuid.get_variant(), uuid::Variant::RFC4122);
         assert_eq!(bound_user(&db, access_token), Some(bot_id));
         assert_ne!(bot_id, user_id, "bot must differ from the approving human");
 

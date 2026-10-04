@@ -27,6 +27,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, BufReader};
 
+use super::mcp_http::validate_envelope;
 use super::mcp_proxy::{
     ForwardError, encode, inject_bound_project, internal_error_response, parse_error_response,
     tidy, write_line,
@@ -34,10 +35,8 @@ use super::mcp_proxy::{
 
 // Limits. Each bounds something attacker- or accident-controlled.
 
-/// Largest response body accepted from a backend, per request.
-const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
-/// Largest single JSON-RPC line accepted from the client on stdin.
-const MAX_REQUEST_LINE_BYTES: usize = 1024 * 1024;
+// Keep proxy line and response limits aligned with the local wire boundary.
+use crate::mcp::batching::{MAX_REQUEST_BYTES as MAX_REQUEST_LINE_BYTES, MAX_RESPONSE_BYTES};
 /// Largest instances config file.
 const MAX_CONFIG_BYTES: u64 = 256 * 1024;
 /// How many `tools/list` pages a backend may serve before discovery gives up.
@@ -52,7 +51,7 @@ const MAX_ALIAS_LEN: usize = 32;
 const MIN_REDACTABLE_SECRET_LEN: usize = 8;
 
 /// Per-request wall clock for a routed call.
-const CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+const CALL_TIMEOUT: std::time::Duration = crate::mcp::batching::BATCH_TIMEOUT;
 /// Shorter than a routed call: a slow backend fails the launch, not the
 /// client waiting on `initialize`.
 const DISCOVERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
@@ -634,64 +633,6 @@ impl InstanceTransport for HttpBackends {
             .get(alias)
             .ok_or_else(|| ForwardError::unreachable("unknown instance"))?;
         Self::post_with_notifications(backend, body, notifications, deadline).await
-    }
-}
-
-// backend envelope validation
-
-/// Check that a backend's answer is the response to the request we sent.
-///
-/// Without this a backend can answer one call with another call's body and the
-/// client attributes it to the wrong call. Checked before anything is relayed,
-/// and during startup discovery too.
-pub(crate) fn validate_envelope(response: &Value, expected_id: &Value) -> Result<(), String> {
-    let Some(envelope) = response.as_object() else {
-        return Err("response was not a JSON-RPC object".to_owned());
-    };
-    match envelope.get("jsonrpc") {
-        Some(Value::String(version)) if version == "2.0" => {}
-        Some(other) => {
-            return Err(format!(
-                "response declared jsonrpc {}, expected \"2.0\"",
-                tidy(&other.to_string())
-            ));
-        }
-        None => return Err("response is missing the jsonrpc member".to_owned()),
-    }
-
-    if envelope.contains_key("method") {
-        return Err("response must not contain a request method".to_owned());
-    }
-
-    let Some(id) = envelope.get("id") else {
-        return Err("response is missing the id member".to_owned());
-    };
-    if id != expected_id {
-        return Err(format!(
-            "response id {} does not match the request id {}; refusing to attribute one call's \
-             answer to another",
-            tidy(&id.to_string()),
-            tidy(&expected_id.to_string())
-        ));
-    }
-
-    match (envelope.get("result"), envelope.get("error")) {
-        (Some(_), Some(_)) => Err(
-            "response carried both result and error, which JSON-RPC forbids and which makes the \
-             outcome of the call ambiguous"
-                .to_owned(),
-        ),
-        (None, None) => Err("response carried neither result nor error".to_owned()),
-        (None, Some(error)) => {
-            if error.get("code").and_then(Value::as_i64).is_none()
-                || error.get("message").and_then(Value::as_str).is_none()
-            {
-                return Err("response error requires an integer code and string message".to_owned());
-            }
-            Ok(())
-        }
-        (Some(result), None) if result.is_object() => Ok(()),
-        (Some(_), None) => Err("MCP response result must be an object".to_owned()),
     }
 }
 
@@ -1486,37 +1427,17 @@ where
                     Some(tokio::time::Instant::now() + crate::mcp::batching::BATCH_TIMEOUT);
                 let mut writer = crate::mcp::batching::BatchWriter::new(&mut output, items)
                     .map_fallbacks(|fallback| safe_frame(router, fallback))?;
-                let mut ids = std::collections::HashSet::new();
                 for (index, item) in items.iter().enumerate() {
                     if !writer.begin_member(index) {
                         continue;
                     }
-                    if !crate::mcp::batching::valid_message(item) {
-                        write_frame(
-                            &mut writer,
-                            router,
-                            &crate::mcp::batching::error(Value::Null, -32600, "Invalid Request"),
-                        )
-                        .await?;
-                        continue;
-                    }
-                    if item.get("method").is_none() {
-                        continue;
-                    }
-                    if let Some(id) = item.get("id")
-                        && !ids.insert(id.to_string())
-                    {
-                        write_frame(
-                            &mut writer,
-                            router,
-                            &crate::mcp::batching::error(
-                                Value::Null,
-                                -32600,
-                                "Duplicate batch request ID",
-                            ),
-                        )
-                        .await?;
-                        continue;
+                    match writer.member(index).clone() {
+                        crate::mcp::batching::BatchMember::Ignore => continue,
+                        crate::mcp::batching::BatchMember::Error(error) => {
+                            write_frame(&mut writer, router, &error).await?;
+                            continue;
+                        }
+                        crate::mcp::batching::BatchMember::Dispatch => {}
                     }
                     let frame = format!("{item}\n");
                     pump_inner(frame.as_bytes(), &mut writer, router, transport, deadline).await?;

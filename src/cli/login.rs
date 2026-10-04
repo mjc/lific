@@ -140,25 +140,31 @@ where
 /// Arbitrary client IDs requiring quoting mark `next_step_shell` as `posix`;
 /// consumers using another shell can pass the separate `client_id` directly.
 pub fn non_interactive_json(resp: &DeviceAuthResponse, base: &str) -> serde_json::Value {
-    let mut next_step = format!("lific login --complete {} --url {}", resp.device_code, base);
     let mut needs_posix_shell = false;
-    if let Some(client_id) = &resp.client_id {
-        next_step.push_str(" --client-id=");
-        // Lific issues UUIDs. This restricted alphabet needs no quoting in
-        // POSIX shells, PowerShell or cmd.exe (where single quotes are literal).
-        if !client_id.is_empty()
-            && client_id
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
-        {
-            next_step.push_str(client_id);
-        } else {
-            needs_posix_shell = true;
-            next_step.push('\'');
-            next_step.push_str(&client_id.replace('\'', "'\\''"));
-            next_step.push('\'');
+    let next_step = (|| {
+        let quoted_code = shlex::try_quote(&resp.device_code)?;
+        let quoted_base = shlex::try_quote(base)?;
+        needs_posix_shell =
+            quoted_code.as_ref() != resp.device_code || quoted_base.as_ref() != base;
+        let mut command = format!("lific login --complete {quoted_code} --url {quoted_base}");
+        if let Some(client_id) = &resp.client_id {
+            command.push_str(" --client-id=");
+            // UUIDs and this restricted alphabet remain usable in POSIX,
+            // PowerShell and cmd.exe, where single quotes are literal.
+            if !client_id.is_empty()
+                && client_id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+            {
+                command.push_str(client_id);
+            } else {
+                needs_posix_shell = true;
+                command.push_str(&shlex::try_quote(client_id)?);
+            }
         }
-    }
+        Ok::<_, shlex::QuoteError>(command)
+    })();
+    let cannot_quote = next_step.is_err();
     let mut payload = serde_json::json!({
         "verification_uri": resp.verification_uri,
         "verification_uri_complete": resp.verification_uri_complete,
@@ -166,12 +172,14 @@ pub fn non_interactive_json(resp: &DeviceAuthResponse, base: &str) -> serde_json
         "device_code": resp.device_code,
         "interval": resp.interval,
         "expires_in": resp.expires_in,
-        "next_step": next_step,
+        "next_step": next_step.ok(),
     });
     if let Some(client_id) = &resp.client_id {
         payload["client_id"] = client_id.clone().into();
     }
-    if needs_posix_shell {
+    if cannot_quote {
+        payload["next_step_error"] = "Completion arguments cannot contain NUL bytes".into();
+    } else if needs_posix_shell {
         payload["next_step_shell"] = "posix".into();
     }
     payload
@@ -660,9 +668,72 @@ mod tests {
         let v = non_interactive_json(&registered, "http://h");
         assert_eq!(v["next_step_shell"], "posix");
         assert_eq!(
-            v["next_step"],
-            "lific login --complete DEV123 --url http://h --client-id='client with '\\''quotes'\\'''"
+            shlex::split(v["next_step"].as_str().unwrap())
+                .unwrap()
+                .last()
+                .unwrap(),
+            "--client-id=client with 'quotes'"
         );
+    }
+
+    #[test]
+    fn completion_command_roundtrips_arbitrary_client_ids() {
+        use clap::Parser;
+
+        let mut resp = FakeFlow::new(vec![]).device;
+        for client in [
+            "",
+            "client with 'quotes'",
+            "$(echo dangerous); & |",
+            "\"double\" \\ slash",
+            "line\nnext\tcolumn",
+            "client-€-日本語",
+            "-leading",
+            "client@host",
+        ] {
+            resp.client_id = Some(client.into());
+            let payload = non_interactive_json(&resp, "http://h");
+            assert_eq!(payload["client_id"], client);
+            let command = payload["next_step"].as_str().unwrap();
+            let words = shlex::split(command).unwrap();
+            let parsed = super::super::Cli::try_parse_from(words).unwrap();
+            let super::super::Command::Login { client_id, .. } = parsed.command else {
+                panic!("expected login command");
+            };
+            assert_eq!(client_id.as_deref(), Some(client));
+        }
+    }
+
+    #[test]
+    fn completion_command_quotes_device_code_and_url_arguments() {
+        let mut resp = FakeFlow::new(vec![]).device;
+        resp.device_code = "code with $(expansion)".into();
+        let url = "https://example.com/path?x=1&y=2";
+        let payload = non_interactive_json(&resp, url);
+        assert_eq!(payload["next_step_shell"], "posix");
+        let words = shlex::split(payload["next_step"].as_str().unwrap()).unwrap();
+        assert_eq!(words[3], resp.device_code);
+        assert_eq!(words[5], url);
+        assert_eq!(words[6], "--client-id=grant-client");
+    }
+
+    #[test]
+    fn completion_command_rejects_nul_without_losing_structured_arguments() {
+        for location in ["client", "code", "url"] {
+            let mut resp = FakeFlow::new(vec![]).device;
+            let mut url = "http://h";
+            match location {
+                "client" => resp.client_id = Some("client\0suffix".into()),
+                "code" => resp.device_code = "code\0suffix".into(),
+                _ => url = "http://h/\0suffix",
+            }
+            let payload = non_interactive_json(&resp, url);
+            assert!(payload["next_step"].is_null());
+            assert!(payload["next_step_error"].as_str().unwrap().contains("NUL"));
+            assert!(payload.get("next_step_shell").is_none());
+            assert_eq!(payload["client_id"], resp.client_id.as_deref().unwrap());
+            assert_eq!(payload["device_code"], resp.device_code);
+        }
     }
 
     #[cfg(windows)]

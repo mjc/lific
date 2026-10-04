@@ -146,8 +146,11 @@ impl Forwarder for HttpForwarder {
         notifications: &mut S,
         deadline: Option<tokio::time::Instant>,
     ) -> Result<String, ForwardError> {
-        let limits = super::mcp_http::Limits::with_timeout(4 * 1024 * 1024, self.request_timeout)
-            .with_deadline(deadline);
+        let limits = super::mcp_http::Limits::with_timeout(
+            crate::mcp::batching::MAX_RESPONSE_BYTES,
+            self.request_timeout,
+        )
+        .with_deadline(deadline);
         super::mcp_http::post_with_notifications(
             &self.client,
             &self.endpoint,
@@ -472,39 +475,17 @@ where
                 let deadline =
                     Some(tokio::time::Instant::now() + crate::mcp::batching::BATCH_TIMEOUT);
                 let mut writer = crate::mcp::batching::BatchWriter::new(&mut output, items);
-                let mut ids = std::collections::HashSet::new();
                 for (index, item) in items.iter().enumerate() {
                     if !writer.begin_member(index) {
                         continue;
                     }
-                    if !crate::mcp::batching::valid_message(item) {
-                        write_line(
-                            &mut writer,
-                            &encode(&crate::mcp::batching::error(
-                                Value::Null,
-                                -32600,
-                                "Invalid Request",
-                            )),
-                        )
-                        .await?;
-                        continue;
-                    }
-                    if item.get("method").is_none() {
-                        continue;
-                    }
-                    if let Some(id) = item.get("id")
-                        && !ids.insert(id.to_string())
-                    {
-                        write_line(
-                            &mut writer,
-                            &encode(&crate::mcp::batching::error(
-                                Value::Null,
-                                -32600,
-                                "Duplicate batch request ID",
-                            )),
-                        )
-                        .await?;
-                        continue;
+                    match writer.member(index).clone() {
+                        crate::mcp::batching::BatchMember::Ignore => continue,
+                        crate::mcp::batching::BatchMember::Error(error) => {
+                            write_line(&mut writer, &encode(&error)).await?;
+                            continue;
+                        }
+                        crate::mcp::batching::BatchMember::Dispatch => {}
                     }
                     let frame = format!("{item}\n");
                     pump_inner(frame.as_bytes(), &mut writer, forwarder, bound, deadline).await?;
@@ -626,7 +607,7 @@ pub async fn run(url: String, credential: Option<String>) -> Result<(), Box<dyn 
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(std::time::Duration::from_secs(10))
-        .timeout(std::time::Duration::from_secs(120))
+        .timeout(crate::mcp::batching::BATCH_TIMEOUT)
         .build()?;
     // Resolved before the pump, so the very first `initialize` already knows
     // the answer and no request is ever forwarded against a stale binding.
@@ -635,7 +616,7 @@ pub async fn run(url: String, credential: Option<String>) -> Result<(), Box<dyn 
     let endpoint = format!("{}/mcp", url.trim_end_matches('/'));
     let forwarder = HttpForwarder {
         client,
-        request_timeout: std::time::Duration::from_secs(120),
+        request_timeout: crate::mcp::batching::BATCH_TIMEOUT,
         endpoint,
         credential,
         session: std::sync::Mutex::new(super::mcp_http::Session::default()),

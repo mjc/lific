@@ -24,22 +24,9 @@ pub struct AuthState {
     pub required: bool,
 }
 
-/// Encode bytes as a lowercase hex string.
-///
-/// LIF-383: the one hex encoder in the tree. Four copies of this loop used to
-/// live in oauth.rs, mcp/mod.rs, auth.rs and db/queries/users.rs.
+/// Shared lowercase encoding for persisted credential digests.
 pub(crate) fn hex_encode(bytes: &[u8]) -> String {
-    let mut encoded = String::with_capacity(bytes.len() * 2);
-    append_hex(&mut encoded, bytes);
-    encoded
-}
-
-fn append_hex(encoded: &mut String, bytes: &[u8]) {
-    use std::fmt::Write as _;
-
-    for byte in bytes {
-        write!(encoded, "{byte:02x}").expect("writing to a String cannot fail");
-    }
+    hex::encode(bytes)
 }
 
 /// SHA-256 a byte slice and return the lowercase hex digest. This is how every
@@ -1174,33 +1161,16 @@ impl Sha256ApiKeyVerifier {
         }
 
         let mut bytes = [0u8; SHA256_DIGEST_BYTES];
-        for (index, [high, low]) in encoded.as_bytes().as_chunks::<2>().0.iter().enumerate() {
-            let high = hex_nibble(*high)?;
-            let low = hex_nibble(*low)?;
-            bytes[index] = (high << 4) | low;
-        }
+        hex::decode_to_slice(encoded, &mut bytes).ok()?;
         Some(Self(bytes))
     }
 
     fn encode(self) -> String {
-        let mut encoded =
-            String::with_capacity(SHA256_VERIFIER_PREFIX.len() + SHA256_DIGEST_BYTES * 2);
-        encoded.push_str(SHA256_VERIFIER_PREFIX);
-        append_hex(&mut encoded, &self.0);
-        encoded
+        format!("{SHA256_VERIFIER_PREFIX}{}", hex::encode(self.0))
     }
 
     fn matches(self, presented: Self) -> bool {
         bool::from(self.0.ct_eq(&presented.0))
-    }
-}
-
-fn hex_nibble(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        _ => None,
     }
 }
 
@@ -2202,6 +2172,56 @@ mod tests {
         API_KEY_ARGON2_VERIFY_CALLS.with(|calls| calls.set(0));
         assert!(validate_api_key(&pool, &key).is_ok());
         API_KEY_ARGON2_VERIFY_CALLS.with(|calls| assert_eq!(calls.get(), 0));
+    }
+
+    #[test]
+    fn credential_hex_encoding_preserves_persisted_digest_format() {
+        assert_eq!(hex_encode(&[]), "");
+        assert_eq!(hex_encode(&[0, 15, 16, 127, 128, 255]), "000f107f80ff");
+        assert_eq!(
+            sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    #[test]
+    fn tagged_sha256_verifiers_decode_uppercase_and_reject_malformed_bytes() {
+        let verifier = Sha256ApiKeyVerifier::for_token("credential");
+        let encoded = verifier.encode();
+        assert!(
+            Sha256ApiKeyVerifier::parse_tagged(&encoded)
+                .unwrap()
+                .matches(verifier)
+        );
+        let uppercase = format!(
+            "{SHA256_VERIFIER_PREFIX}{}",
+            hex_encode(&verifier.0).to_uppercase()
+        );
+        assert!(
+            Sha256ApiKeyVerifier::parse_tagged(&uppercase)
+                .unwrap()
+                .matches(verifier)
+        );
+        for bad in [
+            "a".repeat(63),
+            "a".repeat(65),
+            "g".repeat(64),
+            "é".repeat(32),
+            "\0".repeat(64),
+        ] {
+            assert!(
+                Sha256ApiKeyVerifier::parse_tagged(&format!("{SHA256_VERIFIER_PREFIX}{bad}"))
+                    .is_none()
+            );
+        }
+        assert!(
+            Sha256ApiKeyVerifier::parse_tagged(&format!("sha256:v2:{}", "a".repeat(64))).is_none()
+        );
+        assert!(
+            !Sha256ApiKeyVerifier::parse_tagged(&encoded)
+                .unwrap()
+                .matches(Sha256ApiKeyVerifier::for_token("different"))
+        );
     }
 
     #[test]

@@ -1,9 +1,17 @@
 //! HTTP framing shared by the remote MCP proxies.
+//!
+//! Keep raw messages at this boundary: the SDK client narrows the ID domain,
+//! retries broader session errors, and lacks our aggregate exchange budget.
+//! SDK header definitions and sse-stream parsing are reused below.
 
 use std::sync::Mutex;
 
 use futures_util::StreamExt;
 use reqwest::header::{ACCEPT, CONTENT_TYPE};
+use rmcp::transport::common::http_header::{
+    BASE64_HEADER_PREFIX, BASE64_HEADER_SUFFIX, EVENT_STREAM_MIME_TYPE, HEADER_MCP_METHOD,
+    HEADER_MCP_NAME, HEADER_MCP_PROTOCOL_VERSION, HEADER_SESSION_ID, JSON_MIME_TYPE,
+};
 use serde_json::Value;
 
 use super::mcp_proxy::{ForwardError, tidy};
@@ -221,17 +229,20 @@ async fn post_once<S: NotificationSink>(
     let modern = version == Some("2026-07-28");
     let mut request = client
         .post(endpoint)
-        .header(CONTENT_TYPE, "application/json")
-        .header(ACCEPT, "application/json, text/event-stream")
-        .header("Mcp-Method", method);
+        .header(CONTENT_TYPE, JSON_MIME_TYPE)
+        .header(
+            ACCEPT,
+            format!("{JSON_MIME_TYPE}, {EVENT_STREAM_MIME_TYPE}"),
+        )
+        .header(HEADER_MCP_METHOD, method);
     if let Some(version) = version {
-        request = request.header("MCP-Protocol-Version", version);
+        request = request.header(HEADER_MCP_PROTOCOL_VERSION, version);
     }
     if !modern
         && method != "initialize"
         && let Some(id) = &state.id
     {
-        request = request.header("Mcp-Session-Id", id);
+        request = request.header(HEADER_SESSION_ID, id);
     }
     if let Some(name) = match method {
         "tools/call" | "prompts/get" => message["params"]["name"].as_str(),
@@ -241,16 +252,16 @@ async fn post_once<S: NotificationSink>(
         use base64::Engine;
         let value = if name.bytes().all(|byte| (32..=126).contains(&byte))
             && name.trim() == name
-            && !name.starts_with("=?base64?")
+            && !name.starts_with(BASE64_HEADER_PREFIX)
         {
             name.to_owned()
         } else {
             format!(
-                "=?base64?{}?=",
+                "{BASE64_HEADER_PREFIX}{}{BASE64_HEADER_SUFFIX}",
                 base64::engine::general_purpose::STANDARD.encode(name)
             )
         };
-        request = request.header("Mcp-Name", value);
+        request = request.header(HEADER_MCP_NAME, value);
     }
     if let Some(credential) = credential {
         request = request.bearer_auth(credential);
@@ -330,7 +341,7 @@ async fn post_once<S: NotificationSink>(
     }
     let session_id = response
         .headers()
-        .get("Mcp-Session-Id")
+        .get(HEADER_SESSION_ID)
         .and_then(|value| value.to_str().ok())
         .map(str::to_owned);
     let mime = response
@@ -339,27 +350,24 @@ async fn post_once<S: NotificationSink>(
         .and_then(|value| value.to_str().ok())
         .unwrap_or_default()
         .to_owned();
-    let payload = if mime.starts_with("application/json") {
-        read_capped(response, max_bytes).await?
-    } else if mime.starts_with("text/event-stream") {
-        let bytes = futures_util::stream::try_unfold(
-            (response, 0usize),
-            move |(mut response, seen)| async move {
-                match response.chunk().await.map_err(ForwardError::unreachable)? {
-                    Some(chunk) if chunk.len() <= max_bytes.saturating_sub(seen) => {
-                        let total = seen + chunk.len();
-                        Ok(Some((chunk, (response, total))))
-                    }
-                    Some(_) => Err(ForwardError::unreachable(
-                        "SSE response exceeded the byte limit",
-                    )),
-                    None => Ok(None),
-                }
-            },
-        );
-        let stream = sse_stream::SseStream::from_bytes_stream(bytes);
+    let march = state.version.as_deref() == Some(crate::mcp::batching::MARCH);
+    let initialize_id = (method == "initialize").then_some(&message["id"]);
+    let mut replies = ResponseCollector::new(&message["id"]);
+    let value = if mime.starts_with(JSON_MIME_TYPE) {
+        let payload = read_capped(response, max_bytes).await?;
+        let raw: Value = serde_json::from_str(&payload).map_err(ForwardError::unreachable)?;
+        if raw.is_array() {
+            replies
+                .accept(response_messages(raw, march, initialize_id)?, notifications)
+                .await?;
+            replies.finish("MCP response batch omitted request ID")?
+        } else {
+            validate_envelope(&raw, &message["id"]).map_err(ForwardError::unreachable)?;
+            raw
+        }
+    } else if mime.starts_with(EVENT_STREAM_MIME_TYPE) {
+        let stream = sse_stream::SseStream::from_bytes_stream(capped_chunks(response, max_bytes));
         tokio::pin!(stream);
-        let mut reply = None;
         while let Some(event) = stream.next().await {
             let Some(data) = event
                 .map_err(ForwardError::unreachable)?
@@ -369,77 +377,23 @@ async fn post_once<S: NotificationSink>(
                 continue;
             };
             let value: Value = serde_json::from_str(&data).map_err(ForwardError::unreachable)?;
-            let values = response_messages(
-                value,
-                state.version.as_deref() == Some(crate::mcp::batching::MARCH),
-                (method == "initialize").then_some(&message["id"]),
-            )?;
-            for value in values {
-                if value.get("id") == message.get("id") && value.get("method").is_none() {
-                    super::mcp_instances::validate_envelope(&value, &message["id"])
-                        .map_err(ForwardError::unreachable)?;
-                    if reply.replace(value.to_string()).is_some() {
-                        return Err(ForwardError::unreachable(
-                            "duplicate response ID in MCP batch",
-                        ));
-                    }
-                } else {
-                    if value.get("id").is_some()
-                        || !valid_request(&value)
-                        || value.get("result").is_some()
-                        || value.get("error").is_some()
-                    {
-                        return Err(ForwardError::unreachable(
-                            "invalid or unexpected SSE notification",
-                        ));
-                    }
-                    notifications.send(value).await?;
-                }
-            }
-            if reply.is_some() {
+            replies
+                .accept(
+                    response_messages(value, march, initialize_id)?,
+                    notifications,
+                )
+                .await?;
+            if replies.reply.is_some() {
                 break;
             }
         }
-        reply.ok_or_else(|| ForwardError::unreachable("SSE stream ended without a response"))?
+        replies.finish("SSE stream ended without a response")?
     } else {
         return Err(ForwardError::unreachable(format!(
             "expected JSON or SSE from {endpoint}, got content-type {mime}"
         )));
     };
-    let raw: Value = serde_json::from_str(&payload).map_err(ForwardError::unreachable)?;
-    let value = if raw.is_array() {
-        let mut matched = None;
-        for value in response_messages(
-            raw,
-            state.version.as_deref() == Some(crate::mcp::batching::MARCH),
-            (method == "initialize").then_some(&message["id"]),
-        )? {
-            if value.get("id") == message.get("id") && value.get("method").is_none() {
-                if matched.replace(value).is_some() {
-                    return Err(ForwardError::unreachable(
-                        "duplicate response ID in MCP batch",
-                    ));
-                }
-            } else {
-                if value.get("id").is_some()
-                    || !valid_request(&value)
-                    || value.get("result").is_some()
-                    || value.get("error").is_some()
-                {
-                    return Err(ForwardError::unreachable(
-                        "invalid or unexpected JSON response batch member",
-                    ));
-                }
-                notifications.send(value).await?;
-            }
-        }
-        matched.ok_or_else(|| ForwardError::unreachable("MCP response batch omitted request ID"))?
-    } else {
-        raw
-    };
     let payload = value.to_string();
-    super::mcp_instances::validate_envelope(&value, &message["id"])
-        .map_err(ForwardError::unreachable)?;
     if method == "initialize"
         && let Some(version) = value["result"]["protocolVersion"].as_str()
     {
@@ -489,20 +443,141 @@ fn response_messages(
     }
 }
 
+// backend envelope validation
+
+/// Check that a backend's answer is the response to the request we sent.
+///
+/// Without this a backend can answer one call with another call's body and the
+/// client attributes it to the wrong call. Checked before anything is relayed,
+/// and during startup discovery too.
+pub(crate) fn validate_envelope(response: &Value, expected_id: &Value) -> Result<(), String> {
+    let Some(envelope) = response.as_object() else {
+        return Err("response was not a JSON-RPC object".to_owned());
+    };
+    match envelope.get("jsonrpc") {
+        Some(Value::String(version)) if version == "2.0" => {}
+        Some(other) => {
+            return Err(format!(
+                "response declared jsonrpc {}, expected \"2.0\"",
+                tidy(&other.to_string())
+            ));
+        }
+        None => return Err("response is missing the jsonrpc member".to_owned()),
+    }
+
+    if envelope.contains_key("method") {
+        return Err("response must not contain a request method".to_owned());
+    }
+
+    let Some(id) = envelope.get("id") else {
+        return Err("response is missing the id member".to_owned());
+    };
+    if id != expected_id {
+        return Err(format!(
+            "response id {} does not match the request id {}; refusing to attribute one call's \
+             answer to another",
+            tidy(&id.to_string()),
+            tidy(&expected_id.to_string())
+        ));
+    }
+
+    match (envelope.get("result"), envelope.get("error")) {
+        (Some(_), Some(_)) => Err(
+            "response carried both result and error, which JSON-RPC forbids and which makes the \
+             outcome of the call ambiguous"
+                .to_owned(),
+        ),
+        (None, None) => Err("response carried neither result nor error".to_owned()),
+        (None, Some(error)) => {
+            if error.get("code").and_then(Value::as_i64).is_none()
+                || error.get("message").and_then(Value::as_str).is_none()
+            {
+                return Err("response error requires an integer code and string message".to_owned());
+            }
+            Ok(())
+        }
+        (Some(result), None) if result.is_object() => Ok(()),
+        (Some(_), None) => Err("MCP response result must be an object".to_owned()),
+    }
+}
+
+/// Both JSON and SSE count raw bytes before parsing or buffering. In
+/// particular, many small SSE events must not evade the exchange-wide cap.
+fn capped_chunks(
+    response: reqwest::Response,
+    max_bytes: usize,
+) -> impl futures_util::Stream<Item = Result<axum::body::Bytes, ForwardError>> + Send {
+    futures_util::stream::try_unfold((response, 0usize), move |(mut response, seen)| async move {
+        match response.chunk().await.map_err(ForwardError::unreachable)? {
+            Some(chunk) if chunk.len() <= max_bytes.saturating_sub(seen) => {
+                let total = seen + chunk.len();
+                Ok(Some((chunk, (response, total))))
+            }
+            Some(_) => Err(ForwardError::unreachable(format!(
+                "response exceeded the {max_bytes} byte limit"
+            ))),
+            None => Ok(None),
+        }
+    })
+}
+
 pub(super) async fn read_capped(
-    mut response: reqwest::Response,
+    response: reqwest::Response,
     max_bytes: usize,
 ) -> Result<String, ForwardError> {
+    let stream = capped_chunks(response, max_bytes);
+    tokio::pin!(stream);
     let mut buffer = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(ForwardError::unreachable)? {
-        if chunk.len() > max_bytes.saturating_sub(buffer.len()) {
-            return Err(ForwardError::unreachable(format!(
-                "response exceeded the {max_bytes} byte limit"
-            )));
-        }
-        buffer.extend_from_slice(&chunk);
+    while let Some(chunk) = stream.next().await {
+        buffer.extend_from_slice(&chunk?);
     }
     String::from_utf8(buffer).map_err(|_| ForwardError::unreachable("response was not UTF-8"))
+}
+
+/// JSON batches and SSE events share response correlation and notification
+/// validation, so neither framing mode can bypass duplicate-ID checks.
+struct ResponseCollector<'a> {
+    id: &'a Value,
+    reply: Option<Value>,
+}
+
+impl<'a> ResponseCollector<'a> {
+    fn new(id: &'a Value) -> Self {
+        Self { id, reply: None }
+    }
+
+    async fn accept<S: NotificationSink>(
+        &mut self,
+        values: Vec<Value>,
+        notifications: &mut S,
+    ) -> Result<(), ForwardError> {
+        for value in values {
+            if value.get("id") == Some(self.id) && value.get("method").is_none() {
+                validate_envelope(&value, self.id).map_err(ForwardError::unreachable)?;
+                if self.reply.replace(value).is_some() {
+                    return Err(ForwardError::unreachable(
+                        "duplicate response ID in MCP batch",
+                    ));
+                }
+            } else {
+                if value.get("id").is_some()
+                    || !valid_request(&value)
+                    || value.get("result").is_some()
+                    || value.get("error").is_some()
+                {
+                    return Err(ForwardError::unreachable(
+                        "invalid or unexpected MCP notification",
+                    ));
+                }
+                notifications.send(value).await?;
+            }
+        }
+        Ok(())
+    }
+
+    fn finish(self, missing: &str) -> Result<Value, ForwardError> {
+        self.reply.ok_or_else(|| ForwardError::unreachable(missing))
+    }
 }
 
 #[cfg(test)]
@@ -684,6 +759,199 @@ mod tests {
         async fn send(&mut self, notification: Value) -> Result<(), ForwardError> {
             self.0.push(notification);
             Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn raw_http_framing_preserves_the_full_proxy_request_id_domain() {
+        for sse in [false, true] {
+            let app = axum::Router::new().route(
+                "/mcp",
+                axum::routing::post(move |axum::Json(request): axum::Json<Value>| async move {
+                    let reply = json!({"jsonrpc":"2.0","id":request["id"],"result":{}});
+                    Response::builder()
+                        .header(
+                            CONTENT_TYPE,
+                            if sse {
+                                EVENT_STREAM_MIME_TYPE
+                            } else {
+                                JSON_MIME_TYPE
+                            },
+                        )
+                        .body(axum::body::Body::from(if sse {
+                            format!("data: {reply}\n\n")
+                        } else {
+                            reply.to_string()
+                        }))
+                        .unwrap()
+                }),
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let endpoint = format!("http://{}/mcp", listener.local_addr().unwrap());
+            let task = tokio::spawn(async move {
+                axum::serve(listener, app).await.unwrap();
+            });
+            let client = reqwest::Client::new();
+            let session = Mutex::default();
+            for id in [
+                json!(u64::MAX),
+                json!(i64::MIN),
+                json!("quote\"slash\\newline\n"),
+            ] {
+                let request =
+                    json!({"jsonrpc":"2.0","id":id,"method":"extension/unknown","params":{}});
+                assert!(valid_request(&request));
+                let result = post(
+                    &client,
+                    &endpoint,
+                    None,
+                    &session,
+                    request.to_string(),
+                    4096,
+                )
+                .await
+                .unwrap();
+                assert_eq!(serde_json::from_str::<Value>(&result).unwrap()["id"], id);
+            }
+            task.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn json_and_sse_batches_share_correlation_and_notification_validation() {
+        let reply = json!({"jsonrpc":"2.0","id":1,"result":{}});
+        let notification =
+            json!({"jsonrpc":"2.0","method":"notifications/progress","params":{"progress":1}});
+        let cases = [
+            (json!([notification, reply]), true),
+            (json!([reply, reply]), false),
+            (json!([{"jsonrpc":"2.0","id":2,"result":{}}]), false),
+            (
+                json!([{"jsonrpc":"2.0","id":null,"error":{"code":-32603,"message":"failed"}}]),
+                false,
+            ),
+            (json!([{"jsonrpc":"2.0","id":1,"result":[]}]), false),
+            (
+                json!([{"jsonrpc":"2.0","method":"notifications/progress","error":{"code":-32603,"message":"failed"}}, reply]),
+                false,
+            ),
+        ];
+        for sse in [false, true] {
+            for (batch, succeeds) in &cases {
+                let batch = batch.clone();
+                let app = axum::Router::new().route(
+                    "/mcp",
+                    axum::routing::post(move || {
+                        let batch = batch.clone();
+                        async move {
+                            Response::builder()
+                                .header(
+                                    CONTENT_TYPE,
+                                    if sse {
+                                        EVENT_STREAM_MIME_TYPE
+                                    } else {
+                                        JSON_MIME_TYPE
+                                    },
+                                )
+                                .body(axum::body::Body::from(if sse {
+                                    format!("data: {batch}\n\n")
+                                } else {
+                                    batch.to_string()
+                                }))
+                                .unwrap()
+                        }
+                    }),
+                );
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let endpoint = format!("http://{}/mcp", listener.local_addr().unwrap());
+                let task = tokio::spawn(async move {
+                    axum::serve(listener, app).await.unwrap();
+                });
+                let session = Mutex::new(Session {
+                    version: Some(crate::mcp::batching::MARCH.into()),
+                    ..Session::default()
+                });
+                let mut notifications = CollectedNotifications::default();
+                let result = post_with_notifications(
+                    &reqwest::Client::new(),
+                    &endpoint,
+                    None,
+                    &session,
+                    json!({"jsonrpc":"2.0","id":1,"method":"ping"}).to_string(),
+                    Limits::with_timeout(4096, std::time::Duration::from_secs(3)),
+                    &mut notifications,
+                )
+                .await;
+                assert_eq!(result.is_ok(), *succeeds, "sse={sse}: {result:?}");
+                if *succeeds {
+                    assert_eq!(
+                        serde_json::from_str::<Value>(&result.unwrap()).unwrap(),
+                        reply
+                    );
+                    assert_eq!(notifications.0, vec![notification.clone()]);
+                }
+                task.abort();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn json_and_sse_enforce_the_same_aggregate_raw_byte_cap() {
+        for sse in [false, true] {
+            let reply = json!({"jsonrpc":"2.0","id":1,"result":{}});
+            let notification =
+                json!({"jsonrpc":"2.0","method":"notifications/progress","params":{"progress":1}});
+            let body = if sse {
+                format!("data: {notification}\n\ndata: {notification}\n\ndata: {reply}\n\n")
+            } else {
+                json!([notification, notification, reply]).to_string()
+            };
+            let exact = body.len();
+            let app = axum::Router::new().route(
+                "/mcp",
+                axum::routing::post(move || {
+                    let body = body.clone();
+                    async move {
+                        Response::builder()
+                            .header(
+                                CONTENT_TYPE,
+                                if sse {
+                                    EVENT_STREAM_MIME_TYPE
+                                } else {
+                                    JSON_MIME_TYPE
+                                },
+                            )
+                            .body(axum::body::Body::from(body))
+                            .unwrap()
+                    }
+                }),
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let endpoint = format!("http://{}/mcp", listener.local_addr().unwrap());
+            let task = tokio::spawn(async move {
+                axum::serve(listener, app).await.unwrap();
+            });
+            let session = Mutex::new(Session {
+                version: Some(crate::mcp::batching::MARCH.into()),
+                ..Session::default()
+            });
+            for max in [exact, exact - 1] {
+                let result = post(
+                    &reqwest::Client::new(),
+                    &endpoint,
+                    None,
+                    &session,
+                    json!({"jsonrpc":"2.0","id":1,"method":"ping"}).to_string(),
+                    max,
+                )
+                .await;
+                assert_eq!(
+                    result.is_ok(),
+                    max == exact,
+                    "sse={sse}, limit={max}: {result:?}"
+                );
+            }
+            task.abort();
         }
     }
 

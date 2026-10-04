@@ -69,11 +69,13 @@ anyhow = "1"
 # CLI
 clap = { version = "4", features = ["derive", "env"] }
 clap_complete = "4"
+shlex = "1.3"
 
 # Auth
 blake3 = "1"
 argon2 = "0.5"
 rand = "0.8"
+uuid = { version = "1.22", features = ["v4"] }
 # Credential storage for `lific login` (LIF-258). On Linux we use the
 # Secret Service backend (sync-secret-service) with the pure-Rust crypto
 # session (crypto-rust, no OpenSSL) and `vendored` so libdbus is compiled in
@@ -102,6 +104,7 @@ flate2 = "1"
 
 # Encoding
 urlencoding = "2"
+hex = "0.4"
 content_disposition = "0.4"
 # serde_urlencoded: parse application/x-www-form-urlencoded device-authorization
 # bodies by hand (the endpoint accepts BOTH form and JSON, so we sniff the

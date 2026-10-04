@@ -85,10 +85,38 @@ pub(crate) fn valid_message(value: &Value) -> bool {
     }
 }
 
+/// One decision shared by reply reservation and both proxy pumps. Client
+/// responses are ignored; invalid and duplicate requests get null-ID errors.
+#[derive(Clone)]
+pub(crate) enum BatchMember {
+    Dispatch,
+    Ignore,
+    Error(Value),
+}
+
+fn plan_members(items: &[Value]) -> Vec<BatchMember> {
+    let mut ids = HashSet::new();
+    items
+        .iter()
+        .map(|item| {
+            if !valid_message(item) {
+                BatchMember::Error(error(Value::Null, -32600, "Invalid Request"))
+            } else if item.get("method").is_none() {
+                BatchMember::Ignore
+            } else if item.get("id").is_some_and(|id| !ids.insert(id.to_string())) {
+                BatchMember::Error(error(Value::Null, -32600, "Duplicate batch request ID"))
+            } else {
+                BatchMember::Dispatch
+            }
+        })
+        .collect()
+}
+
 /// Collect response frames, while allowing notifications to flush immediately.
 /// Existing pumps keep their single-message dispatch and redaction paths.
 pub(crate) struct BatchWriter<'a, W> {
     output: &'a mut W,
+    members: Vec<BatchMember>,
     frame: Vec<u8>,
     pending: Vec<u8>,
     written: usize,
@@ -103,23 +131,16 @@ pub(crate) struct BatchWriter<'a, W> {
 }
 impl<'a, W> BatchWriter<'a, W> {
     pub(crate) fn new(output: &'a mut W, items: &[Value]) -> Self {
-        let mut ids = HashSet::new();
-        let fallbacks: Vec<_> = items
+        let members = plan_members(items);
+        let fallbacks: Vec<_> = members
             .iter()
-            .map(|item| {
-                if !valid_message(item) {
-                    Some(error(Value::Null, -32600, "Invalid Request"))
-                } else if item.get("method").is_none() {
-                    None
-                } else {
-                    item.get("id").map(|id| {
-                        if ids.insert(id.to_string()) {
-                            error(id.clone(), -32603, "MCP batch response exceeded byte limit")
-                        } else {
-                            error(Value::Null, -32600, "Duplicate batch request ID")
-                        }
-                    })
-                }
+            .zip(items)
+            .map(|(member, item)| match member {
+                BatchMember::Error(error) => Some(error.clone()),
+                BatchMember::Ignore => None,
+                BatchMember::Dispatch => item
+                    .get("id")
+                    .map(|id| error(id.clone(), -32603, "MCP batch response exceeded byte limit")),
             })
             .collect();
         let count = fallbacks.iter().flatten().count();
@@ -130,6 +151,7 @@ impl<'a, W> BatchWriter<'a, W> {
             .sum();
         Self {
             output,
+            members,
             frame: vec![],
             pending: vec![],
             written: 0,
@@ -143,6 +165,10 @@ impl<'a, W> BatchWriter<'a, W> {
             exhausted: false,
             current_bytes: 0,
         }
+    }
+
+    pub(crate) fn member(&self, index: usize) -> &BatchMember {
+        &self.members[index]
     }
 
     /// Apply the caller's output policy before measuring reserved errors.
@@ -1321,6 +1347,39 @@ mod tests {
     use super::*;
     use rmcp::ServiceExt;
     use tokio::io::AsyncBufReadExt;
+
+    #[test]
+    fn proxy_batch_plan_matches_reservations_without_claiming_ignored_ids() {
+        let items = vec![
+            json!({"jsonrpc":"2.0","id":1,"result":{}}),
+            json!({"jsonrpc":"2.0","id":1,"method":"ping","result":{}}),
+            json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+            json!({"jsonrpc":"2.0","id":1,"method":"ping"}),
+            json!({"jsonrpc":"2.0","id":"1","method":"ping"}),
+            json!({"jsonrpc":"2.0","id":1,"method":"ping"}),
+            json!({"jsonrpc":"2.0","id":null,"method":"ping"}),
+        ];
+        let mut output = Vec::<u8>::new();
+        let writer = BatchWriter::new(&mut output, &items);
+        assert!(matches!(writer.member(0), BatchMember::Ignore));
+        assert!(matches!(writer.member(1), BatchMember::Error(_)));
+        assert!(matches!(writer.member(2), BatchMember::Dispatch));
+        assert!(matches!(writer.member(3), BatchMember::Dispatch));
+        assert!(matches!(writer.member(4), BatchMember::Dispatch));
+        assert!(matches!(writer.member(5), BatchMember::Error(_)));
+        assert!(matches!(writer.member(6), BatchMember::Error(_)));
+        assert!(writer.fallbacks[0].is_none());
+        assert!(writer.fallbacks[2].is_none());
+        assert_eq!(writer.fallbacks[3].as_ref().unwrap()["id"], 1);
+        assert_eq!(writer.fallbacks[4].as_ref().unwrap()["id"], "1");
+        for index in [1, 5, 6] {
+            let BatchMember::Error(error) = writer.member(index) else {
+                panic!("expected immediate error");
+            };
+            assert_eq!(writer.fallbacks[index].as_ref(), Some(error));
+            assert!(error["id"].is_null());
+        }
+    }
 
     #[tokio::test]
     async fn proxy_batch_writer_reserves_escaped_ids_invalid_members_and_notifications() {

@@ -913,7 +913,7 @@ async fn check_mcp_authorized_response(
     }
     if !status.is_success() {
         if let Ok(body) = serde_json::from_str::<serde_json::Value>(&text)
-            && super::mcp_instances::validate_envelope(&body, &serde_json::json!(1)).is_ok()
+            && super::mcp_http::validate_envelope(&body, &serde_json::json!(1)).is_ok()
             && let Some(error) = body.get("error")
         {
             return Check::new(
@@ -974,7 +974,7 @@ fn discovery_needs_legacy(status: reqwest::StatusCode, text: &str) -> bool {
     {
         envelope.insert("id".to_owned(), serde_json::json!(1));
     }
-    super::mcp_instances::validate_envelope(&body, &serde_json::json!(1)).is_ok()
+    super::mcp_http::validate_envelope(&body, &serde_json::json!(1)).is_ok()
 }
 
 async fn check_mcp_legacy(client: &reqwest::Client, base: &str, key: &str) -> Check {
@@ -1085,7 +1085,7 @@ async fn check_mcp_legacy(client: &reqwest::Client, base: &str, key: &str) -> Ch
 }
 
 fn check_mcp_json_response(body: serde_json::Value) -> Check {
-    if let Err(error) = super::mcp_instances::validate_envelope(&body, &serde_json::json!(1)) {
+    if let Err(error) = super::mcp_http::validate_envelope(&body, &serde_json::json!(1)) {
         return Check::new(
             "mcp",
             Status::Fail,
