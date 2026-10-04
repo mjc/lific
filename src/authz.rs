@@ -400,19 +400,27 @@ pub fn visible_project_ids(
     identity: &Option<ResolvedIdentity>,
 ) -> Result<Option<HashSet<i64>>, LificError> {
     let conn = db.read()?;
+    visible_project_ids_conn(&conn, identity)
+}
 
-    let effective = effective_user(&conn, &user_of(identity));
+/// Use the caller's existing snapshot, including a transaction that writes an
+/// issue and projects its authorized response before committing.
+pub(crate) fn visible_project_ids_conn(
+    conn: &Connection,
+    identity: &Option<ResolvedIdentity>,
+) -> Result<Option<HashSet<i64>>, LificError> {
+    let effective = effective_user(conn, &user_of(identity));
     if matches!(&effective, Some(u) if u.is_admin) {
         return Ok(None);
     }
-    if !authz_enforced_conn(&conn)? {
+    if !authz_enforced_conn(conn)? {
         return Ok(None);
     }
     let Some(user) = effective else {
         return Ok(Some(HashSet::new()));
     };
 
-    let ids = queries::members::list_project_ids_for_user(&conn, user.id)?;
+    let ids = queries::members::list_project_ids_for_user(conn, user.id)?;
     Ok(Some(ids.into_iter().collect()))
 }
 

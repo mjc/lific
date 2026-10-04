@@ -20,6 +20,20 @@ pub(crate) fn read<T>(cx: &Cx, result: Result<T, LificError>) -> topcoat::Result
             };
             Err(topcoat::router::error::redirect(destination).into())
         }
+        Err(LificError::Forbidden(_)) => Err(topcoat::router::error::forbidden().into()),
+        Err(LificError::BadRequest(message)) => {
+            Err(topcoat::router::error::bad_request(message).into())
+        }
+        Err(LificError::NotFound(_)) => Err(topcoat::router::error::not_found().into()),
+        Err(LificError::TooManyRequests(_)) => {
+            Err(topcoat::router::error::too_many_requests(30).into())
+        }
+        Err(LificError::PayloadTooLarge(_)) => {
+            Err(topcoat::router::error::content_too_large().into())
+        }
+        Err(LificError::Unavailable(_)) => {
+            Err(topcoat::router::error::service_unavailable(2).into())
+        }
         Err(error) => Err(error.into()),
     }
 }
@@ -205,11 +219,57 @@ mod tests {
         .unwrap_err();
         assert!(
             error
-                .to_string()
-                .contains("insufficient project permissions")
+                .clone()
+                .downcast_cloned::<topcoat::router::error::ForbiddenError>()
+                .is_ok()
         );
         assert!(error.downcast_cloned::<RedirectError>().is_err());
         assert_eq!(read(&cx, Ok::<_, LificError>(42)).unwrap(), 42);
+    }
+
+    #[test]
+    fn native_session_http_domain_denials_keep_their_status_instead_of_becoming_500() {
+        let cx = CxTestBuilder::new().build();
+        for (error, expected, retry) in [
+            (
+                LificError::Forbidden("insufficient project permissions".into()),
+                403,
+                None,
+            ),
+            (
+                LificError::BadRequest("invalid identifier".into()),
+                400,
+                None,
+            ),
+            (LificError::NotFound("missing issue".into()), 404, None),
+            (
+                LificError::TooManyRequests("budget exhausted".into()),
+                429,
+                Some("30"),
+            ),
+            (
+                LificError::PayloadTooLarge("resource ceiling".into()),
+                413,
+                None,
+            ),
+            (
+                LificError::Unavailable("store occupied".into()),
+                503,
+                Some("2"),
+            ),
+        ] {
+            let error = read::<()>(&cx, Err(error)).unwrap_err();
+            assert!(error.clone().downcast_cloned::<RedirectError>().is_err());
+            let response = error.into_response(&cx).unwrap();
+            assert_eq!(response.status().as_u16(), expected);
+            assert_eq!(
+                response
+                    .headers()
+                    .get("retry-after")
+                    .map(|value| value.to_str().unwrap()),
+                retry
+            );
+        }
     }
 
     #[tokio::test]

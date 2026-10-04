@@ -93,13 +93,14 @@ test('document fingerprint escapes stale bare CSS and loads production native st
           const style = selector => getComputedStyle(document.querySelector(selector));
           return {rules: sheet?.cssRules.length || 0, shell: style('.native-home-shell').display,
             sidebar: style('.native-home-sidebar').width, border: style('.native-home-panel').borderTopWidth,
+            radius: style('.native-home-panel').borderTopLeftRadius,
             pagePadding: style('.tc-native-home__page').paddingTop,
             columns: style('.tc-native-home__columns').flexDirection,
             heading: style('.tc-home-active__heading h2').textTransform,
             bodyMargin: getComputedStyle(document.body).margin, violations: window.styleViolations};
         });
         assert.ok(applied.rules > 0, 'The browser accepts the actual same-origin CSSOM.');
-        assert.deepEqual({...applied, rules: 0}, {rules: 0, shell: 'flex', sidebar: '230px', border: '1px',
+        assert.deepEqual({...applied, rules: 0}, {rules: 0, shell: 'flex', sidebar: '230px', border: '0px', radius: '12px',
           pagePadding: '40px', columns: 'row', heading: 'uppercase', bodyMargin: '0px', violations: []});
         assert.deepEqual(failed, [], 'Stylesheet loading has no network failures.');
         assert.deepEqual(errors, [], 'No CSS MIME/CSP or native browser errors.');

@@ -86,9 +86,7 @@ pub(super) async fn update_issue(
 ) -> Result<Json<Issue>, LificError> {
     let project_id = with_read(&db, |conn| crate::db::queries::get_issue(conn, id))?.project_id;
     authz::require_role(&db, &identity, project_id, Role::Maintainer)?;
-    let mut issue = commit_issue_update(&db, &realtime, &identity, id, input)?;
-    retain_visible_relations(&db, &identity, std::slice::from_mut(&mut issue))?;
-    Ok(Json(issue))
+    commit_issue_update(&db, &realtime, &identity, id, input).map(Json)
 }
 
 /// The REST editor and commit-message hook share one authorized transaction

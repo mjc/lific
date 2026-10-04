@@ -8,8 +8,8 @@ There is no request-aware URL attribute visitor in the pinned view renderer.
 
 The vendored framework runtime therefore has one transport helper and three
 changed call sites: procedure requests, shard requests, and shard socket URLs.
-It also has the tuple, mount lifecycle, and connected-render patches described
-below. The rest of the upstream runtime is preserved. Page request URLs already
+It also includes the tuple, mount lifecycle, comment decoding, and
+connected-render patches described below. The rest of the upstream runtime is preserved. Page request URLs already
 use the current mounted browser location.
 
 ## Rust document boundary
@@ -55,12 +55,13 @@ continue to use their existing framework conversion. Stored procedure URLs
 remain logical. Tagged Vec, Array, and Slice surrogates retain their existing
 implementations.
 
-Together these patches prepend 27 helper/comment lines and change seven
+Together these patches prepend 27 helper/comment lines and change eight
 sites in the pinned asset. To reconstruct upstream, remove those first 27
 lines and reverse the following substitutions:
 
 | Patched expression | Upstream expression | Occurrences |
 | --- | --- | --- |
+| `function pe(t){let e=new DOMParser().parseFromString(t.replaceAll("<","&lt;"),"text/html")` | `function pe(t){let e=new DOMParser().parseFromString(t,"text/html")` | 1 |
 | `fetch(topcoatMountedEndpoint(this.path)` | `fetch(this.path` | 2 |
 | `url(){return topcoatMountedEndpoint(this.path)}` | `url(){return this.path}` | 1 |
 | `function V(t,e){if(Array.isArray(t))return topcoatHydrateTuple(t,e);if(t!==null)` | `function V(t,e){if(t!==null)` | 1 |
@@ -70,6 +71,19 @@ lines and reverse the following substitutions:
 
 The reconstructed bytes match the upstream SHA-256 recorded in
 `../assets/runtime.LICENSE.txt`.
+
+## Comment decoding
+
+Rust signal declarations encode `>`, `&`, and quotes inside inert HTML
+comments. Literal `<` remains data. The pinned decoder passed that data to an
+HTML parser directly, which truncated tag-like strings and broke JSON parsing
+when persisted issue text was hydrated after reload.
+
+The decoder now escapes literal `<` before its existing entity-decoding step.
+The parser reads text, and JSON receives the original value exactly once.
+No application values, state, or handlers are added to the runtime. Real native
+editor tests persist markup and comment terminators, reload, and check exact
+visible text and edit values without created elements or effects.
 
 ## Browser initialization
 

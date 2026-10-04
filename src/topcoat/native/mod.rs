@@ -16,8 +16,13 @@ pub(crate) mod home_model;
 mod home_production;
 pub(crate) mod home_sections;
 pub(crate) mod home_shell;
+#[cfg(test)]
+mod home_shell_production;
 pub(crate) mod home_view;
 pub(crate) mod icons;
+pub(crate) mod issue_edit;
+#[cfg(test)]
+mod limit_contract;
 #[cfg(test)]
 pub(crate) mod probe;
 pub(crate) mod session;

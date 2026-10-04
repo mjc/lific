@@ -14,6 +14,8 @@ test('vendored patches reconstruct the exact pinned upstream runtime', () => {
   assert.ok(start >= 0, 'The pinned upstream body is present.');
   let original = runtime.slice(start);
   for (const [patched, upstream, count] of [
+    ['function pe(t){let e=new DOMParser().parseFromString(t.replaceAll("<","&lt;"),"text/html")',
+      'function pe(t){let e=new DOMParser().parseFromString(t,"text/html")', 1],
     ['fetch(topcoatMountedEndpoint(this.path)', 'fetch(this.path', 2],
     ['url(){return topcoatMountedEndpoint(this.path)}', 'url(){return this.path}', 1],
     ['function V(t,e){if(Array.isArray(t))return topcoatHydrateTuple(t,e);if(t!==null)', 'function V(t,e){if(t!==null)', 1],

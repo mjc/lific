@@ -8,7 +8,7 @@
 .tc-home-sections__row { width: 100%; align-items: center; }
 .tc-home-sections__title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--tc-text); font-size: .8125rem; }
 .tc-home-sections__project { flex-shrink: 0; color: var(--tc-faint); font-family: ui-monospace, "Cascadia Code", "Fira Code", monospace; font-size: .6875rem; }
-.tc-home-sections__activity { align-items: flex-start; font: inherit; font-size: .8125rem; line-height: 1.375; cursor: pointer; }
+.tc-home-sections__activity { align-items: flex-start; font: inherit; font-size: .8125rem; line-height: 1.375; text-align: center; cursor: pointer; }
 .tc-home-sections__activity-text { flex: 1; min-width: 0; color: var(--tc-muted); }
 .tc-home-sections__actor { font-weight: 500; color: var(--tc-text); }
 .tc-home-sections__label { font-family: ui-monospace, "Cascadia Code", "Fira Code", monospace; font-size: .75rem; color: var(--tc-accent); }

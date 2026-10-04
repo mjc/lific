@@ -44,14 +44,24 @@ pub(crate) fn retain_visible_relations(
     identity: &Option<ResolvedIdentity>,
     issues: &mut [Issue],
 ) -> Result<(), LificError> {
-    let visible = authz::visible_project_ids(db, identity)?;
     let conn = db.read()?;
-    crate::db::queries::retain_visible_relations(&conn, issues, visible.as_ref());
+    retain_visible_relations_conn(&conn, identity, issues)
+}
+
+fn retain_visible_relations_conn(
+    conn: &rusqlite::Connection,
+    identity: &Option<ResolvedIdentity>,
+    issues: &mut [Issue],
+) -> Result<(), LificError> {
+    let visible = authz::visible_project_ids_conn(conn, identity)?;
+    crate::db::queries::retain_visible_relations(conn, issues, visible.as_ref());
     Ok(())
 }
 
 /// Commit an authenticated issue edit through the shared domain transaction.
 /// The caller supplies its actor scope; this service preserves that transport.
+/// Success and conflict snapshots retain only relations visible to the caller
+/// on the same writer connection, before commit or publication.
 pub(crate) fn commit_issue_update(
     db: &DbPool,
     realtime: &RealtimeHub,
@@ -70,7 +80,28 @@ pub(crate) fn commit_issue_update(
         authz::require_role_conn(conn, identity, project_id, Role::Maintainer)?;
         // LIF-262: `update_issue` re-scans the stored description and
         // reconciles links in the same savepoint as the edit.
-        crate::db::queries::update_issue(conn, id, &input)
+        match crate::db::queries::update_issue(conn, id, &input) {
+            Ok(mut issue) => {
+                retain_visible_relations_conn(conn, identity, std::slice::from_mut(&mut issue))?;
+                Ok(issue)
+            }
+            Err(LificError::UpdateConflict { message, current }) => {
+                // Preserve the exact losing-write snapshot and sequence. A new
+                // read could observe a later edit and disagree with the conflict.
+                let mut issue: Issue = serde_json::from_value(*current).map_err(|error| {
+                    LificError::Internal(format!("failed to read conflicting issue: {error}"))
+                })?;
+                retain_visible_relations_conn(conn, identity, std::slice::from_mut(&mut issue))?;
+                let current = serde_json::to_value(issue).map_err(|error| {
+                    LificError::Internal(format!("failed to project conflicting issue: {error}"))
+                })?;
+                Err(LificError::UpdateConflict {
+                    message,
+                    current: Box::new(current),
+                })
+            }
+            Err(error) => Err(error),
+        }
     })?;
     realtime.send_with_seq(
         RealtimeEvent::IssueUpdated {
@@ -606,6 +637,167 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+        assert!(events.try_recv().is_err());
+    }
+
+    fn relations(db: &DbPool, issue: &Issue) -> Issue {
+        let conn = db.write().unwrap();
+        let hidden = queries::create_project(
+            &conn,
+            &crate::db::models::CreateProject {
+                identifier: "HIDE".into(),
+                name: "Hidden relations".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        for (relation, reverse) in [
+            ("blocks", false),
+            ("blocks", true),
+            ("relates_to", false),
+            ("duplicate", false),
+            ("duplicate", true),
+        ] {
+            for project_id in [issue.project_id, hidden.id] {
+                let neighbor = queries::create_issue(
+                    &conn,
+                    &CreateIssue {
+                        project_id,
+                        title: format!("{relation}/{reverse}"),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                let (source, target) = if reverse {
+                    (neighbor.id, issue.id)
+                } else {
+                    (issue.id, neighbor.id)
+                };
+                queries::link_issues(&conn, source, target, relation).unwrap();
+            }
+        }
+        queries::get_issue(&conn, issue.id).unwrap()
+    }
+
+    fn assert_scoped(issue: &Issue) {
+        for relations in [
+            &issue.blocks,
+            &issue.blocked_by,
+            &issue.relates_to,
+            &issue.duplicates,
+            &issue.duplicated_by,
+        ] {
+            assert_eq!(relations.len(), 1);
+            assert!(!relations[0].starts_with("HIDE-"));
+        }
+    }
+
+    #[test]
+    fn native_issue_write_success_scopes_all_private_relation_directions() {
+        let (db, identity, before) = fixture();
+        let before = relations(&db, &before);
+        let saved = commit_issue_update(
+            &db,
+            &RealtimeHub::new(),
+            &Some(identity),
+            before.id,
+            UpdateIssue {
+                title: Some("Scoped success".into()),
+                expected_seq: Some(before.seq),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(saved.title, "Scoped success");
+        assert_scoped(&saved);
+        let raw = queries::get_issue(&db.read().unwrap(), before.id).unwrap();
+        assert_eq!(
+            raw.blocks.len(),
+            2,
+            "projection must not delete stored relations"
+        );
+        let admin = queries::users::get_user_by_username(&db.read().unwrap(), "admin").unwrap();
+        let admin = crate::auth::fresh_identity(&admin, Transport::Web);
+        let saved = commit_issue_update(
+            &db,
+            &RealtimeHub::new(),
+            &Some(admin),
+            before.id,
+            UpdateIssue {
+                title: Some("Admin success".into()),
+                expected_seq: Some(saved.seq),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        for relations in [
+            &saved.blocks,
+            &saved.blocked_by,
+            &saved.relates_to,
+            &saved.duplicates,
+            &saved.duplicated_by,
+        ] {
+            assert_eq!(relations.len(), 2);
+        }
+    }
+
+    #[test]
+    fn native_issue_write_conflict_scopes_captured_snapshot_without_mutation_or_publication() {
+        let (db, identity, before) = fixture();
+        let before = relations(&db, &before);
+        let realtime = RealtimeHub::new();
+        let mut events = realtime.subscribe();
+        let result = commit_issue_update(
+            &db,
+            &realtime,
+            &Some(identity),
+            before.id,
+            UpdateIssue {
+                title: Some("Losing draft".into()),
+                expected_seq: Some(before.seq - 1),
+                ..Default::default()
+            },
+        );
+        let Err(LificError::UpdateConflict { message, current }) = result else {
+            panic!("expected captured conflict")
+        };
+        assert!(message.contains(&format!("current seq {}", before.seq)));
+        let current: Issue = serde_json::from_value(*current).unwrap();
+        assert_eq!(current.seq, before.seq);
+        assert_eq!(current.title, before.title);
+        assert_scoped(&current);
+        assert_eq!(
+            queries::get_issue(&db.read().unwrap(), before.id)
+                .unwrap()
+                .seq,
+            before.seq
+        );
+        assert!(events.try_recv().is_err());
+        let admin = queries::users::get_user_by_username(&db.read().unwrap(), "admin").unwrap();
+        let admin = crate::auth::fresh_identity(&admin, Transport::Web);
+        let Err(LificError::UpdateConflict { current, .. }) = commit_issue_update(
+            &db,
+            &realtime,
+            &Some(admin),
+            before.id,
+            UpdateIssue {
+                expected_seq: Some(before.seq - 1),
+                title: Some("Admin losing draft".into()),
+                ..Default::default()
+            },
+        ) else {
+            panic!("expected admin conflict")
+        };
+        let current: Issue = serde_json::from_value(*current).unwrap();
+        for relations in [
+            &current.blocks,
+            &current.blocked_by,
+            &current.relates_to,
+            &current.duplicates,
+            &current.duplicated_by,
+        ] {
+            assert_eq!(relations.len(), 2);
+        }
         assert!(events.try_recv().is_err());
     }
 }

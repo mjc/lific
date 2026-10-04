@@ -1917,10 +1917,10 @@ fn build_app_with_store_and_frontend(
             }),
         )
         .layer(axum::Extension(realtime.clone()))
-        .layer(axum::Extension(login_limiter))
+        .layer(axum::Extension(login_limiter.clone()))
         .layer(axum::Extension(trusted_proxies.clone()))
-        .layer(axum::Extension(attachment_config))
-        .layer(axum::Extension(attachment_upload_limiter))
+        .layer(axum::Extension(attachment_config.clone()))
+        .layer(axum::Extension(attachment_upload_limiter.clone()))
         .layer(axum::Extension(crate::config::AuthConfig::from_server(
             &cfg.auth,
             cfg.server.public_url.as_deref(),
@@ -2026,6 +2026,9 @@ fn build_app_with_store_and_frontend(
                 .app_context(auth_state)
                 .app_context(realtime)
                 .app_context(attachment_store)
+                .app_context(login_limiter)
+                .app_context(attachment_upload_limiter)
+                .app_context(attachment_config)
                 .app_context(trusted_proxies.clone())
                 .app_context(cfg.clone())
                 .build(),
