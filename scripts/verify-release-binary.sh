@@ -221,10 +221,10 @@ if grep -Eq '(src|href)="/assets/' "$scratch/index.html"; then
   echo "the web root still references a retired frontend bundle" >&2
   exit 1
 fi
-assets="$(grep -Eo '/__topcoat-[A-Za-z0-9._~%+-]+\.(js|css)' "$scratch/index.html" | sort -u || true)"
-js_assets="$(printf '%s\n' "$assets" | grep -E '\.js$' || true)"
-css_assets="$(printf '%s\n' "$assets" | grep -E '\.css$' || true)"
-if ! printf '%s\n' "$js_assets" | grep -Fxq '/__topcoat-runtime.js' || [[ -z ${css_assets//[[:space:]]/} ]]; then
+assets="$(grep -Eo '/__topcoat-[A-Za-z0-9._~%+-]+\.(js|css)(\?[^"<>[:space:]]*)?' "$scratch/index.html" | sort -u || true)"
+js_assets="$(printf '%s\n' "$assets" | grep -E '^[^?]+\.js(\?.*)?$' || true)"
+css_assets="$(printf '%s\n' "$assets" | grep -E '^[^?]+\.css(\?.*)?$' || true)"
+if ! printf '%s\n' "$js_assets" | grep -Eq '^/__topcoat-runtime\.js(\?v=[0-9a-f]{64})?$' || [[ -z ${css_assets//[[:space:]]/} ]]; then
   echo "the web root is missing the Topcoat runtime or stylesheet" >&2
   exit 1
 fi

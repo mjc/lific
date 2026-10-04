@@ -106,7 +106,7 @@ mod topcoat_app {
                     <meta name="apple-mobile-web-app-title" content="Lific">
                     <meta name="theme-color" content="#fafcfb" media="(prefers-color-scheme: light)">
                     <meta name="theme-color" content="#1c221f" media="(prefers-color-scheme: dark)">
-                    <link rel="stylesheet" href=(mounted_url(cx, "/__topcoat-app.css"))>
+                    <link rel="stylesheet" href=(mounted_url(cx, super::topcoat_frontend::assets::app_stylesheet_url()))>
                     if !native_home {
                     <link rel="stylesheet" href=(mounted_url(cx, super::topcoat_frontend::shell::STYLESHEET_PATH))>
                     <link rel="stylesheet" href=(mounted_url(cx, super::topcoat_frontend::shell::mobile::STYLESHEET_PATH))>
@@ -131,7 +131,7 @@ mod topcoat_app {
                     <link rel="stylesheet" href=(mounted_url(cx, super::topcoat_frontend::activity_insights::STYLESHEET_PATH))>
                     <link rel="stylesheet" href=(mounted_url(cx, super::topcoat_frontend::public::STYLESHEET_PATH))>
                     }
-                    <script type="module" src=(mounted_url(cx, "/__topcoat-runtime.js"))></script>
+                    <script type="module" src=(mounted_url(cx, super::topcoat_frontend::assets::runtime_url()))></script>
                     if !native_home {
                     <script defer="defer" src=(mounted_url(cx, super::topcoat_frontend::shell::ROUTE_SCRIPT_PATH))></script>
                     <script defer="defer" src=(mounted_url(cx, super::topcoat_frontend::session::SCRIPT_PATH))></script>
@@ -336,19 +336,12 @@ mod topcoat_app {
 
     #[route(GET "/__topcoat-app.css")]
     async fn stylesheet() -> Result<Response> {
-        let css = format!(
-            "{}\n{}\n{}\n{}\n{}\n{}\n{}",
-            include_str!("topcoat/assets/base.css"),
-            super::topcoat_frontend::controls::STYLESHEET,
-            super::topcoat_frontend::shell::STYLESHEET,
-            super::topcoat_frontend::native::home_view::STYLESHEET,
-            super::topcoat_frontend::native::home_sections::STYLESHEET,
-            super::topcoat_frontend::native::home_shell::STYLESHEET,
-            super::topcoat_frontend::native::home::STYLESHEET
-        );
         Ok(Response::builder()
             .header("content-type", "text/css; charset=utf-8")
-            .body(topcoat::router::Body::from(css))?)
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::assets::app_stylesheet(),
+            ))?)
     }
 
     #[route(GET "/__topcoat-shell.css")]
@@ -846,9 +839,9 @@ mod topcoat_app {
         Ok(Response::builder()
             .header("content-type", "text/javascript; charset=utf-8")
             .header("cache-control", "no-cache")
-            .body(topcoat::router::Body::from(include_str!(
-                "topcoat/assets/runtime.js"
-            )))?)
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::assets::RUNTIME,
+            ))?)
     }
 
     pub(super) fn router_builder() -> topcoat::router::RouterBuilder {
@@ -3099,7 +3092,10 @@ mod topcoat_prefix_tests {
         assert!(trusted_document.contains("data-lific-base-path=\"/app\""));
         assert!(trusted_document.contains("data-topcoat-runtime-prefix=\"/app\""));
         assert!(trusted_document.contains("href=\"/app/login\""));
-        assert!(trusted_document.contains("src=\"/app/__topcoat-runtime.js\""));
+        assert!(trusted_document.contains(&format!(
+            "src=\"/app{}\"",
+            super::topcoat_frontend::assets::runtime_url()
+        )));
 
         let mut untrusted = Request::builder()
             .uri("/login")
@@ -3135,7 +3131,10 @@ mod topcoat_prefix_tests {
             .unwrap();
         let document = String::from_utf8(document.to_vec()).unwrap();
         assert!(document.contains("href=\"/ACC/ACC/issues\""));
-        assert!(document.contains("href=\"/ACC/__topcoat-app.css\""));
+        assert!(document.contains(&format!(
+            "href=\"/ACC{}\"",
+            super::topcoat_frontend::assets::app_stylesheet_url()
+        )));
 
         let mut redirect = Request::builder()
             .uri("/redirect")
@@ -3523,7 +3522,10 @@ mod public_surface_tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = body_string(response).await;
         assert!(body.contains("data-lific-base-path=\"/app\""));
-        assert!(body.contains("href=\"/app/__topcoat-app.css\""));
+        assert!(body.contains(&format!(
+            "href=\"/app{}\"",
+            super::topcoat_frontend::assets::app_stylesheet_url()
+        )));
 
         let mut proxied_api = Request::builder()
             .uri("/api/health")

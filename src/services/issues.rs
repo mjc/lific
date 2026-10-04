@@ -7,6 +7,49 @@ use crate::error::LificError;
 use crate::realtime::{RealtimeEvent, RealtimeHub};
 use crate::resolve_caller::ResolvedIdentity;
 
+/// Read the private issue shape through the same Viewer and relation scope
+/// rules as REST. Published-project reads use their separate public boundary.
+pub(crate) fn get_issue(
+    db: &DbPool,
+    identity: &Option<ResolvedIdentity>,
+    id: i64,
+) -> Result<Issue, LificError> {
+    let mut issue = {
+        let conn = db.read()?;
+        crate::db::queries::get_issue(&conn, id)?
+    };
+    authz::require_role(db, identity, issue.project_id, Role::Viewer)?;
+    retain_visible_relations(db, identity, std::slice::from_mut(&mut issue))?;
+    Ok(issue)
+}
+
+pub(crate) fn resolve_issue(
+    db: &DbPool,
+    identity: &Option<ResolvedIdentity>,
+    identifier: &str,
+) -> Result<Issue, LificError> {
+    let mut issue = {
+        let conn = db.read()?;
+        let id = crate::db::queries::resolve_identifier(&conn, identifier)?;
+        crate::db::queries::get_issue(&conn, id)?
+    };
+    authz::require_role(db, identity, issue.project_id, Role::Viewer)?;
+    retain_visible_relations(db, identity, std::slice::from_mut(&mut issue))?;
+    Ok(issue)
+}
+
+/// One relation-visibility policy shared by every private issue response.
+pub(crate) fn retain_visible_relations(
+    db: &DbPool,
+    identity: &Option<ResolvedIdentity>,
+    issues: &mut [Issue],
+) -> Result<(), LificError> {
+    let visible = authz::visible_project_ids(db, identity)?;
+    let conn = db.read()?;
+    crate::db::queries::retain_visible_relations(&conn, issues, visible.as_ref());
+    Ok(())
+}
+
 /// Commit an authenticated issue edit through the shared domain transaction.
 /// The caller supplies its actor scope; this service preserves that transport.
 pub(crate) fn commit_issue_update(
@@ -37,6 +80,300 @@ pub(crate) fn commit_issue_update(
         issue.seq,
     );
     Ok(issue)
+}
+
+#[cfg(test)]
+mod read_tests {
+    use super::*;
+    use crate::{
+        actor::Transport,
+        db::{
+            models::{CreateIssue, CreateProject, CreateWait, UpdateProject, User},
+            queries,
+        },
+    };
+
+    fn identity(user: &User) -> ResolvedIdentity {
+        crate::auth::fresh_identity(user, Transport::Web)
+    }
+
+    fn fixture() -> (DbPool, User, User, User, Issue) {
+        let (db, admin, _, _, viewer, outsider, project_id) =
+            crate::api::test_helpers::setup_membership_test();
+        let issue = {
+            let conn = db.write().unwrap();
+            let issue = queries::create_issue(
+                &conn,
+                &CreateIssue {
+                    project_id,
+                    title: "Private subject <script>".into(),
+                    description: "Description with ![reference](/api/attachments/unlinked)".into(),
+                    source: Some("github".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            queries::waits::add_wait(
+                &conn,
+                issue.id,
+                &CreateWait {
+                    user: Some(viewer.username.clone()),
+                    note: Some("Private blocker note".into()),
+                    ..Default::default()
+                },
+                Some(admin.id),
+            )
+            .unwrap();
+            queries::get_issue(&conn, issue.id).unwrap()
+        };
+        (db, admin, viewer, outsider, issue)
+    }
+
+    #[test]
+    fn native_issue_read_preserves_private_fields_and_scopes_all_relation_directions() {
+        let (db, admin, viewer, _, issue) = fixture();
+        let (raw, visible_identifiers) = {
+            let conn = db.write().unwrap();
+            let hidden = queries::create_project(
+                &conn,
+                &CreateProject {
+                    identifier: "HIDE".into(),
+                    name: "Hidden relations".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let mut visible_identifiers = Vec::new();
+            for (relation, reverse) in [
+                ("blocks", false),
+                ("blocks", true),
+                ("relates_to", false),
+                ("duplicate", false),
+                ("duplicate", true),
+            ] {
+                for project_id in [issue.project_id, hidden.id] {
+                    let neighbor = queries::create_issue(
+                        &conn,
+                        &CreateIssue {
+                            project_id,
+                            title: format!("{relation} reverse={reverse}"),
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap();
+                    if project_id == issue.project_id {
+                        visible_identifiers.push(neighbor.identifier);
+                    }
+                    let (source, target) = if reverse {
+                        (neighbor.id, issue.id)
+                    } else {
+                        (issue.id, neighbor.id)
+                    };
+                    queries::link_issues(&conn, source, target, relation).unwrap();
+                }
+            }
+            (
+                queries::get_issue(&conn, issue.id).unwrap(),
+                visible_identifiers,
+            )
+        };
+        for relations in [
+            &raw.blocks,
+            &raw.blocked_by,
+            &raw.relates_to,
+            &raw.duplicates,
+            &raw.duplicated_by,
+        ] {
+            assert_eq!(relations.len(), 2);
+            assert!(relations.iter().any(|id| id.starts_with("HIDE-")));
+        }
+        let scoped = get_issue(&db, &Some(identity(&viewer)), issue.id).unwrap();
+        for (index, relations) in [
+            &scoped.blocks,
+            &scoped.blocked_by,
+            &scoped.relates_to,
+            &scoped.duplicates,
+            &scoped.duplicated_by,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_eq!(
+                relations.as_slice(),
+                std::slice::from_ref(&visible_identifiers[index])
+            );
+        }
+        assert_eq!(scoped.title, raw.title);
+        assert_eq!(scoped.description, raw.description);
+        assert_eq!(scoped.source, raw.source);
+        assert_eq!(scoped.waits, raw.waits);
+        assert_eq!(scoped.seq, raw.seq);
+        // An authorized private reader keeps its private shape. This read
+        // does not grant access to bytes merely referenced in description.
+        assert!(scoped.description.contains("/api/attachments/unlinked"));
+        let full = get_issue(&db, &Some(identity(&admin)), issue.id).unwrap();
+        assert_eq!(
+            serde_json::to_value(full).unwrap(),
+            serde_json::to_value(raw).unwrap()
+        );
+    }
+
+    #[test]
+    fn native_issue_read_reuses_viewer_membership_and_bot_owner_authority() {
+        let (db, admin, viewer, outsider, issue) = fixture();
+        let bot = queries::users::create_bot_user(
+            &db.write().unwrap(),
+            viewer.id,
+            "reader-bot",
+            "Reader bot",
+            None,
+        )
+        .unwrap();
+        assert!(get_issue(&db, &Some(identity(&viewer)), issue.id).is_ok());
+        assert!(get_issue(&db, &Some(identity(&bot)), issue.id).is_ok());
+        assert!(matches!(
+            get_issue(&db, &Some(identity(&outsider)), issue.id),
+            Err(LificError::Forbidden(_))
+        ));
+        queries::members::remove_member(&db.write().unwrap(), issue.project_id, viewer.id).unwrap();
+        for caller in [identity(&viewer), identity(&bot)] {
+            assert!(matches!(
+                get_issue(&db, &Some(caller), issue.id),
+                Err(LificError::Forbidden(_))
+            ));
+        }
+        assert!(get_issue(&db, &Some(identity(&admin)), issue.id).is_ok());
+    }
+
+    #[test]
+    fn native_issue_read_preserves_not_found_legacy_and_distinct_public_boundaries() {
+        let (db, _, _, outsider, issue) = fixture();
+        assert!(matches!(
+            get_issue(&db, &Some(identity(&outsider)), i64::MAX),
+            Err(LificError::NotFound(_))
+        ));
+        {
+            let conn = db.write().unwrap();
+            assert!(
+                queries::public::public_project(&conn, "MEM")
+                    .unwrap()
+                    .is_none()
+            );
+            queries::update_project(
+                &conn,
+                issue.project_id,
+                &UpdateProject {
+                    is_public: Some(true),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let published = queries::public::public_project(&conn, "MEM")
+                .unwrap()
+                .unwrap();
+            let public = queries::public::public_issue(&conn, &published, issue.id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(public.source, None);
+            assert!(public.waits.is_empty());
+        }
+        // Publishing does not make the private Viewer-gated read anonymous.
+        assert!(matches!(
+            get_issue(&db, &None, issue.id),
+            Err(LificError::Forbidden(_))
+        ));
+        assert!(matches!(
+            get_issue(&db, &Some(identity(&outsider)), issue.id),
+            Err(LificError::Forbidden(_))
+        ));
+        queries::settings::update(
+            &db.write().unwrap(),
+            queries::settings::InstanceSettingsPatch {
+                authz_enforced: Some(false),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let legacy = get_issue(&db, &None, issue.id).unwrap();
+        assert_eq!(legacy.source, issue.source);
+        assert_eq!(legacy.waits, issue.waits);
+        assert_eq!(legacy.description, issue.description);
+    }
+
+    #[test]
+    fn native_issue_read_propagates_database_faults_as_database_errors() {
+        let (db, admin, _, _, issue) = fixture();
+        db.write()
+            .unwrap()
+            .execute(
+                "ALTER TABLE issue_relations RENAME TO unavailable_issue_relations",
+                [],
+            )
+            .unwrap();
+        assert!(matches!(
+            get_issue(&db, &Some(identity(&admin)), issue.id),
+            Err(LificError::Database(_))
+        ));
+    }
+
+    #[test]
+    fn native_issue_resolve_preserves_identifier_errors_scope_and_visible_relations() {
+        let (db, admin, viewer, outsider, issue) = fixture();
+        assert!(matches!(
+            resolve_issue(&db, &Some(identity(&outsider)), "MEM-invalid"),
+            Err(LificError::BadRequest(_))
+        ));
+        assert!(matches!(
+            resolve_issue(&db, &Some(identity(&outsider)), "MEM-9223372036854775807"),
+            Err(LificError::NotFound(_))
+        ));
+        let (visible, hidden) = {
+            let conn = db.write().unwrap();
+            let hidden_project = queries::create_project(
+                &conn,
+                &CreateProject {
+                    identifier: "HIDE".into(),
+                    name: "Hidden resolve".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let make_issue = |project_id| {
+                queries::create_issue(
+                    &conn,
+                    &CreateIssue {
+                        project_id,
+                        title: "Resolve neighbor".into(),
+                        ..Default::default()
+                    },
+                )
+                .unwrap()
+            };
+            let visible = make_issue(issue.project_id);
+            let hidden = make_issue(hidden_project.id);
+            for neighbor in [&visible, &hidden] {
+                queries::link_issues(&conn, issue.id, neighbor.id, "relates_to").unwrap();
+            }
+            (visible, hidden)
+        };
+        let scoped = resolve_issue(
+            &db,
+            &Some(identity(&viewer)),
+            &issue.identifier.to_lowercase(),
+        )
+        .unwrap();
+        assert_eq!(scoped.id, issue.id);
+        assert_eq!(scoped.relates_to, std::slice::from_ref(&visible.identifier));
+        assert_eq!(scoped.source, issue.source);
+        assert_eq!(scoped.waits, issue.waits);
+        assert!(matches!(
+            resolve_issue(&db, &Some(identity(&viewer)), &hidden.identifier),
+            Err(LificError::Forbidden(_))
+        ));
+        let full = resolve_issue(&db, &Some(identity(&admin)), &issue.identifier).unwrap();
+        assert_eq!(full.relates_to.len(), 2);
+        assert!(full.relates_to.contains(&hidden.identifier));
+    }
 }
 
 #[cfg(test)]
