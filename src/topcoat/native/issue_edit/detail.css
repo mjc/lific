@@ -12,6 +12,12 @@
 .native-issue-detail .native-issue-editor__fields section>span{margin:0;font:13px/1.6 var(--tc-font)}
 .native-issue-detail :is([data-native-issue-status],[data-native-issue-priority]){display:inline-block;text-transform:none}
 .native-issue-detail :is([data-native-issue-status],[data-native-issue-priority])::first-letter{text-transform:uppercase}
+.native-issue-detail__decoration{display:inline-flex;align-items:center;flex-shrink:0}
+.native-issue-detail span.native-issue-detail__field-value{display:flex;align-items:center;gap:8px}
+.native-issue-detail [data-native-issue-priority][data-priority=urgent]{color:var(--tc-danger)}
+.native-issue-detail [data-native-issue-priority][data-priority=high]{color:var(--tc-warn)}
+.native-issue-detail [data-native-issue-priority][data-priority=medium]{color:var(--tc-accent)}
+.native-issue-detail .native-issue-detail__empty-value{color:var(--tc-faint)}
 .native-issue-detail__topbar{display:flex;flex-wrap:nowrap;align-items:center;gap:12px;width:100%;padding:8px 24px;font:16px/1.6 var(--tc-font);color:var(--tc-text)}
 .native-home-topbar:has(.native-issue-detail__topbar){padding:0}
 .native-issue-detail__scope{display:flex;align-items:center;gap:6px;min-width:0}

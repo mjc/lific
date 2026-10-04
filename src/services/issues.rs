@@ -113,6 +113,51 @@ pub(crate) fn commit_issue_update(
     Ok(issue)
 }
 
+/// Identifiers and the committed deletion cursor; carries no private issue DTO.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct IssueDelete {
+    pub(crate) issue_id: i64,
+    pub(crate) project_id: i64,
+    pub(crate) tombstone_seq: i64,
+}
+
+/// Tombstone through the shared authorized transaction. The caller supplies
+/// its actor scope, and publication follows the successful commit.
+pub(crate) fn commit_issue_delete(
+    db: &DbPool,
+    realtime: &RealtimeHub,
+    identity: &Option<ResolvedIdentity>,
+    id: i64,
+) -> Result<IssueDelete, LificError> {
+    let project_id = {
+        let conn = db.read()?;
+        crate::db::queries::get_issue(&conn, id)?.project_id
+    };
+    // Preserve REST's missing-issue-before-authorization error ordering and
+    // the existing legacy authority, including an anonymous caller.
+    authz::require_role(db, identity, project_id, Role::Maintainer)?;
+    let deleted = db.transaction(|conn| {
+        let project_id = crate::db::queries::get_issue(conn, id)?.project_id;
+        authz::require_role_conn(conn, identity, project_id, Role::Maintainer)?;
+        crate::db::queries::delete_issue(conn, id)?;
+        // Read the tombstone cursor after the write; seq is a global cursor.
+        let tombstone_seq = crate::db::queries::issue_seq(conn, id)?;
+        Ok(IssueDelete {
+            issue_id: id,
+            project_id,
+            tombstone_seq,
+        })
+    })?;
+    realtime.send_with_seq(
+        RealtimeEvent::IssueDeleted {
+            project_id: deleted.project_id,
+            issue_id: deleted.issue_id,
+        },
+        deleted.tombstone_seq,
+    );
+    Ok(deleted)
+}
+
 #[cfg(test)]
 mod read_tests {
     use super::*;
@@ -798,6 +843,221 @@ mod tests {
         ] {
             assert_eq!(relations.len(), 2);
         }
+        assert!(events.try_recv().is_err());
+    }
+}
+
+#[cfg(test)]
+mod delete_tests {
+    use super::*;
+    use crate::{
+        actor::{ActorCtx, Transport},
+        db::{
+            models::{AttachmentEntity, CreateIssue},
+            queries,
+        },
+    };
+
+    fn fixture() -> (DbPool, ResolvedIdentity, Issue) {
+        let (db, _, _, maintainer, _, _, project_id) =
+            crate::api::test_helpers::setup_membership_test();
+        let issue = queries::create_issue(
+            &db.write().unwrap(),
+            &CreateIssue {
+                project_id,
+                title: "Deferred native deletion".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let identity = crate::auth::fresh_identity(&maintainer, Transport::Web);
+        (db, identity, issue)
+    }
+
+    #[tokio::test]
+    async fn native_issue_delete_commits_web_audit_tombstone_and_one_event() {
+        let (db, identity, before) = fixture();
+        let attachment = {
+            let conn = db.write().unwrap();
+            let attachment = queries::attachments::create_attachment(
+                &conn,
+                &"4".repeat(64),
+                "kept.png",
+                "image/png",
+                1,
+                Some(identity.user.id),
+            )
+            .unwrap();
+            queries::attachments::link_attachment(
+                &conn,
+                attachment.id,
+                AttachmentEntity::Issue,
+                before.id,
+            )
+            .unwrap();
+            // The cursor is global: unrelated mutations can leave gaps.
+            queries::create_issue(
+                &conn,
+                &CreateIssue {
+                    project_id: before.project_id,
+                    title: "Cursor gap".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            attachment
+        };
+        let realtime = RealtimeHub::new();
+        let mut events = realtime.subscribe();
+        let deleted = crate::actor::scope(
+            ActorCtx {
+                user_id: Some(identity.user.id),
+                transport: Transport::Web,
+            },
+            async { commit_issue_delete(&db, &realtime, &Some(identity.clone()), before.id) },
+        )
+        .await
+        .unwrap();
+        let conn = db.read().unwrap();
+        assert!(matches!(
+            queries::get_issue(&conn, before.id),
+            Err(LificError::NotFound(_))
+        ));
+        let seq = queries::issue_seq(&conn, before.id).unwrap();
+        assert!(seq > before.seq);
+        assert_eq!(deleted.issue_id, before.id);
+        assert_eq!(deleted.project_id, before.project_id);
+        assert_eq!(deleted.tombstone_seq, seq);
+        let audits: Vec<(Option<i64>, String)> = conn.prepare("SELECT actor_user_id, transport FROM audit_log WHERE entity_type = 'issue' AND entity_id = ?1 AND action = 'delete'").unwrap()
+            .query_map([before.id], |row| Ok((row.get(0)?, row.get(1)?))).unwrap().collect::<Result<_, _>>().unwrap();
+        assert_eq!(audits, vec![(Some(identity.user.id), "web".into())]);
+        assert_eq!(
+            queries::attachments::list_for_entity(&conn, AttachmentEntity::Issue, before.id)
+                .unwrap()[0]
+                .id,
+            attachment.id
+        );
+        assert!(queries::attachments::get_attachment(&conn, attachment.id).is_ok());
+        drop(conn);
+        let event = events.try_recv().unwrap();
+        assert_eq!(
+            event.event,
+            RealtimeEvent::IssueDeleted {
+                project_id: before.project_id,
+                issue_id: before.id
+            }
+        );
+        let envelope: serde_json::Value =
+            serde_json::from_str(event.message.to_text().unwrap()).unwrap();
+        assert_eq!(envelope["seq"], seq);
+        assert!(matches!(
+            commit_issue_delete(&db, &realtime, &Some(identity), before.id),
+            Err(LificError::NotFound(_))
+        ));
+        assert_eq!(
+            queries::issue_seq(&db.read().unwrap(), before.id).unwrap(),
+            seq
+        );
+        assert!(events.try_recv().is_err());
+    }
+
+    #[test]
+    fn native_issue_delete_rechecks_demotion_and_removal() {
+        for removed in [false, true] {
+            let (db, identity, before) = fixture();
+            if removed {
+                queries::members::remove_member(
+                    &db.write().unwrap(),
+                    before.project_id,
+                    identity.user.id,
+                )
+                .unwrap();
+            } else {
+                queries::members::upsert_member(
+                    &db.write().unwrap(),
+                    before.project_id,
+                    identity.user.id,
+                    Role::Viewer,
+                )
+                .unwrap();
+            }
+            let realtime = RealtimeHub::new();
+            let mut events = realtime.subscribe();
+            assert!(matches!(
+                commit_issue_delete(&db, &realtime, &Some(identity), before.id),
+                Err(LificError::Forbidden(_))
+            ));
+            assert_eq!(
+                queries::get_issue(&db.read().unwrap(), before.id)
+                    .unwrap()
+                    .seq,
+                before.seq
+            );
+            assert!(events.try_recv().is_err());
+        }
+    }
+
+    #[test]
+    fn native_issue_delete_preserves_error_order_and_legacy_authority() {
+        let (db, _, before) = fixture();
+        let realtime = RealtimeHub::new();
+        assert!(matches!(
+            commit_issue_delete(&db, &realtime, &None, i64::MAX),
+            Err(LificError::NotFound(_))
+        ));
+        assert!(matches!(
+            commit_issue_delete(&db, &realtime, &None, before.id),
+            Err(LificError::Forbidden(_))
+        ));
+        queries::settings::update(
+            &db.write().unwrap(),
+            queries::settings::InstanceSettingsPatch {
+                authz_enforced: Some(false),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(commit_issue_delete(&db, &realtime, &None, before.id).is_ok());
+    }
+
+    #[test]
+    fn native_issue_delete_database_failure_leaves_live_row_and_no_event() {
+        let (db, identity, before) = fixture();
+        db.write().unwrap().execute_batch("CREATE TEMP TRIGGER reject_native_delete BEFORE UPDATE OF deleted_at ON issues WHEN NEW.deleted_at IS NOT NULL BEGIN SELECT RAISE(ABORT, 'delete blocked'); END").unwrap();
+        let realtime = RealtimeHub::new();
+        let mut events = realtime.subscribe();
+        assert!(matches!(
+            commit_issue_delete(&db, &realtime, &Some(identity), before.id),
+            Err(LificError::Database(_))
+        ));
+        assert_eq!(
+            queries::get_issue(&db.read().unwrap(), before.id)
+                .unwrap()
+                .seq,
+            before.seq
+        );
+        assert!(events.try_recv().is_err());
+    }
+
+    #[test]
+    fn native_issue_delete_failed_cursor_read_rolls_back_tombstone_and_audit() {
+        let (db, identity, before) = fixture();
+        // The delete query succeeds, but its post-write cursor read cannot.
+        // This probes transaction rollback beyond SQLite statement atomicity.
+        db.write().unwrap().execute_batch("CREATE TEMP TRIGGER remove_native_tombstone AFTER UPDATE OF deleted_at ON issues WHEN OLD.deleted_at IS NULL AND NEW.deleted_at IS NOT NULL BEGIN DELETE FROM issues WHERE id = NEW.id; END").unwrap();
+        let realtime = RealtimeHub::new();
+        let mut events = realtime.subscribe();
+        assert!(matches!(
+            commit_issue_delete(&db, &realtime, &Some(identity), before.id),
+            Err(LificError::NotFound(_))
+        ));
+        let conn = db.read().unwrap();
+        assert_eq!(
+            queries::get_issue(&conn, before.id).unwrap().seq,
+            before.seq
+        );
+        let deletes: i64 = conn.query_row("SELECT count(*) FROM audit_log WHERE entity_type = 'issue' AND entity_id = ?1 AND action = 'delete'", [before.id], |row| row.get(0)).unwrap();
+        assert_eq!(deletes, 0);
         assert!(events.try_recv().is_err());
     }
 }

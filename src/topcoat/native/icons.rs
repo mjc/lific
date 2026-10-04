@@ -11,6 +11,7 @@ use topcoat::{
 };
 
 use super::transport::mounted_url;
+use crate::db::models::{Priority, Status};
 
 type IconNodes = Vec<(String, BTreeMap<String, String>)>;
 
@@ -71,6 +72,40 @@ pub(crate) fn project_icon<'a>(cx: &'a Cx, value: Option<&str>, size: u32) -> Bo
         </svg>
     }
     .boxed()
+}
+
+pub(crate) fn status_icon(cx: &Cx, status: Status, size: u32) -> BoxView<'_> {
+    let (icon, color) = match status {
+        Status::Active => ("lucide:CircleDot", "var(--tc-accent)"),
+        Status::Todo => ("lucide:Circle", "var(--tc-muted)"),
+        Status::Done => ("lucide:CircleCheckBig", "var(--tc-success)"),
+        Status::Backlog => ("lucide:CircleDashed", "var(--tc-faint)"),
+        Status::Cancelled => ("lucide:CircleX", "var(--tc-faint)"),
+    };
+    view! { cx =>
+        <span data-status=(status.to_string()) style=(format!("color:{color};display:inline-flex;flex-shrink:0"))>
+            (project_icon(cx, Some(icon), size))
+        </span>
+    }.boxed()
+}
+
+pub(crate) fn priority_icon(cx: &Cx, priority: Priority, size: u32) -> BoxView<'_> {
+    let (color, bars): (_, &[u8]) = match priority {
+        Priority::Urgent => ("var(--tc-danger)", &[]),
+        Priority::High => ("var(--tc-warn)", &[12, 6, 18]),
+        Priority::Medium => ("var(--tc-accent)", &[9, 15]),
+        Priority::Low => ("var(--tc-muted)", &[12]),
+        Priority::None => ("inherit", &[]),
+    };
+    view! { cx =>
+        <svg width=(size) height=(size) viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" data-priority=(priority.to_string()) style=(format!("color:{color};flex-shrink:0"))>
+            if matches!(priority, Priority::Urgent) {
+                <circle cx="12" cy="12" r="10"></circle>
+                <line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line>
+            }
+            for y in bars { <line x1="5" y1=(y.to_string()) x2="19" y2=(y.to_string())></line> }
+        </svg>
+    }.boxed()
 }
 
 #[cfg(test)]
