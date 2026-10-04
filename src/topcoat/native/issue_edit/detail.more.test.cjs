@@ -1,6 +1,7 @@
 // The original and native views consume the same production database.
 // node <driver> <fixture-origin> <token> <browser-helper> <pinned-master-web>
 const {test} = require('node:test');
+const {installOriginalFonts, captureOriginalFonts} = require('../original_fonts_fixture.cjs');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -15,6 +16,7 @@ async function setup(browser, origin, mode, theme, native) {
   const viewport = mode==='phone'?{width:390,height:844}:{width:1440,height:900};
   const context = await browser.newContext({viewport,isMobile:mode==='phone',hasTouch:mode==='phone',
     colorScheme:theme,locale:'en-US',timezoneId:'America/Denver',reducedMotion:'reduce'});
+  if (!native) await installOriginalFonts(context);
   if (native) await context.addCookies([{name:'lific_token',value:token,url:origin,httpOnly:true,sameSite:'Lax'}]);
   await context.addInitScript(({theme,token,native})=>{
     localStorage.setItem('lific_theme',theme); localStorage.setItem('lific_motion','reduced');
@@ -65,6 +67,7 @@ test('native issue More and confirmation match pinned master at every mount',asy
             await session.page.getByRole('button',{name:fixtureTitle,exact:true}).waitFor();
             await session.page.getByRole('heading',{name:'Production markdown',exact:true}).waitFor();
             await session.page.evaluate(()=>document.fonts.ready);
+            if (session === original) await captureOriginalFonts(session.page,path.join(output,`${name}-original-fonts.json`));
           }
           // Capture both actual documents before the first parity assertion.
           await original.page.screenshot({path:path.join(output,`${name}-original.png`),fullPage:true});

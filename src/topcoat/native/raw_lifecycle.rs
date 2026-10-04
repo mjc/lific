@@ -39,7 +39,11 @@ impl Drop for Fixture {
 }
 
 impl Fixture {
-    async fn new(policy: SocketPolicy) -> Self {
+    fn new(policy: SocketPolicy) -> Self {
+        Self::with_send_buffer(policy, None)
+    }
+
+    fn with_send_buffer(policy: SocketPolicy, send_buffer: Option<u32>) -> Self {
         let seed = home_fixture::fixture();
         let user_id = queries::users::validate_session(&seed.db.read().unwrap(), &seed.token)
             .unwrap()
@@ -56,7 +60,19 @@ impl Fixture {
             AttachmentStore::new(store.path().to_owned()),
             topcoat_app::router_builder().app_context(policy),
         );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let listener = tokio::net::TcpSocket::new_v4().unwrap();
+        if let Some(bytes) = send_buffer {
+            // Bound both halves of the real TCP path. Windows send buffering
+            // can complete a large write despite the peer's small SO_RCVBUF.
+            listener.set_send_buffer_size(bytes).unwrap();
+            let actual = listener.send_buffer_size().unwrap();
+            assert!(
+                actual > 0 && actual <= bytes * 2,
+                "bounded sender buffer: {actual}"
+            );
+        }
+        listener.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let listener = listener.listen(64).unwrap();
         let address = listener.local_addr().unwrap();
         let app = super::admission_contract::mounted(app);
         let server = tokio::spawn(async move {
@@ -258,7 +274,7 @@ fn native_raw_policy_preserves_existing_deadlines_and_rejects_invalid_intervals(
 
 #[tokio::test]
 async fn native_raw_idle_peer_without_pongs_releases_quota_before_first_render() {
-    let fixture = Fixture::new(policy(100, 600, 200)).await;
+    let fixture = Fixture::new(policy(100, 600, 200));
     let _socket = fixture.open().await;
     fixture
         .counts(1, 0, DEADLINE, "the idle physical socket owns a permit")
@@ -276,7 +292,7 @@ async fn native_raw_idle_peer_without_pongs_releases_quota_before_first_render()
 
 #[tokio::test]
 async fn native_raw_passive_peer_answers_pings_and_survives_without_application_input() {
-    let fixture = Fixture::new(policy(100, 600, 200)).await;
+    let fixture = Fixture::new(policy(100, 600, 200));
     let mut socket = fixture.open().await;
     let until = tokio::time::Instant::now() + Duration::from_millis(1_500);
     let mut pings = 0usize;
@@ -315,7 +331,7 @@ async fn native_raw_passive_peer_answers_pings_and_survives_without_application_
 async fn native_raw_stopped_reader_bounds_send_and_aborts_its_live_render() {
     // Progress expiry is ten seconds; retirement within three seconds must
     // come from the send deadline while the actual TCP peer remains open.
-    let fixture = Fixture::new(policy(2_000, 10_000, 200)).await;
+    let fixture = Fixture::with_send_buffer(policy(2_000, 10_000, 200), Some(4_096));
     let title = "raw stopped reader ".to_owned() + &"x".repeat(16 * 1024 * 1024);
     fixture.rename(&title);
     // Bound this peer's buffering before TCP negotiation instead of assuming
@@ -377,7 +393,7 @@ async fn native_raw_stopped_reader_bounds_send_and_aborts_its_live_render() {
 
 #[tokio::test]
 async fn native_raw_peer_close_aborts_connected_render_and_releases_receiver_and_quota() {
-    let fixture = Fixture::new(policy(100, 600, 200)).await;
+    let fixture = Fixture::new(policy(100, 600, 200));
     let mut socket = fixture.open().await;
     request_render(&mut socket, 1).await;
     snapshot(&mut socket, 1, "Visible active initial work").await;
@@ -404,7 +420,7 @@ async fn native_raw_peer_close_aborts_connected_render_and_releases_receiver_and
 async fn native_raw_latest_render_cancels_previous_body_before_next_run_announcement() {
     // Replacement ordering uses the production policy. Short idle deadlines
     // belong to the dedicated timeout tests, not this resource ownership proof.
-    let fixture = Fixture::new(SocketPolicy::default()).await;
+    let fixture = Fixture::new(SocketPolicy::default());
     let mut socket = fixture.open().await;
     for run in 1..=4u64 {
         let title = format!("Raw current render {run}");
@@ -518,7 +534,7 @@ async fn protocol_canary(socket: &mut Socket) {
 
 #[tokio::test]
 async fn native_raw_authority_before_first_render_retires_page_and_palette_at_all_mounts() {
-    let fixture = Fixture::new(policy(100, 10_000, 200)).await;
+    let fixture = Fixture::new(policy(100, 10_000, 200));
     let sockets = private_sockets(&fixture, &fixture.seed.token).await;
     queries::users::delete_session(&fixture.seed.db.write().unwrap(), &fixture.seed.token).unwrap();
     fixture.seed.realtime.revoke_user(fixture.user_id);
@@ -541,7 +557,7 @@ async fn native_raw_authority_before_first_render_retires_page_and_palette_at_al
 
 #[tokio::test]
 async fn native_raw_authority_unrelated_broadcast_preserves_idle_page_and_palette() {
-    let fixture = Fixture::new(policy(100, 10_000, 200)).await;
+    let fixture = Fixture::new(policy(100, 10_000, 200));
     let mut sockets = private_sockets(&fixture, &fixture.seed.token).await;
     let unrelated_id =
         queries::users::get_user_by_username(&fixture.seed.db.read().unwrap(), "admin")
@@ -582,7 +598,7 @@ async fn native_raw_authority_unrelated_broadcast_preserves_idle_page_and_palett
 
 #[tokio::test]
 async fn native_raw_authority_one_receiver_survives_page_rerenders_and_peer_close() {
-    let fixture = Fixture::new(policy(100, 10_000, 200)).await;
+    let fixture = Fixture::new(policy(100, 10_000, 200));
     for prefix in MOUNTS {
         let mut socket = fixture.open_at(prefix, "/", &fixture.seed.token).await;
         fixture
@@ -622,7 +638,7 @@ async fn native_raw_authority_one_receiver_survives_page_rerenders_and_peer_clos
 
 #[tokio::test]
 async fn native_raw_authority_real_interval_expires_db_only_sessions_at_all_mounts() {
-    let fixture = Fixture::new(SocketPolicy::default()).await;
+    let fixture = Fixture::new(SocketPolicy::default());
     let (valid_id, valid_token) = {
         let conn = fixture.seed.db.write().unwrap();
         let admin = queries::users::get_user_by_username(&conn, "admin").unwrap();

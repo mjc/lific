@@ -1,6 +1,7 @@
 // Real production Home and pinned master, using one disposable authenticated fixture.
 // node home.browser.test.cjs <fixture-origin> <session-token> [pinned-master-web-directory]
 const {test} = require('node:test');
+const {installOriginalFonts, captureOriginalFonts} = require('./original_fonts_fixture.cjs');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const {createHash} = require('node:crypto');
@@ -46,6 +47,7 @@ async function newContext(browser, origin, token, viewport, theme, master = fals
     isMobile: viewport.name === 'phone', colorScheme: theme, reducedMotion: 'reduce',
     locale: 'en-US', timezoneId: 'America/Denver',
   });
+  if (master) await installOriginalFonts(context);
   if (!master) await context.addCookies([{name: 'lific_token', value: token, url: origin, httpOnly: true, sameSite: 'Lax'}]);
   await context.addInitScript(({token, theme, master, recents}) => {
     if (master) localStorage.setItem('lific_token', token);
@@ -276,6 +278,7 @@ test('production native Home uses Rust state and mounted transport; capture pair
             assertOutsideRest(state.requests);
           }
           await bounded(`${name}: fonts`, () => state.page.evaluate(() => document.fonts.ready));
+          if (master) await captureOriginalFonts(state.page,path.join(output,`${name}-original-fonts.json`));
           await state.page.screenshot({path: path.join(output, `${name}.png`)});
           report.push({name, errors: state.errors, consoleErrors: state.consoleErrors, geometry: await geometry(state.page)});
           assert.deepEqual(state.errors, [], `${name} must render without browser errors.`);
