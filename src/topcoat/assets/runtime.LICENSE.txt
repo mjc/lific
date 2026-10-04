@@ -30,6 +30,11 @@ SOFTWARE.
 - Crate SHA-256: `c4c4dc39a1c6ef6f0f604ecba3949baf401a30b5b44e7b3f830c3509e6b560dd`
 - Unmodified upstream file SHA-256: `980dd1be1962006b98b8c1646b0e6a4f86a78ec721e2739f59ddf4c4c1c5c8b4`
 - Lific transport patch: prepend `topcoatMountedEndpoint`, then apply it at
-  the two `fetch(this.path)` calls and the shard's `url()` method. All other
-  upstream framework code is unchanged. See `../native/TRANSPORT.md`.
-- Patched file SHA-256: `e3594c8091e2ad02acafb0f69affcc89b3093a728e191c0dec23ec3551585279`
+  the two `fetch(this.path)` calls and the shard's `url()` method.
+- Lific tuple compatibility patch: prepend `topcoatHydrateTuple`, then add
+  array guards to the framework hydration (`V`) and dehydration (`f`) functions.
+  This supports the untagged arrays emitted by Rust tuple serialization.
+- All remaining upstream framework code is unchanged. Removing the five
+  prepended helper/comment lines and reversing these five substitutions
+  reproduces the unmodified upstream bytes. See `../native/TRANSPORT.md`.
+- Patched file SHA-256: `885af36e4c4c78e2939a56d2f2fc496cdd373b55f0da66e947b5655a3fad91c9`

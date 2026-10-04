@@ -808,7 +808,7 @@ mod topcoat_app {
     }
 
     #[route(GET "/__topcoat-runtime.js")]
-    async fn runtime_script() -> Result<Response> {
+    pub(super) async fn runtime_script() -> Result<Response> {
         Ok(Response::builder()
             .header("content-type", "text/javascript; charset=utf-8")
             .header("cache-control", "no-cache")
@@ -1787,6 +1787,24 @@ pub(crate) fn build_app_with_store(
     trusted_proxies: Arc<[ratelimit::IpNetwork]>,
     attachment_store: storage::AttachmentStore,
 ) -> Router {
+    build_app_with_store_and_frontend(
+        cfg,
+        pool,
+        realtime,
+        trusted_proxies,
+        attachment_store,
+        topcoat_app::router_builder(),
+    )
+}
+
+fn build_app_with_store_and_frontend(
+    cfg: &Config,
+    pool: db::DbPool,
+    realtime: realtime::RealtimeHub,
+    trusted_proxies: Arc<[ratelimit::IpNetwork]>,
+    attachment_store: storage::AttachmentStore,
+    frontend: topcoat::router::RouterBuilder,
+) -> Router {
     // Auth state for middleware. When no public_url is configured the
     // issuer is derived from the bind address — but 0.0.0.0/:: are
     // bind-any addresses, not dialable URLs. They leak into
@@ -1996,7 +2014,7 @@ pub(crate) fn build_app_with_store(
     let app = app
         .route("/assets/{*path}", any(|| async { StatusCode::NOT_FOUND }))
         .fallback_service(topcoat::router::tower::TowerService::new(
-            topcoat_app::router_builder()
+            frontend
                 .app_context(auth_state)
                 .app_context(realtime)
                 .app_context(attachment_store)
