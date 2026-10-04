@@ -832,6 +832,7 @@ mod topcoat_app {
         topcoat::router::Router::builder()
             .discover()
             .runtime()
+            .layer(super::topcoat_frontend::runtime::SocketLayer)
             .layer(super::topcoat_frontend::native::socket_admission::SocketAdmission)
     }
 

@@ -90,6 +90,8 @@ jobs:
           add-rust-environment-hash-key: false
           cache-bin: false
           cache-workspace-crates: true
+      - name: Check the packaged application
+        run: devenv shell -- cargo package --locked
       - name: Run project, hook, and documentation checks
         run: devenv tasks run lific:check devenv:git-hooks:run lific:docs:check
 
@@ -116,7 +118,7 @@ jobs:
         working-directory: e2e
         run: bunx --no-install playwright install chromium
       - name: Test
-        run: cargo test --all-targets
+        run: cargo test --all-targets -- --test-threads=2
       - name: Test runtime lifecycle
         run: cargo test --locked --manifest-path src/topcoat/vendor/topcoat-runtime/Cargo.toml --features router --target-dir target
 

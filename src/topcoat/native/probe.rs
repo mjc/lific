@@ -8,10 +8,11 @@ use std::sync::{
 use topcoat::{
     context::{Cx, app_context},
     router::page,
-    runtime::{Event, connected, procedure, shard, signal},
+    runtime::{Event, procedure, shard, signal},
     view::{View, view},
 };
 
+use super::super::runtime::connected;
 use super::{context, transport};
 use crate::db::{
     models::{Issue, Role, UpdateIssue},

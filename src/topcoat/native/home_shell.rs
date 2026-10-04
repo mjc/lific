@@ -1,10 +1,11 @@
 //! Native Home chrome. Display snapshots never authorize palette reads.
 
+use super::super::runtime::connected;
 use super::home_data::Snapshot;
 use super::session::native_home_session;
 use topcoat::{
     context::Cx,
-    runtime::{BoolSurrogate, Event, Signal, Surrogated, connected, expr, shard, signal},
+    runtime::{BoolSurrogate, Event, Signal, Surrogated, expr, shard, signal},
     view::{Attributes, BoxView, View, ViewExt, view},
 };
 
