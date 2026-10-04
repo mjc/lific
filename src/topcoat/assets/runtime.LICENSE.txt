@@ -47,7 +47,10 @@ SOFTWARE.
 - Lific navigation patch: let the document Runtime claim its first redirect
   before navigation starts. Sibling socket frames and redirected HTTP responses
   share this terminal claim; each new document has a fresh Runtime.
+- Lific procedure keepalive patch: add generic `call_keepalive` and typed-call
+  `with_keepalive` adapter methods sharing the existing POST/Future pipeline.
+  Ordinary `call` options are unchanged; only keepalive calls set `keepalive: true`.
 - All remaining upstream framework code is unchanged. Removing the 27
-  prepended helper/comment lines and reversing these thirteen substitutions
+  prepended helper/comment lines and reversing these fourteen substitutions
   reproduces the unmodified upstream bytes. See `../native/TRANSPORT.md`.
-- Patched file SHA-256: `cfdacb59309f7f14856286611588cf1e504f63c04e4c6db9bd4b1feff0ce5381`
+- Patched file SHA-256: `d927b23556cb9670c11252f216a8f7c6b014cbda4788b3c9a83bdb14380fbba8`

@@ -9,6 +9,8 @@ use topcoat_core::context::Cx;
 use topcoat_router::{Body, Layer, LayerFuture, Next, Path};
 
 mod connection;
+#[cfg(test)]
+pub(crate) mod procedure;
 mod socket;
 
 pub(crate) use connection::{ConnectedRender, connected, connected_untracked};

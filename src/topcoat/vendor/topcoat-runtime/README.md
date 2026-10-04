@@ -120,6 +120,21 @@ Close outcomes and retaining a
 Send-only future in the Send + Sync request context. Actual application TCP
 tests cover request-scoped Redirect lifetimes, idle session retirement,
 periodic revalidation, stable ownership across rerenders and peer cleanup.
-The browser source and distribution are unchanged. Lific's existing
+Except for the generic procedure browser adapter described below, the browser
+source and distribution are unchanged. Lific's existing
 `src/topcoat/assets/runtime.js` transport patches remain separate. Its document
 runtime claims navigation once across sibling framework redirects.
+
+
+## Generic procedure keepalive browser adapter
+
+`browser/src/surrogate/procedure.ts` adds `call_keepalive` and the callable
+`with_keepalive` adapter, sharing the original lazy Future transport. Ordinary
+`call` retains its request options; keepalive calls add only Fetch's keepalive
+flag. The application uses the registry Rust type graph and a typed extension
+in `src/topcoat/runtime/procedure.rs`, rather than this copy's Rust procedure
+module. Its expression adapter preserves the registry Args/Output contract.
+The packaged application browser asset carries a matching reversible patch;
+its license provenance and reconstruction oracle describe that addition.
+The browser source therefore differs from the original package in this file;
+the checked-in vendor distribution has not been rebuilt by this change.
