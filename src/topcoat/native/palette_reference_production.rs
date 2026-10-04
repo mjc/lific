@@ -103,3 +103,23 @@ async fn native_palette_reference_production_escape_clears_query_before_reopenin
 async fn native_palette_reference_production_rechecks_cookie_owner_and_session_denial() {
     browser("cookie").await;
 }
+
+#[tokio::test]
+async fn native_palette_reference_modifier_enter_opens_new_tab_without_replacing_home() {
+    browser("modified-ready").await;
+}
+
+#[tokio::test]
+async fn native_palette_reference_modifier_enter_keeps_new_tab_intent_until_actual_result() {
+    browser("modified-pending").await;
+}
+
+#[tokio::test]
+async fn native_palette_reference_late_actual_results_cannot_replace_query_or_closed_palette() {
+    browser("stale").await;
+}
+
+#[tokio::test]
+async fn native_palette_reference_disposed_account_cannot_consume_pending_modified_enter() {
+    browser("disposed").await;
+}

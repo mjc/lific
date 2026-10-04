@@ -117,6 +117,8 @@ jobs:
         run: bunx --no-install playwright install chromium
       - name: Test
         run: cargo test --all-targets
+      - name: Test runtime lifecycle
+        run: cargo test --locked --manifest-path src/topcoat/vendor/topcoat-runtime/Cargo.toml --features router --target-dir target
 
   windows-msvc-cross-build:
     # This is the proposed release path: Linux owns the reproducible Devenv

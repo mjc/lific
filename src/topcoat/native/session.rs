@@ -10,14 +10,28 @@ use crate::error::LificError;
 use tokio::sync::broadcast::{Receiver, error::RecvError};
 
 pub(crate) fn read<T>(cx: &Cx, result: Result<T, LificError>) -> topcoat::Result<T> {
+    read_with_auth_destination(cx, result, "/login")
+}
+
+/// A late connected read retires to Home so fresh HTTP cookie authority can
+/// recover a replacement account or reach the existing login boundary.
+pub(crate) fn read_for_refresh<T>(cx: &Cx, result: Result<T, LificError>) -> topcoat::Result<T> {
+    read_with_auth_destination(cx, result, "/")
+}
+
+fn read_with_auth_destination<T>(
+    cx: &Cx,
+    result: Result<T, LificError>,
+    auth_destination: &str,
+) -> topcoat::Result<T> {
     match result {
         Ok(value) => Ok(value),
         Err(LificError::Forbidden(message)) if message == "authentication required" => {
             // Socket renders bypass the outer HTTP middleware that mounts Location.
             let destination = if connected_untracked(cx) {
-                super::transport::mounted_url(cx, "/login")
+                super::transport::mounted_url(cx, auth_destination)
             } else {
-                "/login".to_owned()
+                auth_destination.to_owned()
             };
             Err(topcoat::router::error::redirect(destination).into())
         }
@@ -421,6 +435,23 @@ mod tests {
         }
     }
 
+    #[test]
+    fn native_session_http_refresh_denial_keeps_home_logical_for_outer_mounting() {
+        let db = db::open_memory().unwrap();
+        for prefix in ["", "/app", "/ACC"] {
+            let cx = context(&db, true, None, prefix);
+            let error = read_for_refresh(&cx, caller(&cx)).err().unwrap();
+            let redirect = error.downcast_cloned::<RedirectError>().unwrap();
+            let response = redirect.into_response(&cx).unwrap();
+            assert!(response.status().is_redirection());
+            assert_eq!(
+                response.headers()["location"],
+                "/",
+                "HTTP middleware owns mounting"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn native_session_optional_operator_keeps_authority_and_anonymous_web_actor() {
         let db = db::open_memory().unwrap();
@@ -474,50 +505,60 @@ mod tests {
         );
         assert!(error.downcast_cloned::<RedirectError>().is_err());
         assert_eq!(read(&cx, Ok::<_, LificError>(42)).unwrap(), 42);
+        assert_eq!(read_for_refresh(&cx, Ok::<_, LificError>(42)).unwrap(), 42);
+        let error = read_for_refresh::<()>(
+            &cx,
+            Err(LificError::Internal("session refresh failed".into())),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("session refresh failed"));
+        assert!(error.downcast_cloned::<RedirectError>().is_err());
     }
 
     #[test]
     fn native_session_http_domain_denials_keep_their_status_instead_of_becoming_500() {
         let cx = CxTestBuilder::new().build();
-        for (error, expected, retry) in [
-            (
-                LificError::Forbidden("insufficient project permissions".into()),
-                403,
-                None,
-            ),
-            (
-                LificError::BadRequest("invalid identifier".into()),
-                400,
-                None,
-            ),
-            (LificError::NotFound("missing issue".into()), 404, None),
-            (
-                LificError::TooManyRequests("budget exhausted".into()),
-                429,
-                Some("30"),
-            ),
-            (
-                LificError::PayloadTooLarge("resource ceiling".into()),
-                413,
-                None,
-            ),
-            (
-                LificError::Unavailable("store occupied".into()),
-                503,
-                Some("2"),
-            ),
-        ] {
-            let error = read::<()>(&cx, Err(error)).unwrap_err();
-            assert!(error.clone().downcast_cloned::<RedirectError>().is_err());
-            let response = error.into_response(&cx).unwrap();
-            assert_eq!(response.status().as_u16(), expected);
-            assert_eq!(
-                response
-                    .headers()
-                    .get("retry-after")
-                    .map(|value| value.to_str().unwrap()),
-                retry
-            );
+        for reader in [read::<()>, read_for_refresh::<()>] {
+            for (error, expected, retry) in [
+                (
+                    LificError::Forbidden("insufficient project permissions".into()),
+                    403,
+                    None,
+                ),
+                (
+                    LificError::BadRequest("invalid identifier".into()),
+                    400,
+                    None,
+                ),
+                (LificError::NotFound("missing issue".into()), 404, None),
+                (
+                    LificError::TooManyRequests("budget exhausted".into()),
+                    429,
+                    Some("30"),
+                ),
+                (
+                    LificError::PayloadTooLarge("resource ceiling".into()),
+                    413,
+                    None,
+                ),
+                (
+                    LificError::Unavailable("store occupied".into()),
+                    503,
+                    Some("2"),
+                ),
+            ] {
+                let error = reader(&cx, Err(error)).unwrap_err();
+                assert!(error.clone().downcast_cloned::<RedirectError>().is_err());
+                let response = error.into_response(&cx).unwrap();
+                assert_eq!(response.status().as_u16(), expected);
+                assert_eq!(
+                    response
+                        .headers()
+                        .get("retry-after")
+                        .map(|value| value.to_str().unwrap()),
+                    retry
+                );
+            }
         }
     }
 

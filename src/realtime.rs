@@ -269,6 +269,11 @@ impl RealtimeHub {
     }
 
     #[cfg(test)]
+    pub(crate) fn event_receiver_count(&self) -> usize {
+        self.tx.receiver_count()
+    }
+
+    #[cfg(test)]
     pub(crate) fn socket_count(&self, user_id: i64) -> usize {
         let connections = self.connections.lock().expect("connections lock poisoned");
         connections.per_user.get(&user_id).copied().unwrap_or(0)
@@ -1120,12 +1125,12 @@ fn query_visible_projects(
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum EventVisibility {
+pub(crate) enum EventVisibility {
     Visible,
     Hidden,
 }
 
-fn visible_to(
+pub(crate) fn visible_to(
     db: &crate::db::DbPool,
     auth_user: &crate::db::models::AuthUser,
     message: &RealtimeMessage,

@@ -1,11 +1,17 @@
 //! Renders a page or shard over a WebSocket opened at its URL.
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc;
-use topcoat_core::{context::Cx, error::Result};
+use tokio::{
+    sync::{mpsc, watch},
+    time::{self, Instant, MissedTickBehavior},
+};
+use topcoat_core::{
+    context::{Cx, try_app_context},
+    error::Result,
+};
 use topcoat_router::{
     Body, HeaderMap, HeaderName, HeaderValue, Method, RemoteAddr, Router, Uri,
     content::{
@@ -19,6 +25,50 @@ use topcoat_router::{
 };
 
 use crate::{ConnectedRender, RUNTIME_PROTOCOL, SignalValues};
+
+/// Protocol liveness and outbound deadlines for a runtime connection.
+///
+/// Register in the router's application context to override the defaults.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SocketPolicy {
+    ping_interval: Duration,
+    progress_timeout: Duration,
+    send_timeout: Duration,
+}
+
+impl SocketPolicy {
+    /// Creates a policy with nonzero deadlines and room to answer a ping.
+    /// Returns `None` when a deadline is zero or pings cannot precede timeout.
+    #[must_use]
+    pub fn new(
+        ping_interval: Duration,
+        progress_timeout: Duration,
+        send_timeout: Duration,
+    ) -> Option<Self> {
+        if ping_interval.is_zero()
+            || progress_timeout.is_zero()
+            || send_timeout.is_zero()
+            || ping_interval >= progress_timeout
+        {
+            return None;
+        }
+        Some(Self {
+            ping_interval,
+            progress_timeout,
+            send_timeout,
+        })
+    }
+}
+
+impl Default for SocketPolicy {
+    fn default() -> Self {
+        Self {
+            ping_interval: Duration::from_secs(30),
+            progress_timeout: Duration::from_secs(120),
+            send_timeout: Duration::from_secs(5),
+        }
+    }
+}
 
 /// Checks for a `GET` that requests the runtime WebSocket subprotocol.
 pub(super) fn requested(cx: &Cx) -> bool {
@@ -39,11 +89,14 @@ fn requests_runtime_protocol(headers: &HeaderMap) -> bool {
 pub(super) async fn accept(cx: &Cx, body: Body) -> Result<Response> {
     let upgrade = WebSocketUpgrade::from_request(cx, body).await?;
     let target = Arc::new(ConnectionTarget::from_handshake(cx));
+    let policy = try_app_context::<SocketPolicy>(cx)
+        .copied()
+        .unwrap_or_default();
     let connection_context = cx.clone();
     upgrade
         .protocols([RUNTIME_PROTOCOL])
         .on_upgrade(move |socket| async move {
-            run(target, socket).await;
+            run(target, socket, policy).await;
             drop(connection_context);
         })
 }
@@ -232,53 +285,113 @@ impl ConnectionTarget {
 /// starting another. Aborting alone is not enough because a task running
 /// on another worker can still send output until it yields. Waiting keeps
 /// that output ahead of the next run announcement in the queue.
-async fn run(target: Arc<ConnectionTarget>, socket: WebSocket) {
+async fn run(target: Arc<ConnectionTarget>, socket: WebSocket, policy: SocketPolicy) {
     let (mut sink, mut stream) = socket.split();
     let (out, mut queue) = mpsc::channel::<Message>(16);
+    let (progress, deadline) = watch::channel(Instant::now() + policy.progress_timeout);
+    let mut current = RenderTask::default();
 
-    let forward = async move {
-        while let Some(message) = queue.recv().await {
-            if sink.send(message).await.is_err() {
-                break;
-            }
-        }
-    };
-
-    let receive = async move {
-        let mut current: Option<tokio::task::JoinHandle<()>> = None;
-        while let Some(Ok(message)) = stream.next().await {
-            let Message::Text(text) = message else {
-                continue;
-            };
-            let Ok(request) = serde_json::from_str::<RenderRequest>(text.as_str()) else {
-                let error = ConnectionMessage::Error { status: 400 }.to_message();
-                if out.send(error).await.is_err() {
+    {
+        let forward = async move {
+            let mut ping =
+                time::interval_at(Instant::now() + policy.ping_interval, policy.ping_interval);
+            ping.set_missed_tick_behavior(MissedTickBehavior::Delay);
+            loop {
+                let message = tokio::select! {
+                    biased;
+                    _ = ping.tick() => Message::Ping(Vec::new().into()),
+                    message = queue.recv() => match message {
+                        Some(message) => message,
+                        None => break,
+                    },
+                };
+                if !matches!(
+                    time::timeout(policy.send_timeout, sink.send(message)).await,
+                    Ok(Ok(()))
+                ) {
                     break;
                 }
-                continue;
-            };
-            if let Some(current) = current.take() {
-                current.abort();
-                // Wait until the old render can no longer send frames.
-                let _ = current.await;
             }
-            let render = Render {
-                request,
-                text: text.as_str().to_owned(),
-            };
-            let target = Arc::clone(&target);
-            let out = out.clone();
-            current = Some(tokio::spawn(async move {
-                target.render(render, out).await;
-            }));
-        }
-        if let Some(current) = current {
-            current.abort();
-        }
-        // The forwarder finishes after all senders close and queued messages are sent.
-    };
+        };
 
-    futures_util::future::join(forward, receive).await;
+        let receive = async {
+            while let Some(Ok(message)) = stream.next().await {
+                if matches!(message, Message::Close(_)) {
+                    break;
+                }
+                progress.send_replace(Instant::now() + policy.progress_timeout);
+                let Message::Text(text) = message else {
+                    continue;
+                };
+                let Ok(request) = serde_json::from_str::<RenderRequest>(text.as_str()) else {
+                    let error = ConnectionMessage::Error { status: 400 }.to_message();
+                    if out.send(error).await.is_err() {
+                        break;
+                    }
+                    continue;
+                };
+                // Wait until the old render can no longer send frames.
+                current.stop().await;
+                let render = Render {
+                    request,
+                    text: text.as_str().to_owned(),
+                };
+                let target = Arc::clone(&target);
+                let out = out.clone();
+                current.0 = Some(tokio::spawn(async move {
+                    target.render(render, out).await;
+                }));
+            }
+        };
+
+        // Independent of both pumps: a full output queue cannot postpone
+        // progress expiry while the receiver waits to enqueue an error.
+        let liveness = progress_lifetime(deadline);
+
+        tokio::select! {
+            biased;
+            () = liveness => {},
+            () = forward => {},
+            () = receive => {},
+        }
+    }
+
+    // Either pump ending retires the whole socket, including the live body.
+    current.stop().await;
+}
+
+async fn progress_lifetime(mut deadline: watch::Receiver<Instant>) {
+    loop {
+        let until = *deadline.borrow_and_update();
+        tokio::select! {
+            biased;
+            // Progress may have arrived while this future was not polled.
+            // Consume that newer deadline before considering the cached timer.
+            changed = deadline.changed() => if changed.is_err() { break; },
+            () = time::sleep_until(until) => break,
+        }
+    }
+}
+
+/// Aborts the connected render even if the socket owner itself is cancelled.
+#[derive(Default)]
+struct RenderTask(Option<tokio::task::JoinHandle<()>>);
+
+impl RenderTask {
+    async fn stop(&mut self) {
+        if let Some(task) = self.0.take() {
+            task.abort();
+            let _ = task.await;
+        }
+    }
+}
+
+impl Drop for RenderTask {
+    fn drop(&mut self) {
+        if let Some(task) = &self.0 {
+            task.abort();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -286,6 +399,23 @@ mod tests {
     use topcoat_router::HeaderValue;
 
     use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn pending_progress_update_precedes_expired_cached_deadline() {
+        let old_deadline = Instant::now() + Duration::from_millis(500);
+        let (progress, deadline) = watch::channel(old_deadline);
+        let mut lifetime = Box::pin(progress_lifetime(deadline));
+        assert!(futures_util::poll!(lifetime.as_mut()).is_pending());
+
+        // The receive pump extends progress while the watchdog is not polled.
+        // On its next poll both the old timer and the watch update are ready.
+        progress.send_replace(Instant::now() + Duration::from_secs(5));
+        time::sleep_until(old_deadline + Duration::from_millis(100)).await;
+        assert!(
+            futures_util::poll!(lifetime.as_mut()).is_pending(),
+            "actual peer progress extends liveness past the obsolete cached deadline"
+        );
+    }
 
     fn headers_with_protocols(value: &'static str) -> HeaderMap {
         let mut headers = HeaderMap::new();

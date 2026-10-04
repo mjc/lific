@@ -4,7 +4,7 @@ use super::home_data::Snapshot;
 use super::session::native_home_session;
 use topcoat::{
     context::Cx,
-    runtime::{BoolSurrogate, Event, Signal, connected, expr, shard, signal},
+    runtime::{BoolSurrogate, Event, Signal, Surrogated, connected, expr, shard, signal},
     view::{Attributes, BoxView, View, ViewExt, view},
 };
 
@@ -33,6 +33,7 @@ struct PaletteState {
     cursor_moved: Signal<bool>,
     count: Signal<usize>,
     pending_enter: Signal<bool>,
+    pending_new_tab: Signal<bool>,
     waiting: Signal<bool>,
     error: Signal<String>,
     account_id: i64,
@@ -46,6 +47,7 @@ type PaletteSignals = (
     Signal<bool>,
     Signal<usize>,
     Signal<usize>,
+    Signal<bool>,
     Signal<bool>,
     Signal<bool>,
     Signal<bool>,
@@ -75,6 +77,7 @@ pub(crate) fn shell_with_palette<'a>(
         cursor_moved: signal(cx, || false),
         count: signal(cx, || 0usize),
         pending_enter: signal(cx, || false),
+        pending_new_tab: signal(cx, || false),
         waiting: signal(cx, || false),
         error: signal(cx, String::new),
         account_id: snapshot.user.id,
@@ -249,7 +252,8 @@ pub(crate) fn shell_with_palette<'a>(
                             palette.revision.clone(), palette.selected.clone(),
                             palette.selected_href.clone(), palette.cursor_moved.clone(),
                             palette.count.clone(), palette.rendered.clone(),
-                            palette.pending_enter.clone(), palette.waiting.clone(), palette.open.clone()
+                            palette.pending_enter.clone(), palette.pending_new_tab.clone(),
+                            palette.waiting.clone(), palette.open.clone()
                         )
                     )
                 </section>
@@ -519,6 +523,7 @@ fn shell_mount(
     let start_selected = palette.selected.clone();
     let start_cursor = palette.cursor_moved.clone();
     let start_enter = palette.pending_enter.clone();
+    let start_new_tab = palette.pending_new_tab.clone();
     let start_error = palette.error.clone();
     let start_waiting = palette.waiting.clone();
     let request_revision = palette.revision.clone();
@@ -528,6 +533,7 @@ fn shell_mount(
     let failed_error = palette.error.clone();
     let failed_waiting = palette.waiting.clone();
     let failed_enter = palette.pending_enter.clone();
+    let failed_new_tab = palette.pending_new_tab.clone();
     let open_query = palette.query.clone();
     let open_palette = palette.open.clone();
     let focus_palette_open = palette.open.clone();
@@ -535,6 +541,7 @@ fn shell_mount(
     let close_open = palette.open.clone();
     let close_revision = palette.revision.clone();
     let close_enter = palette.pending_enter.clone();
+    let close_new_tab = palette.pending_new_tab.clone();
     let close_waiting = palette.waiting.clone();
     let input_query = palette.query;
     let keyboard_selected = palette.selected;
@@ -543,6 +550,7 @@ fn shell_mount(
     let keyboard_cursor = palette.cursor_moved;
     let keyboard_waiting = palette.waiting;
     let keyboard_enter = palette.pending_enter;
+    let keyboard_new_tab = palette.pending_new_tab;
     let keyboard_revision = palette.revision.clone();
     let keyboard_rendered = palette.rendered;
     let dispose_revision = palette.revision;
@@ -570,6 +578,7 @@ fn shell_mount(
             start_href.set("".to_owned());
             start_cursor.set(false);
             start_enter.set(false);
+            start_new_tab.set(false);
             start_error.set("".to_owned());
             start_waiting.set(true);
             let _failed = || {
@@ -578,6 +587,7 @@ fn shell_mount(
                         failed_error.set("Unable to search. Try again.".to_owned());
                         failed_waiting.set(false);
                         failed_enter.set(false);
+                        failed_new_tab.set(false);
                     }
                 }
             };
@@ -634,6 +644,7 @@ fn shell_mount(
             close_revision.increment();
             close_open.set(false);
             close_enter.set(false);
+            close_new_tab.set(false);
             close_waiting.set(false);
         };
         let _palette_input = |_event: Event| {
@@ -882,6 +893,32 @@ fn shell_mount(
                 if keyboard_palette.get() {
                     let id = raw!("cx.hydrate(${_event}.target.id || '')", String::new());
                     if id == "native-home-palette-query" {
+                        // A visible current server projection is ready before
+                        // its asynchronous mount callback updates our signals.
+                        let _revision = keyboard_revision.get();
+                        let stamped_revision = raw!(
+                            "cx.hydrate(document.querySelector('.native-home-palette-results')?.getAttribute('data-native-palette-revision') || '')",
+                            String::new()
+                        );
+                        let expected_revision =
+                            raw!("cx.hydrate(${_revision}.toString())", String::new());
+                        let current_results = stamped_revision == expected_revision;
+                        if current_results {
+                            let visible_count = raw!(
+                                "cx.hydrate(JSON.parse(document.querySelector('.native-home-palette-results').getAttribute('data-native-palette-count')))",
+                                0usize
+                            );
+                            keyboard_count.set(visible_count);
+                            if visible_count == 0usize {
+                                keyboard_selected.set(0usize);
+                            } else {
+                                if keyboard_selected.get() >= visible_count {
+                                    keyboard_selected.set(visible_count - 1usize);
+                                }
+                            }
+                            keyboard_rendered.set(_revision);
+                            keyboard_waiting.set(false);
+                        }
                         if key == "ArrowDown" {
                             raw!("${_event}.preventDefault();", ());
                             keyboard_cursor.set(true);
@@ -900,16 +937,37 @@ fn shell_mount(
                             } else {
                                 if key == "Enter" {
                                     raw!("${_event}.preventDefault();", ());
+                                    let new_tab = if raw!("cx.hydrate(${_event}.metaKey)", false) {
+                                        true
+                                    } else {
+                                        raw!("cx.hydrate(${_event}.ctrlKey)", false)
+                                    };
                                     if keyboard_waiting.get() {
                                         keyboard_enter.set(true);
+                                        keyboard_new_tab.set(new_tab);
                                     } else {
                                         if keyboard_rendered.get() == keyboard_revision.get() {
-                                            let _destination = keyboard_href.get();
-                                            if !_destination.is_empty() {
-                                                raw!(
-                                                    "${_close_palette}(); window.location.assign(${_destination}.toString());",
-                                                    ()
+                                            if current_results {
+                                                let _index = keyboard_selected.get();
+                                                let _destination = raw!(
+                                                    "cx.hydrate(document.querySelector('.native-home-palette-results a[data-palette-index=\"'+${_index}.toString()+'\"]')?.getAttribute('href') || '')",
+                                                    String::new()
                                                 );
+                                                keyboard_href.set(_destination.clone());
+                                                if !_destination.is_empty() {
+                                                    raw!("${_close_palette}();", ());
+                                                    if new_tab {
+                                                        raw!(
+                                                            "window.open(${_destination}.toString(), '_blank', 'noopener');",
+                                                            ()
+                                                        );
+                                                    } else {
+                                                        raw!(
+                                                            "window.location.assign(${_destination}.toString());",
+                                                            ()
+                                                        );
+                                                    }
+                                                }
                                             }
                                         }
                                     }
@@ -1071,6 +1129,7 @@ async fn native_home_palette_results(
         count,
         rendered,
         pending_enter,
+        pending_new_tab,
         waiting,
         live_open,
     ) = state;
@@ -1138,6 +1197,12 @@ async fn native_home_palette_results(
             }),
     );
     let total = rows.len();
+    let rendered_count = serde_json::json!(total.into_surrogate()).to_string();
+    let rendered_revision = if allowed {
+        revision.to_string()
+    } else {
+        String::new()
+    };
     let empty_text = if super::palette_reference::parse_reference(&query).is_some() {
         format!("Nothing matches “{}”", query.trim())
     } else {
@@ -1157,6 +1222,7 @@ async fn native_home_palette_results(
     let click_open = live_open.clone();
     let click_revision = live_revision.clone();
     let click_enter = pending_enter.clone();
+    let click_new_tab = pending_new_tab.clone();
     let mounted = expr!(|_mount: Event| {
         if !raw!("cx.hydrate(cx.abortSignal.aborted)", false) {
             if live_revision.get() == revision {
@@ -1186,12 +1252,21 @@ async fn native_home_palette_results(
                         rendered.set(revision);
                         waiting.set(false);
                         if pending_enter.get() {
+                            let new_tab = pending_new_tab.get();
                             pending_enter.set(false);
+                            pending_new_tab.set(false);
                             let _destination = selected_href.get();
                             if !_destination.is_empty() {
                                 live_open.set(false);
                                 live_revision.increment();
-                                raw!("window.location.assign(${_destination}.toString());", ());
+                                if new_tab {
+                                    raw!(
+                                        "window.open(${_destination}.toString(), '_blank', 'noopener');",
+                                        ()
+                                    );
+                                } else {
+                                    raw!("window.location.assign(${_destination}.toString());", ());
+                                }
                             }
                         }
                     }
@@ -1200,7 +1275,8 @@ async fn native_home_palette_results(
         }
     });
     Ok(view! {
-        <nav class="native-home-palette-results" aria-label="Project search results" data-native-home-connected=(if connected { "true" } else { "false" }) @mount=(mounted)>
+        <nav class="native-home-palette-results" aria-label="Project search results" data-native-home-connected=(if connected { "true" } else { "false" })
+            data-native-palette-revision=(rendered_revision) data-native-palette-count=(rendered_count) @mount=(mounted)>
             if allowed && rows.is_empty() { <p>(empty_text)</p> }
             #[key(destination.clone())]
             for (index, (destination, title, identifier, project_name, icon)) in rows.into_iter().enumerate() {
@@ -1217,6 +1293,7 @@ async fn native_home_palette_results(
                         click_open.set(false);
                         click_revision.increment();
                         click_enter.set(false);
+                        click_new_tab.set(false);
                     })>
                     (super::icons::project_icon(cx, Some(icon), 16))
                     <span class="native-home-palette-row-copy"><span>(title)</span>
