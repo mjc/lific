@@ -29,7 +29,7 @@ use topcoat_router::{
     router,
 };
 
-use crate::{ConnectedRender, RUNTIME_PROTOCOL, SignalValues};
+use super::{ConnectedRender, RUNTIME_PROTOCOL, SignalValues};
 
 /// The action requested when an application's socket lifetime completes.
 #[derive(Debug, PartialEq, Eq)]

@@ -4,13 +4,13 @@
 
 use std::{sync::Arc, time::Duration};
 
+use super::super::runtime::SocketPolicy;
 use axum::http::{Request, StatusCode, header};
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream,
     tungstenite::{Message, client::IntoClientRequest},
 };
-use topcoat::runtime::SocketPolicy;
 
 use super::home_fixture;
 use crate::{

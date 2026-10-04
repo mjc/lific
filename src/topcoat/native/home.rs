@@ -2,10 +2,11 @@
 
 use topcoat::{
     context::{Cx, app_context},
-    runtime::{Signal, connected, shard, signal},
+    runtime::{Signal, shard, signal},
     view::{BoxView, View, ViewExt, view},
 };
 
+use super::super::runtime::connected;
 use super::{
     home_data, home_live, home_local, home_model, home_sections, home_shell, home_view,
     transport::mounted_url,

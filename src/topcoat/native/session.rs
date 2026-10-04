@@ -1,10 +1,9 @@
 //! Session outcomes shared by native pages and connected reads.
 
+use super::super::runtime::{SocketLifetime, SocketRetirement, connected_untracked};
 use topcoat::{
     context::{Cx, app_context},
-    runtime::{
-        Event, SocketLifetime, SocketRetirement, connected_untracked, expr, procedure, signal,
-    },
+    runtime::{Event, expr, procedure, signal},
     view::Attributes,
 };
 

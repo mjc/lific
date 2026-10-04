@@ -16,26 +16,25 @@ the current HTTP cookie; connected shard credentials and stored token text
 cannot replace that baseline. Session and theme listeners belong to their
 rendered scopes and are removed when those scopes are disposed.
 
-The connected Home content scope subscribes to session revocations before
-reading its authorization snapshot. A matching revocation retires that scope
-and reloads Home through the current HTTP cookie. Unrelated revocations do not
-interrupt it. The receiver follows the content scope; document teardown also
-releases the physical sockets.
+Each private native socket owns its authority lifetime from admission, before
+its first render. Matching revocations and the existing 60-second database
+revalidation retire the connection; unrelated revocations leave it open.
+Rerenders do not add authority receivers or quota slots. Home's content-event
+subscription follows its render scope. Sibling redirects cause one fresh Home
+request using the current browser cookie.
 
-Private native sockets share the existing REST socket quotas. Admission checks
-the current credentials before upgrading, and a pinned Rust runtime patch
-retains the request context for the entire physical connection. Idle sockets
-consume quota before their first render; rerenders do not acquire another slot.
-Published routes bypass this private admission boundary and still need a
-separate native socket policy.
+Private native sockets share the existing REST per-user and global quotas.
+Published admission checks supported routes and current publication, then claims
+only a shared global slot without resolving cookies or operator identity.
+Full native published application rendering remains separate work.
 
 Home's native palette resolves qualified and bare issue references through
 shared Rust services, with per-result authorization and personal project order.
 Before publishing a query, a current-cookie check compares the rendered account
 and admin flag. An owner change reloads Home; a missing session reaches login.
 Rust owns selection, query reset, and pending Enter state. Project search remains
-available. Other search domains, modifier+Enter, shard failure recovery, and
-delayed-result browser proofs remain open.
+available. Reference navigation, pending Enter ownership and query revision
+have real browser coverage. Other search domains remain unported.
 
 Reusable native issue controls cover title, exact description text, status,
 priority, sequence conflicts, draft retention, and retries. Their production
@@ -46,10 +45,10 @@ a native Markdown composer.
 Other route families still use browser JavaScript controllers and the existing
 JSON API. The full native port remains unfinished. Home still needs project
 management and grouping, sidebar resizing, the complete command palette and
-appearance preferences, live refresh, and reconnect proofs. Idle revocation
-still needs coverage across the remaining route families. Home's content-owned
-idle revocation has browser coverage at root and both mounted paths. Paired
-screenshots cover selected Home geometry and theme details; they do not
+appearance preferences. Native Home live refresh, reconnect, membership loss
+and idle session retirement have real browser coverage at root and both mounted
+paths. Remaining route families need their own recovery and authority tests.
+Paired screenshots cover selected Home geometry and theme details; they do not
 establish complete visual parity.
 
 ## Target data flow
@@ -62,9 +61,9 @@ the server. Neither components nor procedures should make loopback HTTP calls.
 Topcoat 0.9.0 procedures and shards use framework-managed HTTP endpoints. This
 removes the frontend's dependency on the existing JSON API while retaining
 browser-server communication. File uploads/downloads still transfer bytes.
-Realtime updates need a prototype before choosing between the existing
-WebSocket and native streaming. Preserve reconnect, account isolation, and
-public-scope behavior whichever transport is used.
+Home live regions already read committed shared events over native sockets.
+Other route families must preserve reconnect, account isolation and public-scope
+behavior through their native transport.
 
 Reuse the same domain services and authorization as the external API. Keep
 REST available for its other clients. Extract shared behavior from handlers
@@ -88,11 +87,11 @@ scripts, stylesheets, vendored Markdown/diagram libraries, and the mascot are
 embedded with `include_str!` or `include_bytes!`. Checkout builds compile the
 interface and these assets into one binary.
 
-The native socket context-retention fix currently uses a pinned path patch.
-Cargo registry packaging excludes nested crates and removes patch declarations,
-so registry installation would lose that fix. Registry release remains gated on
-a dependency strategy that preserves the patched runtime. Checkout and Git
-installation builds retain it.
+The native socket driver and connection helpers live in `src/topcoat/runtime`.
+They compile into checkout and Cargo package builds using the same pinned
+registry framework types. No application Cargo patch is required. The standalone
+runtime tests use these same source files. Their MIT license and provenance are
+included in the package. CI verifies the packaged application build.
 
 Format Rust with `cargo fmt`. The macro formatter uses the pinned CLI:
 

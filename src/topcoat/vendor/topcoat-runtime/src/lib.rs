@@ -2,6 +2,7 @@
 
 mod arguments;
 mod bind_attribute;
+#[path = "../../../runtime/connection.rs"]
 mod connection;
 mod event_handler;
 mod expr;

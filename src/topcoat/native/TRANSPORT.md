@@ -158,38 +158,46 @@ documents, procedures, shard HTTP requests, and other socket protocols keep
 their existing dispatch.
 
 The existing Rust route parser identifies published `Public` scope before any
-private caller lookup. Those routes bypass this private admission boundary.
+private caller lookup. Runtime socket admission accepts only supported published
+routes after a fresh publication check, then acquires a global-only permit from
+the shared 1024-slot quota. Cookies and optional operator identity are not
+resolved for this scope. Missing, private, unpublished or unsupported routes
+return 404 before upgrade.
+
 Private requests resolve their current credentials through the existing caller,
-require a user, and acquire the same `RealtimeHub::SocketPermit` used by REST
-events sockets. Genuine configured private local-operator behavior remains in
-that caller; invalid or revoked credentials cannot select its fallback. A quota
-refusal returns HTTP 429 with the existing socket-limit JSON message. Admission
-does not grant project access; each native read and write keeps its own current
-authorization checks.
+require a user, and acquire the same per-user/global `RealtimeHub::SocketPermit`
+used by REST events sockets. Genuine configured private local-operator behavior
+remains in that caller; invalid or revoked credentials cannot select its
+fallback. Quota refusals return HTTP 429 with the existing socket-limit JSON
+message. Admission does not grant project access; every native read and write
+keeps its own current authorization checks.
 
-Pinned runtime `socket::accept` previously kept only copied headers and the
-verified peer in its `ConnectionTarget`. Request extensions did not survive as
-socket lifetime owners, and a live region could not account for a socket that
-had not sent its first render. The repository-owned pinned crate at
-`../vendor/topcoat-runtime` therefore has one generic Rust patch: `accept`
-clones its incoming `Cx`, moves the clone into its upgrade callback, and drops
-it explicitly after the raw `run` future completes. The admission layer passes
-a child context containing `Arc<SocketPermit>` into that callback. No permit is
-acquired by subsequent synthetic render requests. Disconnect ends the raw task;
-a failed upgrade drops its callback; both release the context and permit.
-Two sibling Home connections consume two physical socket slots.
+The generic socket driver and matching connected-render helpers live in
+`../runtime`. Both checkout and packaged applications compile those sources with
+registry signal, shard, procedure, router and view types. The standalone vendor
+runtime tests compile those same files. The packaged source includes its MIT
+license and upstream provenance. Admission runs before this socket layer; HTTP
+reruns continue through the registry runtime layer.
 
-The full pinned crate retains its MIT license and upstream provenance, with
-the exact patch and original file hashes in its README and
-`UPSTREAM-SHA256SUMS`. Its browser source and distribution are unchanged; the
-separately recorded application runtime asset remains unchanged by this patch.
+The driver retains the incoming `Cx` through the upgrade callback and raw socket
+future. Admission installs an `Arc<SocketPermit>` and, for private sockets, one
+request-owned authority lifetime. That lifetime captures its parent context
+before being installed on a child, avoiding a reference cycle. Revocation and
+the existing 60-second database revalidation run independently of renders and
+socket input. Home's content-event subscription belongs to its render; authority
+belongs to each physical page/palette connection.
 
-This private quota slice does not complete public credential isolation, a
-credential-free native public socket policy, raw idle socket credential
-retirement, streaming recovery, or the full native product port.
-Published application/domain requests
-need their separate Rust-driven credentials policy. Document navigation and
-static resources retain normal same-origin browser cookie behavior.
+Retirement cancels the pumps and aborts/awaits the active render before a bounded
+framework Redirect/close. The framework document runtime claims navigation once
+across sibling socket and HTTP redirects, preserving one fresh document request
+with the browser's current cookie. No permit is acquired by synthetic renders.
+Disconnect and failed upgrades release the captured context and permit.
+
+These admission and lifecycle guarantees do not complete native published
+application rendering or the full product port. Published domain reads and
+procedures still need their route-specific Rust scope and recovery contracts.
+Document navigation and static resources retain normal same-origin browser
+cookie behavior.
 
 ## Tests and integration scope
 

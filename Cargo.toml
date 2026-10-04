@@ -42,6 +42,10 @@ unused_async = "deny"
 # HTTP
 axum = { version = "0.8", features = ["json", "multipart", "ws"] }
 topcoat = { version = "=0.9.0", default-features = false, features = ["asset", "discover", "router", "runtime", "tower", "view"] }
+# Shared framework types used by the packaged native socket bridge.
+topcoat-core = "=0.9.0"
+topcoat-router = { version = "=0.9.0", features = ["websocket"] }
+topcoat-view = "=0.9.0"
 tokio = { version = "1", features = ["full"] }
 futures-util = "0.3"
 tower-http = { version = "0.6", features = ["cors", "compression-gzip", "compression-br"] }
@@ -196,7 +200,3 @@ strip = true
 inherits = "release"
 lto = true
 codegen-units = 1
-
-# Keep request resources alive for the native runtime socket task.
-[patch.crates-io]
-topcoat-runtime = { path = "src/topcoat/vendor/topcoat-runtime" }

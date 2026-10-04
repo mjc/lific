@@ -86,6 +86,8 @@ async fn deploy() -> Fixture {
         probe::router_builder()
             .route(topcoat_app::runtime_script)
             .runtime()
+            .layer(super::super::runtime::SocketLayer)
+            .layer(super::socket_admission::SocketAdmission)
             .app_context(state.clone()),
     );
     let task = tokio::spawn(async move {

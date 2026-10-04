@@ -19,6 +19,7 @@ pub(crate) mod palette;
 pub(crate) mod plans;
 pub(crate) mod project_settings;
 pub(crate) mod public;
+pub(crate) mod runtime;
 pub(crate) mod session;
 pub(crate) mod shell;
 pub(crate) mod sync;
