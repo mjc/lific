@@ -7,6 +7,15 @@ use crate::db::{
 
 #[tokio::test]
 async fn native_issue_detail_matches_pinned_master_geometry_and_phone_properties() {
+    compare_document(false).await;
+}
+
+#[tokio::test]
+async fn native_issue_detail_matches_pinned_master_computed_typography() {
+    compare_document(true).await;
+}
+
+async fn compare_document(typography_only: bool) {
     let fixture = home_fixture::fixture();
     {
         let conn = fixture.db.write().unwrap();
@@ -41,6 +50,9 @@ async fn native_issue_detail_matches_pinned_master_geometry_and_phone_properties
             .join("src/topcoat/native/browser_fixture.cjs"),
     );
     command.arg(std::env::var_os("LIFIC_SVELTE_SNAPSHOT").expect("Pinned master required"));
+    if typography_only {
+        command.arg("--typography-only");
+    }
     let result = tokio::time::timeout(std::time::Duration::from_secs(180), command.output()).await;
     server.abort();
     let output = result

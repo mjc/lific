@@ -7,8 +7,10 @@ const path = require('node:path');
 const {pathToFileURL} = require('node:url');
 const {mountedProxy, launchBrowser} = require(process.argv[4]);
 const upstream = new URL(process.argv[2]), token = process.argv[3], snapshot = process.argv[5];
-const output = path.join(require('node:os').tmpdir(),'lific-native-issue-detail');
 const fixtureTitle = 'Production issue initial title';
+const typographyOnly = process.argv[6] === '--typography-only';
+const output = path.join(require('node:os').tmpdir(), typographyOnly
+  ? 'lific-native-issue-typography' : 'lific-native-issue-detail');
 
 function measure(element) {
   const rect = element.getBoundingClientRect(), style = getComputedStyle(element);
@@ -76,6 +78,47 @@ test('native issue document matches pinned master composition at every mount',as
           // Capture both actual documents before the first parity assertion.
           await original.page.screenshot({path:path.join(output,`${name}-original.png`),fullPage:true});
           await native.page.screenshot({path:path.join(output,`${name}-native.png`),fullPage:true});
+          const typography = locator => locator.evaluate(element => {
+            const style=getComputedStyle(element);
+            return {fontFamily:style.fontFamily,fontSize:style.fontSize,
+              fontWeight:style.fontWeight,letterSpacing:style.letterSpacing};
+          });
+          const originalCrumbs=original.page.getByRole('navigation',{name:'Breadcrumb',exact:true});
+          const nativeCrumbs=native.page.getByRole('navigation',{name:'Breadcrumb',exact:true});
+          const pairs=[
+            ['current identifier',originalCrumbs.locator('[aria-current="page"]'),nativeCrumbs.locator('[aria-current="page"]')],
+            ['current identifier label',originalCrumbs.locator('[aria-current="page"] > span'),nativeCrumbs.locator('[aria-current="page"] > [data-label]')],
+            ['issue title',original.page.getByRole('button',{name:fixtureTitle,exact:true}),native.page.getByRole('button',{name:fixtureTitle,exact:true})],
+            ['header status label',original.page.getByTitle('Change status',{exact:true}).locator('span').first(),
+              native.page.getByTitle('Change status',{exact:true}).locator(':scope > span[data-status]')],
+            ['Preview control',original.page.getByRole('radio',{name:'Preview',exact:true}),native.page.getByRole('radio',{name:'Preview',exact:true})],
+            ['Export control',original.page.getByRole('button',{name:'Export',exact:true}),native.page.getByRole('button',{name:'Export',exact:true})],
+          ];
+          if(mode==='desktop'){
+            pairs.push(['project identifier',originalCrumbs.getByRole('link',{name:'ACC',exact:true}),nativeCrumbs.getByRole('link',{name:'ACC',exact:true})]);
+            pairs.push(['Issues label',originalCrumbs.getByRole('link',{name:'Issues',exact:true}),nativeCrumbs.getByRole('link',{name:'Issues',exact:true})]);
+          }
+          // Persist every actual computed rule before the first font or geometry
+          // assertion. The same platform/browser evaluates both documents.
+          const fonts={originalEnvironment:await original.page.evaluate(()=>({userAgent:navigator.userAgent,fonts:document.fonts.status})),
+            nativeEnvironment:await native.page.evaluate(()=>({userAgent:navigator.userAgent,fonts:document.fonts.status})),values:{}};
+          for(const [label,reference,current]of pairs){
+            assert.equal(await reference.count(),1,`Pinned ${label} is uniquely identified.`);
+            assert.equal(await current.count(),1,`Native ${label} is uniquely identified.`);
+            fonts.values[label]={original:await typography(reference),native:await typography(current)};
+          }
+          fs.writeFileSync(path.join(output,`${name}-typography.json`),JSON.stringify(fonts,null,2));
+          const masterMono=fonts.values['current identifier'].original;
+          assert.ok(masterMono.fontFamily.includes('Cascadia Code')&&masterMono.fontFamily.includes('Fira Code'),
+            'Pinned font-mono includes both named platform fallbacks.');
+          assert.equal(masterMono.fontSize,'13px','Pinned breadcrumb uses text-body-sm.');
+          assert.equal(masterMono.fontWeight,'500','Pinned breadcrumb uses font-medium.');
+          for(const [label,value]of Object.entries(fonts.values))
+            assert.deepEqual(value.native,value.original,`${label} computed font family/size/weight/letter spacing`);
+          if (typographyOnly) {
+            assert.deepEqual(errors,[], 'Actual documents render without browser errors.');
+            return;
+          }
           const titleOriginal = original.page.getByRole('button',{name:fixtureTitle,exact:true});
           const titleNative = native.page.getByRole('button',{name:fixtureTitle,exact:true});
           const geometry = async (session,nativeView) => {

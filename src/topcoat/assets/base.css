@@ -4,7 +4,7 @@
   color-scheme: light dark;
   font-family: "DM Sans", -apple-system, BlinkMacSystemFont, sans-serif;
   line-height: 1.5;
-  --tc-font-display: "Space Grotesk", "DM Sans", sans-serif;
+  --tc-font-display: "Space Grotesk", "DM Sans", -apple-system, sans-serif;
   /* Existing route styles consume the Svelte token names. */
   --bg: var(--tc-bg);
   --bg-subtle: var(--tc-bg-subtle);
