@@ -36,7 +36,11 @@ SOFTWARE.
   This supports the untagged arrays emitted by Rust tuple serialization.
 - Lific lifecycle patch: prepend the generic scoped mount helper, then defer
   `@mount` factories and callbacks through it at the event-handler setup site.
+- Lific connected-render patch: select requested connections in `P.refresh()`
+  while loading, handshaking, or reconnecting; route connection-required children
+  to an ancestor with an existing or requested connection. Opening the socket
+  reads fresh inputs through the existing upstream handler.
 - All remaining upstream framework code is unchanged. Removing the 27
-  prepended helper/comment lines and reversing these six substitutions
+  prepended helper/comment lines and reversing these seven substitutions
   reproduces the unmodified upstream bytes. See `../native/TRANSPORT.md`.
-- Patched file SHA-256: `ce7de79419d3149d66e1c8ab1c54515e7b2263ab259d01711f8bf1c0b4da495c`
+- Patched file SHA-256: `9dcdabbd37ce7e866cfab175d5be35e5bd90e9884404cd67dd8bacf40398d5a7`

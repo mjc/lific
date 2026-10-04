@@ -55,6 +55,10 @@ mod topcoat_app {
             .map_or_else(|| uri.path(), |path| path.as_str());
         let route = super::topcoat_frontend::shell::ParsedRoute::parse(route_target);
         let title = route.page.title();
+        let native_home = matches!(route.page, super::topcoat_frontend::shell::Page::Home);
+        if native_home {
+            super::topcoat_frontend::native::home::authorize(cx)?;
+        }
         let scope = match (route.layout, route.project) {
             (super::topcoat_frontend::shell::Layout::Public, Some(project)) => {
                 super::topcoat_frontend::session::Scope::public(project)
@@ -65,8 +69,11 @@ mod topcoat_app {
             route.layout,
             super::topcoat_frontend::shell::Layout::Private
         );
-        let session_attributes =
-            super::topcoat_frontend::session::bootstrap_attributes(cx, &scope, require_session);
+        let session_attributes = if native_home {
+            topcoat::view::Attributes::with_capacity(0)
+        } else {
+            super::topcoat_frontend::session::bootstrap_attributes(cx, &scope, require_session)
+        };
         Ok(view! {
             <!DOCTYPE html>
             <html lang="en" data-topcoat-runtime-prefix=(trusted_mount(cx))>
@@ -81,6 +88,7 @@ mod topcoat_app {
                     <meta name="theme-color" content="#fafcfb" media="(prefers-color-scheme: light)">
                     <meta name="theme-color" content="#1c221f" media="(prefers-color-scheme: dark)">
                     <link rel="stylesheet" href=(mounted_url(cx, "/__topcoat-app.css"))>
+                    if !native_home {
                     <link rel="stylesheet" href=(mounted_url(cx, super::topcoat_frontend::shell::STYLESHEET_PATH))>
                     <link rel="stylesheet" href=(mounted_url(cx, super::topcoat_frontend::shell::mobile::STYLESHEET_PATH))>
                     <link rel="stylesheet" href=(mounted_url(cx, super::topcoat_frontend::shell::projects::STYLESHEET_PATH))>
@@ -103,7 +111,9 @@ mod topcoat_app {
                     <link rel="stylesheet" href=(mounted_url(cx, super::topcoat_frontend::modules::STYLESHEET_PATH))>
                     <link rel="stylesheet" href=(mounted_url(cx, super::topcoat_frontend::activity_insights::STYLESHEET_PATH))>
                     <link rel="stylesheet" href=(mounted_url(cx, super::topcoat_frontend::public::STYLESHEET_PATH))>
+                    }
                     <script type="module" src=(mounted_url(cx, "/__topcoat-runtime.js"))></script>
+                    if !native_home {
                     <script defer="defer" src=(mounted_url(cx, super::topcoat_frontend::shell::ROUTE_SCRIPT_PATH))></script>
                     <script defer="defer" src=(mounted_url(cx, super::topcoat_frontend::session::SCRIPT_PATH))></script>
                     <script defer="defer" src=(mounted_url(cx, super::topcoat_frontend::attachments::SCRIPT_PATH))></script>
@@ -131,6 +141,7 @@ mod topcoat_app {
                     <script defer="defer" src=(mounted_url(cx, super::topcoat_frontend::activity_insights::SCRIPT_PATH))></script>
                     <script defer="defer" src=(mounted_url(cx, super::topcoat_frontend::public::SCRIPT_PATH))></script>
                     <script type="module" src=(mounted_url(cx, "/__topcoat-preferences.js"))></script>
+                    }
                 </head>
                 <body data-lific-base-path=(trusted_mount(cx)) (session_attributes)>
                     (slot)
@@ -141,7 +152,7 @@ mod topcoat_app {
 
     #[page("/")]
     async fn shell_home(cx: &topcoat::context::Cx) -> Result<impl View> {
-        shell_page(cx)
+        super::topcoat_frontend::native::home::screen(cx)
     }
 
     #[page("/{*path}")]
@@ -161,7 +172,7 @@ mod topcoat_app {
         use super::topcoat_frontend::shell::{Layout, Page};
         let content = match route.layout {
             Layout::Private => match route.page {
-                Page::Home => super::topcoat_frontend::dashboard::home(cx),
+                Page::Home => return super::topcoat_frontend::native::home::screen(cx),
                 Page::Overview => route.project.map_or_else(
                     || super::topcoat_frontend::shell::placeholder(cx, &route),
                     |identifier| {
@@ -307,11 +318,14 @@ mod topcoat_app {
     #[route(GET "/__topcoat-app.css")]
     async fn stylesheet() -> Result<Response> {
         let css = format!(
-            "{}\n{}\n{}\n{}",
+            "{}\n{}\n{}\n{}\n{}\n{}\n{}",
             include_str!("topcoat/assets/base.css"),
             super::topcoat_frontend::controls::STYLESHEET,
             super::topcoat_frontend::shell::STYLESHEET,
-            super::topcoat_frontend::native::home_view::STYLESHEET
+            super::topcoat_frontend::native::home_view::STYLESHEET,
+            super::topcoat_frontend::native::home_sections::STYLESHEET,
+            super::topcoat_frontend::native::home_shell::STYLESHEET,
+            super::topcoat_frontend::native::home::STYLESHEET
         );
         Ok(Response::builder()
             .header("content-type", "text/css; charset=utf-8")
@@ -3443,7 +3457,6 @@ mod public_surface_tests {
         let d = deploy();
         for path in [
             "/login",
-            "/",
             "/LIF/issues",
             "/LIF/issues/LIF-1",
             "/LIF/pages",

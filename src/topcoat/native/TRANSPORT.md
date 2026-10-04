@@ -8,9 +8,9 @@ There is no request-aware URL attribute visitor in the pinned view renderer.
 
 The vendored framework runtime therefore has one transport helper and three
 changed call sites: procedure requests, shard requests, and shard socket URLs.
-It also has the tuple and mount lifecycle patches described below. The rest of the
-upstream runtime is preserved. Page reruns already use the current mounted
-browser location and are unchanged.
+It also has the tuple, mount lifecycle, and connected-render patches described
+below. The rest of the upstream runtime is preserved. Page request URLs already
+use the current mounted browser location.
 
 ## Rust document boundary
 
@@ -55,7 +55,7 @@ continue to use their existing framework conversion. Stored procedure URLs
 remain logical. Tagged Vec, Array, and Slice surrogates retain their existing
 implementations.
 
-Together these patches prepend 27 helper/comment lines and change six
+Together these patches prepend 27 helper/comment lines and change seven
 sites in the pinned asset. To reconstruct upstream, remove those first 27
 lines and reverse the following substitutions:
 
@@ -66,6 +66,7 @@ lines and reverse the following substitutions:
 | `function V(t,e){if(Array.isArray(t))return topcoatHydrateTuple(t,e);if(t!==null)` | `function V(t,e){if(t!==null)` | 1 |
 | `function f(t){if(t==null)return null;if(Array.isArray(t))return t.map(f);` | `function f(t){if(t==null)return null;` | 1 |
 | ``let r=e.name.substring(ke.length);if(r==="mount"){topcoatMount(t,()=>T(e.value,`event @${r}`)(n.runtime.context),n);return}let o=T(e.value,`event @${r}`)(n.runtime.context);`` | ``let r=e.name.substring(ke.length),o=T(e.value,`event @${r}`)(n.runtime.context);`` | 1 |
+| `refresh(){if(this.isDisposed)return Promise.resolve();if(this.connection!==null)return this.connection.requestRun(),Promise.resolve();if(this.requiresConnection){for(let n of this.ancestors())if(n.connection!==null\|\|n.requiresConnection)return n.refresh();return this.connectIfRequired(),Promise.resolve()}` | `refresh(){if(this.connection?.isOpen)return this.connection.requestRun(),Promise.resolve();if(this.requiresConnection){for(let n of this.ancestors())if(n.connection?.isOpen)return n.refresh()}` | 1 |
 
 The reconstructed bytes match the upstream SHA-256 recorded in
 `../assets/runtime.LICENSE.txt`.
@@ -93,6 +94,24 @@ them; they confer no authority. Rust owns parsing, projections and rendering.
 This hook does not cancel asynchronous work that a callback has already
 started. Timers, global subscriptions and their cleanup remain separate work.
 
+## Connected render selection
+
+The pinned render unit selects a WebSocket only after it opens. Signal changes
+while document loading delays the connection, during its handshake, or during
+reconnect therefore fall back to HTTP, even for content requiring a connection.
+An initialization mount callback can trigger that fallback before the socket
+starts.
+
+The render unit's `refresh()` now selects an existing connection regardless of
+its socket state. A connection-required child delegates to an ancestor with
+either an existing connection or a connection marker. Otherwise it schedules
+its own required connection and waits without an HTTP render. The existing
+socket open handler reads the current render inputs on every initial connection
+and reconnect; intermediate updates need no separate queue or saved arguments.
+Disposed units stop immediately, and the existing lifetime abort signal cancels
+load listeners, socket ownership, and reconnect timers. Shards without a
+connection requirement continue to use their existing HTTP transport.
+
 ## Tests and integration scope
 
 `transport.browser.test.cjs` loads the actual vendored runtime in headless
@@ -103,6 +122,10 @@ absolute URLs; same-origin cookies; and an unchanged global `fetch` function.
 The tuple case covers indexing and explicit dehydration, nested tuple values
 inside tagged collections, exact large integer values, returned procedures,
 and passing hydrated or constructed tuples back to a procedure.
+The connected-render case holds document loading and socket handshakes for both
+own and ancestor connections. It proves that mount and later signal updates
+wait without HTTP fallback, that initial open and reconnect send the freshest
+inputs, and that HTTP-only shards continue to POST their current arguments.
 The reconstruction test reverses all declared substitutions and checks the
 exact pinned upstream SHA-256. Lifecycle browser tests cover later signal
 declarations, one refresh with a persistent sentinel, reused DOM elements,
