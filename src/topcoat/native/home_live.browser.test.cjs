@@ -47,7 +47,7 @@ async function waitClosed(socket) {
 }
 
 test(`native Home live production ${scenario}`, async t => {
-  assert.ok(['live', 'reconnect', 'membership', 'late_auth', 'burst', 'continuous', 'hidden_projection', 'render_failure'].includes(scenario));
+  assert.ok(['live', 'reconnect', 'membership', 'late_auth', 'burst', 'continuous', 'hidden_projection', 'render_failure', 'owner_retirement'].includes(scenario));
   const browser = await launchBrowser();
   try {
     for (const [index, prefix] of ['', '/app', '/ACC'].entries()) {
@@ -237,6 +237,77 @@ test(`native Home live production ${scenario}`, async t => {
             return;
           }
 
+          if (scenario === 'owner_retirement') {
+            await page.clock.install();
+            await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
+            const queuedTitle = `Queued before parent retirement ${index}`;
+            const applied = await page.evaluate(() => window.__homeLiveAppliedFrames.length);
+            await control('edit', {title: queuedTitle, hidden: false});
+            await eventually(() => page.evaluate(before => window.__homeLiveAppliedFrames.slice(before)
+              .some(frame => frame.t === 'swap' && frame.html.includes('nativeHomeRealtime')), applied),
+              'The genuine publication arms the old owner quiet/max timers.');
+            await page.evaluate(() => {window.__retiredHomeOwner = document.querySelector('[data-native-home]');});
+            const parentRecent = `Fresh recents on new owner ${index}`;
+            await storeRecent(page, parentRecent);
+            const parentResponse = await page.evaluate(async () => {
+              const detail = {};
+              window.dispatchEvent(new CustomEvent('topcoat:dev-runtime:v1', {detail}));
+              if (!detail.runtime) throw new Error('The actual public parent refresh seam is required.');
+              const response = await detail.runtime.request(new AbortController().signal);
+              if (!response.ok || response.redirected) throw new Error(`Actual parent render failed: ${response.status}`);
+              const parsed = new DOMParser().parseFromString(await response.text(), 'text/html');
+              detail.runtime.replace(() => document.body.replaceChildren(
+                ...Array.from(parsed.body.childNodes, node => document.importNode(node, true))));
+              return {status: response.status, type: response.headers.get('content-type')};
+            });
+            assert.equal(parentResponse.status, 200);
+            assert.match(parentResponse.type, /^text\/html/);
+            await work.getByText(queuedTitle, {exact: true}).waitFor();
+            await work.locator('[data-home-section="recents"]').getByText(parentRecent, {exact: true}).waitFor();
+            await eventually(() => page.evaluate(() =>
+              document.querySelector('.tc-native-home__page')?.getAttribute('data-native-home-connected') === 'true' &&
+              document.querySelector('.native-home-palette-results')?.getAttribute('data-native-home-connected') === 'true'),
+              'The actual replacement content and palette connect while the browser clock is paused.');
+            await resources(2, 2);
+            assert.deepEqual(await page.evaluate(() => ({
+              distinct: window.__retiredHomeOwner !== document.querySelector('[data-native-home]'),
+              oldConnected: window.__retiredHomeOwner.isConnected,
+              oldCallback: typeof window.__retiredHomeOwner.nativeHomeRun,
+              newCallback: typeof document.querySelector('[data-native-home]').nativeHomeRun,
+            })), {distinct: true, oldConnected: false, oldCallback: 'undefined', newCallback: 'function'});
+            const baseline = (await control('count')).homeProjectionReads;
+            await page.clock.runFor(5000);
+            assert.equal((await control('count')).homeProjectionReads, baseline,
+              'Retired quiet/max deadlines cannot act on the replacement owner in the same Runtime.');
+            await storeRecent(page, `Fresh during replacement burst ${index}`);
+            let finalTitle;
+            for (let step = 0; step < 21; step++) {
+              const before = await page.evaluate(() => window.__homeLiveAppliedFrames.length);
+              finalTitle = `Replacement owner continuous ${index}-${step}`;
+              await control('edit', {title: finalTitle, hidden: false});
+              await eventually(() => page.evaluate(before => window.__homeLiveAppliedFrames.slice(before)
+                .some(frame => frame.t === 'swap' && frame.html.includes('nativeHomeRealtime')), before),
+                'The new owner processes the genuine publication.');
+              if (step >= 19) assert.ok((await control('count')).homeProjectionReads > baseline,
+                'The new owner has its own independent five-second maximum deadline.');
+              if (step < 20) await page.clock.runFor(300);
+            }
+            const finalRecent = `Fresh replacement trailing recents ${index}`;
+            await storeRecent(page, finalRecent);
+            await page.clock.runFor(750);
+            await work.getByText(finalTitle, {exact: true}).waitFor();
+            await work.locator('[data-home-section="recents"]').getByText(finalRecent, {exact: true}).waitFor();
+            assert.equal((await control('count')).homeProjectionReads, baseline + 2,
+              'Replacement owner performs one maximum-wait projection and one final quiet projection.');
+            assert.equal(await page.evaluate(() => window.__homeLiveDocument), document);
+            assert.equal(requests.filter(request => request.isNavigationRequest()).length, documentRequests);
+            assert.ok(requests.every(request => !new URL(request.url()).pathname.split('/').includes('api')));
+            assert.ok(requests.every(request => request.method() !== 'POST' || !new URL(request.url()).pathname.endsWith('/__native_home/content')));
+            assert.deepEqual(errors, []);
+            await resources(2, 2);
+            return;
+          }
+
           if (scenario === 'render_failure') {
             // Genuine server read failure, not a synthetic socket frame. Sessions
             // and caller rows are restored intact before the recovery attempt.
@@ -409,4 +480,11 @@ async function assertEventually(predicate) {
   const deadline = Date.now() + 7000;
   while (!predicate() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
   assert.ok(predicate(), 'The actual current content connection reports the expected server error frame.');
+}
+
+async function storeRecent(page, title) {
+  await page.evaluate(({identifier, title}) => localStorage.setItem('lific_recents', JSON.stringify([
+    {type: 'issue', routeId: identifier, identifier, title,
+      project: identifier.replace(/-[0-9]+$/, ''), ts: Date.now()},
+  ])), {identifier: fixture.identifier, title});
 }
