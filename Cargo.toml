@@ -168,6 +168,8 @@ windows-sys = { version = "0.61", features = [
 embed-manifest = "1.5"
 
 [dev-dependencies]
+# Inspect and bound actual accepted TCP sockets in backpressure proofs.
+socket2 = "0.6"
 hyper = "1"
 assert_cmd = "2"
 predicates = "3"

@@ -28,6 +28,10 @@ enum Control {
         title: String,
         hidden: bool,
     },
+    ReaderFault {
+        id: usize,
+        enabled: bool,
+    },
     Count {
         id: usize,
     },
@@ -103,6 +107,7 @@ async fn browser(scenario: &str) {
         String::from_utf8_lossy(&bytes).into_owned()
     });
     let mut output = String::new();
+    let mut reader_fault = false;
     let result = tokio::time::timeout(Duration::from_secs(90), async {
         while let Some(line) = stdout.next_line().await.unwrap() {
             if let Some(message) = line.strip_prefix("@lific-fixture:home-live:") {
@@ -124,6 +129,17 @@ async fn browser(scenario: &str) {
                         assert_eq!(event.event, RealtimeEvent::IssueUpdated {
                             project_id: issue.project_id, issue_id: issue.id,
                         });
+                        id
+                    }
+                    Control::ReaderFault { id, enabled } => {
+                        assert_ne!(reader_fault, enabled);
+                        let conn = fixture.db.write().unwrap();
+                        conn.execute_batch(if enabled {
+                            "ALTER TABLE users RENAME TO home_fixture_failed_users"
+                        } else {
+                            "ALTER TABLE home_fixture_failed_users RENAME TO users"
+                        }).unwrap();
+                        reader_fault = enabled;
                         id
                     }
                     Control::Count { id } => id,
@@ -166,13 +182,13 @@ async fn browser(scenario: &str) {
                         id
                     }
                 };
-                let title_rows = match crate::services::home::project_activity(&fixture.db, &viewer_identity, visible.project_id) {
+                let title_rows = if reader_fault { 0 } else { match crate::services::home::project_activity(&fixture.db, &viewer_identity, visible.project_id) {
                     Ok(feed) => feed.items.iter().filter(|activity|
                         activity.entity_id == visible.id && activity.field.as_deref() == Some("title")
                     ).count(),
                     Err(crate::error::LificError::Forbidden(_)) => 0,
                     Err(error) => panic!("fixture activity read failed: {error}"),
-                };
+                } };
                 let response = serde_json::json!({
                     "id": id,
                     "sockets": fixture.realtime.socket_count(viewer.id) + fixture.realtime.socket_count(admin.id),
@@ -181,6 +197,7 @@ async fn browser(scenario: &str) {
                     "receivers": fixture.realtime.revocation_receiver_count(),
                     "eventReceivers": fixture.realtime.event_receiver_count(),
                     "titleRows": title_rows,
+                    "homeProjectionReads": fixture.home_snapshot_reads.count(),
                 });
                 stdin.write_all(format!("{response}\n").as_bytes()).await.unwrap();
             } else {
@@ -222,4 +239,24 @@ async fn native_home_live_membership_loss_erases_previously_visible_home_body() 
 async fn native_home_live_expired_bound_account_recovers_replacement_cookie_without_revocation_broadcast()
  {
     browser("late_auth").await;
+}
+
+#[tokio::test]
+async fn native_home_live_real_edit_burst_waits_for_quiet_then_renders_one_snapshot() {
+    browser("burst").await;
+}
+
+#[tokio::test]
+async fn native_home_live_continuous_real_edits_refresh_within_five_seconds() {
+    browser("continuous").await;
+}
+
+#[tokio::test]
+async fn native_home_hidden_publication_checks_authority_without_reading_home_projection() {
+    browser("hidden_projection").await;
+}
+
+#[tokio::test]
+async fn native_home_failed_connected_render_preserves_body_and_recovers_on_focus() {
+    browser("render_failure").await;
 }

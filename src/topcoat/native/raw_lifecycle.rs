@@ -5,7 +5,10 @@
 use std::{sync::Arc, time::Duration};
 
 use super::super::runtime::SocketPolicy;
-use axum::http::{Request, StatusCode, header};
+use axum::{
+    http::{Request, StatusCode, header},
+    serve::ListenerExt,
+};
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream,
@@ -74,6 +77,17 @@ impl Fixture {
         listener.bind("127.0.0.1:0".parse().unwrap()).unwrap();
         let listener = listener.listen(64).unwrap();
         let address = listener.local_addr().unwrap();
+        let listener = listener.tap_io(move |stream| {
+            if let Some(bytes) = send_buffer {
+                let socket = socket2::SockRef::from(&*stream);
+                socket.set_send_buffer_size(bytes as usize).unwrap();
+                let actual = socket.send_buffer_size().unwrap();
+                assert!(
+                    actual > 0 && actual <= bytes as usize * 2,
+                    "bounded accepted sender buffer: {actual}"
+                );
+            }
+        });
         let app = super::admission_contract::mounted(app);
         let server = tokio::spawn(async move {
             axum::serve(

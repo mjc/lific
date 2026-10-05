@@ -47,7 +47,7 @@ export abstract class RenderUnit implements ConnectionTarget {
 		this.contentScope = new Scope(this.lifetime, runtime, this);
 		this.requestController = new RenderRequest(
 			this.lifetime.abortSignal,
-			(error) => runtime.reportError(error),
+			(error) => this.reportError(error),
 		);
 	}
 
@@ -104,8 +104,18 @@ export abstract class RenderUnit implements ConnectionTarget {
 	/** Collects the fields to send with a render request. */
 	abstract renderInputs(): object;
 
+	/** DOM owner for a scoped render failure notification. */
+	protected failureTarget(): EventTarget | null {
+		return document;
+	}
+
 	reportError(error: unknown): void {
 		this.runtime.reportError(error);
+		if (this.isDisposed) return;
+		this.failureTarget()?.dispatchEvent(new CustomEvent("topcoat:render-error", {
+			bubbles: true,
+			detail: { path: this.url() },
+		}));
 	}
 
 	/** Returns the units enclosing this one, innermost first. */

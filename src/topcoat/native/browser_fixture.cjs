@@ -27,8 +27,20 @@ async function launchVisibilityBrowser() {
     const profile = server.process().spawnargs.find(arg => arg.startsWith('--user-data-dir='));
     assert.ok(profile, 'Playwright owns the temporary Chrome profile.');
     const activePort = path.join(profile.slice('--user-data-dir='.length), 'DevToolsActivePort');
-    const [port] = (await require('node:fs/promises').readFile(activePort, 'utf8')).split('\n');
-    assert.match(port, /^[0-9]+$/);
+    // Chrome's transport can be ready before its discovery file is committed.
+    const deadline = performance.now() + 15000;
+    let port;
+    while (port === undefined) {
+      try {
+        const first = (await require('node:fs/promises').readFile(activePort, 'utf8')).split('\n')[0];
+        if (/^[0-9]+$/.test(first)) port = first;
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+      }
+      if (port !== undefined) break;
+      assert.ok(performance.now() < deadline, `Chrome did not publish its DevTools port: ${activePort}`);
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
     browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`, {noDefaults: true});
     const context = browser.contexts()[0];
     assert.ok(context, 'Actual default context preserves real tab visibility.');

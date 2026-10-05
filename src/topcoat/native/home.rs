@@ -28,15 +28,15 @@ fn authorized_snapshot(cx: &Cx) -> topcoat::Result<home_data::Snapshot> {
 
 pub(crate) fn screen(cx: &Cx) -> topcoat::Result<BoxView<'_>> {
     let snapshot = authorized_snapshot(cx)?;
-    let initialized = signal(cx, || false);
     let inputs = signal(cx, String::new);
+    let refresh_revision = signal(cx, || 0_usize);
     let palette_open = signal(cx, || false);
     let content_palette = palette_open.clone();
     let content = view! { cx =>
         <section data-native-home="" class="tc-native-home"
-            (super::browser_inputs::mount(cx, initialized, inputs.clone(), "lific_recents".into()))>
+            (super::home_refresh::mount(cx, inputs.clone(), refresh_revision.clone()))>
             <span hidden="hidden" (super::bookmark::mount(cx))></span>
-            native_home_content(browser_inputs: $(inputs.get()), palette_open: content_palette)
+            native_home_content(browser_inputs: $(inputs.get()), refresh_revision: $(refresh_revision.get()), palette_open: content_palette)
         </section>
     }
     .boxed();
@@ -52,8 +52,10 @@ pub(crate) fn screen(cx: &Cx) -> topcoat::Result<BoxView<'_>> {
 async fn native_home_content(
     cx: &Cx,
     browser_inputs: String,
+    refresh_revision: usize,
     palette_open: Signal<bool>,
 ) -> topcoat::Result<impl View> {
+    let _ = refresh_revision;
     // Subscribe before reading so an edit committed during the snapshot cannot
     // be missed between the initial read and the live content lifetime.
     let events = app_context::<crate::realtime::RealtimeHub>(cx).subscribe();

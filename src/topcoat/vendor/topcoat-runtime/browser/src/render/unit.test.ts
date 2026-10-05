@@ -896,3 +896,64 @@ it("a re-run re-evaluates the connection requirement from the new content", asyn
 	await fetchAndReplace();
 	expect(shard.requiresConnection).toBe(true);
 });
+
+it("render failure notification bubbles from the shard comment parent and retains logging", () => {
+	const { runtime, shard } = mountShard("<p>retained</p>");
+	const logged = vi.spyOn(runtime, "reportError").mockImplementation(() => {});
+	const notifications: CustomEvent[] = [];
+	const listener = (event: Event) => notifications.push(event as CustomEvent);
+	document.addEventListener("topcoat:render-error", listener);
+	try {
+		const error = new Error("genuine render failure");
+		shard.reportError(error);
+		expect(logged).toHaveBeenCalledWith(error);
+		expect(notifications).toHaveLength(1);
+		expect(notifications[0].target).toBe(document.body);
+		expect(notifications[0].detail).toEqual({ path: "/shards/1" });
+		shard.dispose();
+		shard.reportError(error);
+		expect(notifications).toHaveLength(1);
+	} finally {
+		document.removeEventListener("topcoat:render-error", listener);
+		runtime.page.dispose();
+	}
+});
+
+it("page render failure notification belongs to document", () => {
+	const runtime = new Runtime();
+	vi.spyOn(runtime, "reportError").mockImplementation(() => {});
+	const listener = vi.fn();
+	document.addEventListener("topcoat:render-error", listener);
+	try {
+		runtime.page.reportError(new Error("page failure"));
+		expect(listener).toHaveBeenCalledOnce();
+		const event = listener.mock.calls[0][0] as CustomEvent;
+		expect(event.target).toBe(document);
+		expect(event.detail).toEqual({ path: location.origin + location.pathname + location.search });
+	} finally {
+		document.removeEventListener("topcoat:render-error", listener);
+		runtime.page.dispose();
+	}
+});
+
+it("scheduled HTTP render failure delegates through the owning unit notification", async () => {
+	const request = stubFetch(500, "Internal Server Error");
+	document.body.innerHTML = `${declaration("fa11", 1)}<!--::topcoat::dep("fa11")--><p>retained</p>`;
+	const runtime = new Runtime();
+	const logged = vi.spyOn(runtime, "reportError").mockImplementation(() => {});
+	const listener = vi.fn();
+	document.addEventListener("topcoat:render-error", listener);
+	try {
+		runtime.start(document);
+		runtime.context.signal("fa11").set(new F64(2));
+		await settle();
+		expect(request.calls()).toBe(1);
+		expect(logged).toHaveBeenCalledOnce();
+		expect(listener).toHaveBeenCalledOnce();
+		expect((listener.mock.calls[0][0] as CustomEvent).target).toBe(document);
+		expect(document.body.textContent).toContain("retained");
+	} finally {
+		document.removeEventListener("topcoat:render-error", listener);
+		runtime.page.dispose();
+	}
+});

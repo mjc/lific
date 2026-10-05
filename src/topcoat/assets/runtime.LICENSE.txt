@@ -55,7 +55,9 @@ SOFTWARE.
   and bounds; no application policy is included.
 - Lific native-event patch: expose Context.event using the existing Event
   surrogate for DOM event primitives; wire hydration remains unchanged.
+- Lific generic render-error patch: current live units log and emit a bubbling
+  path-scoped DOM notification; disposed units retain logging without notifying.
 - All remaining upstream framework code is unchanged. Removing the 27
-  prepended helper/comment lines and reversing these seventeen substitutions
+  prepended helper/comment lines and reversing these twenty substitutions
   reproduces the unmodified upstream bytes. See `../native/TRANSPORT.md`.
-- Patched file SHA-256: `0f356d63f7feb730d925f782c00edd002767e0affb11e296fefd5f3d9bf77e94`
+- Patched file SHA-256: `a5bf390e6227095e9b6446101148c79bc3b65c9cb335df550416d861ab249e97`

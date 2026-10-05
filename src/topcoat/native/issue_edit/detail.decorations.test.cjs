@@ -48,13 +48,14 @@ test('native issue decorations match pinned master at every mount',async t=>{
     for (const prefix of ['', '/app', '/ACC']) for (const mode of ['desktop']) for (const theme of ['light','dark']) {
       await t.test(`${prefix||'root'} ${mode} ${theme}`,async caseTest=>{
         const proxy = await mountedProxy(upstream,prefix);
-        const original = await setup(browser,originalOrigin,mode,theme,false);
-        const native = await setup(browser,proxy.origin,mode,theme,true);
         const name = `${prefix.slice(1)||'root'}-${mode}-${theme}`, errors = [];
-        for (const [kind,session] of [['original',original],['native',native]]) {
-          session.page.on('pageerror',error=>errors.push({kind,message:error.message}));
-        }
+        let original, native;
         try {
+          original = await setup(browser,originalOrigin,mode,theme,false);
+          native = await setup(browser,proxy.origin,mode,theme,true);
+          for (const [kind,session] of [['original',original],['native',native]]) {
+            session.page.on('pageerror',error=>errors.push({kind,message:error.message}));
+          }
           await original.page.goto(`${originalOrigin}/#/ACC/issues/ACC-1`);
           assert.equal((await native.page.goto(`${proxy.origin}${prefix}/ACC/issues/ACC-1`)).status(),200);
           for (const session of [original,native]) {
@@ -123,8 +124,13 @@ test('native issue decorations match pinned master at every mount',async t=>{
           assert.equal(await native.page.evaluate(()=>localStorage.getItem('lific_token')),null);
           assert.deepEqual(errors,[]);
         } finally {
-          fs.writeFileSync(path.join(output,`${name}-errors.json`),JSON.stringify({errors,requests:proxy.requests},null,2));
-          await original.context.close(); await native.context.close(); await proxy.close();
+          try {
+            fs.writeFileSync(path.join(output,`${name}-errors.json`),JSON.stringify({errors,requests:proxy.requests},null,2));
+          } finally {
+            try {if (original) await original.context.close();}
+            finally {try {if (native) await native.context.close();}
+              finally {await proxy.close();}}
+          }
         }
       });
     }
