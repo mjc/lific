@@ -17,6 +17,12 @@ progress deadlines, and cancel active renders when the socket retires. The
 driver imports its connection marker and wire values from its parent module.
 Application authentication and quota decisions run in the admission layer.
 
+`string.rs` adds local Unicode uppercase and scalar-vector operations to the
+registry string values. The browser uses the same owned String and Vec wire
+types; a typed usize supplies the vector's target width. Source and packaged
+browser tests compare actual Rust expressions and serialized values, including
+case expansion, astral scalars, hydration and index bounds.
+
 `mod.rs` uses the registry runtime's signal values and protocol constant with
 the registry core, router and view crates, all pinned to 0.9.0. Native connection
 checks and the driver use the same local marker. HTTP reruns, signals, procedures,

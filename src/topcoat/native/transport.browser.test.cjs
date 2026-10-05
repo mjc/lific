@@ -50,6 +50,7 @@ test('vendored patches reconstruct the exact pinned upstream runtime', () => {
   assert.ok(start >= 0, 'The pinned upstream body is present.');
   let original = runtime.slice(start);
   for (const [patched, upstream, count] of [
+    ['to_uppercase(){return new v(this.v.toUpperCase())}unicode_scalars(e){let n=e.dehydrate();if(n.t!=="usize")throw new Error("Unicode scalar vector requires target usize width");return new F(Array.from(this.v,r=>new v(r)),ue("usize",n.bits))}to_owned(){return new v(this.v)}is_empty(){return new l(this.v.length===0)}', 'to_owned(){return new v(this.v)}is_empty(){return new l(this.v.length===0)}', 1],
     ['new H(this.lifetime.abortSignal,r=>this.reportError(r),r=>n.redirect(r))', 'new H(this.lifetime.abortSignal,r=>n.reportError(r),r=>n.redirect(r))', 1],
     ['failureTarget(){return document}reportError(e){this.runtime.reportError(e);if(this.isDisposed)return;this.failureTarget()?.dispatchEvent(new CustomEvent("topcoat:render-error",{bubbles:true,detail:{path:this.url()}}))}', 'reportError(e){this.runtime.reportError(e)}', 1],
     ['failureTarget(){return this.startNode.parentNode}url()', 'url()', 1],
@@ -531,4 +532,48 @@ test('packaged render failure notifications retain logging and owning DOM scope'
     await page.close();
     }
   }finally{try{await browser.close();}finally{await new Promise(resolve=>server.close(resolve));}}
+});
+
+
+test('packaged generic Unicode strings retain expansions, scalar vectors and target widths', async () => {
+  const server = http.createServer((request, response) => {
+    if (request.url === '/runtime.js') return response.writeHead(200, {'content-type':'text/javascript'}).end(runtime);
+    response.writeHead(200, {'content-type':'text/html'}).end('<html><body><span data-topcoat-on:mount="()=>{window.stringCx=cx;}"></span><script type="module" src="/runtime.js"></script></body></html>');
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  let browser;
+  try {
+    browser = await launchBrowser();
+    const page = await browser.newPage(), errors = [];
+    page.on('pageerror', error => errors.push(error.message));
+    await page.goto(`http://127.0.0.1:${server.address().port}/`);
+    await page.waitForFunction(() => window.stringCx);
+    const results = await page.evaluate(() => [32,64].map(bits => {
+      const cx = window.stringCx, index = (value, width=bits, kind='usize') => cx.hydrate({t:kind,bits:width,v:String(value)});
+      const text = cx.hydrate('Straße ﬃ 😀a'), upper = text.to_uppercase();
+      const vector = upper.unicode_scalars(index(0));
+      const rejected = [];
+      for (const offset of [index(14), index(0,bits===32?64:32), index(0,64,'u64')]) {
+        try {vector.index(offset); rejected.push(false);} catch {rejected.push(true);}
+      }
+      let wrongKind = false;
+      try {text.unicode_scalars(index(0,64,'u64'));} catch {wrongKind=true;}
+      return {bits, upper:upper.dehydrate(), vector:vector.dehydrate(), len:vector.len().dehydrate(),
+        roundTrip:cx.hydrate(vector.dehydrate()).dehydrate(), empty:cx.hydrate('').unicode_scalars(index(0)).dehydrate(), rejected, wrongKind};
+    }));
+    for (const result of results) {
+      const wire = {t:'Vec',bits:result.bits,v:['S','T','R','A','S','S','E',' ','F','F','I',' ','😀','A']};
+      assert.equal(result.upper,'STRASSE FFI 😀A');
+      assert.deepEqual(result.vector,wire);
+      assert.deepEqual(result.len,{t:'usize',bits:result.bits,v:'14'});
+      assert.deepEqual(result.roundTrip,wire);
+      assert.deepEqual(result.empty,{t:'Vec',bits:result.bits,v:[]});
+      assert.deepEqual(result.rejected,[true,true,true]);
+      assert.equal(result.wrongKind,true);
+    }
+    assert.deepEqual(errors,[]);
+  } finally {
+    if (browser) await browser.close();
+    await new Promise(resolve => server.close(resolve));
+  }
 });

@@ -12,6 +12,7 @@ mod connection;
 pub(crate) mod procedure;
 pub(crate) mod signal_vec;
 mod socket;
+pub(crate) mod string;
 
 pub(crate) use connection::{ConnectedRender, connected, connected_untracked};
 #[cfg(test)]
