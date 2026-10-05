@@ -18,28 +18,6 @@ beforeEach(() => {
   restore = () => Object.assign(globalThis, { fetch, window, localStorage: storage, document });
 });
 afterEach(() => restore());
-test("archive fetch returns bytes without saving and forwards cancellation and session", async () => {
-  const { downloadProjectArchive } = require('./archive-adapter.js');
-  localStorage.setItem("lific_token", "lific_sess_test");
-  const controller = new AbortController;
-  let received;
-  globalThis.fetch = async (url, options) => {
-    received={url,options};
-    return new Response("archive bytes", { headers: { "Content-Type": "application/gzip" } });
-  };
-  const result = await downloadProjectArchive("ARC", controller.signal);
-  const {url,options}=received;
-  expect(url).toBe("/api/project-archives/ARC");
-  expect(options.signal).toBe(controller.signal);
-  expect(options.cache).toBe("no-store");
-  expect(new Headers(options.headers).get("Authorization")).toBe("Bearer lific_sess_test");
-
-  expect(result.ok).toBe(true);
-  if (result.ok) {
-    expect(result.filename).toBe("ARC.lific.tar.gz");
-    expect(await result.blob.text()).toBe("archive bytes");
-  }
-});
 test("session observers see same-tab refresh and logout and unsubscribe cleanly", async () => {
   const { onSessionChange, saveSession, clearSession } = require('./archive-adapter.js');
   const seen = [];

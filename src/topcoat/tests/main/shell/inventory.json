@@ -105,7 +105,7 @@
     },
     {
       "source": "web/tests/activityRate.test.ts",
-      "target": "src/topcoat/tests/main/shell/activityRate.test.js",
+      "target": "src/topcoat/native/home_activity_rate.rs",
       "cases": [
         "combines a daily baseline with live time buckets",
         "seeding and resetting discard stale live buckets",
@@ -115,8 +115,8 @@
         "accepts only non-negative safe-integer baselines",
         "selects the shortest active rate window"
       ],
-      "kind": "live-source-unit",
-      "notes": "All original named case bodies and assertions retained; adapter invokes the corresponding live Topcoat runtime."
+      "kind": "native-rust-unit",
+      "notes": "All seven original observable contracts are executed by native_activity_rate_ Rust tests in the workspace suite, including original second/minute bucket boundaries, daily-baseline expiry, reset, audit event filtering, safe integer inputs and shortest rate-window selection. No dashboard JavaScript adapter or copied browser model remains."
     },
     {
       "source": "web/tests/authSession.test.ts",
@@ -133,12 +133,15 @@
     },
     {
       "source": "web/tests/autoRefresh.test.ts",
-      "target": "src/topcoat/tests/main/shell/autoRefresh.test.js",
+      "target": "src/topcoat/native/home_live_production.rs",
       "cases": [
         "bounds refresh delay during a continuous realtime event burst"
       ],
-      "kind": "live-controller-unit",
-      "notes": "Original configurable shared helper replaced by actual DashboardController.handleEvent. Clock/timer fixtures run a continuous burst spaced at half live debounce until live maximum wait. Original maxwait assertion and disposal remain; old40/100 configuration values are obsolete helper configuration."
+      "kind": "native-production-browser",
+      "notes": "The original maximum-wait assertion runs against native_home_live_continuous_real_edits_refresh_within_five_seconds using real shared-service issue updates and actual mounted Home refreshes. The native quiet-burst, owner replacement and busy-render cases retain scheduling and disposal coverage. Run workspace tests with ignored cases enabled; no hybrid controller is used.",
+      "additional_targets": [
+        "src/topcoat/native/home_live.browser.test.cjs"
+      ]
     },
     {
       "source": "web/tests/dompurify.ssr.ts",
@@ -149,12 +152,22 @@
     },
     {
       "source": "web/tests/labelColors.test.ts",
-      "target": "src/topcoat/tests/main/shell/colors-icons.test.js",
+      "target": "src/topcoat/native/project_overview/labels_model.rs",
       "cases": [
         "preserves hex colors and rejects CSS source"
       ],
-      "kind": "live-source-unit",
-      "notes": "Both exact hex preservation and CSS-source default-color assertions run live safeColor."
+      "kind": "native-unit",
+      "notes": "Original named case maps to native safe_color: exact mixed-case #12aBcF is preserved, and CSS source red; background-image: url(https://example.test) falls back to #6B7280. The native tests label_hex_and_safe_legacy_colors_preserve_source_input_rules and label_unsafe_stored_color_uses_native_component_fallback own these assertions; no removed JavaScript helper is loaded.",
+      "mappings": [
+        {
+          "original": "preserves hex colors and rejects CSS source",
+          "target": "src/topcoat/native/project_overview/labels_model.rs",
+          "translated": [
+            "label_hex_and_safe_legacy_colors_preserve_source_input_rules",
+            "label_unsafe_stored_color_uses_native_component_fallback"
+          ]
+        }
+      ]
     },
     {
       "source": "web/tests/mermaidLimits.test.ts",

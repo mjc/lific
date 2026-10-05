@@ -29,7 +29,7 @@ use topcoat_router::{
     router,
 };
 
-use super::{ConnectedRender, RUNTIME_PROTOCOL, SignalValues};
+use super::{ConnectedRender, ConnectionEpoch, RUNTIME_PROTOCOL, SignalValues};
 
 /// The action requested when an application's socket lifetime completes.
 #[derive(Debug, PartialEq, Eq)]
@@ -191,6 +191,7 @@ impl ConnectionMessage<'_> {
 
 /// The router, URL, and request details used for every render on a connection.
 struct ConnectionTarget {
+    epoch: ConnectionEpoch,
     router: Router,
     uri: Uri,
     /// Headers from the handshake, with WebSocket headers and
@@ -214,6 +215,7 @@ impl ConnectionTarget {
             headers.remove(name);
         }
         Self {
+            epoch: ConnectionEpoch(format!("{:032x}", rand::random::<u128>())),
             router: router(cx),
             uri: uri(cx).clone(),
             headers,
@@ -262,7 +264,11 @@ impl ConnectionTarget {
                 self.router
                     .handle_with(
                         self.request(Method::POST, headers, Body::from(text)),
-                        (ConnectedRender, ViewResponseDelivery::Frames),
+                        (
+                            ConnectedRender,
+                            self.epoch.clone(),
+                            ViewResponseDelivery::Frames,
+                        ),
                     )
                     .await
             }
@@ -272,6 +278,7 @@ impl ConnectionTarget {
                         self.request(Method::GET, self.headers.clone(), Body::empty()),
                         (
                             ConnectedRender,
+                            self.epoch.clone(),
                             request.signals,
                             ViewResponseDelivery::Frames,
                         ),

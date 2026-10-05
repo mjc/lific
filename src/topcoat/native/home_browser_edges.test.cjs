@@ -90,7 +90,7 @@ test(`production native Home ${scenario}`, async t => {
               background: style.backgroundColor, faint: style.getPropertyValue('--tc-faint').trim(),
               size: style.maskSize, position: style.maskPosition, repeat: style.maskRepeat};
           });
-          assert.equal(new URL(mascot.url).pathname, `${prefix}/__topcoat-dashboard-mascot.png`);
+          assert.equal(new URL(mascot.url).pathname, `${prefix}/__native_home/mascot.png`);
           assert.deepEqual([mascot.naturalWidth, mascot.naturalHeight], [1000, 420]);
           assert.deepEqual([mascot.width, mascot.height], [180, 76]);
           assert.equal(mascot.opacity, '0.5');
@@ -98,7 +98,7 @@ test(`production native Home ${scenario}`, async t => {
           assert.equal(mascot.position, '50% 50%');
           assert.equal(mascot.repeat, 'no-repeat');
           assert.notEqual(mascot.background, 'rgba(0, 0, 0, 0)');
-          assert.ok(proxy.requests.some(request => request.path === `${prefix}/__topcoat-dashboard-mascot.png`),
+          assert.ok(proxy.requests.some(request => request.path === `${prefix}/__native_home/mascot.png`),
             'The browser loads the mounted production PNG, rather than a mocked mask.');
         }
         assert.equal(requests.some(url => new URL(url).pathname.split('/').includes('api')), false,

@@ -8,7 +8,7 @@ const {execFileSync}=require('node:child_process');
 const {pathToFileURL}=require('node:url');
 const {installOriginalFonts,captureOriginalFonts}=require('../original_fonts_fixture.cjs');
 const {prepareOriginalVite,closeOriginalVite}=require('../original_vite_fixture.cjs');
-const {mountedProxy,launchBrowser}=require(process.argv[4]);
+const {mountedProxy,launchBrowser,settleScroll}=require(process.argv[4]);
 const [origin,token,,snapshot]=process.argv.slice(2);
 const referenceHead='9683d38af8e1e6f9b076439fe90d9519109b2218';
 const output=process.env.LIFIC_PROJECT_OVERVIEW_VISUAL_OUTPUT||path.join(tmpdir(),'lific-native-project-overview-visual');
@@ -57,7 +57,6 @@ function controls(page,native){
     publishCheckbox:publish.getByRole('checkbox'),publishAcknowledgement:publish.getByRole('checkbox').locator('..'),archiveCheckbox:archive.getByRole('checkbox'),archiveAcknowledgement:archive.getByRole('checkbox').locator('..'),
     publishButton:publish.getByRole('button',{name:'Publish issues',exact:true}),archiveButton:archive.getByRole('button',{name:'Download project archive',exact:true})};
 }
-async function settleScroll(page){await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));}
 async function session(browser,url,viewport,theme,native){
   const context=await browser.newContext({viewport,colorScheme:theme,reducedMotion:'reduce',locale:'en-US',timezoneId:'America/Denver',isMobile:viewport.width===360,hasTouch:viewport.width===360});
   if(!native)await installOriginalFonts(context);

@@ -191,6 +191,28 @@
       "cases": [
         "archive fetch returns bytes without saving and forwards cancellation and session",
         "session observers see same-tab refresh and logout and unsubscribe cleanly"
+      ],
+      "additionalTargets": [
+        "src/topcoat/tests/main/issues/overview-administration.browser.test.js"
+      ],
+      "mappings": [
+        {
+          "original": "archive fetch returns bytes without saving and forwards cancellation and session",
+          "target": "src/topcoat/tests/main/issues/overview-administration.browser.test.js",
+          "translated": [
+            "archive fetch returns bytes without saving and forwards cancellation and session",
+            "native archive acknowledgement, exact filename/bytes, verified owner and deferred object URL cleanup"
+          ],
+          "status": "partial",
+          "notes": "Actual native browser fetch observes its mounted AbortSignal, cache:no-store, mounted archive endpoint and current HTTP-only session cookie, and verifies no save while fetching. Companion native cases compare saved bytes with a clone of the real fetch response, gzip format, ACC.lific.tar.gz filename, acknowledgement gate, fresh post-Blob owner verification and deferred cleanup. Document disposal aborting the same signal and request, same-user session replacement and navigation during owner verification remain incomplete. Native cookie transport replaces the original Bearer header; direct native routes replace REST. Original case name and later unfinished assertions remain tracked."
+        },
+        {
+          "original": "session observers see same-tab refresh and logout and unsubscribe cleanly",
+          "target": "src/topcoat/tests/main/resources/projectArchives.test.js",
+          "translated": "session observers see same-tab refresh and logout and unsubscribe cleanly",
+          "status": "retained",
+          "notes": "The live shared session script still drives unfinished routes. Same-tab first/refreshed/null notifications and clean unsubscribe retain the original assertions."
+        }
       ]
     },
     {
@@ -258,7 +280,7 @@
     "ansi": "Cases read spans/text/style from actual FilesController.preview output. No ANSI implementation is supplied by the adapter.",
     "downscale": "Dimensions and byte estimates read the actual production offer. A null offer leaves the source dimensions untouched.",
     "files": "Deleted helper behavior is exercised through actual FilesController.render/renderLinks/remove and current Rust MIME-filter markup. Boundary DOM stubs do not supply production decisions.",
-    "projectArchives": "Archive byte download calls the current production download closure; session notifications execute the current embedded session script. Download cancellation is asserted outside the fetch callback so production error handling cannot hide the harness assertion.",
+    "projectArchives": "The removed administration download extraction is retired. Native browser cases observe real fetch options/current cookie/no-save while fetching and real response bytes/filename/owner checks. Document-disposal cancellation and same-user session replacement remain incomplete. The retained session observer case executes the shared session script still used by unfinished routes.",
     "uploadQueue": "Original task queue assertions now drive actual attachment composer upload admission. Boundary DOM and upload outcomes are controlled; observer promises settle only from production onUploaded/onStatus and terminal item state, never directly from transport outcomes. Admission, completion and slot release are production behavior.",
     "annotateMath": "Root owns live production annotation adapters. Fixed production60-entry undo bound replaces obsolete arbitrary-limit helper; additional browser test executes actual annotation UI/canvas."
   }

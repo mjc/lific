@@ -460,12 +460,6 @@ test('navigating to another thread starts the anchor walk over',async()=>{
  const second=anchorFixture({target:'comment-1',fetcher:()=>({ok:true,data:[]})});second.root.dataset.issueId='10';await second.api.resolveCommentHash(second.root,1);expect(second.calls()).toBe(1);
 });
 
-test('renders unsafe stored label colors through the component fallback',()=>{
- const {product}=require('./harness');const settings=product('project_settings/assets/project-settings.js','LificTopcoatProjectSettings');
- const value='red; background-image: url(https://example.test)';
- expect(settings.safeColor(value)).toBe('#6B7280');expect(settings.safeColor(value)).not.toContain(value);expect(settings.safeColor(value)).not.toContain('background-image');
-});
-
 test('a manual load older does not hand the automatic walk a fresh budget',async()=>{
  const fs=require('node:fs'),path=require('node:path');const {product,root:checkout}=require('./harness');
  const source=fs.readFileSync(path.join(checkout,'src/topcoat/issue_detail/collaboration/assets/collaboration.js'),'utf8');

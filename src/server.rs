@@ -102,7 +102,6 @@ mod topcoat_app {
                     <link rel="stylesheet" href=(mounted_url(cx, super::topcoat_frontend::shell::page_chrome::STYLESHEET_PATH))>
                     <link rel="stylesheet" href=(mounted_url(cx, super::topcoat_frontend::attachments::STYLESHEET_PATH))>
                     <link rel="stylesheet" href=(mounted_url(cx, super::topcoat_frontend::palette::STYLESHEET_PATH))>
-                    <link rel="stylesheet" href=(mounted_url(cx, super::topcoat_frontend::dashboard::STYLESHEET_PATH))>
                     <link rel="stylesheet" href=(mounted_url(cx, super::topcoat_frontend::issue_list::STYLESHEET_PATH))>
                     <link rel="stylesheet" href=(mounted_url(cx, super::topcoat_frontend::issue_detail::route::STYLESHEET_PATH))>
                     <link rel="stylesheet" href=(mounted_url(cx, super::topcoat_frontend::issue_detail::fields::STYLESHEET_PATH))>
@@ -131,7 +130,6 @@ mod topcoat_app {
                     <script defer="defer" src=(mounted_url(cx, super::topcoat_frontend::shell::page_chrome::SCRIPT_PATH))></script>
                     <script defer="defer" src=(mounted_url(cx, super::topcoat_frontend::shell::BOOTSTRAP_SCRIPT_PATH))></script>
                     <script defer="defer" src=(mounted_url(cx, super::topcoat_frontend::palette::SCRIPT_PATH))></script>
-                    <script defer="defer" src=(mounted_url(cx, super::topcoat_frontend::dashboard::SCRIPT_PATH))></script>
                     <script defer="defer" src=(mounted_url(cx, super::topcoat_frontend::issue_list::SCRIPT_PATH))></script>
                     <script defer="defer" src=(mounted_url(cx, super::topcoat_frontend::issue_detail::fields::SCRIPT_PATH))></script>
                     <script defer="defer" src=(mounted_url(cx, super::topcoat_frontend::issue_detail::editor::SCRIPT_PATH))></script>
@@ -197,7 +195,9 @@ mod topcoat_app {
                 Page::Overview => {
                     return super::topcoat_frontend::native::project_overview::screen(cx, &route);
                 }
-                Page::ProjectNew => super::topcoat_frontend::project_settings::new_project(cx),
+                Page::ProjectNew => {
+                    return super::topcoat_frontend::native::project_create::screen(cx, &route);
+                }
                 Page::ProjectImport => {
                     super::topcoat_frontend::project_settings::archive_import(cx)
                 }
@@ -281,6 +281,7 @@ mod topcoat_app {
                     || super::topcoat_frontend::shell::placeholder(cx, &route),
                     |project| super::topcoat_frontend::activity_insights::graph(cx, project),
                 ),
+                Page::NotFound => return Err(topcoat::router::error::not_found().into()),
                 _ => super::topcoat_frontend::shell::placeholder(cx, &route),
             },
             Layout::Public => {
@@ -558,33 +559,13 @@ mod topcoat_app {
             ))?)
     }
 
-    #[route(GET "/__topcoat-dashboard.css")]
-    async fn dashboard_stylesheet() -> Result<Response> {
-        Ok(Response::builder()
-            .header("content-type", "text/css; charset=utf-8")
-            .header("cache-control", "no-cache")
-            .body(topcoat::router::Body::from(
-                super::topcoat_frontend::dashboard::STYLESHEET,
-            ))?)
-    }
-
-    #[route(GET "/__topcoat-dashboard.js")]
-    async fn dashboard_script() -> Result<Response> {
-        Ok(Response::builder()
-            .header("content-type", "text/javascript; charset=utf-8")
-            .header("cache-control", "no-cache")
-            .body(topcoat::router::Body::from(
-                super::topcoat_frontend::dashboard::SCRIPT,
-            ))?)
-    }
-
-    #[route(GET "/__topcoat-dashboard-mascot.png")]
-    async fn dashboard_mascot() -> Result<Response> {
+    #[route(GET "/__native_home/mascot.png")]
+    async fn home_mascot() -> Result<Response> {
         Ok(Response::builder()
             .header("content-type", "image/png")
             .header("cache-control", "public, max-age=86400")
             .body(topcoat::router::Body::from(
-                super::topcoat_frontend::dashboard::MASCOT.to_vec(),
+                super::topcoat_frontend::native::home_view::MASCOT.to_vec(),
             ))?)
     }
 
@@ -903,6 +884,36 @@ mod topcoat_app_tests {
     use tower::ServiceExt;
 
     #[tokio::test]
+    async fn replaced_dashboard_assets_are_not_served_or_loaded() {
+        let router = topcoat::router::tower::TowerService::new(topcoat_app::router());
+        for asset in ["/__topcoat-dashboard.js", "/__topcoat-dashboard.css"] {
+            let response = router
+                .clone()
+                .oneshot(Request::builder().uri(asset).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                axum::http::StatusCode::NOT_FOUND,
+                "{asset}"
+            );
+        }
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/login")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let body = String::from_utf8_lossy(&body);
+        assert!(!body.contains("/__topcoat-dashboard.js"));
+        assert!(!body.contains("/__topcoat-dashboard.css"));
+    }
+
+    #[tokio::test]
     async fn production_fonts_are_embedded_at_every_mount() {
         for prefix in ["", "/app", "/ACC"] {
             let service = topcoat::router::tower::TowerService::new(topcoat_app::router());
@@ -993,8 +1004,8 @@ mod topcoat_app_tests {
         assert!(body.contains("/__topcoat-app.css"));
         assert!(body.contains("/__topcoat-attachments.css"));
         assert!(body.contains("/__topcoat-attachments.js"));
-        assert!(body.contains("/__topcoat-dashboard.css"));
-        assert!(body.contains("/__topcoat-dashboard.js"));
+        assert!(!body.contains("/__topcoat-dashboard.css"));
+        assert!(!body.contains("/__topcoat-dashboard.js"));
         assert!(body.contains("/__topcoat-issue-list.css"));
         assert!(body.contains("/__topcoat-issue-list.js"));
         assert!(body.contains("/__topcoat-issue-detail.css"));
@@ -1246,11 +1257,11 @@ mod topcoat_app_tests {
     }
 
     #[tokio::test]
-    async fn topcoat_dashboard_mascot_is_served_without_vite() {
+    async fn native_home_mascot_is_served_without_vite() {
         let response = topcoat::router::tower::TowerService::new(topcoat_app::router())
             .oneshot(
                 Request::builder()
-                    .uri("/__topcoat-dashboard-mascot.png")
+                    .uri("/__native_home/mascot.png")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1492,16 +1503,6 @@ mod topcoat_app_tests {
                 "/__topcoat-attachments.css",
                 "text/css; charset=utf-8",
                 ".tc-attachments",
-            ),
-            (
-                "/__topcoat-dashboard.js",
-                "text/javascript; charset=utf-8",
-                "LificTopcoatDashboard",
-            ),
-            (
-                "/__topcoat-dashboard.css",
-                "text/css; charset=utf-8",
-                ".tc-dashboard",
             ),
             (
                 "/__topcoat-issue-list.js",

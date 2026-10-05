@@ -2,7 +2,7 @@
 const {test}=require('node:test');
 const assert=require('node:assert/strict');
 const path=require('node:path');
-const {mountedProxy,launchBrowser}=require(path.join(process.cwd(),'src/topcoat/native/browser_fixture.cjs'));
+const {mountedProxy,launchBrowser,settleScroll}=require(path.join(process.cwd(),'src/topcoat/native/browser_fixture.cjs'));
 const upstream=new URL(process.argv[2]),adminToken=process.argv[3],fixture=JSON.parse(process.argv[4]);
 
 async function mutate(page,endpoint,action){
@@ -72,7 +72,7 @@ test('native overview real inline controls, roles, local drafts and disclosures 
     assert.ok(await retainedRepo.evaluate(element=>element.isConnected),'Label mutation retains the actual import control owner.');
     assert.ok(await retainedPerson.evaluate(element=>element.isConnected),'Label mutation retains the actual select owner.');
     assert.equal(await rekey.inputValue(),'HOLD','Label mutation retains the actual identifier draft.');
-    await person.click();const personMenu=members.locator(`#native-overview-member-person-${fixture.project}-menu`);await personMenu.waitFor({state:'visible'});
+    await person.scrollIntoViewIfNeeded();await settleScroll(page);await person.click();const personMenu=members.locator(`#native-overview-member-person-${fixture.project}-menu`);await personMenu.waitFor({state:'visible'});
     assert.ok((await personMenu.getByRole('option').allTextContents()).some(value=>value.includes('non_member')));
     await person.press('Escape');assert.ok(await person.evaluate(element=>document.activeElement===element));
     assert.ok(await personMenu.isHidden());

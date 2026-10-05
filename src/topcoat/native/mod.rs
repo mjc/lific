@@ -9,6 +9,7 @@ pub(crate) mod context;
 pub(crate) mod deferred_delete;
 pub(crate) mod home;
 pub(crate) mod home_activity;
+pub(crate) mod home_activity_rate;
 #[cfg(test)]
 mod home_browser_edges;
 pub(crate) mod home_data;

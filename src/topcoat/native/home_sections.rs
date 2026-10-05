@@ -22,6 +22,24 @@ pub(crate) fn right_rail<'a>(
     activity: &[Activity],
     recents: &[RecentEntry],
 ) -> BoxView<'a> {
+    right_rail_with_rate(
+        cx,
+        projects,
+        pinned_pages,
+        activity,
+        recents,
+        view! { cx => }.boxed(),
+    )
+}
+
+pub(crate) fn right_rail_with_rate<'a>(
+    cx: &'a Cx,
+    projects: &[Project],
+    pinned_pages: &[Page],
+    activity: &[Activity],
+    recents: &[RecentEntry],
+    activity_rate: BoxView<'a>,
+) -> BoxView<'a> {
     let has_recents = !recents.is_empty();
     let has_pinned_pages = !pinned_pages.is_empty();
     let has_activity = !activity.is_empty();
@@ -101,7 +119,13 @@ pub(crate) fn right_rail<'a>(
             }
             if has_activity {
                 <section data-home-section="activity">
-                    (heading(cx, "lucide:ArrowUpRight", "Recent activity"))
+                    <div class="tc-home-sections__heading" style="justify-content:space-between">
+                        <div style="display:flex;align-items:center;gap:.5rem;min-width:0">
+                            <span class="tc-home-sections__icon">(super::icons::project_icon(cx, Some("lucide:ArrowUpRight"), 12))</span>
+                            <h2>"Recent activity"</h2>
+                        </div>
+                        <span style="font-size:.6875rem;color:var(--tc-faint);font-variant-numeric:tabular-nums;text-align:right">(activity_rate)</span>
+                    </div>
                     <div class="tc-home-sections__rows">
                         for (actor, verb, label, destination) in activity_rows {
                             if let Some(destination) = destination {
@@ -116,6 +140,8 @@ pub(crate) fn right_rail<'a>(
                         }
                     </div>
                 </section>
+            } else {
+                <span hidden="hidden">(activity_rate)</span>
             }
         </aside>
     }.boxed()

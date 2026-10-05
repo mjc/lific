@@ -11,6 +11,9 @@ use super::{
     transport::mounted_url,
 };
 
+pub(crate) const MASCOT_PATH: &str = "/__native_home/mascot.png";
+pub(crate) const MASCOT: &[u8] = include_bytes!("assets/sleeping-lizzy.png");
+
 pub(crate) const STYLESHEET: &str = include_str!("assets/home.css");
 
 pub(crate) fn active_work<'a>(cx: &'a Cx, model: HomeModel<'_>) -> BoxView<'a> {
@@ -53,7 +56,7 @@ pub(crate) fn active_work<'a>(cx: &'a Cx, model: HomeModel<'_>) -> BoxView<'a> {
             if groups.is_empty() {
                 <div class="tc-home-active__empty">
                     <span class="tc-home-active__mascot" aria-hidden="true"
-                        style=(format!("mask-image:url('{}')", mounted_url(cx, super::super::dashboard::MASCOT_PATH)))></span>
+                        style=(format!("mask-image:url('{}')", mounted_url(cx, MASCOT_PATH)))></span>
                     <p>"All quiet here"</p>
                     <p>"Nothing active or todo assigned to you across your projects right now."</p>
                 </div>
@@ -183,7 +186,7 @@ mod tests {
         assert!(html.contains("All quiet here"));
         assert!(html.contains("Nothing active or todo assigned to you across your projects"));
         assert!(html.contains("data-home-active-count=\"0\""));
-        assert!(html.contains("/__topcoat-dashboard-mascot.png"));
+        assert!(html.contains("/__native_home/mascot.png"));
         assert!(!html.contains("class=\"tc-dashboard__issue\""));
     }
 }

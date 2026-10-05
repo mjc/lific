@@ -146,10 +146,20 @@ mod tests {
             assert_eq!(normalize_hex(input), None);
         }
         assert_eq!(safe_color("#abc123"), "#abc123");
+        assert_eq!(safe_color("#12aBcF"), "#12aBcF");
         assert_eq!(safe_color("#abc"), DEFAULT_COLOR);
         assert_eq!(color_name("#ef4444"), "Red");
         assert_eq!(color_name("#abcdef"), "Custom");
     }
+    #[test]
+    fn label_unsafe_stored_color_uses_native_component_fallback() {
+        let value = "red; background-image: url(https://example.test)";
+        let rendered_color = safe_color(value);
+        assert_eq!(rendered_color, "#6B7280");
+        assert!(!rendered_color.contains(value));
+        assert!(!rendered_color.contains("background-image"));
+    }
+
     #[test]
     fn label_duplicate_test_excludes_rename_target_and_preserves_whitespace() {
         let labels = [Label {

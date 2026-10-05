@@ -6,7 +6,6 @@ pub(crate) mod assets;
 pub(crate) mod attachments;
 pub(crate) mod browser_assets;
 pub(crate) mod controls;
-pub(crate) mod dashboard;
 pub(crate) mod files;
 pub(crate) mod identity;
 pub(crate) mod issue_create;
