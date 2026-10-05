@@ -72,49 +72,17 @@ pub(super) async fn create_project(
     Extension(realtime): Extension<RealtimeHub>,
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
     headers: axum::http::HeaderMap,
-    Json(mut input): Json<CreateProject>,
+    Json(input): Json<CreateProject>,
 ) -> Result<Json<Project>, LificError> {
-    let caller = super::require_user(&identity)?;
-    // Only parsed when the body asks for a lead that might not be the caller;
-    // resolving "might not be" needs the effective user, which needs the
-    // transaction, so the token is captured here and judged there.
     let session_token = crate::auth::recent_session_token(&headers).ok();
-
-    let project = db.transaction(|tx| {
-        let fresh = crate::auth::fresh_caller(tx, caller.id)?;
-        let effective =
-            crate::authz::effective_user(tx, &Some(crate::auth::fresh_auth_user(&fresh)))
-                .ok_or_else(|| LificError::Forbidden("authentication required".into()))?;
-
-        match input.lead_user_id {
-            // LIF-102 fix #1: no lead supplied means the creator leads it.
-            // Without this, `require_project_lead` rejects everyone but admins
-            // and the project is unowned.
-            None => input.lead_user_id = Some(effective.id),
-            // Naming yourself grants nothing new.
-            Some(id) if id == effective.id => {}
-            // Naming anybody else does, so it needs a recent human sign-in.
-            Some(_) => {
-                let token = session_token.as_deref().ok_or_else(|| {
-                    LificError::Forbidden("recent authentication required".into())
-                })?;
-                let session_user = crate::auth::revalidate_recent_session(tx, token, caller.id)?;
-                // A session belongs to a human, so the effective user is that
-                // human; assert it rather than assume it.
-                if session_user.id != effective.id {
-                    return Err(LificError::Forbidden(
-                        "recent authentication required".into(),
-                    ));
-                }
-            }
-        }
-
-        crate::db::queries::create_project(tx, &input)
-    })?;
-    realtime.send(RealtimeEvent::ProjectCreated {
-        project_id: project.id,
-    });
-    Ok(Json(project))
+    crate::services::projects::create_project(
+        &db,
+        &realtime,
+        &identity,
+        session_token.as_deref(),
+        input,
+    )
+    .map(Json)
 }
 
 pub(super) async fn update_project(

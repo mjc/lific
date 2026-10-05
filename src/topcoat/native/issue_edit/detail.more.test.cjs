@@ -53,10 +53,14 @@ test('native issue More and confirmation match pinned master at every mount',asy
       await t.test(`${prefix||'root'} ${mode} ${theme}`,async()=>{
         const proxy = await mountedProxy(upstream,prefix);
         const name = `${prefix.slice(1)||'root'}-${mode}-${theme}`, errors = [];
-        const nativeRequests = [];
+        const nativeRequests = [], originalNetwork = [];
         let original, native;
         try {
           original = await setup(browser,originalOrigin,mode,theme,false);
+          original.page.on('request',request=>originalNetwork.push({event:'request',url:request.url(),type:request.resourceType()}));
+          original.page.on('requestfinished',request=>originalNetwork.push({event:'finished',url:request.url()}));
+          original.page.on('requestfailed',request=>originalNetwork.push({event:'failed',url:request.url(),failure:request.failure()}));
+          original.page.on('response',response=>{if(response.status()>=400)originalNetwork.push({event:'response',url:response.url(),status:response.status()});});
           native = await setup(browser,proxy.origin,mode,theme,true);
           native.context.on('request', request => nativeRequests.push({url:request.url(), authorization:request.headers().authorization}));
           for (const [kind,session] of [['original',original],['native',native]]) {
@@ -214,7 +218,7 @@ test('native issue More and confirmation match pinned master at every mount',asy
           assert.deepEqual(errors,[]);
         } finally {
           try {
-            fs.writeFileSync(path.join(output,`${name}-errors.json`),JSON.stringify({errors,nativeRequests,requests:proxy.requests},null,2));
+            fs.writeFileSync(path.join(output,`${name}-errors.json`),JSON.stringify({errors,nativeRequests,originalNetwork,requests:proxy.requests},null,2));
           } finally {
             try {if (original) await original.context.close();}
             finally {try {if (native) await native.context.close();}

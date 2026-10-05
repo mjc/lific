@@ -132,3 +132,17 @@ pub(super) fn browser_command(script: &str, origin: &str, token: &str) -> tokio:
         .kill_on_drop(true);
     command
 }
+
+#[tokio::test]
+async fn native_browser_discovery_io_contract() {
+    let output = browser_command("src/topcoat/native/browser_fixture.io.test.cjs", "", "")
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "browser discovery IO contracts failed:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}

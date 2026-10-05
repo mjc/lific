@@ -1,4 +1,4 @@
-//! Generic browser-only vector signal writes, matching Signal<String>::push_str.
+//! Generic browser-only vector signal writes, matching `Signal<String>::push_str`.
 use topcoat::runtime::{SignalSurrogate, Surrogated, UsizeSurrogate};
 
 pub(crate) trait SignalVecExt<T: Surrogated> {
