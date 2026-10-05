@@ -1,6 +1,8 @@
 import type { AttributeValueViewParts, NodeViewParts } from "../dom/view";
 import { Bool } from "./bool";
 import { F64 } from "./f64";
+import { Integer, integerType } from "./integer";
+import { Vec } from "./sequence";
 
 const TEXT_ENCODER = new TextEncoder();
 
@@ -54,6 +56,16 @@ export class Str implements AttributeValueViewParts, NodeViewParts {
 
 	le(other: Str): Bool {
 		return new Bool(compare(this.v, other.v) <= 0);
+	}
+
+	to_uppercase(): String {
+		return new String(this.v.toUpperCase());
+	}
+
+	unicode_scalars(target: Integer): Vec<String> {
+		const wire = target.dehydrate();
+		if (wire.t !== "usize") throw new Error("Unicode scalar vector requires target usize width");
+		return new Vec(Array.from(this.v, scalar => new String(scalar)), integerType("usize", wire.bits));
 	}
 
 	to_owned(): String {
