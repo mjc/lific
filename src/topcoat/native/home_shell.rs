@@ -1,7 +1,7 @@
 //! Shared native private chrome. Display data never authorizes palette reads.
 
 use super::super::runtime::connected;
-use super::super::shell::{Page, ParsedRoute};
+use super::super::shell::ParsedRoute;
 use super::home_data::Snapshot;
 use super::session::native_home_session;
 use crate::db::models::{AuthUser, Project};
@@ -32,6 +32,16 @@ pub(crate) type MobileNavigationSignals = (
     Signal<bool>,
 );
 impl MobileNavigation {
+    pub(crate) fn new(cx: &Cx) -> Self {
+        Self {
+            open: signal(cx, || false),
+            pane: signal(cx, || "root".to_owned()),
+            project: signal(cx, String::new),
+            owner: signal(cx, String::new),
+            href: signal(cx, String::new),
+            pending_palette: signal(cx, || false),
+        }
+    }
     pub(crate) fn handles(&self) -> MobileNavigationSignals {
         (
             self.open.clone(),
@@ -52,6 +62,31 @@ impl MobileNavigation {
             pending_palette: handles.5,
         }
     }
+}
+
+/// Ordinary Rust composition shares the chrome's actual signal owner.
+#[derive(Clone)]
+pub(crate) struct LiveChrome {
+    pub(crate) path: Signal<String>,
+    pub(crate) label: Signal<String>,
+    pub(crate) navigation: MobileNavigation,
+}
+impl LiveChrome {
+    pub(crate) fn new(cx: &Cx, path: Signal<String>, route: &ParsedRoute<'_>) -> Self {
+        Self {
+            path,
+            label: signal(cx, || page_label(route)),
+            navigation: MobileNavigation::new(cx),
+        }
+    }
+}
+
+pub(crate) fn page_label(route: &ParsedRoute<'_>) -> String {
+    let title = route.page.navigation_page().title();
+    route.project.map_or_else(
+        || route.page.title().to_owned(),
+        |project| format!("{project}  {title}"),
+    )
 }
 
 #[derive(Clone)]
@@ -85,7 +120,7 @@ type PaletteSignals = (
     Signal<bool>,
     Signal<bool>,
     Signal<bool>,
-    Option<String>,
+    Signal<String>,
 );
 
 pub(crate) fn shell<'a>(
@@ -156,6 +191,26 @@ pub(crate) fn shell_with_workspace<'a>(
     palette_open: Signal<bool>,
     path: Signal<String>,
 ) -> topcoat::Result<BoxView<'a>> {
+    shell_with_owner(
+        cx,
+        user,
+        projects,
+        route,
+        region,
+        palette_open,
+        LiveChrome::new(cx, path, route),
+    )
+}
+
+pub(crate) fn shell_with_owner<'a>(
+    cx: &'a Cx,
+    user: &AuthUser,
+    projects: &[Project],
+    route: &ParsedRoute<'_>,
+    region: BoxView<'a>,
+    palette_open: Signal<bool>,
+    chrome: LiveChrome,
+) -> topcoat::Result<BoxView<'a>> {
     render_shell(
         cx,
         user,
@@ -163,7 +218,7 @@ pub(crate) fn shell_with_workspace<'a>(
         route,
         PageRegion::Workspace(region),
         palette_open,
-        Some(path),
+        Some(chrome),
     )
 }
 
@@ -208,15 +263,9 @@ fn render_shell<'a>(
     route: &ParsedRoute<'_>,
     region: PageRegion<'a>,
     palette_open: Signal<bool>,
-    live_path: Option<Signal<String>>,
+    live_chrome: Option<LiveChrome>,
 ) -> topcoat::Result<BoxView<'a>> {
-    let home_active = route.page == Page::Home;
-    let active_page = route.page.navigation_page().title();
-    let current_project = route.project.map(str::to_owned);
-    let page_label = match route.project {
-        Some(project) => format!("{project}  {}", active_page),
-        None => route.page.title().to_owned(),
-    };
+    let initial_label = page_label(route);
     let account_id = user.id;
     let account_admin = user.is_admin;
     let request_uri = topcoat::router::request::uri(cx);
@@ -224,8 +273,19 @@ fn render_shell<'a>(
         .path_and_query()
         .map_or_else(|| request_uri.path(), |path| path.as_str())
         .to_owned();
-    let path = live_path.unwrap_or_else(|| signal(cx, || initial_path.clone()));
+    let chrome = live_chrome
+        .unwrap_or_else(|| LiveChrome::new(cx, signal(cx, || initial_path.clone()), route));
+    let path = chrome.path;
+    let page_label = chrome.label;
+    let navigation = chrome.navigation;
+    let home_path = path.clone();
+    let home_active = expr!(if home_path.get() == "/" {
+        true
+    } else {
+        home_path.get().starts_with("/?")
+    });
     let sidebar = super::project_sidebar::Sidebar::load(cx, account_id, &initial_path)?;
+    let sidebar_menu_open = sidebar.menu_open();
     let collapsed = signal(cx, || false);
     let query = signal(cx, String::new);
     let palette = PaletteState {
@@ -251,17 +311,8 @@ fn render_shell<'a>(
     let authorized = palette.authorized.clone();
     let palette_error = palette.error.clone();
     let palette_waiting = palette.waiting.clone();
-    let mobile_open = signal(cx, || false);
-    let mobile_pane = signal(cx, || "root".to_owned());
-    let mobile_project = signal(cx, String::new);
-    let navigation = MobileNavigation {
-        open: mobile_open.clone(),
-        pane: mobile_pane.clone(),
-        project: mobile_project,
-        owner: signal(cx, String::new),
-        href: signal(cx, String::new),
-        pending_palette: signal(cx, || false),
-    };
+    let mobile_open = navigation.open.clone();
+    let mobile_pane = navigation.pane.clone();
     let theme = signal(cx, || "system".to_owned());
     let theme_menu = signal(cx, || false);
     let projects = projects.to_vec();
@@ -286,17 +337,16 @@ fn render_shell<'a>(
         .flat_map(char::to_uppercase)
         .collect::<String>();
     let content = match region {
-        PageRegion::Wrapped { content, topbar } => {
-            page_region(cx, content, topbar, page_label.clone())
-        }
+        PageRegion::Wrapped { content, topbar } => page_region(cx, content, topbar, initial_label),
         PageRegion::Workspace(region) => region,
     };
     let rendered = view! { cx =>
         <div class="native-home-shell" (super::session::mount(cx)) :data-collapsed=$(if collapsed.get() { "true" } else { "false" })>
             <span hidden="hidden" (super::session::account_mount(cx, account_id, account_admin))></span>
             <span hidden="hidden" (super::motion::mount(cx))></span>
+            (sidebar.route(cx, path.clone()))
             <a class="tc-shell__skip" href="#main-content" :inert=$(mobile_open.get())>"Skip to content"</a>
-            <span hidden="hidden" (shell_mount(cx, collapsed.clone(), theme.clone(), theme_menu.clone(), navigation.clone(), mobile_catalog, palette.clone()))></span>
+            <span hidden="hidden" (shell_mount(cx, collapsed.clone(), theme.clone(), (theme_menu.clone(), sidebar_menu_open.clone()), navigation.clone(), mobile_catalog, palette.clone()))></span>
             <button id="native-home-collapse" class="native-home-fold native-home-icon-button"
                 :aria-label=$(if collapsed.get() { "Expand sidebar" } else { "Collapse sidebar" })
                 :aria-expanded=$(if collapsed.get() { "false" } else { "true" }) :inert=$(mobile_open.get())
@@ -320,7 +370,7 @@ fn render_shell<'a>(
                 </button>
                 </div>
                 <nav class="native-home-workspace" aria-label="Workspace">
-                    <a class="native-home-destination native-home-home-link" href=(super::transport::mounted_url(cx, "/")) aria-current=(home_active.then_some("page"))>
+                    <a class="native-home-destination native-home-home-link" href=(super::transport::mounted_url(cx, "/")) :aria-current=$(home_active.then_some("page"))>
                         (super::icons::project_icon(cx, Some("lucide:House"), 14)) "Home"
                     </a>
                     (sidebar.desktop(cx,path.clone()))
@@ -341,11 +391,11 @@ fn render_shell<'a>(
                         (mobile_action(cx, &navigation, "open", String::new()))>
                         (super::icons::project_icon(cx, Some("lucide:Menu"), 20))
                     </button>
-                    <img src=(super::transport::mounted_url(cx, "/logo.webp")) alt="" width="22" height="22"/><span>(page_label.clone())</span>
+                    <img src=(super::transport::mounted_url(cx, "/logo.webp")) alt="" width="22" height="22"/><span>$(page_label.get())</span>
                 </header>
                 (content)
             </div>
-            <section data-native-mobile-nav="" role="dialog" aria-modal="true" aria-label="Workspace navigation" :hidden=$(!mobile_open.get())>
+            <section data-native-mobile-nav="" role="dialog" :aria-modal=$(if sidebar_menu_open { "false" } else { if theme_menu.get() { "false" } else { "true" } }) aria-label="Workspace navigation" :hidden=$(!mobile_open.get())>
                 <div data-native-mobile-root="" :hidden=$(mobile_pane.get() != "root")>
                     <header class="native-home-mobile-nav-header">
                         <img src=(super::transport::mounted_url(cx, "/logo.webp")) alt="" width="28" height="28"/>
@@ -358,7 +408,7 @@ fn render_shell<'a>(
                         (super::icons::project_icon(cx, Some("lucide:Search"), 18)) "Search issues, pages, projects…"
                     </button>
                     <nav aria-label="Phone workspace">
-                        <a class="native-home-mobile-link" href=(super::transport::mounted_url(cx, "/")) aria-current=(home_active.then_some("page"))>
+                        <a class="native-home-mobile-link" href=(super::transport::mounted_url(cx, "/")) :aria-current=$(home_active.then_some("page"))>
                             (super::icons::project_icon(cx, Some("lucide:House"), 20)) "Home"
                         </a>
                         (sidebar.phone(cx,path.clone(),navigation.handles()))
@@ -408,7 +458,7 @@ fn render_shell<'a>(
                             palette.count.clone(), palette.rendered.clone(),
                             palette.pending_enter.clone(), palette.pending_new_tab.clone(),
                             palette.waiting.clone(), palette.open.clone(),
-                            current_project.clone()
+                            path.clone()
                         )
                     )
                 </section>
@@ -537,11 +587,12 @@ fn shell_mount(
     cx: &Cx,
     collapsed: Signal<bool>,
     theme: Signal<String>,
-    theme_menu: Signal<bool>,
+    menus: (Signal<bool>, topcoat::runtime::Expr<bool>),
     navigation: MobileNavigation,
     mobile_catalog: String,
     palette: PaletteState,
 ) -> Attributes {
+    let (theme_menu, sidebar_menu) = menus;
     let MobileNavigation {
         open: mobile_open,
         pane: mobile_pane,
@@ -559,6 +610,7 @@ fn shell_mount(
     let keyboard_open = mobile_open.clone();
     let keyboard_pane = mobile_pane.clone();
     let keyboard_menu = theme_menu.clone();
+    let keyboard_sidebar_menu = sidebar_menu.clone();
     let keyboard_palette = palette.open.clone();
     let start_revision = palette.revision.clone();
     let start_query = palette.query.clone();
@@ -607,6 +659,7 @@ fn shell_mount(
     let focus_open = mobile_open;
     let focus_pane = mobile_pane;
     let focus_menu = theme_menu;
+    let focus_sidebar_menu = sidebar_menu;
     let handler = expr!(|_mount: Event| {
         // A replacement owning scope never inherits a queued browser action.
         mount_pending.set(false);
@@ -772,6 +825,17 @@ fn shell_mount(
                 String::new()
             );
             let current_href = raw!("cx.hydrate(window.location.href)", String::new());
+            // A genuine traversal may restore an owned drawer on another
+            // retained page. Its current URL, owner and version admit it.
+            if history_pop {
+                if record_version == "1" {
+                    if record_owner == owner.get() {
+                        if record_href == current_href {
+                            href.set(record_href.clone());
+                        }
+                    }
+                }
+            }
             let owned = if record_version == "1" {
                 if record_owner == owner.get() {
                     if record_href == href.get() {
@@ -915,6 +979,9 @@ fn shell_mount(
             }
         };
         let _keyboard = |_event: Event| {
+            if keyboard_sidebar_menu {
+                return;
+            }
             let key = raw!("cx.hydrate(${_event}.key)", String::new());
             if key == "Escape" {
                 if keyboard_menu.get() {
@@ -1066,6 +1133,9 @@ fn shell_mount(
             }
         };
         let _focus = |_event: Event| {
+            if focus_sidebar_menu {
+                return;
+            }
             if focus_open.get() {
                 if !focus_menu.get() {
                     let _pane = if focus_pane.get() == "root" {
@@ -1176,8 +1246,10 @@ async fn native_home_palette_results(
         pending_new_tab,
         waiting,
         live_open,
-        current_project,
+        path,
     ) = state;
+    let current_path = path.get_untracked();
+    let current_project = ParsedRoute::parse(&current_path).project.map(str::to_owned);
     let connected = connected(cx);
     // An open connected palette validates its bound session even while the
     // fresh HTTP query gate is pending. The gate controls query data only.

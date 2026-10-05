@@ -4,12 +4,12 @@ const assert=require('node:assert/strict');
 const path=require('node:path');
 const readline=require('node:readline');
 const {mountedProxy,launchBrowser}=require(path.join(process.cwd(),'src/topcoat/native/browser_fixture.cjs'));
+const {attr}=require('./sidebar.browser.fixture.cjs');
 const upstream=new URL(process.argv[2]),token=process.argv[3];
 const inputLines=readline.createInterface({input:process.stdin});
 let sequence=0;
 const pending=new Map();inputLines.on('line',line=>{const response=JSON.parse(line);const resolve=pending.get(response.id);if(resolve){pending.delete(response.id);resolve(response);}});
 function control(action,fields={}){const id=++sequence;return new Promise(resolve=>{pending.set(id,resolve);process.stdout.write(`CONTROL ${JSON.stringify({action,id,...fields})}\n`);});}
-async function attr(locator,name,value){await locator.page().waitForFunction(({selector,name,value})=>document.querySelector(selector)?.getAttribute(name)===value,{selector:`#${await locator.getAttribute('id')}`,name,value});}
 async function action(page,surface,name,choice){const trigger=surface.getByRole('button',{name,exact:true});await trigger.focus();await trigger.click();await page.getByRole('menuitem',{name:choice,exact:true}).click();}
 
 test('group create rename failure retry Cancel Escape',async t=>{
@@ -22,7 +22,7 @@ test('group create rename failure retry Cancel Escape',async t=>{
    await context.addCookies([{name:'lific_token',value:token,url:proxy.origin,httpOnly:true,sameSite:'Lax'}]);
    const errors=[],calls=[],requests=[];let release;
    try{
-    const page=await context.newPage();page.setDefaultTimeout(15000);
+    const page=await context.newPage();page.setDefaultTimeout(5000);
     page.on('pageerror',error=>errors.push(error.message));
     page.on('console',message=>{if(message.type()==='error')errors.push(message.text());});
     page.on('request',request=>{const url=new URL(request.url());requests.push(url.pathname);if(url.pathname.endsWith('/__native_sidebar/apply'))calls.push(JSON.parse(request.postData()));});

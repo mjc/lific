@@ -437,13 +437,20 @@ pub(super) async fn finish(
 
 /// The actual finish procedure uses this transition after fresh owner/outcome reads.
 fn merge(state: &mut State, write: Write, mut applied: Applied) -> Result<String, LificError> {
-    let (token, kind) = match &write {
-        Write::Refresh { token } => (*token, Completion::Refresh),
-        Write::SaveGroup { token, .. } => (*token, Completion::Save),
-        Write::OrderProjects { token, .. }
-        | Write::OrderGroups { token, .. }
-        | Write::DeleteGroup { token, .. }
-        | Write::Assign { token, .. } => (*token, Completion::Order),
+    let (token, kind, failure) = match &write {
+        Write::Refresh { token } => (*token, Completion::Refresh, None),
+        Write::SaveGroup { token, .. } => (*token, Completion::Save, None),
+        Write::OrderProjects { token, .. } => (
+            *token,
+            Completion::Order,
+            Some("Project order wasn't saved"),
+        ),
+        Write::OrderGroups { token, .. } => {
+            (*token, Completion::Order, Some("Group order wasn't saved"))
+        }
+        Write::DeleteGroup { token, .. } | Write::Assign { token, .. } => {
+            (*token, Completion::Order, None)
+        }
     };
     if !state.admits_completion(token, kind) {
         return Ok(String::new());
@@ -489,6 +496,11 @@ fn merge(state: &mut State, write: Write, mut applied: Applied) -> Result<String
         | Write::DeleteGroup { token, .. }
         | Write::Assign { token, .. } => {
             let result = if let Some(error) = applied.error {
+                let error = if let Some(failure) = failure {
+                    format!("{failure}: {error}")
+                } else {
+                    error
+                };
                 Err(error)
             } else {
                 Ok(applied.catalog.unwrap_or_else(|| state.catalog.clone()))

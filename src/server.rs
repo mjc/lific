@@ -47,29 +47,7 @@ mod topcoat_app {
         view::{View, view},
     };
 
-    enum NativeRoute {
-        Home,
-        Workspace,
-        ProjectNew,
-        ProjectOverview,
-    }
-
-    fn native_route(
-        route: &super::topcoat_frontend::shell::ParsedRoute<'_>,
-        has_query: bool,
-    ) -> Option<NativeRoute> {
-        use super::topcoat_frontend::shell::{Layout, Page};
-        match (route.layout, route.project, route.page) {
-            (Layout::Private, _, Page::Home) => Some(NativeRoute::Home),
-            (Layout::Private, _, Page::ProjectNew) => Some(NativeRoute::ProjectNew),
-            (Layout::Private, Some(_), Page::Overview) => Some(NativeRoute::ProjectOverview),
-            (Layout::Private, Some(_), Page::IssueDetail(_)) => Some(NativeRoute::Workspace),
-            (Layout::Private, Some(_), Page::Issues | Page::Board) if !has_query => {
-                Some(NativeRoute::Workspace)
-            }
-            _ => None,
-        }
-    }
+    use super::topcoat_frontend::native::workspace::{NativeRoute, native_route};
 
     #[layout("/")]
     async fn document_layout(cx: &topcoat::context::Cx, slot: Slot<'_>) -> Result<impl View> {

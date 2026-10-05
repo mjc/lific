@@ -350,6 +350,8 @@ pub(super) fn menu_attributes(cx: &Cx, state: &Signals) -> Attributes {
     let y = state.menu_y.clone();
     let kind = state.menu_kind.clone();
     let focus = state.focus.clone();
+    let menu = state.menu_kind.clone();
+    let key_focus = state.focus.clone();
     let mount = expr!(|_event: Event| {
         let measured = raw!(
             "cx.hydrate((()=>{const r=document.getElementById('native-sidebar-menu').getBoundingClientRect();return [r.width,r.height,innerWidth,innerHeight];})())",
@@ -382,92 +384,96 @@ pub(super) fn menu_attributes(cx: &Cx, state: &Signals) -> Attributes {
                 raw!("document.getElementById(${_id}.toString())?.focus();", ());
             }
         };
+        let _keys = |event: Event| {
+            if menu.get().is_empty() {
+                return;
+            }
+            if event.key == "Escape" {
+                event.prevent_default();
+                event.stop_immediate_propagation();
+                menu.set("".to_owned());
+                let _id = key_focus.get();
+                raw!("document.getElementById(${_id}.toString())?.focus();", ());
+            } else if event.key == "Tab" {
+                event.prevent_default();
+                event.stop_immediate_propagation();
+                menu.set("".to_owned());
+                let _id = key_focus.get();
+                raw!("document.getElementById(${_id}.toString())?.focus();", ());
+            } else {
+                let arrow = if event.key == "ArrowDown" {
+                    true
+                } else {
+                    if event.key == "ArrowUp" {
+                        true
+                    } else {
+                        if event.key == "Home" {
+                            true
+                        } else {
+                            event.key == "End"
+                        }
+                    }
+                };
+                if arrow {
+                    let inside = raw!(
+                        "cx.hydrate(document.getElementById('native-sidebar-menu').contains(document.activeElement))",
+                        false
+                    );
+                    if !inside {
+                        return;
+                    }
+                    event.prevent_default();
+                    event.stop_immediate_propagation();
+                    let measured = raw!(
+                        "cx.hydrate((()=>{const n=[...document.querySelectorAll('[data-native-sidebar-menu] button:not(:disabled),[data-native-sidebar-menu] a')];return [n.length,n.indexOf(document.activeElement)];})())",
+                        (0_i64, -1_i64)
+                    );
+                    if measured.0 > 0_i64 {
+                        let last = measured.0 - 1_i64;
+                        let _index = if event.key == "Home" {
+                            0_i64
+                        } else {
+                            if event.key == "End" {
+                                last
+                            } else {
+                                if event.key == "ArrowDown" {
+                                    if measured.1 >= last {
+                                        0_i64
+                                    } else {
+                                        measured.1 + 1_i64
+                                    }
+                                } else {
+                                    if measured.1 <= 0_i64 {
+                                        last
+                                    } else {
+                                        measured.1 - 1_i64
+                                    }
+                                }
+                            }
+                        };
+                        raw!(
+                            "[...document.querySelectorAll('[data-native-sidebar-menu] button:not(:disabled),[data-native-sidebar-menu] a')][Number(${_index}.toString())]?.focus();",
+                            ()
+                        );
+                    }
+                }
+            }
+        };
         raw!(
             r#"(()=>{
             const menu=document.getElementById('native-sidebar-menu');
             menu.querySelector('button:not(:disabled),a')?.focus();
             const click=e=>{if(cx.abortSignal.aborted)return;if(!menu.contains(e.target))${_close}(cx.hydrate(document.activeElement===document.body||menu.contains(document.activeElement)));};
             const scroll=e=>{if(cx.abortSignal.aborted||menu.contains(e.target))return;${_close}(cx.hydrate(true));};
+            window.addEventListener('keydown',event=>${_keys}(cx.event(event)),{capture:true,signal:cx.abortSignal});
             document.addEventListener('click',click);document.addEventListener('scroll',scroll,true);window.addEventListener('resize',scroll);
             cx.abortSignal.addEventListener('abort',()=>{document.removeEventListener('click',click);document.removeEventListener('scroll',scroll,true);window.removeEventListener('resize',scroll);},{once:true});
         })();"#,
             ()
         );
     });
-    let menu = state.menu_kind.clone();
-    let focus = state.focus.clone();
-    let keys = expr!(|event: Event| {
-        if event.key == "Escape" {
-            event.prevent_default();
-            event.stop_propagation();
-            menu.set("".to_owned());
-            let _id = focus.get();
-            raw!("document.getElementById(${_id}.toString())?.focus();", ());
-        } else if event.key == "Tab" {
-            event.prevent_default();
-            event.stop_propagation();
-            menu.set("".to_owned());
-            let _id = focus.get();
-            raw!("document.getElementById(${_id}.toString())?.focus();", ());
-        } else {
-            let arrow = if event.key == "ArrowDown" {
-                true
-            } else {
-                if event.key == "ArrowUp" {
-                    true
-                } else {
-                    if event.key == "Home" {
-                        true
-                    } else {
-                        event.key == "End"
-                    }
-                }
-            };
-            if arrow {
-                event.prevent_default();
-                event.stop_propagation();
-                let measured = raw!(
-                    "cx.hydrate((()=>{const n=[...document.querySelectorAll('[data-native-sidebar-menu] button:not(:disabled),[data-native-sidebar-menu] a')];return [n.length,n.indexOf(document.activeElement)];})())",
-                    (0_i64, -1_i64)
-                );
-                if measured.0 > 0_i64 {
-                    let last = measured.0 - 1_i64;
-                    let _index = if event.key == "Home" {
-                        0_i64
-                    } else {
-                        if event.key == "End" {
-                            last
-                        } else {
-                            if event.key == "ArrowDown" {
-                                if measured.1 >= last {
-                                    0_i64
-                                } else {
-                                    measured.1 + 1_i64
-                                }
-                            } else {
-                                if measured.1 <= 0_i64 {
-                                    last
-                                } else {
-                                    measured.1 - 1_i64
-                                }
-                            }
-                        }
-                    };
-                    raw!(
-                        "[...document.querySelectorAll('[data-native-sidebar-menu] button:not(:disabled),[data-native-sidebar-menu] a')][Number(${_index}.toString())]?.focus();",
-                        ()
-                    );
-                }
-            }
-        }
-    });
-    let mut attributes = Attributes::with_capacity(2);
+    let mut attributes = Attributes::with_capacity(1);
     attributes.insert(cx, "data-topcoat-on:mount", mount.into_evaluated_and_js().1);
-    attributes.insert(
-        cx,
-        "data-topcoat-on:keydown",
-        keys.into_evaluated_and_js().1,
-    );
     attributes
 }
 

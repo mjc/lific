@@ -44,6 +44,8 @@ mod raw_lifecycle;
 pub(crate) mod session;
 #[cfg(test)]
 mod session_idle;
+#[cfg(test)]
+mod session_redirect_production;
 pub(crate) mod socket_admission;
 #[cfg(test)]
 mod stylesheet;
@@ -65,3 +67,6 @@ pub(crate) mod project_create;
 pub(crate) mod project_sidebar;
 
 mod motion;
+
+#[cfg(test)]
+mod common_owner_production;

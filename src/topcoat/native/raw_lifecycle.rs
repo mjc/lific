@@ -210,8 +210,8 @@ impl StoppedReaderTrace {
                         // so a nonreturning poll still leaves visible CI evidence.
                         writeln!(
                             std::io::stderr().lock(),
-                            "raw stopped-reader wall={:?}, phase={}, TCP operations(1=write,2=vectored,3=flush,4=shutdown), writes={writes:?}",
-                            started.elapsed(), STOPPED_READER_PHASES[phase]
+                            "raw stopped-reader pid={} wall={:?}, phase={}, TCP operations(1=write,2=vectored,3=flush,4=shutdown), writes={writes:?}",
+                            std::process::id(), started.elapsed(), STOPPED_READER_PHASES[phase]
                         ).expect("write stopped-reader phase diagnostics");
                     }
                 }
