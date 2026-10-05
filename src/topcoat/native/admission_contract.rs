@@ -596,14 +596,16 @@ async fn native_published_admission_valid_private_shard_identity_cannot_select_a
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let html = response.text().await.unwrap();
+        // Shared navigation also renders shards before the private Home content.
         let marker = html
-            .split_once("::topcoat::shard::start(\"")
-            .expect("actual private Home contains a shard marker")
-            .1;
+            .split("::topcoat::shard::start(\"")
+            .skip(1)
+            .find(|marker| marker.starts_with("/__native_home/content\""))
+            .expect("actual private Home contains its production content shard");
         let fields = marker.split('"').take(3).collect::<Vec<_>>();
-        assert!(
-            fields[0].contains("/__native_home/"),
-            "identity came from a production private shard"
+        assert_eq!(
+            fields[0], "/__native_home/content",
+            "identity came from the production private Home content shard"
         );
         let identity = fields[2];
         let parsed: topcoat::core::identity::Identity = identity

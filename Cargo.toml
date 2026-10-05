@@ -39,6 +39,10 @@ useless_let_if_seq = "deny"
 unused_async = "deny"
 
 [dependencies]
+# Browser-locale ordering for the native overview label manager.
+icu_collator = { version = "=2.3.1", default-features = false, features = ["compiled_data"] }
+icu_locale_core = { version = "=2.3.0", default-features = false, features = ["alloc"] }
+lru = "=0.12.5"
 # Native Markdown parsing and final HTML sanitization.
 comrak = { version = "=0.55.0", default-features = false }
 ammonia = "=4.2.0"

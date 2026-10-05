@@ -15,9 +15,10 @@ use super::with_read;
 use crate::services::export::{EXPORT_STREAM_CHUNK_BYTES, stream_response_with_timeouts};
 #[cfg(test)]
 pub(super) use crate::services::export::{EXPORT_TEST_GATE, ExportTestGate};
-pub(super) use crate::services::export::{
-    PreparedExport, blocking_export, single_file_response, stream_body, stream_response,
-};
+pub(super) use crate::services::export::{blocking_export, single_file_response, stream_body};
+
+#[cfg(test)]
+pub(super) use crate::services::export::{PreparedExport, stream_response};
 
 #[derive(serde::Deserialize)]
 pub(super) struct ExportQuery {
@@ -74,32 +75,7 @@ pub(super) async fn export_project(
     Path(identifier): Path<String>,
     Query(q): Query<ExportQuery>,
 ) -> Result<impl IntoResponse, LificError> {
-    if let Some(format) = q.format.as_deref()
-        && !matches!(format, "json" | "zip")
-    {
-        return Err(LificError::BadRequest(
-            "invalid export format. Expected 'zip' or 'json'".into(),
-        ));
-    }
-    let project_id = with_read(&db, |conn| {
-        crate::db::queries::resolve_project_identifier(conn, &identifier)
-    })?;
-    authz::require_role(&db, &identity, project_id, Role::Viewer)?;
-    let visible = authz::visible_project_ids(&db, &identity)?;
-    let slot = db.acquire_export_slot()?;
-    let format = q.format.unwrap_or_else(|| "zip".into());
-    let (bundle, slot) = blocking_export(slot, move || {
-        with_read(&db, |conn| {
-            crate::export::export_project(conn, &identifier, visible.as_ref())
-        })
-    })
-    .await?;
-    let (prepared, slot) = match format.as_str() {
-        "json" => blocking_export(slot, move || PreparedExport::json(&bundle)).await?,
-        "zip" => blocking_export(slot, move || PreparedExport::zip(&bundle)).await?,
-        _ => unreachable!("format was validated before export"),
-    };
-    stream_response(prepared, slot).await
+    crate::services::export_project::project(db, &identity, identifier, q.format).await
 }
 
 #[cfg(test)]

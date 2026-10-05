@@ -468,7 +468,8 @@ pub fn export_project(
     visible: VisibleProjects<'_>,
 ) -> Result<ExportBundle, LificError> {
     let transaction = conn.unchecked_transaction()?;
-    let bundle = export_project_snapshot(&transaction, identifier, visible)?;
+    let project_id = queries::resolve_project_identifier(&transaction, identifier)?;
+    let bundle = export_project_snapshot_by_id(&transaction, project_id, visible)?;
     transaction.commit()?;
     Ok(bundle)
 }
@@ -594,12 +595,14 @@ fn ensure_project_preflight(
     Ok(())
 }
 
-fn export_project_snapshot(
+/// Render the selected project using the caller's authorized read snapshot.
+/// The caller must establish that snapshot and authorize this immutable row ID
+/// before passing its connection. CLI identifier exports use the same renderer.
+pub(crate) fn export_project_snapshot_by_id(
     conn: &Connection,
-    identifier: &str,
+    project_id: i64,
     visible: VisibleProjects<'_>,
 ) -> Result<ExportBundle, LificError> {
-    let project_id = queries::resolve_project_identifier(conn, identifier)?;
     ensure_project_preflight(
         conn,
         project_id,

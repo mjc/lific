@@ -126,8 +126,27 @@ test(`native Home original shell: ${scenario}`, async t => {
             await page.locator('[data-native-home-connected="true"]').first().waitFor();
             await page.getByText('Visible active initial work', {exact: true}).waitFor();
 
+            // Resolve the real catalog ID from the mounted overview link. Both
+            // shared sidebar layouts expose that same ID on their native rows.
+            let projectId;
+            if (['disclosure', 'mobile', 'mobile_lifetime', 'mobile_unavailable', 'hostile_project'].includes(scenario)) {
+              const overview = page.locator(`.native-home-sidebar a[data-sidebar-project][href="${prefix}/ACC/overview"]`);
+              assert.equal(await overview.count(), 1);
+              projectId = await overview.getAttribute('data-sidebar-project');
+              assert.match(projectId, /^\d+$/);
+            }
+            const phoneProject = async (nav, name = 'Visible project') => {
+              const row = nav.locator(`#native-sidebar-phone-project-${projectId}[data-native-project-trigger="ACC"]`);
+              await row.waitFor();
+              assert.equal(await row.count(), 1);
+              assert.equal(await row.getAttribute('aria-label'), `Open ${name} navigation`);
+              assert.equal(await row.textContent(), `AC${name}ACC`);
+              assert.equal(await row.locator(':scope > span').nth(1).locator(':scope > span').textContent(), name);
+              return row;
+            };
+
             if (scenario === 'disclosure') {
-              const project = page.locator('.native-home-project').filter({has: page.getByText('Visible project', {exact: true})});
+              const project = page.locator(`[data-native-sidebar-project="${projectId}"]`);
               const toggle = project.getByRole('button', {name: 'Expand Visible project', exact: true});
               assert.equal(await toggle.count(), 1, 'Home has a project disclosure distinct from overview navigation.');
               assert.equal(await toggle.getAttribute('aria-expanded'), 'false');
@@ -142,7 +161,8 @@ test(`native Home original shell: ${scenario}`, async t => {
               for (const [index, slug] of destinations.map(label => label.toLowerCase()).entries()) {
                 assert.equal(await links.nth(index).getAttribute('href'), `${prefix}/ACC/${slug}`);
               }
-              const overview = project.locator('a').filter({hasText: 'Visible project'});
+              const overview = project.locator(`a[data-sidebar-project="${projectId}"]`);
+              assert.equal(await overview.textContent(), 'ACVisible project');
               assert.equal(await overview.getAttribute('href'), `${prefix}/ACC/overview`);
               assert.equal(await page.getByText('Private hidden project', {exact: true}).count(), 0);
               await page.getByRole('button', {name: 'Collapse sidebar', exact: true}).click();
@@ -204,7 +224,7 @@ test(`native Home original shell: ${scenario}`, async t => {
               assert.equal(await nav.isVisible(), true);
               const rect = await nav.boundingBox();
               assert.deepEqual([rect.x, rect.y, rect.width, rect.height], [0, 0, viewport.width, viewport.height]);
-              await nav.getByRole('button', {name: 'Visible project', exact: true}).click();
+              await (await phoneProject(nav)).click();
               assert.equal(await nav.locator('[data-native-mobile-root]').isVisible(), false);
               assert.deepEqual(await nav.locator('[data-native-mobile-project]').getByRole('link').allTextContents(), destinations);
               await page.keyboard.press('Escape');
@@ -232,7 +252,7 @@ test(`native Home original shell: ${scenario}`, async t => {
               assert.equal(await first.evaluate(element => element === document.activeElement), true);
               await page.evaluate(() => document.getElementById('main-content').focus());
               assert.equal(await nav.evaluate(element => element.contains(document.activeElement)), true);
-              const project = nav.getByRole('button', {name: 'Visible project', exact: true});
+              const project = await phoneProject(nav);
               await project.click();
               const pane = nav.locator('[data-native-mobile-project]:not([hidden])');
               const back = pane.getByRole('button', {name: 'Back to projects', exact: true});
@@ -250,7 +270,7 @@ test(`native Home original shell: ${scenario}`, async t => {
               await page.goForward();
               await nav.waitFor();
               assert.equal(page.url(), current, 'Forward restores the owned root navigation entry.');
-              await nav.getByRole('button', {name: 'Visible project', exact: true}).click();
+              await (await phoneProject(nav)).click();
               await page.goBack();
               await nav.locator('[data-native-mobile-root]').waitFor();
               assert.equal(page.url(), current);
@@ -267,7 +287,7 @@ test(`native Home original shell: ${scenario}`, async t => {
               const current = page.url();
               await page.getByRole('button', {name: 'Open navigation', exact: true}).click();
               const nav = page.getByRole('dialog', {name: 'Workspace navigation', exact: true});
-              await nav.getByRole('button', {name: 'Visible project', exact: true}).click();
+              await (await phoneProject(nav)).click();
               const pane = await page.evaluate(() => {
                 const entry = history.state.lificNativeHomeNav;
                 history.replaceState({...history.state, lificNativeHomeNav: {...entry, project: 'HIDE'}}, '');
@@ -292,7 +312,7 @@ test(`native Home original shell: ${scenario}`, async t => {
               await page.keyboard.press('Tab');
               assert.equal(await back.evaluate(element => element === document.activeElement), true);
               await back.click();
-              await nav.getByRole('button', {name: 'Visible project', exact: true}).waitFor();
+              await phoneProject(nav);
               assert.equal(await nav.getByRole('heading', {name: 'Project unavailable', exact: true}).isVisible(), false);
               assert.equal(page.url(), current);
               await page.goForward();
@@ -355,8 +375,9 @@ test(`native Home original shell: ${scenario}`, async t => {
                   await page.getByText('Visible active initial work', {exact: true}).waitFor();
                 }
                 if (mode === 'desktop') {
-                  const project = page.locator('.native-home-project').filter({has: page.locator('a[href="' + prefix + '/ACC/overview"]')});
-                  const title = project.locator('.native-home-project-title');
+                  const project = page.locator(`[data-native-sidebar-project="${projectId}"]`);
+                  const title = project.locator(`a[data-sidebar-project="${projectId}"]`);
+                  assert.equal(await title.textContent(), `AC${hostileProjectName}`);
                   assert.equal(await title.locator('span').last().textContent(), hostileProjectName);
                   assert.equal(await title.getAttribute('title'), hostileProjectName);
                   assert.equal(await title.getAttribute('href'), `${prefix}/ACC/overview`);
@@ -370,9 +391,7 @@ test(`native Home original shell: ${scenario}`, async t => {
                   const nav = page.getByRole('dialog', {name: 'Workspace navigation', exact: true});
                   if (!hydration) {
                     await page.getByRole('button', {name: 'Open navigation', exact: true}).click();
-                    const row = nav.getByRole('button', {name: hostileProjectName, exact: true});
-                    assert.equal(await row.getAttribute('aria-label'), hostileProjectName);
-                    assert.equal(await row.locator('span').last().textContent(), hostileProjectName);
+                    const row = await phoneProject(nav, hostileProjectName);
                     await row.click();
                   }
                   const pane = nav.locator('[data-native-mobile-project]:not([hidden])');

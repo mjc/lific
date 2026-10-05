@@ -2,33 +2,13 @@ use axum::{
     Extension,
     extract::{Json, Path, Query, State},
 };
-use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex, OnceLock, Weak};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::authz;
 use crate::db::{DbPool, models::*};
 use crate::error::LificError;
-use crate::realtime::{RealtimeEvent, RealtimeHub};
+use crate::realtime::RealtimeHub;
 
-use super::{require_project_delete, require_project_lead, require_user, with_read};
-
-/// Connection-scoped counterpart of authz::visible_project_ids for sidebar
-/// snapshots. The credential user owns preferences, as with project groups;
-/// the freshly resolved effective user governs project visibility.
-pub(super) fn sidebar_visibility(
-    conn: &rusqlite::Connection,
-    user_id: i64,
-) -> Result<Option<HashSet<i64>>, LificError> {
-    crate::services::projects::sidebar_visibility(conn, user_id)
-}
-
-/// REST ranks describe positions in the visible response, not storage ranks.
-/// Filtering may remove stored positions and newly visible rows use legacy
-/// ranks internally, so normalize only after the final ordering and filtering.
-fn normalize_sidebar_ranks(projects: Vec<Project>) -> Vec<Project> {
-    crate::services::projects::normalize_sidebar_ranks(projects)
-}
+use super::{require_project_lead, with_read};
 
 pub(super) async fn list_projects(
     State(db): State<DbPool>,
@@ -93,53 +73,23 @@ pub(super) async fn update_project(
     headers: axum::http::HeaderMap,
     Json(input): Json<UpdateProject>,
 ) -> Result<Json<Project>, LificError> {
+    // Preserve transport error ordering before the shared authoritative writer.
     require_project_lead(&db, &identity, id)?;
-
-    // Naming a lead is a membership grant in disguise: `update_project` upserts
-    // a `lead` row for whoever is named (LIF-195), which is the same access
-    // expansion `POST /api/projects/{id}/members` performs and must carry the
-    // same rule. Renames, descriptions, emoji and *clearing* the lead are not
-    // expansions and stay ungated.
-    let grants_lead = matches!(input.lead_user_id, Some(Some(_)));
-    let recent = if grants_lead {
-        let granter = super::require_user(&identity)?;
-        Some((crate::auth::recent_session_token(&headers)?, granter.id))
+    let token = if matches!(input.lead_user_id, Some(Some(_))) {
+        super::require_user(&identity)?;
+        Some(crate::auth::recent_session_token(&headers)?)
     } else {
         None
     };
-
-    let project = db.transaction(|tx| {
-        // When this grants a lead membership the gate re-runs against the
-        // freshly read session user, so a lead revoked since the request
-        // arrived cannot hand the role to anyone.
-        let gate_identity = match &recent {
-            Some((token, granter_id)) => {
-                let fresh = crate::auth::revalidate_recent_session(tx, token, *granter_id)?;
-                Some(crate::auth::fresh_identity(
-                    &fresh,
-                    crate::actor::Transport::Web,
-                ))
-            }
-            // Not a grant (a rename, or clearing the lead). No recency, but
-            // still not the middleware's snapshot: the caller is re-read here
-            // so a demoted admin cannot edit on the strength of a stale
-            // `is_admin`.
-            None => {
-                let caller = super::require_user(&identity)?;
-                let fresh = crate::auth::fresh_caller(tx, caller.id)?;
-                Some(crate::auth::fresh_identity(
-                    &fresh,
-                    crate::actor::Transport::Web,
-                ))
-            }
-        };
-        crate::authz::require_role_conn(tx, &gate_identity, id, Role::Lead)?;
-        crate::db::queries::update_project(tx, id, &input)
-    })?;
-    realtime.send(RealtimeEvent::ProjectUpdated {
-        project_id: project.id,
-    });
-    Ok(Json(project))
+    crate::services::project_overview::update(
+        &db,
+        &realtime,
+        &identity,
+        token.as_deref(),
+        id,
+        input,
+    )
+    .map(Json)
 }
 
 /// PUT /api/projects/reorder persists only the caller's sidebar preferences.
@@ -150,13 +100,8 @@ pub(super) async fn reorder_projects(
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
     Json(input): Json<ReorderProjects>,
 ) -> Result<Json<Vec<Project>>, LificError> {
-    let user = require_user(&identity)?;
-    let projects = db.transaction(|tx| {
-        let visible = sidebar_visibility(tx, user.id)?;
-        crate::db::queries::reorder_projects(tx, user.id, &input.ids, &visible)
-    })?;
-    realtime.send_to_users(RealtimeEvent::ProjectsReordered, vec![user.id]);
-    Ok(Json(normalize_sidebar_ranks(projects)))
+    crate::services::project_sidebar::reorder_projects(&db, &realtime, &identity, &input.ids)
+        .map(Json)
 }
 
 pub(super) async fn delete_project_handler(
@@ -165,30 +110,8 @@ pub(super) async fn delete_project_handler(
     Path(id): Path<i64>,
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
 ) -> Result<Json<serde_json::Value>, LificError> {
-    // Preflight on a read connection so an unauthorized caller never reaches
-    // the writer; re-run authoritatively inside the transaction below.
-    require_project_delete(&db, &identity, id)?;
-    let caller = super::require_user(&identity)?;
-    let (project, audience) = db.transaction(|tx| {
-        // Deleting a project destroys everything in it, so the decision is
-        // made from state read here rather than from the snapshot the
-        // middleware attached before the request was routed.
-        let fresh = crate::auth::fresh_caller(tx, caller.id)?;
-        let fresh_identity = Some(crate::auth::fresh_identity(
-            &fresh,
-            crate::actor::Transport::Web,
-        ));
-        crate::authz::require_project_delete_role_conn(tx, &fresh_identity, id)?;
-        crate::db::queries::delete_project_with_audience(tx, id)
-    })?;
-    let event = RealtimeEvent::ProjectDeleted {
-        project_id: project.id,
-    };
-    match audience {
-        Some(user_ids) => realtime.send_to_users(event, user_ids),
-        None => realtime.send(event),
-    }
-    Ok(Json(serde_json::json!({"deleted": true})))
+    crate::services::project_overview::delete(&db, &realtime, &identity, id)?;
+    Ok(Json(serde_json::json!({"deleted":true})))
 }
 
 /// Per-status issue counts + total for the topbar (LIF-161). Separate from
@@ -266,101 +189,10 @@ pub(super) async fn get_board(
 
 // ── GitHub import (LIF-264, web surface) ─────────────────────
 
-/// Request body for `POST /api/projects/{id}/import/github`.
-///
-/// The web Import panel posts repo + token + mapping here. `dry_run` drives the
-/// preview step (counts only, no writes). Only GitHub is exposed on the web;
-/// Linear/Jira are CLI-only per LIF-265.
-#[derive(serde::Deserialize)]
-pub(super) struct GithubImportRequest {
-    /// Source repo as `owner/name`.
-    repo: String,
-    /// Optional GitHub token. Public repos work without one (subject to the
-    /// anon rate limit).
-    #[serde(default)]
-    token: Option<String>,
-    /// open / closed / all. Defaults to all.
-    #[serde(default = "default_import_state")]
-    state: String,
-    /// Lific status for open issues.
-    #[serde(default = "default_map_open")]
-    map_open: String,
-    /// Lific status for closed issues.
-    #[serde(default = "default_map_closed")]
-    map_closed: String,
-    /// Preview only — count, write nothing.
-    #[serde(default)]
-    dry_run: bool,
-}
+use crate::services::github_import::GithubImportRequest;
+#[cfg(test)]
+use crate::services::github_import::{github_import_permits, import_github_with};
 
-// Keep a small global ceiling while allowing unrelated projects to import in
-// parallel. The per-project gate below is the important isolation boundary:
-// one expensive import cannot make another import for the same project race
-// its writes or consume unbounded resources.
-const GITHUB_IMPORT_GLOBAL_LIMIT: usize = 4;
-static GITHUB_IMPORT_SLOTS: OnceLock<Arc<Semaphore>> = OnceLock::new();
-static GITHUB_IMPORT_PROJECT_SLOTS: OnceLock<Mutex<HashMap<i64, Weak<Semaphore>>>> =
-    OnceLock::new();
-
-fn github_import_permits(
-    project_id: i64,
-) -> Result<(OwnedSemaphorePermit, OwnedSemaphorePermit), LificError> {
-    let project_slot = {
-        let slots = GITHUB_IMPORT_PROJECT_SLOTS.get_or_init(|| Mutex::new(HashMap::new()));
-        let mut slots = slots
-            .lock()
-            .map_err(|_| LificError::Internal("GitHub import gate poisoned".into()))?;
-        slots.retain(|_, slot| slot.strong_count() > 0);
-        match slots.entry(project_id) {
-            std::collections::hash_map::Entry::Occupied(mut entry) => {
-                if let Some(slot) = entry.get().upgrade() {
-                    slot
-                } else {
-                    let slot = Arc::new(Semaphore::new(1));
-                    entry.insert(Arc::downgrade(&slot));
-                    slot
-                }
-            }
-            std::collections::hash_map::Entry::Vacant(entry) => {
-                let slot = Arc::new(Semaphore::new(1));
-                entry.insert(Arc::downgrade(&slot));
-                slot
-            }
-        }
-    };
-    let project_permit = project_slot.try_acquire_owned().map_err(|_| {
-        LificError::Conflict("a GitHub import is already running for this project".into())
-    })?;
-    let global_permit = GITHUB_IMPORT_SLOTS
-        .get_or_init(|| Arc::new(Semaphore::new(GITHUB_IMPORT_GLOBAL_LIMIT)))
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| LificError::Conflict("too many GitHub imports are already running".into()))?;
-    Ok((global_permit, project_permit))
-}
-
-fn default_import_state() -> String {
-    "all".to_string()
-}
-fn default_map_open() -> String {
-    "backlog".to_string()
-}
-fn default_map_closed() -> String {
-    "done".to_string()
-}
-
-/// POST /api/projects/{id}/import/github — run (or preview) a GitHub import
-/// into this project.
-///
-/// Synchronous for v1: the request blocks until the import completes and
-/// returns the [`crate::import::ImportSummary`]. The fetch + DB work runs in a
-/// `spawn_blocking` task because the importer uses the blocking reqwest client.
-/// Progress is a spinner on the client; a real dry-run preview precedes the
-/// write so the operator sees counts first. Gated on project-lead (same bar as
-/// editing project structure).
-///
-/// The actual collect/apply is delegated to [`import_github_with`], which takes
-/// the fetcher as a parameter so tests can stub the network entirely.
 pub(super) async fn import_github(
     State(db): State<DbPool>,
     Extension(realtime): Extension<RealtimeHub>,
@@ -368,93 +200,9 @@ pub(super) async fn import_github(
     Path(project_id): Path<i64>,
     Json(req): Json<GithubImportRequest>,
 ) -> Result<Json<crate::import::ImportSummary>, LificError> {
-    require_project_lead(&db, &identity, project_id)?;
-    // Move both permits into the blocking closure. `spawn_blocking` cannot
-    // stop a running blocking task when this request is cancelled; keeping
-    // the permits in that closure prevents a cancelled request from releasing
-    // admission while its network/DB work is still running.
-    let (global_permit, project_permit) = github_import_permits(project_id)?;
-
-    // Resolve the import-bot owner from the authenticated user (the bot is
-    // owned by whoever ran the import), so audit provenance is correct. On a
-    // dry run we skip bot creation entirely.
-    let owner_id = identity.as_ref().map(|i| i.user.id);
-    let dry_run = req.dry_run;
-
-    let db2 = db.clone();
-    let summary = tokio::task::spawn_blocking(move || {
-        let _global_permit = global_permit;
-        let _project_permit = project_permit;
-        run_github_import_blocking(&db2, project_id, owner_id, &req)
-    })
-    .await
-    .map_err(|e| LificError::Internal(format!("import task failed: {e}")))??;
-
-    if !dry_run {
-        realtime.send(RealtimeEvent::ProjectUpdated { project_id });
-    }
-
-    Ok(Json(summary))
-}
-
-/// The blocking body of [`import_github`], factored out so it runs off the
-/// async runtime (blocking reqwest) and so tests can call the injectable
-/// [`import_github_with`] variant directly.
-fn run_github_import_blocking(
-    db: &DbPool,
-    project_id: i64,
-    owner_id: Option<i64>,
-    req: &GithubImportRequest,
-) -> Result<crate::import::ImportSummary, LificError> {
-    let (owner, name) =
-        crate::import::github::parse_repo(&req.repo).map_err(LificError::BadRequest)?;
-    let state =
-        crate::import::github::StateFilter::parse(&req.state).map_err(LificError::BadRequest)?;
-    let fetcher = crate::import::github::LiveGithub::new(&owner, &name, req.token.clone())?;
-    let slug = format!("{owner}/{name}");
-    import_github_with(db, project_id, owner_id, &fetcher, &slug, state, req)
-}
-
-/// Core import logic with the fetcher injected. `owner_id` is the human who
-/// owns the import bot (comments are attributed to it); `None` (fresh install /
-/// dry run) skips comment attribution. Shared by the live handler and tests.
-pub(super) fn import_github_with(
-    db: &DbPool,
-    project_id: i64,
-    owner_id: Option<i64>,
-    fetcher: &dyn crate::import::github::GithubFetcher,
-    slug: &str,
-    state: crate::import::github::StateFilter,
-    req: &GithubImportRequest,
-) -> Result<crate::import::ImportSummary, LificError> {
-    // LIF-385: `map_open` / `map_closed` arrive as free text from the web
-    // Import panel; reject a bad one with 400 up front instead of letting every
-    // insert fail against the status CHECK constraint.
-    let status_map = crate::import::StatusMap {
-        open: req.map_open.parse().map_err(LificError::BadRequest)?,
-        closed: req.map_closed.parse().map_err(LificError::BadRequest)?,
-    };
-    // A resource-ceiling refusal surfaces as 413 (see the `GithubImportError`
-    // conversion in `crate::error`); GitHub being unreachable stays a 500.
-    let fetched = crate::import::github::collect(fetcher, slug, state, &status_map)?;
-
-    // A dry run never mints a bot or writes; a real run resolves/creates the
-    // import bot owned by the requester.
-    let bot = if req.dry_run {
-        None
-    } else {
-        match owner_id {
-            Some(owner) => Some(crate::import::ensure_import_bot(
-                db,
-                owner,
-                "github",
-                "GitHub Import",
-            )?),
-            None => None,
-        }
-    };
-
-    crate::import::run_import(db, project_id, bot, &fetched, req.dry_run)
+    crate::services::github_import::run(&db, &realtime, &identity, project_id, req)
+        .await
+        .map(Json)
 }
 
 #[cfg(test)]

@@ -14,13 +14,44 @@ use topcoat::{
 pub(crate) const STYLESHEET: &str = include_str!("assets/home-shell.css");
 
 #[derive(Clone)]
-struct MobileNavigation {
+pub(crate) struct MobileNavigation {
     open: Signal<bool>,
     pane: Signal<String>,
     project: Signal<String>,
     owner: Signal<String>,
     href: Signal<String>,
     pending_palette: Signal<bool>,
+}
+
+pub(crate) type MobileNavigationSignals = (
+    Signal<bool>,
+    Signal<String>,
+    Signal<String>,
+    Signal<String>,
+    Signal<String>,
+    Signal<bool>,
+);
+impl MobileNavigation {
+    pub(crate) fn handles(&self) -> MobileNavigationSignals {
+        (
+            self.open.clone(),
+            self.pane.clone(),
+            self.project.clone(),
+            self.owner.clone(),
+            self.href.clone(),
+            self.pending_palette.clone(),
+        )
+    }
+    pub(crate) fn from_handles(handles: MobileNavigationSignals) -> Self {
+        Self {
+            open: handles.0,
+            pane: handles.1,
+            project: handles.2,
+            owner: handles.3,
+            href: handles.4,
+            pending_palette: handles.5,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -57,7 +88,11 @@ type PaletteSignals = (
     Option<String>,
 );
 
-pub(crate) fn shell<'a>(cx: &'a Cx, snapshot: &Snapshot, content: BoxView<'a>) -> BoxView<'a> {
+pub(crate) fn shell<'a>(
+    cx: &'a Cx,
+    snapshot: &Snapshot,
+    content: BoxView<'a>,
+) -> topcoat::Result<BoxView<'a>> {
     shell_with_palette(cx, snapshot, content, signal(cx, || false))
 }
 
@@ -66,7 +101,7 @@ pub(crate) fn shell_with_palette<'a>(
     snapshot: &Snapshot,
     content: BoxView<'a>,
     palette_open: Signal<bool>,
-) -> BoxView<'a> {
+) -> topcoat::Result<BoxView<'a>> {
     shell_with_palette_for_page(
         cx,
         &snapshot.user,
@@ -86,7 +121,7 @@ pub(crate) fn shell_with_palette_for_page<'a>(
     route: &ParsedRoute<'_>,
     content: BoxView<'a>,
     palette_open: Signal<bool>,
-) -> BoxView<'a> {
+) -> topcoat::Result<BoxView<'a>> {
     shell_with_palette_for_page_and_topbar(cx, user, projects, route, content, palette_open, None)
 }
 
@@ -99,7 +134,7 @@ pub(crate) fn shell_with_palette_for_page_and_topbar<'a>(
     content: BoxView<'a>,
     palette_open: Signal<bool>,
     topbar: Option<BoxView<'a>>,
-) -> BoxView<'a> {
+) -> topcoat::Result<BoxView<'a>> {
     render_shell(
         cx,
         user,
@@ -107,6 +142,7 @@ pub(crate) fn shell_with_palette_for_page_and_topbar<'a>(
         route,
         PageRegion::Wrapped { content, topbar },
         palette_open,
+        None,
     )
 }
 
@@ -118,7 +154,8 @@ pub(crate) fn shell_with_workspace<'a>(
     route: &ParsedRoute<'_>,
     region: BoxView<'a>,
     palette_open: Signal<bool>,
-) -> BoxView<'a> {
+    path: Signal<String>,
+) -> topcoat::Result<BoxView<'a>> {
     render_shell(
         cx,
         user,
@@ -126,6 +163,7 @@ pub(crate) fn shell_with_workspace<'a>(
         route,
         PageRegion::Workspace(region),
         palette_open,
+        Some(path),
     )
 }
 
@@ -170,7 +208,8 @@ fn render_shell<'a>(
     route: &ParsedRoute<'_>,
     region: PageRegion<'a>,
     palette_open: Signal<bool>,
-) -> BoxView<'a> {
+    live_path: Option<Signal<String>>,
+) -> topcoat::Result<BoxView<'a>> {
     let home_active = route.page == Page::Home;
     let active_page = route.page.navigation_page().title();
     let current_project = route.project.map(str::to_owned);
@@ -180,6 +219,13 @@ fn render_shell<'a>(
     };
     let account_id = user.id;
     let account_admin = user.is_admin;
+    let request_uri = topcoat::router::request::uri(cx);
+    let initial_path = request_uri
+        .path_and_query()
+        .map_or_else(|| request_uri.path(), |path| path.as_str())
+        .to_owned();
+    let path = live_path.unwrap_or_else(|| signal(cx, || initial_path.clone()));
+    let sidebar = super::project_sidebar::Sidebar::load(cx, account_id, &initial_path)?;
     let collapsed = signal(cx, || false);
     let query = signal(cx, String::new);
     let palette = PaletteState {
@@ -219,7 +265,7 @@ fn render_shell<'a>(
     let theme = signal(cx, || "system".to_owned());
     let theme_menu = signal(cx, || false);
     let projects = projects.to_vec();
-    let mobile_projects = projects.clone();
+
     // Quoted token boundaries retain exact membership, including unusual identifiers.
     // The runtime supports Rust string membership but not collection iteration.
     let mut mobile_catalog = String::new();
@@ -245,9 +291,10 @@ fn render_shell<'a>(
         }
         PageRegion::Workspace(region) => region,
     };
-    view! { cx =>
+    let rendered = view! { cx =>
         <div class="native-home-shell" (super::session::mount(cx)) :data-collapsed=$(if collapsed.get() { "true" } else { "false" })>
             <span hidden="hidden" (super::session::account_mount(cx, account_id, account_admin))></span>
+            <span hidden="hidden" (super::motion::mount(cx))></span>
             <a class="tc-shell__skip" href="#main-content" :inert=$(mobile_open.get())>"Skip to content"</a>
             <span hidden="hidden" (shell_mount(cx, collapsed.clone(), theme.clone(), theme_menu.clone(), navigation.clone(), mobile_catalog, palette.clone()))></span>
             <button id="native-home-collapse" class="native-home-fold native-home-icon-button"
@@ -276,11 +323,7 @@ fn render_shell<'a>(
                     <a class="native-home-destination native-home-home-link" href=(super::transport::mounted_url(cx, "/")) aria-current=(home_active.then_some("page"))>
                         (super::icons::project_icon(cx, Some("lucide:House"), 14)) "Home"
                     </a>
-                    <div class="native-home-project-heading">"Projects"</div>
-                    #[key(project.id)]
-                    for project in projects {
-                        (project_tree(cx, &project, current_project.as_deref(), active_page))
-                    }
+                    (sidebar.desktop(cx,path.clone()))
                 </nav>
                 <footer class="native-home-footer">
                     <a class="native-home-account-link" href=(super::transport::mounted_url(cx, "/settings")) title="Account settings">
@@ -318,11 +361,7 @@ fn render_shell<'a>(
                         <a class="native-home-mobile-link" href=(super::transport::mounted_url(cx, "/")) aria-current=(home_active.then_some("page"))>
                             (super::icons::project_icon(cx, Some("lucide:House"), 20)) "Home"
                         </a>
-                        <div class="native-home-project-heading">"Projects"</div>
-                        #[key(project.id)]
-                        for project in mobile_projects.clone() {
-                            (mobile_project_row(cx, &project, &navigation))
-                        }
+                        (sidebar.phone(cx,path.clone(),navigation.handles()))
                     </nav>
                     <footer class="native-home-mobile-footer">
                         <a href=(super::transport::mounted_url(cx, "/settings")) class="native-home-mobile-account-link">
@@ -331,12 +370,10 @@ fn render_shell<'a>(
                         (theme_button(cx, theme.clone(), theme_menu.clone()))
                     </footer>
                 </div>
-                #[key(project.id)]
-                for project in mobile_projects {
-                    (mobile_project_panel(cx, &project, &navigation, current_project.as_deref(), active_page))
-                }
+                (sidebar.phone_panels(cx,path.clone(),navigation.handles()))
                 (mobile_unavailable_panel(cx, &navigation))
             </section>
+            (sidebar.menu(cx))
             <div class="native-home-theme-menu" role="menu" aria-label="Theme" :hidden=$(!theme_menu.get())>
                 for (preference, label) in [("light", "Light"), ("dark", "Dark"), ("system", "System")] {
                     <button role="menuitemradio" :aria-checked=$(if theme.get() == preference { "true" } else { "false" }) @click=$(|_event| {
@@ -377,145 +414,8 @@ fn render_shell<'a>(
                 </section>
             </div>
         </div>
-    }.boxed()
-}
-
-const PROJECT_DESTINATIONS: [(&str, &str, &str); 10] = [
-    ("overview", "Overview", "lucide:LayoutDashboard"),
-    ("issues", "Issues", "lucide:List"),
-    ("board", "Board", "lucide:LayoutGrid"),
-    ("graph", "Graph", "lucide:Waypoints"),
-    ("modules", "Modules", "lucide:Layers"),
-    ("pages", "Pages", "lucide:FileText"),
-    ("files", "Files", "lucide:Paperclip"),
-    ("plans", "Plans", "lucide:ListChecks"),
-    ("activity", "Activity", "lucide:History"),
-    ("insights", "Insights", "lucide:TrendingUp"),
-];
-
-fn project_mark<'a>(cx: &'a Cx, project: &crate::db::models::Project, size: u32) -> BoxView<'a> {
-    let icon = project.emoji.as_deref().filter(|value| !value.is_empty());
-    if icon.is_some() {
-        super::icons::project_icon(cx, icon, size)
-    } else {
-        let initials = project.identifier.chars().take(2).collect::<String>();
-        view! { cx => <span class="native-home-project-initials">(initials)</span> }.boxed()
-    }
-}
-
-fn project_destinations<'a>(
-    cx: &'a Cx,
-    identifier: &str,
-    class: &str,
-    current_project: Option<&str>,
-    active_page: &'static str,
-) -> BoxView<'a> {
-    let links = PROJECT_DESTINATIONS.map(|(slug, title, icon)| {
-        (
-            super::transport::mounted_url(cx, &format!("/{identifier}/{slug}")),
-            title,
-            icon,
-            current_project == Some(identifier) && active_page == title,
-        )
-    });
-    let class = class.to_owned();
-    view! { cx =>
-        for (href, title, icon, active) in links {
-            <a class=(class.clone()) href=(href) aria-current=(active.then_some("page"))>(super::icons::project_icon(cx, Some(icon), 14)) (title)</a>
-        }
-    }.boxed()
-}
-
-fn project_tree<'a>(
-    cx: &'a Cx,
-    project: &Project,
-    current_project: Option<&str>,
-    active_page: &'static str,
-) -> BoxView<'a> {
-    let open = signal(cx, || current_project == Some(project.identifier.as_str()));
-    let expand = format!("Expand {}", project.name);
-    let collapse = format!("Collapse {}", project.name);
-    let id = format!("native-project-nav-{}", project.id);
-    let name = project.name.clone();
-    let overview = super::transport::mounted_url(cx, &format!("/{}/overview", project.identifier));
-    let mark = project_mark(cx, project, 16);
-    let destinations = project_destinations(
-        cx,
-        &project.identifier,
-        "native-home-destination",
-        current_project,
-        active_page,
-    );
-    view! { cx =>
-        <section class="native-home-project">
-            <div class="native-home-project-row">
-                <button class="native-home-project-toggle native-home-icon-button" :aria-label=$(if open.get() { collapse.clone() } else { expand.clone() })
-                    :aria-expanded=$(if open.get() { "true" } else { "false" }) aria-controls=(id.clone()) @click=$(|_event| open.set(!open.get()))>
-                    (super::icons::project_icon(cx, Some("lucide:ChevronRight"), 13))
-                </button>
-                <a class="native-home-project-title" href=(overview) title=(name.clone())>
-                    (mark)<span>(name)</span>
-                </a>
-            </div>
-            <div id=(id) class="native-home-project-links" :hidden=$(!open.get())>
-                (destinations)
-            </div>
-        </section>
-    }.boxed()
-}
-
-fn mobile_project_row<'a>(
-    cx: &'a Cx,
-    project: &crate::db::models::Project,
-    navigation: &MobileNavigation,
-) -> BoxView<'a> {
-    let identifier = project.identifier.clone();
-    let name = project.name.clone();
-    let mark = project_mark(cx, project, 18);
-    let action = mobile_action(cx, navigation, "project", identifier.clone());
-    view! { cx =>
-        <button class="native-home-mobile-link" aria-label=(name.clone()) data-native-project-trigger=(identifier.clone())
-            (action)>
-            (mark)<span>(name)</span>(super::icons::project_icon(cx, Some("lucide:ChevronRight"), 16))
-        </button>
-    }.boxed()
-}
-
-fn mobile_project_panel<'a>(
-    cx: &'a Cx,
-    project: &crate::db::models::Project,
-    navigation: &MobileNavigation,
-    current_project: Option<&str>,
-    active_page: &'static str,
-) -> BoxView<'a> {
-    let identifier = project.identifier.clone();
-    let name = project.name.clone();
-    let destinations = project_destinations(
-        cx,
-        &identifier,
-        "native-home-mobile-link",
-        current_project,
-        active_page,
-    );
-    let selected = navigation.project.clone();
-    let id = format!("native-mobile-project-{identifier}");
-    let back = mobile_action(cx, navigation, "back", String::new());
-    let close = mobile_action(cx, navigation, "close", String::new());
-    view! { cx =>
-        <div id=(id) data-native-mobile-project="" :hidden=$(selected.get() != identifier)>
-            <header class="native-home-mobile-nav-header">
-                <button class="native-home-icon-button" aria-label="Back to projects" (back)>
-                    (super::icons::project_icon(cx, Some("lucide:ArrowLeft"), 20))
-                </button>
-                <strong>(name)</strong>
-                <button class="native-home-icon-button" aria-label="Close navigation" (close)>
-                    (super::icons::project_icon(cx, Some("lucide:X"), 20))
-                </button>
-            </header>
-            (destinations)
-        </div>
-    }
-    .boxed()
+    }.boxed();
+    Ok(rendered)
 }
 
 fn mobile_unavailable_panel<'a>(cx: &'a Cx, navigation: &MobileNavigation) -> BoxView<'a> {
@@ -540,7 +440,7 @@ fn mobile_unavailable_panel<'a>(cx: &'a Cx, navigation: &MobileNavigation) -> Bo
     }.boxed()
 }
 
-fn mobile_action(
+pub(crate) fn mobile_action(
     cx: &Cx,
     navigation: &MobileNavigation,
     action: &str,
@@ -1453,12 +1353,16 @@ async fn native_home_palette_results(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{
-        self,
-        models::{AuthUser, CreateProject},
-        queries,
+    use crate::{
+        auth::AuthState,
+        db::{
+            self,
+            models::{AuthUser, CreateProject, CreateUser},
+            queries,
+        },
+        realtime::RealtimeHub,
     };
-    use topcoat::context::CxTestBuilder;
+    use topcoat::{context::CxTestBuilder, router::request::Request};
 
     fn snapshot() -> Snapshot {
         let db = db::open_memory().unwrap();
@@ -1512,20 +1416,75 @@ mod tests {
         assert!(matching_projects(&data.projects, "missing").is_empty());
     }
 
+    fn shell_context(empty_name: bool) -> Cx {
+        let db = db::open_memory().unwrap();
+        let token = {
+            let conn = db.write().unwrap();
+            let user = queries::users::create_user(
+                &conn,
+                &CreateUser {
+                    username: "member".into(),
+                    email: "member@test.local".into(),
+                    password: "testpassword1".into(),
+                    display_name: Some(if empty_name { "" } else { "Member" }.into()),
+                    is_admin: false,
+                    is_bot: false,
+                },
+            )
+            .unwrap();
+            queries::settings::update(
+                &conn,
+                queries::settings::InstanceSettingsPatch {
+                    authz_enforced: Some(true),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            for (identifier, name) in [("ACC", "Accounts <script>"), ("DCS", "Documents")] {
+                queries::create_project(
+                    &conn,
+                    &CreateProject {
+                        identifier: identifier.into(),
+                        name: name.into(),
+                        lead_user_id: Some(user.id),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            }
+            queries::users::create_session(&conn, user.id, None)
+                .unwrap()
+                .token
+        };
+        let request = Request::builder()
+            .uri("/")
+            .header("cookie", format!("lific_token={token}"))
+            .body(())
+            .unwrap();
+        let (parts, ()) = request.into_parts();
+        CxTestBuilder::new()
+            .app_context(AuthState {
+                db,
+                public_url: "https://test.local".into(),
+                required: true,
+            })
+            .app_context(RealtimeHub::new())
+            .app_context(super::super::project_sidebar::SidebarWriteStore::default())
+            .request_context(parts)
+            .build()
+    }
+
     #[topcoat::view::component]
-    async fn shell_fixture(cx: &Cx, empty_name: bool) -> topcoat::Result<impl View> {
-        let mut data = snapshot();
-        if empty_name {
-            data.user.display_name.clear();
-        }
+    async fn shell_fixture(cx: &Cx) -> topcoat::Result<impl View> {
+        let data = super::super::home_data::snapshot(cx)?;
         let content = view! { cx => <p>"Actual Home content"</p> }.boxed();
-        Ok(shell(cx, &data, content))
+        shell(cx, &data, content)
     }
 
     #[tokio::test]
     async fn shell_account_uses_username_when_display_name_is_empty() {
-        let cx = CxTestBuilder::new().build();
-        let outer = view! { cx => shell_fixture(empty_name: true) };
+        let cx = shell_context(true);
+        let outer = view! { cx => shell_fixture() };
         let html = outer.single().await.unwrap().render(&cx);
         let account = html
             .split("class=\"native-home-account-link\"")
@@ -1540,8 +1499,8 @@ mod tests {
 
     #[tokio::test]
     async fn shell_populates_safe_project_navigation_and_native_controls() {
-        let cx = CxTestBuilder::new().build();
-        let outer = view! { cx => shell_fixture(empty_name: false) };
+        let cx = shell_context(false);
+        let outer = view! { cx => shell_fixture() };
         let html = outer.single().await.unwrap().render(&cx);
         for expected in [
             "Accounts &lt;script&gt;",
@@ -1562,7 +1521,7 @@ mod tests {
         // The pinned serializer leaves '<' inert within quoted attributes;
         // visible text and attribute values have distinct escaping contexts.
         assert!(html.contains("title=\"Accounts <script>\""));
-        assert!(html.contains("aria-label=\"Accounts <script>\""));
+        assert!(html.contains("aria-label=\"Expand Accounts <script>\""));
         assert!(!html.contains("data-lific-"));
     }
 }

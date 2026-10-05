@@ -75,7 +75,11 @@ fn overview_reads_preserve_project_counts_capped_issues_activity_and_personal_gr
     )
     .unwrap();
     let reads = load(&db, &identity, "OVR").unwrap();
-    assert!(!reads.web_auto_login);
+    assert!(
+        !queries::settings::get(&db.read().unwrap())
+            .unwrap()
+            .web_auto_login
+    );
     assert!(reads.pages.as_ref().unwrap().is_empty());
     assert!(
         reads
@@ -86,9 +90,7 @@ fn overview_reads_preserve_project_counts_capped_issues_activity_and_personal_gr
             .any(|member| member.user_id == viewer.id)
     );
     assert!(
-        reads
-            .leads
-            .as_ref()
+        crate::services::project_form::list_leads(&db, &identity)
             .unwrap()
             .iter()
             .any(|lead| lead.id == viewer.id)

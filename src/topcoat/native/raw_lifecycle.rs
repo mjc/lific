@@ -335,6 +335,9 @@ impl Fixture {
                 socket.set_send_buffer_size(bytes as usize).unwrap();
                 let actual = socket.send_buffer_size().unwrap();
                 assert_send_buffer(actual, bytes);
+                // The deadline relies on the accepted TCP write returning.
+                // Establish that mode here after configuring the OS buffers.
+                socket.set_nonblocking(true).unwrap();
             }
         });
         let app = super::admission_contract::mounted(app);

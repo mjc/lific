@@ -58,8 +58,10 @@ pub(crate) mod workspace;
 #[cfg(test)]
 mod workspace_delete_production;
 
-// Model-only executable stage; no route or placeholder view is registered.
-#[cfg(test)]
-mod project_overview {
-    mod model;
-}
+pub(crate) mod project_overview;
+
+pub(crate) mod project_create;
+
+pub(crate) mod project_sidebar;
+
+mod motion;
