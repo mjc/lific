@@ -4,6 +4,7 @@ const net = require('node:net');
 const path = require('node:path');
 const {pathToFileURL} = require('node:url');
 const assert = require('node:assert/strict');
+const {Transform} = require('node:stream');
 
 async function readDevToolsPort(activePort, platform = process.platform) {
   const deadline = performance.now() + 15000;
@@ -59,7 +60,39 @@ async function launchVisibilityBrowser() {
   }
 }
 
-async function mountedProxy(upstream, prefix) {
+// Optional gate is fixture-only observation/control of genuine transport bytes.
+function makeIncomingGate() {
+  let held = false, buffers = [], bytes = 0, failure = null;
+  const stream = new Transform({
+    transform(chunk, encoding, callback) {
+      if (!held) {callback(null, chunk); return;}
+      bytes += chunk.length;
+      if (bytes > 2 * 1024 * 1024) {
+        callback(new Error('Home proof held more than 2 MiB of genuine incoming transport.'));
+        return;
+      }
+      buffers.push(Buffer.from(chunk));
+      callback();
+    },
+  });
+  stream.on('error', error => {failure = error;});
+  return {
+    stream,
+    hold() {assert.equal(held, false); held = true; buffers = []; bytes = 0;},
+    text() {if (failure) throw failure; return Buffer.concat(buffers).toString('utf8');},
+    release() {
+      if (failure) throw failure;
+      assert.equal(held, true);
+      held = false;
+      for (const chunk of buffers) stream.push(chunk);
+      buffers = []; bytes = 0;
+    },
+    dispose() {buffers = []; bytes = 0; stream.destroy();},
+  };
+}
+
+async function mountedProxy(upstream, prefix, options = {}) {
+  const incoming = options.incomingPath ? makeIncomingGate() : null;
   const requests = [], sockets = [], connections = new Set();
   const logicalPath = url => !prefix ? url : url.startsWith(`${prefix}/`) ? url.slice(prefix.length) : null;
   const headersFor = request => {
@@ -91,7 +124,11 @@ async function mountedProxy(upstream, prefix) {
       const headers = headersFor(request);
       backend.write(`${request.method} ${logical} HTTP/${request.httpVersion}\r\n${Object.entries(headers).map(([name, value]) => `${name}: ${value}`).join('\r\n')}\r\n\r\n`);
       if (head.length) backend.write(head);
-      socket.pipe(backend); backend.pipe(socket);
+      socket.pipe(backend);
+      if (incoming && logical.split('?')[0] === options.incomingPath) {
+        backend.pipe(incoming.stream).pipe(socket);
+        incoming.stream.on('error', () => {socket.destroy(); backend.destroy();});
+      } else backend.pipe(socket);
     });
     connections.add(socket); connections.add(backend);
     socket.on('close', () => {connections.delete(socket); backend.destroy();});
@@ -104,8 +141,9 @@ async function mountedProxy(upstream, prefix) {
     server.listen(0, '127.0.0.1', resolve);
   });
   return {
-    origin: `http://127.0.0.1:${server.address().port}`, requests, sockets,
+    origin: `http://127.0.0.1:${server.address().port}`, requests, sockets, incomingGate: incoming,
     async close() {
+      if (incoming) incoming.dispose();
       for (const connection of connections) connection.destroy();
       server.closeAllConnections();
       await new Promise(resolve => server.close(resolve));
