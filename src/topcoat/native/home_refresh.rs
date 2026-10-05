@@ -14,7 +14,8 @@ pub(super) fn mount(cx: &Cx, inputs: Signal<String>, revision: Signal<usize>) ->
     let maximum_scheduled = signal(cx, || false);
     let retry_scheduled = signal(cx, || false);
     let disposed = signal(cx, || false);
-    let initialized = signal(cx, || false);
+    let mount_maximum = maximum_scheduled.clone();
+    let mount_retry = retry_scheduled.clone();
     let quiet_maximum = maximum_scheduled.clone();
     let quiet_disposed = disposed.clone();
     let retry_pending = pending.clone();
@@ -28,6 +29,10 @@ pub(super) fn mount(cx: &Cx, inputs: Signal<String>, revision: Signal<usize>) ->
     let schedule_disposed = disposed.clone();
     let schedule_maximum = maximum_scheduled;
     let dispose_pending = pending.clone();
+    let mount_ready = ready.clone();
+    let mount_refreshing = refreshing.clone();
+    let mount_pending = pending.clone();
+    let mount_disposed = disposed.clone();
     let handler = expr!(|_event: Event| {
         let _read = || {
             raw!(
@@ -154,11 +159,16 @@ pub(super) fn mount(cx: &Cx, inputs: Signal<String>, revision: Signal<usize>) ->
             "owner.addEventListener('topcoat:render-error',event=>${_failed}(cx.hydrate(event.detail.path)),{signal:cx.abortSignal}); window.addEventListener('focus',event=>${_focus}(cx.event(event)),{signal:cx.abortSignal}); document.addEventListener('visibilitychange',event=>${_visible}(cx.event(event)),{signal:cx.abortSignal}); cx.abortSignal.addEventListener('abort',()=>${_dispose}(),{once:true});",
             ()
         );
-        if !initialized.get() {
-            let initial_inputs = raw!("${_read}()", String::new());
-            inputs.set(initial_inputs);
-            initialized.set(true);
-        };
+        // A parent render preserves matching signals, but retires their timer
+        // handles. The generic mount runs once for each new owning scope.
+        mount_ready.set(false);
+        mount_refreshing.set(false);
+        mount_pending.set(false);
+        mount_maximum.set(false);
+        mount_retry.set(false);
+        mount_disposed.set(false);
+        let initial_inputs = raw!("${_read}()", String::new());
+        inputs.set(initial_inputs);
     });
     let mut attributes = Attributes::with_capacity(1);
     attributes.insert(

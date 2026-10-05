@@ -260,3 +260,8 @@ async fn native_home_hidden_publication_checks_authority_without_reading_home_pr
 async fn native_home_failed_connected_render_preserves_body_and_recovers_on_focus() {
     browser("render_failure").await;
 }
+
+#[tokio::test]
+async fn native_home_parent_rerender_retires_old_deadlines_and_initializes_new_owner() {
+    browser("owner_retirement").await;
+}
