@@ -40,12 +40,7 @@ pub(crate) fn screen(cx: &Cx) -> topcoat::Result<BoxView<'_>> {
         </section>
     }
     .boxed();
-    Ok(home_shell::shell_with_palette(
-        cx,
-        &snapshot,
-        content,
-        palette_open,
-    ))
+    home_shell::shell_with_palette(cx, &snapshot, content, palette_open)
 }
 
 #[shard("/__native_home/content")]

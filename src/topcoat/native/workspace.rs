@@ -45,6 +45,7 @@ async fn workspace_owner(
     initial_path: String,
 ) -> topcoat::Result<impl View> {
     let path = signal(cx, || initial_path.clone());
+    let sidebar_path = path.clone();
     let pending_issues = signal(cx, Vec::<i64>::new);
     let navigation_revision = signal(cx, || 0_usize);
     let region = view! { cx =>
@@ -53,14 +54,15 @@ async fn workspace_owner(
         native_workspace_page(path: $(path.get()), pending_issues: $(pending_issues.get()))
     }
     .boxed();
-    Ok(home_shell::shell_with_workspace(
+    home_shell::shell_with_workspace(
         cx,
         &user,
         &projects,
         &ParsedRoute::parse(&initial_path),
         region,
         signal(cx, || false),
-    ))
+        sidebar_path,
+    )
 }
 
 #[shard("/__native_workspace/page")]

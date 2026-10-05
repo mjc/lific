@@ -44,11 +44,12 @@ async fn browser(scenario: &str) {
         );
     }
     let (origin, task) = home_fixture::serve(&fixture).await;
-    let mut command = home_fixture::browser_command(
-        "src/topcoat/native/home_shell.browser.test.cjs",
-        &origin,
-        &fixture.token,
-    );
+    let script = if scenario == "motion" {
+        "src/topcoat/native/motion.browser.test.cjs"
+    } else {
+        "src/topcoat/native/home_shell.browser.test.cjs"
+    };
+    let mut command = home_fixture::browser_command(script, &origin, &fixture.token);
     command.arg(scenario);
     // This existing capture option points at the installed, pinned original frontend.
     command.arg(std::env::var_os("LIFIC_SVELTE_SNAPSHOT").unwrap_or_default());
@@ -106,4 +107,9 @@ async fn native_home_shell_hostile_project_stays_text_through_disclosure_and_pho
 #[tokio::test]
 async fn native_home_shell_theme_preferences_persist_and_follow_system_and_other_tabs() {
     browser("preferences").await;
+}
+
+#[tokio::test]
+async fn controls_preferences_keep_motion_and_synchronize_other_tabs() {
+    browser("motion").await;
 }

@@ -44,12 +44,14 @@ mod topcoat_app {
     use topcoat::{
         Result,
         router::{Slot, layout, page, response::Response, route},
-        view::{View, ViewExt, view},
+        view::{View, view},
     };
 
     enum NativeRoute {
         Home,
         Workspace,
+        ProjectNew,
+        ProjectOverview,
     }
 
     fn native_route(
@@ -59,6 +61,8 @@ mod topcoat_app {
         use super::topcoat_frontend::shell::{Layout, Page};
         match (route.layout, route.project, route.page) {
             (Layout::Private, _, Page::Home) => Some(NativeRoute::Home),
+            (Layout::Private, _, Page::ProjectNew) => Some(NativeRoute::ProjectNew),
+            (Layout::Private, Some(_), Page::Overview) => Some(NativeRoute::ProjectOverview),
             (Layout::Private, Some(_), Page::IssueDetail(_)) => Some(NativeRoute::Workspace),
             (Layout::Private, Some(_), Page::Issues | Page::Board) if !has_query => {
                 Some(NativeRoute::Workspace)
@@ -201,23 +205,20 @@ mod topcoat_app {
             Some(NativeRoute::Workspace) => {
                 return super::topcoat_frontend::native::workspace::screen(cx, &route);
             }
+            Some(NativeRoute::ProjectNew) => {
+                return super::topcoat_frontend::native::project_create::screen(cx, &route);
+            }
+            Some(NativeRoute::ProjectOverview) => {
+                return super::topcoat_frontend::native::project_overview::screen(cx, &route);
+            }
             None => {}
         }
         let content = match route.layout {
             Layout::Private => match route.page {
                 Page::Home => return super::topcoat_frontend::native::home::screen(cx),
-                Page::Overview => route.project.map_or_else(
-                    || super::topcoat_frontend::shell::placeholder(cx, &route),
-                    |identifier| {
-                        view! { cx =>
-                            <div class="tc-project-overview">
-                                (super::topcoat_frontend::dashboard::overview(cx, identifier))
-                                (super::topcoat_frontend::project_settings::administration(cx, identifier))
-                            </div>
-                        }
-                        .boxed()
-                    },
-                ),
+                Page::Overview => {
+                    return super::topcoat_frontend::native::project_overview::screen(cx, &route);
+                }
                 Page::ProjectNew => super::topcoat_frontend::project_settings::new_project(cx),
                 Page::ProjectImport => {
                     super::topcoat_frontend::project_settings::archive_import(cx)
@@ -284,7 +285,9 @@ mod topcoat_app {
                         super::topcoat_frontend::modules::detail(
                             cx,
                             project,
-                            module_id.parse().expect("module routes contain numeric ids"),
+                            module_id
+                                .parse()
+                                .expect("module routes contain numeric ids"),
                         )
                     },
                 ),
@@ -1288,41 +1291,105 @@ mod topcoat_app_tests {
 
     #[tokio::test]
     async fn topcoat_project_overview_and_settings_alias_share_one_composed_screen() {
-        let router = topcoat::router::tower::TowerService::new(topcoat_app::router());
-        for path in ["/LIF/overview", "/LIF/settings"] {
-            let response = router
-                .clone()
-                .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
-                .await
-                .unwrap();
-            let body = response.into_body().collect().await.unwrap().to_bytes();
-            let body = String::from_utf8_lossy(&body);
-            assert!(
-                body.contains("data-topcoat-dashboard=\"overview\""),
-                "{path}"
-            );
-            assert!(
-                body.contains("data-topcoat-project-settings=\"settings\""),
-                "{path}"
-            );
+        let fixture = super::topcoat_frontend::native::home_fixture::fixture();
+        for prefix in ["", "/app", "/ACC"] {
+            for path in [
+                "/ACC/overview",
+                "/ACC/settings",
+                "/ACC/overview?group_warning=1",
+            ] {
+                let mut request = Request::builder()
+                    .uri(path)
+                    .header("cookie", format!("lific_token={}", fixture.token))
+                    .header("x-forwarded-prefix", prefix)
+                    .body(Body::empty())
+                    .unwrap();
+                request.extensions_mut().insert(axum::extract::ConnectInfo(
+                    "127.0.0.1:3000".parse::<std::net::SocketAddr>().unwrap(),
+                ));
+                let response = fixture.app.clone().oneshot(request).await.unwrap();
+                assert_eq!(
+                    response.status(),
+                    axum::http::StatusCode::OK,
+                    "{prefix}{path}"
+                );
+                let body = response.into_body().collect().await.unwrap().to_bytes();
+                let body = String::from_utf8_lossy(&body);
+                assert!(
+                    body.contains("class=\"native-overview\""),
+                    "{prefix}{path}: {body}"
+                );
+                assert!(body.contains("Visible project"), "{prefix}{path}");
+                assert!(
+                    body.contains("Visible active initial work"),
+                    "{prefix}{path}"
+                );
+                assert!(!body.contains("Private hidden"), "{prefix}{path}");
+                assert!(
+                    body.contains(&format!("href=\"{prefix}/ACC/issues\"")),
+                    "{prefix}{path}"
+                );
+                for script in body.split("<script").skip(1) {
+                    let tag = script.split('>').next().unwrap();
+                    if tag.contains(" src=") {
+                        assert!(
+                            tag.contains("/__topcoat-runtime.js"),
+                            "legacy overview script: {tag}"
+                        );
+                    }
+                }
+                if path.contains("group_warning=1") {
+                    assert!(
+                        body.contains("data-native-project-notice"),
+                        "{prefix}{path}"
+                    );
+                    assert!(
+                        body.contains("You can add it from the sidebar."),
+                        "{prefix}{path}"
+                    );
+                }
+            }
         }
     }
 
     #[tokio::test]
     async fn topcoat_project_setup_routes_mount_create_and_archive_import_modes() {
-        let router = topcoat::router::tower::TowerService::new(topcoat_app::router());
-        for (path, mode) in [("/projects/new", "new"), ("/projects/import", "archive")] {
-            let response = router
-                .clone()
-                .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
-                .await
-                .unwrap();
-            let body = response.into_body().collect().await.unwrap().to_bytes();
-            assert!(
-                String::from_utf8_lossy(&body)
-                    .contains(&format!("data-topcoat-project-settings=\"{mode}\"")),
-                "{path}"
-            );
+        let fixture = super::topcoat_frontend::native::home_fixture::fixture();
+        for prefix in ["", "/app", "/ACC"] {
+            for (path, marker) in [
+                ("/projects/new", "class=\"native-project-create-page\""),
+                (
+                    "/projects/import",
+                    "data-topcoat-project-settings=\"archive\"",
+                ),
+            ] {
+                let mut request = Request::builder()
+                    .uri(path)
+                    .header("cookie", format!("lific_token={}", fixture.token))
+                    .header("x-forwarded-prefix", prefix)
+                    .body(Body::empty())
+                    .unwrap();
+                request.extensions_mut().insert(axum::extract::ConnectInfo(
+                    "127.0.0.1:3000".parse::<std::net::SocketAddr>().unwrap(),
+                ));
+                let response = fixture.app.clone().oneshot(request).await.unwrap();
+                assert_eq!(
+                    response.status(),
+                    axum::http::StatusCode::OK,
+                    "{prefix}{path}"
+                );
+                let body = response.into_body().collect().await.unwrap().to_bytes();
+                let body = String::from_utf8_lossy(&body);
+                assert!(body.contains(marker), "{prefix}{path}");
+                if path == "/projects/new" {
+                    assert!(body.contains("id=\"native-project-create-form\""));
+                    assert!(body.contains("for=\"project-name\""));
+                    assert!(body.contains("for=\"project-id\""));
+                    assert!(!body.contains("data-topcoat-project-settings=\"new\""));
+                    assert!(!body.contains("/__topcoat-project-settings.js"));
+                    assert!(!body.contains("Private hidden project"));
+                }
+            }
         }
     }
 
@@ -2207,6 +2274,16 @@ fn build_app_with_store_and_frontend(
         attachment_store.clone(),
         trusted_proxies.clone(),
     ));
+    // A trusted host may provide the shared store; production still defaults once.
+    let frontend = if frontend
+        .get_app_context::<topcoat_frontend::native::project_sidebar::SidebarWriteStore>()
+        .is_some()
+    {
+        frontend
+    } else {
+        frontend
+            .app_context(topcoat_frontend::native::project_sidebar::SidebarWriteStore::default())
+    };
     let app = app
         .route("/assets/{*path}", any(|| async { StatusCode::NOT_FOUND }))
         .fallback_service(topcoat::router::tower::TowerService::new(
@@ -2219,6 +2296,8 @@ fn build_app_with_store_and_frontend(
                 .app_context(attachment_config)
                 .app_context(trusted_proxies.clone())
                 .app_context(cfg.clone())
+                .app_context(topcoat_frontend::native::project_create::DraftStore::default())
+                .app_context(topcoat_frontend::native::project_overview::ManagementStore::default())
                 .build(),
         ));
 

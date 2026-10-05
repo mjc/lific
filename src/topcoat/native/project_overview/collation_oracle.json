@@ -1,0 +1,322 @@
+{
+  "master": "9683d38",
+  "browser": "149.0.7827.55",
+  "labels": [
+    {
+      "id": 1,
+      "name": "éclair"
+    },
+    {
+      "id": 2,
+      "name": "eclair"
+    },
+    {
+      "id": 3,
+      "name": "Eclair"
+    },
+    {
+      "id": 4,
+      "name": "Ångström"
+    },
+    {
+      "id": 5,
+      "name": "angstrom"
+    },
+    {
+      "id": 6,
+      "name": "Örebro"
+    },
+    {
+      "id": 7,
+      "name": "Zebra"
+    },
+    {
+      "id": 8,
+      "name": "label2"
+    },
+    {
+      "id": 9,
+      "name": "label10"
+    },
+    {
+      "id": 10,
+      "name": "a"
+    },
+    {
+      "id": 11,
+      "name": "A"
+    },
+    {
+      "id": 12,
+      "name": "ä"
+    },
+    {
+      "id": 13,
+      "name": "z"
+    },
+    {
+      "id": 14,
+      "name": "a"
+    }
+  ],
+  "results": [
+    {
+      "requestedLocale": "default",
+      "options": {
+        "locale": "en-US",
+        "usage": "sort",
+        "sensitivity": "variant",
+        "ignorePunctuation": false,
+        "collation": "default",
+        "numeric": false,
+        "caseFirst": "false"
+      },
+      "name": [
+        10,
+        14,
+        11,
+        12,
+        5,
+        4,
+        2,
+        3,
+        1,
+        9,
+        8,
+        6,
+        13,
+        7
+      ],
+      "usage": [
+        13,
+        10,
+        14,
+        11,
+        12,
+        5,
+        4,
+        2,
+        3,
+        1,
+        9,
+        8,
+        6,
+        7
+      ],
+      "newest": [
+        14,
+        13,
+        12,
+        11,
+        10,
+        9,
+        8,
+        7,
+        6,
+        5,
+        4,
+        3,
+        2,
+        1
+      ],
+      "filtered": [
+        2,
+        3
+      ],
+      "pairs": [
+        {
+          "a": "a",
+          "b": "A",
+          "result": -1
+        },
+        {
+          "a": "éclair",
+          "b": "eclair",
+          "result": 1
+        },
+        {
+          "a": "label2",
+          "b": "label10",
+          "result": 1
+        },
+        {
+          "a": "Ångström",
+          "b": "Zebra",
+          "result": -1
+        }
+      ]
+    },
+    {
+      "requestedLocale": "en-US",
+      "options": {
+        "locale": "en-US",
+        "usage": "sort",
+        "sensitivity": "variant",
+        "ignorePunctuation": false,
+        "collation": "default",
+        "numeric": false,
+        "caseFirst": "false"
+      },
+      "name": [
+        10,
+        14,
+        11,
+        12,
+        5,
+        4,
+        2,
+        3,
+        1,
+        9,
+        8,
+        6,
+        13,
+        7
+      ],
+      "usage": [
+        13,
+        10,
+        14,
+        11,
+        12,
+        5,
+        4,
+        2,
+        3,
+        1,
+        9,
+        8,
+        6,
+        7
+      ],
+      "newest": [
+        14,
+        13,
+        12,
+        11,
+        10,
+        9,
+        8,
+        7,
+        6,
+        5,
+        4,
+        3,
+        2,
+        1
+      ],
+      "filtered": [
+        2,
+        3
+      ],
+      "pairs": [
+        {
+          "a": "a",
+          "b": "A",
+          "result": -1
+        },
+        {
+          "a": "éclair",
+          "b": "eclair",
+          "result": 1
+        },
+        {
+          "a": "label2",
+          "b": "label10",
+          "result": 1
+        },
+        {
+          "a": "Ångström",
+          "b": "Zebra",
+          "result": -1
+        }
+      ]
+    },
+    {
+      "requestedLocale": "sv-SE",
+      "options": {
+        "locale": "sv-SE",
+        "usage": "sort",
+        "sensitivity": "variant",
+        "ignorePunctuation": false,
+        "collation": "default",
+        "numeric": false,
+        "caseFirst": "false"
+      },
+      "name": [
+        10,
+        14,
+        11,
+        5,
+        2,
+        3,
+        1,
+        9,
+        8,
+        13,
+        7,
+        4,
+        12,
+        6
+      ],
+      "usage": [
+        13,
+        10,
+        14,
+        11,
+        5,
+        2,
+        3,
+        1,
+        9,
+        8,
+        7,
+        4,
+        12,
+        6
+      ],
+      "newest": [
+        14,
+        13,
+        12,
+        11,
+        10,
+        9,
+        8,
+        7,
+        6,
+        5,
+        4,
+        3,
+        2,
+        1
+      ],
+      "filtered": [
+        2,
+        3
+      ],
+      "pairs": [
+        {
+          "a": "a",
+          "b": "A",
+          "result": -1
+        },
+        {
+          "a": "éclair",
+          "b": "eclair",
+          "result": 1
+        },
+        {
+          "a": "label2",
+          "b": "label10",
+          "result": 1
+        },
+        {
+          "a": "Ångström",
+          "b": "Zebra",
+          "result": 1
+        }
+      ]
+    }
+  ]
+}

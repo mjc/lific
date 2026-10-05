@@ -34,6 +34,7 @@ pub(crate) struct Fixture {
     pub(crate) token: String,
     pub(crate) realtime: RealtimeHub,
     pub(crate) home_snapshot_reads: HomeSnapshotReads,
+    pub(crate) sidebar_writes: super::project_sidebar::SidebarWriteStore,
     _store: tempfile::TempDir,
 }
 
@@ -85,13 +86,16 @@ pub(super) fn fixture_with_auth(required: bool) -> Fixture {
     let proxies: Arc<[IpNetwork]> = vec![IpNetwork::parse("127.0.0.1").unwrap()].into();
     let realtime = RealtimeHub::new();
     let home_snapshot_reads = HomeSnapshotReads::default();
+    let sidebar_writes = super::project_sidebar::SidebarWriteStore::default();
     let app = build_app_with_store_and_frontend(
         &cfg,
         db.clone(),
         realtime.clone(),
         proxies,
         AttachmentStore::new(store.path().to_owned()),
-        topcoat_app::router_builder().app_context(home_snapshot_reads.clone()),
+        topcoat_app::router_builder()
+            .app_context(home_snapshot_reads.clone())
+            .app_context(sidebar_writes.clone()),
     );
     Fixture {
         app,
@@ -99,6 +103,7 @@ pub(super) fn fixture_with_auth(required: bool) -> Fixture {
         token,
         realtime,
         home_snapshot_reads,
+        sidebar_writes,
         _store: store,
     }
 }

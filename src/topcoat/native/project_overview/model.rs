@@ -2,6 +2,7 @@
 
 use chrono::{DateTime, NaiveDateTime};
 
+use super::super::super::runtime::whitespace::is_ecmascript_whitespace;
 use crate::db::models::{Activity, Issue, Priority, Project, Role, Status, UpdateProject};
 
 pub(crate) const GROUP_WARNING: &str =
@@ -140,20 +141,18 @@ pub(crate) enum Field {
 
 pub(crate) fn field_patch(field: Field, draft: &str, saved: &Project) -> Option<UpdateProject> {
     // String.trim's ECMAScript whitespace includes FEFF and excludes U+0085.
-    let trim = |value: &str| {
-        value.trim_matches(|c: char| matches!(c, '\u{0009}'..='\u{000D}' | '\u{0020}' | '\u{00A0}' | '\u{1680}' | '\u{2000}'..='\u{200A}' | '\u{2028}' | '\u{2029}' | '\u{202F}' | '\u{205F}' | '\u{3000}' | '\u{FEFF}')).to_owned()
-    };
+    let trimmed = draft.trim_matches(is_ecmascript_whitespace);
     let mut patch = UpdateProject::default();
     match field {
         Field::Name => {
-            let value = trim(draft);
+            let value = trimmed.to_owned();
             if value.is_empty() || value == saved.name {
                 return None;
             }
             patch.name = Some(value);
         }
         Field::Description => {
-            let value = trim(draft);
+            let value = trimmed.to_owned();
             if value == saved.description {
                 return None;
             }
@@ -161,7 +160,7 @@ pub(crate) fn field_patch(field: Field, draft: &str, saved: &Project) -> Option<
         }
         Field::Emoji => patch.emoji = Some((!draft.is_empty()).then(|| draft.to_owned())),
         Field::Identifier => {
-            let value = trim(draft).to_uppercase();
+            let value = trimmed.to_uppercase();
             if value.is_empty() || value == saved.identifier {
                 return None;
             }

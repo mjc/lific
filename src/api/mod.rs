@@ -676,18 +676,6 @@ fn require_structure_role(
     crate::authz::require_structure_role(db, identity, project_id)
 }
 
-/// LIF-197: thin wrapper over `authz::require_project_delete_role`, used by
-/// `DELETE /api/projects/{id}`. See that function's doc comment for why the
-/// legacy branch reproduces `require_admin` exactly rather than delegating
-/// to `require_role(.., Lead)`.
-fn require_project_delete(
-    db: &DbPool,
-    identity: &Option<crate::resolve_caller::ResolvedIdentity>,
-    project_id: i64,
-) -> Result<(), LificError> {
-    crate::authz::require_project_delete_role(db, identity, project_id)
-}
-
 /// Require any authenticated user, and hand back who they are (LIF-233,
 /// LIF-372). The single "is there a caller at all?" gate for the whole API:
 /// used both by low-stakes instance-wide actions like sidebar project

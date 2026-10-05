@@ -58,7 +58,7 @@ pub(crate) fn list_leads(
     lead_rows(&conn)
 }
 
-fn group_rows(conn: &Connection, user_id: i64) -> Result<Vec<ProjectGroup>, LificError> {
+pub(crate) fn group_rows(conn: &Connection, user_id: i64) -> Result<Vec<ProjectGroup>, LificError> {
     let visible = super::projects::sidebar_visibility(conn, user_id)?;
     let mut groups = queries::project_groups::list_groups(conn, user_id)?;
     if let Some(ids) = &visible {
@@ -82,10 +82,6 @@ pub(crate) fn list_groups(
     Ok(groups)
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "Native project form integration is pending")
-)]
 pub(crate) fn form_catalog(
     db: &DbPool,
     identity: &Option<ResolvedIdentity>,
@@ -101,10 +97,6 @@ pub(crate) fn form_catalog(
 
 /// Group assignment remains a separate commit after project creation.
 /// The native entry preserves the form's existing concrete group argument.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "Native project form integration is pending")
-)]
 pub(crate) fn assign_created_project(
     db: &DbPool,
     realtime: &RealtimeHub,

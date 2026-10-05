@@ -93,7 +93,8 @@ function makeIncomingGate() {
 
 async function mountedProxy(upstream, prefix, options = {}) {
   const incoming = options.incomingPath ? makeIncomingGate() : null;
-  const requests = [], sockets = [], connections = new Set();
+  const requests = [], sockets = [], connections = new Set(), abortedRequests = [], canceledTcpAttempts = [];
+  let abortOncePath = null, cancellationRecorded = false;
   const logicalPath = url => !prefix ? url : url.startsWith(`${prefix}/`) ? url.slice(prefix.length) : null;
   const headersFor = request => {
     const headers = {...request.headers};
@@ -105,6 +106,14 @@ async function mountedProxy(upstream, prefix, options = {}) {
     const logical = logicalPath(request.url);
     if (!logical) {response.writeHead(404); response.end(); return;}
     requests.push({method: request.method, path: request.url, headers: {...request.headers}});
+    // Test-only genuine TCP cancellation before dispatch, without an application response.
+    if (abortOncePath !== null && logical.split('?')[0] === abortOncePath) {
+      // Keep the operation canceled through Chromium's transparent TCP retries.
+      if (!cancellationRecorded) {abortedRequests.push(request.url); cancellationRecorded = true;}
+      canceledTcpAttempts.push({method: request.method, path: request.url});
+      request.socket.destroy();
+      return;
+    }
     const forwarded = http.request(upstream, {path: logical, method: request.method, headers: headersFor(request)}, incoming => {
       response.writeHead(incoming.statusCode, incoming.headers);
       incoming.pipe(response);
@@ -141,7 +150,18 @@ async function mountedProxy(upstream, prefix, options = {}) {
     server.listen(0, '127.0.0.1', resolve);
   });
   return {
-    origin: `http://127.0.0.1:${server.address().port}`, requests, sockets, incomingGate: incoming,
+    origin: `http://127.0.0.1:${server.address().port}`, requests, sockets, incomingGate: incoming, abortedRequests, canceledTcpAttempts,
+    abortNextRequest(logicalPath) {
+      assert.equal(abortOncePath, null, 'Only one actual request cancellation is armed at a time.');
+      assert.ok(logicalPath.startsWith('/'));
+      cancellationRecorded = false;
+      abortOncePath = logicalPath;
+    },
+    releaseRequestCancellation() {
+      assert.notEqual(abortOncePath, null, 'A real cancellation gate must be armed.');
+      assert.ok(canceledTcpAttempts.length > 0, 'The gate canceled an actual socket request.');
+      abortOncePath = null;
+    },
     async close() {
       if (incoming) incoming.dispose();
       for (const connection of connections) connection.destroy();

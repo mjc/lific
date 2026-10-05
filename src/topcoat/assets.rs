@@ -24,14 +24,14 @@ pub(crate) const SPACE_GROTESK_NORMAL_LATIN: &[u8] =
 pub(crate) fn app_stylesheet() -> &'static str {
     static CSS: OnceLock<String> = OnceLock::new();
     CSS.get_or_init(|| {
-        format!(
-            "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+        [
             include_str!("assets/base.css"),
             super::controls::STYLESHEET,
             super::shell::STYLESHEET,
             super::native::home_view::STYLESHEET,
             super::native::home_sections::STYLESHEET,
             super::native::home_shell::STYLESHEET,
+            include_str!("native/project_sidebar/sidebar.css"),
             super::native::home::STYLESHEET,
             super::native::issue_edit::controls::STYLESHEET,
             super::native::issue_edit::activity::STYLESHEET,
@@ -41,7 +41,11 @@ pub(crate) fn app_stylesheet() -> &'static str {
             include_str!("native/issue_edit/detail.css"),
             super::native::issue_edit::delete_menu::STYLESHEET,
             include_str!("native/assets/deferred-delete.css"),
-        )
+            super::native::project_create::STYLESHEET,
+            super::native::project_overview::STYLESHEET,
+            include_str!("native/assets/motion.css"),
+        ]
+        .join("\n")
     })
 }
 
