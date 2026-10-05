@@ -15,7 +15,9 @@ mod socket;
 pub(crate) mod string;
 pub(crate) mod whitespace;
 
-pub(crate) use connection::{ConnectedRender, connected, connected_untracked};
+pub(crate) use connection::{
+    ConnectedRender, ConnectionEpoch, connected, connected_untracked, connection_epoch,
+};
 #[cfg(test)]
 pub(crate) use socket::SocketPolicy;
 pub(crate) use socket::{SocketLifetime, SocketRetirement};

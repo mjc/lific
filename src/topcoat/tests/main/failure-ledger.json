@@ -1556,5 +1556,845 @@
         }
       ]
     }
-  ]
+  ],
+  "native_cleanup": {
+    "notes": [
+      "Earlier complete translation results in runs are historical checkpoints, not current native pass claims.",
+      "Removed application-controller cases retain original names and native mappings; the Rust workspace suite includes their native model and production cases.",
+      "Administration coverage dispositions document assertions still blocked or awaiting native coverage. Later assertions behind an earlier failure remain executable and are not counted as passes."
+    ],
+    "runs": [
+      {
+        "mode": "unit",
+        "command": "node src/topcoat/tests/main/run.js unit",
+        "counts": {
+          "tests": 338,
+          "failed": 57,
+          "passed": 281,
+          "cancelled": 0,
+          "skipped": 0,
+          "todo": 0,
+          "topLevel": 161,
+          "suites": 56
+        },
+        "files": [
+          {
+            "path": "src/topcoat/tests/main/inventory.test.js",
+            "counts": {
+              "tests": 1,
+              "failed": 0,
+              "passed": 1,
+              "cancelled": 0,
+              "skipped": 0,
+              "todo": 0,
+              "topLevel": 1,
+              "suites": 0
+            },
+            "failed_assertions": []
+          },
+          {
+            "path": "src/topcoat/tests/main/issues/comments.test.js",
+            "counts": {
+              "tests": 34,
+              "failed": 0,
+              "passed": 34,
+              "cancelled": 0,
+              "skipped": 0,
+              "todo": 0,
+              "topLevel": 34,
+              "suites": 0
+            },
+            "failed_assertions": []
+          },
+          {
+            "path": "src/topcoat/tests/main/issues/insertSnippet.test.js",
+            "counts": {
+              "tests": 9,
+              "failed": 0,
+              "passed": 9,
+              "cancelled": 0,
+              "skipped": 0,
+              "todo": 0,
+              "topLevel": 9,
+              "suites": 0
+            },
+            "failed_assertions": []
+          },
+          {
+            "path": "src/topcoat/tests/main/issues/pendingPatch.test.js",
+            "counts": {
+              "tests": 13,
+              "failed": 1,
+              "passed": 12,
+              "cancelled": 0,
+              "skipped": 0,
+              "todo": 0,
+              "topLevel": 13,
+              "suites": 0
+            },
+            "failed_assertions": [
+              {
+                "case": "a failed replay retains an edit made during it",
+                "classification": "controller_contract",
+                "evidence": "[Error [ERR_TEST_FAILURE]: expect(received).toContain(expected) // indexOf\n\nExpected value: \"session_lifetime_days\"\nReceived array: []] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: Error: expect(received).toContain(expected) // indexOf\n  \n  Expected value: \"session_lifetime_days\"\n  Received array: []\n      at captureRawStack (e2e/node_modules/playwright-core/lib/coreBundle.js:3172:17)\n      at callMatcherAsStep (e2e/node_modules/playwright/lib/matchers/expect.js:12877:57)\n      at Object.toContain (e2e/node_modules/playwright/lib/matchers/expect.js:12867:23)\n      at TestContext.<anonymous> (src/topcoat/tests/main/issues/pendingPatch.test.js:39:309) {\n    matcherResult: {\n      message: 'expect(received).toContain(expected) // indexOf\\n' +\n        '\\n' +\n        'Expected value: \"session_lifetime_days\"\\n' +\n        'Received array: []',\n      pass: false,\n      name: 'toContain'\n    }\n  }\n}"
+              }
+            ]
+          },
+          {
+            "path": "src/topcoat/tests/main/issues/reference-assertions.js",
+            "counts": {},
+            "failed_assertions": [
+              {
+                "case": "caches stable not-found responses",
+                "classification": "controller_contract",
+                "evidence": "[Error [ERR_TEST_FAILURE]: expect(received).toBe(expected) // Object.is equality\n\nExpected: 1\nReceived: 2] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: Error: expect(received).toBe(expected) // Object.is equality\n  \n  Expected: 1\n  Received: 2\n      at captureRawStack (e2e/node_modules/playwright-core/lib/coreBundle.js:3172:17)\n      at callMatcherAsStep (e2e/node_modules/playwright/lib/matchers/expect.js:12877:57)\n      at Object.toBe (e2e/node_modules/playwright/lib/matchers/expect.js:12867:23)\n      at src/topcoat/tests/main/issues/references.test.js:180:19\n      at async TestContext.<anonymous> (src/topcoat/tests/main/issues/reference-assertions.js:14:7) {\n    matcherResult: {\n      actual: 2,\n      expected: 1,\n      message: 'expect(received).toBe(expected) // Object.is equality\\n' +\n        '\\n' +\n        'Expected: 1\\n' +\n        'Received: 2',\n      name: 'toBe',\n      pass: false\n    }\n  }\n}"
+              },
+              {
+                "case": "resolves a shared status once for every subscriber",
+                "classification": "controller_contract",
+                "evidence": "[Error [ERR_TEST_FAILURE]: expect(received).toBe(expected) // Object.is equality\n\nExpected: 1\nReceived: 2] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: Error: expect(received).toBe(expected) // Object.is equality\n  \n  Expected: 1\n  Received: 2\n      at captureRawStack (e2e/node_modules/playwright-core/lib/coreBundle.js:3172:17)\n      at callMatcherAsStep (e2e/node_modules/playwright/lib/matchers/expect.js:12877:57)\n      at Object.toBe (e2e/node_modules/playwright/lib/matchers/expect.js:12867:23)\n      at src/topcoat/tests/main/issues/references.test.js:206:19\n      at async TestContext.<anonymous> (src/topcoat/tests/main/issues/reference-assertions.js:14:7) {\n    matcherResult: {\n      actual: 2,\n      expected: 1,\n      message: 'expect(received).toBe(expected) // Object.is equality\\n' +\n        '\\n' +\n        'Expected: 1\\n' +\n        'Received: 2',\n      name: 'toBe',\n      pass: false\n    }\n  }\n}"
+              },
+              {
+                "case": "isolates subscriber exceptions",
+                "classification": "controller_contract",
+                "evidence": "[Error [ERR_TEST_FAILURE]: Expected values to be strictly equal:\n\n0 !== 1\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n  \n  0 !== 1\n  \n      at result.toHaveBeenCalledTimes (src/topcoat/tests/main/issues/reference-assertions.js:6:50)\n      at src/topcoat/tests/main/issues/references.test.js:219:22\n      at async TestContext.<anonymous> (src/topcoat/tests/main/issues/reference-assertions.js:14:7)\n      at async Test.run (node:internal/test_runner/test:1404:7)\n      at async Suite.processPendingSubtests (node:internal/test_runner/test:969:7) {\n    generatedMessage: true,\n    code: 'ERR_ASSERTION',\n    actual: 0,\n    expected: 1,\n    operator: 'strictEqual',\n    diff: 'simple'\n  }\n}"
+              },
+              {
+                "case": "drops unsubscribed status work before it reaches the server",
+                "classification": "controller_contract",
+                "evidence": "[Error [ERR_TEST_FAILURE]: expect(received).toBe(expected) // Object.is equality\n\nExpected: 6\nReceived: 12] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: Error: expect(received).toBe(expected) // Object.is equality\n  \n  Expected: 6\n  Received: 12\n      at captureRawStack (e2e/node_modules/playwright-core/lib/coreBundle.js:3172:17)\n      at callMatcherAsStep (e2e/node_modules/playwright/lib/matchers/expect.js:12877:57)\n      at Object.toBe (e2e/node_modules/playwright/lib/matchers/expect.js:12867:23)\n      at src/topcoat/tests/main/issues/references.test.js:278:19\n      at async TestContext.<anonymous> (src/topcoat/tests/main/issues/reference-assertions.js:14:7) {\n    matcherResult: {\n      actual: 12,\n      expected: 6,\n      message: 'expect(received).toBe(expected) // Object.is equality\\n' +\n        '\\n' +\n        'Expected: 6\\n' +\n        'Received: 12',\n      name: 'toBe',\n      pass: false\n    }\n  }\n}"
+              },
+              {
+                "case": "caps concurrent issue resolution",
+                "classification": "controller_contract",
+                "evidence": "[Error [ERR_TEST_FAILURE]: expect(received).toBe(expected) // Object.is equality\n\nExpected: 6\nReceived: 12] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: Error: expect(received).toBe(expected) // Object.is equality\n  \n  Expected: 6\n  Received: 12\n      at captureRawStack (e2e/node_modules/playwright-core/lib/coreBundle.js:3172:17)\n      at callMatcherAsStep (e2e/node_modules/playwright/lib/matchers/expect.js:12877:57)\n      at Object.toBe (e2e/node_modules/playwright/lib/matchers/expect.js:12867:23)\n      at src/topcoat/tests/main/issues/references.test.js:295:24\n      at async TestContext.<anonymous> (src/topcoat/tests/main/issues/reference-assertions.js:14:7) {\n    matcherResult: {\n      actual: 12,\n      expected: 6,\n      message: 'expect(received).toBe(expected) // Object.is equality\\n' +\n        '\\n' +\n        'Expected: 6\\n' +\n        'Received: 12',\n      name: 'toBe',\n      pass: false\n    }\n  }\n}"
+              },
+              {
+                "case": "an old cleanup cannot remove a replacement same-key subscription",
+                "classification": "controller_contract",
+                "evidence": "[Error [ERR_TEST_FAILURE]: expect(received).toBe(expected) // Object.is equality\n\nExpected: 1\nReceived: 0] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: Error: expect(received).toBe(expected) // Object.is equality\n  \n  Expected: 1\n  Received: 0\n      at captureRawStack (e2e/node_modules/playwright-core/lib/coreBundle.js:3172:17)\n      at callMatcherAsStep (e2e/node_modules/playwright/lib/matchers/expect.js:12877:57)\n      at Object.toBe (e2e/node_modules/playwright/lib/matchers/expect.js:12867:23)\n      at src/topcoat/tests/main/issues/references.test.js:353:68\n      at async TestContext.<anonymous> (src/topcoat/tests/main/issues/reference-assertions.js:14:7) {\n    matcherResult: {\n      actual: 0,\n      expected: 1,\n      message: 'expect(received).toBe(expected) // Object.is equality\\n' +\n        '\\n' +\n        'Expected: 1\\n' +\n        'Received: 0',\n      name: 'toBe',\n      pass: false\n    }\n  }\n}"
+              },
+              {
+                "case": "does not join an aborted queued request for the same identifier",
+                "classification": "controller_contract",
+                "evidence": "[Error [ERR_TEST_FAILURE]: expect(received).toBe(expected) // Object.is equality\n\nExpected: 7\nReceived: 8] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: Error: expect(received).toBe(expected) // Object.is equality\n  \n  Expected: 7\n  Received: 8\n      at captureRawStack (e2e/node_modules/playwright-core/lib/coreBundle.js:3172:17)\n      at callMatcherAsStep (e2e/node_modules/playwright/lib/matchers/expect.js:12877:57)\n      at Object.toBe (e2e/node_modules/playwright/lib/matchers/expect.js:12867:23)\n      at src/topcoat/tests/main/issues/references.test.js:395:19\n      at async TestContext.<anonymous> (src/topcoat/tests/main/issues/reference-assertions.js:14:7) {\n    matcherResult: {\n      actual: 8,\n      expected: 7,\n      message: 'expect(received).toBe(expected) // Object.is equality\\n' +\n        '\\n' +\n        'Expected: 7\\n' +\n        'Received: 8',\n      name: 'toBe',\n      pass: false\n    }\n  }\n}"
+              },
+              {
+                "case": "refreshes subscribers after the session changes during a request",
+                "classification": "controller_contract",
+                "evidence": "[Error [ERR_TEST_FAILURE]: Reference behavior did not deliver: refreshes subscribers after the session changes during a request] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: Error: Reference behavior did not deliver: refreshes subscribers after the session changes during a request\n      at Timeout.<anonymous> (src/topcoat/tests/main/issues/reference-assertions.js:15:41)\n      at listOnTimeout (node:internal/timers:685:17)\n      at process.processTimers (node:internal/timers:618:7)\n}"
+              },
+              {
+                "case": "shares one browser refresh listener and removes it after teardown",
+                "classification": "controller_contract",
+                "evidence": "[Error [ERR_TEST_FAILURE]: expect(received).toBe(expected) // Object.is equality\n\nExpected: 1\nReceived: 2] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: Error: expect(received).toBe(expected) // Object.is equality\n  \n  Expected: 1\n  Received: 2\n      at captureRawStack (e2e/node_modules/playwright-core/lib/coreBundle.js:3172:17)\n      at callMatcherAsStep (e2e/node_modules/playwright/lib/matchers/expect.js:12877:57)\n      at Object.toBe (e2e/node_modules/playwright/lib/matchers/expect.js:12867:23)\n      at src/topcoat/tests/main/issues/references.test.js:437:19\n      at async TestContext.<anonymous> (src/topcoat/tests/main/issues/reference-assertions.js:14:7) {\n    matcherResult: {\n      actual: 2,\n      expected: 1,\n      message: 'expect(received).toBe(expected) // Object.is equality\\n' +\n        '\\n' +\n        'Expected: 1\\n' +\n        'Received: 2',\n      name: 'toBe',\n      pass: false\n    }\n  }\n}"
+              },
+              {
+                "case": "keeps a shared request alive for a direct caller after status teardown",
+                "classification": "controller_contract",
+                "evidence": "[Error [ERR_TEST_FAILURE]: expect(received).toBe(expected) // Object.is equality\n\nExpected: 1\nReceived: 2] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: Error: expect(received).toBe(expected) // Object.is equality\n  \n  Expected: 1\n  Received: 2\n      at captureRawStack (e2e/node_modules/playwright-core/lib/coreBundle.js:3172:17)\n      at callMatcherAsStep (e2e/node_modules/playwright/lib/matchers/expect.js:12877:57)\n      at Object.toBe (e2e/node_modules/playwright/lib/matchers/expect.js:12867:23)\n      at src/topcoat/tests/main/issues/references.test.js:467:19\n      at async TestContext.<anonymous> (src/topcoat/tests/main/issues/reference-assertions.js:14:7) {\n    matcherResult: {\n      actual: 2,\n      expected: 1,\n      message: 'expect(received).toBe(expected) // Object.is equality\\n' +\n        '\\n' +\n        'Expected: 1\\n' +\n        'Received: 2',\n      name: 'toBe',\n      pass: false\n    }\n  }\n}"
+              },
+              {
+                "case": "caps direct cached issue resolution",
+                "classification": "controller_contract",
+                "evidence": "[Error [ERR_TEST_FAILURE]: expect(received).toBe(expected) // Object.is equality\n\nExpected: 6\nReceived: 12] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: Error: expect(received).toBe(expected) // Object.is equality\n  \n  Expected: 6\n  Received: 12\n      at captureRawStack (e2e/node_modules/playwright-core/lib/coreBundle.js:3172:17)\n      at callMatcherAsStep (e2e/node_modules/playwright/lib/matchers/expect.js:12877:57)\n      at Object.toBe (e2e/node_modules/playwright/lib/matchers/expect.js:12867:23)\n      at src/topcoat/tests/main/issues/references.test.js:476:24\n      at async TestContext.<anonymous> (src/topcoat/tests/main/issues/reference-assertions.js:14:7) {\n    matcherResult: {\n      actual: 12,\n      expected: 6,\n      message: 'expect(received).toBe(expected) // Object.is equality\\n' +\n        '\\n' +\n        'Expected: 6\\n' +\n        'Received: 12',\n      name: 'toBe',\n      pass: false\n    }\n  }\n}"
+              }
+            ]
+          },
+          {
+            "path": "src/topcoat/tests/main/issues/references.test.js",
+            "counts": {
+              "tests": 21,
+              "failed": 11,
+              "passed": 10,
+              "cancelled": 0,
+              "skipped": 0,
+              "todo": 0,
+              "topLevel": 2,
+              "suites": 2
+            },
+            "failed_assertions": []
+          },
+          {
+            "path": "src/topcoat/tests/main/issues/saveQueue.test.js",
+            "counts": {
+              "tests": 7,
+              "failed": 4,
+              "passed": 3,
+              "cancelled": 0,
+              "skipped": 0,
+              "todo": 0,
+              "topLevel": 1,
+              "suites": 1
+            },
+            "failed_assertions": [
+              {
+                "case": "an edit made during an in-flight save is not dropped",
+                "classification": "controller_contract",
+                "evidence": "[Error [ERR_TEST_FAILURE]: settings save did not settle while the next save was still in flight] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: Error: settings save did not settle while the next save was still in flight\n      at Timeout.<anonymous> (src/topcoat/tests/main/issues/harness.js:21:37)\n      at listOnTimeout (node:internal/timers:685:17)\n      at process.processTimers (node:internal/timers:618:7)\n}"
+              },
+              {
+                "case": "queued patches coalesce, last write winning per field",
+                "classification": "controller_contract",
+                "evidence": "[Error [ERR_TEST_FAILURE]: settings save did not settle while the next save was still in flight] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: Error: settings save did not settle while the next save was still in flight\n      at Timeout.<anonymous> (src/topcoat/tests/main/issues/harness.js:21:37)\n      at listOnTimeout (node:internal/timers:685:17)\n      at process.processTimers (node:internal/timers:618:7)\n}"
+              },
+              {
+                "case": "everyone who pushed into a coalesced batch learns how it went",
+                "classification": "controller_contract",
+                "evidence": "[Error [ERR_TEST_FAILURE]: settings save did not settle while the next save was still in flight] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: Error: settings save did not settle while the next save was still in flight\n      at Timeout.<anonymous> (src/topcoat/tests/main/issues/harness.js:21:37)\n      at listOnTimeout (node:internal/timers:685:17)\n      at process.processTimers (node:internal/timers:618:7)\n}"
+              },
+              {
+                "case": "an edit arriving after dispatch is not merged into the sent patch",
+                "classification": "controller_contract",
+                "evidence": "[Error [ERR_TEST_FAILURE]: settings save did not settle while the next save was still in flight] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: Error: settings save did not settle while the next save was still in flight\n      at Timeout.<anonymous> (src/topcoat/tests/main/issues/harness.js:21:37)\n      at listOnTimeout (node:internal/timers:685:17)\n      at process.processTimers (node:internal/timers:618:7)\n}"
+              }
+            ]
+          },
+          {
+            "path": "src/topcoat/tests/main/resources/altText.test.js",
+            "counts": {
+              "tests": 14,
+              "failed": 0,
+              "passed": 14,
+              "cancelled": 0,
+              "skipped": 0,
+              "todo": 0,
+              "topLevel": 14,
+              "suites": 0
+            },
+            "failed_assertions": []
+          },
+          {
+            "path": "src/topcoat/tests/main/resources/annotateMath.test.js",
+            "counts": {
+              "tests": 19,
+              "failed": 4,
+              "passed": 15,
+              "cancelled": 0,
+              "skipped": 0,
+              "todo": 0,
+              "topLevel": 6,
+              "suites": 6
+            },
+            "failed_assertions": [
+              {
+                "case": "block size scales with the region's short side, within bounds",
+                "classification": "observable product behavior",
+                "evidence": "Error [ERR_TEST_FAILURE]: Expected values to be strictly equal:\n\nnull !== 20\n\n    at new Promise (<anonymous>)\n    at Array.map (<anonymous>) {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n  \n  null !== 20\n  \n      at Object.toBe (src/topcoat/tests/main/resources/assertions.js:5:30)\n      at TestContext.<anonymous> (src/topcoat/tests/main/resources/annotateMath.test.js:43:59)\n      at Test.runInAsyncScope (node:async_hooks:227:14)\n      at Test.run (node:internal/test_runner/test:1397:25)\n      at Test.start (node:internal/test_runner/test:1257:17)\n      at node:internal/test_runner/test:1887:71\n      at node:internal/per_context/primordials:504:82\n      at new Promise (<anonymous>)\n      at new SafePromise (node:internal/per_context/primordials:478:3)\n      at node:internal/per_context/primordials:504:9 {\n    generatedMessage: true,\n    code: 'ERR_ASSERTION',\n    actual: null,\n    expected: 20,\n    operator: 'strictEqual',\n    diff: 'simple'\n  }\n}"
+              },
+              {
+                "case": "downsamples to one pixel per block and paints back over the region",
+                "classification": "observable product behavior",
+                "evidence": "Error [ERR_TEST_FAILURE]: Expected values to be strictly equal:\n\nnull !== 20\n\n    at async Promise.all (index 0) {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n  \n  null !== 20\n  \n      at Object.toBe (src/topcoat/tests/main/resources/assertions.js:5:30)\n      at TestContext.<anonymous> (src/topcoat/tests/main/resources/annotateMath.test.js:50:25)\n      at Test.runInAsyncScope (node:async_hooks:227:14)\n      at Test.run (node:internal/test_runner/test:1397:25)\n      at Suite.processPendingSubtests (node:internal/test_runner/test:969:18)\n      at Test.postRun (node:internal/test_runner/test:1537:19)\n      at Test.run (node:internal/test_runner/test:1462:12)\n      at async Promise.all (index 0)\n      at async Suite.run (node:internal/test_runner/test:1889:7)\n      at async Test.processPendingSubtests (node:internal/test_runner/test:969:7) {\n    generatedMessage: true,\n    code: 'ERR_ASSERTION',\n    actual: null,\n    expected: 20,\n    operator: 'strictEqual',\n    diff: 'simple'\n  }\n}"
+              },
+              {
+                "case": "the intermediate buffer holds far fewer samples than the region",
+                "classification": "observable product behavior",
+                "evidence": "[Error [ERR_TEST_FAILURE]: Expected \"actual\" to be strictly unequal to: null] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: Expected \"actual\" to be strictly unequal to: null\n      at Object.toBeNull (src/topcoat/tests/main/resources/assertions.js:19:28)\n      at TestContext.<anonymous> (src/topcoat/tests/main/resources/annotateMath.test.js:58:29)\n      at Test.runInAsyncScope (node:async_hooks:227:14)\n      at Test.run (node:internal/test_runner/test:1397:25)\n      at Suite.processPendingSubtests (node:internal/test_runner/test:969:18)\n      at Test.postRun (node:internal/test_runner/test:1537:19)\n      at Test.run (node:internal/test_runner/test:1462:12)\n      at async Suite.processPendingSubtests (node:internal/test_runner/test:969:7) {\n    generatedMessage: true,\n    code: 'ERR_ASSERTION',\n    actual: null,\n    expected: null,\n    operator: 'notStrictEqual',\n    diff: 'simple'\n  }\n}"
+              },
+              {
+                "case": "never produces a zero-dimension buffer for a sub-block region",
+                "classification": "observable product behavior",
+                "evidence": "[Error [ERR_TEST_FAILURE]: Expected \"actual\" to be strictly unequal to: null] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: Expected \"actual\" to be strictly unequal to: null\n      at Object.toBeNull (src/topcoat/tests/main/resources/assertions.js:19:28)\n      at TestContext.<anonymous> (src/topcoat/tests/main/resources/annotateMath.test.js:72:29)\n      at Test.runInAsyncScope (node:async_hooks:227:14)\n      at Test.run (node:internal/test_runner/test:1397:25)\n      at Suite.processPendingSubtests (node:internal/test_runner/test:969:18)\n      at Test.postRun (node:internal/test_runner/test:1537:19)\n      at Test.run (node:internal/test_runner/test:1462:12)\n      at async Suite.processPendingSubtests (node:internal/test_runner/test:969:7) {\n    generatedMessage: true,\n    code: 'ERR_ASSERTION',\n    actual: null,\n    expected: null,\n    operator: 'notStrictEqual',\n    diff: 'simple'\n  }\n}"
+              }
+            ]
+          },
+          {
+            "path": "src/topcoat/tests/main/resources/ansi.test.js",
+            "counts": {
+              "tests": 11,
+              "failed": 10,
+              "passed": 1,
+              "cancelled": 0,
+              "skipped": 0,
+              "todo": 0,
+              "topLevel": 2,
+              "suites": 2
+            },
+            "failed_assertions": [
+              {
+                "case": "colors the run between an SGR code and its reset",
+                "classification": "observed behavior; group evidence and reproduction retained",
+                "evidence": "[Error [ERR_TEST_FAILURE]: Expected values to be strictly deep-equal:\n+ actual - expected\n\n  [\n+   'ok \\x1B[32mpassed\\x1B[0m done'\n-   'ok ',\n-   'passed',\n-   ' done'\n  ]\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:\n  + actual - expected\n  \n    [\n  +   'ok \\x1B[32mpassed\\x1B[0m done'\n  -   'ok ',\n  -   'passed',\n  -   ' done'\n    ]\n  \n      at Object.toEqual (src/topcoat/tests/main/resources/assertions.js:6:33)\n      at TestContext.<anonymous> (src/topcoat/tests/main/resources/ansi.test.js:18:38)\n      at async Test.run (node:internal/test_runner/test:1404:7)\n      at async Suite.processPendingSubtests (node:internal/test_runner/test:969:7) {\n    generatedMessage: true,\n    code: 'ERR_ASSERTION',\n    actual: [ 'ok \\x1B[32mpassed\\x1B[0m done' ],\n    expected: [ 'ok ', 'passed', ' done' ],\n    operator: 'deepStrictEqual',\n    diff: 'simple'\n  }\n}"
+              },
+              {
+                "case": "combines attributes and clears them individually",
+                "classification": "observed behavior; group evidence and reproduction retained",
+                "evidence": "[Error [ERR_TEST_FAILURE]: Expected values to be strictly deep-equal:\n+ actual - expected\n\n+ undefined\n- true\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:\n  + actual - expected\n  \n  + undefined\n  - true\n  \n      at Object.toMatchObject (src/topcoat/tests/main/resources/assertions.js:15:66)\n      at TestContext.<anonymous> (src/topcoat/tests/main/resources/ansi.test.js:24:28)\n      at async Test.run (node:internal/test_runner/test:1404:7)\n      at async Suite.processPendingSubtests (node:internal/test_runner/test:969:7) {\n    generatedMessage: true,\n    code: 'ERR_ASSERTION',\n    actual: undefined,\n    expected: true,\n    operator: 'deepStrictEqual',\n    diff: 'simple'\n  }\n}"
+              },
+              {
+                "case": "reads bright, 256-color and truecolor forms",
+                "classification": "observed behavior; group evidence and reproduction retained",
+                "evidence": "[Error [ERR_TEST_FAILURE]: Expected values to be strictly equal:\n+ actual - expected\n\n+ undefined\n- 'var(--ansi-bright-red)'\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n  + actual - expected\n  \n  + undefined\n  - 'var(--ansi-bright-red)'\n  \n      at Object.toBe (src/topcoat/tests/main/resources/assertions.js:5:30)\n      at TestContext.<anonymous> (src/topcoat/tests/main/resources/ansi.test.js:32:70)\n      at async Test.run (node:internal/test_runner/test:1404:7)\n      at async Suite.processPendingSubtests (node:internal/test_runner/test:969:7) {\n    generatedMessage: true,\n    code: 'ERR_ASSERTION',\n    actual: undefined,\n    expected: 'var(--ansi-bright-red)',\n    operator: 'strictEqual',\n    diff: 'simple'\n  }\n}"
+              },
+              {
+                "case": "an empty parameter list is a reset",
+                "classification": "observed behavior; group evidence and reproduction retained",
+                "evidence": "[Error [ERR_TEST_FAILURE]: Cannot read properties of undefined (reading 'style')] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: TypeError: Cannot read properties of undefined (reading 'style')\n      at TestContext.<anonymous> (src/topcoat/tests/main/resources/ansi.test.js:40:21)\n      at async Test.run (node:internal/test_runner/test:1404:7)\n      at async Suite.processPendingSubtests (node:internal/test_runner/test:969:7)\n}"
+              },
+              {
+                "case": "strips sequences it does not support instead of printing them",
+                "classification": "observed behavior; group evidence and reproduction retained",
+                "evidence": "[Error [ERR_TEST_FAILURE]: Expected values to be strictly equal:\n+ actual - expected\n\n+ '\\x1B[2K\\x1B[1Gprogress\\x1B]0;window title\\x1B\\\\ done'\n- 'progress done'\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n  + actual - expected\n  \n  + '\\x1B[2K\\x1B[1Gprogress\\x1B]0;window title\\x1B\\\\ done'\n  - 'progress done'\n  \n      at Object.toBe (src/topcoat/tests/main/resources/assertions.js:5:30)\n      at TestContext.<anonymous> (src/topcoat/tests/main/resources/ansi.test.js:44:47)\n      at async Test.run (node:internal/test_runner/test:1404:7)\n      at async Suite.processPendingSubtests (node:internal/test_runner/test:969:7) {\n    generatedMessage: true,\n    code: 'ERR_ASSERTION',\n    actual: '\\x1B[2K\\x1B[1Gprogress\\x1B]0;window title\\x1B\\\\ done',\n    expected: 'progress done',\n    operator: 'strictEqual',\n    diff: 'simple'\n  }\n}"
+              },
+              {
+                "case": "carries style across a line boundary",
+                "classification": "observed behavior; group evidence and reproduction retained",
+                "evidence": "[Error [ERR_TEST_FAILURE]: Expected values to be strictly equal:\n+ actual - expected\n\n+ undefined\n- 'var(--ansi-yellow)'\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n  + actual - expected\n  \n  + undefined\n  - 'var(--ansi-yellow)'\n  \n      at Object.toBe (src/topcoat/tests/main/resources/assertions.js:5:30)\n      at TestContext.<anonymous> (src/topcoat/tests/main/resources/ansi.test.js:51:34)\n      at async Test.run (node:internal/test_runner/test:1404:7)\n      at async Suite.processPendingSubtests (node:internal/test_runner/test:969:7) {\n    generatedMessage: true,\n    code: 'ERR_ASSERTION',\n    actual: undefined,\n    expected: 'var(--ansi-yellow)',\n    operator: 'strictEqual',\n    diff: 'simple'\n  }\n}"
+              },
+              {
+                "case": "a line of pure escapes still yields one empty span",
+                "classification": "observed behavior; group evidence and reproduction retained",
+                "evidence": "[Error [ERR_TEST_FAILURE]: Expected values to be strictly deep-equal:\n+ actual - expected\n\n  [\n    {\n      style: {},\n+     text: '\\x1B[0m'\n-     text: ''\n    }\n  ]\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:\n  + actual - expected\n  \n    [\n      {\n        style: {},\n  +     text: '\\x1B[0m'\n  -     text: ''\n      }\n    ]\n  \n      at Object.toEqual (src/topcoat/tests/main/resources/assertions.js:6:33)\n      at TestContext.<anonymous> (src/topcoat/tests/main/resources/ansi.test.js:57:19)\n      at async Test.run (node:internal/test_runner/test:1404:7)\n      at async Suite.processPendingSubtests (node:internal/test_runner/test:969:7) {\n    generatedMessage: true,\n    code: 'ERR_ASSERTION',\n    actual: [ { text: '\\x1B[0m', style: {} } ],\n    expected: [ { text: '', style: {} } ],\n    operator: 'deepStrictEqual',\n    diff: 'simple'\n  }\n}"
+              },
+              {
+                "case": "merges adjacent runs that share a style",
+                "classification": "observed behavior; group evidence and reproduction retained",
+                "evidence": "[Error [ERR_TEST_FAILURE]: Expected values to be strictly equal:\n\n1 !== 2\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n  \n  1 !== 2\n  \n      at Object.toHaveLength (src/topcoat/tests/main/resources/assertions.js:9:38)\n      at TestContext.<anonymous> (src/topcoat/tests/main/resources/ansi.test.js:61:19)\n      at async Test.run (node:internal/test_runner/test:1404:7)\n      at async Suite.processPendingSubtests (node:internal/test_runner/test:969:7) {\n    generatedMessage: true,\n    code: 'ERR_ASSERTION',\n    actual: 1,\n    expected: 2,\n    operator: 'strictEqual',\n    diff: 'simple'\n  }\n}"
+              },
+              {
+                "case": "detects and removes escapes",
+                "classification": "observed behavior; group evidence and reproduction retained",
+                "evidence": "Error [ERR_TEST_FAILURE]: Expected values to be strictly equal:\n\nfalse !== true\n\n    at async Promise.all (index 0) {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n  \n  false !== true\n  \n      at Object.toBe (src/topcoat/tests/main/resources/assertions.js:5:30)\n      at TestContext.<anonymous> (src/topcoat/tests/main/resources/ansi.test.js:68:46)\n      at async Test.run (node:internal/test_runner/test:1404:7)\n      at async Promise.all (index 0)\n      at async Suite.run (node:internal/test_runner/test:1889:7)\n      at async Test.processPendingSubtests (node:internal/test_runner/test:969:7) {\n    generatedMessage: true,\n    code: 'ERR_ASSERTION',\n    actual: false,\n    expected: true,\n    operator: 'strictEqual',\n    diff: 'simple'\n  }\n}"
+              },
+              {
+                "case": "maps style to css, swapping colors when inverted",
+                "classification": "observed behavior; group evidence and reproduction retained",
+                "evidence": "[Error [ERR_TEST_FAILURE]: Expected values to be strictly equal:\n+ actual - expected\n\n+ ''\n- 'color:#ff0000;font-weight:600'\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n  + actual - expected\n  \n  + ''\n  - 'color:#ff0000;font-weight:600'\n  \n      at Object.toBe (src/topcoat/tests/main/resources/assertions.js:5:30)\n      at TestContext.<anonymous> (src/topcoat/tests/main/resources/ansi.test.js:72:67)\n      at async Test.run (node:internal/test_runner/test:1404:7)\n      at async Suite.processPendingSubtests (node:internal/test_runner/test:969:7) {\n    generatedMessage: true,\n    code: 'ERR_ASSERTION',\n    actual: '',\n    expected: 'color:#ff0000;font-weight:600',\n    operator: 'strictEqual',\n    diff: 'simple'\n  }\n}"
+              }
+            ]
+          },
+          {
+            "path": "src/topcoat/tests/main/resources/attachmentDeepLink.test.js",
+            "counts": {
+              "tests": 18,
+              "failed": 9,
+              "passed": 9,
+              "cancelled": 0,
+              "skipped": 0,
+              "todo": 0,
+              "topLevel": 5,
+              "suites": 5
+            },
+            "failed_assertions": [
+              {
+                "case": "formats single lines and ranges",
+                "classification": "observed behavior; group evidence and reproduction retained",
+                "evidence": "Error [ERR_TEST_FAILURE]: formatLineAnchor: the production text viewer rendered pre with no selectable line controls.\n    at async Promise.all (index 0) {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: formatLineAnchor: the production text viewer rendered pre with no selectable line controls.\n      at selectableViewer (src/topcoat/tests/main/resources/deep-link-adapter.js:31:2)\n      at async formatLineAnchor (src/topcoat/tests/main/resources/deep-link-adapter.js:39:64)\n      at async TestContext.<anonymous> (src/topcoat/tests/main/resources/attachmentDeepLink.test.js:15:13)\n      at async Test.run (node:internal/test_runner/test:1404:7)\n      at async Promise.all (index 0)\n      at async Suite.run (node:internal/test_runner/test:1889:7)\n      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {\n    generatedMessage: false,\n    code: 'ERR_ASSERTION',\n    actual: false,\n    expected: true,\n    operator: '==',\n    diff: 'simple'\n  }\n}"
+              },
+              {
+                "case": "normalizes a backwards range",
+                "classification": "observed behavior; group evidence and reproduction retained",
+                "evidence": "[Error [ERR_TEST_FAILURE]: formatLineAnchor: the production text viewer rendered pre with no selectable line controls.] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: formatLineAnchor: the production text viewer rendered pre with no selectable line controls.\n      at selectableViewer (src/topcoat/tests/main/resources/deep-link-adapter.js:31:2)\n      at async formatLineAnchor (src/topcoat/tests/main/resources/deep-link-adapter.js:39:64)\n      at async TestContext.<anonymous> (src/topcoat/tests/main/resources/attachmentDeepLink.test.js:20:13)\n      at async Test.run (node:internal/test_runner/test:1404:7)\n      at async Suite.processPendingSubtests (node:internal/test_runner/test:969:7) {\n    generatedMessage: false,\n    code: 'ERR_ASSERTION',\n    actual: false,\n    expected: true,\n    operator: '==',\n    diff: 'simple'\n  }\n}"
+              },
+              {
+                "case": "reads the query carried on a hash route",
+                "classification": "observed behavior; group evidence and reproduction retained",
+                "evidence": "[Error [ERR_TEST_FAILURE]: Expected values to be strictly deep-equal:\n+ actual - expected\n\n+ null\n- {\n-   attachmentId: 7,\n-   end: 5,\n-   start: 5\n- }\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:\n  + actual - expected\n  \n  + null\n  - {\n  -   attachmentId: 7,\n  -   end: 5,\n  -   start: 5\n  - }\n  \n      at Object.toEqual (src/topcoat/tests/main/resources/assertions.js:6:33)\n      at TestContext.<anonymous> (src/topcoat/tests/main/resources/attachmentDeepLink.test.js:58:74)\n      at async Test.run (node:internal/test_runner/test:1404:7)\n      at async Suite.processPendingSubtests (node:internal/test_runner/test:969:7) {\n    generatedMessage: true,\n    code: 'ERR_ASSERTION',\n    actual: null,\n    expected: { attachmentId: 7, start: 5, end: 5 },\n    operator: 'deepStrictEqual',\n    diff: 'simple'\n  }\n}"
+              },
+              {
+                "case": "adds and removes the query without disturbing other params",
+                "classification": "observed behavior; group evidence and reproduction retained",
+                "evidence": "Error [ERR_TEST_FAILURE]: routeWithLineTarget: the production text viewer rendered pre with no selectable line controls.\n    at async Promise.all (index 0) {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: routeWithLineTarget: the production text viewer rendered pre with no selectable line controls.\n      at selectableViewer (src/topcoat/tests/main/resources/deep-link-adapter.js:31:2)\n      at async selectedLocation (src/topcoat/tests/main/resources/deep-link-adapter.js:44:13)\n      at async routeWithLineTarget (src/topcoat/tests/main/resources/deep-link-adapter.js:52:61)\n      at async TestContext.<anonymous> (src/topcoat/tests/main/resources/attachmentDeepLink.test.js:73:13)\n      at async Test.run (node:internal/test_runner/test:1404:7)\n      at async Promise.all (index 0)\n      at async Suite.run (node:internal/test_runner/test:1889:7)\n      at async Test.processPendingSubtests (node:internal/test_runner/test:969:7) {\n    generatedMessage: false,\n    code: 'ERR_ASSERTION',\n    actual: false,\n    expected: true,\n    operator: '==',\n    diff: 'simple'\n  }\n}"
+              },
+              {
+                "case": "keeps the hash route intact when selecting a line",
+                "classification": "observed behavior; group evidence and reproduction retained",
+                "evidence": "[Error [ERR_TEST_FAILURE]: hashWithLineTarget: the production text viewer rendered pre with no selectable line controls.] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: hashWithLineTarget: the production text viewer rendered pre with no selectable line controls.\n      at selectableViewer (src/topcoat/tests/main/resources/deep-link-adapter.js:31:2)\n      at async selectedLocation (src/topcoat/tests/main/resources/deep-link-adapter.js:44:13)\n      at async hashWithLineTarget (src/topcoat/tests/main/resources/deep-link-adapter.js:54:59)\n      at async TestContext.<anonymous> (src/topcoat/tests/main/resources/attachmentDeepLink.test.js:78:13)\n      at async Test.run (node:internal/test_runner/test:1404:7)\n      at async Suite.processPendingSubtests (node:internal/test_runner/test:969:7) {\n    generatedMessage: false,\n    code: 'ERR_ASSERTION',\n    actual: false,\n    expected: true,\n    operator: '==',\n    diff: 'simple'\n  }\n}"
+              },
+              {
+                "case": "uses the bare fragment when the route is not in the hash",
+                "classification": "observed behavior; group evidence and reproduction retained",
+                "evidence": "[Error [ERR_TEST_FAILURE]: hashWithLineTarget: the production text viewer rendered pre with no selectable line controls.] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: hashWithLineTarget: the production text viewer rendered pre with no selectable line controls.\n      at selectableViewer (src/topcoat/tests/main/resources/deep-link-adapter.js:31:2)\n      at async selectedLocation (src/topcoat/tests/main/resources/deep-link-adapter.js:44:13)\n      at async hashWithLineTarget (src/topcoat/tests/main/resources/deep-link-adapter.js:54:59)\n      at async TestContext.<anonymous> (src/topcoat/tests/main/resources/attachmentDeepLink.test.js:82:13)\n      at async Test.run (node:internal/test_runner/test:1404:7)\n      at async Suite.processPendingSubtests (node:internal/test_runner/test:969:7) {\n    generatedMessage: false,\n    code: 'ERR_ASSERTION',\n    actual: false,\n    expected: true,\n    operator: '==',\n    diff: 'simple'\n  }\n}"
+              },
+              {
+                "case": "turns a hash route into a path-style URL",
+                "classification": "observed behavior; group evidence and reproduction retained",
+                "evidence": "Error [ERR_TEST_FAILURE]: fullLineLink: the production text viewer rendered pre with no selectable line controls.\n    at async Promise.all (index 0) {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: fullLineLink: the production text viewer rendered pre with no selectable line controls.\n      at selectableViewer (src/topcoat/tests/main/resources/deep-link-adapter.js:31:2)\n      at async selectedLocation (src/topcoat/tests/main/resources/deep-link-adapter.js:44:13)\n      at async fullLineLink (src/topcoat/tests/main/resources/deep-link-adapter.js:56:13)\n      at async TestContext.<anonymous> (src/topcoat/tests/main/resources/attachmentDeepLink.test.js:88:13)\n      at async Test.run (node:internal/test_runner/test:1404:7)\n      at async Promise.all (index 0)\n      at async Suite.run (node:internal/test_runner/test:1889:7)\n      at async Test.processPendingSubtests (node:internal/test_runner/test:969:7) {\n    generatedMessage: false,\n    code: 'ERR_ASSERTION',\n    actual: false,\n    expected: true,\n    operator: '==',\n    diff: 'simple'\n  }\n}"
+              },
+              {
+                "case": "preserves a sub-path deployment prefix",
+                "classification": "observed behavior; group evidence and reproduction retained",
+                "evidence": "[Error [ERR_TEST_FAILURE]: fullLineLink: the production text viewer rendered pre with no selectable line controls.] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: fullLineLink: the production text viewer rendered pre with no selectable line controls.\n      at selectableViewer (src/topcoat/tests/main/resources/deep-link-adapter.js:31:2)\n      at async selectedLocation (src/topcoat/tests/main/resources/deep-link-adapter.js:44:13)\n      at async fullLineLink (src/topcoat/tests/main/resources/deep-link-adapter.js:56:13)\n      at async TestContext.<anonymous> (src/topcoat/tests/main/resources/attachmentDeepLink.test.js:96:13)\n      at async Test.run (node:internal/test_runner/test:1404:7)\n      at async Suite.processPendingSubtests (node:internal/test_runner/test:969:7) {\n    generatedMessage: false,\n    code: 'ERR_ASSERTION',\n    actual: false,\n    expected: true,\n    operator: '==',\n    diff: 'simple'\n  }\n}"
+              },
+              {
+                "case": "keeps an existing path-style location as-is",
+                "classification": "observed behavior; group evidence and reproduction retained",
+                "evidence": "[Error [ERR_TEST_FAILURE]: fullLineLink: the production text viewer rendered pre with no selectable line controls.] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: fullLineLink: the production text viewer rendered pre with no selectable line controls.\n      at selectableViewer (src/topcoat/tests/main/resources/deep-link-adapter.js:31:2)\n      at async selectedLocation (src/topcoat/tests/main/resources/deep-link-adapter.js:44:13)\n      at async fullLineLink (src/topcoat/tests/main/resources/deep-link-adapter.js:56:13)\n      at async TestContext.<anonymous> (src/topcoat/tests/main/resources/attachmentDeepLink.test.js:104:13)\n      at async Test.run (node:internal/test_runner/test:1404:7)\n      at async Suite.processPendingSubtests (node:internal/test_runner/test:969:7) {\n    generatedMessage: false,\n    code: 'ERR_ASSERTION',\n    actual: false,\n    expected: true,\n    operator: '==',\n    diff: 'simple'\n  }\n}"
+              }
+            ]
+          },
+          {
+            "path": "src/topcoat/tests/main/resources/bigPaste.test.js",
+            "counts": {
+              "tests": 7,
+              "failed": 2,
+              "passed": 5,
+              "cancelled": 0,
+              "skipped": 0,
+              "todo": 0,
+              "topLevel": 7,
+              "suites": 0
+            },
+            "failed_assertions": [
+              {
+                "case": "counts lines without inventing one for empty text",
+                "classification": "unreachable helper input under production admission/recorder invariants",
+                "evidence": "[Error [ERR_TEST_FAILURE]: Expected values to be strictly equal:\n\n1 !== 0\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n  \n  1 !== 0\n  \n      at Object.toBe (src/topcoat/tests/main/resources/assertions.js:5:30)\n      at TestContext.<anonymous> (src/topcoat/tests/main/resources/bigPaste.test.js:17:26)\n      at Test.runInAsyncScope (node:async_hooks:227:14)\n      at Test.run (node:internal/test_runner/test:1397:25)\n      at Test.start (node:internal/test_runner/test:1257:17)\n      at startSubtestAfterBootstrap (node:internal/test_runner/harness:387:17) {\n    generatedMessage: true,\n    code: 'ERR_ASSERTION',\n    actual: 1,\n    expected: 0,\n    operator: 'strictEqual',\n    diff: 'simple'\n  }\n}"
+              },
+              {
+                "case": "describes the paste by whichever threshold it tripped",
+                "classification": "observable product behavior",
+                "evidence": "[Error [ERR_TEST_FAILURE]: Expected values to be strictly equal:\n+ actual - expected\n\n+ '1 lines'\n- '8,204 characters'\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n  + actual - expected\n  \n  + '1 lines'\n  - '8,204 characters'\n  \n      at Object.toBe (src/topcoat/tests/main/resources/assertions.js:5:30)\n      at TestContext.<anonymous> (src/topcoat/tests/main/resources/bigPaste.test.js:53:43)\n      at Test.runInAsyncScope (node:async_hooks:227:14)\n      at Test.run (node:internal/test_runner/test:1397:25)\n      at Test.processPendingSubtests (node:internal/test_runner/test:969:18)\n      at Test.postRun (node:internal/test_runner/test:1537:19)\n      at Test.run (node:internal/test_runner/test:1462:12)\n      at async Test.processPendingSubtests (node:internal/test_runner/test:969:7) {\n    generatedMessage: true,\n    code: 'ERR_ASSERTION',\n    actual: '1 lines',\n    expected: '8,204 characters',\n    operator: 'strictEqual',\n    diff: 'simple'\n  }\n}"
+              }
+            ]
+          },
+          {
+            "path": "src/topcoat/tests/main/resources/csv.test.js",
+            "counts": {
+              "tests": 14,
+              "failed": 0,
+              "passed": 14,
+              "cancelled": 0,
+              "skipped": 0,
+              "todo": 0,
+              "topLevel": 3,
+              "suites": 3
+            },
+            "failed_assertions": []
+          },
+          {
+            "path": "src/topcoat/tests/main/resources/diff.test.js",
+            "counts": {
+              "tests": 10,
+              "failed": 0,
+              "passed": 10,
+              "cancelled": 0,
+              "skipped": 0,
+              "todo": 0,
+              "topLevel": 1,
+              "suites": 1
+            },
+            "failed_assertions": []
+          },
+          {
+            "path": "src/topcoat/tests/main/resources/downscale.test.js",
+            "counts": {
+              "tests": 11,
+              "failed": 0,
+              "passed": 11,
+              "cancelled": 0,
+              "skipped": 0,
+              "todo": 0,
+              "topLevel": 11,
+              "suites": 0
+            },
+            "failed_assertions": []
+          },
+          {
+            "path": "src/topcoat/tests/main/resources/files.test.js",
+            "counts": {
+              "tests": 13,
+              "failed": 2,
+              "passed": 11,
+              "cancelled": 0,
+              "skipped": 0,
+              "todo": 0,
+              "topLevel": 5,
+              "suites": 5
+            },
+            "failed_assertions": [
+              {
+                "case": "states how many references go with the file",
+                "classification": "observed behavior; group evidence and reproduction retained",
+                "evidence": "Error [ERR_TEST_FAILURE]: Expected values to be strictly equal:\n+ actual - expected\n\n+ 'Delete shot.png and its 1 reference?'\n- 'Removes the file and its 1 reference.'\n\n    at async Promise.all (index 0) {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n  + actual - expected\n  \n  + 'Delete shot.png and its 1 reference?'\n  - 'Removes the file and its 1 reference.'\n  \n      at Object.toBe (src/topcoat/tests/main/resources/assertions.js:5:30)\n      at TestContext.<anonymous> (src/topcoat/tests/main/resources/files.test.js:51:43)\n      at async Test.run (node:internal/test_runner/test:1404:7)\n      at async Promise.all (index 0)\n      at async Suite.run (node:internal/test_runner/test:1889:7)\n      at async Test.processPendingSubtests (node:internal/test_runner/test:969:7) {\n    generatedMessage: true,\n    code: 'ERR_ASSERTION',\n    actual: 'Delete shot.png and its 1 reference?',\n    expected: 'Removes the file and its 1 reference.',\n    operator: 'strictEqual',\n    diff: 'simple'\n  }\n}"
+              },
+              {
+                "case": "issues route by identifier, pages by numeric id",
+                "classification": "observed behavior; group evidence and reproduction retained",
+                "evidence": "Error [ERR_TEST_FAILURE]: Expected values to be strictly equal:\n+ actual - expected\n\n+ '/LIF/pages/1'\n- '/LIF/pages/42'\n              ^\n\n    at new Promise (<anonymous>)\n    at Array.map (<anonymous>) {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n  + actual - expected\n  \n  + '/LIF/pages/1'\n  - '/LIF/pages/42'\n                ^\n  \n      at Object.toBe (src/topcoat/tests/main/resources/assertions.js:5:30)\n      at TestContext.<anonymous> (src/topcoat/tests/main/resources/files.test.js:76:102)\n      at Test.runInAsyncScope (node:async_hooks:227:14)\n      at Test.run (node:internal/test_runner/test:1397:25)\n      at Test.start (node:internal/test_runner/test:1257:17)\n      at node:internal/test_runner/test:1887:71\n      at node:internal/per_context/primordials:504:82\n      at new Promise (<anonymous>)\n      at new SafePromise (node:internal/per_context/primordials:478:3)\n      at node:internal/per_context/primordials:504:9 {\n    generatedMessage: true,\n    code: 'ERR_ASSERTION',\n    actual: '/LIF/pages/1',\n    expected: '/LIF/pages/42',\n    operator: 'strictEqual',\n    diff: 'simple'\n  }\n}"
+              }
+            ]
+          },
+          {
+            "path": "src/topcoat/tests/main/resources/issueExport.test.js",
+            "counts": {
+              "tests": 3,
+              "failed": 0,
+              "passed": 3,
+              "cancelled": 0,
+              "skipped": 0,
+              "todo": 0,
+              "topLevel": 3,
+              "suites": 0
+            },
+            "failed_assertions": []
+          },
+          {
+            "path": "src/topcoat/tests/main/resources/projectArchives.test.js",
+            "counts": {
+              "tests": 1,
+              "failed": 0,
+              "passed": 1,
+              "cancelled": 0,
+              "skipped": 0,
+              "todo": 0,
+              "topLevel": 1,
+              "suites": 0
+            },
+            "failed_assertions": []
+          },
+          {
+            "path": "src/topcoat/tests/main/resources/uploadQueue.test.js",
+            "counts": {
+              "tests": 8,
+              "failed": 4,
+              "passed": 4,
+              "cancelled": 0,
+              "skipped": 0,
+              "todo": 0,
+              "topLevel": 5,
+              "suites": 0
+            },
+            "failed_assertions": [
+              {
+                "case": "limit 0",
+                "classification": "helper-option edge; ordinary fixed production concurrency passes",
+                "evidence": "Error [ERR_TEST_FAILURE]: Expected values to be strictly equal:\n\n0 !== 1\n\n    at async TestContext.<anonymous> (src/topcoat/tests/main/resources/uploadQueue.test.js:79:5) {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n  \n  0 !== 1\n  \n      at Object.toBe (src/topcoat/tests/main/resources/assertions.js:5:30)\n      at TestContext.<anonymous> (src/topcoat/tests/main/resources/uploadQueue.test.js:83:40)\n      at async Test.run (node:internal/test_runner/test:1404:7)\n      at async TestContext.<anonymous> (src/topcoat/tests/main/resources/uploadQueue.test.js:79:5)\n      at async Test.run (node:internal/test_runner/test:1404:7)\n      at async Test.processPendingSubtests (node:internal/test_runner/test:969:7) {\n    generatedMessage: true,\n    code: 'ERR_ASSERTION',\n    actual: 0,\n    expected: 1,\n    operator: 'strictEqual',\n    diff: 'simple'\n  }\n}"
+              },
+              {
+                "case": "limit -5",
+                "classification": "helper-option edge; ordinary fixed production concurrency passes",
+                "evidence": "Error [ERR_TEST_FAILURE]: Expected values to be strictly equal:\n\n0 !== 1\n\n    at async TestContext.<anonymous> (src/topcoat/tests/main/resources/uploadQueue.test.js:79:5) {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n  \n  0 !== 1\n  \n      at Object.toBe (src/topcoat/tests/main/resources/assertions.js:5:30)\n      at TestContext.<anonymous> (src/topcoat/tests/main/resources/uploadQueue.test.js:83:40)\n      at async Test.run (node:internal/test_runner/test:1404:7)\n      at async TestContext.<anonymous> (src/topcoat/tests/main/resources/uploadQueue.test.js:79:5)\n      at async Test.run (node:internal/test_runner/test:1404:7)\n      at async Test.processPendingSubtests (node:internal/test_runner/test:969:7) {\n    generatedMessage: true,\n    code: 'ERR_ASSERTION',\n    actual: 0,\n    expected: 1,\n    operator: 'strictEqual',\n    diff: 'simple'\n  }\n}"
+              },
+              {
+                "case": "limit 3.7",
+                "classification": "helper-option edge; ordinary fixed production concurrency passes",
+                "evidence": "Error [ERR_TEST_FAILURE]: Expected values to be strictly equal:\n\n4 !== 3\n\n    at async TestContext.<anonymous> (src/topcoat/tests/main/resources/uploadQueue.test.js:79:5) {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n  \n  4 !== 3\n  \n      at Object.toBe (src/topcoat/tests/main/resources/assertions.js:5:30)\n      at TestContext.<anonymous> (src/topcoat/tests/main/resources/uploadQueue.test.js:83:40)\n      at async Test.run (node:internal/test_runner/test:1404:7)\n      at async TestContext.<anonymous> (src/topcoat/tests/main/resources/uploadQueue.test.js:79:5)\n      at async Test.run (node:internal/test_runner/test:1404:7)\n      at async Test.processPendingSubtests (node:internal/test_runner/test:969:7) {\n    generatedMessage: true,\n    code: 'ERR_ASSERTION',\n    actual: 4,\n    expected: 3,\n    operator: 'strictEqual',\n    diff: 'simple'\n  }\n}"
+              }
+            ]
+          },
+          {
+            "path": "src/topcoat/tests/main/resources/voiceNote.test.js",
+            "counts": {
+              "tests": 18,
+              "failed": 3,
+              "passed": 15,
+              "cancelled": 0,
+              "skipped": 0,
+              "todo": 0,
+              "topLevel": 5,
+              "suites": 5
+            },
+            "failed_assertions": [
+              {
+                "case": "adds an hours field past an hour",
+                "classification": "unreachable helper input under production admission/recorder invariants",
+                "evidence": "Error [ERR_TEST_FAILURE]: Expected values to be strictly equal:\n\n'62:05' !== '1:02:05'\n\n    at async Promise.all (index 0) {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n  \n  '62:05' !== '1:02:05'\n  \n      at Object.toBe (src/topcoat/tests/main/resources/assertions.js:5:30)\n      at TestContext.<anonymous> (src/topcoat/tests/main/resources/voiceNote.test.js:68:36)\n      at Test.runInAsyncScope (node:async_hooks:227:14)\n      at Test.run (node:internal/test_runner/test:1397:25)\n      at Suite.processPendingSubtests (node:internal/test_runner/test:969:18)\n      at Test.postRun (node:internal/test_runner/test:1537:19)\n      at Test.run (node:internal/test_runner/test:1462:12)\n      at async Promise.all (index 0)\n      at async Suite.run (node:internal/test_runner/test:1889:7)\n      at async Test.processPendingSubtests (node:internal/test_runner/test:969:7) {\n    generatedMessage: true,\n    code: 'ERR_ASSERTION',\n    actual: '62:05',\n    expected: '1:02:05',\n    operator: 'strictEqual',\n    diff: 'simple'\n  }\n}"
+              },
+              {
+                "case": "clamps a negative elapsed time to zero",
+                "classification": "unreachable helper input under production admission/recorder invariants",
+                "evidence": "[Error [ERR_TEST_FAILURE]: Expected values to be strictly equal:\n\n'-1:-1' !== '0:00'\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n  \n  '-1:-1' !== '0:00'\n  \n      at Object.toBe (src/topcoat/tests/main/resources/assertions.js:5:30)\n      at TestContext.<anonymous> (src/topcoat/tests/main/resources/voiceNote.test.js:71:33)\n      at Test.runInAsyncScope (node:async_hooks:227:14)\n      at Test.run (node:internal/test_runner/test:1397:25)\n      at Suite.processPendingSubtests (node:internal/test_runner/test:969:18)\n      at Test.postRun (node:internal/test_runner/test:1537:19)\n      at Test.run (node:internal/test_runner/test:1462:12)\n      at async Suite.processPendingSubtests (node:internal/test_runner/test:969:7) {\n    generatedMessage: true,\n    code: 'ERR_ASSERTION',\n    actual: '-1:-1',\n    expected: '0:00',\n    operator: 'strictEqual',\n    diff: 'simple'\n  }\n}"
+              },
+              {
+                "case": "handles an empty buffer",
+                "classification": "unreachable helper input under production admission/recorder invariants",
+                "evidence": "[Error [ERR_TEST_FAILURE]: Expected values to be strictly equal:\n\nNaN !== 0\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n  \n  NaN !== 0\n  \n      at Object.toBe (src/topcoat/tests/main/resources/assertions.js:5:30)\n      at TestContext.<anonymous> (src/topcoat/tests/main/resources/voiceNote.test.js:88:43)\n      at Test.runInAsyncScope (node:async_hooks:227:14)\n      at Test.run (node:internal/test_runner/test:1397:25)\n      at Suite.processPendingSubtests (node:internal/test_runner/test:969:18)\n      at Test.postRun (node:internal/test_runner/test:1537:19)\n      at Test.run (node:internal/test_runner/test:1462:12)\n      at async Suite.processPendingSubtests (node:internal/test_runner/test:969:7) {\n    generatedMessage: true,\n    code: 'ERR_ASSERTION',\n    actual: NaN,\n    expected: 0,\n    operator: 'strictEqual',\n    diff: 'simple'\n  }\n}"
+              }
+            ]
+          },
+          {
+            "path": "src/topcoat/tests/main/run.test.js",
+            "counts": {
+              "tests": 1,
+              "failed": 0,
+              "passed": 1,
+              "cancelled": 0,
+              "skipped": 0,
+              "todo": 0,
+              "topLevel": 1,
+              "suites": 0
+            },
+            "failed_assertions": []
+          },
+          {
+            "path": "src/topcoat/tests/main/shell/assertions.js",
+            "counts": {},
+            "failed_assertions": [
+              {
+                "case": "a wrong password leaves the existing session in place",
+                "classification": "controller_contract",
+                "evidence": "[Error [ERR_TEST_FAILURE]: Expected values to be strictly equal:\n+ actual - expected\n\n+ null\n- 'lific_sess_stale'\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n  + actual - expected\n  \n  + null\n  - 'lific_sess_stale'\n  \n      at Object.toBe (src/topcoat/tests/main/shell/assertions.js:12:32)\n      at TestContext.<anonymous> (src/topcoat/tests/main/shell/reauth.test.js:84:44)\n      at async Test.run (node:internal/test_runner/test:1404:7)\n      at async Suite.processPendingSubtests (node:internal/test_runner/test:969:7) {\n    generatedMessage: true,\n    code: 'ERR_ASSERTION',\n    actual: null,\n    expected: 'lific_sess_stale',\n    operator: 'strictEqual',\n    diff: 'simple'\n  }\n}"
+              },
+              {
+                "case": "refuses a session belonging to a different admin",
+                "classification": "controller_contract",
+                "evidence": "[Error [ERR_TEST_FAILURE]: Expected values to be strictly equal:\n\ntrue !== false\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n  \n  true !== false\n  \n      at Object.toBe (src/topcoat/tests/main/shell/assertions.js:12:32)\n      at TestContext.<anonymous> (src/topcoat/tests/main/shell/reauth.test.js:111:24)\n      at async Test.run (node:internal/test_runner/test:1404:7)\n      at async Suite.processPendingSubtests (node:internal/test_runner/test:969:7) {\n    generatedMessage: true,\n    code: 'ERR_ASSERTION',\n    actual: true,\n    expected: false,\n    operator: 'strictEqual',\n    diff: 'simple'\n  }\n}"
+              },
+              {
+                "case": "the same identity check applies to the password path",
+                "classification": "controller_contract",
+                "evidence": "[Error [ERR_TEST_FAILURE]: Expected values to be strictly equal:\n\ntrue !== false\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n  \n  true !== false\n  \n      at Object.toBe (src/topcoat/tests/main/shell/assertions.js:12:32)\n      at TestContext.<anonymous> (src/topcoat/tests/main/shell/reauth.test.js:119:24)\n      at async Test.run (node:internal/test_runner/test:1404:7)\n      at async Suite.processPendingSubtests (node:internal/test_runner/test:969:7) {\n    generatedMessage: true,\n    code: 'ERR_ASSERTION',\n    actual: true,\n    expected: false,\n    operator: 'strictEqual',\n    diff: 'simple'\n  }\n}"
+              },
+              {
+                "case": "a refresh naming another account is recoverable, and the token is untouched",
+                "classification": "controller_contract",
+                "evidence": "[Error [ERR_TEST_FAILURE]: Expected values to be strictly equal:\n\ntrue !== false\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n  \n  true !== false\n  \n      at Object.toBe (src/topcoat/tests/main/shell/assertions.js:12:32)\n      at TestContext.<anonymous> (src/topcoat/tests/main/shell/reauth.test.js:211:24)\n      at async Test.run (node:internal/test_runner/test:1404:7)\n      at async Suite.processPendingSubtests (node:internal/test_runner/test:969:7) {\n    generatedMessage: true,\n    code: 'ERR_ASSERTION',\n    actual: true,\n    expected: false,\n    operator: 'strictEqual',\n    diff: 'simple'\n  }\n}"
+              }
+            ]
+          },
+          {
+            "path": "src/topcoat/tests/main/shell/authSession.test.js",
+            "counts": {
+              "tests": 5,
+              "failed": 0,
+              "passed": 5,
+              "cancelled": 0,
+              "skipped": 0,
+              "todo": 0,
+              "topLevel": 2,
+              "suites": 2
+            },
+            "failed_assertions": []
+          },
+          {
+            "path": "src/topcoat/tests/main/shell/colors-icons.test.js",
+            "counts": {
+              "tests": 2,
+              "failed": 0,
+              "passed": 2,
+              "cancelled": 0,
+              "skipped": 0,
+              "todo": 0,
+              "topLevel": 2,
+              "suites": 0
+            },
+            "failed_assertions": []
+          },
+          {
+            "path": "src/topcoat/tests/main/shell/palette-search.test.js",
+            "counts": {
+              "tests": 64,
+              "failed": 0,
+              "passed": 64,
+              "cancelled": 0,
+              "skipped": 0,
+              "todo": 0,
+              "topLevel": 16,
+              "suites": 16
+            },
+            "failed_assertions": []
+          },
+          {
+            "path": "src/topcoat/tests/main/shell/publicScope.test.js",
+            "counts": {
+              "tests": 7,
+              "failed": 0,
+              "passed": 7,
+              "cancelled": 0,
+              "skipped": 0,
+              "todo": 0,
+              "topLevel": 2,
+              "suites": 2
+            },
+            "failed_assertions": []
+          },
+          {
+            "path": "src/topcoat/tests/main/shell/reauth.test.js",
+            "counts": {
+              "tests": 18,
+              "failed": 4,
+              "passed": 14,
+              "cancelled": 0,
+              "skipped": 0,
+              "todo": 0,
+              "topLevel": 5,
+              "suites": 5
+            },
+            "failed_assertions": []
+          },
+          {
+            "path": "src/topcoat/tests/main/shell/sidebarWidth.test.js",
+            "counts": {
+              "tests": 5,
+              "failed": 0,
+              "passed": 5,
+              "cancelled": 0,
+              "skipped": 0,
+              "todo": 0,
+              "topLevel": 1,
+              "suites": 1
+            },
+            "failed_assertions": []
+          },
+          {
+            "path": "src/topcoat/tests/main/shell/userState.test.js",
+            "counts": {
+              "tests": 4,
+              "failed": 3,
+              "passed": 1,
+              "cancelled": 0,
+              "skipped": 0,
+              "todo": 0,
+              "topLevel": 4,
+              "suites": 0
+            },
+            "failed_assertions": [
+              {
+                "case": "successful profile publication reaches all subscribers immediately",
+                "classification": "behavioral difference requiring review",
+                "evidence": "[Error [ERR_TEST_FAILURE]: Expected values to be strictly deep-equal:\n+ actual - expected\n\n  [\n    '',\n    'Before',\n-   'After'\n  ]\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:\n  + actual - expected\n  \n    [\n      '',\n      'Before',\n  -   'After'\n    ]\n  \n      at TestContext.<anonymous> (src/topcoat/tests/main/shell/userState.test.js:9:92)\n      at async Test.run (node:internal/test_runner/test:1404:7)\n      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {\n    generatedMessage: true,\n    code: 'ERR_ASSERTION',\n    actual: [ '', 'Before' ],\n    expected: [ '', 'Before', 'After' ],\n    operator: 'deepStrictEqual',\n    diff: 'simple'\n  }\n}"
+              },
+              {
+                "case": "late me response cannot replace a newer profile",
+                "classification": "behavioral difference requiring review",
+                "evidence": "[Error [ERR_TEST_FAILURE]: Expected values to be strictly equal:\n\n'Before' !== 'Saved'\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n  \n  'Before' !== 'Saved'\n  \n      at TestContext.<anonymous> (src/topcoat/tests/main/shell/userState.test.js:14:9)\n      at async Test.run (node:internal/test_runner/test:1404:7)\n      at async Test.processPendingSubtests (node:internal/test_runner/test:969:7) {\n    generatedMessage: true,\n    code: 'ERR_ASSERTION',\n    actual: 'Before',\n    expected: 'Saved',\n    operator: 'strictEqual',\n    diff: 'simple'\n  }\n}"
+              },
+              {
+                "case": "direct store updates also invalidate stale loads",
+                "classification": "internal mutable-store contract; no public producer established",
+                "evidence": "[Error [ERR_TEST_FAILURE]: Expected values to be strictly equal:\n+ actual - expected\n\n+ 'Before'\n- 'Updated'\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n  + actual - expected\n  \n  + 'Before'\n  - 'Updated'\n  \n      at TestContext.<anonymous> (src/topcoat/tests/main/shell/userState.test.js:22:132)\n      at async Test.run (node:internal/test_runner/test:1404:7)\n      at async Test.processPendingSubtests (node:internal/test_runner/test:969:7) {\n    generatedMessage: true,\n    code: 'ERR_ASSERTION',\n    actual: 'Before',\n    expected: 'Updated',\n    operator: 'strictEqual',\n    diff: 'simple'\n  }\n}"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "mode": "native-browser",
+        "command": "node --test src/topcoat/tests/main/issues/overview-administration.browser.test.js",
+        "counts": {
+          "tests": 17,
+          "failed": 4,
+          "passed": 13,
+          "cancelled": 0,
+          "skipped": 0,
+          "todo": 0,
+          "topLevel": 17,
+          "suites": 0
+        },
+        "files": [
+          {
+            "path": "src/topcoat/project_settings/assets/project-settings.browser.test.js",
+            "counts": {
+              "tests": 1,
+              "failed": 0,
+              "passed": 1,
+              "cancelled": 0,
+              "skipped": 0,
+              "todo": 0,
+              "topLevel": 1,
+              "suites": 0
+            },
+            "failed_assertions": []
+          },
+          {
+            "path": "src/topcoat/project_settings/assets/project-settings.test.js",
+            "counts": {
+              "tests": 5,
+              "failed": 0,
+              "passed": 5,
+              "cancelled": 0,
+              "skipped": 0,
+              "todo": 0,
+              "topLevel": 5,
+              "suites": 0
+            },
+            "failed_assertions": []
+          },
+          {
+            "path": "src/topcoat/tests/main/issues/overview-administration.browser.test.js",
+            "counts": {
+              "tests": 11,
+              "failed": 4,
+              "passed": 7,
+              "cancelled": 0,
+              "skipped": 0,
+              "todo": 0,
+              "topLevel": 11,
+              "suites": 0
+            },
+            "failed_assertions": [
+              {
+                "case": "native repository binding conflict, canonical remote/root aliases, and cancelled or completed removal",
+                "classification": "native_browser_behavior",
+                "evidence": "[Error [ERR_TEST_FAILURE]: locator.fill: Timeout 5000ms exceeded.\nCall log:\n  - waiting for getByLabel('Repository alias', { exact: true })\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: locator.fill: Timeout 5000ms exceeded.\n  Call log:\n    - waiting for getByLabel('Repository alias', { exact: true })\n  \n      at src/topcoat/tests/main/issues/overview-administration.browser.test.js:76:17\n      at withPage (src/topcoat/tests/main/issues/overview-administration.browser.test.js:35:11)\n      at async TestContext.<anonymous> (src/topcoat/tests/main/issues/overview-administration.browser.test.js:67:3) {\n    name: 'TimeoutError',\n    log: [\n      \"  - waiting for getByLabel('Repository alias', { exact: true })\"\n    ]\n  }\n}"
+              },
+              {
+                "case": "native binding readers have no mutation controls even when role enforcement is off",
+                "classification": "native_browser_behavior",
+                "evidence": "[Error [ERR_TEST_FAILURE]: locator.waitFor: Timeout 5000ms exceeded.\nCall log:\n  - waiting for getByText('root: v1:0123456789abcdef0123456789abcdef01234567', { exact: true }) to be visible\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: locator.waitFor: Timeout 5000ms exceeded.\n  Call log:\n    - waiting for getByText('root: v1:0123456789abcdef0123456789abcdef01234567', { exact: true }) to be visible\n  \n      at src/topcoat/tests/main/issues/overview-administration.browser.test.js:117:63\n      at async withPage (src/topcoat/tests/main/issues/overview-administration.browser.test.js:35:5)\n      at async TestContext.<anonymous> (src/topcoat/tests/main/issues/overview-administration.browser.test.js:101:3) {\n    name: 'TimeoutError',\n    log: [\n      \"  - waiting for getByText('root: v1:0123456789abcdef0123456789abcdef01234567', { exact: true }) to be visible\"\n    ]\n  }\n}"
+              },
+              {
+                "case": "native member add retains joined metadata and role refusal rolls back persisted and rendered state",
+                "classification": "native_browser_behavior",
+                "evidence": "[Error [ERR_TEST_FAILURE]: locator.waitFor: Timeout 5000ms exceeded.\nCall log:\n  - waiting for locator('.native-overview__member-row').filter({ hasText: '@metadata-member' }) to be visible\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: locator.waitFor: Timeout 5000ms exceeded.\n  Call log:\n    - waiting for locator('.native-overview__member-row').filter({ hasText: '@metadata-member' }) to be visible\n  \n      at src/topcoat/tests/main/issues/overview-administration.browser.test.js:272:54\n      at async withPage (src/topcoat/tests/main/issues/overview-administration.browser.test.js:35:5)\n      at async TestContext.<anonymous> (src/topcoat/tests/main/issues/overview-administration.browser.test.js:264:3) {\n    name: 'TimeoutError',\n    log: [\n      \"  - waiting for locator('.native-overview__member-row').filter({ hasText: '@metadata-member' }) to be visible\"\n    ]\n  }\n}"
+              },
+              {
+                "case": "native GitHub preview commits the exact previewed repository and mappings through the real importer",
+                "classification": "native_browser_behavior",
+                "evidence": "[Error [ERR_TEST_FAILURE]: The real upstream import returns a successful preview.\n+ actual - expected\n\n  {\n+   err: \"Couldn't save changes. Try again.\",\n-   ok: 'preview',\n    t: 'Result'\n  }\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: The real upstream import returns a successful preview.\n  + actual - expected\n  \n    {\n  +   err: \"Couldn't save changes. Try again.\",\n  -   ok: 'preview',\n      t: 'Result'\n    }\n  \n      at src/topcoat/tests/main/issues/overview-administration.browser.test.js:348:12\n      at async withPage (src/topcoat/tests/main/issues/overview-administration.browser.test.js:35:5)\n      at async TestContext.<anonymous> (src/topcoat/tests/main/issues/overview-administration.browser.test.js:337:3)\n      at async Test.run (node:internal/test_runner/test:1404:7)\n      at async Test.processPendingSubtests (node:internal/test_runner/test:969:7) {\n    generatedMessage: false,\n    code: 'ERR_ASSERTION',\n    actual: { t: 'Result', err: \"Couldn't save changes. Try again.\" },\n    expected: { t: 'Result', ok: 'preview' },\n    operator: 'deepStrictEqual',\n    diff: 'simple'\n  }\n}"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "geometry": {
+      "counts": {
+        "tests": 5,
+        "failed": 5,
+        "passed": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 1,
+        "suites": 0
+      },
+      "failed_assertions": [
+        {
+          "case": "desktop light",
+          "classification": "native_appearance",
+          "evidence": "Error [ERR_TEST_FAILURE]: larger greeting text: expected 24.75 \u00b1 0.1, received 22\n    at async TestContext.<anonymous> (src/topcoat/visual_parity/geometry.browser.test.cjs:27:9) {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: larger greeting text: expected 24.75 \u00b1 0.1, received 22\n      at near (src/topcoat/visual_parity/geometry.browser.test.cjs:11:65)\n      at TestContext.<anonymous> (src/topcoat/visual_parity/geometry.browser.test.cjs:82:11)\n      at async Test.run (node:internal/test_runner/test:1404:7)\n      at async TestContext.<anonymous> (src/topcoat/visual_parity/geometry.browser.test.cjs:27:9)\n      at async Test.run (node:internal/test_runner/test:1404:7)\n      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {\n    generatedMessage: false,\n    code: 'ERR_ASSERTION',\n    actual: false,\n    expected: true,\n    operator: '==',\n    diff: 'simple'\n  }\n}"
+        },
+        {
+          "case": "desktop dark",
+          "classification": "native_appearance",
+          "evidence": "Error [ERR_TEST_FAILURE]: larger greeting text: expected 24.75 \u00b1 0.1, received 22\n    at async TestContext.<anonymous> (src/topcoat/visual_parity/geometry.browser.test.cjs:27:9) {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: larger greeting text: expected 24.75 \u00b1 0.1, received 22\n      at near (src/topcoat/visual_parity/geometry.browser.test.cjs:11:65)\n      at TestContext.<anonymous> (src/topcoat/visual_parity/geometry.browser.test.cjs:82:11)\n      at runNextTicks (node:internal/process/task_queues:65:5)\n      at process.processImmediate (node:internal/timers:541:9)\n      at async Test.run (node:internal/test_runner/test:1404:7)\n      at async TestContext.<anonymous> (src/topcoat/visual_parity/geometry.browser.test.cjs:27:9)\n      at async Test.run (node:internal/test_runner/test:1404:7)\n      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {\n    generatedMessage: false,\n    code: 'ERR_ASSERTION',\n    actual: false,\n    expected: true,\n    operator: '==',\n    diff: 'simple'\n  }\n}"
+        },
+        {
+          "case": "phone light",
+          "classification": "native_appearance",
+          "evidence": "Error [ERR_TEST_FAILURE]: larger greeting text: expected 24.75 \u00b1 0.1, received 22\n    at async TestContext.<anonymous> (src/topcoat/visual_parity/geometry.browser.test.cjs:27:9) {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: larger greeting text: expected 24.75 \u00b1 0.1, received 22\n      at near (src/topcoat/visual_parity/geometry.browser.test.cjs:11:65)\n      at TestContext.<anonymous> (src/topcoat/visual_parity/geometry.browser.test.cjs:82:11)\n      at runNextTicks (node:internal/process/task_queues:65:5)\n      at process.processImmediate (node:internal/timers:541:9)\n      at async Test.run (node:internal/test_runner/test:1404:7)\n      at async TestContext.<anonymous> (src/topcoat/visual_parity/geometry.browser.test.cjs:27:9)\n      at async Test.run (node:internal/test_runner/test:1404:7)\n      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {\n    generatedMessage: false,\n    code: 'ERR_ASSERTION',\n    actual: false,\n    expected: true,\n    operator: '==',\n    diff: 'simple'\n  }\n}"
+        },
+        {
+          "case": "phone dark",
+          "classification": "native_appearance",
+          "evidence": "Error [ERR_TEST_FAILURE]: larger greeting text: expected 24.75 \u00b1 0.1, received 22\n    at async TestContext.<anonymous> (src/topcoat/visual_parity/geometry.browser.test.cjs:27:9) {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: larger greeting text: expected 24.75 \u00b1 0.1, received 22\n      at near (src/topcoat/visual_parity/geometry.browser.test.cjs:11:65)\n      at TestContext.<anonymous> (src/topcoat/visual_parity/geometry.browser.test.cjs:82:11)\n      at runNextTicks (node:internal/process/task_queues:65:5)\n      at process.processImmediate (node:internal/timers:541:9)\n      at async Test.run (node:internal/test_runner/test:1404:7)\n      at async TestContext.<anonymous> (src/topcoat/visual_parity/geometry.browser.test.cjs:27:9)\n      at async Test.run (node:internal/test_runner/test:1404:7)\n      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {\n    generatedMessage: false,\n    code: 'ERR_ASSERTION',\n    actual: false,\n    expected: true,\n    operator: '==',\n    diff: 'simple'\n  }\n}"
+        }
+      ],
+      "note": "The old controller DOM selectors were corrected to native markup using pinned main. Four actual layout/theme cases reach and fail the original larger-text assertion: 22px instead of 24.75px. Other geometry predicates preceding this assertion pass; later predicates are not counted as proven."
+    },
+    "rust_workspace": {
+      "tests": 3470,
+      "passed": 3470,
+      "failed": 0,
+      "skipped": 0,
+      "note": "Full workspace and all targets, including ignored cases. Includes corrected timer/account navigation, Select opening position, and mounted archive download cancellation.",
+      "post_lint_fix": {
+        "tests": 69,
+        "passed": 69,
+        "failed": 0,
+        "filtered_out": 3401,
+        "note": "Home activity-rate, live Home, and native raw authority cases rerun after checked-conversion and immutable event-decision lint fixes."
+      },
+      "checked_conversion_rerun": {
+        "tests": 14,
+        "passed": 14,
+        "failed": 0,
+        "filtered_out": 3456,
+        "note": "Activity-rate model, serialization, view, and direct authority baseline tests after the final explicit checked-conversion lint fix."
+      }
+    }
+  }
 }

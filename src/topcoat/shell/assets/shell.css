@@ -177,12 +177,6 @@
 }
 .tc-shell[data-layout="private"] .tc-shell__navigation { font-size: .8125rem; gap: .125rem; }
 .tc-shell[data-layout="private"] .tc-shell__navigation { margin-top: 0; }
-.tc-shell[data-layout="private"] .tc-shell__navigation a[href$="/"] {
-  position: absolute; top: 0; left: .5rem; right: .5rem;
-}
-.tc-shell[data-layout="private"] .tc-shell__navigation a[href$="/"]::before {
-  content: "⌂"; margin-right: .5rem; color: var(--tc-accent); font-size: 1rem; line-height: 1;
-}
 .tc-shell[data-layout="private"] .tc-shell__navigation a[href$="/projects/new"],
 .tc-shell[data-layout="private"] .tc-shell__navigation a[href$="/projects/import"],
 .tc-shell[data-layout="private"] .tc-shell__navigation .tc-shell__hint { display: none; }
@@ -200,10 +194,6 @@
   background: var(--tc-bg);
   box-shadow: inset .625rem .625rem 1.5rem -.625rem var(--tc-shadow-recess);
 }
-.tc-shell__main:has([data-topcoat-dashboard="home"]) .tc-page-chrome__row::before {
-  content: "Home"; font-weight: 500; color: var(--tc-text);
-}
-.tc-shell[data-layout="private"] .tc-shell__main:has([data-topcoat-dashboard="home"]) .tc-page-chrome { border: 0; }
 .tc-shell[data-layout="private"][data-sidebar-collapsed="true"] { grid-template-columns: minmax(0, 1fr); grid-template-rows: 2.75rem minmax(0, 1fr); }
 .tc-shell[data-layout="private"][data-sidebar-collapsed="true"] .tc-shell__header { grid-column: 1; }
 .tc-shell[data-layout="private"][data-sidebar-collapsed="true"] .tc-shell__brand,
@@ -226,7 +216,6 @@
 
 .tc-shell[data-layout="private"] .tc-shell__header > [data-palette-open]::before { content: ""; width: .875rem; height: .875rem; background: currentColor; mask: var(--tc-icon-search) center / contain no-repeat; }
 .tc-shell[data-layout="private"] .tc-shell__sidebar-toggle::before { content: ""; display: block; margin: auto; width: .9375rem; height: .9375rem; background: currentColor; mask: var(--tc-icon-panel-left-close) center / contain no-repeat; }
-.tc-shell[data-layout="private"] .tc-shell__navigation a[href$="/"]::before { content: ""; display: inline-block; width: .875rem; height: .875rem; background: currentColor; mask: var(--tc-icon-house) center / contain no-repeat; }
 .tc-shell[data-layout="private"] .tc-shell__navigation a[href$="/settings"] { position: absolute; left: .5rem; bottom: 1rem; }
 .tc-shell[data-layout="private"] .tc-shell__navigation a[href$="/settings/instance"] { position: absolute; left: 5.5rem; bottom: 1rem; font-size: .6875rem; }
 .tc-shell[data-layout="private"] .tc-shell__desktop > [data-shortcut-open] { position: absolute; right: .5rem; bottom: 1rem; }

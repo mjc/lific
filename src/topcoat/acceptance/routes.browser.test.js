@@ -2,9 +2,15 @@ const {test} = require('node:test');
 const assert = require('node:assert/strict');
 const {startFixture} = require('./server.js');
 
-async function loaded(page, selector) {
-  await page.waitForFunction(selector => document.querySelector(selector)?.getAttribute('aria-busy') === 'false', selector);
+async function loaded(page, selector, native = false) {
+  if (!native) {
+    await page.waitForFunction(selector => document.querySelector(selector)?.getAttribute('aria-busy') === 'false', selector);
+  }
   const root = page.locator(selector);
+  await root.waitFor({state: 'visible'});
+  if (selector === '[data-native-home]') {
+    await root.locator('[data-native-home-connected="true"]').waitFor();
+  }
   const alerts = await root.locator('[role="alert"]:visible').allTextContents();
   assert.deepEqual(alerts.filter(text => text.trim()), [], `${selector} showed an error`);
   return root;
@@ -24,14 +30,13 @@ test('real server loads every private route family through a stripping proxy',
       page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
       const project = fixture.project.identifier;
       const routes = [
-        ['/', '[data-topcoat-dashboard="home"]', async root => {
-          await contains(root.locator('[data-dashboard-content]'), 'All quiet here');
-          await contains(page.locator('[data-topcoat-projects]'), fixture.project.name);
-          assert.equal((await root.locator('[data-dashboard-errors]').textContent()).trim(), '');
-          const mascot = root.locator('.tc-dashboard__mascot');
+        ['/', '[data-native-home]', async root => {
+          await contains(root.locator('.tc-home-active__empty'), 'All quiet here');
+          await contains(page.locator('[data-native-sidebar-layout="desktop"]'), fixture.project.name);
+          const mascot = root.locator('.tc-home-active__mascot');
           assert.equal(await mascot.isVisible(), true);
           const mask = await mascot.evaluate(element => getComputedStyle(element).maskImage);
-          const mascotPath = `${fixture.prefix}/__topcoat-dashboard-mascot.png`;
+          const mascotPath = `${fixture.prefix}/__native_home/mascot.png`;
           assert.equal(new URL(mask.slice(5, -2), fixture.origin).pathname, mascotPath);
           const decoded = await page.evaluate(url => new Promise((resolve, reject) => {
             const image = new Image();
@@ -40,31 +45,36 @@ test('real server loads every private route family through a stripping proxy',
             image.src = url;
           }), `${fixture.origin}${mascotPath}`);
           assert.equal(decoded, true);
-        }],
+        }, true],
         ['/settings', '[data-topcoat-identity="settings"]', root => contains(root.locator('h1'), 'Account settings')],
         ['/settings/instance', '[data-topcoat-identity="instance"]', root => contains(root.locator('h1'), 'Instance settings')],
-        ['/projects/new', '[data-topcoat-project-settings="new"]', async root => {
+        ['/projects/new', '.native-project-create-page', async root => {
           assert.equal(await root.getByLabel('Name', {exact: true}).isVisible(), true);
-          assert.equal(await root.getByRole('button', {name: 'Create project', exact: true}).isEnabled(), true);
-        }],
+          await root.getByLabel('Name', {exact: true}).fill('Acceptance project');
+          await root.getByLabel('Identifier', {exact: true}).fill('NEW');
+          assert.equal(await page.getByRole('button', {name: 'Create project', exact: true}).isEnabled(), true);
+        }, true],
         ['/projects/import', '[data-topcoat-project-settings="archive"]', async root => {
           assert.equal(await root.getByLabel('Project archive (.tar.gz)', {exact: true}).isVisible(), true);
         }],
-        ...['overview', 'settings'].map(section => [`/${project}/${section}`, '[data-topcoat-dashboard="overview"]', async root => {
-          await contains(root.locator('h1'), fixture.project.name);
-          assert.equal(await root.getByRole('region', {name: 'Project progress'}).count(), 1);
-          assert.equal((await root.locator('[data-dashboard-errors]').textContent()).trim(), '');
-          await loaded(page, '[data-topcoat-project-settings="settings"]');
-        }]),
-        ...['issues', 'board'].map(section => [`/${project}/${section}`, '[data-topcoat-issue-list]', root => contains(root.locator('[data-issues-content]'), fixture.issue.title)]),
+        ...['overview', 'settings'].map(section => [`/${project}/${section}`, '.native-overview', async root => {
+          await contains(root.locator('.native-overview__name'), fixture.project.name);
+          assert.equal(await root.getByRole('progressbar').count(), 1);
+          assert.equal(await root.getByRole('progressbar').getAttribute('aria-valuenow'), '0');
+          await contains(root.locator('.native-overview__completion'), '0/1 done');
+          assert.equal(await root.locator('.native-overview__group').isVisible(), true);
+          assert.equal(await root.getByRole('heading', {name: /^Labels/}).isVisible(), true);
+        }, true]),
+        ...['issues', 'board'].map(section => [`/${project}/${section}`, section === 'issues' ? '[data-native-issue-list]' : '[data-native-board]', root => contains(root, fixture.issue.title), true]),
         [`/${project}/issues/new`, '[data-topcoat-issue-create]', async root => {
           assert.equal(await root.getByRole('heading', {name: 'New issue', exact: true}).isVisible(), true);
           assert.equal(await root.locator('[data-issue-create-form]').isVisible(), true);
         }],
-        [`/${project}/issues/${fixture.issue.identifier}`, '[data-topcoat-issue-detail]', async root => {
-          await contains(root.locator('[data-detail-title]'), fixture.issue.title);
-          await contains(root.locator('[data-detail-identifier]'), fixture.issue.identifier);
-        }],
+        [`/${project}/issues/${fixture.issue.identifier}`, '[data-native-issue-editor]', async root => {
+          await contains(root.locator('.native-issue-editor__title:visible'), fixture.issue.title);
+          assert.equal(await root.getAttribute('data-native-issue-editor'), fixture.issue.identifier);
+          await contains(page.locator('.native-issue-detail__topbar'), fixture.issue.identifier);
+        }, true],
         [`/${project}/pages`, '[data-topcoat-pages="list"]', root => contains(root.locator('[data-pages-content]'), fixture.page.title)],
         [`/${project}/pages/${fixture.page.id}`, '[data-topcoat-pages="detail"]', async root => {
           assert.equal(await root.locator('[data-page-title]').inputValue(), fixture.page.title);
@@ -86,15 +96,19 @@ test('real server loads every private route family through a stripping proxy',
         [`/${project}/insights`, '[data-topcoat-analytics="insights"]', root => contains(root.locator('[data-analytics-content]'), 'Insights')],
         [`/${project}/graph`, '[data-topcoat-analytics="graph"]', root => contains(root.locator('[data-analytics-content]'), 'Dependency graph')],
       ];
-      for (const [route, selector, check] of routes) {
+      for (const [route, selector, check, native = false] of routes) {
         await t.test(route, async () => {
           errors.length = 0;
           const response = await page.goto(fixture.url(route));
           assert.equal(response.status(), 200);
           assert.equal(new URL(page.url()).pathname, `${fixture.prefix}${route}`);
-          assert.equal(await page.locator('.tc-shell').getAttribute('data-layout'), 'private');
+          if (native) {
+            assert.equal(await page.locator('.native-home-shell').count(), 1);
+          } else {
+            assert.equal(await page.locator('.tc-shell').getAttribute('data-layout'), 'private');
+          }
           assert.equal(await page.locator('.tc-shell__skip').getAttribute('href'), '#main-content');
-          const root = await loaded(page, selector);
+          const root = await loaded(page, selector, native);
           await check(root);
           assert.equal(await page.locator('.tc-shell__placeholder').count(), 0);
           assert.deepEqual(errors, [], route);

@@ -67,12 +67,6 @@ async function main() {
           recents: process.env.LIFIC_VISUAL_SCENARIO === 'populated' ? [{type: 'issue', project: 'ACC', routeId: fixture.issue.identifier, identifier: fixture.issue.identifier, title: fixture.issue.title, ts: Date.now()},
             {type: 'page', project: 'ACC', routeId: String(fixture.page.id), identifier: fixture.page.identifier, title: fixture.page.title, ts: Date.now() - 1000}] : []});
         const page = await context.newPage();
-        if (implementation === 'topcoat' && process.env.LIFIC_VISUAL_LIVE_CSS === '1') {
-          await page.route(url => url.pathname.endsWith('/__topcoat-app.css'), r => r.fulfill({contentType: 'text/css', body: ['../assets/base.css', '../assets/controls.css', '../shell/assets/shell.css', '../native/assets/home.css', '../native/assets/home-sections.css', '../native/assets/home-shell.css', '../native/assets/home-page.css'].map(file => fs.readFileSync(path.resolve(__dirname, file), 'utf8')).join('\n')}));
-          const assets = {'base': '../assets/base.css', 'controls': '../assets/controls.css', 'shell': '../shell/assets/shell.css', 'projects': '../shell/assets/projects.css', 'page-chrome': '../shell/assets/page-chrome.css', 'dashboard': '../dashboard/assets/dashboard.css'};
-          for (const [name, file] of Object.entries(assets)) await page.route(`**/__topcoat-${name}.css`, r => r.fulfill({contentType: 'text/css', body: fs.readFileSync(path.resolve(__dirname, file), 'utf8')}));
-          for (const [name, file] of [['projects', '../shell/assets/projects.js'], ['dashboard', '../dashboard/assets/dashboard.js']]) await page.route(`**/__topcoat-${name}.js`, r => r.fulfill({contentType: 'text/javascript', body: fs.readFileSync(path.resolve(__dirname, file), 'utf8')}));
-        }
         const errors = [];
         page.on('pageerror', e => errors.push(e.message));
         await page.goto(implementation === 'svelte' ? `http://127.0.0.1:5178/#${routePaths[route]}` : fixture.url(routePaths[route]), {waitUntil: 'networkidle'});

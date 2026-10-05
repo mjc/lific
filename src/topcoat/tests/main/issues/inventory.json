@@ -182,9 +182,10 @@
         "navigating to another thread starts the anchor walk over",
         "deletes a comment through its typed API call"
       ],
-      "notes": "35 Node controller cases plus 9 browser parent cases preserve all 44 original titles. Actual collaboration refreshComments/fetchCommentPage/renderCommentList/resolveCommentHash and current manual older click branch are exposed for controlled component tests; no old implementation is copied. Real browser update/delete/keyboard requests use actual database. Retired configurable page geometry maps to current fixed50 rows/51 fetch and actual ten-page anchor bound.",
+      "notes": "Original named cases remain mapped to live collaboration unit/browser tests and the native label-color boundary. Actual collaboration refreshComments/fetchCommentPage/renderCommentList/resolveCommentHash and current manual older click branch are exposed for controlled component tests; real browser update/delete/keyboard requests use the actual database. Retired configurable page geometry maps to current fixed 50 rows/51 fetch and actual ten-page anchor bound.",
       "additionalTargets": [
-        "src/topcoat/tests/main/issues/comments.browser.test.js"
+        "src/topcoat/tests/main/issues/comments.browser.test.js",
+        "src/topcoat/native/project_overview/labels_model.rs"
       ],
       "mappings": [
         {
@@ -205,9 +206,9 @@
         },
         {
           "original": "renders unsafe stored label colors through the component fallback",
-          "target": "src/topcoat/tests/main/issues/comments.test.js",
-          "translated": "renders unsafe stored label colors through the component fallback",
-          "notes": "Actual project-settings safeColor boundary must choose #6B7280 and reject the injected stored color; retired ColorPicker SSR wrapper is omitted."
+          "target": "src/topcoat/native/project_overview/labels_model.rs",
+          "translated": "label_unsafe_stored_color_uses_native_component_fallback",
+          "notes": "Native safe_color preserves all three original port assertions: the malicious stored CSS becomes #6B7280, the original injected value is absent, and background-image is absent. This is the native model boundary test; it does not claim a browser DOM assertion."
         },
         {
           "original": "the thread revision changes for every way the rendered thread can change",

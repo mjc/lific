@@ -38,12 +38,13 @@ pub(crate) fn screen(cx: &Cx) -> topcoat::Result<BoxView<'_>> {
 pub(super) fn region(cx: &Cx, account: i64, palette_open: Signal<bool>) -> BoxView<'_> {
     let inputs = signal(cx, String::new);
     let refresh_revision = signal(cx, || 0_usize);
+    let activity_state = signal(cx, String::new);
     let content_palette = palette_open;
     let content = view! { cx =>
         <section data-native-home="" class="tc-native-home"
             (super::home_refresh::mount(cx, inputs.clone(), refresh_revision.clone()))>
             <span hidden="hidden" (super::bookmark::mount(cx))></span>
-            native_home_content(account: account, browser_inputs: $(inputs.get()), refresh_revision: $(refresh_revision.get()), palette_open: content_palette)
+            native_home_content(account: account, browser_inputs: $(inputs.get()), refresh_revision: $(refresh_revision.get()), palette_open: content_palette, activity_state: activity_state)
         </section>
     }
     .boxed();
@@ -57,6 +58,7 @@ async fn native_home_content(
     browser_inputs: String,
     refresh_revision: usize,
     palette_open: Signal<bool>,
+    activity_state: Signal<String>,
 ) -> topcoat::Result<impl View> {
     let _ = refresh_revision;
     // Subscribe before reading so an edit committed during the snapshot cannot
@@ -77,6 +79,7 @@ async fn native_home_content(
         browser_inputs,
         palette_open,
         connected,
+        activity_state,
     );
     // The physical sockets retain their authority; only this body is refreshed.
     Ok(content)
@@ -88,6 +91,7 @@ pub(super) fn content_view<'a>(
     browser_inputs: &str,
     palette_open: Signal<bool>,
     connected: bool,
+    activity_rate: BoxView<'a>,
 ) -> BoxView<'a> {
     let local = if browser_inputs.is_empty() {
         None
@@ -131,12 +135,13 @@ pub(super) fn content_view<'a>(
         .quick_issue_project
         .map(|project| mounted_url(cx, &format!("/{}/issues/new", project.identifier)));
     let work = home_view::active_work(cx, model);
-    let rail = home_sections::right_rail(
+    let rail = home_sections::right_rail_with_rate(
         cx,
         &snapshot.projects,
         &snapshot.pinned_pages,
         &snapshot.activity,
         &recents,
+        activity_rate,
     );
     view! { cx =>
         <div class="tc-native-home__page" data-native-home-connected=(if connected { "true" } else { "false" })>

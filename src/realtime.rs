@@ -1069,7 +1069,7 @@ async fn close_socket(socket: &mut WebSocket) -> SocketFlow {
     SocketFlow::Close
 }
 
-fn activity_baseline(
+pub(crate) fn activity_baseline(
     db: &crate::db::DbPool,
     auth_user: &crate::db::models::AuthUser,
 ) -> Result<RealtimeEvent, crate::error::LificError> {

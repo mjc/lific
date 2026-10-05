@@ -10,6 +10,14 @@ use topcoat_view::{HoistKey, hoist_once};
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct ConnectedRender;
 
+/// One physical socket identity shared by all renders it carries.
+#[derive(Debug, Clone)]
+pub(crate) struct ConnectionEpoch(pub(crate) String);
+
+pub(crate) fn connection_epoch(cx: &Cx) -> Option<&str> {
+    try_request_context::<ConnectionEpoch>(cx).map(|epoch| epoch.0.as_str())
+}
+
 /// Returns whether this render runs over a browser connection and marks
 /// the content as needing one.
 ///
@@ -127,6 +135,21 @@ mod tests {
         let cx = Cx::default().with(ConnectedRender);
         assert!(connected_untracked(&cx.keyed(1)));
         assert!(connected_untracked(&cx.with(())));
+    }
+
+    #[test]
+    fn native_connection_epoch_is_socket_scoped_and_survives_child_render_contexts() {
+        assert_eq!(connection_epoch(&Cx::default()), None);
+        let first = Cx::default()
+            .with(ConnectedRender)
+            .with(ConnectionEpoch("first".into()));
+        assert_eq!(connection_epoch(&first), Some("first"));
+        assert_eq!(connection_epoch(&first.keyed(1)), Some("first"));
+        assert_eq!(connection_epoch(&first.with(())), Some("first"));
+        let second = Cx::default()
+            .with(ConnectedRender)
+            .with(ConnectionEpoch("second".into()));
+        assert_ne!(connection_epoch(&first), connection_epoch(&second));
     }
 
     #[test]

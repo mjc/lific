@@ -37,18 +37,18 @@ test('the executable Home retains measured Svelte shell and type geometry, touch
           }, {origin: fixture.origin, theme, token: fixture.token});
           const page = await context.newPage();
           await page.goto(fixture.url('/'));
-          await page.waitForFunction(() => document.querySelector('[data-topcoat-dashboard]')?.getAttribute('aria-busy') === 'false');
+          await page.locator('.tc-native-home__page[data-native-home-connected="true"]').waitFor();
           await page.evaluate(() => document.fonts.ready);
           const geometry = await page.evaluate(() => {
-            const heading = document.querySelector('.tc-dashboard h1');
+            const heading = document.getElementById('native-home-greeting');
             const style = getComputedStyle(heading);
-            const shell = document.querySelector('.tc-shell');
-            return {header: shell.querySelector('.tc-shell__header').getBoundingClientRect().toJSON(),
-              contentTop: shell.querySelector('.tc-page-chrome').getBoundingClientRect().bottom,
+            const shell = document.querySelector('.native-home-shell');
+            return {header: shell.querySelector('.native-home-sidebar').getBoundingClientRect().toJSON(),
+              contentTop: shell.querySelector('.native-home-topbar').getBoundingClientRect().bottom,
               heading: heading.getBoundingClientRect().toJSON(), size: parseFloat(style.fontSize), family: style.fontFamily,
-              border: getComputedStyle(document.querySelector('.tc-dashboard__card')).borderTopColor,
+              border: getComputedStyle(document.querySelector('.tc-home-active .tc-dashboard__card')).borderTopColor,
               overflow: document.documentElement.scrollWidth > innerWidth,
-              statusName: document.querySelector('.tc-dashboard__status').getAttribute('aria-label')};
+              statusName: document.querySelector('.tc-home-active [data-status="active"]').getAttribute('data-status')};
           });
           const reference = REFERENCE[device];
           if (device === 'desktop') near(geometry.header.width, reference.sidebar, 'sidebar header width');
@@ -60,24 +60,26 @@ test('the executable Home retains measured Svelte shell and type geometry, touch
           assert.equal(geometry.border, theme === 'light' ? 'rgb(208, 220, 214)' : 'rgb(61, 72, 66)');
           assert.equal(geometry.overflow, false);
           assert.equal(geometry.statusName, 'active');
-          assert.ok(await page.getByRole('img', {name: 'active', exact: true}).count() > 0,
-            'Status remains exposed to assistive technology after switching to SVG.');
+          assert.ok(await page.locator('.tc-home-active [data-status="active"] svg').count() > 0,
+            'The active status retains the SVG indicator used by main.');
           if (device === 'desktop') {
-            await page.locator('.tc-projects__create-toggle').click();
-            await page.getByRole('textbox', {name: 'New group name'}).fill(`Visual parity ${theme}`);
-            await page.getByRole('button', {name: 'Create group', exact: true}).click();
-            await page.getByRole('button', {name: `Collapse Visual parity ${theme}`}).waitFor();
+            await page.getByRole('button', {name: 'New project or group', exact: true}).click();
+            await page.getByRole('menuitem', {name: 'New group', exact: true}).click();
+            const sidebar = page.locator('.native-home-sidebar');
+            await sidebar.getByRole('textbox', {name: 'Group name', exact: true}).fill(`Visual parity ${theme}`);
+            await sidebar.getByRole('button', {name: 'Save', exact: true}).click();
+            await sidebar.locator('.native-sidebar-group-toggle').filter({hasText: `Visual parity ${theme}`}).waitFor();
           } else {
             await page.getByRole('button', {name: 'Open navigation', exact: true}).click();
-            await page.getByRole('dialog', {name: 'Navigation', exact: true}).waitFor();
+            await page.getByRole('dialog', {name: 'Workspace navigation', exact: true}).waitFor();
             await page.getByRole('button', {name: 'Close navigation', exact: true}).first().click();
-            await page.locator('.tc-shell__main').evaluate(el => {el.scrollTop = el.scrollHeight;});
-            assert.equal(await page.locator('.tc-shell__main').evaluate(el => el.scrollTop > 0), true);
+            await page.locator('[data-native-home]').evaluate(el => {el.scrollTop = el.scrollHeight;});
+            assert.equal(await page.locator('[data-native-home]').evaluate(el => el.scrollTop > 0), true);
           }
           await page.evaluate(() => localStorage.setItem('lific_font_scale', 'lg'));
           await page.reload();
-          await page.waitForFunction(() => document.querySelector('[data-topcoat-dashboard]')?.getAttribute('aria-busy') === 'false');
-          near(await page.locator('.tc-dashboard h1').evaluate(el => parseFloat(getComputedStyle(el).fontSize)), 24.75, 'larger greeting text', .1);
+          await page.locator('.tc-native-home__page[data-native-home-connected="true"]').waitFor();
+          near(await page.locator('#native-home-greeting').evaluate(el => parseFloat(getComputedStyle(el).fontSize)), 24.75, 'larger greeting text', .1);
           await context.close();
         });
       }

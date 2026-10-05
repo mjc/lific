@@ -83,7 +83,7 @@ pub(crate) fn toolbar_fragments<'a>(cx: &'a Cx, identifier: &str) -> (BoxView<'a
                                     anchor.click();
                                 } finally {
                                     anchor.remove();
-                                    URL.revokeObjectURL(url);
+                                    setTimeout(() => URL.revokeObjectURL(url), 1000);
                                 }
                                 return '';
                             } catch (failure) {

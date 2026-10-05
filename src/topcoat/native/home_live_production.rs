@@ -196,6 +196,7 @@ async fn browser(scenario: &str) {
                     "replacementSockets": fixture.realtime.socket_count(admin.id),
                     "receivers": fixture.realtime.revocation_receiver_count(),
                     "eventReceivers": fixture.realtime.event_receiver_count(),
+                    "activityDayCount": match crate::realtime::activity_baseline(&fixture.db, &viewer_identity.as_ref().unwrap().user).unwrap() { RealtimeEvent::ActivityBaseline { day_count } => day_count, event => panic!("unexpected baseline: {event:?}") },
                     "titleRows": title_rows,
                     "homeProjectionReads": fixture.home_snapshot_reads.count(),
                 });
@@ -223,6 +224,12 @@ async fn browser(scenario: &str) {
 #[tokio::test]
 async fn native_home_live_issue_and_activity_refresh_without_rest_or_document_reload() {
     browser("live").await;
+}
+
+#[tokio::test]
+async fn native_home_live_activity_rate_preserves_counter_across_refresh_without_extra_projection()
+{
+    browser("activity_rate").await;
 }
 
 #[tokio::test]

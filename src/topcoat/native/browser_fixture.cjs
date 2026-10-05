@@ -171,4 +171,8 @@ async function mountedProxy(upstream, prefix, options = {}) {
   };
 }
 
-module.exports = {mountedProxy, launchBrowser, launchVisibilityBrowser, readDevToolsPort};
+async function settleScroll(page) {
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+}
+
+module.exports = {settleScroll, mountedProxy, launchBrowser, launchVisibilityBrowser, readDevToolsPort};

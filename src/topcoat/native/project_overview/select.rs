@@ -160,8 +160,10 @@ pub(super) fn select<'a>(
         let kind = event.event_type.to_owned();
         if kind == "click" {
             event.stop_propagation();
-            open.set(!open.get());
-            if open.get() {
+            let opening = !open.get();
+            if opening { raw!("${_position}();", ()); }
+            open.set(opening);
+            if opening {
                 raw!("requestAnimationFrame(() => ${_position}());", ());
             }
         } else {
@@ -174,6 +176,7 @@ pub(super) fn select<'a>(
                     event.key == "ArrowDown"
                 } {
                     event.prevent_default();
+                    raw!("${_position}();", ());
                     open.set(true);
                     raw!("requestAnimationFrame(() => ${_position}());", ());
                 }

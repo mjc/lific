@@ -189,8 +189,8 @@ let
           node --test src/topcoat/shell/assets/shell.browser.test.js
           node --test src/topcoat/palette/assets/palette.browser.test.js
           node --test src/topcoat/attachments/assets/attachments.browser.test.js
-          node --test src/topcoat/dashboard/assets/dashboard.browser.test.js
-          node --test src/topcoat/dashboard/assets/dashboard.session.browser.test.js
+          cargo test --locked native_home_ -- --include-ignored
+          cargo test --locked native::project_overview:: -- --include-ignored
           node --test src/topcoat/issue_list/assets/issue-list.browser.test.js
           node --test src/topcoat/issue_detail/assets/fields.test.js src/topcoat/issue_detail/assets/route.test.js
           node --test src/topcoat/issue_detail/editor/assets/editor.test.js
@@ -437,7 +437,7 @@ in
         node --test src/topcoat/shell/assets/recents.test.js
         node --test src/topcoat/palette/assets/palette.test.js
         node --test src/topcoat/attachments/assets/attachments.test.js
-        node --test src/topcoat/dashboard/assets/dashboard.test.js
+        cargo test --locked native_activity_rate_
         node --test src/topcoat/issue_list/assets/issue-list.test.js
         node --test src/topcoat/issue_detail/editor/assets/editor.test.js
         node --test src/topcoat/issue_detail/collaboration/assets/collaboration.test.js

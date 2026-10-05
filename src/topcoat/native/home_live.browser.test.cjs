@@ -47,7 +47,7 @@ async function waitClosed(socket) {
 }
 
 test(`native Home live production ${scenario}`, async t => {
-  assert.ok(['live', 'reconnect', 'membership', 'late_auth', 'burst', 'continuous', 'hidden_projection', 'render_failure', 'owner_retirement', 'owner_snapshot', 'busy_success', 'busy_failure'].includes(scenario));
+  assert.ok(['live', 'activity_rate', 'reconnect', 'membership', 'late_auth', 'burst', 'continuous', 'hidden_projection', 'render_failure', 'owner_retirement', 'owner_snapshot', 'busy_success', 'busy_failure'].includes(scenario));
   const browser = await launchBrowser();
   try {
     for (const [index, prefix] of ['', '/app', '/ACC'].entries()) {
@@ -126,7 +126,8 @@ test(`native Home live production ${scenario}`, async t => {
           const documentRequests = requests.filter(request => request.isNavigationRequest()).length;
           const inputCount = inputs.length;
           const palette = sockets.find(socket => new URL(socket.url).pathname.endsWith('/__native_home/palette'));
-          const contentFrames = () => frames.filter(frame => new URL(frame.url).pathname.endsWith('/__native_home/content')).length;
+          // Rate-only swaps are independent of content invalidation and projection.
+          const contentFrames = () => frames.filter(({url, frame}) => new URL(url).pathname.endsWith('/__native_home/content') && /data-native-home-(?:invalidation|snapshot)/.test(JSON.stringify(frame))).length;
 
           // A hidden-project update must not invalidate this account's Home.
           const hiddenProjectionBaseline = (await control('count')).homeProjectionReads;
@@ -138,6 +139,40 @@ test(`native Home live production ${scenario}`, async t => {
 
           assert.equal(await work.getByText(hiddenTitle, {exact: true}).count(), 0);
           assert.equal(await work.locator('a[href*="/HIDE/"]').count(), 0);
+
+          if (scenario === 'activity_rate') {
+            const projections = (await control('count')).homeProjectionReads;
+            let title;
+            for (let edit = 0; edit < 3; edit++) {
+              title = `Authorized rate edit ${index}-${edit}`;
+              await control('edit', {title, hidden: false});
+            }
+            await work.getByText(title, {exact: true}).waitFor();
+            const rate = work.locator('[data-native-home-activity-rate]');
+            await rate.waitFor({state: 'visible'});
+            assert.equal(await rate.getAttribute('title'),
+              'Websocket activity rate; the day fallback includes the last 24 hours');
+            await page.waitForFunction(() => document.querySelector('[data-native-home-activity-rate]')?.textContent.trim() === '3 updates/min');
+            assert.equal((await control('count')).homeProjectionReads, projections + 1,
+              'Rate updates preserve the three-event counter through the one quiet-burst projection.');
+            const settled = contentFrames();
+            await new Promise(resolve => setTimeout(resolve, 1200));
+            assert.equal(await rate.textContent(), '3 updates/min');
+            assert.equal((await control('count')).homeProjectionReads, projections + 1,
+              'Independent rate ticks do not read the Home projection.');
+            assert.equal(contentFrames(), settled, 'Rate ticks do not invalidate or render the Home projection.');
+            await control('edit', {title: `Hidden rate edit ${index}`, hidden: true});
+            await new Promise(resolve => setTimeout(resolve, 500));
+            assert.equal(await rate.textContent(), '3 updates/min', 'Hidden audit events cannot enter this account rate.');
+            assert.equal(contentFrames(), settled);
+            assert.equal(await page.evaluate(() => window.__homeLiveDocument), document);
+            assert.equal(requests.filter(request => request.isNavigationRequest()).length, documentRequests);
+            assert.ok(requests.every(request => !new URL(request.url()).pathname.split('/').includes('api')));
+            assert.deepEqual(errors, []);
+            const connected = await resources(2, 2);
+            assert.equal(connected.eventReceivers, 2, 'Activity rate shares the existing Home publication receiver.');
+            return;
+          }
 
           if (scenario === 'hidden_projection') {
             // The real next visible publication is ordered after the hidden
@@ -165,10 +200,10 @@ test(`native Home live production ${scenario}`, async t => {
             const projectionBaseline = (await control('count')).homeProjectionReads;
             await page.evaluate(() => {
               const owner = document.querySelector('[data-native-home]');
-              let previous = owner.querySelector('.tc-native-home__page').textContent;
+              let previous = owner.querySelector('.tc-home-active').textContent;
               window.__homeRefreshes = [];
               const observer = new MutationObserver(() => {
-                const current = owner.querySelector('.tc-native-home__page').textContent;
+                const current = owner.querySelector('.tc-home-active').textContent;
                 if (current !== previous) {
                   previous = current;
                   window.__homeRefreshes.push({time: performance.now(), text: current});
@@ -540,6 +575,10 @@ test(`native Home live production ${scenario}`, async t => {
             assert.ok(!palette.closed, 'Content recovery keeps the sibling palette connection alive.');
             assert.equal(await work.getByText(initialTitle, {exact: true}).count(), 0);
             await assertActivity(work, edit.titleRows);
+            const baseline = (await control('count')).activityDayCount;
+            await work.locator('[data-native-home-activity-rate]').filter({hasText: `${baseline} updates/day`}).waitFor({state: 'visible'});
+            assert.equal(await work.locator('[data-native-home-activity-rate]').textContent(), `${baseline} updates/day`,
+              'A new physical connection reads a fresh authorized baseline including the missed audit event.');
             await resources(2, 2);
           }
 

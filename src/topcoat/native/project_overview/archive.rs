@@ -98,12 +98,17 @@ pub(super) fn panel<'a>(
         cx,
         &format!("/__native_overview/archive_owner/{account}/{project}"),
     );
+    let button_id = format!("native-overview-archive-download-{project}");
+    let _listener_id = button_id.clone();
     Ok(view!{cx=><section class="native-overview__archive" aria-labelledby="native-overview-archive-heading"><h2 id="native-overview-archive-heading">"Project archive"</h2>
         <p>"Copy this whole project to another Lific instance. The archive includes linked files, history, deleted content and author names. It can contain sensitive text no longer visible in the project. Accounts and permissions are not included; author names transfer as text only."</p>
         <p>"Downloading leaves this project untouched. Importing creates a private project, never a merge."</p>
         <label><input type="checkbox" :checked=$(confirmed.get()) :disabled=$(busy.get()) @change=$(|event:Event|confirmed.set(event.target.checked)) />"I understand this archive includes history and deleted content."</label>
         <p class="native-overview__error" role="alert" :hidden=$(error.get().is_empty())>$(error.get())</p>
-        <button type="button" class="toolbar-pill" :disabled=$(if !confirmed.get(){true}else{busy.get()}) @click=$(|_event:Event|{
+        <button id=(button_id) type="button" class="toolbar-pill" :disabled=$(if !confirmed.get(){true}else{busy.get()}) @mount=$(|_mount:Event|{
+            // A new mount owns no surviving download from the retired scope.
+            busy.set(false);
+            let _click = || {
             if if confirmed.get(){!busy.get()}else{false}{busy.set(true);error.set("".to_owned());
                 let _completed=|failure:topcoat::runtime::StringSurrogate|{if !raw!("cx.hydrate(cx.abortSignal.aborted)",false){error.set(failure);busy.set(false);}};
                 // Fetch, abort, blob and download are browser primitives. Both
@@ -120,11 +125,13 @@ pub(super) fn panel<'a>(
                         if(cx.abortSignal.aborted)return '';
                         const url=URL.createObjectURL(blob),anchor=document.createElement('a');
                         try{anchor.href=url;anchor.download=filename;document.body.appendChild(anchor);anchor.click();}
-                        finally{anchor.remove();URL.revokeObjectURL(url);}
+                        finally{anchor.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);}
                         return '';
                     }catch(failure){return failure instanceof Error?failure.message:String(failure);}
                 })().then(failure=>${_completed}(cx.hydrate(failure)))"#,());
             }
+            };
+            raw!("document.getElementById(${_listener_id}.toString()).addEventListener('click',${_click},{signal:cx.abortSignal})",());
         })>(icons::project_icon(cx,Some("lucide:Download"),14))$(if busy.get(){"Preparing archive..."}else{"Download project archive"})</button>
     </section>}.boxed())
 }

@@ -273,4 +273,52 @@ mod tests {
         assert!(data.pinned_pages.is_empty());
         assert!(!data.activity.is_empty());
     }
+
+    #[test]
+    fn native_activity_rate_baseline_rechecks_visible_membership() {
+        let (db, _, cookie, first_id, second_id) = fixture();
+        let cx = cx(&db, &cookie);
+        let user = snapshot(&cx).unwrap().user;
+        let count = || match crate::realtime::activity_baseline(&db, &user).unwrap() {
+            crate::realtime::RealtimeEvent::ActivityBaseline { day_count } => day_count,
+            event => panic!("unexpected baseline {event:?}"),
+        };
+        db.write()
+            .unwrap()
+            .execute("DELETE FROM audit_log", [])
+            .unwrap();
+        {
+            let conn = db.write().unwrap();
+            issue(&conn, first_id, Status::Active, "Visible rate update");
+            let hidden = queries::resolve_project_identifier(&conn, "HIDE").unwrap();
+            issue(&conn, hidden, Status::Active, "Hidden rate update");
+        }
+        assert_eq!(count(), 1);
+        let mut rate =
+            super::super::home_activity_rate::State::restore("", user.id, user.is_admin, 1_000);
+        rate.admit_connection("baseline-fixture");
+        assert!(rate.seed(&cx, &user, 1_000));
+        let label = rate.presentation(1_000);
+        assert!(rate.seed(&cx, &user, 3_601_000));
+        assert_eq!(rate.presentation(3_601_000), label);
+        let stored = serde_json::to_string(&rate).unwrap();
+        let restored = super::super::home_activity_rate::State::restore(
+            &stored,
+            user.id,
+            user.is_admin,
+            3_601_001,
+        );
+        assert!(
+            !restored.baseline_due(3_601_001),
+            "An unchanged successful hourly baseline retains its renewed timestamp across content renders."
+        );
+        db.write()
+            .unwrap()
+            .execute(
+                "DELETE FROM project_members WHERE project_id IN (?1, ?2) AND user_id = ?3",
+                (first_id, second_id, user.id),
+            )
+            .unwrap();
+        assert_eq!(count(), 0);
+    }
 }
