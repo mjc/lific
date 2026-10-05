@@ -2,6 +2,7 @@
 // node <driver> <fixture-origin> <token> <browser-helper> <pinned-master-web>
 const {test} = require('node:test');
 const {installOriginalFonts, captureOriginalFonts} = require('../original_fonts_fixture.cjs');
+const {prepareOriginalVite, closeOriginalVite} = require('../original_vite_fixture.cjs');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -61,7 +62,7 @@ test('native issue document matches pinned master composition at every mount',as
         '/api':{target:upstream.origin,ws:true,changeOrigin:false,configure},
         '/public/api':{target:upstream.origin,ws:true,changeOrigin:false,configure},
       }}});
-    await vite.listen(); const originalOrigin = `http://127.0.0.1:${vite.httpServer.address().port}`;
+    await vite.listen(); await prepareOriginalVite(vite); const originalOrigin = `http://127.0.0.1:${vite.httpServer.address().port}`;
     for (const prefix of ['', '/app', '/ACC']) for (const mode of ['desktop','phone']) for (const theme of ['light','dark']) {
       await t.test(`${prefix||'root'} ${mode} ${theme}`,async()=>{
         const proxy = await mountedProxy(upstream,prefix);
@@ -275,7 +276,7 @@ test('native issue document matches pinned master composition at every mount',as
   } finally {
     for (const socket of proxySockets) socket.destroy();
     try {await browser.close();}
-    finally {try {if (vite) await vite.close();}
+    finally {try {if (vite) await closeOriginalVite(vite);}
       finally {if (referenceCache) fs.rmSync(referenceCache,{recursive:true,force:true});}}
   }
 });

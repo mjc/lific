@@ -5,7 +5,10 @@
 use std::{
     io,
     pin::Pin,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
     task::{Context, Poll},
     time::Duration,
 };
@@ -41,9 +44,37 @@ const DEADLINE: Duration = Duration::from_secs(5);
 // Observe real TCP backpressure without changing bytes or readiness. The Home
 // receiver exists before its large snapshot has finished rendering, so it is
 // not a witness that the production sink has begun its bounded send.
+#[derive(Debug, Default)]
+struct WriteObservation {
+    max_attempt: AtomicUsize,
+    accepted_bytes: AtomicUsize,
+    pending_count: AtomicUsize,
+    max_pending: AtomicUsize,
+    error_count: AtomicUsize,
+}
+
+impl WriteObservation {
+    fn record(&self, length: usize, result: &Poll<io::Result<usize>>) {
+        self.max_attempt.fetch_max(length, Ordering::Relaxed);
+        match result {
+            Poll::Ready(Ok(bytes)) => {
+                self.accepted_bytes.fetch_add(*bytes, Ordering::Relaxed);
+            }
+            Poll::Pending => {
+                self.pending_count.fetch_add(1, Ordering::Relaxed);
+                self.max_pending.fetch_max(length, Ordering::Relaxed);
+            }
+            Poll::Ready(Err(_)) => {
+                self.error_count.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+}
+
 struct ObservedIo {
     inner: TcpStream,
     blocked_large_write: Arc<Notify>,
+    writes: Arc<WriteObservation>,
 }
 
 impl AsyncRead for ObservedIo {
@@ -63,6 +94,7 @@ impl AsyncWrite for ObservedIo {
         buffer: &[u8],
     ) -> Poll<io::Result<usize>> {
         let result = Pin::new(&mut self.inner).poll_write(cx, buffer);
+        self.writes.record(buffer.len(), &result);
         if buffer.len() >= 1024 * 1024 && result.is_pending() {
             self.blocked_large_write.notify_one();
         }
@@ -75,9 +107,9 @@ impl AsyncWrite for ObservedIo {
         buffers: &[io::IoSlice<'_>],
     ) -> Poll<io::Result<usize>> {
         let result = Pin::new(&mut self.inner).poll_write_vectored(cx, buffers);
-        if buffers.iter().map(|buffer| buffer.len()).sum::<usize>() >= 1024 * 1024
-            && result.is_pending()
-        {
+        let length = buffers.iter().map(|buffer| buffer.len()).sum::<usize>();
+        self.writes.record(length, &result);
+        if length >= 1024 * 1024 && result.is_pending() {
             self.blocked_large_write.notify_one();
         }
         result
@@ -99,6 +131,7 @@ impl AsyncWrite for ObservedIo {
 struct ObservedListener {
     inner: TcpListener,
     blocked_large_write: Arc<Notify>,
+    writes: Arc<WriteObservation>,
 }
 
 impl Listener for ObservedListener {
@@ -111,6 +144,7 @@ impl Listener for ObservedListener {
             ObservedIo {
                 inner,
                 blocked_large_write: Arc::clone(&self.blocked_large_write),
+                writes: Arc::clone(&self.writes),
             },
             address,
         )
@@ -127,6 +161,7 @@ struct Fixture {
     origin: String,
     server: tokio::task::JoinHandle<()>,
     blocked_large_write: Arc<Notify>,
+    writes: Arc<WriteObservation>,
     _store: tempfile::TempDir,
 }
 
@@ -173,9 +208,11 @@ impl Fixture {
         let listener = listener.listen(64).unwrap();
         let address = listener.local_addr().unwrap();
         let blocked_large_write = Arc::new(Notify::new());
+        let writes = Arc::new(WriteObservation::default());
         let listener = ObservedListener {
             inner: listener,
             blocked_large_write: Arc::clone(&blocked_large_write),
+            writes: Arc::clone(&writes),
         };
         let listener = listener.tap_io(move |stream| {
             if let Some(bytes) = send_buffer {
@@ -203,6 +240,7 @@ impl Fixture {
             origin: format!("http://{address}"),
             server,
             blocked_large_write,
+            writes,
             _store: store,
         }
     }
@@ -297,9 +335,10 @@ impl Fixture {
                 .map(|&(id, expected)| (id, expected, self.seed.realtime.socket_count(id)))
                 .collect::<Vec<_>>();
             panic!(
-                "{message}; users(id, expected, actual)={counts:?}, revocation_receivers={}, event_receivers={}",
+                "{message}; users(id, expected, actual)={counts:?}, revocation_receivers={}, event_receivers={}, writes={:?}",
                 self.seed.realtime.revocation_receiver_count(),
                 self.seed.realtime.event_receiver_count(),
+                self.writes,
             );
         });
     }
@@ -498,7 +537,15 @@ async fn native_raw_stopped_reader_bounds_send_and_aborts_its_live_render() {
     // subscribing to Home happens before its snapshot is prepared.
     tokio::time::timeout(DEADLINE, fixture.blocked_large_write.notified())
         .await
-        .expect("real large TCP snapshot write never became blocked");
+        .unwrap_or_else(|_| {
+            panic!(
+                "real large TCP snapshot write never became blocked; writes={:?}, sockets={}, revocation_receivers={}, event_receivers={}",
+                fixture.writes,
+                fixture.seed.realtime.socket_count(fixture.user_id),
+                fixture.seed.realtime.revocation_receiver_count(),
+                fixture.seed.realtime.event_receiver_count(),
+            );
+        });
     fixture
         .counts(
             0,
