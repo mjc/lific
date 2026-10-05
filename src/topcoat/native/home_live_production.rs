@@ -267,6 +267,11 @@ async fn native_home_parent_rerender_retires_old_deadlines_and_initializes_new_o
 }
 
 #[tokio::test]
+async fn native_home_parent_rerender_consumes_genuine_publication_in_new_owner_initial_snapshot() {
+    browser("owner_snapshot").await;
+}
+
+#[tokio::test]
 async fn native_home_busy_render_completes_exactly_one_trailing_fresh_projection() {
     browser("busy_success").await;
 }

@@ -47,7 +47,7 @@ async function waitClosed(socket) {
 }
 
 test(`native Home live production ${scenario}`, async t => {
-  assert.ok(['live', 'reconnect', 'membership', 'late_auth', 'burst', 'continuous', 'hidden_projection', 'render_failure', 'owner_retirement', 'busy_success', 'busy_failure'].includes(scenario));
+  assert.ok(['live', 'reconnect', 'membership', 'late_auth', 'burst', 'continuous', 'hidden_projection', 'render_failure', 'owner_retirement', 'owner_snapshot', 'busy_success', 'busy_failure'].includes(scenario));
   const browser = await launchBrowser();
   try {
     for (const [index, prefix] of ['', '/app', '/ACC'].entries()) {
@@ -241,7 +241,7 @@ test(`native Home live production ${scenario}`, async t => {
             return;
           }
 
-          if (scenario === 'owner_retirement') {
+          if (scenario === 'owner_retirement' || scenario === 'owner_snapshot') {
             await page.clock.install();
             await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
             const queuedTitle = `Queued before parent retirement ${index}`;
@@ -253,6 +253,7 @@ test(`native Home live production ${scenario}`, async t => {
             await page.evaluate(() => {window.__retiredHomeOwner = document.querySelector('[data-native-home]');});
             const parentRecent = `Fresh recents on new owner ${index}`;
             await storeRecent(page, parentRecent);
+            const beforeOwnerSnapshot = await page.evaluate(() => window.__homeLiveAppliedFrames.length);
             const parentResponse = await page.evaluate(async () => {
               const detail = {};
               window.dispatchEvent(new CustomEvent('topcoat:dev-runtime:v1', {detail}));
@@ -283,15 +284,63 @@ test(`native Home live production ${scenario}`, async t => {
             await page.clock.runFor(5000);
             assert.equal((await control('count')).homeProjectionReads, baseline,
               'Retired quiet/max deadlines cannot act on the replacement owner in the same Runtime.');
+            if (scenario === 'owner_snapshot') {
+              // The service publication was genuinely committed before parent
+              // replacement. The new connection subscribes afterwards and
+              // includes it in its initial snapshot, without an invalidation swap.
+              const initialSnapshot = await page.evaluate(({before, title}) =>
+                window.__homeLiveAppliedFrames.slice(before).some(frame =>
+                  frame.t === 'snapshot' && frame.html.includes(title)),
+                {before: beforeOwnerSnapshot, title: queuedTitle});
+              assert.ok(initialSnapshot, 'The new owner receives the committed publication in its genuine connected snapshot.');
+              assert.equal(await work.getByText(queuedTitle, {exact: true}).count(), 1);
+              await eventually(() => ownerPublicationConsumed(page, beforeOwnerSnapshot, queuedTitle),
+                'The shared publication barrier admits the actual new-owner snapshot.', async () => ({
+                  prefix, title: queuedTitle, fixture: await control('count'), errors,
+                  owner: await page.evaluate(({before, title}) => ({
+                    newOwner: document.querySelector('[data-native-home]') !== window.__retiredHomeOwner,
+                    oldOwnerDetached: !window.__retiredHomeOwner.isConnected,
+                    exactTitleRendered: [...document.querySelector('[data-native-home]').querySelectorAll('.tc-dashboard__issue-title')]
+                      .some(element => element.textContent === title),
+                    frames: window.__homeLiveAppliedFrames.slice(before).map(frame => ({
+                      t: frame.t, containsCommittedTitle: frame.html?.includes(title),
+                      hasRealtimeCallback: frame.html?.includes('nativeHomeRealtime'),
+                    })),
+                  }), {before: beforeOwnerSnapshot, title: queuedTitle}),
+                }));
+            }
             await storeRecent(page, `Fresh during replacement burst ${index}`);
             let finalTitle;
             for (let step = 0; step < 21; step++) {
               const before = await page.evaluate(() => window.__homeLiveAppliedFrames.length);
               finalTitle = `Replacement owner continuous ${index}-${step}`;
               await control('edit', {title: finalTitle, hidden: false});
-              await eventually(() => page.evaluate(before => window.__homeLiveAppliedFrames.slice(before)
-                .some(frame => frame.t === 'swap' && frame.html.includes('nativeHomeRealtime')), before),
-                'The new owner processes the genuine publication.');
+              await eventually(() => ownerPublicationConsumed(page, before, finalTitle),
+                'The new owner processes the genuine publication.', async () => ({
+                  prefix, step, title: finalTitle, appliedBefore: before, errors,
+                  fixture: await control('count'),
+                  contentFrames: frames.filter(({url}) => new URL(url).pathname.endsWith('/__native_home/content'))
+                    .slice(-12).map(({frame}) => summarizePublication(frame, finalTitle)),
+                  sentRuns: sentFrames.filter(({url}) => new URL(url).pathname.endsWith('/__native_home/content'))
+                    .slice(-8).map(({frame}) => ({run: frame.run, shard: frame.shard})),
+                  owner: await page.evaluate(({before, title}) => {
+                    const owner = document.querySelector('[data-native-home]');
+                    return {
+                      currentOwnerConnected: owner?.isConnected,
+                      oldOwnerDetached: !window.__retiredHomeOwner.isConnected,
+                      currentOwnerHasRun: typeof owner?.nativeHomeRun,
+                      exactTitleRendered: [...owner.querySelectorAll('.tc-dashboard__issue-title')]
+                        .some(element => element.textContent === title),
+                      connected: owner.querySelector('.tc-native-home__page')?.getAttribute('data-native-home-connected'),
+                      observedFrames: window.__homeLiveAppliedFrames.slice(before).map(frame => ({
+                        t: frame.t, region: frame.region, id: frame.id,
+                        hasRealtimeCallback: frame.html?.includes('nativeHomeRealtime'),
+                        containsCommittedTitle: frame.html?.includes(title),
+                        htmlLength: frame.html?.length,
+                      })),
+                    };
+                  }, {before, title: finalTitle}),
+                }));
               if (step >= 19) assert.ok((await control('count')).homeProjectionReads > baseline,
                 'The new owner has its own independent five-second maximum deadline.');
               if (step < 20) await page.clock.runFor(300);
@@ -540,13 +589,31 @@ async function assertActivity(work, expectedRows) {
   assert.equal(await rows.count(), expectedRows, 'Home activity matches the original authorized eight-row project feed.');
 }
 
-async function eventually(predicate, message) {
+async function ownerPublicationConsumed(page, before, title) {
+  return page.evaluate(({before, title}) => {
+    const owner = document.querySelector('[data-native-home]');
+    return window.__homeLiveAppliedFrames.slice(before).some(frame =>
+      (frame.t === 'swap' && frame.html.includes('nativeHomeRealtime')) ||
+      ((frame.t === 'snapshot' || frame.t === 'swap') && frame.html.includes(title) &&
+        owner !== window.__retiredHomeOwner && owner.isConnected &&
+        [...owner.querySelectorAll('.tc-dashboard__issue-title')]
+          .some(element => element.textContent === title)));
+  }, {before, title});
+}
+
+function summarizePublication(frame, title) {
+  return {t: frame.t, id: frame.id, region: frame.region,
+    hasRealtimeCallback: frame.html?.includes('nativeHomeRealtime'),
+    containsCommittedTitle: frame.html?.includes(title), htmlLength: frame.html?.length};
+}
+
+async function eventually(predicate, message, diagnostics) {
   const deadline = Date.now() + 7000;
   while (Date.now() < deadline) {
     if (await predicate()) return;
     await new Promise(resolve => setTimeout(resolve, 20));
   }
-  assert.fail(message);
+  assert.fail(diagnostics ? `${message} ${JSON.stringify(await diagnostics())}` : message);
 }
 
 async function assertEventually(predicate) {
