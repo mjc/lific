@@ -145,7 +145,7 @@ pub(crate) fn page_region<'a>(
     page_label: String,
 ) -> BoxView<'a> {
     let topbar_class = if topbar.is_some() {
-        "native-home-topbar native-issue-detail__topbar"
+        "native-home-topbar native-home-topbar--custom"
     } else {
         "native-home-topbar"
     };

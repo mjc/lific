@@ -31,6 +31,7 @@
 .native-home-theme-button>span{display:inline-flex}
 .native-home-body{display:flex;flex-direction:column;flex:1;min-width:0;min-height:0}
 .native-home-topbar{flex-shrink:0;display:flex;align-items:center;padding:8px 24px;color:var(--tc-text);font:500 13px/1.6 var(--tc-font)}
+.native-home-topbar--custom{padding:0}
 .native-home-panel-wrap{position:relative;flex:1;min-width:0;min-height:0;border-radius:12px 0 0;overflow:hidden}
 .native-home-panel{position:absolute;inset:0;background:var(--tc-bg);border:0;border-radius:inherit;overflow-y:auto}
 .native-home-shadow-top,.native-home-shadow-left{position:absolute;pointer-events:none;z-index:10}.native-home-shadow-top{top:0;left:0;right:0;height:24px;background:linear-gradient(to bottom,var(--tc-shadow-recess),transparent)}.native-home-shadow-left{top:0;left:0;bottom:0;width:24px;background:linear-gradient(to right,var(--tc-shadow-recess),transparent)}
