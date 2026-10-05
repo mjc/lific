@@ -2,6 +2,7 @@
 // node <driver> <fixture-origin> <token> <browser-helper> <pinned-master-web>
 const {test} = require('node:test');
 const {installOriginalFonts, captureOriginalFonts} = require('../original_fonts_fixture.cjs');
+const {prepareOriginalVite, closeOriginalVite} = require('../original_vite_fixture.cjs');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -44,11 +45,7 @@ test('native issue More and confirmation match pinned master at every mount',asy
         '/api':{target:upstream.origin,ws:true,configure},
         '/public/api':{target:upstream.origin,ws:true,configure},
       }}});
-    const clientSockets=new Set();
-    vite.httpServer.on('connection',socket=>{clientSockets.add(socket);socket.once('close',()=>clientSockets.delete(socket));});
-    vite.httpServer.once('close',()=>{for(const socket of clientSockets)socket.destroy();});
-    vite.lificClientSockets=clientSockets;
-    await vite.listen(); const originalOrigin = `http://127.0.0.1:${vite.httpServer.address().port}`;
+    await vite.listen(); await prepareOriginalVite(vite); const originalOrigin = `http://127.0.0.1:${vite.httpServer.address().port}`;
     for (const prefix of ['', '/app', '/ACC']) for (const mode of ['desktop','phone']) for (const theme of ['light','dark']) {
       await t.test(`${prefix||'root'} ${mode} ${theme}`,async()=>{
         const proxy = await mountedProxy(upstream,prefix);
@@ -232,12 +229,7 @@ test('native issue More and confirmation match pinned master at every mount',asy
     for (const socket of proxySockets) socket.destroy();
     try {await browser.close();}
     finally {try {
-      if(vite) {
-        const closing=vite.close();
-        for(const socket of vite.lificClientSockets||[])socket.destroy();
-        vite.httpServer?.closeAllConnections();
-        await closing;
-      }
+      if (vite) await closeOriginalVite(vite);
     } finally {if (referenceCache) fs.rmSync(referenceCache,{recursive:true,force:true});}}
   }
 });
