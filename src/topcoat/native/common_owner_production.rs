@@ -233,3 +233,21 @@ async fn native_common_owner_notice_once_survives_genuine_sibling_reconnect() {
 async fn native_common_owner_nearest_reveal_once_and_manual_scroll() {
     browser("scroll", true).await;
 }
+
+#[tokio::test]
+async fn native_common_owner_context_menu_focus_and_pending_keyboard_ownership() {
+    browser("menu", true).await;
+}
+#[tokio::test]
+async fn native_common_owner_context_menu_focus_and_pending_keyboard_ownership_auth_optional() {
+    browser("menu", false).await;
+}
+
+#[tokio::test]
+async fn native_common_owner_selected_panel_adoption_and_newer_focus() {
+    browser("panel", true).await;
+}
+#[tokio::test]
+async fn native_common_owner_selected_panel_adoption_and_newer_focus_auth_optional() {
+    browser("panel", false).await;
+}

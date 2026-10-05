@@ -7,7 +7,7 @@ use super::session::native_home_session;
 use crate::db::models::{AuthUser, Project};
 use topcoat::{
     context::Cx,
-    runtime::{BoolSurrogate, Event, Signal, Surrogated, expr, shard, signal},
+    runtime::{BoolSurrogate, Event, Signal, StringSurrogate, Surrogated, expr, shard, signal},
     view::{Attributes, BoxView, View, ViewExt, view},
 };
 
@@ -21,6 +21,9 @@ pub(crate) struct MobileNavigation {
     owner: Signal<String>,
     href: Signal<String>,
     pending_palette: Signal<bool>,
+    // One last-viewed pane remains parked across root/closed presentation.
+    // Fresh Sidebar projection still controls whether its content exists.
+    view_identifier: Signal<String>,
 }
 
 pub(crate) type MobileNavigationSignals = (
@@ -30,6 +33,7 @@ pub(crate) type MobileNavigationSignals = (
     Signal<String>,
     Signal<String>,
     Signal<bool>,
+    Signal<String>,
 );
 impl MobileNavigation {
     pub(crate) fn new(cx: &Cx) -> Self {
@@ -40,6 +44,7 @@ impl MobileNavigation {
             owner: signal(cx, String::new),
             href: signal(cx, String::new),
             pending_palette: signal(cx, || false),
+            view_identifier: signal(cx, String::new),
         }
     }
     pub(crate) fn handles(&self) -> MobileNavigationSignals {
@@ -50,6 +55,7 @@ impl MobileNavigation {
             self.owner.clone(),
             self.href.clone(),
             self.pending_palette.clone(),
+            self.view_identifier.clone(),
         )
     }
     pub(crate) fn from_handles(handles: MobileNavigationSignals) -> Self {
@@ -60,6 +66,7 @@ impl MobileNavigation {
             owner: handles.3,
             href: handles.4,
             pending_palette: handles.5,
+            view_identifier: handles.6,
         }
     }
 }
@@ -343,10 +350,12 @@ fn render_shell<'a>(
     let rendered = view! { cx =>
         <div class="native-home-shell" (super::session::mount(cx)) :data-collapsed=$(if collapsed.get() { "true" } else { "false" })>
             <span hidden="hidden" (super::session::account_mount(cx, account_id, account_admin))></span>
+            <span hidden="hidden" (sidebar.mount(cx))></span>
             <span hidden="hidden" (super::motion::mount(cx))></span>
             (sidebar.route(cx, path.clone()))
             <a class="tc-shell__skip" href="#main-content" :inert=$(mobile_open.get())>"Skip to content"</a>
             <span hidden="hidden" (shell_mount(cx, collapsed.clone(), theme.clone(), (theme_menu.clone(), sidebar_menu_open.clone()), navigation.clone(), mobile_catalog, palette.clone()))></span>
+            <span hidden="hidden" (mobile_action_mount(cx, &navigation))></span>
             <button id="native-home-collapse" class="native-home-fold native-home-icon-button"
                 :aria-label=$(if collapsed.get() { "Expand sidebar" } else { "Collapse sidebar" })
                 :aria-expanded=$(if collapsed.get() { "false" } else { "true" }) :inert=$(mobile_open.get())
@@ -490,12 +499,43 @@ fn mobile_unavailable_panel<'a>(cx: &'a Cx, navigation: &MobileNavigation) -> Bo
     }.boxed()
 }
 
+/// Buttons carry scalar arguments; their original typed history workflow is
+/// emitted once under the actual shared navigation owner.
 pub(crate) fn mobile_action(
     cx: &Cx,
-    navigation: &MobileNavigation,
+    _navigation: &MobileNavigation,
     action: &str,
     identifier: String,
 ) -> Attributes {
+    let encoded = serde_json::to_string(&(action, identifier))
+        .expect("Mobile action arguments contain only serializable scalar values");
+    let mut attributes = Attributes::with_capacity(1);
+    attributes.insert(cx, "data-native-mobile-action", encoded);
+    attributes
+}
+
+fn mobile_action_mount(cx: &Cx, navigation: &MobileNavigation) -> Attributes {
+    let id = "native-mobile-action-owner";
+    let source = topcoat::runtime::Js::builder()
+        .source("() => {const ownerId=")
+        .surrogate(&id)
+        .source(";const root=document.getElementById(ownerId.toString())?.closest('.native-home-shell');if(!root)return;const run=(")
+        .source(mobile_dispatcher(navigation).to_source())
+        .source(r#");root.addEventListener('click',event=>{
+            const target=event.target instanceof Element?event.target:event.target?.parentElement;
+            const node=target?.closest('[data-native-mobile-action]');
+            if(!node||!root.contains(node)||node.closest('.native-home-shell')!==root)return;
+            const args=JSON.parse(node.getAttribute('data-native-mobile-action'));
+            run(cx.hydrate(args[0]),cx.hydrate(args[1]));
+        },{signal:cx.abortSignal});}"#)
+        .build();
+    let mut attributes = Attributes::with_capacity(2);
+    attributes.insert(cx, "id", id);
+    attributes.insert(cx, "data-topcoat-on:mount", source);
+    attributes
+}
+
+fn mobile_dispatcher(navigation: &MobileNavigation) -> topcoat::runtime::Js {
     let MobileNavigation {
         open,
         pane,
@@ -503,9 +543,9 @@ pub(crate) fn mobile_action(
         owner,
         href,
         pending_palette,
+        view_identifier,
     } = navigation.clone();
-    let action = action.to_owned();
-    let handler = expr!(|_event: Event| {
+    expr!(|action: StringSurrogate, identifier: StringSurrogate| {
         if !pending_palette.get() {
             if action == "back" {
                 raw!("history.back();", ());
@@ -545,6 +585,7 @@ pub(crate) fn mobile_action(
                             "history.pushState({...history.state,lificNativeHomeNav:{version:'1',owner:${_owner}.toString(),href:${_href}.toString(),pane:${_pane}.toString(),project:${identifier}.toString()}},'');",
                             ()
                         );
+                        view_identifier.set(identifier.clone());
                         project.set(identifier.clone());
                         pane.set("project".to_owned());
                     }
@@ -556,14 +597,7 @@ pub(crate) fn mobile_action(
                 }
             }
         }
-    });
-    let mut attributes = Attributes::with_capacity(1);
-    attributes.insert(
-        cx,
-        "data-topcoat-on:click",
-        handler.into_evaluated_and_js().1,
-    );
-    attributes
+    }).into_evaluated_and_js().1
 }
 
 fn theme_button<'a>(cx: &'a Cx, theme: Signal<String>, open: Signal<bool>) -> BoxView<'a> {
@@ -600,6 +634,7 @@ fn shell_mount(
         owner,
         href,
         pending_palette,
+        view_identifier,
     } = navigation;
     let mount_pending = pending_palette.clone();
     let present_open = mobile_open.clone();
@@ -883,7 +918,9 @@ fn shell_mount(
             if pane == "closed" {
                 present_open.set(false);
                 present_pane.set("root".to_owned());
-                present_project.set("".to_owned());
+                if !_before.is_empty() {
+                    present_project.set("".to_owned());
+                }
                 if was_open {
                     raw!(
                         "queueMicrotask(() => document.getElementById('native-home-mobile-open')?.focus());",
@@ -891,6 +928,11 @@ fn shell_mount(
                     );
                 }
             } else {
+                // Main keeps the last project populated while root/closed,
+                // changing it only for an admitted project history entry.
+                if record_pane == "project" {
+                    view_identifier.set(record_project.clone());
+                }
                 present_open.set(true);
                 present_pane.set(pane.to_owned());
                 if pane == "project" {
@@ -979,104 +1021,104 @@ fn shell_mount(
             }
         };
         let _keyboard = |_event: Event| {
-            if keyboard_sidebar_menu {
-                return;
-            }
-            let key = raw!("cx.hydrate(${_event}.key)", String::new());
-            if key == "Escape" {
-                if keyboard_menu.get() {
-                    keyboard_menu.set(false);
-                } else {
-                    if keyboard_open.get() {
-                        raw!("${_event}.preventDefault(); history.back();", ());
+            if !keyboard_sidebar_menu {
+                let key = raw!("cx.hydrate(${_event}.key)", String::new());
+                if key == "Escape" {
+                    if keyboard_menu.get() {
+                        keyboard_menu.set(false);
                     } else {
-                        if keyboard_palette.get() {
-                            raw!("${_close_palette}();", ());
-                            let _opener = palette_return_focus.get();
-                            raw!(
-                                "${_event}.preventDefault(); ${_event}.stopPropagation(); queueMicrotask(() => document.getElementById(${_opener}.toString())?.focus());",
-                                ()
-                            );
+                        if keyboard_open.get() {
+                            raw!("${_event}.preventDefault(); history.back();", ());
+                        } else {
+                            if keyboard_palette.get() {
+                                raw!("${_close_palette}();", ());
+                                let _opener = palette_return_focus.get();
+                                raw!(
+                                    "${_event}.preventDefault(); ${_event}.stopPropagation(); queueMicrotask(() => document.getElementById(${_opener}.toString())?.focus());",
+                                    ()
+                                );
+                            }
                         }
                     }
-                }
-            } else {
-                if keyboard_palette.get() {
-                    let id = raw!("cx.hydrate(${_event}.target.id || '')", String::new());
-                    if id == "native-home-palette-query" {
-                        // A visible current server projection is ready before
-                        // its asynchronous mount callback updates our signals.
-                        let _revision = keyboard_revision.get();
-                        let stamped_revision = raw!(
-                            "cx.hydrate(document.querySelector('.native-home-palette-results')?.getAttribute('data-native-palette-revision') || '')",
-                            String::new()
-                        );
-                        let expected_revision =
-                            raw!("cx.hydrate(${_revision}.toString())", String::new());
-                        let current_results = stamped_revision == expected_revision;
-                        if current_results {
-                            let visible_count = raw!(
-                                "cx.hydrate(JSON.parse(document.querySelector('.native-home-palette-results').getAttribute('data-native-palette-count')))",
-                                0usize
+                } else {
+                    if keyboard_palette.get() {
+                        let id = raw!("cx.hydrate(${_event}.target.id || '')", String::new());
+                        if id == "native-home-palette-query" {
+                            // A visible current server projection is ready before
+                            // its asynchronous mount callback updates our signals.
+                            let _revision = keyboard_revision.get();
+                            let stamped_revision = raw!(
+                                "cx.hydrate(document.querySelector('.native-home-palette-results')?.getAttribute('data-native-palette-revision') || '')",
+                                String::new()
                             );
-                            keyboard_count.set(visible_count);
-                            if visible_count == 0usize {
-                                keyboard_selected.set(0usize);
-                            } else {
-                                if keyboard_selected.get() >= visible_count {
-                                    keyboard_selected.set(visible_count - 1usize);
+                            let expected_revision =
+                                raw!("cx.hydrate(${_revision}.toString())", String::new());
+                            let current_results = stamped_revision == expected_revision;
+                            if current_results {
+                                let visible_count = raw!(
+                                    "cx.hydrate(JSON.parse(document.querySelector('.native-home-palette-results').getAttribute('data-native-palette-count')))",
+                                    0usize
+                                );
+                                keyboard_count.set(visible_count);
+                                if visible_count == 0usize {
+                                    keyboard_selected.set(0usize);
+                                } else {
+                                    if keyboard_selected.get() >= visible_count {
+                                        keyboard_selected.set(visible_count - 1usize);
+                                    }
                                 }
+                                keyboard_rendered.set(_revision);
+                                keyboard_waiting.set(false);
                             }
-                            keyboard_rendered.set(_revision);
-                            keyboard_waiting.set(false);
-                        }
-                        if key == "ArrowDown" {
-                            raw!("${_event}.preventDefault();", ());
-                            keyboard_cursor.set(true);
-                            if keyboard_count.get() > 0usize {
-                                if keyboard_selected.get() + 1usize < keyboard_count.get() {
-                                    keyboard_selected.increment();
-                                }
-                            }
-                        } else {
-                            if key == "ArrowUp" {
+                            if key == "ArrowDown" {
                                 raw!("${_event}.preventDefault();", ());
                                 keyboard_cursor.set(true);
-                                if keyboard_selected.get() > 0usize {
-                                    keyboard_selected.decrement();
+                                if keyboard_count.get() > 0usize {
+                                    if keyboard_selected.get() + 1usize < keyboard_count.get() {
+                                        keyboard_selected.increment();
+                                    }
                                 }
                             } else {
-                                if key == "Enter" {
+                                if key == "ArrowUp" {
                                     raw!("${_event}.preventDefault();", ());
-                                    let new_tab = if raw!("cx.hydrate(${_event}.metaKey)", false) {
-                                        true
-                                    } else {
-                                        raw!("cx.hydrate(${_event}.ctrlKey)", false)
-                                    };
-                                    if keyboard_waiting.get() {
-                                        keyboard_enter.set(true);
-                                        keyboard_new_tab.set(new_tab);
-                                    } else {
-                                        if keyboard_rendered.get() == keyboard_revision.get() {
-                                            if current_results {
-                                                let _index = keyboard_selected.get();
-                                                let _destination = raw!(
-                                                    "cx.hydrate(document.querySelector('.native-home-palette-results a[data-palette-index=\"'+${_index}.toString()+'\"]')?.getAttribute('href') || '')",
-                                                    String::new()
-                                                );
-                                                keyboard_href.set(_destination.clone());
-                                                if !_destination.is_empty() {
-                                                    raw!("${_close_palette}();", ());
-                                                    if new_tab {
-                                                        raw!(
-                                                            "window.open(${_destination}.toString(), '_blank', 'noopener');",
-                                                            ()
-                                                        );
-                                                    } else {
-                                                        raw!(
-                                                            "window.location.assign(${_destination}.toString());",
-                                                            ()
-                                                        );
+                                    keyboard_cursor.set(true);
+                                    if keyboard_selected.get() > 0usize {
+                                        keyboard_selected.decrement();
+                                    }
+                                } else {
+                                    if key == "Enter" {
+                                        raw!("${_event}.preventDefault();", ());
+                                        let new_tab =
+                                            if raw!("cx.hydrate(${_event}.metaKey)", false) {
+                                                true
+                                            } else {
+                                                raw!("cx.hydrate(${_event}.ctrlKey)", false)
+                                            };
+                                        if keyboard_waiting.get() {
+                                            keyboard_enter.set(true);
+                                            keyboard_new_tab.set(new_tab);
+                                        } else {
+                                            if keyboard_rendered.get() == keyboard_revision.get() {
+                                                if current_results {
+                                                    let _index = keyboard_selected.get();
+                                                    let _destination = raw!(
+                                                        "cx.hydrate(document.querySelector('.native-home-palette-results a[data-palette-index=\"'+${_index}.toString()+'\"]')?.getAttribute('href') || '')",
+                                                        String::new()
+                                                    );
+                                                    keyboard_href.set(_destination.clone());
+                                                    if !_destination.is_empty() {
+                                                        raw!("${_close_palette}();", ());
+                                                        if new_tab {
+                                                            raw!(
+                                                                "window.open(${_destination}.toString(), '_blank', 'noopener');",
+                                                                ()
+                                                            );
+                                                        } else {
+                                                            raw!(
+                                                                "window.location.assign(${_destination}.toString());",
+                                                                ()
+                                                            );
+                                                        }
                                                     }
                                                 }
                                             }
@@ -1084,40 +1126,39 @@ fn shell_mount(
                                     }
                                 }
                             }
-                        }
-                        let arrow = if key == "ArrowDown" {
-                            true
-                        } else {
-                            key == "ArrowUp"
-                        };
-                        if arrow {
-                            let _index = keyboard_selected.get();
-                            let destination = raw!(
-                                "cx.hydrate(document.querySelector('.native-home-palette-results a[data-palette-index=\"'+${_index}.toString()+'\"]')?.getAttribute('href') || '')",
-                                String::new()
-                            );
-                            keyboard_href.set(destination);
-                            raw!(
-                                "document.querySelector('.native-home-palette-results a[data-palette-index=\"'+${_index}.toString()+'\"]')?.scrollIntoView({block:'nearest'});",
-                                ()
-                            );
+                            let arrow = if key == "ArrowDown" {
+                                true
+                            } else {
+                                key == "ArrowUp"
+                            };
+                            if arrow {
+                                let _index = keyboard_selected.get();
+                                let destination = raw!(
+                                    "cx.hydrate(document.querySelector('.native-home-palette-results a[data-palette-index=\"'+${_index}.toString()+'\"]')?.getAttribute('href') || '')",
+                                    String::new()
+                                );
+                                keyboard_href.set(destination);
+                                raw!(
+                                    "document.querySelector('.native-home-palette-results a[data-palette-index=\"'+${_index}.toString()+'\"]')?.scrollIntoView({block:'nearest'});",
+                                    ()
+                                );
+                            }
                         }
                     }
-                }
-                if key == "Tab" {
-                    if keyboard_open.get() {
-                        if !keyboard_menu.get() {
-                            let _pane = if keyboard_pane.get() == "root" {
-                                "[data-native-mobile-root]"
-                            } else {
-                                if keyboard_pane.get() == "unavailable" {
-                                    "[data-native-mobile-unavailable]"
+                    if key == "Tab" {
+                        if keyboard_open.get() {
+                            if !keyboard_menu.get() {
+                                let _pane = if keyboard_pane.get() == "root" {
+                                    "[data-native-mobile-root]"
                                 } else {
-                                    "[data-native-mobile-project]:not([hidden])"
-                                }
-                            };
-                            raw!(
-                                r#"(() => {
+                                    if keyboard_pane.get() == "unavailable" {
+                                        "[data-native-mobile-unavailable]"
+                                    } else {
+                                        "[data-native-mobile-project]:not([hidden])"
+                                    }
+                                };
+                                raw!(
+                                    r#"(() => {
                                 const pane=document.querySelector(${_pane}.toString());
                                 const items=Array.from(pane.querySelectorAll('button:not(:disabled),a[href],input:not(:disabled),[tabindex="0"]')).filter(element=>element.getClientRects().length && !element.closest('[inert]'));
                                 const first=items[0],last=items.at(-1),active=document.activeElement;
@@ -1125,37 +1166,37 @@ fn shell_mount(
                                     ${_event}.preventDefault(); (${_event}.shiftKey ? last : first)?.focus();
                                 }
                             })();"#,
-                                ()
-                            );
+                                    ()
+                                );
+                            }
                         }
                     }
                 }
             }
         };
         let _focus = |_event: Event| {
-            if focus_sidebar_menu {
-                return;
-            }
-            if focus_open.get() {
-                if !focus_menu.get() {
-                    let _pane = if focus_pane.get() == "root" {
-                        "[data-native-mobile-root]"
-                    } else {
-                        if focus_pane.get() == "unavailable" {
-                            "[data-native-mobile-unavailable]"
+            if !focus_sidebar_menu {
+                if focus_open.get() {
+                    if !focus_menu.get() {
+                        let _pane = if focus_pane.get() == "root" {
+                            "[data-native-mobile-root]"
                         } else {
-                            "[data-native-mobile-project]:not([hidden])"
-                        }
-                    };
-                    let inside = raw!(
-                        "cx.hydrate(document.querySelector(${_pane}.toString())?.contains(${_event}.target) || false)",
-                        false
-                    );
-                    if !inside {
-                        raw!(
-                            "document.querySelector(${_pane}.toString()+' button')?.focus();",
-                            ()
+                            if focus_pane.get() == "unavailable" {
+                                "[data-native-mobile-unavailable]"
+                            } else {
+                                "[data-native-mobile-project]:not([hidden])"
+                            }
+                        };
+                        let inside = raw!(
+                            "cx.hydrate(document.querySelector(${_pane}.toString())?.contains(${_event}.target) || false)",
+                            false
                         );
+                        if !inside {
+                            raw!(
+                                "document.querySelector(${_pane}.toString()+' button')?.focus();",
+                                ()
+                            );
+                        }
                     }
                 }
             }
