@@ -5,6 +5,24 @@ const path = require('node:path');
 const {pathToFileURL} = require('node:url');
 const assert = require('node:assert/strict');
 
+async function readDevToolsPort(activePort, platform = process.platform) {
+  const deadline = performance.now() + 15000;
+  let port;
+  while (port === undefined) {
+    try {
+      const first = (await require('node:fs/promises').readFile(activePort, 'utf8')).split('\n')[0];
+      if (/^[0-9]+$/.test(first)) port = first;
+    } catch (error) {
+      if (error.code !== 'ENOENT' && !(platform === 'win32' && error.code === 'EBUSY')) throw error;
+    }
+    if (port !== undefined) break;
+    assert.ok(performance.now() < deadline, `Chrome did not publish its DevTools port: ${activePort}`);
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  return port;
+}
+
+
 async function launchBrowser() {
   assert.ok(process.platform === 'win32' || process.env.PLAYWRIGHT_EXECUTABLE_PATH,
     'Use the repository Chromium environment.');
@@ -28,19 +46,7 @@ async function launchVisibilityBrowser() {
     assert.ok(profile, 'Playwright owns the temporary Chrome profile.');
     const activePort = path.join(profile.slice('--user-data-dir='.length), 'DevToolsActivePort');
     // Chrome's transport can be ready before its discovery file is committed.
-    const deadline = performance.now() + 15000;
-    let port;
-    while (port === undefined) {
-      try {
-        const first = (await require('node:fs/promises').readFile(activePort, 'utf8')).split('\n')[0];
-        if (/^[0-9]+$/.test(first)) port = first;
-      } catch (error) {
-        if (error.code !== 'ENOENT') throw error;
-      }
-      if (port !== undefined) break;
-      assert.ok(performance.now() < deadline, `Chrome did not publish its DevTools port: ${activePort}`);
-      await new Promise(resolve => setTimeout(resolve, 20));
-    }
+    const port = await readDevToolsPort(activePort);
     browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`, {noDefaults: true});
     const context = browser.contexts()[0];
     assert.ok(context, 'Actual default context preserves real tab visibility.');
@@ -107,4 +113,4 @@ async function mountedProxy(upstream, prefix) {
   };
 }
 
-module.exports = {mountedProxy, launchBrowser, launchVisibilityBrowser};
+module.exports = {mountedProxy, launchBrowser, launchVisibilityBrowser, readDevToolsPort};

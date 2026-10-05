@@ -2,14 +2,25 @@
 //! Policy injection changes deadlines only; requests, Home rendering, TCP
 //! backpressure, session receivers and quota accounting remain production code.
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    io,
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
+    time::Duration,
+};
 
 use super::super::runtime::SocketPolicy;
 use axum::{
     http::{Request, StatusCode, header},
-    serve::ListenerExt,
+    serve::{Listener, ListenerExt},
 };
 use futures_util::{SinkExt, StreamExt};
+use tokio::{
+    io::{AsyncRead, AsyncWrite, ReadBuf},
+    net::{TcpListener, TcpStream},
+    sync::Notify,
+};
 use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream,
     tungstenite::{Message, client::IntoClientRequest},
@@ -27,11 +38,95 @@ use crate::{
 type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 const DEADLINE: Duration = Duration::from_secs(5);
 
+// Observe real TCP backpressure without changing bytes or readiness. The Home
+// receiver exists before its large snapshot has finished rendering, so it is
+// not a witness that the production sink has begun its bounded send.
+struct ObservedIo {
+    inner: TcpStream,
+    blocked_large_write: Arc<Notify>,
+}
+
+impl AsyncRead for ObservedIo {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buffer: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_read(cx, buffer)
+    }
+}
+
+impl AsyncWrite for ObservedIo {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buffer: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        let result = Pin::new(&mut self.inner).poll_write(cx, buffer);
+        if buffer.len() >= 1024 * 1024 && result.is_pending() {
+            self.blocked_large_write.notify_one();
+        }
+        result
+    }
+
+    fn poll_write_vectored(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buffers: &[io::IoSlice<'_>],
+    ) -> Poll<io::Result<usize>> {
+        let result = Pin::new(&mut self.inner).poll_write_vectored(cx, buffers);
+        if buffers.iter().map(|buffer| buffer.len()).sum::<usize>() >= 1024 * 1024
+            && result.is_pending()
+        {
+            self.blocked_large_write.notify_one();
+        }
+        result
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.inner.is_write_vectored()
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
+struct ObservedListener {
+    inner: TcpListener,
+    blocked_large_write: Arc<Notify>,
+}
+
+impl Listener for ObservedListener {
+    type Io = ObservedIo;
+    type Addr = std::net::SocketAddr;
+
+    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
+        let (inner, address) = Listener::accept(&mut self.inner).await;
+        (
+            ObservedIo {
+                inner,
+                blocked_large_write: Arc::clone(&self.blocked_large_write),
+            },
+            address,
+        )
+    }
+
+    fn local_addr(&self) -> io::Result<Self::Addr> {
+        self.inner.local_addr()
+    }
+}
+
 struct Fixture {
     seed: home_fixture::Fixture,
     user_id: i64,
     origin: String,
     server: tokio::task::JoinHandle<()>,
+    blocked_large_write: Arc<Notify>,
     _store: tempfile::TempDir,
 }
 
@@ -77,9 +172,14 @@ impl Fixture {
         listener.bind("127.0.0.1:0".parse().unwrap()).unwrap();
         let listener = listener.listen(64).unwrap();
         let address = listener.local_addr().unwrap();
+        let blocked_large_write = Arc::new(Notify::new());
+        let listener = ObservedListener {
+            inner: listener,
+            blocked_large_write: Arc::clone(&blocked_large_write),
+        };
         let listener = listener.tap_io(move |stream| {
             if let Some(bytes) = send_buffer {
-                let socket = socket2::SockRef::from(&*stream);
+                let socket = socket2::SockRef::from(&stream.inner);
                 socket.set_send_buffer_size(bytes as usize).unwrap();
                 let actual = socket.send_buffer_size().unwrap();
                 assert!(
@@ -102,6 +202,7 @@ impl Fixture {
             user_id,
             origin: format!("http://{address}"),
             server,
+            blocked_large_write,
             _store: store,
         }
     }
@@ -392,8 +493,12 @@ async fn native_raw_stopped_reader_bounds_send_and_aborts_its_live_render() {
             "the real connected Home owns its live receiver",
         )
         .await;
-    // Keep the connection alive but never read its large Home snapshot. This
-    // exceeds the TCP buffers and exercises the production sink's backpressure.
+    // Keep the connection alive but never read its large Home snapshot. Wait
+    // for an actual large TCP write to block before measuring send retirement;
+    // subscribing to Home happens before its snapshot is prepared.
+    tokio::time::timeout(DEADLINE, fixture.blocked_large_write.notified())
+        .await
+        .expect("real large TCP snapshot write never became blocked");
     fixture
         .counts(
             0,
