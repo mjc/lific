@@ -118,7 +118,7 @@ pub(super) async fn serve(fixture: &Fixture) -> (String, tokio::task::JoinHandle
     (format!("http://{address}"), task)
 }
 
-pub(super) fn browser_command(script: &str, origin: &str, token: &str) -> tokio::process::Command {
+pub(crate) fn browser_command(script: &str, origin: &str, token: &str) -> tokio::process::Command {
     let mut command = if cfg!(windows) || std::env::var_os("PLAYWRIGHT_EXECUTABLE_PATH").is_some() {
         tokio::process::Command::new("node")
     } else {

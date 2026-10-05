@@ -58,11 +58,17 @@ SOFTWARE.
 - Lific generic render-error patch: current live units log and emit a bubbling
   path-scoped DOM notification; disposed units retain logging without notifying.
 - All remaining upstream framework code is unchanged. Removing the 27
-  prepended helper/comment lines and reversing these twenty-one substitutions
+  prepended helper/comment lines and reversing these twenty-two substitutions
   reproduces the unmodified upstream bytes. See `../native/TRANSPORT.md`.
-- Patched file SHA-256: `96773f04ce907eccb1ae188f288c9f22273930fe54fc7bc2014a65cc05cb8ce5`
+- Patched file SHA-256: `8419312a4341b2f20cd1fc6d26964e705a24ce70f696965438bcd52c67d7e060`
 
 Generic Unicode string operations add to_uppercase and unicode_scalars. Scalar
 strings use the existing owned String and Vec values; target usize width is
 validated. Reversing their one declared Str-method substitution preserves the
 original pinned upstream SHA-256.
+
+Generic ECMAScript whitespace adds trim_ecmascript on Str. It returns the
+existing owned String surrogate using String.prototype.trim. The matching
+Rust extension enumerates ECMAScript WhiteSpace and LineTerminator; ordinary
+Rust trim retains its existing Unicode White_Space behavior. The one additional
+declared method substitution reverses to the exact pinned upstream bytes.
