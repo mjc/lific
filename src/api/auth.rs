@@ -9,6 +9,7 @@ use std::{net::SocketAddr, sync::Arc};
 use crate::db::{DbPool, models::*};
 use crate::error::LificError;
 use crate::realtime::{RealtimeEvent, RealtimeHub};
+use crate::services::project_form::LeadOption as UserListItem;
 use crate::services::sessions::session_cookie;
 
 use super::{require_admin, require_user, with_read, with_write};
@@ -1101,33 +1102,6 @@ pub(super) async fn delete_bot(
 
 // ── User endpoints ──────────────────────────────────────────
 
-#[derive(serde::Serialize)]
-pub(super) struct UserListItem {
-    id: i64,
-    username: String,
-    display_name: String,
-    is_admin: bool,
-    /// LIF-214: false for a deactivated account. Deactivated users stay in
-    /// the list so an admin can find and restore them; clients that are
-    /// picking someone to hand work to (the project-member picker) filter
-    /// them out.
-    is_active: bool,
-    created_at: String,
-}
-
-impl From<User> for UserListItem {
-    fn from(u: User) -> Self {
-        UserListItem {
-            id: u.id,
-            username: u.username,
-            display_name: u.display_name,
-            is_admin: u.is_admin,
-            is_active: u.is_active,
-            created_at: u.created_at,
-        }
-    }
-}
-
 pub(super) async fn list_users(
     State(db): State<DbPool>,
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
@@ -1138,16 +1112,7 @@ pub(super) async fn list_users(
     // handler refuses to serve without a resolved user of its own accord.
     // Any authenticated member may read it (project leads need the roster
     // for the member picker); mutations stay admin-gated below.
-    require_user(&identity)?;
-    with_read(&db, |conn| {
-        let users = crate::db::queries::users::list_users(conn)?;
-        Ok(users
-            .into_iter()
-            .filter(|u| !u.is_bot)
-            .map(UserListItem::from)
-            .collect())
-    })
-    .map(Json)
+    crate::services::project_form::list_leads(&db, &identity).map(Json)
 }
 
 // ── Instance-admin roster management (LIF-214) ───────────────

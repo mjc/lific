@@ -286,6 +286,11 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "audio MP4 attachment MIME",
         include_str!("../../migrations/058_audio_mp4_attachment_mime.sql"),
     ),
+    (
+        59,
+        "audit issue identifier lookup",
+        include_str!("../../migrations/059_audit_issue_identifier.sql"),
+    ),
 ];
 
 /// Migrations that rebuild a table other tables reference by foreign key.

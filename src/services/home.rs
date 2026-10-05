@@ -4,7 +4,7 @@
 
 use crate::db::{
     DbPool,
-    models::{ActivityFeed, Issue, ListIssuesQuery, Page, Project, Role, Status},
+    models::{ActivityFeed, Issue, ListIssuesQuery, Page, Project, Status},
     queries,
 };
 use crate::error::LificError;
@@ -77,22 +77,15 @@ pub(crate) fn project_activity(
     identity: &Option<ResolvedIdentity>,
     project_id: i64,
 ) -> Result<ActivityFeed, LificError> {
-    let user = crate::api::require_user(identity)?;
-    let conn = db.read()?;
-    let tx = conn.unchecked_transaction()?;
-    let fresh = crate::auth::fresh_caller(&tx, user.id)?;
-    let current_identity = identity
-        .as_ref()
-        .map(|caller| crate::auth::fresh_identity(&fresh, caller.transport));
-    crate::authz::require_role_conn(&tx, &current_identity, project_id, Role::Viewer)?;
-    let feed = queries::activity::list_activity(
-        &tx,
+    crate::api::require_user(identity)?;
+    super::activity::list_activity(
+        db,
+        identity,
         queries::activity::ActivityScope::Project(project_id),
+        None,
         Some(8),
         Some(0),
-    )?;
-    tx.commit()?;
-    Ok(feed)
+    )
 }
 
 #[cfg(test)]

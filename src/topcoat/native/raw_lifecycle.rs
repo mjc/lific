@@ -41,6 +41,13 @@ use crate::{
 type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 const DEADLINE: Duration = Duration::from_secs(5);
 
+fn assert_send_buffer(actual: usize, requested: u32) {
+    assert!(
+        actual <= requested as usize * 2 && (requested == 0 || actual > 0),
+        "bounded sender buffer: requested={requested}, actual={actual}"
+    );
+}
+
 // Observe real TCP backpressure without changing bytes or readiness. The Home
 // receiver exists before its large snapshot has finished rendering, so it is
 // not a witness that the production sink has begun its bounded send.
@@ -199,10 +206,7 @@ impl Fixture {
             // can complete a large write despite the peer's small SO_RCVBUF.
             listener.set_send_buffer_size(bytes).unwrap();
             let actual = listener.send_buffer_size().unwrap();
-            assert!(
-                actual > 0 && actual <= bytes * 2,
-                "bounded sender buffer: {actual}"
-            );
+            assert_send_buffer(actual as usize, bytes);
         }
         listener.bind("127.0.0.1:0".parse().unwrap()).unwrap();
         let listener = listener.listen(64).unwrap();
@@ -219,10 +223,7 @@ impl Fixture {
                 let socket = socket2::SockRef::from(&stream.inner);
                 socket.set_send_buffer_size(bytes as usize).unwrap();
                 let actual = socket.send_buffer_size().unwrap();
-                assert!(
-                    actual > 0 && actual <= bytes as usize * 2,
-                    "bounded accepted sender buffer: {actual}"
-                );
+                assert_send_buffer(actual, bytes);
             }
         });
         let app = super::admission_contract::mounted(app);
@@ -485,7 +486,11 @@ async fn native_raw_passive_peer_answers_pings_and_survives_without_application_
 async fn native_raw_stopped_reader_bounds_send_and_aborts_its_live_render() {
     // Progress expiry is ten seconds; retirement within three seconds must
     // come from the send deadline while the actual TCP peer remains open.
-    let fixture = Fixture::with_send_buffer(policy(2_000, 10_000, 200), Some(4_096));
+    // Winsock can accept a complete large nonblocking send with a positive
+    // SO_SNDBUF. Zero disables that buffering; check it on both real sockets.
+    // https://learn.microsoft.com/en-us/windows/win32/winsock/tcp-ip-specific-issues-2
+    let send_buffer = if cfg!(windows) { 0 } else { 4_096 };
+    let fixture = Fixture::with_send_buffer(policy(2_000, 10_000, 200), Some(send_buffer));
     let title = "raw stopped reader ".to_owned() + &"x".repeat(16 * 1024 * 1024);
     fixture.rename(&title);
     // Bound this peer's buffering before TCP negotiation instead of assuming

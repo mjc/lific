@@ -1292,10 +1292,21 @@ fn activity_reference<'a>(
         return MarkdownReference::plain(label);
     };
     if activity.entity_type == "plan_step" {
-        return queries::plans::resolve_plan_identifier(conn, label).map_or_else(
-            |_| MarkdownReference::plain(label),
-            |plan_id| context.plan_markdown(label, plan_id),
-        );
+        let Ok(plan_id) = queries::plans::resolve_plan_identifier(conn, label) else {
+            return MarkdownReference::plain(label);
+        };
+        let same_project = conn
+            .query_row(
+                "SELECT project_id FROM plans WHERE id = ?1",
+                [plan_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .is_ok_and(|project_id| Some(project_id) == activity.project_id);
+        return if same_project {
+            context.plan_markdown(label, plan_id)
+        } else {
+            MarkdownReference::plain(label)
+        };
     }
     if activity.entity_type == "comment" {
         return activity_comment_reference(conn, context, activity, label);
@@ -1952,9 +1963,13 @@ impl LificMcp {
             matches!(scope_reference.kind, ReferenceKind::Project(_))
                 .then_some(scope_identifier.as_str())
         });
+        let identity = super::current_identity(&self.db);
         let rendered = self.read(|conn| {
-            let feed = queries::activity::list_activity_since(
+            let tx = conn.unchecked_transaction()?;
+            let conn = &tx;
+            let feed = crate::services::activity::list_activity_conn(
                 conn,
+                &identity,
                 scope,
                 since.as_deref(),
                 Some(limit),
@@ -1991,6 +2006,7 @@ impl LificMcp {
                     "failed to format activity response: {error}"
                 ))
             })?;
+            tx.commit()?;
             Ok((Some(output), feed.items.len(), feed.has_more))
         })?;
         Ok(match rendered {
@@ -11815,6 +11831,213 @@ mod tests {
             out.contains("created plan_step [TST-PLAN-1](https://tracker.example/TST/plans/1): Exercise the link"),
             "got: {out}"
         );
+    }
+
+    #[tokio::test]
+    async fn get_activity_preserves_plan_history_without_hidden_replacement_links() {
+        let (m, _, _, _, viewer, _, project_id, _guard) = setup_membership_mcp();
+        assert!(!viewer.is_admin);
+        let (plan_id, hidden_plan_id) = {
+            let conn = m.db.write().unwrap();
+            let plan = queries::plans::create_plan(
+                &conn,
+                &models::CreatePlan {
+                    project_id,
+                    title: "Historical visible plan".into(),
+                    issue_id: None,
+                    steps: Vec::new(),
+                },
+            )
+            .unwrap();
+            queries::plans::add_step(&conn, plan.id, None, "Historical visible step", "", None)
+                .unwrap();
+            queries::update_project(
+                &conn,
+                project_id,
+                &models::UpdateProject {
+                    identifier: Some("REN".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let hidden = queries::create_project(
+                &conn,
+                &models::CreateProject {
+                    name: "Hidden replacement project".into(),
+                    identifier: "MEM".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let replacement = queries::plans::create_plan(
+                &conn,
+                &models::CreatePlan {
+                    project_id: hidden.id,
+                    title: "Hidden replacement plan".into(),
+                    issue_id: None,
+                    steps: Vec::new(),
+                },
+            )
+            .unwrap();
+            let identity = Some(crate::resolve_caller::ResolvedIdentity {
+                user: viewer.clone(),
+                transport: crate::actor::Transport::Mcp,
+            });
+            assert!(
+                crate::authz::require_role_conn(&conn, &identity, hidden.id, models::Role::Viewer,)
+                    .is_err()
+            );
+            assert_eq!(
+                queries::plans::resolve_plan_identifier(&conn, "MEM-PLAN-1").unwrap(),
+                replacement.id,
+            );
+            (plan.id, replacement.id)
+        };
+        assert_ne!(plan_id, hidden_plan_id);
+        let context = crate::links::IssueLinkContext::parse("https://tracker.example").unwrap();
+        let out = crate::mcp::with_request_context(Some(viewer), Some(context), || async {
+            m.get_activity(Parameters(GetActivityInput {
+                identifier: "REN".into(),
+                ..Default::default()
+            }))
+        })
+        .await;
+
+        assert!(
+            out.contains("created plan MEM-PLAN-1: Historical visible plan"),
+            "historical plan event must remain plain: {out}",
+        );
+        assert!(
+            out.contains("Historical visible step"),
+            "historical step event must remain available: {out}",
+        );
+        assert!(
+            !out.contains(&format!(
+                "https://tracker.example/MEM/plans/{hidden_plan_id}"
+            )),
+            "hidden replacement plan link escaped through historical label: {out}",
+        );
+        assert!(
+            out.contains("created plan_step MEM-PLAN-1: Historical visible step"),
+            "historical step event must remain plain: {out}",
+        );
+        assert!(!out.contains("Hidden replacement"), "got: {out}");
+    }
+
+    #[tokio::test]
+    async fn get_activity_filters_reused_hidden_issue_labels_in_step_and_anchor_history() {
+        let (m, _, _, _, viewer, _, project_id, _guard) = setup_membership_mcp();
+        assert!(!viewer.is_admin);
+        {
+            let conn = m.db.write().unwrap();
+            let issue = queries::create_issue(
+                &conn,
+                &models::CreateIssue {
+                    project_id,
+                    title: "Historical visible issue".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let plan = queries::plans::create_plan(
+                &conn,
+                &models::CreatePlan {
+                    project_id,
+                    title: "Historical visible plan".into(),
+                    issue_id: None,
+                    steps: Vec::new(),
+                },
+            )
+            .unwrap();
+            let step =
+                queries::plans::add_step(&conn, plan.id, None, "Historical visible step", "", None)
+                    .unwrap();
+            queries::plans::set_step_issue(&conn, step, Some(issue.id)).unwrap();
+            queries::plans::update_plan(
+                &conn,
+                plan.id,
+                &models::UpdatePlan {
+                    issue_id: Some(Some(issue.id)),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let raw = queries::activity::list_activity(
+                &conn,
+                queries::activity::ActivityScope::Project(project_id),
+                None,
+                None,
+            )
+            .unwrap();
+            for field in ["issue", "anchor_issue"] {
+                assert!(raw.items.iter().any(|row| {
+                    row.field.as_deref() == Some(field) && row.new_value.as_deref() == Some("MEM-1")
+                }));
+            }
+            queries::update_project(
+                &conn,
+                project_id,
+                &models::UpdateProject {
+                    identifier: Some("REN".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let hidden = queries::create_project(
+                &conn,
+                &models::CreateProject {
+                    name: "Hidden replacement project".into(),
+                    identifier: "MEM".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let replacement = queries::create_issue(
+                &conn,
+                &models::CreateIssue {
+                    project_id: hidden.id,
+                    title: "Hidden replacement issue".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(replacement.identifier, "MEM-1");
+            let identity = Some(crate::resolve_caller::ResolvedIdentity {
+                user: viewer.clone(),
+                transport: crate::actor::Transport::Mcp,
+            });
+            assert!(
+                crate::authz::require_role_conn(&conn, &identity, hidden.id, models::Role::Viewer,)
+                    .is_err()
+            );
+        }
+        let context = crate::links::IssueLinkContext::parse("https://tracker.example").unwrap();
+        let out = crate::mcp::with_request_context(Some(viewer), Some(context), || async {
+            m.get_activity(Parameters(GetActivityInput {
+                identifier: "REN".into(),
+                ..Default::default()
+            }))
+        })
+        .await;
+
+        assert!(out.contains("Historical visible step"), "got: {out}");
+        assert!(
+            out.contains("created issue MEM-1: Historical visible issue"),
+            "permitted historical issue must remain plain: {out}",
+        );
+        assert!(
+            !out.contains("[MEM-1](https://tracker.example/MEM/issues/MEM-1)"),
+            "hidden current issue link escaped: {out}",
+        );
+        assert!(
+            !out.contains(" issue: "),
+            "hidden step reference event remained: {out}"
+        );
+        assert!(
+            !out.contains(" anchor_issue: "),
+            "hidden anchor event remained: {out}"
+        );
+        assert!(!out.contains("Hidden replacement"), "got: {out}");
     }
 
     #[tokio::test]

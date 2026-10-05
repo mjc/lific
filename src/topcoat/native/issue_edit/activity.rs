@@ -8,10 +8,9 @@ use topcoat::{
 
 use super::super::{context, icons, session};
 use crate::{
-    authz,
     db::{
         DbPool,
-        models::{Activity, Priority, Role, Status},
+        models::{Activity, Priority, Status},
         queries,
     },
     error::LificError,
@@ -26,20 +25,15 @@ pub(crate) fn load(
     identity: &Option<ResolvedIdentity>,
     identifier: &str,
 ) -> Result<Vec<Activity>, LificError> {
-    let caller = crate::api::require_user(identity)?;
+    crate::api::require_user(identity)?;
     let conn = db.read()?;
     let tx = conn.unchecked_transaction()?;
-    let fresh = crate::auth::fresh_caller(&tx, caller.id)?;
-    let identity = Some(crate::auth::fresh_identity(
-        &fresh,
-        crate::actor::Transport::Web,
-    ));
     let id = queries::resolve_identifier(&tx, identifier)?;
-    let issue = queries::get_issue(&tx, id)?;
-    authz::require_role_conn(&tx, &identity, issue.project_id, Role::Viewer)?;
-    let items = queries::activity::list_activity(
+    let items = crate::services::activity::list_activity_conn(
         &tx,
+        identity,
         queries::activity::ActivityScope::Issue(id),
+        None,
         None,
         None,
     )?
@@ -398,7 +392,10 @@ fn time_view<'a>(cx: &'a Cx, timestamp: &str, transport: &str, now: Signal<f64>)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{actor::Transport, db::models::UpdateIssue};
+    use crate::{
+        actor::Transport,
+        db::models::{Role, UpdateIssue},
+    };
     use scraper::{Html, Selector};
 
     fn fixture() -> (
@@ -416,6 +413,109 @@ mod tests {
         let cx = Cx::default();
         let rendered = timeline(&cx, items).single().await.unwrap().render(&cx);
         Html::parse_fragment(&rendered)
+    }
+
+    #[tokio::test]
+    async fn relation_history_excludes_hidden_targets_for_viewers_and_maintainers() {
+        for role in [Role::Viewer, Role::Maintainer] {
+            let (fixture, identity) = fixture();
+            {
+                let conn = fixture.db.write().unwrap();
+                let source = queries::resolve_identifier(&conn, "ACC-1").unwrap();
+                let allowed = queries::resolve_identifier(&conn, "ACC-2").unwrap();
+                let hidden = queries::resolve_identifier(&conn, "HIDE-1").unwrap();
+                let project = queries::get_issue(&conn, source).unwrap().project_id;
+                queries::members::upsert_member(
+                    &conn,
+                    project,
+                    identity.as_ref().unwrap().user.id,
+                    role,
+                )
+                .unwrap();
+                for relation in ["blocks", "relates_to", "duplicate"] {
+                    for target in [allowed, hidden] {
+                        queries::link_issues(&conn, source, target, relation).unwrap();
+                        queries::unlink_issues(&conn, source, target).unwrap();
+                    }
+                }
+                let raw = queries::activity::list_activity(
+                    &conn,
+                    queries::activity::ActivityScope::Issue(source),
+                    None,
+                    None,
+                )
+                .unwrap();
+                assert_eq!(
+                    raw.items
+                        .iter()
+                        .filter(|item| {
+                            item.old_value.as_deref() == Some("HIDE-1")
+                                || item.new_value.as_deref() == Some("HIDE-1")
+                        })
+                        .count(),
+                    6,
+                    "the real relation triggers must capture every hidden link/unlink"
+                );
+            }
+            let items = load(&fixture.db, &identity, "ACC-1").unwrap();
+            let serialized = serde_json::to_string(&items).unwrap();
+            assert!(
+                !serialized.contains("HIDE-1"),
+                "hidden references entered the authorized Activity model for {role:?}: {serialized}"
+            );
+            assert_eq!(
+                items
+                    .iter()
+                    .filter(|item| {
+                        item.old_value.as_deref() == Some("ACC-2")
+                            || item.new_value.as_deref() == Some("ACC-2")
+                    })
+                    .count(),
+                6,
+                "all permitted historical relations must survive unchanged"
+            );
+            let cx = Cx::default();
+            let rendered = timeline(&cx, items).single().await.unwrap().render(&cx);
+            assert!(
+                !rendered.contains("HIDE-1"),
+                "hidden references entered HTML or signals"
+            );
+            assert!(rendered.contains("ACC-2"));
+        }
+    }
+
+    #[test]
+    fn deleted_visible_targets_keep_relation_history() {
+        let (fixture, identity) = fixture();
+        {
+            let conn = fixture.db.write().unwrap();
+            let source = queries::resolve_identifier(&conn, "ACC-1").unwrap();
+            let allowed = queries::resolve_identifier(&conn, "ACC-2").unwrap();
+            queries::link_issues(&conn, source, allowed, "relates_to").unwrap();
+            queries::unlink_issues(&conn, source, allowed).unwrap();
+            queries::delete_issue(&conn, allowed).unwrap();
+            conn.execute(
+                "UPDATE issues SET deleted_at='2000-01-01 00:00:00' WHERE id=?1",
+                [allowed],
+            )
+            .unwrap();
+            assert_eq!(
+                queries::trash::purge_tombstones(&conn, 1).unwrap().issues,
+                1
+            );
+            assert!(queries::resolve_identifier(&conn, "ACC-2").is_err());
+        }
+        let items = load(&fixture.db, &identity, "ACC-1").unwrap();
+        assert!(
+            items
+                .iter()
+                .any(|item| item.action == "link" && item.new_value.as_deref() == Some("ACC-2"))
+        );
+        assert!(
+            items
+                .iter()
+                .any(|item| item.action == "unlink" && item.old_value.as_deref() == Some("ACC-2"))
+        );
     }
 
     #[tokio::test]
