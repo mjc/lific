@@ -37,7 +37,12 @@ fn read_with_auth_destination<T>(
             } else {
                 auth_destination.to_owned()
             };
-            Err(topcoat::router::error::redirect(destination).into())
+            // Procedure POSTs must follow authentication redirects as GETs.
+            if topcoat::router::request::original_method(cx) == axum::http::Method::POST {
+                Err(topcoat::router::error::see_other(destination).into())
+            } else {
+                Err(topcoat::router::error::redirect(destination).into())
+            }
         }
         Err(LificError::Forbidden(_)) => Err(topcoat::router::error::forbidden().into()),
         Err(LificError::BadRequest(message)) => {

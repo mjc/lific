@@ -6,7 +6,7 @@ use super::{
 };
 use topcoat::{
     context::Cx,
-    runtime::Event,
+    runtime::{Event, expr},
     view::{Attributes, BoxView, ViewExt, view},
 };
 
@@ -128,15 +128,17 @@ fn editor<'a>(cx: &'a Cx, model: &State, signals: &Signals, layout: Layout) -> B
     let has_error = !edit.error.is_empty();
     let error = edit.error.clone();
     let saving = edit.saving;
+    let busy = signals.busy.clone();
+    let waiting = expr!(if saving { true } else { busy.get() });
     let draft = signals.draft.clone();
     let save = state::invoke(cx, signals, "save_group", 0, String::new(), "submit");
     let keyboard = state::invoke(cx, signals, "cancel_edit", 0, String::new(), "keydown");
     let cancel = state::invoke(cx, signals, "cancel_edit", 0, String::new(), "click");
     let restore = state::restore_editor_focus(cx, signals, id.to_owned(), !saving);
     view!{cx=><form class="native-sidebar-group-editor" (save) (keyboard)>
-        <input id=(id) aria-label="Group name" placeholder="Group name" autocomplete="off" aria-invalid=(has_error.to_string()) aria-describedby=(has_error.then_some(error_id.clone())) disabled=(saving) (restore) :value=$(draft.get()) @input=$(|event:Event|draft.set(event.target.value))>
+        <input id=(id) aria-label="Group name" placeholder="Group name" autocomplete="off" aria-invalid=(has_error.to_string()) aria-describedby=(has_error.then_some(error_id.clone())) :disabled=$(waiting) (restore) :value=$(draft.get()) @input=$(|event:Event|draft.set(event.target.value))>
         if has_error{<p id=(error_id) role="alert">(error)</p>}
-        <div><button type="submit" disabled=(saving)> (if saving{"Saving…"}else{"Save"}) </button><button type="button" disabled=(saving) (cancel)>"Cancel"</button></div>
+        <div><button type="submit" :disabled=$(waiting)> (if saving{"Saving…"}else{"Save"}) </button><button type="button" :disabled=$(waiting) (cancel)>"Cancel"</button></div>
     </form>}.boxed()
 }
 fn group<'a>(

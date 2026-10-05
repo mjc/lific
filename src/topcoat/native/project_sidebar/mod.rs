@@ -11,7 +11,7 @@ use super::{context, home_shell, session};
 use crate::error::LificError;
 use topcoat::{
     context::Cx,
-    runtime::{Signal, shard},
+    runtime::{Event, Signal, expr, shard, signal},
     view::{Attributes, BoxView, View, ViewExt, view},
 };
 
@@ -20,6 +20,7 @@ use topcoat::{
 pub(crate) struct Sidebar {
     signals: state::Signals,
     recents: recents_state::Signals,
+    scrolled: Signal<i64>,
 }
 impl Sidebar {
     pub(crate) fn load(cx: &Cx, account: i64, path: &str) -> topcoat::Result<Self> {
@@ -41,7 +42,27 @@ impl Sidebar {
         Ok(Self {
             signals: state::Signals::new(cx, model)?,
             recents,
+            scrolled: signal(cx, || 0_i64),
         })
+    }
+    /// The sibling action menu owns keyboard and focus above phone navigation.
+    pub(crate) fn menu_open(&self) -> topcoat::runtime::Expr<bool> {
+        let kind = self.signals.menu_kind.clone();
+        topcoat::runtime::expr!(!kind.get().is_empty())
+    }
+    /// Route changes reveal a project once through the existing local transition.
+    pub(crate) fn route<'a>(&self, cx: &'a Cx, path: Signal<String>) -> BoxView<'a> {
+        let account = self.signals.account;
+        let model = self.signals.model.clone();
+        let busy = self.signals.busy.clone();
+        let frozen = self.signals.frozen.clone();
+        let blocked = topcoat::runtime::expr!(if busy.get() {
+            true
+        } else {
+            !frozen.get().is_empty()
+        });
+        let handles = self.signals.handles();
+        view! {cx => native_sidebar_route(account: account, path: $(path.get()), wire: $(model.get()), blocked: $(blocked), handles: handles)}.boxed()
     }
     pub(crate) fn desktop<'a>(&self, cx: &'a Cx, path: Signal<String>) -> BoxView<'a> {
         let account = self.signals.account;
@@ -51,7 +72,8 @@ impl Sidebar {
         let recents = self.recents.handles();
         let catalog = model.clone();
         let storage = recents_state::storage(cx, &self.recents);
-        view! {cx => <span hidden="hidden" (storage)></span> recents_view::driver(account:account,path:$(path.get()),handles:recents.clone(),catalog:catalog) native_sidebar_desktop(account:account, wire:$(model.get()), path:$(path.get()), revision:$(revision.get()), handles:handles,recents:recents)}.boxed()
+        let reveal = (path.clone(), self.scrolled.clone());
+        view! {cx => <span hidden="hidden" (storage)></span> recents_view::driver(account:account,path:$(path.get()),handles:recents.clone(),catalog:catalog) native_sidebar_desktop(account:account, wire:$(model.get()), path:$(path.get()), revision:$(revision.get()), handles:handles,recents:recents,reveal:reveal)}.boxed()
     }
     pub(crate) fn phone<'a>(
         &self,
@@ -93,6 +115,35 @@ fn projection(cx: &Cx, account: i64, wire: &str) -> topcoat::Result<model::State
     let (_, model) = session::read(cx, actions::decoded(cx, account, wire))?;
     Ok(model)
 }
+#[shard("/__native_sidebar/route")]
+async fn native_sidebar_route(
+    cx: &Cx,
+    account: i64,
+    path: String,
+    wire: String,
+    blocked: bool,
+    handles: state::Handles,
+) -> topcoat::Result<impl View> {
+    let mut model = projection(cx, account, &wire)?;
+    let previous = model.revealed;
+    let identifier = super::super::shell::ParsedRoute::parse(&path).project;
+    let revealed = model.reveal(identifier);
+    let changed = revealed.is_some() || previous != model.revealed;
+    let mount = if !blocked && changed {
+        state::invoke(
+            cx,
+            &state::Signals::from_handles(account, handles),
+            "reveal",
+            0,
+            identifier.unwrap_or_default().to_owned(),
+            "mount",
+        )
+    } else {
+        Attributes::with_capacity(0)
+    };
+    Ok(view! {cx => <span hidden="hidden" (mount)></span>}.boxed())
+}
+
 use desktop_shard::native_sidebar_desktop;
 #[allow(
     clippy::too_many_arguments,
@@ -110,11 +161,61 @@ mod desktop_shard {
         revision: usize,
         handles: state::Handles,
         recents: recents_state::Handles,
+        reveal: (Signal<String>, Signal<i64>),
     ) -> topcoat::Result<impl View> {
         let _ = revision;
         let model = projection(cx, account, &wire)?;
         let signals = state::Signals::from_handles(account, handles);
-        Ok(view::projects(
+        let identifier = super::super::super::shell::ParsedRoute::parse(&path).project;
+        let current = identifier
+            .and_then(|identifier| {
+                model
+                    .catalog
+                    .projects
+                    .iter()
+                    .find(|project| project.identifier.eq_ignore_ascii_case(identifier))
+            })
+            .map(|project| project.id);
+        let target = current
+            .filter(|id| model.groups_ready && model.revealed == Some(*id))
+            .unwrap_or(0);
+        let reset = current.is_none();
+        let current_path = reveal.0;
+        let scrolled = reveal.1;
+        let current_wire = signals.model.clone();
+        let expected_path = path.clone();
+        // The mounted shard is the actual adopted desktop projection. A late
+        // frame cannot reveal another route or an obsolete model snapshot.
+        let mounted = expr!(|_event: Event| {
+            let _scroll = || {
+                if !raw!("cx.hydrate(cx.abortSignal.aborted)", false) {
+                    if current_path.get() == expected_path {
+                        if current_wire.get() == wire {
+                            if reset {
+                                scrolled.set(0_i64);
+                            } else {
+                                if target > 0_i64 {
+                                    if scrolled.get() != target {
+                                        scrolled.set(target);
+                                        if raw!(
+                                            "cx.hydrate(matchMedia('(min-width: 768px)').matches)",
+                                            false
+                                        ) {
+                                            raw!(
+                                                "document.getElementById('native-sidebar-project-link-'+${target}.toString())?.scrollIntoView({block:'nearest'});",
+                                                ()
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            };
+            raw!("requestAnimationFrame(() => ${_scroll}());", ());
+        });
+        let projects = view::projects(
             cx,
             &model,
             &signals,
@@ -122,7 +223,8 @@ mod desktop_shard {
             view::Layout::Desktop,
             &|_| Attributes::with_capacity(0),
             &recents_state::Signals::from_handles(account, recents),
-        ))
+        );
+        Ok(view! {cx => <span hidden="hidden" @mount=(mounted)></span>(projects)}.boxed())
     }
 }
 use phone_shard::native_sidebar_phone;
@@ -221,6 +323,12 @@ mod phone_panels_shard {
 
 #[cfg(test)]
 mod production;
+
+#[cfg(test)]
+mod disclosure_production;
+
+#[cfg(test)]
+mod order_production;
 
 #[cfg(test)]
 mod expiry_production;
