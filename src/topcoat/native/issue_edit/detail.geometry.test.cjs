@@ -34,7 +34,7 @@ async function setup(browser, origin, mode, theme, native) {
   const context = await browser.newContext({viewport,isMobile:mode==='phone',hasTouch:mode==='phone',
     colorScheme:theme,locale:'en-US',timezoneId:'America/Denver',reducedMotion:'reduce'});
   if (!native) await installOriginalFonts(context);
-  if (native) await context.addCookies([{name:'lific_token',value:token,url:origin,httpOnly:true,sameSite:'Lax'}]);
+  await context.addCookies([{name:'lific_token',value:token,url:origin,httpOnly:true,sameSite:'Lax'}]);
   await context.addInitScript(({theme,token,native})=>{
     localStorage.setItem('lific_theme',theme); localStorage.setItem('lific_motion','reduced');
     if (!native) localStorage.setItem('lific_token',token);
@@ -58,8 +58,8 @@ test('native issue document matches pinned master composition at every mount',as
     referenceCache = fs.mkdtempSync(path.join(tmpdir(), 'lific-pinned-vite-'));
     vite = await createServer({cacheDir:referenceCache,root:snapshot,logLevel:'silent',configFile:path.join(snapshot,'vite.config.ts'),
       server:{host:'127.0.0.1',port:0,strictPort:false,proxy:{
-        '/api':{target:upstream.origin,ws:true,configure},
-        '/public/api':{target:upstream.origin,ws:true,configure},
+        '/api':{target:upstream.origin,ws:true,changeOrigin:false,configure},
+        '/public/api':{target:upstream.origin,ws:true,changeOrigin:false,configure},
       }}});
     await vite.listen(); const originalOrigin = `http://127.0.0.1:${vite.httpServer.address().port}`;
     for (const prefix of ['', '/app', '/ACC']) for (const mode of ['desktop','phone']) for (const theme of ['light','dark']) {
@@ -72,6 +72,9 @@ test('native issue document matches pinned master composition at every mount',as
           native = await setup(browser,proxy.origin,mode,theme,true);
           for (const [kind,session] of [['original',original],['native',native]]) {
             session.page.on('pageerror',error=>errors.push({kind,message:error.message}));
+            session.page.on('console',message=>{
+              if (message.type()==='error') errors.push({kind,message:message.text()});
+            });
           }
           await original.page.goto(`${originalOrigin}/#/ACC/issues/ACC-1`);
           assert.equal((await native.page.goto(`${proxy.origin}${prefix}/ACC/issues/ACC-1`)).status(),200);
@@ -84,6 +87,38 @@ test('native issue document matches pinned master composition at every mount',as
           // Capture both actual documents before the first parity assertion.
           await original.page.screenshot({path:path.join(output,`${name}-original.png`),fullPage:true});
           await native.page.screenshot({path:path.join(output,`${name}-native.png`),fullPage:true});
+          const originalActivity = original.page.locator('section').filter({
+            has: original.page.getByRole('heading',{name:'Activity',exact:true}),
+          });
+          await originalActivity.getByRole('heading',{name:'Activity',exact:true}).waitFor();
+          assert.equal(await originalActivity.locator('ol > li').count(),4,
+            'Pinned master renders the four real issue audits.');
+          const mountSources=await native.page.locator('[data-topcoat-on\\:mount]').evaluateAll(elements=>elements.map(element=>({
+            tag:element.tagName, classes:element.className, source:element.getAttribute('data-topcoat-on:mount'),
+          })));
+          fs.writeFileSync(path.join(output,`${name}-mounts.json`),JSON.stringify(mountSources,null,2));
+          const nativeActivity = native.page.locator('[data-native-issue-activity]');
+          assert.equal(await nativeActivity.count(),1,
+            'Native issue detail renders the Activity panel.');
+          assert.equal(await nativeActivity.locator('ol > li[data-activity-id]').count(),4,
+            'Native issue detail renders the same four real issue audits.');
+          const originalRows=originalActivity.locator('ol > li');
+          const nativeRows=nativeActivity.locator('ol > li[data-activity-id]');
+          const activityProof={rows:[]};
+          const rowContent=locator=>locator.evaluate(element=>({
+            text:element.innerText.replace(/\s+/g,' ').trim(),
+            datetime:element.querySelector('time').getAttribute('datetime'),
+            timestamp:element.querySelector('time').title,
+            transport:element.querySelector('time').parentElement.title,
+          }));
+          for(let index=0;index<4;index++) {
+            const reference=originalRows.nth(index).locator('div.text-body-sm');
+            const current=nativeRows.nth(index).locator('.native-issue-activity__line');
+            activityProof.rows.push({original:await rowContent(reference),native:await rowContent(current)});
+          }
+          fs.writeFileSync(path.join(output,`${name}-activity.json`),JSON.stringify(activityProof,null,2));
+          for(const [index,row]of activityProof.rows.entries())
+            assert.deepEqual(row.native,row.original,`Activity row ${index} ordered text, UTC timestamp, and transport tooltip`);
           const typography = locator => locator.evaluate(element => {
             const style=getComputedStyle(element);
             return {fontFamily:style.fontFamily,fontSize:style.fontSize,
@@ -92,6 +127,8 @@ test('native issue document matches pinned master composition at every mount',as
           const originalCrumbs=original.page.getByRole('navigation',{name:'Breadcrumb',exact:true});
           const nativeCrumbs=native.page.getByRole('navigation',{name:'Breadcrumb',exact:true});
           const pairs=[
+            ['Activity heading',originalActivity.getByRole('heading',{name:'Activity',exact:true}),nativeActivity.getByRole('heading',{name:'Activity',exact:true})],
+            ['Activity first row',originalRows.first().locator('div.text-body-sm'),nativeRows.first().locator('.native-issue-activity__line')],
             ['current identifier',originalCrumbs.locator('[aria-current="page"]'),nativeCrumbs.locator('[aria-current="page"]')],
             ['current identifier label',originalCrumbs.locator('[aria-current="page"] > span'),nativeCrumbs.locator('[aria-current="page"] > [data-label]')],
             ['issue title',original.page.getByRole('button',{name:fixtureTitle,exact:true}),native.page.getByRole('button',{name:fixtureTitle,exact:true})],
@@ -152,6 +189,37 @@ test('native issue document matches pinned master composition at every mount',as
           };
           const recorded = {original:await geometry(original,false),native:await geometry(native,true)};
           fs.writeFileSync(path.join(output,`${name}.json`),JSON.stringify(recorded,null,2));
+          close(await nativeActivity.evaluate(measure),await originalActivity.evaluate(measure),'Activity panel');
+          close(await nativeActivity.locator('.native-issue-activity__header').evaluate(measure),
+            await originalActivity.locator(':scope > div').first().evaluate(measure),'Activity header');
+          for(let index=0;index<4;index++) {
+            close(await nativeRows.nth(index).evaluate(measure),await originalRows.nth(index).evaluate(measure),`Activity row ${index}`);
+            close(await nativeRows.nth(index).locator('time').evaluate(measure),
+              await originalRows.nth(index).locator('time').evaluate(measure),`Activity row ${index} painted timestamp`);
+          }
+          const originalChange=originalActivity.getByRole('button',{name:'show change',exact:true});
+          const nativeChange=nativeActivity.getByRole('button',{name:'show change',exact:true});
+          assert.equal(await originalChange.count(),1);
+          assert.equal(await nativeChange.count(),1);
+          await originalChange.click(); await nativeChange.click();
+          const originalValues=originalRows.filter({has:original.page.getByRole('button',{name:'hide change',exact:true})}).locator('div[class*="max-w-[640px]"]');
+          const nativeValues=nativeActivity.locator('.native-issue-activity__values');
+          await originalValues.waitFor({state:'visible'}); await nativeValues.waitFor({state:'visible'});
+          assert.deepEqual(await nativeValues.locator(':scope > div').allTextContents(),
+            await originalValues.locator(':scope > div').allTextContents(),'Expanded Activity old and new values');
+          const painted=locator=>locator.evaluate(element=>({color:getComputedStyle(element).color,
+            background:getComputedStyle(element).backgroundColor,border:getComputedStyle(element).borderColor}));
+          for(let index=0;index<2;index++) {
+            const current=nativeValues.locator(':scope > div').nth(index);
+            const reference=originalValues.locator(':scope > div').nth(index);
+            close(await current.evaluate(measure),await reference.evaluate(measure),`Expanded Activity value ${index}`);
+            assert.deepEqual(await painted(current),await painted(reference),`Expanded Activity value ${index} colors`);
+          }
+          await original.page.screenshot({path:path.join(output,`${name}-original-change.png`),fullPage:true});
+          await native.page.screenshot({path:path.join(output,`${name}-native-change.png`),fullPage:true});
+          await originalActivity.getByRole('button',{name:'hide change',exact:true}).click();
+          await nativeActivity.getByRole('button',{name:'hide change',exact:true}).click();
+          assert.equal(await nativeValues.isVisible(),false,'Activity change closes again');
           close(recorded.native.title,recorded.original.title,'issue title');
           const crumbOriginal = original.page.getByRole('navigation',{name:'Breadcrumb',exact:true});
           const crumbNative = native.page.getByRole('navigation',{name:'Breadcrumb',exact:true});
@@ -190,6 +258,8 @@ test('native issue document matches pinned master composition at every mount',as
             }
             assert.equal(await native.page.getByRole('button',{name:'Show details',exact:true}).getAttribute('aria-expanded'),'false');
           }
+          assert.equal(proxy.requests.filter(request=>new URL(request.path,proxy.origin).pathname.replace(prefix,'').startsWith('/api/')).length,0,
+            'Native issue document and Activity actions make no frontend REST calls.');
           assert.deepEqual(errors,[]);
         } finally {
           try {

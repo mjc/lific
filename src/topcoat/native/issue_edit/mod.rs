@@ -1,6 +1,9 @@
 //! Native issue editing proof. Shared services own authorization and writes.
 
 pub(crate) mod actions;
+pub(crate) mod activity;
+#[cfg(test)]
+mod activity_production;
 #[cfg(test)]
 mod browser_production;
 pub(crate) mod controls;

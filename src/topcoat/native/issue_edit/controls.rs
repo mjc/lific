@@ -8,6 +8,7 @@ use topcoat::{
 
 use super::{
     actions::{self, SaveOutcome, Snapshot},
+    activity::native_issue_activity,
     model::Field,
 };
 use crate::db::models::{Priority, Status};
@@ -1029,6 +1030,7 @@ fn render_editor<'a>(
         controls.duplicates.clone(),
         controls.duplicated_by.clone(),
     );
+    let activity_identifier = identifier.clone();
     let metadata_identifier = identifier.clone();
     let dates_identifier = identifier.clone();
     let display_identifier = snapshot.identifier.clone();
@@ -1125,6 +1127,9 @@ fn render_editor<'a>(
                     <p class="native-issue-editor__empty" :hidden=$(!description.get().trim().is_empty())>"No description"</p>
                 }
                 <p data-native-issue-save-error="" role="alert" :hidden=$(message.get().is_empty())>$(message.get())</p>
+                if document {
+                    native_issue_activity(identifier: activity_identifier, revision: $(seq.get()))
+                }
             </div>
             <aside class="native-issue-editor__fields" aria-label="Issue fields">
                 if document {
