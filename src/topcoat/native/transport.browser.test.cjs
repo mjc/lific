@@ -50,6 +50,7 @@ test('vendored patches reconstruct the exact pinned upstream runtime', () => {
   assert.ok(start >= 0, 'The pinned upstream body is present.');
   let original = runtime.slice(start);
   for (const [patched, upstream, count] of [
+    ['trim_ecmascript(){return new v(this.v.trim())}trim(){return new t(this.v.replace(xe,"").replace(Ee,""))}', 'trim(){return new t(this.v.replace(xe,"").replace(Ee,""))}', 1],
     ['to_uppercase(){return new v(this.v.toUpperCase())}unicode_scalars(e){let n=e.dehydrate();if(n.t!=="usize")throw new Error("Unicode scalar vector requires target usize width");return new F(Array.from(this.v,r=>new v(r)),ue("usize",n.bits))}to_owned(){return new v(this.v)}is_empty(){return new l(this.v.length===0)}', 'to_owned(){return new v(this.v)}is_empty(){return new l(this.v.length===0)}', 1],
     ['new H(this.lifetime.abortSignal,r=>this.reportError(r),r=>n.redirect(r))', 'new H(this.lifetime.abortSignal,r=>n.reportError(r),r=>n.redirect(r))', 1],
     ['failureTarget(){return document}reportError(e){this.runtime.reportError(e);if(this.isDisposed)return;this.failureTarget()?.dispatchEvent(new CustomEvent("topcoat:render-error",{bubbles:true,detail:{path:this.url()}}))}', 'reportError(e){this.runtime.reportError(e)}', 1],

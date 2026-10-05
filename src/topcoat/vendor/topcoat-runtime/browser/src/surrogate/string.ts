@@ -80,6 +80,10 @@ export class Str implements AttributeValueViewParts, NodeViewParts {
 		return new F64(TEXT_ENCODER.encode(this.v).length);
 	}
 
+	trim_ecmascript(): String {
+		return new String(this.v.trim());
+	}
+
 	trim(): Str {
 		return new Str(this.v.replace(TRIM_START, "").replace(TRIM_END, ""));
 	}

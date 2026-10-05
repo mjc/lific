@@ -285,3 +285,18 @@ reverses them before the earlier transport and surrogate substitutions and
 checks the exact original package hash. The source and packaged tests cover
 owner paths, retained logging, disposal, stale connected errors, and actual
 scheduled HTTP failures.
+
+## ECMAScript whitespace
+
+The generic `StrEcmaTrimExt::trim_ecmascript` operation returns an existing
+owned String wire value. It preserves interfaces using ECMAScript trim:
+BOM is removed at the edges and NEL is retained. The packaged Str operation
+calls `String.prototype.trim`; the Rust host enumerates exactly the ECMAScript
+WhiteSpace and LineTerminator set. Existing Rust `trim` behavior remains
+Unicode White_Space. The package regression executes eighteen actual Rust
+expression sources and compares their authoritative surrogate wires.
+
+The additional exact reverse substitution removes
+`trim_ecmascript(){return new v(this.v.trim())}` immediately before Str trim.
+It is declared in transport.browser.test.cjs and included in the license
+provenance; the pinned upstream digest remains the same.
