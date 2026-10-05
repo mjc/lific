@@ -7,7 +7,7 @@ use axum::{
 };
 
 use crate::authz;
-use crate::db::queries::activity::{ActivityScope, actor_stats, list_activity};
+use crate::db::queries::activity::{ActivityScope, actor_stats};
 use crate::db::{
     DbPool,
     models::{ActivityFeed, ActorStat, Role},
@@ -15,33 +15,6 @@ use crate::db::{
 use crate::error::LificError;
 
 use super::with_read;
-
-/// Resolve the `project_id` an activity scope belongs to, for the
-/// `Viewer` gate (LIF-197 scope item 2: single-resource reads resolve
-/// project_id from the target then check). Workspace-level pages
-/// (`project_id = None`) fall back to admin-only.
-fn require_scope_viewer(
-    db: &DbPool,
-    identity: &Option<crate::resolve_caller::ResolvedIdentity>,
-    scope: &ActivityScope,
-) -> Result<(), LificError> {
-    let project_id: Option<i64> = match *scope {
-        ActivityScope::Issue(id) => {
-            Some(with_read(db, |conn| crate::db::queries::get_issue(conn, id))?.project_id)
-        }
-        ActivityScope::Page(id) => {
-            with_read(db, |conn| crate::db::queries::get_page(conn, id))?.project_id
-        }
-        ActivityScope::Plan(id) => {
-            Some(with_read(db, |conn| crate::db::queries::plans::get_plan(conn, id))?.project_id)
-        }
-        ActivityScope::Project(id) => Some(id),
-    };
-    match project_id {
-        Some(pid) => authz::require_role(db, identity, pid, Role::Viewer),
-        None => authz::require_workspace_admin(db, identity),
-    }
-}
 
 #[derive(Debug, serde::Deserialize)]
 pub(super) struct ActivityQuery {
@@ -58,8 +31,8 @@ pub(super) async fn issue_activity(
     Query(q): Query<ActivityQuery>,
 ) -> Result<Json<ActivityFeed>, LificError> {
     let scope = ActivityScope::Issue(id);
-    require_scope_viewer(&db, &identity, &scope)?;
-    with_read(&db, |conn| list_activity(conn, scope, q.limit, q.offset)).map(Json)
+    crate::services::activity::list_activity(&db, &identity, scope, None, q.limit, q.offset)
+        .map(Json)
 }
 
 /// GET /api/pages/{id}/activity
@@ -70,8 +43,8 @@ pub(super) async fn page_activity(
     Query(q): Query<ActivityQuery>,
 ) -> Result<Json<ActivityFeed>, LificError> {
     let scope = ActivityScope::Page(id);
-    require_scope_viewer(&db, &identity, &scope)?;
-    with_read(&db, |conn| list_activity(conn, scope, q.limit, q.offset)).map(Json)
+    crate::services::activity::list_activity(&db, &identity, scope, None, q.limit, q.offset)
+        .map(Json)
 }
 
 /// GET /api/plans/{id}/activity — the plan's own edits plus every step
@@ -83,8 +56,8 @@ pub(super) async fn plan_activity(
     Query(q): Query<ActivityQuery>,
 ) -> Result<Json<ActivityFeed>, LificError> {
     let scope = ActivityScope::Plan(id);
-    require_scope_viewer(&db, &identity, &scope)?;
-    with_read(&db, |conn| list_activity(conn, scope, q.limit, q.offset)).map(Json)
+    crate::services::activity::list_activity(&db, &identity, scope, None, q.limit, q.offset)
+        .map(Json)
 }
 
 /// GET /api/projects/{id}/activity — everything in the project, newest
@@ -96,8 +69,8 @@ pub(super) async fn project_activity(
     Query(q): Query<ActivityQuery>,
 ) -> Result<Json<ActivityFeed>, LificError> {
     let scope = ActivityScope::Project(id);
-    require_scope_viewer(&db, &identity, &scope)?;
-    with_read(&db, |conn| list_activity(conn, scope, q.limit, q.offset)).map(Json)
+    crate::services::activity::list_activity(&db, &identity, scope, None, q.limit, q.offset)
+        .map(Json)
 }
 
 /// GET /api/projects/{id}/activity/actors — per-actor rollup, most

@@ -107,6 +107,7 @@ pub fn normalize_since(input: &str) -> Result<String, LificError> {
 
 /// List activity newest-first. `limit` is clamped to 1..=200 (default 50).
 /// Fetches limit+1 rows internally to compute `has_more` without a COUNT.
+#[cfg(test)]
 pub fn list_activity(
     conn: &Connection,
     scope: ActivityScope,
@@ -120,6 +121,7 @@ pub fn list_activity(
 /// through [`normalize_since`]) only entries strictly after it are returned,
 /// oldest-first, so a caller can page forward from where it left off. Without
 /// it the feed is newest-first, as it always was.
+#[cfg(test)]
 pub fn list_activity_since(
     conn: &Connection,
     scope: ActivityScope,
@@ -127,6 +129,25 @@ pub fn list_activity_since(
     limit: Option<i64>,
     offset: Option<i64>,
 ) -> Result<ActivityFeed, LificError> {
+    list_activity_since_visible(conn, scope, since, limit, offset, None)
+}
+
+/// Project and issue-reference visibility is applied before over-fetch, offset,
+/// and cursor ordering. Internal audit readers retain the unrestricted entrypoint.
+pub(crate) fn list_activity_since_visible(
+    conn: &Connection,
+    scope: ActivityScope,
+    since: Option<&str>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+    visible: Option<&HashSet<i64>>,
+) -> Result<ActivityFeed, LificError> {
+    if visible.is_some_and(HashSet::is_empty) {
+        return Ok(ActivityFeed {
+            items: Vec::new(),
+            has_more: false,
+        });
+    }
     let (limit, offset) = super::page_with(limit, offset, DEFAULT_LIMIT, MAX_LIMIT);
 
     // Scope params come first (?1, optionally ?2 for plans); limit/offset are
@@ -178,12 +199,103 @@ pub fn list_activity_since(
         None => (where_clause, "a.id DESC"),
     };
 
+    let (visibility_cte, where_clause) = if let Some(visible) = visible {
+        let ids = visible
+            .iter()
+            .map(|id| {
+                sp.push(Box::new(*id) as Box<dyn rusqlite::types::ToSql>);
+                format!("(?{})", sp.len())
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        // The small project alias map also scopes imported references without
+        // issue lifecycle history. Known issue snapshots take precedence when a
+        // former prefix has been reused by another project.
+        let cte = format!(
+            "WITH visible_projects(id) AS (VALUES {ids}),
+             project_identifiers(identifier, project_id) AS (
+                 SELECT identifier, id FROM projects
+                 UNION
+                 SELECT entity_label, project_id FROM audit_log
+                 WHERE entity_type = 'project' AND project_id IS NOT NULL
+                 UNION
+                 SELECT old_value, project_id FROM audit_log
+                 WHERE entity_type = 'project' AND field = 'identifier'
+                   AND project_id IS NOT NULL
+             )"
+        );
+        let reference_visible = |column: &str| {
+            // Project identifiers cannot contain hyphens. The project's unique
+            // (project_id, sequence) issue key resolves a current target, including
+            // tombstones, without scanning issues or parsing display text.
+            let current_project = format!(
+                "(SELECT i.project_id FROM projects p JOIN issues i ON i.project_id = p.id
+                  WHERE p.identifier = substr({column}, 1, instr({column}, '-') - 1) COLLATE NOCASE
+                    AND i.sequence = CAST(substr({column}, instr({column}, '-') + 1) AS INTEGER)
+                    AND {column} = (p.identifier || '-' || i.sequence) COLLATE NOCASE)"
+            );
+            format!(
+                "({column} IS NULL OR CASE
+                    WHEN EXISTS (
+                        SELECT 1 FROM audit_log t WHERE t.entity_type = 'issue'
+                          AND t.entity_label = {column} COLLATE NOCASE
+                          AND t.project_id IS NOT NULL
+                    ) THEN (
+                        NOT EXISTS (
+                            SELECT 1 FROM audit_log t WHERE t.entity_type = 'issue'
+                              AND t.entity_label = {column} COLLATE NOCASE
+                              AND t.project_id NOT IN (SELECT id FROM visible_projects)
+                        ) AND ({current_project} IS NULL
+                               OR {current_project} IN (SELECT id FROM visible_projects))
+                    )
+                    WHEN {current_project} IS NOT NULL
+                        THEN {current_project} IN (SELECT id FROM visible_projects)
+                    ELSE (
+                        length({column}) > instr({column}, '-')
+                        AND instr({column}, '-') > 1
+                        AND substr({column}, instr({column}, '-') + 1) NOT GLOB '*[^0-9]*'
+                        AND EXISTS (
+                            SELECT 1 FROM project_identifiers p
+                            WHERE p.identifier = substr({column}, 1, instr({column}, '-') - 1) COLLATE NOCASE
+                              AND p.project_id IN (SELECT id FROM visible_projects)
+                        )
+                        AND NOT EXISTS (
+                            SELECT 1 FROM project_identifiers p
+                            WHERE p.identifier = substr({column}, 1, instr({column}, '-') - 1) COLLATE NOCASE
+                              AND p.project_id NOT IN (SELECT id FROM visible_projects)
+                        )
+                    ) END)"
+            )
+        };
+        let old_visible = reference_visible("a.old_value");
+        let new_visible = reference_visible("a.new_value");
+        (
+            cte,
+            format!(
+                "({where_clause}) AND a.project_id IN (SELECT id FROM visible_projects)
+                 AND (a.issue_id IS NULL OR COALESCE(
+                     (SELECT i.project_id FROM issues i WHERE i.id = a.issue_id),
+                     (SELECT t.project_id FROM audit_log t
+                      WHERE t.entity_type = 'issue' AND t.entity_id = a.issue_id
+                        AND t.project_id IS NOT NULL ORDER BY t.id DESC LIMIT 1)
+                 ) IN (SELECT id FROM visible_projects))
+                 AND (NOT (
+                     (a.entity_type = 'issue' AND a.action IN ('link', 'unlink'))
+                     OR (a.entity_type = 'plan' AND a.action = 'update' AND a.field = 'anchor_issue')
+                     OR (a.entity_type = 'plan_step' AND a.action = 'update' AND a.field = 'issue')
+                 ) OR ({old_visible} AND {new_visible}))"
+            ),
+        )
+    } else {
+        (String::new(), where_clause)
+    };
+
     let n = sp.len();
     sp.push(Box::new(super::over_fetch(limit)));
     sp.push(Box::new(offset));
 
     let sql = format!(
-        "SELECT a.id, a.ts, a.actor_user_id,
+        "{visibility_cte} SELECT a.id, a.ts, a.actor_user_id,
                 COALESCE(a.imported_author, u.username), COALESCE(a.imported_author, u.display_name),
                 COALESCE(u.is_bot, 0), a.transport, a.entity_type, a.entity_id,
                 a.entity_label, a.project_id, a.issue_id, a.page_id,

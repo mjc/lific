@@ -16,34 +16,18 @@ use axum::{
     extract::{Json, Path, State},
 };
 
-use crate::authz;
 use crate::db::queries::project_groups;
 use crate::db::{DbPool, models::*};
 use crate::error::LificError;
 use crate::realtime::{RealtimeEvent, RealtimeHub};
 
-use super::{require_user, with_read, with_write};
+use super::{require_user, with_write};
 
 pub(super) async fn list_groups(
     State(db): State<DbPool>,
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
 ) -> Result<Json<Vec<ProjectGroup>>, LificError> {
-    let user = require_user(&identity)?;
-    let groups = with_read(&db, |conn| {
-        let tx = conn.unchecked_transaction()?;
-        let visible = super::projects::sidebar_visibility(&tx, user.id)?;
-        let mut groups = project_groups::list_groups(&tx, user.id)?;
-        // Group membership can outlive project access. Resolve both from the
-        // same snapshot so stale middleware roles cannot reveal hidden IDs.
-        if let Some(ids) = &visible {
-            for group in &mut groups {
-                group.project_ids.retain(|id| ids.contains(id));
-            }
-        }
-        tx.commit()?;
-        Ok(groups)
-    })?;
-    Ok(Json(groups))
+    crate::services::project_form::list_groups(&db, &identity).map(Json)
 }
 
 pub(super) async fn reorder_groups(
@@ -114,12 +98,13 @@ pub(super) async fn assign_project(
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
     Json(input): Json<AssignProjectGroup>,
 ) -> Result<Json<serde_json::Value>, LificError> {
-    authz::require_role(&db, &identity, input.project_id, Role::Viewer)?;
-    let user = require_user(&identity)?;
-    with_write(&db, |conn| {
-        project_groups::assign_project(conn, user.id, input.project_id, input.group_id)
-    })?;
-    realtime.send_to_users(RealtimeEvent::ProjectGroupsChanged, vec![user.id]);
+    crate::services::project_form::assign_project(
+        &db,
+        &realtime,
+        &identity,
+        input.project_id,
+        input.group_id,
+    )?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
