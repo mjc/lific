@@ -3,7 +3,7 @@
 //! backpressure, session receivers and quota accounting remain production code.
 
 use std::{
-    io,
+    io::{self, Write},
     pin::Pin,
     sync::{
         Arc,
@@ -54,6 +54,11 @@ fn assert_send_buffer(actual: usize, requested: u32) {
 #[derive(Debug, Default)]
 struct WriteObservation {
     max_attempt: AtomicUsize,
+    polls_started: AtomicUsize,
+    polls_completed: AtomicUsize,
+    in_flight_operation: AtomicUsize,
+    in_flight_bytes: AtomicUsize,
+    io_drop_entered: AtomicUsize,
     accepted_bytes: AtomicUsize,
     pending_count: AtomicUsize,
     max_pending: AtomicUsize,
@@ -61,6 +66,19 @@ struct WriteObservation {
 }
 
 impl WriteObservation {
+    fn begin(&self, operation: usize, length: usize) {
+        self.max_attempt.fetch_max(length, Ordering::Relaxed);
+        self.in_flight_bytes.store(length, Ordering::Relaxed);
+        self.in_flight_operation.store(operation, Ordering::Release);
+        self.polls_started.fetch_add(1, Ordering::Release);
+    }
+
+    fn end(&self) {
+        self.polls_completed.fetch_add(1, Ordering::Release);
+        self.in_flight_operation.store(0, Ordering::Release);
+        self.in_flight_bytes.store(0, Ordering::Relaxed);
+    }
+
     fn record(&self, length: usize, result: &Poll<io::Result<usize>>) {
         self.max_attempt.fetch_max(length, Ordering::Relaxed);
         match result {
@@ -100,7 +118,9 @@ impl AsyncWrite for ObservedIo {
         cx: &mut Context<'_>,
         buffer: &[u8],
     ) -> Poll<io::Result<usize>> {
+        self.writes.begin(1, buffer.len());
         let result = Pin::new(&mut self.inner).poll_write(cx, buffer);
+        self.writes.end();
         self.writes.record(buffer.len(), &result);
         if buffer.len() >= 1024 * 1024 && result.is_pending() {
             self.blocked_large_write.notify_one();
@@ -113,8 +133,10 @@ impl AsyncWrite for ObservedIo {
         cx: &mut Context<'_>,
         buffers: &[io::IoSlice<'_>],
     ) -> Poll<io::Result<usize>> {
-        let result = Pin::new(&mut self.inner).poll_write_vectored(cx, buffers);
         let length = buffers.iter().map(|buffer| buffer.len()).sum::<usize>();
+        self.writes.begin(2, length);
+        let result = Pin::new(&mut self.inner).poll_write_vectored(cx, buffers);
+        self.writes.end();
         self.writes.record(length, &result);
         if length >= 1024 * 1024 && result.is_pending() {
             self.blocked_large_write.notify_one();
@@ -127,11 +149,100 @@ impl AsyncWrite for ObservedIo {
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.inner).poll_flush(cx)
+        self.writes.begin(3, 0);
+        let result = Pin::new(&mut self.inner).poll_flush(cx);
+        self.writes.end();
+        result
     }
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.inner).poll_shutdown(cx)
+        self.writes.begin(4, 0);
+        let result = Pin::new(&mut self.inner).poll_shutdown(cx);
+        self.writes.end();
+        result
+    }
+}
+
+impl Drop for ObservedIo {
+    fn drop(&mut self) {
+        // Fields are dropped afterwards; this marks entry, not TCP-drop completion.
+        self.writes.io_drop_entered.fetch_add(1, Ordering::Release);
+    }
+}
+
+const STOPPED_READER_PHASES: [&str; 12] = [
+    "fixture ready",
+    "rename 16MiB title",
+    "configure peer",
+    "real handshake",
+    "send render request",
+    "read run announcement",
+    "wait live receiver",
+    "wait actual large Pending write",
+    "wait send retirement",
+    "drop peer",
+    "drop fixture",
+    "complete",
+];
+
+// This diagnostic thread observes wall time independently of the test runtime.
+// It never writes socket bytes, changes readiness or retires a connection.
+// Five samples bound diagnostics even if an OS call prevents async timers polling.
+struct StoppedReaderTrace {
+    phase: Arc<AtomicUsize>,
+    stop: std::sync::mpsc::Sender<()>,
+    observer: Option<std::thread::JoinHandle<()>>,
+}
+
+impl StoppedReaderTrace {
+    fn new(writes: Arc<WriteObservation>) -> Self {
+        let phase = Arc::new(AtomicUsize::new(0));
+        let observed_phase = Arc::clone(&phase);
+        let (stop, receiver) = std::sync::mpsc::channel();
+        let observer = std::thread::spawn(move || {
+            let started = std::time::Instant::now();
+            for _ in 0..5 {
+                match receiver.recv_timeout(DEADLINE) {
+                    Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        let phase = observed_phase.load(Ordering::Acquire);
+                        // Direct stderr bypasses libtest's per-test macro capture,
+                        // so a nonreturning poll still leaves visible CI evidence.
+                        writeln!(
+                            std::io::stderr().lock(),
+                            "raw stopped-reader wall={:?}, phase={}, TCP operations(1=write,2=vectored,3=flush,4=shutdown), writes={writes:?}",
+                            started.elapsed(), STOPPED_READER_PHASES[phase]
+                        ).expect("write stopped-reader phase diagnostics");
+                    }
+                }
+            }
+        });
+        Self {
+            phase,
+            stop,
+            observer: Some(observer),
+        }
+    }
+
+    fn at(&self, phase: usize) {
+        self.phase.store(phase, Ordering::Release);
+        writeln!(
+            std::io::stderr().lock(),
+            "raw stopped-reader phase={}",
+            STOPPED_READER_PHASES[phase]
+        )
+        .expect("write stopped-reader phase transition");
+    }
+}
+
+impl Drop for StoppedReaderTrace {
+    fn drop(&mut self) {
+        let _ = self.stop.send(());
+        if let Some(observer) = self.observer.take() {
+            observer
+                .join()
+                .expect("stopped-reader diagnostic observer does not panic");
+        }
     }
 }
 
@@ -490,11 +601,20 @@ async fn native_raw_stopped_reader_bounds_send_and_aborts_its_live_render() {
     // SO_SNDBUF. Zero disables that buffering; check it on both real sockets.
     // https://learn.microsoft.com/en-us/windows/win32/winsock/tcp-ip-specific-issues-2
     let send_buffer = if cfg!(windows) { 0 } else { 4_096 };
+    writeln!(
+        std::io::stderr().lock(),
+        "raw stopped-reader phase=create fixture, requested send buffer={send_buffer}"
+    )
+    .expect("write stopped-reader fixture entry");
     let fixture = Fixture::with_send_buffer(policy(2_000, 10_000, 200), Some(send_buffer));
+    let trace = StoppedReaderTrace::new(Arc::clone(&fixture.writes));
+    trace.at(0);
+    trace.at(1);
     let title = "raw stopped reader ".to_owned() + &"x".repeat(16 * 1024 * 1024);
     fixture.rename(&title);
     // Bound this peer's buffering before TCP negotiation instead of assuming
     // the platform's default receive window cannot absorb the large render.
+    trace.at(2);
     let peer = tokio::net::TcpSocket::new_v4().unwrap();
     peer.set_recv_buffer_size(4_096).unwrap();
     let receive_buffer = peer.recv_buffer_size().unwrap();
@@ -509,6 +629,7 @@ async fn native_raw_stopped_reader_bounds_send_and_aborts_its_live_render() {
         .unwrap()
         .parse()
         .unwrap();
+    trace.at(3);
     let (mut socket, response) = tokio::time::timeout(DEADLINE, async {
         let stream = peer.connect(address).await.unwrap();
         tokio_tungstenite::client_async(
@@ -525,10 +646,13 @@ async fn native_raw_stopped_reader_bounds_send_and_aborts_its_live_render() {
         response.headers()[header::SEC_WEBSOCKET_PROTOCOL],
         "topcoat-runtime"
     );
+    trace.at(4);
     request_render(&mut socket, 1).await;
+    trace.at(5);
     let announced = frame(&mut socket).await;
     assert_eq!(announced["t"], "run");
     assert_eq!(announced["id"], 1);
+    trace.at(6);
     fixture
         .counts(
             1,
@@ -540,6 +664,7 @@ async fn native_raw_stopped_reader_bounds_send_and_aborts_its_live_render() {
     // Keep the connection alive but never read its large Home snapshot. Wait
     // for an actual large TCP write to block before measuring send retirement;
     // subscribing to Home happens before its snapshot is prepared.
+    trace.at(7);
     tokio::time::timeout(DEADLINE, fixture.blocked_large_write.notified())
         .await
         .unwrap_or_else(|_| {
@@ -551,6 +676,7 @@ async fn native_raw_stopped_reader_bounds_send_and_aborts_its_live_render() {
                 fixture.seed.realtime.event_receiver_count(),
             );
         });
+    trace.at(8);
     fixture
         .counts(
             0,
@@ -559,7 +685,11 @@ async fn native_raw_stopped_reader_bounds_send_and_aborts_its_live_render() {
             "bounded send retires quota and the active render receiver",
         )
         .await;
+    trace.at(9);
     drop(socket);
+    trace.at(10);
+    drop(fixture);
+    trace.at(11);
 }
 
 #[tokio::test]
