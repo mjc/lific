@@ -47,14 +47,15 @@ async function waitClosed(socket) {
 }
 
 test(`native Home live production ${scenario}`, async t => {
-  assert.ok(['live', 'reconnect', 'membership', 'late_auth', 'burst', 'continuous', 'hidden_projection', 'render_failure', 'owner_retirement'].includes(scenario));
+  assert.ok(['live', 'reconnect', 'membership', 'late_auth', 'burst', 'continuous', 'hidden_projection', 'render_failure', 'owner_retirement', 'busy_success', 'busy_failure'].includes(scenario));
   const browser = await launchBrowser();
   try {
     for (const [index, prefix] of ['', '/app', '/ACC'].entries()) {
       await t.test(prefix || 'root', async () => {
-        const proxy = await mountedProxy(upstream, prefix);
+        const proxy = await mountedProxy(upstream, prefix,
+          scenario.startsWith('busy_') ? {incomingPath: '/__native_home/content'} : {});
         const context = await browser.newContext();
-        const errors = [], requests = [], sockets = [], frames = [], inputs = [];
+        const errors = [], requests = [], sockets = [], frames = [], sentFrames = [], inputs = [];
         try {
           await control('restore_member');
           await control('edit', {title: initialTitle, hidden: false});
@@ -71,6 +72,9 @@ test(`native Home live production ${scenario}`, async t => {
             const record = {url: socket.url(), closed: false, closing: new Promise(resolve => {close = resolve;})};
             sockets.push(record);
             socket.on('close', () => {record.closed = true; close();});
+            socket.on('framesent', ({payload}) => {
+              sentFrames.push({url: socket.url(), frame: JSON.parse(payload.toString())});
+            });
             socket.on('framereceived', ({payload}) => {
               try {frames.push({url: socket.url(), frame: JSON.parse(payload.toString())});}
               catch {errors.push('A native Home socket delivered a non-JSON frame.');}
@@ -306,6 +310,75 @@ test(`native Home live production ${scenario}`, async t => {
             assert.deepEqual(errors, []);
             await resources(2, 2);
             return;
+          }
+
+          if (scenario === 'busy_success' || scenario === 'busy_failure') {
+            await page.clock.install();
+            await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
+            const baseline = (await control('count')).homeProjectionReads;
+            const sentRuns = () => sentFrames.filter(({url, frame}) =>
+              new URL(url).pathname.endsWith('/__native_home/content') && Number.isInteger(frame.run)).length;
+            const beforeRuns = sentRuns(), failed = scenario === 'busy_failure';
+            proxy.incomingGate.hold();
+            let readerFault = false;
+            try {
+              if (failed) {await control('reader_fault', {enabled: true}); readerFault = true;}
+              assert.equal(await page.evaluate(() => document.visibilityState), 'visible');
+              await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+              await page.clock.runFor(50);
+              await eventually(async () => {
+                const bytes = proxy.incomingGate.text();
+                return failed ? bytes.includes('"t":"error"') && bytes.includes('"status":500') :
+                  bytes.includes('"t":"snapshot"') && bytes.includes(initialTitle);
+              }, 'The actual server completion bytes are held, without delivering a replacement frame.');
+              assert.equal(sentRuns(), beforeRuns + 1);
+              assert.equal((await control('count')).homeProjectionReads, baseline + (failed ? 0 : 1));
+              if (readerFault) {await control('reader_fault', {enabled: false}); readerFault = false;}
+              const heldBeforePublication = proxy.incomingGate.text().length;
+              const title = `Genuine pending work ${scenario}-${index}`;
+              await control('edit', {title, hidden: false});
+              if (!failed) await eventually(async () => proxy.incomingGate.text().slice(heldBeforePublication).includes('nativeHomeRealtime'),
+                'The new actual publication is processed by the server while completion remains withheld.');
+              // The publication stays behind the snapshot in genuine wire order.
+              // Supported visibility flushes create pending in the busy browser.
+              for (let tick = 0; tick < 2; tick++) {
+                await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+                await page.clock.runFor(50);
+              }
+              assert.equal(sentRuns(), beforeRuns + 1, 'Busy flushes coalesce into one pending flag.');
+              const recentTitle = `Fresh pending recents ${scenario}-${index}`;
+              await storeRecent(page, recentTitle);
+              proxy.incomingGate.release();
+              await work.getByText(title, {exact: true}).waitFor();
+              await work.locator('[data-home-section="recents"]').getByText(recentTitle, {exact: true}).waitFor();
+              assert.equal(sentRuns(), beforeRuns + 2, 'Completion starts exactly one trailing render.');
+              const expected = baseline + (failed ? 1 : 2);
+              assert.equal((await control('count')).homeProjectionReads, expected);
+              await page.clock.runFor(750);
+              assert.equal(sentRuns(), beforeRuns + 2, 'Superseded held invalidations cannot add another refresh.');
+              assert.equal((await control('count')).homeProjectionReads, expected);
+              const before = await page.evaluate(() => window.__homeLiveAppliedFrames.length);
+              const next = `Live after busy ${scenario}-${index}`;
+              await control('edit', {title: next, hidden: false});
+              await eventually(() => page.evaluate(before => window.__homeLiveAppliedFrames.slice(before)
+                .some(frame => frame.t === 'swap' && frame.html.includes('nativeHomeRealtime')), before),
+                'The successful trailing run retains genuine realtime subscription.');
+              await page.clock.runFor(750);
+              await work.getByText(next, {exact: true}).waitFor();
+              assert.equal((await control('count')).homeProjectionReads, expected + 1);
+              if (failed) {
+                assert.equal(errors.length, 1);
+                assert.match(errors[0], /^\[topcoat\] Error: Connected render failed: 500(?:\n {4}at [^\n]+)+$/);
+              } else assert.deepEqual(errors, []);
+              assert.equal(await page.evaluate(() => window.__homeLiveDocument), document);
+              assert.equal(requests.filter(request => request.isNavigationRequest()).length, documentRequests);
+              assert.ok(requests.every(request => !new URL(request.url()).pathname.split('/').includes('api')));
+              assert.ok(requests.every(request => request.method() !== 'POST' || !new URL(request.url()).pathname.endsWith('/__native_home/content')));
+              await resources(2, 2);
+              return;
+            } finally {
+              if (readerFault) await control('reader_fault', {enabled: false});
+            }
           }
 
           if (scenario === 'render_failure') {

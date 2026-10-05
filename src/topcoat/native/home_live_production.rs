@@ -265,3 +265,13 @@ async fn native_home_failed_connected_render_preserves_body_and_recovers_on_focu
 async fn native_home_parent_rerender_retires_old_deadlines_and_initializes_new_owner() {
     browser("owner_retirement").await;
 }
+
+#[tokio::test]
+async fn native_home_busy_render_completes_exactly_one_trailing_fresh_projection() {
+    browser("busy_success").await;
+}
+
+#[tokio::test]
+async fn native_home_failed_busy_render_completes_exactly_one_trailing_fresh_projection() {
+    browser("busy_failure").await;
+}
