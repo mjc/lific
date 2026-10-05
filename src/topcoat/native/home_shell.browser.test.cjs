@@ -226,6 +226,7 @@ test(`native Home original shell: ${scenario}`, async t => {
               assert.deepEqual([rect.x, rect.y, rect.width, rect.height], [0, 0, viewport.width, viewport.height]);
               await (await phoneProject(nav)).click();
               assert.equal(await nav.locator('[data-native-mobile-root]').isVisible(), false);
+              await nav.locator('[data-native-mobile-project]:not([hidden])').waitFor({state: 'visible'});
               assert.deepEqual(await nav.locator('[data-native-mobile-project]').getByRole('link').allTextContents(), destinations);
               await page.keyboard.press('Escape');
               await nav.locator('[data-native-mobile-root]').waitFor({state: 'visible'});

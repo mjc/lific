@@ -76,7 +76,6 @@ fn project_row<'a>(
             "desktop"
         }
     );
-    let restore = state::restore_focus(cx, signals, trigger.clone(), model.edit.is_none());
     let menu = state::open_menu(cx, signals, "project", id, "click");
     let context_menu = state::open_menu(cx, signals, "project", id, "contextmenu");
     let keyboard_menu = state::open_menu(cx, signals, "project", id, "keydown");
@@ -103,7 +102,7 @@ fn project_row<'a>(
                 <div class="sidebar-row sidebar-project native-sidebar-project-row">
                     <button class="native-sidebar-project-toggle" aria-label=(disclosure) aria-expanded=(open.to_string()) aria-controls=(panel.clone()) (toggle)>(icons::project_icon(cx,Some("lucide:ChevronRight"),13))</button>
                     <a id=(format!("native-sidebar-project-link-{id}")) href=(overview) data-sidebar-project=(id.to_string()) title=(name.clone()) aria-current=(overview_active.then_some("page")) class="sidebar-project-link native-sidebar-project-link" (context_menu) (keyboard_menu)><span class="sidebar-project-icon">(icon)</span><span>(name.clone())</span></a>
-                    <button id=(trigger) class="sidebar-overflow native-sidebar-overflow" aria-label=(actions) aria-haspopup="menu" (menu) (restore)>(icons::project_icon(cx,Some("lucide:Ellipsis"),15))</button>
+                    <button id=(trigger) class="sidebar-overflow native-sidebar-overflow" aria-label=(actions) aria-haspopup="menu" (menu)>(icons::project_icon(cx,Some("lucide:Ellipsis"),15))</button>
                 </div>
                 <div id=(panel) hidden=(!open) class="project-subnav">(links)(recent)</div>
             </div>}.boxed()
@@ -111,7 +110,7 @@ fn project_row<'a>(
         Layout::Phone => {
             let open = phone_action(&identifier);
             let label = format!("Open {name} navigation");
-            view!{cx=><div class="native-sidebar-phone-row"><button id=(format!("native-sidebar-phone-project-{id}")) class="mobile-project-row native-sidebar-mobile-project" data-current-project=(current.then_some("true")) data-mobile-project-trigger=(identifier.clone()) data-native-project-trigger=(identifier.clone()) aria-label=(label) (open) (context_menu) (keyboard_menu)><span class="mobile-project-icon">(icon)</span><span><span>(name)</span><small>(identifier)</small></span>(icons::project_icon(cx,Some("lucide:ChevronRight"),17))</button><button id=(trigger) class="native-sidebar-phone-actions" aria-label=(actions) aria-haspopup="menu" (menu) (restore)>(icons::project_icon(cx,Some("lucide:Ellipsis"),18))</button></div>}.boxed()
+            view!{cx=><div class="native-sidebar-phone-row"><button id=(format!("native-sidebar-phone-project-{id}")) class="mobile-project-row native-sidebar-mobile-project" data-current-project=(current.then_some("true")) data-mobile-project-trigger=(identifier.clone()) data-native-project-trigger=(identifier.clone()) aria-label=(label) (open) (context_menu) (keyboard_menu)><span class="mobile-project-icon">(icon)</span><span><span>(name)</span><small>(identifier)</small></span>(icons::project_icon(cx,Some("lucide:ChevronRight"),17))</button><button id=(trigger) class="native-sidebar-phone-actions" aria-label=(actions) aria-haspopup="menu" (menu)>(icons::project_icon(cx,Some("lucide:Ellipsis"),18))</button></div>}.boxed()
         }
     }
 }
@@ -186,7 +185,6 @@ fn group<'a>(
             "desktop"
         }
     );
-    let restore = state::restore_focus(cx, signals, trigger.clone(), model.edit.is_none());
     let current = group
         .project_ids
         .iter()
@@ -221,7 +219,7 @@ fn group<'a>(
     let show_hint = matches!(layout, Layout::Desktop) && collapsed;
     let hint_toggle = state::invoke(cx, signals, "toggle_group", id, String::new(), "click");
     view!{cx=><section data-native-sidebar-group=(id.to_string())>
-        if editing{(field)}else{<div class="sidebar-row native-sidebar-group-heading"><button id=(format!("native-sidebar-group-toggle-{panel}")) class="native-sidebar-group-toggle" aria-expanded=((!collapsed).to_string()) aria-controls=(panel.clone()) title=(name.clone()) (toggle) (context_menu)>(icons::project_icon(cx,Some("lucide:ChevronRight"),if matches!(layout,Layout::Phone){15}else{13}))<span>(name)</span></button><button id=(trigger) class="sidebar-overflow native-sidebar-overflow" aria-label=(actions) aria-haspopup="menu" data-sidebar-group-actions=(id.to_string()) (menu) (restore)>(icons::project_icon(cx,Some("lucide:Ellipsis"),if matches!(layout,Layout::Phone){18}else{15}))</button></div>}
+        if editing{(field)}else{<div class="sidebar-row native-sidebar-group-heading"><button id=(format!("native-sidebar-group-toggle-{panel}")) class="native-sidebar-group-toggle" aria-expanded=((!collapsed).to_string()) aria-controls=(panel.clone()) title=(name.clone()) (toggle) (context_menu)>(icons::project_icon(cx,Some("lucide:ChevronRight"),if matches!(layout,Layout::Phone){15}else{13}))<span>(name)</span></button><button id=(trigger) class="sidebar-overflow native-sidebar-overflow" aria-label=(actions) aria-haspopup="menu" data-sidebar-group-actions=(id.to_string()) (menu)>(icons::project_icon(cx,Some("lucide:Ellipsis"),if matches!(layout,Layout::Phone){18}else{15}))</button></div>}
         if show_hint{if let Some(name)=current{<button class="native-sidebar-current" (hint_toggle)>(format!("Current: {name}"))</button>}}
         <div id=(panel) class="sidebar-group-projects native-sidebar-group-projects" hidden=(collapsed)>for row in rows{(row)}</div>
     </section>}.boxed()
@@ -241,7 +239,6 @@ pub(super) fn projects<'a>(
     } else {
         "native-sidebar-create-desktop"
     };
-    let restore = state::restore_focus(cx, signals, trigger.to_owned(), model.edit.is_none());
     let new = model
         .edit
         .as_ref()
@@ -286,7 +283,12 @@ pub(super) fn projects<'a>(
     let confirm = state::invoke(cx, signals, "recover", 0, String::new(), "click");
     let create_group = state::invoke(cx, signals, "new_group", 0, String::new(), "click");
     let create_url = transport::mounted_url(cx, "/projects/new");
-    view!{cx=><div data-native-sidebar-projects=""><div class="sidebar-projects-heading native-sidebar-projects-heading"><span class="sidebar-section-label">"Projects"</span><button id=(trigger) aria-label="New project or group" title="New project or group" aria-haspopup="menu" (create) (restore)>(icons::project_icon(cx,Some("lucide:Plus"),if matches!(layout,Layout::Phone){18}else{13}))</button></div>
+    let region = if matches!(layout, Layout::Phone) {
+        "phone"
+    } else {
+        "desktop"
+    };
+    view!{cx=><div data-native-sidebar-projects="" data-native-sidebar-layout=(region)><div class="sidebar-projects-heading native-sidebar-projects-heading"><span class="sidebar-section-label">"Projects"</span><button id=(trigger) aria-label="New project or group" title="New project or group" aria-haspopup="menu" (create)>(icons::project_icon(cx,Some("lucide:Plus"),if matches!(layout,Layout::Phone){18}else{13}))</button></div>
         <div :hidden=$(transport_error.get().is_empty()) class="native-sidebar-order-error"><p role="alert">$(transport_error.get())</p><button type="button" :hidden=$(pending_receipt.get().is_empty()) (confirm)>"Confirm change"</button><button type="button" @click=$(|_event:Event|{raw!("window.location.reload();",());})>"Reload page"</button></div>
         if new{(field)}if !error.is_empty(){<p role="alert" class="native-sidebar-order-error">(error)</p>}
         for group in groups{(group)}

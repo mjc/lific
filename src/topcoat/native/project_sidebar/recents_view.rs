@@ -30,13 +30,12 @@ pub(super) fn slot<'a>(
     path: &str,
     layout: Layout,
 ) -> BoxView<'a> {
+    let Some(section) = super::recents_model::Section::for_path(&project.identifier, path) else {
+        return view! {cx => <span></span>}.boxed();
+    };
     let account = state.account;
     let project_id = project.id;
-    let expected_label = super::recents_model::Section::for_path(&project.identifier, path)
-        .map_or_else(String::new, |section| {
-            format!("Recent {}", section.as_str())
-        });
-    let current = !expected_label.is_empty();
+    let expected_label = format!("Recent {}", section.as_str());
     let rows = state.rows.clone();
     let label = state.label.clone();
     let visible = state.visible.clone();
@@ -56,7 +55,7 @@ pub(super) fn slot<'a>(
     let toggle = recents_state::disclosure(cx, state);
     let path = path.to_owned();
     let root = format!("native-recents-{project_id}-{suffix}");
-    view!{cx=><section id=(root) class="sidebar-recents" data-topcoat-recents="" data-native-recents-project=(project_id.to_string()) :hidden=$(if current{if visible.get(){if selected.get()==project_id{label.get()!=expected_label}else{true}}else{true}}else{true})>
+    view!{cx=><section id=(root) class="sidebar-recents" data-topcoat-recents="" data-native-recents-project=(project_id.to_string()) :hidden=$(if visible.get(){if selected.get()==project_id{label.get()!=expected_label}else{true}}else{true})>
         <button id=(toggle_id.clone()) type="button" class="recent-toggle" data-recents-toggle="" :aria-expanded=$(if open.get(){"true"}else{"false"}) aria-controls=(content.clone()) (toggle)>$(label.get())</button>
         <div id=(content) data-recents-content="" :hidden=$(!open.get()) :aria-busy=$(if loading.get(){"true"}else{"false"})>
             <span data-recents-status="" role="status" aria-live="polite">$(status.get())</span>

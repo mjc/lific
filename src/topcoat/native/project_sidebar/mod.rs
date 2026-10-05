@@ -23,6 +23,10 @@ pub(crate) struct Sidebar {
     scrolled: Signal<i64>,
 }
 impl Sidebar {
+    pub(crate) fn mount(&self, cx: &Cx) -> Attributes {
+        state::mount(cx, &self.signals)
+    }
+
     pub(crate) fn load(cx: &Cx, account: i64, path: &str) -> topcoat::Result<Self> {
         let caller = session::read(cx, context::caller(cx))?;
         let reads = session::read(
@@ -99,7 +103,24 @@ impl Sidebar {
         let model = self.signals.model.clone();
         let revision = self.signals.revision.clone();
         let recents = self.recents.handles();
-        view!{cx=>native_sidebar_phone_panels(account:account,wire:$(model.get()),path:$(path.get()),revision:$(revision.get()),handles:handles,navigation:navigation,recents:recents)}.boxed()
+        // Main keeps its last viewed project pane mounted across root/close.
+        // Current pane/history admission still uses the live project at index 2.
+        let selected = navigation.6.clone();
+        let focused_selection = navigation.2.clone();
+        // Capture the actual focus source when this selection changes, before
+        // its genuine panel request. A later user focus choice must win.
+        let empty_focus = String::new();
+        let focus_source = expr!({
+            if focused_selection.get().is_empty() {
+                empty_focus.clone()
+            } else {
+                raw!(
+                    "cx.hydrate(document.activeElement === document.body ? 'body' : document.activeElement?.id || '')",
+                    String::new()
+                )
+            }
+        });
+        view!{cx=>native_sidebar_phone_panels(account:account,wire:$(model.get()),path:$(path.get()),revision:$(revision.get()),handles:handles,navigation:navigation,recents:recents,selected:$(selected.get()),focus_source:$(focus_source))}.boxed()
     }
     pub(crate) fn menu<'a>(&self, cx: &'a Cx) -> BoxView<'a> {
         let account = self.signals.account;
@@ -186,6 +207,7 @@ mod desktop_shard {
         let expected_path = path.clone();
         // The mounted shard is the actual adopted desktop projection. A late
         // frame cannot reveal another route or an obsolete model snapshot.
+        let focus_wire = wire.clone();
         let mounted = expr!(|_event: Event| {
             let _scroll = || {
                 if !raw!("cx.hydrate(cx.abortSignal.aborted)", false) {
@@ -224,7 +246,14 @@ mod desktop_shard {
             &|_| Attributes::with_capacity(0),
             &recents_state::Signals::from_handles(account, recents),
         );
-        Ok(view! {cx => <span hidden="hidden" @mount=(mounted)></span>(projects)}.boxed())
+        let restore = state::restore_region_focus(
+            cx,
+            &signals,
+            focus_wire,
+            "desktop".to_owned(),
+            model.edit.is_none(),
+        );
+        Ok(view! {cx => <span hidden="hidden" @mount=(mounted)></span><span hidden="hidden" (restore)></span>(projects)}.boxed())
     }
 }
 use phone_shard::native_sidebar_phone;
@@ -250,7 +279,14 @@ mod phone_shard {
         let model = projection(cx, account, &wire)?;
         let signals = state::Signals::from_handles(account, handles);
         let navigation = home_shell::MobileNavigation::from_handles(navigation);
-        Ok(view::projects(
+        let restore = state::restore_region_focus(
+            cx,
+            &signals,
+            wire,
+            "phone".to_owned(),
+            model.edit.is_none(),
+        );
+        let projects = view::projects(
             cx,
             &model,
             &signals,
@@ -260,7 +296,8 @@ mod phone_shard {
                 home_shell::mobile_action(cx, &navigation, "project", identifier.to_owned())
             },
             &recents_state::Signals::from_handles(account, recents),
-        ))
+        );
+        Ok(view! {cx => <span hidden="hidden" (restore)></span>(projects)}.boxed())
     }
 }
 use menu_shard::native_sidebar_menu;
@@ -306,18 +343,111 @@ mod phone_panels_shard {
         handles: state::Handles,
         navigation: home_shell::MobileNavigationSignals,
         recents: recents_state::Handles,
+        selected: String,
+        focus_source: String,
     ) -> topcoat::Result<impl View> {
         let _ = revision;
-        let _ = handles;
-        let model = projection(cx, account, &wire)?;
+        let mut model = projection(cx, account, &wire)?;
+        // The root still renders every authorized project. Only its currently
+        // selected destination pane is materialized, matching MobileNav.
+        model
+            .catalog
+            .projects
+            .retain(|project| project.identifier == selected);
+        let focus_trigger = model
+            .catalog
+            .projects
+            .first()
+            .map_or_else(String::new, |project| {
+                format!("native-sidebar-phone-project-{}", project.id)
+            });
+        let signals = state::Signals::from_handles(account, handles);
+        let current_wire = signals.model;
+        let menu = signals.menu_kind;
         let navigation = home_shell::MobileNavigation::from_handles(navigation);
-        Ok(view::phone_panels(
+        let (open, pane, current_selected, _, _, pending_palette, _) = navigation.handles();
+        let mounted = expr!(|_event: Event| {
+            let _focus = || {
+                if !raw!("cx.hydrate(cx.abortSignal.aborted)", false) {
+                    if current_selected.get() == selected {
+                        if current_wire.get() == wire {
+                            if open.get() {
+                                if pane.get() == "project" {
+                                    if menu.get().is_empty() {
+                                        if !pending_palette.get() {
+                                            let other_surface = raw!(
+                                                "cx.hydrate(Boolean(document.querySelector('.native-home-palette-backdrop:not([hidden]),.native-home-theme-menu:not([hidden])')))",
+                                                false
+                                            );
+                                            if !other_surface {
+                                                let actual_focus = raw!(
+                                                    "cx.hydrate(document.activeElement === document.body ? 'body' : document.activeElement?.id || '')",
+                                                    String::new()
+                                                );
+                                                // Hiding the clicked root row automatically
+                                                // blurs it to body before its panel arrives.
+                                                let source_blurred = if actual_focus == "body" {
+                                                    if focus_source == focus_trigger {
+                                                        if !focus_trigger.is_empty() {
+                                                            raw!(
+                                                                "cx.hydrate(Boolean(document.getElementById(${focus_trigger}.toString())?.closest('[hidden],[inert]')))",
+                                                                false
+                                                            )
+                                                        } else {
+                                                            false
+                                                        }
+                                                    } else {
+                                                        false
+                                                    }
+                                                } else {
+                                                    false
+                                                };
+                                                let unchanged = if actual_focus == focus_source {
+                                                    true
+                                                } else {
+                                                    source_blurred
+                                                };
+                                                if unchanged {
+                                                    let admitted = if focus_source == "body" {
+                                                        true
+                                                    } else {
+                                                        if focus_source == "native-home-mobile-open"
+                                                        {
+                                                            true
+                                                        } else {
+                                                            if !focus_trigger.is_empty() {
+                                                                focus_source == focus_trigger
+                                                            } else {
+                                                                false
+                                                            }
+                                                        }
+                                                    };
+                                                    if admitted {
+                                                        raw!(
+                                                            "document.getElementById('native-mobile-project-'+${selected}.toString())?.querySelector('button')?.focus();",
+                                                            ()
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            };
+            raw!("requestAnimationFrame(() => ${_focus}());", ());
+        });
+        let panels = view::phone_panels(
             cx,
             &model,
             &path,
             &navigation,
             &recents_state::Signals::from_handles(account, recents),
-        ))
+        );
+        Ok(view! {cx => <span hidden="hidden" @mount=(mounted)></span> (panels)}.boxed())
     }
 }
 

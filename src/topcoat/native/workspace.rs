@@ -277,7 +277,7 @@ fn navigation_mount(
     let entry = page.entry;
     let label = page.chrome.label;
     let palette = page.palette;
-    let (open, pane, mobile_project, owner, href, pending_palette) =
+    let (open, pane, mobile_project, owner, href, pending_palette, _) =
         page.chrome.navigation.handles();
     let failure_revision = revision.clone();
     let commit_revision = revision.clone();

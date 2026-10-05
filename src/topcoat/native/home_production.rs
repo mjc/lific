@@ -83,6 +83,61 @@ async fn native_home_production_initial_html_contains_visible_work_without_hybri
 }
 
 #[tokio::test]
+async fn native_home_initial_html_keeps_navigation_handlers_shared_as_catalog_grows() {
+    let fixture = fixture();
+    let cookie = format!("lific_token={}", fixture.token);
+    let response = get(&fixture, Some(&cookie), None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let initial = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    {
+        let conn = fixture.db.write().unwrap();
+        let owner = queries::users::validate_session(&conn, &fixture.token).unwrap();
+        for number in 2..=45 {
+            queries::create_project(
+                &conn,
+                &crate::db::models::CreateProject {
+                    identifier: format!("P{number}"),
+                    name: format!("Project {number}"),
+                    lead_user_id: Some(owner.id),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+    }
+    let response = get(&fixture, Some(&cookie), None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let expanded = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let html = std::str::from_utf8(&expanded).unwrap();
+    for number in 2..=45 {
+        assert!(html.contains(&format!("title=\"Project {number}\"")));
+        assert!(html.contains(&format!("aria-label=\"Open Project {number} navigation\"")));
+    }
+    assert!(html.contains("Visible active initial work"));
+    assert!(!html.contains("Private hidden"));
+    println!(
+        "GET / initial HTML: {} bytes for one project; {} bytes for 45 projects",
+        initial.len(),
+        expanded.len()
+    );
+    assert!(
+        expanded.len() < 750_000,
+        "45-project GET / must not repeat full navigation controllers: {} bytes",
+        expanded.len()
+    );
+    assert!(
+        expanded.len() < initial.len() + 44 * 10_000,
+        "Catalog growth must add markup and action arguments, not controller bodies: {} -> {} bytes",
+        initial.len(),
+        expanded.len()
+    );
+}
+
+#[tokio::test]
 async fn native_home_production_guest_and_revoked_credentials_redirect_without_private_html() {
     let fixture = fixture();
     {
