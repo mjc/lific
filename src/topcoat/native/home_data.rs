@@ -21,6 +21,12 @@ pub(crate) fn snapshot(cx: &Cx) -> Result<Snapshot, LificError> {
     let caller = super::context::caller(cx)?;
     let user = crate::api::require_user(&caller.identity)?;
     let db = super::context::db(cx);
+    #[cfg(test)]
+    if let Some(reads) =
+        topcoat::context::try_app_context::<super::home_fixture::HomeSnapshotReads>(cx)
+    {
+        reads.record();
+    }
     let reads = crate::services::home::load(db, &caller.identity)?;
 
     let projects = section(reads.projects, "projects");

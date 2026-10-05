@@ -244,3 +244,15 @@ it("aborting the lifetime while reconnecting cancels the reopening", () => {
 	vi.advanceTimersByTime(60_000);
 	expect(sockets).toHaveLength(1);
 });
+
+it("a superseded connected error cannot notify the current owner", () => {
+ const { connection, socket, target, lifetime } = fixture();
+ socket().open(); connection.requestRun();
+ socket().receive({ t: "run", id: 1 });
+ socket().receive({ t: "error", status: 500 });
+ expect(target.reportError).not.toHaveBeenCalled();
+ socket().receive({ t: "run", id: 2 });
+ socket().receive({ t: "error", status: 500 });
+ expect(target.reportError).toHaveBeenCalledOnce();
+ lifetime.abort();
+});

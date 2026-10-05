@@ -47,7 +47,7 @@ async function waitClosed(socket) {
 }
 
 test(`native Home live production ${scenario}`, async t => {
-  assert.ok(['live', 'reconnect', 'membership', 'late_auth'].includes(scenario));
+  assert.ok(['live', 'reconnect', 'membership', 'late_auth', 'burst', 'continuous', 'hidden_projection', 'render_failure'].includes(scenario));
   const browser = await launchBrowser();
   try {
     for (const [index, prefix] of ['', '/app', '/ACC'].entries()) {
@@ -87,8 +87,19 @@ test(`native Home live production ${scenario}`, async t => {
             // fabricated render request, or production application state exists.
             const send = WebSocket.prototype.send;
             let contentSocket;
+            window.__homeLiveAppliedFrames = [];
             WebSocket.prototype.send = function (value) {
-              if (new URL(this.url).pathname.endsWith('/__native_home/content')) contentSocket = this;
+              if (new URL(this.url).pathname.endsWith('/__native_home/content') && contentSocket !== this) {
+                contentSocket = this;
+                // Registered after the framework receive handler. Its hydration
+                // queues mount effects before this observation microtask.
+                this.addEventListener('message', event => {
+                  const frame = JSON.parse(event.data);
+                  if (frame.t === 'snapshot' || frame.t === 'swap') {
+                    queueMicrotask(() => {window.__homeLiveAppliedFrames.push(frame);});
+                  }
+                });
+              }
               return send.call(this, value);
             };
             window.__disconnectHomeContent = () => new Promise(resolve => {
@@ -114,13 +125,150 @@ test(`native Home live production ${scenario}`, async t => {
           const contentFrames = () => frames.filter(frame => new URL(frame.url).pathname.endsWith('/__native_home/content')).length;
 
           // A hidden-project update must not invalidate this account's Home.
+          const hiddenProjectionBaseline = (await control('count')).homeProjectionReads;
           const beforeHidden = contentFrames();
           const hiddenTitle = `Private hidden live edit ${scenario}-${index}`;
           await control('edit', {title: hiddenTitle, hidden: true});
           await new Promise(resolve => setTimeout(resolve, 500));
           assert.equal(contentFrames(), beforeHidden, 'A hidden-project event cannot refresh this account\'s content.');
+
           assert.equal(await work.getByText(hiddenTitle, {exact: true}).count(), 0);
           assert.equal(await work.locator('a[href*="/HIDE/"]').count(), 0);
+
+          if (scenario === 'hidden_projection') {
+            // The real next visible publication is ordered after the hidden
+            // one in the same receiver. Its final rendered title is a positive
+            // consumption barrier, independent of the earlier500ms observation.
+            const barrierTitle = `Visible hidden-audience barrier ${index}`;
+            await control('edit', {title: barrierTitle, hidden: false});
+            await work.getByText(barrierTitle, {exact: true}).waitFor();
+            assert.equal((await control('count')).homeProjectionReads, hiddenProjectionBaseline + 1,
+              'Exactly the visible barrier projects Home; the preceding unauthorized publication performs no projection.');
+            assert.deepEqual(errors, []);
+            assert.equal(await page.evaluate(() => window.__homeLiveDocument), document);
+            assert.equal(requests.filter(request => request.isNavigationRequest()).length, documentRequests);
+            assert.ok(requests.every(request => !new URL(request.url()).pathname.split('/').includes('api')));
+            await resources(2, 2);
+            return;
+          }
+
+          if (scenario === 'burst' || scenario === 'continuous') {
+            const settledTitle = `Scheduling baseline ${scenario}-${index}`;
+            await control('edit', {title: settledTitle, hidden: false});
+            await work.getByText(settledTitle, {exact: true}).waitFor();
+            await page.clock.install();
+            await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
+            const projectionBaseline = (await control('count')).homeProjectionReads;
+            await page.evaluate(() => {
+              const owner = document.querySelector('[data-native-home]');
+              let previous = owner.querySelector('.tc-native-home__page').textContent;
+              window.__homeRefreshes = [];
+              const observer = new MutationObserver(() => {
+                const current = owner.querySelector('.tc-native-home__page').textContent;
+                if (current !== previous) {
+                  previous = current;
+                  window.__homeRefreshes.push({time: performance.now(), text: current});
+                }
+              });
+              observer.observe(owner, {subtree: true, childList: true, characterData: true});
+              window.__stopHomeRefreshObservation = () => observer.disconnect();
+            });
+            const refreshCount = () => page.evaluate(() => window.__homeRefreshes.length);
+            const before = await refreshCount();
+            let elapsed = 0;
+            const length = scenario === 'burst' ? 3 : 21;
+            let finalTitle;
+            for (let step = 0; step < length; step++) {
+              finalTitle = `Scheduled Home ${scenario}-${index}-${step}`;
+              const applied = await page.evaluate(() => window.__homeLiveAppliedFrames.length);
+              const received = contentFrames();
+              await control('edit', {title: finalTitle, hidden: false});
+              await eventually(async () => frames.slice().filter(({url}) =>
+                  new URL(url).pathname.endsWith('/__native_home/content')).slice(received)
+                  .some(({frame}) => (frame.t === 'swap' && frame.html.includes('data-native-home-invalidation')) ||
+                    ((frame.t === 'snapshot' || frame.t === 'swap') && frame.html.includes(finalTitle))) &&
+                await page.evaluate(({before, title}) => window.__homeLiveAppliedFrames.slice(before)
+                  .some(frame => (frame.t === 'swap' && frame.html.includes('data-native-home-invalidation')) ||
+                    ((frame.t === 'snapshot' || frame.t === 'swap') && frame.html.includes(title))), {before: applied, title: finalTitle}),
+                'A genuine server publication frame is received and applied before browser time advances.');
+              if (scenario === 'burst') {
+                assert.equal(await refreshCount(), before,
+                  'An edit burst does not render before its quiet deadline.');
+              } else if (elapsed >= 5500) {
+                assert.ok((await control('count')).homeProjectionReads > projectionBaseline,
+                  'The independent maximum deadline invokes the actual shared Home projection during continuous events.');
+                assert.ok(await refreshCount() > before,
+                  'Continuous real publications cannot postpone every render beyond five seconds.');
+              }
+              if (step + 1 < length) {
+                await page.clock.runFor(300);
+                elapsed += 300;
+              }
+            }
+            if (scenario === 'burst') {
+              await page.clock.runFor(400);
+              assert.equal(await refreshCount(), before,
+                'The last edit still has less than 750ms quiet time.');
+              assert.equal((await control('count')).homeProjectionReads, projectionBaseline,
+                'Real publications perform no shared Home projection before the quiet flush.');
+            }
+            const recentTitle = `Fresh local recent at flush ${scenario}-${index}`;
+            await page.evaluate(({identifier, title}) => localStorage.setItem('lific_recents', JSON.stringify([
+              {type: 'issue', routeId: identifier, identifier, title,
+                project: identifier.replace(/-[0-9]+$/, ''), ts: Date.now()},
+            ])), {identifier: fixture.identifier, title: recentTitle});
+            assert.equal(await work.getByText(recentTitle, {exact: true}).count(), 0,
+              'Writing current-tab recents does not itself fabricate a refresh.');
+            await page.clock.runFor(scenario === 'burst' ? 350 : 750);
+            await work.getByText(finalTitle, {exact: true}).waitFor();
+            await work.locator('[data-home-section="recents"]').getByText(recentTitle, {exact: true}).waitFor();
+            if (scenario === 'burst') {
+              assert.equal(await refreshCount(), before + 1,
+                'One final authorized snapshot replaces the entire quiet burst.');
+              assert.equal((await control('count')).homeProjectionReads, projectionBaseline + 1,
+                'The burst invokes the actual shared Home projection exactly once.');
+            }
+            assert.equal(await page.evaluate(() => window.__homeLiveDocument), document);
+            assert.equal(requests.filter(request => request.isNavigationRequest()).length, documentRequests);
+            assert.ok(requests.every(request => !new URL(request.url()).pathname.split('/').includes('api')));
+            assert.deepEqual(errors, []);
+            await resources(2, 2);
+            await page.evaluate(() => window.__stopHomeRefreshObservation());
+            return;
+          }
+
+          if (scenario === 'render_failure') {
+            // Genuine server read failure, not a synthetic socket frame. Sessions
+            // and caller rows are restored intact before the recovery attempt.
+            await control('reader_fault', {enabled: true});
+            try {
+              // Exercise Home's supported visibility listener on this visible
+              // tab without also invoking the shell's independent session check.
+              assert.equal(await page.evaluate(() => document.visibilityState), 'visible');
+              await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+              await assertEventually(() => frames.some(({url, frame}) =>
+                new URL(url).pathname.endsWith('/__native_home/content') && frame.t === 'error' && frame.status === 500));
+              assert.equal(await work.getByText(initialTitle, {exact: true}).count(), 1,
+                'An unsuccessful background read retains the previously rendered Home.');
+            } finally {await control('reader_fault', {enabled: false});}
+            const recovered = `Recovered after failed Home read ${index}`;
+            await control('edit', {title: recovered, hidden: false});
+            await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+            await work.getByText(recovered, {exact: true}).waitFor();
+            const next = `Live after failed Home read ${index}`;
+            await control('edit', {title: next, hidden: false});
+            await work.getByText(next, {exact: true}).waitFor();
+            assert.equal(await page.evaluate(() => window.__homeLiveDocument), document);
+            assert.equal(requests.filter(request => request.isNavigationRequest()).length, documentRequests);
+            assert.ok(requests.every(request => !new URL(request.url()).pathname.split('/').includes('api')));
+            assert.ok(requests.every(request => request.method() !== 'POST' || !new URL(request.url()).pathname.endsWith('/__native_home/content')));
+            assert.equal(errors.length, 1,
+              'Exactly the deliberately induced server failure is reported; every unrelated error fails.');
+            assert.match(errors[0], /^\[topcoat\] Error: Connected render failed: 500(?:\n {4}at [^\n]+)+$/,
+              'The sole error is the actual framework failure with its browser stack.');
+            await resources(2, 2);
+            return;
+          }
 
           if (scenario === 'membership') {
             // This contract covers Home's live body. The independently owned
@@ -246,4 +394,19 @@ async function assertActivity(work, expectedRows) {
     .filter({hasText: `changed title on ${fixture.identifier}`});
   await rows.first().waitFor();
   assert.equal(await rows.count(), expectedRows, 'Home activity matches the original authorized eight-row project feed.');
+}
+
+async function eventually(predicate, message) {
+  const deadline = Date.now() + 7000;
+  while (Date.now() < deadline) {
+    if (await predicate()) return;
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  assert.fail(message);
+}
+
+async function assertEventually(predicate) {
+  const deadline = Date.now() + 7000;
+  while (!predicate() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+  assert.ok(predicate(), 'The actual current content connection reports the expected server error frame.');
 }

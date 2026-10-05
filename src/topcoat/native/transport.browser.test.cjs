@@ -50,6 +50,9 @@ test('vendored patches reconstruct the exact pinned upstream runtime', () => {
   assert.ok(start >= 0, 'The pinned upstream body is present.');
   let original = runtime.slice(start);
   for (const [patched, upstream, count] of [
+    ['new H(this.lifetime.abortSignal,r=>this.reportError(r),r=>n.redirect(r))', 'new H(this.lifetime.abortSignal,r=>n.reportError(r),r=>n.redirect(r))', 1],
+    ['failureTarget(){return document}reportError(e){this.runtime.reportError(e);if(this.isDisposed)return;this.failureTarget()?.dispatchEvent(new CustomEvent("topcoat:render-error",{bubbles:true,detail:{path:this.url()}}))}', 'reportError(e){this.runtime.reportError(e)}', 1],
+    ['failureTarget(){return this.startNode.parentNode}url()', 'url()', 1],
     ['registry;event(e){return new j(e)}hydrate(e){return V(e,this)}', 'registry;hydrate(e){return V(e,this)}', 1],
     ["push(e){this.inner.set(n=>n.clone_with_push(e))}remove(e){this.inner.set(n=>n.clone_without_index(e))}push_str(e){this.inner.set(n=>new v(`${n}${e}`))}", "push_str(e){this.inner.set(n=>new v(`${n}${e}`))}", 1],
     ["clone(){return this.to_vec()}clone_with_push(e){let n=this.items.map(b);return n.push(b(e)),new F(n,this.usizeType)}clone_without_index(e){let n=e.toIndex(this.items.length,this.usizeType.bits);if(n===void 0)throw new RangeError(\"Vec index out of bounds\");let r=this.items.map(b);return r.splice(n,1),new F(r,this.usizeType)}dehydrate(){return{t:\"Vec\",bits:this.usizeType.bits,v:this.items.map(f)}}", "clone(){return this.to_vec()}dehydrate(){return{t:\"Vec\",bits:this.usizeType.bits,v:this.items.map(f)}}", 1],
@@ -483,4 +486,49 @@ test('expression context adapts real keyboard events using the framework Event v
     assert.equal(await page.evaluate(()=>document.activeElement.id),'actual-keyboard-target');
     assert.deepEqual(errors,[]);
   }finally{await browser.close();await new Promise(resolve=>server.close(resolve));}
+});
+
+test('packaged render failure notifications retain logging and owning DOM scope',async()=>{
+  const bootstrap='var Ve=new ne;Ve.start(document);Ve.page.listenForDevRefresh();';
+  assert.equal(runtime.split(bootstrap).length-1,1);
+  const instrumented=runtime.replace(bootstrap,bootstrap+'globalThis.fixtureRuntime=Ve;');
+  const server=http.createServer((request,response)=>{
+    if(new URL(request.url,'http://fixture').pathname.endsWith('/runtime.js'))return response.writeHead(200,{'content-type':'text/javascript'}).end(instrumented);
+    const prefix=new URL(request.url,'http://fixture').pathname.replace(/\/page$/, '');
+    response.writeHead(200,{'content-type':'text/html'}).end(`<!doctype html><html data-topcoat-runtime-prefix="${prefix}"><body><section id="owner"><!--::topcoat::shard::start("/failure-shard", "failure", [])--><p>retained</p><!--::topcoat::shard::end("failure")--></section><script type="module" src="${prefix}/runtime.js"></script>`);
+  });
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  const browser=await launchBrowser();
+  try {
+    for(const prefix of ['', '/app', '/ACC']) {
+    const page=await browser.newPage(),logs=[],errors=[];
+    page.on('console',message=>{if(message.type()==='error')logs.push(message.text());});
+    page.on('pageerror',error=>errors.push(error.message));
+    await page.goto(`http://127.0.0.1:${server.address().port}${prefix}/page?q=1`);
+    await page.waitForFunction(()=>globalThis.fixtureRuntime);
+    const observed=await page.evaluate(prefix=>{
+      const runtime=globalThis.fixtureRuntime,events=[];
+      document.addEventListener('topcoat:render-error',event=>events.push({path:event.detail.path,
+        target:event.target===document?'document':event.target.id,bubbles:event.bubbles}));
+      const find=scope=>{
+        for(const child of scope.children){
+          if(child.unit!==runtime.page&&child.unit.url()===`${prefix}/failure-shard`)return child.unit;
+          const nested=find(child);if(nested)return nested;
+        }
+      };
+      const shard=find(runtime.page.contentScope);
+      if(!shard)throw new Error('Actual hydrated shard owner is required.');
+      shard.reportError(new Error('shard proof'));
+      runtime.page.reportError(new Error('page proof'));
+      shard.dispose();
+      shard.reportError(new Error('disposed proof'));
+      return events;
+    },prefix);
+    assert.deepEqual(observed,[{path:`${prefix}/failure-shard`,target:'owner',bubbles:true},
+      {path:`http://127.0.0.1:${server.address().port}${prefix}/page?q=1`,target:'document',bubbles:true}]);
+    assert.equal(logs.length,3,'Error logging remains active, including disposed owners.');
+    assert.deepEqual(errors,[]);
+    await page.close();
+    }
+  }finally{try{await browser.close();}finally{await new Promise(resolve=>server.close(resolve));}}
 });

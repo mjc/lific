@@ -9,17 +9,31 @@ use crate::{
     },
     ratelimit::IpNetwork,
     realtime::RealtimeHub,
-    server::build_app_with_store,
+    server::{build_app_with_store_and_frontend, topcoat_app},
     storage::AttachmentStore,
 };
 use axum::Router;
 use std::{net::SocketAddr, sync::Arc};
+
+#[derive(Clone, Default)]
+pub(crate) struct HomeSnapshotReads(Arc<std::sync::atomic::AtomicUsize>);
+
+impl HomeSnapshotReads {
+    pub(crate) fn record(&self) {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub(crate) fn count(&self) -> usize {
+        self.0.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
 
 pub(crate) struct Fixture {
     pub(crate) app: Router,
     pub(crate) db: db::DbPool,
     pub(crate) token: String,
     pub(crate) realtime: RealtimeHub,
+    pub(crate) home_snapshot_reads: HomeSnapshotReads,
     _store: tempfile::TempDir,
 }
 
@@ -70,18 +84,21 @@ pub(super) fn fixture_with_auth(required: bool) -> Fixture {
     let store = tempfile::tempdir().unwrap();
     let proxies: Arc<[IpNetwork]> = vec![IpNetwork::parse("127.0.0.1").unwrap()].into();
     let realtime = RealtimeHub::new();
-    let app = build_app_with_store(
+    let home_snapshot_reads = HomeSnapshotReads::default();
+    let app = build_app_with_store_and_frontend(
         &cfg,
         db.clone(),
         realtime.clone(),
         proxies,
         AttachmentStore::new(store.path().to_owned()),
+        topcoat_app::router_builder().app_context(home_snapshot_reads.clone()),
     );
     Fixture {
         app,
         db,
         token,
         realtime,
+        home_snapshot_reads,
         _store: store,
     }
 }

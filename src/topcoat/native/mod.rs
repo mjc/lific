@@ -21,6 +21,7 @@ pub(crate) mod home_local;
 pub(crate) mod home_model;
 #[cfg(test)]
 mod home_production;
+mod home_refresh;
 pub(crate) mod home_sections;
 pub(crate) mod home_shell;
 #[cfg(test)]

@@ -263,3 +263,25 @@ an Authorization header. Browser keepalive remains subject to browser request
 limits and does not promise successful delivery. Calling the method constructs
 a lazy Future; consuming it starts the request. This framework transport owns
 no application deletion, timer, authorization, or toast policy.
+
+
+## Scoped render failures
+
+The generic runtime logs a render error and emits `topcoat:render-error` from
+the current shard marker parent, or from document for a page. The event bubbles
+and carries the mounted render URL in `detail.path`. Disposed owners keep error
+logging but do not notify; superseded connected runs and canceled HTTP requests
+retain their existing rejection rules. HTTP request failures use the owning
+render unit's reporter.
+
+Rust Home scheduling uses this completion event to release its in-flight state
+while retaining the old rendered body. It applies the same completion path as
+a successful snapshot. The framework notification owns no application retry
+policy or Home state.
+
+The packaged runtime has twenty reversible substitutions in total. Three add
+the scoped notification and HTTP reporter delegation; the reconstruction test
+reverses them before the earlier transport and surrogate substitutions and
+checks the exact original package hash. The source and packaged tests cover
+owner paths, retained logging, disposal, stale connected errors, and actual
+scheduled HTTP failures.

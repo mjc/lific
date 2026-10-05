@@ -157,3 +157,14 @@ the existing browser Event surrogate, matching framework DOM event listeners.
 Wire hydration remains restricted to serialized runtime values. The packaged
 application asset carries the matching reversible Context method addition;
 the vendor distribution remains unchanged.
+
+
+## Scoped render failure notification
+
+RenderUnit retains ordinary error logging and notifies its live DOM owner through
+`topcoat:render-error`, with the render URL in `detail.path`. Shards notify their
+marker parent; pages notify document. Disposed units do not dispatch. HTTP
+scheduled failures delegate to the owning unit; existing stale-run and canceled
+request guards remain. The packaged asset carries three reversible substitutions
+for this generic seam; upstream distribution remains unchanged. No application
+refresh policy belongs to this notification.

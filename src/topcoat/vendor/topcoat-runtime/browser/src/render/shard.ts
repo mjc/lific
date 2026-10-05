@@ -49,6 +49,10 @@ export class ShardUnit extends RenderUnit {
 		for (const compute of this.computes) compute(context);
 	}
 
+	protected override failureTarget(): EventTarget | null {
+		return this.startNode.parentNode;
+	}
+
 	protected url(): string {
 		return this.path;
 	}
