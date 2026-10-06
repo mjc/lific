@@ -1,7 +1,7 @@
 {
   "baseline": "9683d38af8e1e6f9b076439fe90d9519109b2218",
-  "checkpoint": "Complete translated unit and browser suites; later production visual updates require affected browser evidence to be refreshed.",
-  "status": "All 48 source mappings checked; independent adapter reviews complete; assertions active and CI remains failing.",
+  "checkpoint": "Intermediate application-wide frontend purge; older suite results below are historical.",
+  "status": "Native code builds; original48source mappings retained. Unported features and native adapter coverage remain incomplete.",
   "notes": [
     "Native test counts include aggregate parents; failed_assertions excludes suite/aggregate duplicates.",
     "A controller contract failure can have observable effects, but unsupported configuration and unreachable input contracts are tracked separately.",
@@ -2556,6 +2556,76 @@
       "passed": 3473,
       "failed": 0,
       "skipped": 0
+    }
+  },
+  "native_private_detail_cleanup": {
+    "notes": [
+      "Retired private issue-detail route, fields, collaboration and editor controllers are removed after caller checks. Live Markdown rendering and snippet insertion remain.",
+      "The34 original comment case names now target real native browser documents. Native Comments is absent; partial/unproven original model contracts are explicitly recorded in issues/comments-native-coverage.md. Matching names alone does not establish assertion equivalence.",
+      "Historical runs and native_overview_followup remain unchanged. The current unit replay has34 fewer passing cases because they moved to the native browser suite; its57 failures remain active.",
+      "Retired asset regression observed200 instead of404 before production removal; shared editor assets passed. Green and affected browser evidence await the final cleanup build.",
+      "Superseded by the later application-wide purge. Shared editor/public/attachment subjects referenced at this intermediate checkpoint were subsequently removed."
+    ],
+    "unit_replay": {
+      "command": "node src/topcoat/tests/main/run.js unit",
+      "counts": {
+        "tests": 304,
+        "failed": 57,
+        "passed": 247,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 127,
+        "suites": 56
+      },
+      "inventory": "All48 original source/named-case mappings pass."
+    }
+  },
+  "intermediate_frontend_purge": {
+    "scope": "User explicitly authorized removal of every intermediate application controller even for unfinished features, provided the Rust build compiles.",
+    "production_javascript": "Only assets/runtime.js remains; vendor/topcoat-runtime is retained framework source and reconstruction evidence.",
+    "notes": [
+      "Unported canonical feature routes return404. Original source mappings/assertions are preserved; no removed application controller remains as a reference or test subject.",
+      "Twenty retired-controller adapters were reduced to explicit ERR_NATIVE_PORT_MISSING coverage errors. These are missingnativecoverage, not demonstrated functional failures or completed ports.",
+      "The prepurge fullRust run was intentionally interrupted when the user expanded deletion scope:3362passed,4interrupted,103notrun. It is not a final fullsuite pass.",
+      "Earlier private-detail units(247/304), helper checks(19/19), and browser evidence predate the application-wide purge and are historical.",
+      "The required public route parser was moved unchanged into native/public_route.rs for native socket authority checks; public frontend controllers remain deleted."
+    ],
+    "build": "cargo build --workspace --all-targets --locked passes.",
+    "focused_native": {
+      "tests": 25,
+      "passed": 25,
+      "failed": 0,
+      "filtered_out": 3359,
+      "covers": "50 retired assets, unfinished routes, shared native fonts/mascot/framework probe, forwarded mount validation and socket admission boundaries"
+    },
+    "inventory": {
+      "tests": 5,
+      "passed": 5,
+      "failed": 0,
+      "covers": "All48 original source/named-case mappings, runner discovery and retained native control stylesheet assertions"
+    },
+    "unit_replay": {
+      "counts": {
+        "tests": 67,
+        "failed": 65,
+        "passed": 2,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 32,
+        "suites": 9
+      },
+      "classification": "Missing native test adapters prevent many original assertions from executing. Counts include file/suite failures; no assertion equivalence or native parity is claimed. Raw missing-file/module errors:0."
+    },
+    "clippy": "cargo clippy --workspace --all-targets --locked -- -D warnings passes.",
+    "home_smoke": {
+      "status": 200,
+      "script_assets": [
+        "/__topcoat-runtime.js"
+      ],
+      "frontend_rest_requests": 0,
+      "headless": true
     }
   }
 }

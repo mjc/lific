@@ -39,8 +39,8 @@ impl Layer for SocketAdmission {
             let hub = app_context::<RealtimeHub>(cx);
             let path = uri(cx).path();
             if path.starts_with("/public/") {
-                use super::super::public::Route;
-                let project = match super::super::public::resolve(path) {
+                use super::public_route::Route;
+                let project = match super::public_route::resolve(path) {
                     Some(
                         Route::Issues { project }
                         | Route::Board { project }

@@ -11,7 +11,6 @@ use topcoat::{
 };
 
 pub(crate) const STYLESHEET: &str = include_str!("assets/controls.css");
-pub(crate) const PREFERENCES_SCRIPT: &str = include_str!("assets/preferences.js");
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum Theme {
@@ -335,8 +334,7 @@ pub(crate) fn select<'a>(cx: &'a Cx, mut props: Select<'a>) -> BoxView<'a> {
     .boxed()
 }
 
-/// The shared preferences script applies/persists this control in both private
-/// and public pages. It requires no authenticated API request.
+/// The caller owns applying and persisting this control.
 pub(crate) fn preference_select<'a>(
     cx: &'a Cx,
     id: &'a str,
@@ -650,8 +648,7 @@ pub(crate) fn error_state<'a>(
     .boxed()
 }
 
-/// Hover/focus exposes the description; the shared preferences script lets
-/// Escape dismiss it until the next pointer/focus entry.
+/// Hover and focus expose the description.
 pub(crate) fn tooltip<'a>(
     cx: &'a Cx,
     id: &'a str,
@@ -677,279 +674,6 @@ pub(crate) fn kbd<'a>(cx: &'a Cx, shortcut: &'a str) -> BoxView<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn run_preferences_script(script: &str) {
-        let fixture = tempfile::tempdir().unwrap();
-        let module = fixture.path().join("preferences # fixture.mjs");
-        std::fs::write(&module, PREFERENCES_SCRIPT).unwrap();
-        let output = std::process::Command::new("node")
-            .args(["--input-type=module", "--eval", script])
-            .env("LIFIC_PREFERENCES_MODULE", module)
-            .output()
-            .expect("the Topcoat devenv profile provides Node.js");
-        assert!(
-            output.status.success(),
-            "{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
-    #[test]
-    fn controls_preferences_preserve_existing_appearance_settings() {
-        run_preferences_script(
-            r#"
-            import assert from 'node:assert/strict';
-            import {pathToFileURL} from 'node:url';
-            const {loadPreferences, savePreferences, STORAGE_KEY} = await import(pathToFileURL(process.env.LIFIC_PREFERENCES_MODULE).href);
-            const values = new Map([
-                ['lific_theme', 'dark'], ['lific_accent', 'teal'],
-                ['lific_density', 'compact'], ['lific_font_scale', 'lg'],
-            ]);
-            const storage = {
-                getItem: key => values.get(key) ?? null,
-                setItem: (key, value) => values.set(key, value),
-                removeItem: key => values.delete(key),
-            };
-            const migrated = loadPreferences(storage);
-            assert.equal(migrated.theme, 'dark');
-            assert.equal(migrated.accent, 'teal');
-            assert.equal(migrated.density, 'compact');
-            assert.equal(migrated.fontScale, 'large');
-            savePreferences({...migrated, theme:'system', accent:'rose', fontScale:'small'}, storage);
-            assert.equal(storage.getItem('lific_theme'), null);
-            assert.equal(storage.getItem('lific_accent'), 'rose');
-            assert.equal(storage.getItem('lific_font_scale'), 'sm');
-            assert.equal(loadPreferences(storage).fontScale, 'small');
-            values.clear();
-            values.set(STORAGE_KEY, JSON.stringify({theme:'light',density:'compact',fontScale:'large'}));
-            const previousTopcoat = loadPreferences(storage);
-            assert.equal(previousTopcoat.theme, 'light');
-            assert.equal(previousTopcoat.density, 'compact');
-            savePreferences(previousTopcoat, storage);
-            assert.equal(storage.getItem(STORAGE_KEY), null);
-            assert.equal(storage.getItem('lific_theme'), 'light');
-            values.delete('lific_theme');
-            assert.equal(loadPreferences(storage).theme, 'system');
-            assert.equal(loadPreferences({getItem(){throw Error('blocked');}}).theme, 'system');
-            assert.equal(savePreferences({accent:'green'}, {removeItem(){},setItem(){throw Error('full');}}).accent, 'green');
-
-            const failedValues = new Map([[STORAGE_KEY, JSON.stringify({theme:'dark',accent:'rose'})]]);
-            const failedMigration = {
-                getItem: key => failedValues.get(key) ?? null,
-                setItem(){throw Error('full');},
-                removeItem: key => failedValues.delete(key),
-            };
-            savePreferences(loadPreferences(failedMigration), failedMigration);
-            assert.notEqual(failedMigration.getItem(STORAGE_KEY), null);
-        "#,
-        );
-    }
-
-    #[test]
-    fn controls_preferences_do_not_overwrite_another_tabs_preference() {
-        run_preferences_script(
-            r#"
-            import assert from 'node:assert/strict';
-            import {pathToFileURL} from 'node:url';
-            const {initializePreferences} = await import(pathToFileURL(process.env.LIFIC_PREFERENCES_MODULE).href);
-            const values = new Map();
-            const writes = [];
-            const storage = {
-                getItem: key => values.get(key) ?? null,
-                setItem: (key, value) => { writes.push(key); values.set(key, value); },
-                removeItem: key => { writes.push(key); values.delete(key); },
-            };
-            function tab(name) {
-                const listeners = new Map();
-                const control = {dataset:{tcPreference:name},value:''};
-                const doc = {
-                    documentElement:{dataset:{}},
-                    querySelectorAll:selector=>selector==='[data-tc-preference]' ? [control] : [],
-                    addEventListener:(event,fn)=>listeners.set(event,fn),
-                    removeEventListener:event=>listeners.delete(event),
-                };
-                doc.documentElement.ownerDocument=doc;
-                const win = {
-                    addEventListener:(event,fn)=>listeners.set(`window:${event}`,fn),
-                    removeEventListener:event=>listeners.delete(`window:${event}`),
-                    matchMedia:()=>null,
-                };
-                initializePreferences(doc,storage,win);
-                return value => {
-                    control.value=value;
-                    listeners.get('change')({target:{closest:()=>control}});
-                };
-            }
-            const changeTheme = tab('theme');
-            const changeAccent = tab('accent');
-            assert.deepEqual(writes, [], 'ordinary initialization must not publish preference writes');
-            changeTheme('dark');
-            assert.equal(values.get('lific_theme'),'dark');
-            changeAccent('teal');
-            assert.equal(values.get('lific_theme'),'dark');
-            assert.equal(values.get('lific_accent'),'teal');
-        "#,
-        );
-    }
-
-    #[test]
-    fn controls_preferences_keep_motion_and_synchronize_other_tabs() {
-        run_preferences_script(
-            r#"
-            import assert from 'node:assert/strict';
-            import {pathToFileURL} from 'node:url';
-            const {loadPreferences, savePreferences, normalizePreferences, initializePreferences, STORAGE_KEY} = await import(pathToFileURL(process.env.LIFIC_PREFERENCES_MODULE).href);
-            const values = new Map([['lific_motion','reduced']]);
-            const storage = {
-                getItem: key => values.get(key) ?? null,
-                setItem: (key, value) => values.set(key, value),
-                removeItem: key => values.delete(key),
-            };
-            assert.equal(loadPreferences(storage).motion, 'reduced');
-            assert.equal(normalizePreferences({motion:'invalid'}).motion, 'system');
-            const listeners = new Map();
-            const media = {matches:false, addEventListener:(_, fn)=>listeners.set('media',fn),removeEventListener:()=>listeners.delete('media')};
-            const win = {
-                addEventListener:(name, fn)=>listeners.set(`window:${name}`,fn),
-                removeEventListener:(name)=>listeners.delete(`window:${name}`),
-                matchMedia:()=>media,
-            };
-            const motion = {dataset:{tcPreference:'motion'},value:''};
-            const root = {dataset:{}};
-            const doc = {
-                documentElement:root, defaultView:win,
-                querySelectorAll:selector=>selector==='[data-tc-preference]' ? [motion] : [],
-                addEventListener:(name, fn)=>listeners.set(`document:${name}`,fn),
-                removeEventListener:(name)=>listeners.delete(`document:${name}`),
-            };
-            root.ownerDocument=doc;
-            const stop = initializePreferences(doc,storage,win);
-            assert.equal(root.dataset.motion, 'reduced');
-            assert.equal(motion.value, 'reduced');
-            values.set('lific_motion','full');
-            listeners.get('window:storage')({storageArea:storage,key:'lific_motion',newValue:'full'});
-            assert.equal(root.dataset.motion, 'full');
-            assert.equal(motion.value, 'full');
-            values.delete('lific_motion');
-            listeners.get('window:storage')({storageArea:storage,key:'lific_motion',newValue:null});
-            assert.equal(motion.value, 'system');
-            media.matches=true;
-            listeners.get('media')();
-            assert.equal(root.dataset.motion, 'reduced');
-            motion.value='full';
-            listeners.get('document:change')({target:{closest:()=>motion}});
-            assert.equal(storage.getItem('lific_motion'), 'full');
-            assert.equal(root.dataset.motion, 'full');
-            values.clear();
-            listeners.get('window:storage')({storageArea:storage,key:null,newValue:null});
-            assert.equal(motion.value, 'system');
-            assert.equal(root.dataset.motion, 'reduced');
-            values.set(STORAGE_KEY, JSON.stringify({motion:'full',fontScale:'large'}));
-            listeners.get('window:storage')({storageArea:storage,key:STORAGE_KEY,newValue:storage.getItem(STORAGE_KEY)});
-            assert.equal(root.dataset.motion, 'full');
-            assert.equal(root.dataset.fontScale, 'large');
-            assert.equal(storage.getItem(STORAGE_KEY), null);
-            assert.equal(initializePreferences(doc,storage,win), stop);
-            stop();
-            assert.equal(listeners.size, 0);
-        "#,
-        );
-    }
-
-    #[tokio::test]
-    #[ignore = "requires devenv --profile topcoat-e2e with repository Playwright/Chromium"]
-    async fn controls_preferences_survive_reload_and_update_dynamic_controls_in_other_tabs() {
-        let cx = &Cx::default();
-        let content = render(
-            cx,
-            view! {
-                cx =>
-                (preference_select(cx, "theme", "Theme", Preference::Theme, "system"))
-                (preference_select(cx, "motion", "Motion", Preference::Motion, "system"))
-                <span class="tc-spinner" aria-hidden="true"></span>
-            },
-        )
-        .await;
-        let fixture = tempfile::tempdir().unwrap();
-        std::fs::write(
-            fixture.path().join("fixture.html"),
-            format!("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><style>{STYLESHEET}</style><script type=\"module\" src=\"/preferences.js\"></script></head><body>{content}</body></html>"),
-        ).unwrap();
-        std::fs::write(fixture.path().join("preferences.js"), PREFERENCES_SCRIPT).unwrap();
-        let playwright = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("e2e/node_modules/playwright/index.mjs");
-        let script = r#"
-            import assert from 'node:assert/strict';
-            import {readFileSync} from 'node:fs';
-            import {join} from 'node:path';
-            import {pathToFileURL} from 'node:url';
-            const {chromium} = await import(pathToFileURL(process.env.LIFIC_PLAYWRIGHT_MODULE).href);
-            const browser = await chromium.launch({executablePath:process.env.PLAYWRIGHT_EXECUTABLE_PATH});
-            try {
-                const context = await browser.newContext({reducedMotion:'reduce'});
-                await context.route('http://lific.test/**', route => {
-                    const script = route.request().url().endsWith('/preferences.js');
-                    return route.fulfill({contentType:script ? 'text/javascript' : 'text/html',body:readFileSync(join(process.env.LIFIC_PREFERENCES_FIXTURE, script ? 'preferences.js' : 'fixture.html'),'utf8')});
-                });
-                const page = await context.newPage();
-                page.setDefaultTimeout(5000);
-                const errors=[];
-                page.on('pageerror',error=>errors.push(error.message));
-                await page.goto('http://lific.test/');
-                const state = async page => page.evaluate(()=>({...document.documentElement.dataset}));
-                await page.waitForFunction(()=>document.documentElement.dataset.motion==='reduced');
-                assert.equal(await page.locator('.tc-spinner').evaluate(e=>getComputedStyle(e).animationName),'none');
-                await page.selectOption('#theme','dark');
-                await page.selectOption('#motion','full');
-                assert.equal((await state(page)).theme,'dark');
-                assert.equal((await state(page)).motion,'full');
-                assert.equal(await page.locator('.tc-spinner').evaluate(e=>getComputedStyle(e).animationName),'tc-spin');
-                await page.reload();
-                await page.waitForFunction(()=>document.documentElement.dataset.motion==='full');
-                assert.equal(await page.locator('#theme').inputValue(),'dark');
-                assert.equal(await page.locator('#motion').inputValue(),'full');
-                await page.evaluate(()=>{
-                    const select=document.createElement('select');
-                    select.id='late-theme'; select.dataset.tcPreference='theme';
-                    for(const value of ['system','light','dark']) select.add(new Option(value,value));
-                    document.body.append(select);
-                });
-                await page.waitForFunction(()=>document.querySelector('#late-theme').value==='dark');
-                const follower=await context.newPage();
-                follower.setDefaultTimeout(5000);
-                follower.on('pageerror',error=>errors.push(error.message));
-                await follower.goto('http://lific.test/');
-                await follower.waitForFunction(()=>document.documentElement.dataset.theme==='dark');
-                await page.selectOption('#theme','light');
-                await page.selectOption('#motion','system');
-                await follower.waitForFunction(()=>document.documentElement.dataset.theme==='light' && document.documentElement.dataset.motion==='reduced');
-                assert.equal(await follower.locator('#theme').inputValue(),'light');
-                assert.equal(await follower.locator('#motion').inputValue(),'system');
-                await follower.emulateMedia({reducedMotion:'no-preference'});
-                await follower.waitForFunction(()=>document.documentElement.dataset.motion==='full');
-                await page.evaluate(()=>localStorage.clear());
-                await follower.waitForFunction(()=>document.documentElement.dataset.theme==='system');
-                assert.equal(await follower.locator('#theme').inputValue(),'system');
-                await page.reload();
-                await page.waitForFunction(()=>document.documentElement.dataset.theme==='system');
-                assert.deepEqual(errors,[]);
-                console.log('appearance reload, dynamic controls, cross-tab storage and OS motion passed');
-            } finally {await browser.close();}
-        "#;
-        let output = std::process::Command::new("bun")
-            .args(["--eval", script])
-            .env("LIFIC_PLAYWRIGHT_MODULE", playwright)
-            .env("LIFIC_PREFERENCES_FIXTURE", fixture.path())
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
 
     async fn render(cx: &Cx, control: impl View) -> String {
         control.single().await.unwrap().render(cx)
@@ -1287,7 +1011,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn controls_preferences_bind_selects_to_the_shared_script_and_tokens() {
+    async fn controls_preferences_bind_selects_to_stylesheet_tokens() {
         let cx = &Cx::default();
         for preference in [
             Preference::Theme,
@@ -1305,7 +1029,6 @@ mod tests {
             assert!(html.contains(&format!("data-tc-preference=\"{}\"", preference.as_str())));
             for (value, _) in preference.options() {
                 assert!(html.contains(&format!("value=\"{value}\"")));
-                assert!(PREFERENCES_SCRIPT.contains(&format!("\"{value}\"")));
                 let attribute = match preference {
                     Preference::Theme => "theme",
                     Preference::Accent => "accent",
@@ -1453,7 +1176,6 @@ mod tests {
         assert!(html.contains("<kbd class=\"tc-kbd\">Ctrl + &lt;Enter&gt;</kbd>"));
         assert!(STYLESHEET.contains(":focus-within"));
         assert!(STYLESHEET.contains("data-dismissed"));
-        assert!(PREFERENCES_SCRIPT.contains("Escape"));
     }
 
     #[tokio::test]
@@ -1493,100 +1215,6 @@ mod tests {
             assert!(html.contains(expected), "missing {expected}: {html}");
             assert_eq!(html.matches(" aria-describedby=").count(), 1);
         }
-    }
-
-    #[tokio::test]
-    #[ignore = "requires devenv --profile e2e with repository Playwright/Chromium"]
-    async fn controls_tooltip_stays_inside_viewport_edges_with_enlarged_text() {
-        let cx = &Cx::default();
-        let content = render(
-            cx,
-            tooltip(
-                cx,
-                "edge-help",
-                "Help",
-                "Save with Enter, or press Escape to cancel your changes.",
-            ),
-        )
-        .await;
-        let html = format!(
-            "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><style>{STYLESHEET}\nbody {{ margin: 0; line-height: 1.5; }} #fixture {{ position: fixed; }}</style></head><body><div id=\"fixture\">{content}</div></body></html>"
-        );
-        let fixture = tempfile::tempdir().unwrap();
-        std::fs::write(fixture.path().join("fixture.html"), html).unwrap();
-        std::fs::write(fixture.path().join("preferences.js"), PREFERENCES_SCRIPT).unwrap();
-        let playwright = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("e2e/node_modules/playwright/index.mjs");
-        let script = r#"
-            import assert from 'node:assert/strict';
-            import { readFileSync } from 'node:fs';
-            import { join } from 'node:path';
-            import {pathToFileURL} from 'node:url';
-            const { chromium } = await import(pathToFileURL(process.env.LIFIC_PLAYWRIGHT_MODULE).href);
-            const browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH });
-            try {
-                const page = await browser.newPage();
-                page.setDefaultTimeout(5000);
-                const failures = [];
-                page.on('pageerror', error => failures.push(error.message));
-                await page.setContent(readFileSync(join(process.env.LIFIC_TOOLTIP_FIXTURE, 'fixture.html'), 'utf8'));
-                await page.addScriptTag({ type: 'module', content: readFileSync(join(process.env.LIFIC_TOOLTIP_FIXTURE, 'preferences.js'), 'utf8') });
-                const bounds = async () => page.locator('[role=tooltip]').evaluate(element => {
-                    const rect = element.getBoundingClientRect();
-                    return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom, visible: getComputedStyle(element).visibility };
-                });
-                for (const viewport of [{ width: 320, height: 300 }, { width: 1280, height: 720 }]) {
-                    await page.setViewportSize(viewport);
-                    for (const scale of ['normal', 'large', '200%']) {
-                        await page.evaluate(scale => {
-                            document.documentElement.dataset.fontScale = scale === '200%' ? 'normal' : scale;
-                            document.documentElement.style.fontSize = scale === '200%' ? scale : '';
-                        }, scale);
-                        for (const corner of ['top-left', 'top-right', 'bottom-left', 'bottom-right']) {
-                            await page.locator('.tc-tooltip button').evaluate(element => element.blur());
-                            await page.evaluate(corner => {
-                                const fixture = document.querySelector('#fixture');
-                                const rect = fixture.getBoundingClientRect();
-                                fixture.style.left = `${corner.endsWith('right') ? innerWidth - rect.width : 0}px`;
-                                fixture.style.top = `${corner.startsWith('bottom') ? innerHeight - rect.height : 0}px`;
-                            }, corner);
-                            await page.locator('.tc-tooltip button').focus();
-                            const rect = await bounds();
-                            assert.equal(rect.visible, 'visible');
-                            assert(rect.left >= -0.5 && rect.top >= -0.5 && rect.right <= viewport.width + 0.5 && rect.bottom <= viewport.height + 0.5, `${JSON.stringify({ viewport, scale, corner, rect })}`);
-                            const trigger = await page.locator('.tc-tooltip button').boundingBox();
-                            if (corner.startsWith('top')) assert(rect.top >= trigger.y + trigger.height - 0.5, 'top-edge tooltip should flip below');
-                            else assert(rect.bottom <= trigger.y + 0.5, 'bottom-edge tooltip should stay above');
-                        }
-                    }
-                }
-                await page.evaluate(() => { document.documentElement.style.fontSize = ''; document.documentElement.dataset.fontScale = 'normal'; document.querySelector('#fixture').style.cssText = 'position:fixed;left:250px;top:80px'; });
-                await page.setViewportSize({ width: 320, height: 300 });
-                await page.locator('.tc-tooltip button').focus();
-                await page.waitForFunction(() => {
-                    const rect = document.querySelector('[role=tooltip]').getBoundingClientRect();
-                    return rect.left >= 0 && rect.top >= 0 && rect.right <= innerWidth + 0.5 && rect.bottom <= innerHeight + 0.5;
-                });
-                const resized = await bounds();
-                assert(resized.left >= 0 && resized.top >= 0 && resized.right <= 320.5 && resized.bottom <= 300.5, 'resize must reposition the visible tooltip');
-                await page.keyboard.press('Escape');
-                assert.equal((await bounds()).visible, 'hidden');
-                assert.deepEqual(failures, []);
-                console.log('tooltip browser edges, enlarged text, resize and dismissal passed');
-            } finally { await browser.close(); }
-        "#;
-        let output = std::process::Command::new("bun")
-            .args(["--eval", script])
-            .env("LIFIC_PLAYWRIGHT_MODULE", playwright)
-            .env("LIFIC_TOOLTIP_FIXTURE", fixture.path())
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
     }
 
     #[test]

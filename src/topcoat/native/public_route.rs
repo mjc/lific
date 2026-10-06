@@ -1,26 +1,4 @@
-//! Anonymous, read-only public project route family.
-
-use super::native::transport::mounted_url;
-
-use topcoat::{
-    context::Cx,
-    view::{BoxView, ViewExt, view},
-};
-
-pub(crate) const SCRIPT_PATH: &str = "/__topcoat-public.js";
-pub(crate) const SCRIPT: &str = concat!(
-    include_str!("assets/vendor.marked.js"),
-    "\n",
-    include_str!("assets/vendor.dompurify.js"),
-    "\n",
-    include_str!("assets/vendor.mermaid.js"),
-    "\n",
-    include_str!("../attachments/assets/attachments.js"),
-    include_str!("assets/public.js")
-);
-pub(crate) const MEDIA_WORKER: &str = include_str!("assets/public.media-worker.js");
-pub(crate) const STYLESHEET_PATH: &str = "/__topcoat-public.css";
-pub(crate) const STYLESHEET: &str = include_str!("assets/public.css");
+//! Public route validation for native WebSocket admission.
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Route {
@@ -88,45 +66,6 @@ pub(crate) fn resolve(path: &str) -> Option<Route> {
         }
         _ => None,
     }
-}
-
-pub(crate) fn screen<'a>(cx: &'a Cx, route: Route) -> Option<BoxView<'a>> {
-    let (project, kind, identifier) = match route {
-        Route::Issues { project } => (project, "issues", None),
-        Route::Board { project } => (project, "board", None),
-        Route::IssueDetail {
-            project,
-            identifier,
-        } => (project, "issue-detail", Some(identifier)),
-        Route::Pages { project } => (project, "pages", None),
-        Route::PageDetail { project, page_id } => {
-            (project, "page-detail", Some(page_id.to_string()))
-        }
-        Route::Redirect(_) => return None,
-    };
-    let public_project = project.to_ascii_uppercase();
-    let project_href = format!("/public/{project}/issues");
-    let heading = match kind {
-        "issues" => "Issues",
-        "board" => "Board",
-        "issue-detail" => "Issue",
-        "pages" => "Pages",
-        _ => "Page",
-    };
-    Some(view! { cx =>
-        <section class="tc-public" data-topcoat-public=(kind)
-            data-public-project=(public_project.as_str()) data-public-identifier=(identifier.as_deref())
-            aria-busy="true" aria-readonly="true">
-            <header class="tc-public__header">
-                <a href=(mounted_url(cx, project_href.as_str())) aria-label="Public project issues">(project.as_str())</a>
-                <h1>(heading)</h1>
-                <span class="tc-public__badge">"Public · read only"</span>
-            </header>
-            <p data-public-status="" role="status" aria-live="polite">"Loading…"</p>
-            <div data-public-error="" role="alert" hidden="hidden"></div>
-            <section data-public-content="" hidden="hidden"></section>
-        </section>
-    }.boxed())
 }
 
 #[cfg(test)]
@@ -200,51 +139,5 @@ mod tests {
         ] {
             assert_eq!(resolve(path), None, "{path}");
         }
-    }
-
-    #[tokio::test]
-    async fn public_mounts_have_only_read_only_route_markers() {
-        let cx = Cx::default();
-        for route in [
-            Route::Issues {
-                project: "ENG".into(),
-            },
-            Route::Board {
-                project: "ENG".into(),
-            },
-            Route::IssueDetail {
-                project: "ENG".into(),
-                identifier: "ENG-42".into(),
-            },
-            Route::Pages {
-                project: "ENG".into(),
-            },
-            Route::PageDetail {
-                project: "ENG".into(),
-                page_id: 42,
-            },
-        ] {
-            let html = screen(&cx, route)
-                .unwrap()
-                .single()
-                .await
-                .unwrap()
-                .render(&cx);
-            assert!(html.contains("data-topcoat-public="));
-            assert!(html.contains("data-public-project=\"ENG\""));
-            assert!(html.contains("aria-readonly=\"true\""));
-            assert!(!html.contains("<form"));
-            assert!(!html.contains("<input"));
-            assert!(!html.contains("<button"));
-        }
-    }
-
-    #[test]
-    fn public_assets_embed_scoped_attachment_reads() {
-        assert_eq!(SCRIPT_PATH, "/__topcoat-public.js");
-        assert_eq!(STYLESHEET_PATH, "/__topcoat-public.css");
-        assert!(SCRIPT.contains("LificTopcoatAttachments"));
-        assert!(SCRIPT.contains("LificTopcoatPublic"));
-        assert!(STYLESHEET.contains(".tc-public"));
     }
 }

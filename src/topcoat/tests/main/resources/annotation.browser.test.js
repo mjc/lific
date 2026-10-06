@@ -10,7 +10,7 @@ test('fits a large image into the viewport and never upscales a small one', {tim
     const page = await fixture.browser.newPage({viewport: {width: 1250, height: 1540}});
     await page.setContent('<main></main>');
     await page.addStyleTag({path: path.resolve(__dirname, '../../../attachments/assets/attachments.css')});
-    const source = fs.readFileSync(path.resolve(__dirname, '../../../attachments/assets/attachments.js'), 'utf8');
+    const source = require('../native-port-missing').unavailable('attachment annotation');
     assert.equal(source.split('globalThis.LificTopcoatAttachments = {').length, 2);
     await page.addScriptTag({content: source.replace('globalThis.LificTopcoatAttachments = {',
       'globalThis.LificTopcoatAttachments = {annotation,')});
