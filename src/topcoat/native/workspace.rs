@@ -16,6 +16,7 @@ use super::{context, home_shell, session, transport};
 #[derive(Clone, Copy)]
 pub(crate) enum NativeRoute {
     Login,
+    Signup,
     Home,
     Workspace,
     ProjectNew,
@@ -27,6 +28,7 @@ pub(crate) enum NativeRoute {
 pub(crate) fn native_route(route: &ParsedRoute<'_>, has_query: bool) -> Option<NativeRoute> {
     match (route.layout, route.project, route.page) {
         (Layout::Auth, _, Page::Login) => Some(NativeRoute::Login),
+        (Layout::Auth, _, Page::Signup) => Some(NativeRoute::Signup),
         (Layout::Private, _, Page::Home) => Some(NativeRoute::Home),
         (Layout::Private, _, Page::ProjectNew) => Some(NativeRoute::ProjectNew),
         (Layout::Private, Some(_), Page::Overview) => Some(NativeRoute::ProjectOverview),

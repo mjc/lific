@@ -1,5 +1,6 @@
 //! Main's login fields and completion state expressed in the Rust runtime.
 use super::super::super::runtime::whitespace::StrEcmaTrimExt;
+use super::super::auth_shell::{BUTTON, INPUT};
 use super::{
     super::icons,
     actions::{automatic, sign_in},
@@ -121,13 +122,28 @@ pub(super) fn content(cx: &Cx, auto: bool) -> BoxView<'_> {
     } else {
         None
     };
+    let password_input = expr!(|event: Event| password.set(event.target.value));
+    let mut password_attributes = Attributes::with_capacity(1);
+    password_attributes.insert(
+        cx,
+        "data-topcoat-on:input",
+        password_input.into_evaluated_and_js().1,
+    );
+    let password_field = super::super::auth_form::password_field(
+        cx,
+        "login-password",
+        "current-password",
+        visible,
+        None,
+        password_attributes,
+    );
     view! {cx =>
         if let Some(mount)=automatic_mount {<span hidden="hidden" (mount)></span>}
         <form class="flex flex-col gap-5" novalidate="novalidate" (command)>
             <div aria-live="polite"><div role="alert" :hidden=$(error.get().is_empty()) class="[&[hidden]]:hidden flex items-start gap-2.5 text-body-sm text-[var(--error)] bg-[var(--tc-error-bg)] px-3.5 py-3 rounded-lg">(icons::project_icon(cx,Some("lucide:AlertTriangle"),15))<span>$(error.get())</span></div></div>
             <div class="flex flex-col gap-1.5">
                 <label for="login-identity" class="text-micro font-semibold uppercase tracking-widest text-[var(--text-faint)]">"Username or email"</label>
-                <input id="login-identity" type="text" placeholder="jane" autocomplete="username" autocapitalize="none" spellcheck="false" class="font-body text-[var(--tc-text)] bg-[var(--tc-surface)] border border-solid border-[var(--tc-border)] outline-none transition-[border-color,box-shadow] duration-200 placeholder:text-[var(--tc-faint)] focus:border-[var(--tc-accent)] focus:shadow-[0_0_0_3px_var(--tc-accent-subtle)] [@media(pointer:coarse)]:text-[16px]! aria-invalid:border-[var(--tc-danger)] rounded-lg px-3.5 py-2.5 text-body-lg"
+                <input id="login-identity" type="text" placeholder="jane" autocomplete="username" autocapitalize="none" spellcheck="false" class=(INPUT)
                     :value=$(identity.get()) @input=$(|event:Event| identity.set(event.target.value)) @blur=$(|_event:Event| touched.set(true))
                     :aria-invalid=$(if invalid {"true"}else{"false"})
                     :aria-describedby=$(if invalid {"login-identity-err"}else{""})/>
@@ -135,18 +151,10 @@ pub(super) fn content(cx: &Cx, auto: bool) -> BoxView<'_> {
             </div>
             <div class="flex flex-col gap-1.5">
                 <label for="login-password" class="text-micro font-semibold uppercase tracking-widest text-[var(--text-faint)]">"Password"</label>
-                <div class="relative">
-                    <input id="login-password" :type=$(if visible.get(){"text"}else{"password"}) autocomplete="current-password" class="font-body text-[var(--tc-text)] bg-[var(--tc-surface)] border border-solid border-[var(--tc-border)] outline-none transition-[border-color,box-shadow] duration-200 placeholder:text-[var(--tc-faint)] focus:border-[var(--tc-accent)] focus:shadow-[0_0_0_3px_var(--tc-accent-subtle)] [@media(pointer:coarse)]:text-[16px]! w-full rounded-lg pl-3.5 pr-11 py-2.5 text-body-lg"
-                        @input=$(|event:Event| password.set(event.target.value))/>
-                    <button type="button" tabindex="-1" :aria-pressed=$(visible.get()) :aria-label=$(if visible.get(){"Hide password"}else{"Show password"}) :title=$(if visible.get(){"Hide password"}else{"Show password"})
-                        class="absolute inset-y-0 right-0 flex items-center px-3 text-[var(--text-faint)] hover:text-[var(--text-muted)] transition-colors focus-visible:outline-none focus-visible:text-[var(--accent)] bg-transparent border-0"
-                        @click=$(|_event:Event| visible.set(!visible.get()))>
-                        <span :hidden=$(visible.get())>(icons::project_icon(cx,Some("lucide:Eye"),17))</span><span :hidden=$(!visible.get())>(icons::project_icon(cx,Some("lucide:EyeOff"),17))</span>
-                    </button>
-                </div>
+                (password_field)
             </div>
             <button type="submit" :disabled=$(if loading.get(){true}else if identity.get().trim_ecmascript().is_empty(){true}else{password.get().is_empty()})
-                class="mt-1 rounded-lg bg-[var(--tc-btn-success)] text-[var(--tc-btn-success-text)] text-body-lg font-medium py-2.5 px-5 transition-all duration-200 hover:bg-[#2ed673] dark:hover:bg-[#54c97e] motion-safe:active:scale-[0.98] focus-visible:ring-2 focus-visible:ring-[var(--tc-btn-success)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] disabled:opacity-55 disabled:cursor-not-allowed disabled:hover:bg-[var(--tc-btn-success)] dark:disabled:hover:bg-[var(--tc-btn-success)] border-0">$(if loading.get(){"Signing in…"}else{"Sign in"})</button>
+                class=(format!("mt-1 {BUTTON}"))>$(if loading.get(){"Signing in…"}else{"Sign in"})</button>
         </form>
     }.boxed()
 }
