@@ -6,7 +6,7 @@ use crate::{
     authz,
     db::{
         DbPool,
-        models::{ActivityFeed, Role},
+        models::{Activity, ActivityFeed, ActorStat, Role},
         queries::{self, activity::ActivityScope},
     },
     error::LificError,
@@ -39,6 +39,18 @@ pub(crate) fn list_activity_conn(
     offset: Option<i64>,
 ) -> Result<ActivityFeed, LificError> {
     let current = crate::auth::refresh_identity(conn, identity.as_ref())?;
+    list_activity_current(conn, &current, scope, since, limit, offset)
+}
+
+/// The identity was refreshed inside the caller's current transaction.
+fn list_activity_current(
+    conn: &Connection,
+    current: &Option<ResolvedIdentity>,
+    scope: ActivityScope,
+    since: Option<&str>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+) -> Result<ActivityFeed, LificError> {
     let project_id = match scope {
         ActivityScope::Issue(id) => Some(queries::get_issue(conn, id)?.project_id),
         ActivityScope::Page(id) => queries::get_page(conn, id)?.project_id,
@@ -46,10 +58,10 @@ pub(crate) fn list_activity_conn(
         ActivityScope::Project(id) => Some(id),
     };
     match project_id {
-        Some(id) => authz::require_role_conn(conn, &current, id, Role::Viewer)?,
-        None => authz::require_workspace_admin_conn(conn, &current)?,
+        Some(id) => authz::require_role_conn(conn, current, id, Role::Viewer)?,
+        None => authz::require_workspace_admin_conn(conn, current)?,
     }
-    let visible = authz::visible_project_ids_conn(conn, &current)?;
+    let visible = authz::visible_project_ids_conn(conn, current)?;
     queries::activity::list_activity_since_visible(
         conn,
         scope,
@@ -58,6 +70,79 @@ pub(crate) fn list_activity_conn(
         offset,
         visible.as_ref(),
     )
+}
+
+pub(crate) fn project_actors(
+    db: &DbPool,
+    identity: &Option<ResolvedIdentity>,
+    project: i64,
+) -> Result<Vec<ActorStat>, LificError> {
+    let conn = db.read()?;
+    let tx = conn.unchecked_transaction()?;
+    let current = crate::auth::refresh_identity(&tx, identity.as_ref())?;
+    authz::require_role_conn(&tx, &current, project, Role::Viewer)?;
+    let actors = actor_stats_conn(&tx, project)?;
+    tx.commit()?;
+    Ok(actors)
+}
+
+/// Only called after project authorization in the same read transaction.
+/// Match the existing actor endpoint: the rollup includes all project audits,
+/// while feed rows independently redact references to inaccessible projects.
+fn actor_stats_conn(conn: &Connection, project: i64) -> Result<Vec<ActorStat>, LificError> {
+    queries::activity::actor_stats(conn, project)
+}
+
+/// Retained authorized rows, an optional fresh page, and all-time actors share one read snapshot.
+pub(crate) struct RetainedProjectActivity {
+    pub(crate) items: Vec<Activity>,
+    pub(crate) page: Option<ActivityFeed>,
+    pub(crate) actors: Vec<ActorStat>,
+}
+
+/// Select an explicit offset or append after the retained authorized history.
+pub(crate) enum ProjectActivityPage {
+    Offset { limit: i64, offset: i64 },
+    Append { limit: i64 },
+}
+
+pub(crate) fn project_retained_snapshot(
+    db: &DbPool,
+    identity: &Option<ResolvedIdentity>,
+    project: i64,
+    ids: &[i64],
+    page: Option<ProjectActivityPage>,
+) -> Result<RetainedProjectActivity, LificError> {
+    let conn = db.read()?;
+    let tx = conn.unchecked_transaction()?;
+    let current = crate::auth::refresh_identity(&tx, identity.as_ref())?;
+    authz::require_role_conn(&tx, &current, project, Role::Viewer)?;
+    let visible = authz::visible_project_ids_conn(&tx, &current)?;
+    let items =
+        queries::activity::list_project_activity_ids_visible(&tx, project, ids, visible.as_ref())?;
+    let page = page
+        .map(|page| {
+            let (limit, offset) = match page {
+                ProjectActivityPage::Offset { limit, offset } => (limit, offset),
+                ProjectActivityPage::Append { limit } => (limit, items.len() as i64),
+            };
+            queries::activity::list_activity_since_visible(
+                &tx,
+                ActivityScope::Project(project),
+                None,
+                Some(limit),
+                Some(offset),
+                visible.as_ref(),
+            )
+        })
+        .transpose()?;
+    let actors = actor_stats_conn(&tx, project)?;
+    tx.commit()?;
+    Ok(RetainedProjectActivity {
+        items,
+        page,
+        actors,
+    })
 }
 
 #[cfg(test)]
@@ -141,6 +226,311 @@ mod tests {
         assert!(
             !json.contains("Private plan"),
             "hidden plan reached authorized feed: {json}"
+        );
+    }
+
+    #[test]
+    fn retained_project_snapshot_reloads_requested_ids_and_pages_from_same_authority() {
+        let fixture = fixture();
+        let expected = feed(&fixture, ActivityScope::Project(fixture.project));
+        let foreign = queries::activity::list_activity(
+            &fixture.db.read().unwrap(),
+            ActivityScope::Project(fixture.hidden_project),
+            None,
+            None,
+        )
+        .unwrap()
+        .items[0]
+            .id;
+        let ids = [
+            expected.items[0].id,
+            expected.items[1].id,
+            expected.items[0].id,
+            foreign,
+        ];
+        let snapshot = project_retained_snapshot(
+            &fixture.db,
+            &fixture.identity,
+            fixture.project,
+            &ids,
+            Some(ProjectActivityPage::Offset {
+                limit: 1,
+                offset: 1,
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            snapshot.items.iter().map(|row| row.id).collect::<Vec<_>>(),
+            vec![expected.items[0].id, expected.items[1].id]
+        );
+        let page = snapshot.page.unwrap();
+        assert_eq!(page.items[0].id, expected.items[1].id);
+        assert_eq!(page.has_more, expected.items.len() > 2);
+        assert!(!snapshot.actors.is_empty());
+        let refreshed = project_retained_snapshot(
+            &fixture.db,
+            &fixture.identity,
+            fixture.project,
+            &ids,
+            Some(ProjectActivityPage::Offset {
+                limit: 1,
+                offset: 0,
+            }),
+        )
+        .unwrap();
+        assert_eq!(refreshed.page.unwrap().items[0].id, expected.items[0].id);
+        let retained =
+            project_retained_snapshot(&fixture.db, &fixture.identity, fixture.project, &ids, None)
+                .unwrap();
+        assert!(retained.page.is_none());
+        assert_eq!(retained.items.len(), 2);
+    }
+
+    #[test]
+    fn retained_project_snapshot_reads_more_than_one_page_of_ids_without_truncation() {
+        let fixture = fixture();
+        let ids = {
+            let conn = fixture.db.write().unwrap();
+            (0..241).map(|index| {
+                conn.execute("INSERT INTO audit_log(transport,entity_type,entity_id,project_id,issue_id,action,field,new_value) VALUES('system','issue',?1,?2,?1,'update','title',?3)",rusqlite::params![fixture.source,fixture.project,format!("Retained edit {index}")]).unwrap();
+                conn.last_insert_rowid()
+            }).collect::<Vec<_>>()
+        };
+        let snapshot =
+            project_retained_snapshot(&fixture.db, &fixture.identity, fixture.project, &ids, None)
+                .unwrap();
+        assert_eq!(
+            snapshot.items.iter().map(|row| row.id).collect::<Vec<_>>(),
+            ids.into_iter().rev().collect::<Vec<_>>()
+        );
+        assert!(snapshot.page.is_none());
+    }
+
+    #[test]
+    fn retained_append_does_not_skip_rows_after_target_visibility_is_revoked() {
+        let fixture = fixture();
+        let user = fixture.identity.as_ref().unwrap().user.id;
+        {
+            let conn = fixture.db.write().unwrap();
+            queries::members::upsert_member(&conn, fixture.hidden_project, user, Role::Viewer)
+                .unwrap();
+            for index in 0..12 {
+                queries::update_issue(
+                    &conn,
+                    fixture.source,
+                    &UpdateIssue {
+                        title: Some(format!("Append visibility edit {index}")),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                queries::link_issues(&conn, fixture.source, fixture.hidden, "relates_to").unwrap();
+                queries::unlink_issues(&conn, fixture.source, fixture.hidden).unwrap();
+            }
+        }
+        let initial = list_activity(
+            &fixture.db,
+            &fixture.identity,
+            ActivityScope::Project(fixture.project),
+            None,
+            Some(12),
+            None,
+        )
+        .unwrap();
+        let retained = initial.items.iter().map(|row| row.id).collect::<Vec<_>>();
+        assert!(
+            initial
+                .items
+                .iter()
+                .any(|row| row.new_value.as_deref() == Some("HIDE-1"))
+        );
+        queries::members::remove_member(&fixture.db.write().unwrap(), fixture.hidden_project, user)
+            .unwrap();
+        let expected = feed(&fixture, ActivityScope::Project(fixture.project));
+        let snapshot = project_retained_snapshot(
+            &fixture.db,
+            &fixture.identity,
+            fixture.project,
+            &retained,
+            Some(ProjectActivityPage::Append { limit: 12 }),
+        )
+        .unwrap();
+        assert!(snapshot.items.len() < retained.len());
+        let expected_page = expected
+            .items
+            .iter()
+            .skip(snapshot.items.len())
+            .take(12)
+            .map(|row| row.id)
+            .collect::<Vec<_>>();
+        let page = snapshot.page.unwrap();
+        assert_eq!(
+            page.items.iter().map(|row| row.id).collect::<Vec<_>>(),
+            expected_page,
+            "Append offset counts fresh readable retained rows"
+        );
+        assert_private_references_absent(&page);
+    }
+
+    #[test]
+    fn retained_project_snapshot_rechecks_target_visibility_and_membership() {
+        let fixture = fixture();
+        let user = fixture.identity.as_ref().unwrap().user.id;
+        {
+            let conn = fixture.db.write().unwrap();
+            queries::members::upsert_member(&conn, fixture.hidden_project, user, Role::Viewer)
+                .unwrap();
+            queries::link_issues(&conn, fixture.source, fixture.hidden, "relates_to").unwrap();
+        }
+        let feed = feed(&fixture, ActivityScope::Project(fixture.project));
+        let ids = feed.items.iter().map(|row| row.id).collect::<Vec<_>>();
+        assert!(
+            feed.items
+                .iter()
+                .any(|row| row.new_value.as_deref() == Some("HIDE-1"))
+        );
+        queries::members::remove_member(&fixture.db.write().unwrap(), fixture.hidden_project, user)
+            .unwrap();
+        let snapshot =
+            project_retained_snapshot(&fixture.db, &fixture.identity, fixture.project, &ids, None)
+                .unwrap();
+        assert!(
+            !snapshot
+                .items
+                .iter()
+                .any(|row| row.new_value.as_deref() == Some("HIDE-1"))
+        );
+        assert!(!snapshot.items.is_empty());
+        queries::members::remove_member(&fixture.db.write().unwrap(), fixture.project, user)
+            .unwrap();
+        assert!(matches!(
+            project_retained_snapshot(&fixture.db, &fixture.identity, fixture.project, &ids, None),
+            Err(LificError::Forbidden(_))
+        ));
+    }
+
+    #[test]
+    fn project_snapshot_pages_visible_history_and_keeps_full_actor_rollup() {
+        let fixture = fixture();
+        {
+            let conn = fixture.db.write().unwrap();
+            for index in 0..4 {
+                queries::update_issue(
+                    &conn,
+                    fixture.source,
+                    &UpdateIssue {
+                        title: Some(format!("Snapshot edit {index}")),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            }
+            queries::link_issues(&conn, fixture.source, fixture.hidden, "relates_to").unwrap();
+        }
+        let expected = feed(&fixture, ActivityScope::Project(fixture.project));
+        let snapshot = project_retained_snapshot(
+            &fixture.db,
+            &fixture.identity,
+            fixture.project,
+            &[],
+            Some(ProjectActivityPage::Offset {
+                limit: 2,
+                offset: 1,
+            }),
+        )
+        .unwrap();
+        let page = snapshot.page.unwrap();
+        assert_eq!(
+            page.items.iter().map(|row| row.id).collect::<Vec<_>>(),
+            expected
+                .items
+                .iter()
+                .skip(1)
+                .take(2)
+                .map(|row| row.id)
+                .collect::<Vec<_>>()
+        );
+        assert!(page.has_more);
+        assert_private_references_absent(&page);
+        let actors = project_actors(&fixture.db, &fixture.identity, fixture.project).unwrap();
+        let raw =
+            queries::activity::actor_stats(&fixture.db.read().unwrap(), fixture.project).unwrap();
+        assert!(!raw.is_empty());
+        assert_eq!(
+            serde_json::to_value(&snapshot.actors).unwrap(),
+            serde_json::to_value(&raw).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(&actors).unwrap(),
+            serde_json::to_value(&raw).unwrap()
+        );
+    }
+
+    #[test]
+    fn project_actor_snapshot_rechecks_revoked_membership() {
+        let fixture = fixture();
+        let user = fixture.identity.as_ref().unwrap().user.id;
+        queries::members::remove_member(&fixture.db.write().unwrap(), fixture.project, user)
+            .unwrap();
+        assert!(matches!(
+            project_actors(&fixture.db, &fixture.identity, fixture.project),
+            Err(LificError::Forbidden(_))
+        ));
+        assert!(matches!(
+            project_retained_snapshot(
+                &fixture.db,
+                &fixture.identity,
+                fixture.project,
+                &[],
+                Some(ProjectActivityPage::Offset {
+                    limit: 50,
+                    offset: 0
+                })
+            ),
+            Err(LificError::Forbidden(_))
+        ));
+    }
+
+    #[test]
+    fn project_actor_snapshot_rechecks_disabled_account_and_anonymous_access() {
+        let fixture = fixture();
+        let user = fixture.identity.as_ref().unwrap().user.id;
+        fixture
+            .db
+            .write()
+            .unwrap()
+            .execute("UPDATE users SET is_active=0 WHERE id=?1", [user])
+            .unwrap();
+        assert!(matches!(
+            project_actors(&fixture.db, &fixture.identity, fixture.project),
+            Err(LificError::Forbidden(_))
+        ));
+        assert!(matches!(
+            project_retained_snapshot(
+                &fixture.db,
+                &fixture.identity,
+                fixture.project,
+                &[],
+                Some(ProjectActivityPage::Offset {
+                    limit: 50,
+                    offset: 0
+                })
+            ),
+            Err(LificError::Forbidden(_))
+        ));
+        assert!(project_actors(&fixture.db, &None, fixture.project).is_err());
+        assert!(
+            project_retained_snapshot(
+                &fixture.db,
+                &None,
+                fixture.project,
+                &[],
+                Some(ProjectActivityPage::Offset {
+                    limit: 50,
+                    offset: 0
+                })
+            )
+            .is_err()
         );
     }
 

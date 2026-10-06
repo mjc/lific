@@ -6,15 +6,12 @@ use axum::{
     extract::{Json, Path, Query, State},
 };
 
-use crate::authz;
-use crate::db::queries::activity::{ActivityScope, actor_stats};
+use crate::db::queries::activity::ActivityScope;
 use crate::db::{
     DbPool,
-    models::{ActivityFeed, ActorStat, Role},
+    models::{ActivityFeed, ActorStat},
 };
 use crate::error::LificError;
-
-use super::with_read;
 
 #[derive(Debug, serde::Deserialize)]
 pub(super) struct ActivityQuery {
@@ -80,8 +77,7 @@ pub(super) async fn project_activity_actors(
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
     Path(id): Path<i64>,
 ) -> Result<Json<Vec<ActorStat>>, LificError> {
-    authz::require_role(&db, &identity, id, Role::Viewer)?;
-    with_read(&db, |conn| actor_stats(conn, id)).map(Json)
+    crate::services::activity::project_actors(&db, &identity, id).map(Json)
 }
 
 #[cfg(test)]

@@ -148,6 +148,7 @@ fs2 = "0.4"
 # Line diffs for get_page(since_seq) (LIF-480). No dependencies with only the
 # `text` feature; 2.x because 3.x needs a newer toolchain than rust-version.
 similar = { version = "2", default-features = false, features = ["text"] }
+chrono-tz = "0.10"
 
 # SIGPIPE handling for piped CLI output (see main.rs); unix only.
 [target.'cfg(unix)'.dependencies]

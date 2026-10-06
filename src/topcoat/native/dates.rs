@@ -2,7 +2,7 @@
 use topcoat::{
     context::Cx,
     runtime::{Event, Signal, expr, signal},
-    view::{Attributes, BoxView, ViewExt, view},
+    view::{Attributes, BoxView, View, ViewExt, component, view},
 };
 
 pub(crate) fn clock_mount(cx: &Cx, now: Signal<f64>) -> Attributes {
@@ -66,4 +66,28 @@ pub(crate) fn relative<'a>(
         else { fallback.get() } } } })
     </time> }.boxed();
     (time, local_full)
+}
+
+/// Isolate timestamps mapped from multiple rows under a stable component scope.
+pub(crate) fn relative_time_view<'a>(cx: &'a Cx, timestamp: &str, now: Signal<f64>) -> BoxView<'a> {
+    let timestamp = timestamp.to_owned();
+    let scoped = cx.keyed(&timestamp);
+    view! {scoped=>scoped_relative_time(timestamp:timestamp,now:now)}.boxed()
+}
+#[component]
+async fn scoped_relative_time(
+    cx: &Cx,
+    timestamp: String,
+    now: Signal<f64>,
+) -> topcoat::Result<impl View> {
+    Ok(relative(cx, &timestamp, now).0)
+}
+pub(crate) fn absolute_time_view<'a>(cx: &'a Cx, timestamp: &str) -> BoxView<'a> {
+    let timestamp = timestamp.to_owned();
+    let scoped = cx.keyed(&timestamp);
+    view! {scoped=>scoped_absolute_time(timestamp:timestamp)}.boxed()
+}
+#[component]
+async fn scoped_absolute_time(cx: &Cx, timestamp: String) -> topcoat::Result<impl View> {
+    Ok(absolute(cx, &timestamp))
 }
