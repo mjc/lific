@@ -224,7 +224,7 @@ async fn authenticate_off_writer(
     challenge.finish(password_ok)
 }
 
-pub(super) async fn auth_login(
+pub(crate) async fn auth_login(
     State(db): State<DbPool>,
     Extension(auth_cfg): Extension<crate::config::AuthConfig>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -333,7 +333,7 @@ pub(super) async fn auth_login(
 /// tokens. On a publicly-reachable instance this is equivalent to handing
 /// admin to anyone who can load the page, which is why it is off by default and
 /// surfaced with a warning in the admin UI.
-pub(super) async fn auth_auto_login(
+pub(crate) async fn auth_auto_login(
     State(db): State<DbPool>,
     Extension(auth_cfg): Extension<crate::config::AuthConfig>,
 ) -> Result<impl IntoResponse, LificError> {

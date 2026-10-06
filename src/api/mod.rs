@@ -4,7 +4,7 @@ mod archived_projects;
 /// and filename hygiene verbatim rather than growing a second copy, so the
 /// module is crate-visible even though its handlers stay `pub(super)`.
 pub(crate) mod attachments;
-mod auth;
+pub(crate) mod auth;
 // `pub` only for the three comment paging header names, which the global CORS
 // layer in `server` has to expose by the same names this module sets them by.
 pub mod comments;

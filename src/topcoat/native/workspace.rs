@@ -15,6 +15,7 @@ use super::{context, home_shell, session, transport};
 /// One classifier supplies both document assets and native navigation admission.
 #[derive(Clone, Copy)]
 pub(crate) enum NativeRoute {
+    Login,
     Home,
     Workspace,
     ProjectNew,
@@ -24,6 +25,7 @@ pub(crate) enum NativeRoute {
 
 pub(crate) fn native_route(route: &ParsedRoute<'_>, has_query: bool) -> Option<NativeRoute> {
     match (route.layout, route.project, route.page) {
+        (Layout::Auth, _, Page::Login) => Some(NativeRoute::Login),
         (Layout::Private, _, Page::Home) => Some(NativeRoute::Home),
         (Layout::Private, _, Page::ProjectNew) => Some(NativeRoute::ProjectNew),
         (Layout::Private, Some(_), Page::Overview) => Some(NativeRoute::ProjectOverview),
