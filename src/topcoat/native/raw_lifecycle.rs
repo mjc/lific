@@ -1,6 +1,6 @@
 //! Raw framework socket lifetimes through the real production factory.
-//! Policy injection changes deadlines only; requests, Home rendering, TCP
-//! backpressure, session receivers and quota accounting remain production code.
+//! The fixture bounds deadlines, TCP buffers, and individual real writes;
+//! Home rendering, backpressure, session receivers and quotas remain real.
 
 use std::{
     io::{self, Write},
@@ -118,34 +118,18 @@ impl AsyncWrite for ObservedIo {
         cx: &mut Context<'_>,
         buffer: &[u8],
     ) -> Poll<io::Result<usize>> {
+        let requested = buffer.len();
+        // Short real writes fill the bounded kernel buffer without submitting
+        // a giant unbuffered Winsock send that can prevent timer polling.
+        let buffer = &buffer[..requested.min(4_096)];
         self.writes.begin(1, buffer.len());
         let result = Pin::new(&mut self.inner).poll_write(cx, buffer);
         self.writes.end();
-        self.writes.record(buffer.len(), &result);
-        if buffer.len() >= 1024 * 1024 && result.is_pending() {
+        self.writes.record(requested, &result);
+        if requested >= 1024 * 1024 && result.is_pending() {
             self.blocked_large_write.notify_one();
         }
         result
-    }
-
-    fn poll_write_vectored(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buffers: &[io::IoSlice<'_>],
-    ) -> Poll<io::Result<usize>> {
-        let length = buffers.iter().map(|buffer| buffer.len()).sum::<usize>();
-        self.writes.begin(2, length);
-        let result = Pin::new(&mut self.inner).poll_write_vectored(cx, buffers);
-        self.writes.end();
-        self.writes.record(length, &result);
-        if length >= 1024 * 1024 && result.is_pending() {
-            self.blocked_large_write.notify_one();
-        }
-        result
-    }
-
-    fn is_write_vectored(&self) -> bool {
-        self.inner.is_write_vectored()
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
@@ -168,6 +152,46 @@ impl Drop for ObservedIo {
         // Fields are dropped afterwards; this marks entry, not TCP-drop completion.
         self.writes.io_drop_entered.fetch_add(1, Ordering::Release);
     }
+}
+
+#[tokio::test]
+async fn observed_tcp_writes_are_bounded_without_changing_payload_bytes() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut peer = TcpStream::connect(listener.local_addr().unwrap())
+        .await
+        .unwrap();
+    let (inner, _) = listener.accept().await.unwrap();
+    let mut sender = ObservedIo {
+        inner,
+        blocked_large_write: Arc::new(Notify::new()),
+        writes: Arc::new(WriteObservation::default()),
+    };
+    let payload = vec![42; 12_288];
+    let written = sender.write(&payload).await.unwrap();
+    assert!(
+        written > 0 && written <= 4_096,
+        "the fixture bounds each real TCP send"
+    );
+    let vectored = sender
+        .write_vectored(&[io::IoSlice::new(&payload[written..]), io::IoSlice::new(&[])])
+        .await
+        .unwrap();
+    assert!(
+        vectored > 0 && vectored <= 4_096,
+        "vectored writes use the same bounded sender"
+    );
+    sender
+        .write_all(&payload[written + vectored..])
+        .await
+        .unwrap();
+    let mut received = vec![0; payload.len()];
+    peer.read_exact(&mut received).await.unwrap();
+    assert_eq!(
+        received, payload,
+        "partial writes preserve the complete stream"
+    );
 }
 
 const STOPPED_READER_PHASES: [&str; 12] = [
@@ -600,10 +624,9 @@ async fn native_raw_passive_peer_answers_pings_and_survives_without_application_
 async fn native_raw_stopped_reader_bounds_send_and_aborts_its_live_render() {
     // Progress expiry is ten seconds; retirement within three seconds must
     // come from the send deadline while the actual TCP peer remains open.
-    // Winsock can accept a complete large nonblocking send with a positive
-    // SO_SNDBUF. Zero disables that buffering; check it on both real sockets.
-    // https://learn.microsoft.com/en-us/windows/win32/winsock/tcp-ip-specific-issues-2
-    let send_buffer = if cfg!(windows) { 0 } else { 4_096 };
+    // Retain normal buffered socket behavior on both platforms. Bounded real
+    // writes fill this buffer until the nonreading peer creates backpressure.
+    let send_buffer = 4_096;
     writeln!(
         std::io::stderr().lock(),
         "raw stopped-reader phase=create fixture, requested send buffer={send_buffer}"
