@@ -53,6 +53,7 @@ test('native overview real inline controls, roles, local drafts and disclosures 
     await text.fill(` Preserved overview description ${index} `);
     await mutate(page,'/__native_overview/save_field',()=>text.press('Control+Enter'));
     await text.waitFor({state:'hidden'});
+    await page.waitForFunction(expected=>document.querySelector('.native-overview__description-button')?.textContent.includes(expected),`Preserved overview description ${index}`);
     assert.ok((await description.textContent()).includes(`Preserved overview description ${index}`));
     phase='group assignment';
     const group=root.getByRole('combobox',{name:'Sidebar group',exact:true});
@@ -116,6 +117,7 @@ test('native overview real inline controls, roles, local drafts and disclosures 
      assert.ok(await document.getByText('Read-only',{exact:true}).isVisible());
      assert.equal(await document.locator('.native-overview__name-input:visible,.native-overview__danger,[data-native-overview-publish],[data-native-overview-import],.native-overview__members,.native-overview__archive').count(),0);
      assert.equal(await document.getByRole('textbox',{name:'New label name',exact:true}).count(),0);
+     await document.getByText(`Smoke label ${index}`,{exact:true}).waitFor({state:'visible'});
      assert.ok(await document.getByText(`Smoke label ${index}`,{exact:true}).isVisible());
      assert.deepEqual(errors,[]);
     }finally{await viewer.close();}
