@@ -325,7 +325,7 @@ fn render_shell<'a>(
     let palette_error = palette.error.clone();
     let palette_waiting = palette.waiting.clone();
     let mobile_open = navigation.open.clone();
-    let mobile_pane = navigation.pane.clone();
+    let phone_initialized = navigation.initialized.clone();
     let theme = signal(cx, || "system".to_owned());
     let theme_menu = signal(cx, || false);
     let projects = projects.to_vec();
@@ -410,34 +410,11 @@ fn render_shell<'a>(
                 </header>
                 (content)
             </div>
-            <section data-native-mobile-nav="" role="dialog" :aria-modal=$(if sidebar_menu_open { "false" } else { if theme_menu.get() { "false" } else { "true" } }) aria-label="Workspace navigation" :hidden=$(!mobile_open.get())>
-                <div data-native-mobile-root="" :hidden=$(mobile_pane.get() != "root")>
-                    <header class="native-home-mobile-nav-header">
-                        <img src=(super::transport::mounted_url(cx, "/logo.webp")) alt="" width="28" height="28"/>
-                        <strong>"Lific"</strong><small>(concat!("v", env!("CARGO_PKG_VERSION")))</small>
-                        <button class="native-home-icon-button" aria-label="Close navigation" (mobile_action(cx, &navigation, "close", String::new()))>
-                            (super::icons::project_icon(cx, Some("lucide:X"), 20))
-                        </button>
-                    </header>
-                    <button class="native-home-mobile-search" (mobile_action(cx, &navigation, "search", String::new()))>
-                        (super::icons::project_icon(cx, Some("lucide:Search"), 18)) "Search issues, pages, projects…"
-                    </button>
-                    <nav aria-label="Phone workspace">
-                        <a class="native-home-mobile-link" href=(super::transport::mounted_url(cx, "/")) :aria-current=$(home_active.then_some("page"))>
-                            (super::icons::project_icon(cx, Some("lucide:House"), 20)) "Home"
-                        </a>
-                        (sidebar.phone(cx,path.clone(),navigation.handles()))
-                    </nav>
-                    <footer class="native-home-mobile-footer">
-                        <a href=(super::transport::mounted_url(cx, "/settings")) class="native-home-mobile-account-link">
-                            <span class="native-home-mobile-avatar">(initials)</span><span>(display_name)<small>"Settings"</small></span>
-                        </a>
-                        (theme_button(cx, theme.clone(), theme_menu.clone()))
-                    </footer>
-                </div>
-                (sidebar.phone_panels(cx,path.clone(),navigation.handles()))
-                (mobile_unavailable_panel(cx, &navigation))
-            </section>
+            native_home_phone(
+                initialized: $(phone_initialized.get()),
+                sidebar: sidebar.handles(), path: path.clone(), navigation: navigation.handles(),
+                theme_controls: (theme.clone(), theme_menu.clone())
+            )
             (sidebar.menu(cx))
             <div class="native-home-theme-menu" role="menu" aria-label="Theme" :hidden=$(!theme_menu.get())>
                 for (preference, label) in [("light", "Light"), ("dark", "Dark"), ("system", "System")] {
@@ -481,6 +458,117 @@ fn render_shell<'a>(
         </div>
     }.boxed();
     Ok(rendered)
+}
+
+/// First use admits the dialog once; its shared owner survives close and history.
+#[shard("/__native_home/phone")]
+async fn native_home_phone(
+    cx: &Cx,
+    initialized: bool,
+    sidebar: super::project_sidebar::SidebarHandles,
+    path: Signal<String>,
+    navigation: MobileNavigationSignals,
+    theme_controls: (Signal<String>, Signal<bool>),
+) -> topcoat::Result<impl View> {
+    if !initialized {
+        return Ok(view! { cx => }.boxed());
+    }
+    let account = sidebar.0;
+    let (theme, theme_menu) = theme_controls;
+    let caller = super::session::read(cx, super::context::caller(cx))?;
+    let user = super::session::read(cx, crate::api::require_user(&caller.identity))?;
+    if user.id != account {
+        return Err(crate::error::LificError::Forbidden(
+            "Your account changed. Reload this page.".into(),
+        )
+        .into());
+    }
+    let display_name = if user.display_name.is_empty() {
+        user.username
+    } else {
+        user.display_name
+    };
+    let initials = display_name
+        .split([' ', '_', '-'])
+        .filter_map(|part| part.chars().next())
+        .take(2)
+        .flat_map(char::to_uppercase)
+        .collect::<String>();
+    let sidebar = super::project_sidebar::Sidebar::from_handles(sidebar);
+    let sidebar_menu_open = sidebar.menu_open();
+    let navigation = MobileNavigation::from_handles(navigation);
+    let mobile_open = navigation.open.clone();
+    let mobile_pane = navigation.pane.clone();
+    let home_active = expr!(if path.get() == "/" {
+        true
+    } else {
+        path.get().starts_with("/?")
+    });
+    let focus_open = mobile_open.clone();
+    let focus_pane = mobile_pane.clone();
+    let focus_theme = theme_menu.clone();
+    let focus_sidebar = sidebar_menu_open.clone();
+    let focus_pending = navigation.pending_palette.clone();
+    // The queued opener callback precedes an asynchronous first-use shard.
+    // Focus only after this actual dialog arrives, under its current owner.
+    let phone_mount = expr!(|_event: Event| {
+        let _focus = || {
+            if !raw!("cx.hydrate(cx.abortSignal.aborted)", false) {
+                if focus_open.get() {
+                    if !focus_theme.get() {
+                        if !focus_sidebar {
+                            if !focus_pending.get() {
+                                if focus_pane.get() == "root" {
+                                    raw!(
+                                        "document.querySelector('[data-native-mobile-root] button')?.focus();",
+                                        ()
+                                    );
+                                } else {
+                                    if focus_pane.get() == "unavailable" {
+                                        raw!(
+                                            "document.querySelector('[data-native-mobile-unavailable] button')?.focus();",
+                                            ()
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        };
+        raw!("queueMicrotask(() => ${_focus}());", ());
+    });
+    Ok(view! { cx =>
+            <section data-native-mobile-nav="" role="dialog" :aria-modal=$(if sidebar_menu_open { "false" } else { if theme_menu.get() { "false" } else { "true" } }) aria-label="Workspace navigation" :hidden=$(!mobile_open.get()) @mount=(phone_mount)>
+                <div data-native-mobile-root="" :hidden=$(mobile_pane.get() != "root")>
+                    <header class="native-home-mobile-nav-header">
+                        <img src=(super::transport::mounted_url(cx, "/logo.webp")) alt="" width="28" height="28"/>
+                        <strong>"Lific"</strong><small>(concat!("v", env!("CARGO_PKG_VERSION")))</small>
+                        <button class="native-home-icon-button" aria-label="Close navigation" (mobile_action(cx, &navigation, "close", String::new()))>
+                            (super::icons::project_icon(cx, Some("lucide:X"), 20))
+                        </button>
+                    </header>
+                    <button class="native-home-mobile-search" (mobile_action(cx, &navigation, "search", String::new()))>
+                        (super::icons::project_icon(cx, Some("lucide:Search"), 18)) "Search issues, pages, projects…"
+                    </button>
+                    <nav aria-label="Phone workspace">
+                        <a class="native-home-mobile-link" href=(super::transport::mounted_url(cx, "/")) :aria-current=$(home_active.then_some("page"))>
+                            (super::icons::project_icon(cx, Some("lucide:House"), 20)) "Home"
+                        </a>
+                        (sidebar.phone(cx,path.clone(),navigation.handles()))
+                    </nav>
+                    <footer class="native-home-mobile-footer">
+                        <a href=(super::transport::mounted_url(cx, "/settings")) class="native-home-mobile-account-link">
+                            <span class="native-home-mobile-avatar">(initials)</span><span>(display_name)<small>"Settings"</small></span>
+                        </a>
+                        (theme_button(cx, theme.clone(), theme_menu.clone()))
+                    </footer>
+                </div>
+                (sidebar.phone_panels(cx,path.clone(),navigation.handles()))
+                (mobile_unavailable_panel(cx, &navigation))
+            </section>
+    }.boxed())
 }
 
 fn mobile_unavailable_panel<'a>(cx: &'a Cx, navigation: &MobileNavigation) -> BoxView<'a> {
@@ -596,7 +684,9 @@ fn mobile_dispatcher(navigation: &MobileNavigation) -> topcoat::runtime::Js {
                         project.set(identifier.clone());
                         pane.set("project".to_owned());
                     }
-                    initialized.set(true);
+                    if !initialized.get() {
+                        initialized.set(true);
+                    }
                     open.set(true);
                     raw!(
                         "queueMicrotask(() => document.querySelector('[data-native-mobile-nav] :is([data-native-mobile-root],[data-native-mobile-project]):not([hidden]) button')?.focus());",
@@ -645,90 +735,105 @@ fn shell_mount(
         view_identifier,
         initialized,
     } = navigation;
-    let mount_pending = pending_palette.clone();
-    let present_open = mobile_open.clone();
-    let present_project = mobile_project;
-    let present_pane = mobile_pane.clone();
-    let resize_open = mobile_open.clone();
-    let resize_pane = mobile_pane.clone();
-    let keyboard_open = mobile_open.clone();
-    let keyboard_pane = mobile_pane.clone();
-    let keyboard_menu = theme_menu.clone();
-    let keyboard_sidebar_menu = sidebar_menu.clone();
-    let keyboard_palette = palette.open.clone();
-    let start_revision = palette.revision.clone();
-    let start_query = palette.query.clone();
-    let start_count = palette.count.clone();
-    let start_href = palette.selected_href.clone();
-    let start_selected = palette.selected.clone();
-    let start_cursor = palette.cursor_moved.clone();
-    let start_enter = palette.pending_enter.clone();
-    let start_new_tab = palette.pending_new_tab.clone();
-    let start_error = palette.error.clone();
-    let start_waiting = palette.waiting.clone();
-    let request_revision = palette.revision.clone();
-    let request_searched = palette.searched.clone();
-    let request_authorized = palette.authorized.clone();
-    let failed_revision = palette.revision.clone();
-    let failed_error = palette.error.clone();
-    let failed_waiting = palette.waiting.clone();
-    let failed_enter = palette.pending_enter.clone();
-    let failed_new_tab = palette.pending_new_tab.clone();
-    let open_query = palette.query.clone();
-    let open_palette = palette.open.clone();
-    let focus_palette_open = palette.open.clone();
-    let focus_palette_revision = palette.revision.clone();
-    let close_open = palette.open.clone();
-    let close_revision = palette.revision.clone();
-    let close_enter = palette.pending_enter.clone();
-    let close_new_tab = palette.pending_new_tab.clone();
-    let close_waiting = palette.waiting.clone();
-    let input_query = palette.query;
-    let keyboard_selected = palette.selected;
-    let keyboard_count = palette.count;
-    let keyboard_href = palette.selected_href;
-    let keyboard_cursor = palette.cursor_moved;
-    let keyboard_waiting = palette.waiting;
-    let keyboard_enter = palette.pending_enter;
-    let keyboard_new_tab = palette.pending_new_tab;
-    let keyboard_revision = palette.revision.clone();
-    let keyboard_rendered = palette.rendered;
-    let dispose_revision = palette.revision;
-    let account_id = palette.account_id;
-    let is_admin = palette.is_admin;
+    let PaletteState {
+        open: palette_open,
+        query: palette_query,
+        searched: palette_searched,
+        revision: palette_revision,
+        authorized: palette_authorized,
+        rendered: palette_rendered,
+        selected: palette_selected,
+        selected_href: palette_selected_href,
+        cursor_moved: palette_cursor_moved,
+        count: palette_count,
+        pending_enter: palette_pending_enter,
+        pending_new_tab: palette_pending_new_tab,
+        waiting: palette_waiting,
+        error: palette_error,
+        account_id,
+        is_admin,
+    } = palette;
     let login = super::transport::mounted_url(cx, "/login");
     let palette_return_focus = signal(cx, || "native-home-palette-open".to_owned());
-    let present_return_focus = palette_return_focus.clone();
-    let click_return_focus = palette_return_focus.clone();
-    let focus_open = mobile_open;
-    let focus_pane = mobile_pane;
-    let focus_menu = theme_menu;
-    let focus_sidebar_menu = sidebar_menu;
+    // Borrowed surrogates are Copy across the generated move callbacks.
+    let collapsed = &collapsed;
+    let theme = &theme;
+    let theme_menu = &theme_menu;
+    let mobile_open = &mobile_open;
+    let mobile_pane = &mobile_pane;
+    let mobile_project = &mobile_project;
+    let owner = &owner;
+    let href = &href;
+    let pending_palette = &pending_palette;
+    let view_identifier = &view_identifier;
+    let initialized = &initialized;
+    let palette_open = &palette_open;
+    let palette_query = &palette_query;
+    let palette_searched = &palette_searched;
+    let palette_revision = &palette_revision;
+    let palette_authorized = &palette_authorized;
+    let palette_rendered = &palette_rendered;
+    let palette_selected = &palette_selected;
+    let palette_selected_href = &palette_selected_href;
+    let palette_cursor_moved = &palette_cursor_moved;
+    let palette_count = &palette_count;
+    let palette_pending_enter = &palette_pending_enter;
+    let palette_pending_new_tab = &palette_pending_new_tab;
+    let palette_waiting = &palette_waiting;
+    let palette_error = &palette_error;
+    let palette_return_focus = &palette_return_focus;
     let handler = expr!(|_mount: Event| {
+        // Typed locals hydrate each shared handle once for this owning scope.
+        let collapsed = collapsed;
+        let theme = theme;
+        let theme_menu = theme_menu;
+        let mobile_open = mobile_open;
+        let mobile_pane = mobile_pane;
+        let mobile_project = mobile_project;
+        let owner = owner;
+        let href = href;
+        let pending_palette = pending_palette;
+        let view_identifier = view_identifier;
+        let initialized = initialized;
+        let palette_open = palette_open;
+        let palette_query = palette_query;
+        let palette_searched = palette_searched;
+        let palette_revision = palette_revision;
+        let palette_authorized = palette_authorized;
+        let palette_rendered = palette_rendered;
+        let palette_selected = palette_selected;
+        let palette_selected_href = palette_selected_href;
+        let palette_cursor_moved = palette_cursor_moved;
+        let palette_count = palette_count;
+        let palette_pending_enter = palette_pending_enter;
+        let palette_pending_new_tab = palette_pending_new_tab;
+        let palette_waiting = palette_waiting;
+        let palette_error = palette_error;
+        let palette_return_focus = palette_return_focus;
         // A replacement owning scope never inherits a queued browser action.
-        mount_pending.set(false);
+        pending_palette.set(false);
         let _dispose_palette = || {
-            dispose_revision.increment();
+            palette_revision.increment();
         };
         let _start_query = || {
-            start_revision.increment();
-            let sent_revision = start_revision.get();
-            let value = start_query.get();
-            start_count.set(0usize);
-            start_selected.set(0usize);
-            start_href.set("".to_owned());
-            start_cursor.set(false);
-            start_enter.set(false);
-            start_new_tab.set(false);
-            start_error.set("".to_owned());
-            start_waiting.set(true);
+            palette_revision.increment();
+            let sent_revision = palette_revision.get();
+            let value = palette_query.get();
+            palette_count.set(0usize);
+            palette_selected.set(0usize);
+            palette_selected_href.set("".to_owned());
+            palette_cursor_moved.set(false);
+            palette_pending_enter.set(false);
+            palette_pending_new_tab.set(false);
+            palette_error.set("".to_owned());
+            palette_waiting.set(true);
             let _failed = || {
                 if !raw!("cx.hydrate(cx.abortSignal.aborted)", false) {
-                    if failed_revision.get() == sent_revision {
-                        failed_error.set("Unable to search. Try again.".to_owned());
-                        failed_waiting.set(false);
-                        failed_enter.set(false);
-                        failed_new_tab.set(false);
+                    if palette_revision.get() == sent_revision {
+                        palette_error.set("Unable to search. Try again.".to_owned());
+                        palette_waiting.set(false);
+                        palette_pending_enter.set(false);
+                        palette_pending_new_tab.set(false);
                     }
                 }
             };
@@ -736,7 +841,7 @@ fn shell_mount(
                 if !raw!("cx.hydrate(cx.abortSignal.aborted)", false) {
                     let current = native_home_session().await;
                     if !raw!("cx.hydrate(cx.abortSignal.aborted)", false) {
-                        if request_revision.get() == sent_revision {
+                        if palette_revision.get() == sent_revision {
                             if current.0.is_none() {
                                 raw!("window.location.assign(${login}.toString())", ());
                             } else {
@@ -749,8 +854,8 @@ fn shell_mount(
                                 if changed {
                                     raw!("window.location.reload()", ());
                                 } else {
-                                    request_searched.set(value);
-                                    request_authorized.set(sent_revision);
+                                    palette_searched.set(value);
+                                    palette_authorized.set(sent_revision);
                                 }
                             }
                         }
@@ -763,14 +868,14 @@ fn shell_mount(
             );
         };
         let _open_palette = || {
-            open_query.set("".to_owned());
-            open_palette.set(true);
+            palette_query.set("".to_owned());
+            palette_open.set(true);
             raw!("${_start_query}();", ());
-            let opened_revision = focus_palette_revision.get();
+            let opened_revision = palette_revision.get();
             let _focus_palette = || {
                 if !raw!("cx.hydrate(cx.abortSignal.aborted)", false) {
-                    if focus_palette_open.get() {
-                        if focus_palette_revision.get() == opened_revision {
+                    if palette_open.get() {
+                        if palette_revision.get() == opened_revision {
                             raw!(
                                 "document.getElementById('native-home-palette-query')?.focus();",
                                 ()
@@ -782,16 +887,16 @@ fn shell_mount(
             raw!("queueMicrotask(() => ${_focus_palette}());", ());
         };
         let _close_palette = || {
-            close_revision.increment();
-            close_open.set(false);
-            close_enter.set(false);
-            close_new_tab.set(false);
-            close_waiting.set(false);
+            palette_revision.increment();
+            palette_open.set(false);
+            palette_pending_enter.set(false);
+            palette_pending_new_tab.set(false);
+            palette_waiting.set(false);
         };
         let _palette_input = |_event: Event| {
             let id = raw!("cx.hydrate(${_event}.target.id || '')", String::new());
             if id == "native-home-palette-query" {
-                input_query.set(_event.target.value);
+                palette_query.set(_event.target.value);
                 raw!("${_start_query}();", ());
             }
         };
@@ -909,8 +1014,8 @@ fn shell_mount(
             } else {
                 false
             };
-            let was_open = present_open.get();
-            let _before = present_project.get();
+            let was_open = mobile_open.get();
+            let _before = mobile_project.get();
             let desktop = raw!(
                 "cx.hydrate(window.matchMedia('(min-width: 768px)').matches)",
                 false
@@ -941,10 +1046,10 @@ fn shell_mount(
                 }
             };
             if pane == "closed" {
-                present_open.set(false);
-                present_pane.set("root".to_owned());
+                mobile_open.set(false);
+                mobile_pane.set("root".to_owned());
                 if !_before.is_empty() {
-                    present_project.set("".to_owned());
+                    mobile_project.set("".to_owned());
                 }
                 if was_open {
                     raw!(
@@ -958,17 +1063,19 @@ fn shell_mount(
                 if record_pane == "project" {
                     view_identifier.set(record_project.clone());
                 }
-                initialized.set(true);
-                present_open.set(true);
-                present_pane.set(pane.to_owned());
+                if !initialized.get() {
+                    initialized.set(true);
+                }
+                mobile_open.set(true);
+                mobile_pane.set(pane.to_owned());
                 if pane == "project" {
-                    present_project.set(record_project);
+                    mobile_project.set(record_project);
                     raw!(
                         "queueMicrotask(() => document.querySelector('[data-native-mobile-project]:not([hidden]) button')?.focus());",
                         ()
                     );
                 } else {
-                    present_project.set("".to_owned());
+                    mobile_project.set("".to_owned());
                     if pane == "unavailable" {
                         raw!(
                             "queueMicrotask(() => document.querySelector('[data-native-mobile-unavailable] button')?.focus());",
@@ -998,7 +1105,7 @@ fn shell_mount(
                     pending_palette.set(false);
                     if owned {
                         if record_pane == "closed" {
-                            present_return_focus.set("native-home-mobile-open".to_owned());
+                            palette_return_focus.set("native-home-mobile-open".to_owned());
                             raw!("${_open_palette}();", ());
                         }
                     }
@@ -1021,9 +1128,9 @@ fn shell_mount(
                 false
             );
             if desktop {
-                if resize_open.get() {
-                    resize_open.set(false);
-                    if resize_pane.get() == "root" {
+                if mobile_open.get() {
+                    mobile_open.set(false);
+                    if mobile_pane.get() == "root" {
                         raw!("history.back();", ());
                     } else {
                         raw!("history.go(-2);", ());
@@ -1041,22 +1148,22 @@ fn shell_mount(
                 raw!("${_close_palette}();", ());
             } else {
                 if !opener.is_empty() {
-                    click_return_focus.set(opener);
+                    palette_return_focus.set(opener);
                     raw!("${_open_palette}();", ());
                 }
             }
         };
         let _keyboard = |_event: Event| {
-            if !keyboard_sidebar_menu {
+            if !sidebar_menu {
                 let key = raw!("cx.hydrate(${_event}.key)", String::new());
                 if key == "Escape" {
-                    if keyboard_menu.get() {
-                        keyboard_menu.set(false);
+                    if theme_menu.get() {
+                        theme_menu.set(false);
                     } else {
-                        if keyboard_open.get() {
+                        if mobile_open.get() {
                             raw!("${_event}.preventDefault(); history.back();", ());
                         } else {
-                            if keyboard_palette.get() {
+                            if palette_open.get() {
                                 raw!("${_close_palette}();", ());
                                 let _opener = palette_return_focus.get();
                                 raw!(
@@ -1067,12 +1174,12 @@ fn shell_mount(
                         }
                     }
                 } else {
-                    if keyboard_palette.get() {
+                    if palette_open.get() {
                         let id = raw!("cx.hydrate(${_event}.target.id || '')", String::new());
                         if id == "native-home-palette-query" {
                             // A visible current server projection is ready before
                             // its asynchronous mount callback updates our signals.
-                            let _revision = keyboard_revision.get();
+                            let _revision = palette_revision.get();
                             let stamped_revision = raw!(
                                 "cx.hydrate(document.querySelector('.native-home-palette-results')?.getAttribute('data-native-palette-revision') || '')",
                                 String::new()
@@ -1085,31 +1192,31 @@ fn shell_mount(
                                     "cx.hydrate(JSON.parse(document.querySelector('.native-home-palette-results').getAttribute('data-native-palette-count')))",
                                     0usize
                                 );
-                                keyboard_count.set(visible_count);
+                                palette_count.set(visible_count);
                                 if visible_count == 0usize {
-                                    keyboard_selected.set(0usize);
+                                    palette_selected.set(0usize);
                                 } else {
-                                    if keyboard_selected.get() >= visible_count {
-                                        keyboard_selected.set(visible_count - 1usize);
+                                    if palette_selected.get() >= visible_count {
+                                        palette_selected.set(visible_count - 1usize);
                                     }
                                 }
-                                keyboard_rendered.set(_revision);
-                                keyboard_waiting.set(false);
+                                palette_rendered.set(_revision);
+                                palette_waiting.set(false);
                             }
                             if key == "ArrowDown" {
                                 raw!("${_event}.preventDefault();", ());
-                                keyboard_cursor.set(true);
-                                if keyboard_count.get() > 0usize {
-                                    if keyboard_selected.get() + 1usize < keyboard_count.get() {
-                                        keyboard_selected.increment();
+                                palette_cursor_moved.set(true);
+                                if palette_count.get() > 0usize {
+                                    if palette_selected.get() + 1usize < palette_count.get() {
+                                        palette_selected.increment();
                                     }
                                 }
                             } else {
                                 if key == "ArrowUp" {
                                     raw!("${_event}.preventDefault();", ());
-                                    keyboard_cursor.set(true);
-                                    if keyboard_selected.get() > 0usize {
-                                        keyboard_selected.decrement();
+                                    palette_cursor_moved.set(true);
+                                    if palette_selected.get() > 0usize {
+                                        palette_selected.decrement();
                                     }
                                 } else {
                                     if key == "Enter" {
@@ -1120,18 +1227,18 @@ fn shell_mount(
                                             } else {
                                                 raw!("cx.hydrate(${_event}.ctrlKey)", false)
                                             };
-                                        if keyboard_waiting.get() {
-                                            keyboard_enter.set(true);
-                                            keyboard_new_tab.set(new_tab);
+                                        if palette_waiting.get() {
+                                            palette_pending_enter.set(true);
+                                            palette_pending_new_tab.set(new_tab);
                                         } else {
-                                            if keyboard_rendered.get() == keyboard_revision.get() {
+                                            if palette_rendered.get() == palette_revision.get() {
                                                 if current_results {
-                                                    let _index = keyboard_selected.get();
+                                                    let _index = palette_selected.get();
                                                     let _destination = raw!(
                                                         "cx.hydrate(document.querySelector('.native-home-palette-results a[data-palette-index=\"'+${_index}.toString()+'\"]')?.getAttribute('href') || '')",
                                                         String::new()
                                                     );
-                                                    keyboard_href.set(_destination.clone());
+                                                    palette_selected_href.set(_destination.clone());
                                                     if !_destination.is_empty() {
                                                         raw!("${_close_palette}();", ());
                                                         if new_tab {
@@ -1158,12 +1265,12 @@ fn shell_mount(
                                 key == "ArrowUp"
                             };
                             if arrow {
-                                let _index = keyboard_selected.get();
+                                let _index = palette_selected.get();
                                 let destination = raw!(
                                     "cx.hydrate(document.querySelector('.native-home-palette-results a[data-palette-index=\"'+${_index}.toString()+'\"]')?.getAttribute('href') || '')",
                                     String::new()
                                 );
-                                keyboard_href.set(destination);
+                                palette_selected_href.set(destination);
                                 raw!(
                                     "document.querySelector('.native-home-palette-results a[data-palette-index=\"'+${_index}.toString()+'\"]')?.scrollIntoView({block:'nearest'});",
                                     ()
@@ -1172,12 +1279,12 @@ fn shell_mount(
                         }
                     }
                     if key == "Tab" {
-                        if keyboard_open.get() {
-                            if !keyboard_menu.get() {
-                                let _pane = if keyboard_pane.get() == "root" {
+                        if mobile_open.get() {
+                            if !theme_menu.get() {
+                                let _pane = if mobile_pane.get() == "root" {
                                     "[data-native-mobile-root]"
                                 } else {
-                                    if keyboard_pane.get() == "unavailable" {
+                                    if mobile_pane.get() == "unavailable" {
                                         "[data-native-mobile-unavailable]"
                                     } else {
                                         "[data-native-mobile-project]:not([hidden])"
@@ -1201,13 +1308,13 @@ fn shell_mount(
             }
         };
         let _focus = |_event: Event| {
-            if !focus_sidebar_menu {
-                if focus_open.get() {
-                    if !focus_menu.get() {
-                        let _pane = if focus_pane.get() == "root" {
+            if !sidebar_menu {
+                if mobile_open.get() {
+                    if !theme_menu.get() {
+                        let _pane = if mobile_pane.get() == "root" {
                             "[data-native-mobile-root]"
                         } else {
-                            if focus_pane.get() == "unavailable" {
+                            if mobile_pane.get() == "unavailable" {
                                 "[data-native-mobile-unavailable]"
                             } else {
                                 "[data-native-mobile-project]:not([hidden])"
@@ -1458,9 +1565,17 @@ async fn native_home_palette_results(
             }
         }
     });
+    let mut result_mount = Attributes::with_capacity(usize::from(allowed));
+    if allowed {
+        result_mount.insert(
+            cx,
+            "data-topcoat-on:mount",
+            mounted.into_evaluated_and_js().1,
+        );
+    }
     Ok(view! {
         <nav class="native-home-palette-results" aria-label="Project search results" data-native-home-connected=(if connected { "true" } else { "false" })
-            data-native-palette-revision=(rendered_revision) data-native-palette-count=(rendered_count) @mount=(mounted)>
+            data-native-palette-revision=(rendered_revision) data-native-palette-count=(rendered_count) (result_mount)>
             if allowed && rows.is_empty() { <p>(empty_text)</p> }
             #[key(destination.clone())]
             for (index, (destination, title, identifier, project_name, icon)) in rows.into_iter().enumerate() {

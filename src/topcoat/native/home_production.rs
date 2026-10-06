@@ -106,6 +106,22 @@ async fn native_home_icons_use_selected_immutable_assets_at_every_mount() {
 }
 
 #[tokio::test]
+async fn native_home_initial_html_serializes_the_sidebar_catalog_once() {
+    let fixture = fixture();
+    let cookie = format!("lific_token={}", fixture.token);
+    let response = get(&fixture, Some(&cookie), None).await;
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let html = std::str::from_utf8(&body).unwrap();
+    assert_eq!(
+        html.matches("\\&quot;catalog\\&quot;").count(),
+        1,
+        "Only the retained model value should contain the catalog; stale mount checks use its revision"
+    );
+}
+
+#[tokio::test]
 async fn native_home_production_initial_html_contains_visible_work_without_hybrid_scripts() {
     let fixture = fixture();
     for prefix in [None, Some("/app"), Some("/ACC")] {
@@ -148,6 +164,58 @@ async fn native_home_production_initial_html_contains_visible_work_without_hybri
             }
         }
     }
+}
+
+#[tokio::test]
+async fn native_home_initial_mount_handlers_bind_shared_signal_handles_once() {
+    let fixture = fixture();
+    let cookie = format!("lific_token={}", fixture.token);
+    let response = get(&fixture, Some(&cookie), None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let html = std::str::from_utf8(&body).unwrap();
+    let document = scraper::Html::parse_document(html);
+    let largest = document
+        .select(&scraper::Selector::parse("*").unwrap())
+        .filter_map(|element| element.value().attr("data-topcoat-on:mount"))
+        .map(str::len)
+        .max()
+        .expect("Home installs native mount handlers");
+    assert!(
+        largest < 22_000,
+        "Shared signal handles must not repeat throughout the largest mount handler: {largest} bytes"
+    );
+}
+
+#[tokio::test]
+async fn native_home_initial_html_defers_phone_chrome_and_closed_palette_result_mount() {
+    let fixture = fixture();
+    let cookie = format!("lific_token={}", fixture.token);
+    let response = get(&fixture, Some(&cookie), None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let html = std::str::from_utf8(&body).unwrap();
+    assert!(html.contains("id=\"native-home-mobile-open\""));
+    assert!(
+        !html.contains("<section data-native-mobile-nav="),
+        "Unopened phone chrome must not serialize its dialog"
+    );
+    assert!(!html.contains("aria-label=\"Phone workspace\""));
+    assert!(!html.contains("data-native-mobile-unavailable=\"\""));
+    let document = scraper::Html::parse_document(html);
+    let results = scraper::Selector::parse("nav.native-home-palette-results").unwrap();
+    let palette_results = document.select(&results).next().unwrap();
+    assert!(
+        palette_results
+            .value()
+            .attr("data-topcoat-on:mount")
+            .is_none(),
+        "Closed palette results must not serialize their inactive result workflow"
+    );
 }
 
 #[tokio::test]
@@ -200,12 +268,12 @@ async fn native_home_initial_html_keeps_navigation_handlers_shared_as_catalog_gr
         expanded.len()
     );
     assert!(
-        expanded.len() < 300_000,
+        expanded.len() < 220_000,
         "45-project GET / must not repeat full navigation controllers: {} bytes",
         expanded.len()
     );
     assert!(
-        expanded.len() < initial.len() + 44 * 3_000,
+        expanded.len() < initial.len() + 44 * 2_200,
         "Catalog growth must add markup and action arguments, not controller bodies: {} -> {} bytes",
         initial.len(),
         expanded.len()

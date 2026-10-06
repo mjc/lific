@@ -95,20 +95,10 @@ impl Signals {
 }
 
 #[derive(serde::Serialize)]
-struct ActionArguments<'a> {
-    mode: &'a str,
-    command: &'a str,
-    id: topcoat::runtime::I64Surrogate,
-    value: &'a str,
-}
+struct ActionArguments<'a>(&'a str, &'a str, String, &'a str);
 
 fn row_action(cx: &Cx, mode: &str, command: &str, id: i64, value: &str, event: &str) -> Attributes {
-    let arguments = ActionArguments {
-        mode,
-        command,
-        id: id.into_surrogate(),
-        value,
-    };
+    let arguments = ActionArguments(mode, command, id.to_string(), value);
     let encoded = serde_json::to_string(&arguments)
         .expect("Sidebar event arguments contain only serializable scalar values");
     let mut attributes = Attributes::with_capacity(1);
@@ -177,7 +167,7 @@ pub(super) fn mount(cx: &Cx, state: &Signals) -> Attributes {
             const node=target?.closest('['+attribute+']');
             if(!node||!root.contains(node)||node.closest('.native-home-shell')!==root)return;
             const args=JSON.parse(node.getAttribute(attribute));
-            run(cx.event(event),cx.hydrate(args.mode),cx.hydrate(args.command),cx.hydrate(args.id),cx.hydrate(args.value),cx.hydrate(node.id));
+            run(cx.event(event),cx.hydrate(args[0]),cx.hydrate(args[1]),cx.hydrate({t:'i64',bits:64,v:args[2]}),cx.hydrate(args[3]),cx.hydrate(node.id));
         };
         for(const type of ['click','contextmenu','keydown','submit'])root.addEventListener(type,dispatch,{signal:cx.abortSignal});
         }"#)
@@ -558,18 +548,18 @@ pub(super) fn menu_attributes(cx: &Cx, state: &Signals) -> Attributes {
 pub(super) fn restore_region_focus(
     cx: &Cx,
     state: &Signals,
-    wire: String,
+    revision: usize,
     layout: String,
     ready: bool,
 ) -> Attributes {
     let focus = state.focus.clone();
     let dom = state.dom.clone();
-    let current_wire = state.model.clone();
+    let current_revision = state.revision.clone();
     let handler = expr!(|_event: Event| {
         let _restore = || {
             if !raw!("cx.hydrate(cx.abortSignal.aborted)", false) {
                 if ready {
-                    if current_wire.get() == wire {
+                    if current_revision.get() == revision {
                         let id = focus.get();
                         if !id.is_empty() {
                             let _snapshot = dom.get();
@@ -637,4 +627,20 @@ fn focus_on_mount(cx: &Cx, state: &Signals, id: String, ready: bool, initial: bo
         handler.into_evaluated_and_js().1,
     );
     attributes
+}
+
+#[cfg(test)]
+mod action_encoding_tests {
+    use super::*;
+
+    #[test]
+    fn sidebar_action_metadata_is_compact_and_preserves_maximum_i64() {
+        let arguments = ActionArguments("menu", "project", i64::MAX.to_string(), "");
+        let encoded = serde_json::to_string(&arguments).unwrap();
+        assert_eq!(encoded, r#"["menu","project","9223372036854775807",""]"#);
+        assert!(
+            encoded.len() <= 48,
+            "One row must carry only its scalar arguments"
+        );
+    }
 }

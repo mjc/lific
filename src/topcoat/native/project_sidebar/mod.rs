@@ -22,7 +22,28 @@ pub(crate) struct Sidebar {
     recents: recents_state::Signals,
     scrolled: Signal<i64>,
 }
+
+pub(crate) type SidebarHandles = (i64, state::Handles, recents_state::Handles, Signal<i64>);
+
 impl Sidebar {
+    pub(crate) fn handles(&self) -> SidebarHandles {
+        (
+            self.signals.account,
+            self.signals.handles(),
+            self.recents.handles(),
+            self.scrolled.clone(),
+        )
+    }
+
+    pub(crate) fn from_handles(handles: SidebarHandles) -> Self {
+        let (account, signals, recents, scrolled) = handles;
+        Self {
+            signals: state::Signals::from_handles(account, signals),
+            recents: recents_state::Signals::from_handles(account, recents),
+            scrolled,
+        }
+    }
+
     pub(crate) fn mount(&self, cx: &Cx) -> Attributes {
         state::mount(cx, &self.signals)
     }
@@ -204,16 +225,15 @@ mod desktop_shard {
         let reset = current.is_none();
         let current_path = reveal.0;
         let scrolled = reveal.1;
-        let current_wire = signals.model.clone();
+        let current_revision = signals.revision.clone();
         let expected_path = path.clone();
         // The mounted shard is the actual adopted desktop projection. A late
         // frame cannot reveal another route or an obsolete model snapshot.
-        let focus_wire = wire.clone();
         let mounted = expr!(|_event: Event| {
             let _scroll = || {
                 if !raw!("cx.hydrate(cx.abortSignal.aborted)", false) {
                     if current_path.get() == expected_path {
-                        if current_wire.get() == wire {
+                        if current_revision.get() == revision {
                             if reset {
                                 scrolled.set(0_i64);
                             } else {
@@ -250,7 +270,7 @@ mod desktop_shard {
         let restore = state::restore_region_focus(
             cx,
             &signals,
-            focus_wire,
+            revision,
             "desktop".to_owned(),
             model.edit.is_none(),
         );
@@ -285,7 +305,7 @@ mod phone_shard {
             state::restore_region_focus(
                 cx,
                 &signals,
-                wire,
+                revision,
                 "phone".to_owned(),
                 model.edit.is_none(),
             )
@@ -372,7 +392,7 @@ mod phone_panels_shard {
                 format!("native-sidebar-phone-project-{}", project.id)
             });
         let signals = state::Signals::from_handles(account, handles);
-        let current_wire = signals.model;
+        let current_revision = signals.revision;
         let menu = signals.menu_kind;
         let navigation = home_shell::MobileNavigation::from_handles(navigation);
         let (open, pane, current_selected, _, _, pending_palette, _, _) = navigation.handles();
@@ -380,7 +400,7 @@ mod phone_panels_shard {
             let _focus = || {
                 if !raw!("cx.hydrate(cx.abortSignal.aborted)", false) {
                     if current_selected.get() == selected {
-                        if current_wire.get() == wire {
+                        if current_revision.get() == revision {
                             if open.get() {
                                 if pane.get() == "project" {
                                     if menu.get().is_empty() {

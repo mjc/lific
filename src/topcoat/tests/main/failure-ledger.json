@@ -1,6 +1,6 @@
 {
   "baseline": "9683d38af8e1e6f9b076439fe90d9519109b2218",
-  "checkpoint": "Native Home payload reduction after the intermediate frontend purge; earlier runs remain historical.",
+  "checkpoint": "Native Home initial markup reduction after the intermediate frontend purge; earlier runs remain historical.",
   "status": "Native code builds; original48source mappings retained. Unported features and native adapter coverage remain incomplete.",
   "notes": [
     "Native test counts include aggregate parents; failed_assertions excludes suite/aggregate duplicates.",
@@ -2667,5 +2667,36 @@
     "browser_evidence": "Original desktop/phone light/dark shell comparisons, issue-detail geometry, shared-icon painting, project disclosure independence, retained phone rows, and group Cancel focus pass through actual native procedures and sockets.",
     "documentation": "cargo doc --workspace --no-deps --locked passes; the binary-only workspace has no library doctest targets.",
     "remaining_coverage": "The earlier missing native adapters and unported routes are still gaps. Passing the Rust workspace does not close them."
+  },
+  "native_home_initial_markup_reduction": {
+    "scope": "One initial catalog, compact sidebar action metadata, shared signal captures, and first-use phone chrome. Unfinished native features and original adapter gaps remain open.",
+    "measurement": {
+      "projects": 45,
+      "document_bytes": 214832,
+      "one_project_document_bytes": 136477,
+      "document_budget_bytes": 220000,
+      "per_additional_project_budget_bytes": 2200,
+      "source": "Actual GET / response bodies from the production router fixture. These are fixture sizes, not a measurement of an operator database."
+    },
+    "red_evidence": [
+      "Compact action encoding and omitted unopened phone chrome failed before implementation.",
+      "The single-catalog assertion observed three copies after the initial phone cut; the largest decoded mount handler was 24458 bytes against a 22000-byte budget.",
+      "The first full run had eight failures: two held selected-panel responses exposed repeated phone-parent initialization; one HTML assertion assumed attribute order; five browser cases inspected phone state before lazy dialog admission."
+    ],
+    "focused": {
+      "tests": 14,
+      "passed": 14,
+      "failed": 0,
+      "contracts": "Closed phone/palette omission, one catalog, shared captures, first-use/history focus, held-panel adoption, newer focus, and recents retention."
+    },
+    "workspace": {
+      "command": "cargo nextest run --workspace --all-targets --locked --run-ignored all --test-threads 4 --no-fail-fast",
+      "tests": 3392,
+      "passed": 3392,
+      "failed": 0,
+      "skipped": 0
+    },
+    "browser_evidence": "Actual native transport and pinned-original desktop/phone light/dark comparisons pass. Phone initialization stays at exactly one parent POST through project selection and Back/Forward. Existing focus, held-response, authorization, retained-row, and frontend REST boundaries remain asserted.",
+    "remaining_coverage": "Historical missing native adapters and unported routes remain gaps. Passing the Rust workspace does not close them."
   }
 }
