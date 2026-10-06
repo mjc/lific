@@ -1,5 +1,6 @@
 //! Main's project history feed, expanded records and actor rail.
 use super::super::dates::{absolute_time_view as absolute, relative_time_view as relative};
+use super::super::icons::UiIcon;
 use super::super::numbers::count as localized_count;
 use super::super::{activity_text, avatar, icons, transport};
 use super::diff::{self, DiffKind, DiffRow};
@@ -41,7 +42,7 @@ pub(super) fn topbar<'a>(
     });
     let href = transport::mounted_url(cx, &format!("/{identifier}/overview"));
     let identifier = identifier.to_owned();
-    view! { cx => <div class="native-project-activity__topbar text-base font-normal leading-[1.6] flex items-center gap-3 px-6 py-2 w-full"><div class="flex items-center gap-1.5 shrink-0"><a class="text-body-sm font-mono font-medium text-[var(--text-muted)] hover:text-[var(--text)] transition-colors no-underline" href=(href)>(identifier)</a>(faint_icon(cx,"lucide:ChevronRight",12))<span class="text-body-sm font-medium text-[var(--text)]">"Activity"</span><span class="ml-1 text-micro text-[var(--text-faint)] font-medium tabular-nums">(count)</span></div>if let Some(active)=active {<div class="flex items-center gap-1.5"><span class="flex items-center gap-1.5 text-caption font-medium text-[var(--accent)] bg-[var(--accent-subtle)] pl-2.5 pr-1 py-0.5 rounded-full">(active)" only"<button type="button" class="size-4 flex items-center justify-center rounded-full hover:bg-[var(--accent)] hover:text-[var(--accent-text)] transition-colors bg-transparent border-0 p-0 text-inherit text-caption leading-[1.6]" title="Clear actor filter" @click=$(|_event:Event| filter.set(raw!("cx.none()",None::<Option<i64>>)))>"×"</button></span></div>}</div> }.boxed()
+    view! { cx => <div class="native-project-activity__topbar text-base font-normal leading-[1.6] flex items-center gap-3 px-6 py-2 w-full"><div class="flex items-center gap-1.5 shrink-0"><a class="text-body-sm font-mono font-medium text-[var(--text-muted)] hover:text-[var(--text)] transition-colors no-underline" href=(href)>(identifier)</a>(faint_icon(cx,UiIcon::BreadcrumbSeparator,12))<span class="text-body-sm font-medium text-[var(--text)]">"Activity"</span><span class="ml-1 text-micro text-[var(--text-faint)] font-medium tabular-nums">(count)</span></div>if let Some(active)=active {<div class="flex items-center gap-1.5"><span class="flex items-center gap-1.5 text-caption font-medium text-[var(--accent)] bg-[var(--accent-subtle)] pl-2.5 pr-1 py-0.5 rounded-full">(active)" only"<button type="button" class="size-4 flex items-center justify-center rounded-full hover:bg-[var(--accent)] hover:text-[var(--accent-text)] transition-colors bg-transparent border-0 p-0 text-inherit text-caption leading-[1.6]" title="Clear actor filter" @click=$(|_event:Event| filter.set(raw!("cx.none()",None::<Option<i64>>)))>"×"</button></span></div>}</div> }.boxed()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -59,7 +60,7 @@ pub(super) fn content<'a>(
     timezone: chrono_tz::Tz,
 ) -> BoxView<'a> {
     if items.is_empty() {
-        return view! { cx => <div class="native-project-activity__empty flex flex-col items-center py-20 gap-3 px-6 max-w-[480px] mx-auto text-center">(faint_icon(cx,"lucide:History",32))<p class="text-body-lg text-[var(--text-muted)] m-0">"No activity yet"</p><p class="text-body-sm text-[var(--text-faint)] leading-relaxed m-0">"Every change in this project lands here — who did it, what changed, and whether it came through the web UI, an agent over MCP, the API, or the CLI."</p></div> }.boxed();
+        return view! { cx => <div class="native-project-activity__empty flex flex-col items-center py-20 gap-3 px-6 max-w-[480px] mx-auto text-center">(faint_icon(cx,UiIcon::History,32))<p class="text-body-lg text-[var(--text-muted)] m-0">"No activity yet"</p><p class="text-body-sm text-[var(--text-faint)] leading-relaxed m-0">"Every change in this project lands here — who did it, what changed, and whether it came through the web UI, an agent over MCP, the API, or the CLI."</p></div> }.boxed();
     }
     let selected = filter.get_untracked();
     let opened = expanded.get_untracked();
@@ -69,7 +70,7 @@ pub(super) fn content<'a>(
         view! { cx => <div class="native-project-activity__day mb-6 last:mb-0"><div class="sticky top-0 z-10 -mx-2 px-2 py-1.5 mb-1 bg-[var(--bg)] flex items-center gap-2"><span class="text-micro font-semibold uppercase tracking-widest text-[var(--text-muted)]">(label)</span><span class="text-micro text-[var(--text-faint)] tabular-nums">(count)</span><div class="flex-1 h-px bg-[var(--border)]"></div></div>for row in rows {(row)}</div> }.boxed()
     }).collect::<Vec<_>>();
     let rail = actor_rail(cx, actors, selected, filter, expanded, now);
-    view! { cx => <div class="native-project-activity__content flex flex-col lg:flex-row gap-8 px-8 py-6 max-w-[1280px] mx-auto items-start"><div class="native-project-activity__feed flex-1 min-w-0 w-full">for group in groups {(group)}if has_more && selected.is_none() {<button type="button" class="native-project-activity__more mt-2 text-caption leading-[1.6] text-[var(--text-muted)] hover:text-[var(--text)] inline-flex items-center gap-1 transition-colors px-2.5 py-1 rounded-md hover:bg-[var(--bg-subtle)] bg-transparent border-0" :disabled=$(loading_more.get()) @click=$(|_event:Event| {loading_more.set(true);more.increment();})>(icons::project_icon(cx,Some("lucide:ChevronDown"),12))$(if loading_more.get() {"Loading..."}else{"Load more"})</button>}</div>(rail)</div> }.boxed()
+    view! { cx => <div class="native-project-activity__content flex flex-col lg:flex-row gap-8 px-8 py-6 max-w-[1280px] mx-auto items-start"><div class="native-project-activity__feed flex-1 min-w-0 w-full">for group in groups {(group)}if has_more && selected.is_none() {<button type="button" class="native-project-activity__more mt-2 text-caption leading-[1.6] text-[var(--text-muted)] hover:text-[var(--text)] inline-flex items-center gap-1 transition-colors px-2.5 py-1 rounded-md hover:bg-[var(--bg-subtle)] bg-transparent border-0" :disabled=$(loading_more.get()) @click=$(|_event:Event| {loading_more.set(true);more.increment();})>(icons::ui_icon(cx,UiIcon::Expand,12))$(if loading_more.get() {"Loading..."}else{"Load more"})</button>}</div>(rail)</div> }.boxed()
 }
 
 fn matches_actor(item: &Activity, selected: Option<Option<i64>>) -> bool {
@@ -184,8 +185,8 @@ fn destination(identifier: &str, item: &Activity) -> Option<String> {
         _ => None,
     }
 }
-fn faint_icon<'a>(cx: &'a Cx, name: &str, size: u32) -> BoxView<'a> {
-    let icon = icons::project_icon(cx, Some(name), size);
+fn faint_icon<'a>(cx: &'a Cx, name: UiIcon, size: u32) -> BoxView<'a> {
+    let icon = icons::ui_icon(cx, name, size);
     view! {cx=><span class="inline-flex shrink-0 text-[var(--text-faint)]">(icon)</span>}.boxed()
 }
 
@@ -193,13 +194,13 @@ fn entity_icon<'a>(cx: &'a Cx, entity: &str, size: u32) -> BoxView<'a> {
     faint_icon(
         cx,
         match entity {
-            "issue" => "lucide:CircleDot",
-            "page" => "lucide:FileText",
-            "comment" => "lucide:MessageSquare",
-            "module" => "lucide:Layers",
-            "label" => "lucide:Tag",
-            "folder" => "lucide:FolderClosed",
-            _ => "lucide:Box",
+            "issue" => UiIcon::IssueLink,
+            "page" => UiIcon::Page,
+            "comment" => UiIcon::Comment,
+            "module" => UiIcon::Modules,
+            "label" => UiIcon::Labels,
+            "folder" => UiIcon::Folder,
+            _ => UiIcon::Entity,
         },
         size,
     )
@@ -242,14 +243,14 @@ fn row<'a>(
     } else {
         "native-project-activity__row rounded-md transition-colors hover:bg-[var(--bg-subtle)] border border-solid border-transparent"
     };
-    view! { cx => <div class=(class) data-activity-id=(id.to_string()) data-activity-expanded=(open.to_string())><div class="native-project-activity__row-toggle flex items-center gap-2.5 px-2.5 py-1.5 cursor-pointer" role="button" tabindex="0" @click=$(|_event:Event| {if open {expanded.set(raw!("cx.none()",None::<i64>));}else{expanded.set(raw!("cx.some(${id})",Some(id)));}})>(icon)<div class="flex-1 min-w-0 text-body-sm leading-relaxed text-[var(--text-muted)] truncate"><span class="font-medium text-[var(--text)]">(actor)</span>" " if bot {<span class="inline-block align-middle text-micro font-semibold uppercase tracking-wider px-1 py-px rounded bg-[var(--accent-subtle)] text-[var(--accent)] mx-0.5">"agent"</span>" "}(description)" "(link)" "(summary)</div><span class="shrink-0 text-micro text-[var(--text-faint)] tabular-nums">(time)</span><span class=(if open {"inline-flex shrink-0 text-[var(--text-faint)] transition-transform rotate-180"}else{"inline-flex shrink-0 text-[var(--text-faint)] transition-transform"})>(icons::project_icon(cx,Some("lucide:ChevronDown"),12))</span></div>if let Some(record)=record {(record)}</div> }.boxed()
+    view! { cx => <div class=(class) data-activity-id=(id.to_string()) data-activity-expanded=(open.to_string())><div class="native-project-activity__row-toggle flex items-center gap-2.5 px-2.5 py-1.5 cursor-pointer" role="button" tabindex="0" @click=$(|_event:Event| {if open {expanded.set(raw!("cx.none()",None::<i64>));}else{expanded.set(raw!("cx.some(${id})",Some(id)));}})>(icon)<div class="flex-1 min-w-0 text-body-sm leading-relaxed text-[var(--text-muted)] truncate"><span class="font-medium text-[var(--text)]">(actor)</span>" " if bot {<span class="inline-block align-middle text-micro font-semibold uppercase tracking-wider px-1 py-px rounded bg-[var(--accent-subtle)] text-[var(--accent)] mx-0.5">"agent"</span>" "}(description)" "(link)" "(summary)</div><span class="shrink-0 text-micro text-[var(--text-faint)] tabular-nums">(time)</span><span class=(if open {"inline-flex shrink-0 text-[var(--text-faint)] transition-transform rotate-180"}else{"inline-flex shrink-0 text-[var(--text-faint)] transition-transform"})>(icons::ui_icon(cx,UiIcon::Expand,12))</span></div>if let Some(record)=record {(record)}</div> }.boxed()
 }
 
 fn status<'a>(cx: &'a Cx, value: Option<&str>) -> BoxView<'a> {
     value
         .and_then(|value| value.parse::<Status>().ok())
         .map_or_else(|| {
-            view! {cx=><span style="color:var(--tc-faint);display:inline-flex;flex-shrink:0">(icons::project_icon(cx, Some("lucide:Circle"), 12))</span>}.boxed()
+            view! {cx=><span style="color:var(--tc-faint);display:inline-flex;flex-shrink:0">(icons::ui_icon(cx, UiIcon::Issue, 12))</span>}.boxed()
         }, |value| icons::status_icon(cx, value, 12))
 }
 fn summary<'a>(cx: &'a Cx, item: &Activity) -> BoxView<'a> {
@@ -349,7 +350,7 @@ fn record<'a>(
             .unwrap_or_default()
     );
     let values = values(cx, item);
-    view! {cx=><div class="native-project-activity__record px-4 pb-3.5 pt-1 border-0 border-t border-solid border-[var(--border)] mx-2.5 mb-1"><div class="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-3 pt-2.5"><div><p class="text-micro font-semibold uppercase tracking-widest text-[var(--text-faint)] mt-0 mb-1">"When"</p><p class="text-body-sm text-[var(--text)] m-0">(when)</p><p class="text-micro font-mono text-[var(--text-faint)] m-0 mt-0.5">(utc)</p></div><div><p class="text-micro font-semibold uppercase tracking-widest text-[var(--text-faint)] mt-0 mb-1">"Who"</p><p class="text-body-sm text-[var(--text)] m-0">(actor)if let Some(username)=username {" "<span class="text-[var(--text-faint)]">"("(username)")"</span>}if bot {<span class="inline-block align-middle text-micro font-semibold uppercase tracking-wider px-1 py-px rounded bg-[var(--accent-subtle)] text-[var(--accent)] ml-1">"agent"</span>}" "<span class="text-[var(--text-muted)]">"via "(transport)</span></p>if let Some(standing)=standing {(standing)}</div><div class="sm:col-span-2"><p class="text-micro font-semibold uppercase tracking-widest text-[var(--text-faint)] mt-0 mb-1">"What"</p><p class="text-body-sm text-[var(--text)] m-0 flex items-center gap-1.5 flex-wrap">(icon)<span class="capitalize">(entity)</span><span class="font-mono text-caption text-[var(--text-muted)]">(label)</span><span class="text-[var(--text-muted)]">(action)</span>if let Some(dest)=dest {<a class="inline-flex items-center gap-0.5 text-caption text-[var(--accent)] hover:underline no-underline" href=(dest)>"Open"(icons::project_icon(cx,Some("lucide:ArrowUpRight"),11))</a>}</p></div>(values)</div></div>}.boxed()
+    view! {cx=><div class="native-project-activity__record px-4 pb-3.5 pt-1 border-0 border-t border-solid border-[var(--border)] mx-2.5 mb-1"><div class="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-3 pt-2.5"><div><p class="text-micro font-semibold uppercase tracking-widest text-[var(--text-faint)] mt-0 mb-1">"When"</p><p class="text-body-sm text-[var(--text)] m-0">(when)</p><p class="text-micro font-mono text-[var(--text-faint)] m-0 mt-0.5">(utc)</p></div><div><p class="text-micro font-semibold uppercase tracking-widest text-[var(--text-faint)] mt-0 mb-1">"Who"</p><p class="text-body-sm text-[var(--text)] m-0">(actor)if let Some(username)=username {" "<span class="text-[var(--text-faint)]">"("(username)")"</span>}if bot {<span class="inline-block align-middle text-micro font-semibold uppercase tracking-wider px-1 py-px rounded bg-[var(--accent-subtle)] text-[var(--accent)] ml-1">"agent"</span>}" "<span class="text-[var(--text-muted)]">"via "(transport)</span></p>if let Some(standing)=standing {(standing)}</div><div class="sm:col-span-2"><p class="text-micro font-semibold uppercase tracking-widest text-[var(--text-faint)] mt-0 mb-1">"What"</p><p class="text-body-sm text-[var(--text)] m-0 flex items-center gap-1.5 flex-wrap">(icon)<span class="capitalize">(entity)</span><span class="font-mono text-caption text-[var(--text-muted)]">(label)</span><span class="text-[var(--text-muted)]">(action)</span>if let Some(dest)=dest {<a class="inline-flex items-center gap-0.5 text-caption text-[var(--accent)] hover:underline no-underline" href=(dest)>"Open"(icons::ui_icon(cx,UiIcon::RecentActivity,11))</a>}</p></div>(values)</div></div>}.boxed()
 }
 
 fn values<'a>(cx: &'a Cx, item: &Activity) -> BoxView<'a> {
@@ -400,7 +401,7 @@ mod tests {
         let cx = CxTestBuilder::new().build();
         for value in [None, Some(""), Some("unknown")] {
             let html = status(&cx, value).single().await.unwrap().render(&cx);
-            assert!(html.contains("/Circle.svg#icon\""), "{value:?}: {html}");
+            assert!(html.contains("/ui.svg#Circle\""), "{value:?}: {html}");
             assert!(html.contains("width=\"12\""), "{value:?}: {html}");
             assert!(html.contains("var(--tc-faint)"), "{value:?}: {html}");
         }

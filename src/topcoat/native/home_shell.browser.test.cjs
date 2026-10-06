@@ -157,9 +157,11 @@ test(`native Home original shell: ${scenario}`, async t => {
                 assert.equal(await control.locator(':scope > :is(svg,.native-icon-mask)').count(), 0);
               }
             }
-            const iconRequests=requests.filter(url=>new URL(url).pathname.includes('/__native_icons/'));
+            // Browser request events also include cached consumption after preload.
+            const iconRequests=proxy.requests.filter(request=>request.path.includes('/__native_icons/'))
+              .map(request=>request.path);
             assert.equal(new Set(iconRequests).size,iconRequests.length,
-              'Repeated icon instances share one browser asset request.');
+              'Repeated icon instances share one actual server download.');
             assert.equal(await page.locator('[data-native-sidebar-layout="phone"]').count(),0,
               'Hydrated unopened Home does not eagerly request or render the phone project tree.');
 

@@ -1,6 +1,7 @@
 //! Four-slot presentation storage for deferred_delete.rs.
 //! Rust expression callbacks must share this storage; no per-slot controller.
 use super::super::runtime::{procedure::ProcedureKeepaliveExt, signal_vec::SignalVecExt};
+use super::icons::UiIcon;
 use super::{issue_edit::delete::commit_delete, transport};
 use topcoat::{
     context::Cx,
@@ -406,7 +407,7 @@ pub(crate) fn owner<'a>(
                 <p>$(message.get())</p>
                 <button data-native-toast-undo="" type="button" :hidden=$(!undo.get())>"Undo"</button>
                 <button data-native-toast-close="" type="button" aria-label="Dismiss notification" title="Dismiss">
-                    (super::icons::project_icon(cx, Some("lucide:X"), 13))
+                    (super::icons::ui_icon(cx, UiIcon::Close, 13))
                 </button>
             </div>
         }
@@ -417,9 +418,9 @@ pub(crate) fn owner<'a>(
 #[shard("/__native_workspace/toast_icon")]
 async fn native_toast_icon(cx: &Cx, kind: String) -> topcoat::Result<impl topcoat::view::View> {
     let icon = match kind.as_str() {
-        "error" => "lucide:CircleAlert",
-        "success" => "lucide:CircleCheck",
-        _ => "lucide:Info",
+        "error" => UiIcon::Error,
+        "success" => UiIcon::Success,
+        _ => UiIcon::Info,
     };
-    Ok(super::icons::project_icon(cx, Some(icon), 16))
+    Ok(super::icons::ui_icon(cx, icon, 16))
 }

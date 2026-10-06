@@ -1,5 +1,6 @@
 //! Complete Rust runtime form state, frozen pending submission, and recovery UI.
 
+use super::super::icons::UiIcon;
 use topcoat::{
     context::Cx,
     runtime::{Event, Signal, expr, signal},
@@ -360,7 +361,7 @@ fn content<'a>(
                 <section class="native-project-create__reauth-wrap" :hidden=$(!pending.get()) aria-label="Verify your sign-in">
                     <div class="native-project-create__reauth">
                     <div class="native-project-create__reauth-copy">
-                    (super::super::icons::project_icon(cx, Some("lucide:Lock"), 15))
+                    (super::super::icons::ui_icon(cx, UiIcon::Restricted, 15))
                     <p>"Verify it's you to create this project with the selected lead. Granting another person access requires a recent sign-in."</p>
                     </div>
                     <p role="status" :hidden=$(auto_note.get().is_empty())>$(auto_note.get())</p>
@@ -390,7 +391,7 @@ fn topbar<'a>(cx: &'a Cx, state: &Form) -> BoxView<'a> {
         <div class="native-project-create__topbar">
             <div class="native-project-create__breadcrumb">
                 <a class="native-project-create__back" href=(settings.clone())>
-                    (super::super::icons::project_icon(cx, Some("lucide:ArrowLeft"), 14)) "Back"
+                    (super::super::icons::ui_icon(cx, UiIcon::Back, 14)) "Back"
                 </a>
                 <span aria-hidden="true">"/"</span><span class="native-project-create__title">"New project"</span>
             </div>

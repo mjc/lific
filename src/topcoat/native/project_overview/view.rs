@@ -1,4 +1,5 @@
 //! Pinned overview hero, attention and activity presentation with shared native chrome.
+use super::super::icons::UiIcon;
 use super::super::{context, dates, icons, session, transport};
 use super::{
     controls::{self, Controls},
@@ -17,7 +18,7 @@ use topcoat::{
 pub(super) fn topbar<'a>(cx: &'a Cx, identifier: &str) -> BoxView<'a> {
     let identifier = identifier.to_owned();
     let (export_error, export_button) = super::export::toolbar_fragments(cx, &identifier);
-    view! { cx => <div class="native-overview__topbar"><div class="native-overview__breadcrumb"><a href=(transport::mounted_url(cx, &format!("/{identifier}/issues")))>(identifier.clone())</a>(icons::project_icon(cx,Some("lucide:ChevronRight"),12))<span>"Overview"</span></div><div class="native-overview__topbar-actions">(export_error)(export_button)</div></div> }.boxed()
+    view! { cx => <div class="native-overview__topbar"><div class="native-overview__breadcrumb"><a href=(transport::mounted_url(cx, &format!("/{identifier}/issues")))>(identifier.clone())</a>(icons::ui_icon(cx,UiIcon::BreadcrumbSeparator,12))<span>"Overview"</span></div><div class="native-overview__topbar-actions">(export_error)(export_button)</div></div> }.boxed()
 }
 
 pub(super) fn content<'a>(
@@ -130,7 +131,7 @@ pub(super) fn content<'a>(
                 </div>
                 <div class="native-overview__identity">
                     <div class="native-overview__name-row">(hero_name)(hero_identifier)
-                        <span class="native-overview__saved" role="status" :hidden=$(!saved.get())>(icons::project_icon(cx,Some("lucide:Check"),11))" Saved"</span>
+                        <span class="native-overview__saved" role="status" :hidden=$(!saved.get())>(icons::ui_icon(cx,UiIcon::Saved,11))" Saved"</span>
                         if read_only { <span class="native-overview__readonly" title="Only a project lead or admin can change project settings.">"Read-only"</span> }
                     </div>
                     (description)
@@ -223,9 +224,9 @@ async fn native_overview_attention(
         .collect::<Vec<_>>();
     Ok(
         view! {cx => <section data-native-overview-attention=""><div class="native-overview__heading"><h2>"Needs attention"</h2>
-            if more>0 {<a href=(transport::mounted_url(cx,&format!("/{identifier}/issues")))>(format!("+{more} more open"))(icons::project_icon(cx,Some("lucide:ArrowRight"),11))</a>}
+            if more>0 {<a href=(transport::mounted_url(cx,&format!("/{identifier}/issues")))>(format!("+{more} more open"))(icons::ui_icon(cx,UiIcon::Forward,11))</a>}
             </div>
-            if rows.is_empty(){<div class="native-overview__empty"><span>(icons::project_icon(cx,Some("lucide:Check"),16))</span><div><p>"Nothing needs attention"</p><p>"Everything open is fresh and on track."</p></div></div>}
+            if rows.is_empty(){<div class="native-overview__empty"><span>(icons::ui_icon(cx,UiIcon::AllClear,16))</span><div><p>"Nothing needs attention"</p><p>"Everything open is fresh and on track."</p></div></div>}
             else {<div class="native-overview__attention-card">for (issue,title,priority,status,age,idle,heat) in rows {
                 <a class="native-overview__attention-row" href=(transport::mounted_url(cx,&format!("/{identifier}/issues/{issue}")))>
                     <span class="native-overview__heat" style=(format!("background:{heat}"))></span>(icons::priority_icon(cx,priority,15))<span class="native-overview__issue-id">(issue)</span><span class="native-overview__issue-title">(title)</span>
@@ -254,7 +255,7 @@ fn recent_activity<'a>(
             )
         })
         .collect::<Vec<_>>();
-    view! {cx => if !rows.is_empty(){<section data-native-overview-activity=""><div class="native-overview__heading"><h2>"Recent activity"</h2><a href=(transport::mounted_url(cx,&format!("/{identifier}/activity")))>(icons::project_icon(cx,Some("lucide:History"),11))" Full log"</a></div>
+    view! {cx => if !rows.is_empty(){<section data-native-overview-activity=""><div class="native-overview__heading"><h2>"Recent activity"</h2><a href=(transport::mounted_url(cx,&format!("/{identifier}/activity")))>(icons::ui_icon(cx,UiIcon::History,11))" Full log"</a></div>
         <div class="native-overview__activity-rows">for (actor,text,time,id) in rows{<div class="native-overview__activity-row" data-activity-id=(id.to_string())><span></span><p><strong>(actor)</strong>" "(text)" "<span>"· "(time)</span></p></div>}</div>
     </section>} }.boxed()
 }

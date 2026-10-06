@@ -35,9 +35,27 @@ only immutable functions; signal handles and request data stay in each owning
 mount scope. Home refresh, recents, mobile navigation, and account checks reuse
 those assets. Sidebar rows carry compact scalar event arguments, preserving
 exact 64-bit IDs and JSON encoding for arbitrary editor text.
-Lucide geometry is served as versioned, immutable assets for the selected icons.
+The 64 fixed UI Lucide icons share one versioned, immutable SVG sprite.
+Each reference selects its named symbol; arbitrary project icons retain
+individual immutable assets. Both formats use the original approved geometry.
 Repeated sidebar chevrons and overflow icons use CSS pseudo-elements and shared
 masks; other icons reuse SVG geometry.
+Initial document responses send HTTP `Link` image preload headers for the
+selected Lucide assets and logo. Repeated references share one hint per URL
+within one `Link` field, including the trusted proxy mount. Unopened picker
+choices add no hints. Redirects, API responses, and WebSocket
+upgrades carry no image hints. Icons retain external SVG references and their
+immutable cache headers.
+
+Use `icons::ui_icon(cx, icons::UiIcon::Search, 16)` for application controls.
+The shared helper constructs the mounted symbol URL and records its preload
+during initial rendering. Semantic names map to approved Lucide glyphs in
+`native/icons/ui.rs`. Add one `UiIcon` variant with its glyph mapping to register
+it; sprite membership and cache version derive automatically. Aliases such as
+`ShowPassword` and `Preview` share one geometry definition.
+Picker grids use `icons::picker_choice_icon` to omit unopened choices from
+preload hints. Use `icons::project_icon` for stored project values, emoji, and
+the logo.
 
 The pinned framework source and distribution are retained for reproducible
 runtime patches. Its tests compare the served runtime against the upstream

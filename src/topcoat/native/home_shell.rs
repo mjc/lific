@@ -3,6 +3,7 @@
 use super::super::runtime::connected;
 use super::super::shell::ParsedRoute;
 use super::home_data::Snapshot;
+use super::icons::UiIcon;
 use super::session::native_home_session;
 use crate::db::models::{AuthUser, Project};
 use topcoat::{
@@ -374,23 +375,23 @@ fn render_shell<'a>(
                     let _value = if collapsed.get() { "1" } else { "0" };
                     raw!("(() => {try {localStorage.setItem('lific:sidebar:collapsed', ${_value}.toString());} catch {}})()", ());
                 })>
-                (super::icons::project_icon(cx, Some("lucide:PanelLeftClose"), 15))
+                (super::icons::ui_icon(cx, UiIcon::CollapseSidebar, 15))
             </button>
             <aside class="native-home-sidebar" aria-label="Workspace sidebar" :inert=$(mobile_open.get())>
                 <div class="native-home-brand-row">
                     <a class="native-home-brand" href="https://github.com/VoidNullable/lific" target="_blank" rel="noopener noreferrer" title="View Lific on GitHub">
-                        <img src=(super::transport::mounted_url(cx, "/logo.webp")) alt="" width="26" height="26"/>
+                        <img src=(super::preloads::image_url(cx, "/logo.webp")) alt="" width="26" height="26"/>
                         <span>"Lific"</span><small>(concat!("v", env!("CARGO_PKG_VERSION")))</small>
                     </a>
                 </div>
                 <div class="native-home-launcher-wrap">
                 <button id="native-home-palette-open" class="native-home-launcher" @click=$(|_event| palette_open.set(true))>
-                    (super::icons::project_icon(cx, Some("lucide:Search"), 14)) <span>"Jump to…"</span><kbd>"⌘K"</kbd>
+                    (super::icons::ui_icon(cx, UiIcon::Search, 14)) <span>"Jump to…"</span><kbd>"⌘K"</kbd>
                 </button>
                 </div>
                 <nav class="native-home-workspace" aria-label="Workspace">
                     <a class="native-home-destination native-home-home-link" href=(super::transport::mounted_url(cx, "/")) :aria-current=$(home_active.then_some("page"))>
-                        (super::icons::project_icon(cx, Some("lucide:House"), 14)) "Home"
+                        (super::icons::ui_icon(cx, UiIcon::Home, 14)) "Home"
                     </a>
                     (sidebar.desktop(cx,path.clone()))
                 </nav>
@@ -398,7 +399,7 @@ fn render_shell<'a>(
                     <a class="native-home-account-link" href=(super::transport::mounted_url(cx, "/settings")) title="Account settings">
                         <span class="native-home-avatar">(initials.clone())</span>
                         <span class="native-home-account-copy"><span class="native-home-account">(display_name.clone())</span>
-                            <small>(super::icons::project_icon(cx, Some("lucide:Settings"), 9)) "Settings"</small>
+                            <small>(super::icons::ui_icon(cx, UiIcon::Settings, 9)) "Settings"</small>
                         </span>
                     </a>
                     (theme_button(cx, theme.clone(), theme_menu.clone()))
@@ -408,9 +409,9 @@ fn render_shell<'a>(
                 <header class="native-home-mobile-header">
                     <button id="native-home-mobile-open" class="native-home-icon-button" aria-label="Open navigation" :aria-expanded=$(if mobile_open.get() { "true" } else { "false" })
                         (mobile_action(cx, &navigation, "open", String::new()))>
-                        (super::icons::project_icon(cx, Some("lucide:Menu"), 20))
+                        (super::icons::ui_icon(cx, UiIcon::OpenNavigation, 20))
                     </button>
-                    <img src=(super::transport::mounted_url(cx, "/logo.webp")) alt="" width="22" height="22"/><span>$(page_label.get())</span>
+                    <img src=(super::preloads::image_url(cx, "/logo.webp")) alt="" width="22" height="22"/><span>$(page_label.get())</span>
                 </header>
                 (content)
             </div>
@@ -438,7 +439,7 @@ fn render_shell<'a>(
                 <section class="native-home-palette" role="dialog" aria-modal="true" aria-labelledby="native-home-palette-title">
                     <header><h2 id="native-home-palette-title">"Jump to project"</h2>
                         <button id="native-home-palette-close" class="native-home-icon-button" aria-label="Close project search" @click=$(|_event| palette_open.set(false))>
-                            (super::icons::project_icon(cx, Some("lucide:X"), 18))
+                            (super::icons::ui_icon(cx, UiIcon::Close, 18))
                         </button>
                     </header>
                     <label for="native-home-palette-query">"Search visible projects and issue references"</label>
@@ -537,18 +538,18 @@ async fn native_home_phone(
             <section data-native-mobile-nav="" role="dialog" :aria-modal=$(if sidebar_menu_open { "false" } else { if theme_menu.get() { "false" } else { "true" } }) aria-label="Workspace navigation" :hidden=$(!mobile_open.get()) @mount=(phone_mount)>
                 <div data-native-mobile-root="" :hidden=$(mobile_pane.get() != "root")>
                     <header class="native-home-mobile-nav-header">
-                        <img src=(super::transport::mounted_url(cx, "/logo.webp")) alt="" width="28" height="28"/>
+                        <img src=(super::preloads::image_url(cx, "/logo.webp")) alt="" width="28" height="28"/>
                         <strong>"Lific"</strong><small>(concat!("v", env!("CARGO_PKG_VERSION")))</small>
                         <button class="native-home-icon-button" aria-label="Close navigation" (mobile_action(cx, &navigation, "close", String::new()))>
-                            (super::icons::project_icon(cx, Some("lucide:X"), 20))
+                            (super::icons::ui_icon(cx, UiIcon::Close, 20))
                         </button>
                     </header>
                     <button class="native-home-mobile-search" (mobile_action(cx, &navigation, "search", String::new()))>
-                        (super::icons::project_icon(cx, Some("lucide:Search"), 18)) "Search issues, pages, projects…"
+                        (super::icons::ui_icon(cx, UiIcon::Search, 18)) "Search issues, pages, projects…"
                     </button>
                     <nav aria-label="Phone workspace">
                         <a class="native-home-mobile-link" href=(super::transport::mounted_url(cx, "/")) :aria-current=$(home_active.then_some("page"))>
-                            (super::icons::project_icon(cx, Some("lucide:House"), 20)) "Home"
+                            (super::icons::ui_icon(cx, UiIcon::Home, 20)) "Home"
                         </a>
                         (sidebar.phone(cx,path.clone(),navigation.handles()))
                     </nav>
@@ -573,10 +574,10 @@ fn mobile_unavailable_panel<'a>(cx: &'a Cx, navigation: &MobileNavigation) -> Bo
         <div data-native-mobile-unavailable="" :hidden=$(pane.get() != "unavailable")>
             <header class="native-home-mobile-nav-header native-home-unavailable-header">
                 <button class="native-home-icon-button native-home-unavailable-back" aria-label="Back to projects" (back)>
-                    (super::icons::project_icon(cx, Some("lucide:ChevronLeft"), 20)) "Projects"
+                    (super::icons::ui_icon(cx, UiIcon::Previous, 20)) "Projects"
                 </button>
                 <button class="native-home-icon-button" aria-label="Close navigation" (close)>
-                    (super::icons::project_icon(cx, Some("lucide:X"), 20))
+                    (super::icons::ui_icon(cx, UiIcon::Close, 20))
                 </button>
             </header>
             <div class="native-home-unavailable-copy">
@@ -756,9 +757,9 @@ fn theme_button<'a>(cx: &'a Cx, theme: Signal<String>, open: Signal<bool>) -> Bo
                 open.set(!open.get());
                 raw!("queueMicrotask(() => document.querySelector('.native-home-theme-menu:not([hidden]) button')?.focus())", ());
             })>
-            <span :hidden=$(theme.get() != "system")>(super::icons::project_icon(cx, Some("lucide:Monitor"), 15))</span>
-            <span :hidden=$(theme.get() != "light")>(super::icons::project_icon(cx, Some("lucide:Sun"), 15))</span>
-            <span :hidden=$(theme.get() != "dark")>(super::icons::project_icon(cx, Some("lucide:Moon"), 15))</span>
+            <span :hidden=$(theme.get() != "system")>(super::icons::ui_icon(cx, UiIcon::SystemTheme, 15))</span>
+            <span :hidden=$(theme.get() != "light")>(super::icons::ui_icon(cx, UiIcon::LightTheme, 15))</span>
+            <span :hidden=$(theme.get() != "dark")>(super::icons::ui_icon(cx, UiIcon::DarkTheme, 15))</span>
         </button>
     }.boxed()
 }
@@ -1543,11 +1544,11 @@ async fn native_home_palette_results(
         .into_iter()
         .map(|issue| {
             let icon = match issue.status.as_str() {
-                "active" => "lucide:CircleDot",
-                "todo" => "lucide:Circle",
-                "done" => "lucide:CircleCheckBig",
-                "cancelled" => "lucide:CircleX",
-                _ => "lucide:CircleDashed",
+                "active" => UiIcon::ActiveIssue,
+                "todo" => UiIcon::TodoIssue,
+                "done" => UiIcon::DoneIssue,
+                "cancelled" => UiIcon::CancelledIssue,
+                _ => UiIcon::BacklogIssue,
             };
             (
                 super::transport::mounted_url(cx, &issue.logical_destination),
@@ -1567,7 +1568,7 @@ async fn native_home_palette_results(
                     project.name.clone(),
                     project.identifier.clone(),
                     String::new(),
-                    "lucide:Folder",
+                    UiIcon::Project,
                 )
             }),
     );
@@ -1678,7 +1679,7 @@ async fn native_home_palette_results(
                         click_enter.set(false);
                         click_new_tab.set(false);
                     })>
-                    (super::icons::project_icon(cx, Some(icon), 16))
+                    (super::icons::ui_icon(cx, icon, 16))
                     <span class="native-home-palette-row-copy"><span>(title)</span>
                         if !project_name.is_empty() { <span class="native-home-palette-row-project">(project_name)</span> }
                     </span><small>(identifier)</small>

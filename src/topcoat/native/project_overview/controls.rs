@@ -1,5 +1,6 @@
 //! Inline identity editing and per-user filing, authored in Rust.
 use super::super::icons;
+use super::super::icons::UiIcon;
 use super::actions;
 use crate::db::models::{Project, ProjectGroup};
 use topcoat::{
@@ -173,7 +174,7 @@ pub(super) fn name<'a>(cx: &'a Cx, controls: &Controls, can_manage: bool) -> Box
             <button type="button" class="native-overview__name" :hidden=$(name_editing.get()) @click=$(|_event: Event| {
                 name_draft.set(name.get()); name_editing.set(true);
                 raw!("requestAnimationFrame(()=>document.getElementById(${focus_input}.toString())?.focus());", ());
-            })>$(name.get())(icons::project_icon(cx,Some("lucide:Pencil"),14))</button>
+            })>$(name.get())(icons::ui_icon(cx,UiIcon::Edit,14))</button>
             <input id=(input_id) aria-label="Project name" class="native-overview__name-input" :hidden=$(!name_editing.get()) :value=$(name_draft.get())
                 @input=$(|event: Event| name_draft.set(event.target.value))
                 (blur) (keydown)>
@@ -197,7 +198,7 @@ pub(super) fn description<'a>(cx: &'a Cx, controls: &Controls, can_manage: bool)
             })>
                 <span :hidden=$(description.get().is_empty())>$(description.get())</span>
                 <span class="native-overview__description-empty" :hidden=$(!description.get().is_empty())>"Add a description…"</span>
-                " "(icons::project_icon(cx,Some("lucide:Pencil"),12))
+                " "(icons::ui_icon(cx,UiIcon::Edit,12))
             </button>
             <textarea id=(input_id) rows="2" aria-label="Project description" placeholder="Describe this project…" class="native-overview__description-input" :hidden=$(!description_editing.get()) :value=$(description_draft.get())
                 @input=$(|event: Event| description_draft.set(event.target.value))
@@ -216,7 +217,7 @@ pub(super) fn copy_identifier<'a>(cx: &'a Cx, identifier: &str) -> BoxView<'a> {
         let _completed = || { completed_copied.set(true); let _reset = || completed_copied.set(false); raw!("setTimeout(()=>{if(!cx.abortSignal.aborted) ${_reset}()},1500);", ()); };
         let _failed = || failed_copied.set(false);
         raw!("navigator.clipboard.writeText(${clipboard_identifier}.toString()).then(()=>${_completed}(),()=>${_failed}());", ());
-    })>(identifier)<span :hidden=$(copied.get())>(icons::project_icon(cx,Some("lucide:Copy"),11))</span><span :hidden=$(!copied.get())>(icons::project_icon(cx,Some("lucide:Check"),11))</span></button> }.boxed()
+    })>(identifier)<span :hidden=$(copied.get())>(icons::ui_icon(cx,UiIcon::Copy,11))</span><span :hidden=$(!copied.get())>(icons::ui_icon(cx,UiIcon::Copied,11))</span></button> }.boxed()
 }
 
 pub(super) fn group<'a>(

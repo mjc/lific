@@ -1,4 +1,5 @@
 //! Server populated Insights cards using the pinned Main presentation.
+use super::super::icons::UiIcon;
 use super::super::{avatar, dates, icons, transport};
 use crate::db::models::{ActorStat, InsightsPayload, Priority, Status};
 use topcoat::{
@@ -96,9 +97,9 @@ pub(super) fn content<'a>(cx: &'a Cx, data: &InsightsPayload) -> BoxView<'a> {
     let clock_mount = dates::clock_mount(cx, clock.clone());
     let actors = actor_list(cx, &data.top_actors, clock);
     view! { cx => <div class="native-insights h-full min-h-0 overflow-y-auto leading-[1.6] text-[var(--tc-text)]" (clock_mount)><div class="native-insights__content max-w-[1100px] mx-auto px-6 py-6 flex flex-col gap-5">
-        <section class="native-insights__card native-insights__hero rounded-xl bg-[var(--tc-surface)] shadow-[0_1px_2px_rgba(0,0,0,0.06)] p-5"><div class="native-insights__heading flex items-center gap-2 mb-4 text-[var(--tc-muted)]">(icons::project_icon(cx,Some("lucide:TrendingUp"),15))<h2 class="text-body-lg font-semibold text-[var(--tc-text)] m-0 leading-[1.2] tracking-[-0.02em]">"Created vs. closed"</h2><span class="text-micro text-[var(--tc-faint)] tabular-nums ml-auto">(window.clone())</span></div>(chart)</section>
+        <section class="native-insights__card native-insights__hero rounded-xl bg-[var(--tc-surface)] shadow-[0_1px_2px_rgba(0,0,0,0.06)] p-5"><div class="native-insights__heading flex items-center gap-2 mb-4 text-[var(--tc-muted)]">(icons::ui_icon(cx,UiIcon::Insights,15))<h2 class="text-body-lg font-semibold text-[var(--tc-text)] m-0 leading-[1.2] tracking-[-0.02em]">"Created vs. closed"</h2><span class="text-micro text-[var(--tc-faint)] tabular-nums ml-auto">(window.clone())</span></div>(chart)</section>
         <div class="native-insights__distributions grid grid-cols-1 md:grid-cols-3 gap-4 items-stretch">(status)(priority)(modules)</div>
-        <section class="native-insights__card native-insights__actors rounded-xl bg-[var(--tc-surface)] shadow-[0_1px_2px_rgba(0,0,0,0.06)] p-4"><div class="native-insights__heading flex items-center gap-2 mb-2 text-[var(--tc-muted)]">(icons::project_icon(cx,Some("lucide:Users"),14))<h3 class="text-micro font-semibold uppercase tracking-widest text-[var(--tc-faint)] m-0 leading-[1.2]">"Top actors"</h3><span class="text-micro text-[var(--tc-faint)] tabular-nums ml-auto">(window)</span></div>(actors)</section>
+        <section class="native-insights__card native-insights__actors rounded-xl bg-[var(--tc-surface)] shadow-[0_1px_2px_rgba(0,0,0,0.06)] p-4"><div class="native-insights__heading flex items-center gap-2 mb-2 text-[var(--tc-muted)]">(icons::ui_icon(cx,UiIcon::Members,14))<h3 class="text-micro font-semibold uppercase tracking-widest text-[var(--tc-faint)] m-0 leading-[1.2]">"Top actors"</h3><span class="text-micro text-[var(--tc-faint)] tabular-nums ml-auto">(window)</span></div>(actors)</section>
     </div></div> }.boxed()
 }
 

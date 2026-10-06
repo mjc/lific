@@ -1,5 +1,6 @@
 //! Pinned issue Activity timeline: authorized SQL history and Rust-owned display.
 
+use super::super::icons::UiIcon;
 use topcoat::{
     context::Cx,
     runtime::{Event, Signal, shard, signal},
@@ -154,7 +155,7 @@ async fn timeline_component(cx: &Cx, items: Vec<Activity>) -> topcoat::Result<im
         if count > 0 {
             <section class="native-issue-activity" data-native-issue-activity="" (mounted)>
                 <div class="native-issue-activity__header">
-                    (icons::project_icon(cx, Some("lucide:History"), 13))
+                    (icons::ui_icon(cx, UiIcon::History, 13))
                     <h2>"Activity"</h2><span class="native-issue-activity__count">(count.to_string())</span>
                 </div>
                 <ol><div class="native-issue-activity__rail" aria-hidden="true"></div>
@@ -167,7 +168,7 @@ async fn timeline_component(cx: &Cx, items: Vec<Activity>) -> topcoat::Result<im
                 </ol>
                 if count > 6 {
                     <button type="button" class="native-issue-activity__all" @click=$(|_event: Event| { expanded.set(!expanded.get()); })>
-                        <span :style=$(if expanded.get() { "display:inline-flex;transition:transform .15s;transform:rotate(180deg)" } else { "display:inline-flex;transition:transform .15s" })>(icons::project_icon(cx, Some("lucide:ChevronDown"), 12))</span>
+                        <span :style=$(if expanded.get() { "display:inline-flex;transition:transform .15s;transform:rotate(180deg)" } else { "display:inline-flex;transition:transform .15s" })>(icons::ui_icon(cx, UiIcon::Expand, 12))</span>
                         <span :hidden=$(expanded.get())>(format!("Show all {count} entries"))</span>
                         <span :hidden=$(!expanded.get())>"Show recent only"</span>
                     </button>
@@ -211,7 +212,7 @@ async fn activity_row(cx: &Cx, item: Activity, now: Signal<f64>) -> topcoat::Res
             if long {
                 <button type="button" @click=$(|_event: Event| { open.set(!open.get()); })>
                     <span :hidden=$(open.get())>"show change"</span><span :hidden=$(!open.get())>"hide change"</span>
-                    <span :style=$(if open.get() { "display:inline-flex;transition:transform .15s;transform:rotate(180deg)" } else { "display:inline-flex;transition:transform .15s" })>(icons::project_icon(cx, Some("lucide:ChevronDown"), 11))</span>
+                    <span :style=$(if open.get() { "display:inline-flex;transition:transform .15s;transform:rotate(180deg)" } else { "display:inline-flex;transition:transform .15s" })>(icons::ui_icon(cx, UiIcon::Expand, 11))</span>
                 </button>
             } else { (values) }
             " "(time_view(cx, &item.ts, &item.transport, now))
@@ -281,7 +282,7 @@ fn value_icon<'a>(cx: &'a Cx, field: &str, value: &str) -> BoxView<'a> {
         match value.parse::<Status>() {
             Ok(status) => icons::status_icon(cx, status, 12),
             // Unknown historical statuses use Circle with the source's faint color.
-            Err(_) => view! { cx => <span style="color:var(--tc-faint);display:inline-flex">(icons::project_icon(cx, Some("lucide:Circle"), 12))</span> }.boxed(),
+            Err(_) => view! { cx => <span style="color:var(--tc-faint);display:inline-flex">(icons::ui_icon(cx, UiIcon::Issue, 12))</span> }.boxed(),
         }
     } else {
         icons::priority_icon(cx, value.parse().unwrap_or(Priority::None), 12)

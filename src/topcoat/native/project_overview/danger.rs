@@ -1,5 +1,6 @@
 //! Deliberate lead/rekey/delete controls with fresh server authority.
 use super::super::super::runtime::string::StrUnicodeExt;
+use super::super::icons::UiIcon;
 use super::super::{context, icons, session, transport};
 use super::actions::save_field;
 use super::{
@@ -71,7 +72,7 @@ pub(super) fn panel<'a>(
     let failed_rename_error = rename_error.clone();
     let failed_deleting = deleting.clone();
     let failed_delete_error = delete_error.clone();
-    view!{cx=><section class="native-overview__danger"><button type="button" class="native-overview__danger-toggle" :aria-expanded=$(expanded.get()) @click=$(|_event:Event|expanded.set(!expanded.get()))>(icons::project_icon(cx,Some("lucide:AlertTriangle"),15))<span>"Danger zone"</span><span class="native-overview__danger-chevron" :data-open=$(expanded.get())>(icons::project_icon(cx,Some("lucide:ChevronDown"),15))</span></button>
+    view!{cx=><section class="native-overview__danger"><button type="button" class="native-overview__danger-toggle" :aria-expanded=$(expanded.get()) @click=$(|_event:Event|expanded.set(!expanded.get()))>(icons::ui_icon(cx,UiIcon::Warning,15))<span>"Danger zone"</span><span class="native-overview__danger-chevron" :data-open=$(expanded.get())>(icons::ui_icon(cx,UiIcon::Expand,15))</span></button>
         <div class="native-overview__danger-body" :hidden=$(!expanded.get())>
             (lead_shard)(prompt)<p role="alert" :hidden=$(lead_error.get().is_empty())>$(lead_error.get())</p>
             <div class="native-overview__danger-divider"></div>

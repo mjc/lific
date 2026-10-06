@@ -1,6 +1,7 @@
 //! Main's login fields and completion state expressed in the Rust runtime.
 use super::super::super::runtime::whitespace::StrEcmaTrimExt;
 use super::super::auth_shell::{BUTTON, INPUT};
+use super::super::icons::UiIcon;
 use super::{
     super::icons,
     actions::{automatic, sign_in},
@@ -140,7 +141,7 @@ pub(super) fn content(cx: &Cx, auto: bool) -> BoxView<'_> {
     view! {cx =>
         if let Some(mount)=automatic_mount {<span hidden="hidden" (mount)></span>}
         <form class="flex flex-col gap-5" novalidate="novalidate" (command)>
-            <div aria-live="polite"><div role="alert" :hidden=$(error.get().is_empty()) class="[&[hidden]]:hidden flex items-start gap-2.5 text-body-sm text-[var(--error)] bg-[var(--tc-error-bg)] px-3.5 py-3 rounded-lg">(icons::project_icon(cx,Some("lucide:AlertTriangle"),15))<span>$(error.get())</span></div></div>
+            <div aria-live="polite"><div role="alert" :hidden=$(error.get().is_empty()) class="[&[hidden]]:hidden flex items-start gap-2.5 text-body-sm text-[var(--error)] bg-[var(--tc-error-bg)] px-3.5 py-3 rounded-lg">(icons::ui_icon(cx,UiIcon::Warning,15))<span>$(error.get())</span></div></div>
             <div class="flex flex-col gap-1.5">
                 <label for="login-identity" class="text-micro font-semibold uppercase tracking-widest text-[var(--text-faint)]">"Username or email"</label>
                 <input id="login-identity" type="text" placeholder="jane" autocomplete="username" autocapitalize="none" spellcheck="false" class=(INPUT)

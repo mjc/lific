@@ -1,4 +1,5 @@
 //! Shared owned project/group rows. Layout affects presentation, never actions.
+use super::super::icons::UiIcon;
 use super::super::{icons, transport};
 use super::{
     model::{Catalog, DESTINATIONS, Destination, EditTarget, Group, Project, State},
@@ -35,7 +36,7 @@ pub(super) fn destinations<'a>(
         Layout::Desktop => "sidebar-destination native-sidebar-destination",
         Layout::Phone => "sidebar-destination native-sidebar-mobile-destination",
     };
-    view!{cx=>for(href,label,icon,active)in links{<a class=(class) href=(href) aria-current=(active.then_some("page"))>(icons::project_icon(cx,Some(icon),if matches!(layout,Layout::Phone){20}else{14}))(label)</a>}}.boxed()
+    view!{cx=>for(href,label,icon,active)in links{<a class=(class) href=(href) aria-current=(active.then_some("page"))>(icons::ui_icon(cx,icon,if matches!(layout,Layout::Phone){20}else{14}))(label)</a>}}.boxed()
 }
 fn mark<'a>(cx: &'a Cx, project: &Project, layout: Layout) -> BoxView<'a> {
     let (class, size) = match layout {
@@ -291,7 +292,7 @@ pub(super) fn projects<'a>(
     } else {
         "desktop"
     };
-    view!{cx=><div data-native-sidebar-projects="" data-native-sidebar-layout=(region)><div class="sidebar-projects-heading native-sidebar-projects-heading"><span class="sidebar-section-label">"Projects"</span><button id=(trigger) aria-label="New project or group" title="New project or group" aria-haspopup="menu" (create)>(icons::project_icon(cx,Some("lucide:Plus"),if matches!(layout,Layout::Phone){18}else{13}))</button></div>
+    view!{cx=><div data-native-sidebar-projects="" data-native-sidebar-layout=(region)><div class="sidebar-projects-heading native-sidebar-projects-heading"><span class="sidebar-section-label">"Projects"</span><button id=(trigger) aria-label="New project or group" title="New project or group" aria-haspopup="menu" (create)>(icons::ui_icon(cx,UiIcon::Add,if matches!(layout,Layout::Phone){18}else{13}))</button></div>
         <div :hidden=$(transport_error.get().is_empty()) class="native-sidebar-order-error"><p role="alert">$(transport_error.get())</p><button type="button" :hidden=$(pending_receipt.get().is_empty()) (confirm)>"Confirm change"</button><button type="button" @click=$(|_event:Event|{raw!("window.location.reload();",());})>"Reload page"</button></div>
         if new{(field)}if !error.is_empty(){<p role="alert" class="native-sidebar-order-error">(error)</p>}
         for group in groups{(group)}
@@ -312,7 +313,7 @@ pub(super) fn menu<'a>(
     if kind == "create" {
         items.push((
             "New group".to_owned(),
-            "lucide:FolderPlus",
+            UiIcon::AddFolder,
             "new_group",
             0,
             String::new(),
@@ -327,7 +328,7 @@ pub(super) fn menu<'a>(
         items.extend([
             (
                 String::from("Move up"),
-                "lucide:ArrowUp",
+                UiIcon::MoveUp,
                 "group_up",
                 id,
                 String::new(),
@@ -335,7 +336,7 @@ pub(super) fn menu<'a>(
             ),
             (
                 String::from("Move down"),
-                "lucide:ArrowDown",
+                UiIcon::MoveDown,
                 "group_down",
                 id,
                 String::new(),
@@ -343,7 +344,7 @@ pub(super) fn menu<'a>(
             ),
             (
                 String::from("Rename"),
-                "lucide:Pencil",
+                UiIcon::Edit,
                 "rename_group",
                 id,
                 group.name.clone(),
@@ -351,7 +352,7 @@ pub(super) fn menu<'a>(
             ),
             (
                 String::from("Delete group"),
-                "lucide:Trash2",
+                UiIcon::Delete,
                 "delete_group",
                 id,
                 String::new(),
@@ -369,7 +370,7 @@ pub(super) fn menu<'a>(
         items.extend([
             (
                 String::from("Move up"),
-                "lucide:ArrowUp",
+                UiIcon::MoveUp,
                 "project_up",
                 id,
                 String::new(),
@@ -377,7 +378,7 @@ pub(super) fn menu<'a>(
             ),
             (
                 String::from("Move down"),
-                "lucide:ArrowDown",
+                UiIcon::MoveDown,
                 "project_down",
                 id,
                 String::new(),
@@ -388,7 +389,7 @@ pub(super) fn menu<'a>(
             if Some(group.id) != containing {
                 items.push((
                     format!("Move to {}", group.name),
-                    "lucide:Folder",
+                    UiIcon::Project,
                     "assign",
                     id,
                     group.id.to_string(),
@@ -399,7 +400,7 @@ pub(super) fn menu<'a>(
         if containing.is_some() {
             items.push((
                 String::from("Remove from group"),
-                "lucide:FolderMinus",
+                UiIcon::RemoveFolder,
                 "assign",
                 id,
                 String::new(),
@@ -408,7 +409,7 @@ pub(super) fn menu<'a>(
         }
         items.push((
             String::from("New group…"),
-            "lucide:FolderPlus",
+            UiIcon::AddFolder,
             "new_group",
             id,
             String::new(),
@@ -418,14 +419,14 @@ pub(super) fn menu<'a>(
     let mut rows = Vec::new();
     for (label, icon, command, target, value, disabled) in items {
         let invoke = state::invoke(cx, signals, command, target, value, "click");
-        rows.push(view!{cx=><button role="menuitem" disabled=(disabled) (invoke)>(icons::project_icon(cx,Some(icon),14))(label)</button>}.boxed());
+        rows.push(view!{cx=><button role="menuitem" disabled=(disabled) (invoke)>(icons::ui_icon(cx,icon,14))(label)</button>}.boxed());
     }
     let new_project = transport::mounted_url(cx, "/projects/new");
     let menu_attributes = state::menu_attributes(cx, signals);
     let x = signals.menu_x.clone();
     let y = signals.menu_y.clone();
     let create = kind == "create";
-    view!{cx=><div id="native-sidebar-menu" role="menu" data-native-sidebar-menu="" data-context-menu="" aria-label="Context menu" tabindex="-1" class="native-sidebar-menu" (menu_attributes) :style=$(raw!("cx.hydrate('left:'+${x}.get().toString()+'px;top:'+${y}.get().toString()+'px')",String::new()))>if create{<a role="menuitem" href=(new_project)>(icons::project_icon(cx,Some("lucide:Plus"),14))"New project"</a>}for row in rows{(row)}</div>}.boxed()
+    view!{cx=><div id="native-sidebar-menu" role="menu" data-native-sidebar-menu="" data-context-menu="" aria-label="Context menu" tabindex="-1" class="native-sidebar-menu" (menu_attributes) :style=$(raw!("cx.hydrate('left:'+${x}.get().toString()+'px;top:'+${y}.get().toString()+'px')",String::new()))>if create{<a role="menuitem" href=(new_project)>(icons::ui_icon(cx,UiIcon::Add,14))"New project"</a>}for row in rows{(row)}</div>}.boxed()
 }
 
 /// The phone project pane reads the same authorized model as the root tree.
@@ -447,7 +448,7 @@ pub(super) fn phone_panels<'a>(
         let links = destinations(cx, project, path, Layout::Phone);
         let recent = super::recents_view::slot(cx, recents, project, path, Layout::Phone);
         let selected = selected.clone();
-        panels.push(view!{cx=><div id=(id) data-native-mobile-project="" :hidden=$(selected.get()!=identifier)><header class="native-home-mobile-nav-header"><button class="native-home-icon-button" aria-label="Back to projects" (back)>(icons::project_icon(cx,Some("lucide:ArrowLeft"),20))</button><strong>(name)</strong><button class="native-home-icon-button" aria-label="Close navigation" (close)>(icons::project_icon(cx,Some("lucide:X"),20))</button></header>(links)(recent)</div>}.boxed());
+        panels.push(view!{cx=><div id=(id) data-native-mobile-project="" :hidden=$(selected.get()!=identifier)><header class="native-home-mobile-nav-header"><button class="native-home-icon-button" aria-label="Back to projects" (back)>(icons::ui_icon(cx,UiIcon::Back,20))</button><strong>(name)</strong><button class="native-home-icon-button" aria-label="Close navigation" (close)>(icons::ui_icon(cx,UiIcon::Close,20))</button></header>(links)(recent)</div>}.boxed());
     }
     view! {cx=>for panel in panels{(panel)}}.boxed()
 }
