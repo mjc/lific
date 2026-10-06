@@ -2,10 +2,12 @@
 mod admission_contract;
 #[cfg(test)]
 mod assembled;
+pub(crate) mod avatar;
 pub(crate) mod board;
 pub(crate) mod bookmark;
 pub(crate) mod browser_inputs;
 pub(crate) mod context;
+pub(crate) mod dates;
 pub(crate) mod deferred_delete;
 pub(crate) mod error_state;
 pub(crate) mod handler_asset;

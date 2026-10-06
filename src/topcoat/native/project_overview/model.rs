@@ -97,21 +97,15 @@ pub(crate) fn age_label(days: i64) -> String {
 }
 
 pub(crate) fn actor_name(activity: &Activity) -> &str {
-    activity
-        .actor_display_name
-        .as_deref()
-        .filter(|name| !name.is_empty())
-        .or_else(|| {
-            activity
-                .actor_username
-                .as_deref()
-                .filter(|name| !name.is_empty())
-        })
-        .unwrap_or(if activity.actor_is_bot {
+    super::super::avatar::display_name(
+        activity.actor_display_name.as_deref(),
+        activity.actor_username.as_deref(),
+        if activity.actor_is_bot {
             "a bot"
         } else {
             "system"
-        })
+        },
+    )
 }
 
 pub(crate) fn activity_text(activity: &Activity) -> String {

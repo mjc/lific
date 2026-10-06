@@ -1,8 +1,8 @@
 //! Pinned overview hero, attention and activity presentation with shared native chrome.
-use super::super::{context, icons, session, transport};
+use super::super::{context, dates, icons, session, transport};
 use super::{
     controls::{self, Controls},
-    dates, model,
+    model,
 };
 use crate::{
     db::models::{Activity, IssueStatusCounts, Priority},
@@ -77,7 +77,7 @@ pub(super) fn content<'a>(
     let description = controls::description(cx, controls, can.manage);
     let read_only = !can.manage && reads.enforced;
     let created = dates::absolute(cx, &project.created_at);
-    let active = activity_first.map(|activity| dates::relative(cx, &activity.ts, clock.clone()));
+    let active = activity_first.map(|activity| dates::relative(cx, &activity.ts, clock.clone()).0);
     let completion = counts
         .filter(|counts| counts.total > 0)
         .map(|counts| completion(cx, counts));
@@ -249,7 +249,7 @@ fn recent_activity<'a>(
             (
                 model::actor_name(&item).to_owned(),
                 model::activity_text(&item),
-                dates::relative(cx, &item.ts, now.clone()),
+                dates::relative(cx, &item.ts, now.clone()).0,
                 item.id,
             )
         })

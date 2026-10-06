@@ -1,5 +1,5 @@
 //! Joined member identities, active-human picker, role changes and inline recovery.
-use super::super::{context, icons, session};
+use super::super::{avatar, context, icons, session};
 use super::{
     management_controls::{self, Pending},
     management_model::{Command, Continuation},
@@ -275,8 +275,8 @@ fn row<'a>(
         Role::Maintainer => "Maintainer",
         Role::Viewer => "Viewer",
     };
-    let since = super::dates::absolute(cx, &member.created_at);
-    view!{cx=><div class="native-overview__member-row"><span class="native-overview__member-avatar">(select::initials(&display))</span><div class="native-overview__member-name"><p>(display.clone())if user==account{<span>" (you)"</span>}</p><p>(label)</p></div>
+    let since = super::super::dates::absolute(cx, &member.created_at);
+    view!{cx=><div class="native-overview__member-row"><span class="native-overview__member-avatar">(avatar::initials(&display))</span><div class="native-overview__member-name"><p>(display.clone())if user==account{<span>" (you)"</span>}</p><p>(label)</p></div>
         if can_manage{<div class="native-overview__member-role" data-role=(badge) (change)>(select::select_scoped(cx,&row_cx,format!("native-overview-member-{project}-{user}"),roles(),selected,locked.clone()))</div>}
         else{<span class="native-overview__member-badge" data-role=(badge)>(role_label)</span>}
         <span class="native-overview__member-since">(since)</span>

@@ -1,9 +1,5 @@
 //! Server populated Insights cards using the pinned Main presentation.
-use super::super::{
-    icons,
-    project_overview::{self, dates},
-    transport,
-};
+use super::super::{avatar, dates, icons, transport};
 use crate::db::models::{ActorStat, InsightsPayload, Priority, Status};
 use topcoat::{
     context::Cx,
@@ -143,11 +139,11 @@ fn actor_list<'a>(cx: &'a Cx, actors: &[ActorStat], clock: Signal<f64>) -> BoxVi
         .unwrap_or(1)
         .max(1);
     let rows = actors.iter().map(|actor| {
-        let name = actor.display_name.as_deref().filter(|name|!name.is_empty()).or_else(||actor.username.as_deref().filter(|name|!name.is_empty())).unwrap_or("system").to_owned();
-        let initials = project_overview::initials(&name);
+        let name = avatar::display_name(actor.display_name.as_deref(), actor.username.as_deref(), "system").to_owned();
+        let initials = avatar::initials(&name);
         let class = if actor.is_bot { "native-insights__avatar native-insights__avatar--bot size-6 rounded-full flex items-center justify-center text-micro font-bold shrink-0 select-none bg-[var(--tc-accent-subtle)] text-[var(--tc-accent)] border border-solid border-[var(--tc-accent)]" } else { "native-insights__avatar size-6 rounded-full flex items-center justify-center text-micro font-bold shrink-0 select-none bg-[var(--tc-accent)] text-[var(--tc-accent-text)]" };
         let volume = format!("width:calc({}% - 0.5rem)",(actor.actions as f64/max as f64*100.0).max(4.0));
-        (name,initials,class,actor.is_bot,action_count(cx,actor.actions),dates::relative(cx,&actor.last_ts,clock.clone()),volume)
+        (name,initials,class,actor.is_bot,action_count(cx,actor.actions),dates::relative(cx,&actor.last_ts,clock.clone()).0,volume)
     }).collect::<Vec<_>>();
     view! { cx => if rows.is_empty() {<p class="native-insights__list-empty text-body-sm text-[var(--tc-faint)] py-2 m-0">"No activity in this window"</p>}else {<div class="native-insights__actor-list flex flex-col gap-1">for (name,initials,class,bot,actions,last_seen,volume) in rows {<div class="native-insights__actor relative flex items-center gap-2.5 px-1 py-1.5 rounded-md overflow-hidden"><span class=(class)>(initials)</span><div class="native-insights__actor-detail flex-1 min-w-0"><div class="native-insights__actor-name flex items-center gap-1.5"><span class="text-body-sm text-[var(--tc-text)] truncate font-medium">(name)</span>if bot {<span class="native-insights__agent text-micro font-semibold uppercase tracking-wider px-1 py-px rounded bg-[var(--tc-accent-subtle)] text-[var(--tc-accent)] shrink-0">"agent"</span>}</div><div class="native-insights__last-seen text-micro text-[var(--tc-faint)]">"last seen "(last_seen)</div></div><span class="native-insights__actions text-caption text-[var(--tc-muted)] tabular-nums shrink-0">(actions)</span><span class="native-insights__actor-volume absolute bottom-0 left-1 h-[2px] rounded-full bg-[var(--tc-accent)] opacity-30" aria-hidden="true" style=(volume)></span></div>}</div>} }.boxed()
 }

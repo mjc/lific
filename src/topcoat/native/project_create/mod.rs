@@ -19,7 +19,7 @@ pub(crate) const STYLESHEET: &str = include_str!("form.css");
 use topcoat::{context::Cx, runtime::signal, view::BoxView};
 
 use super::super::shell::ParsedRoute;
-use super::{context, home_shell, session};
+use super::{avatar, context, home_shell, session};
 
 pub(crate) fn screen<'a>(cx: &'a Cx, route: &ParsedRoute<'_>) -> topcoat::Result<BoxView<'a>> {
     let caller = session::read(cx, context::caller(cx))?;
@@ -41,7 +41,7 @@ pub(crate) fn screen<'a>(cx: &'a Cx, route: &ParsedRoute<'_>) -> topcoat::Result
         };
         select::OptionRow {
             value: Some(user.id),
-            initials: select::initials(&label),
+            initials: avatar::initials(&label),
             label,
             username: user.username,
             admin: user.is_admin,

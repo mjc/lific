@@ -80,6 +80,15 @@ test(`native Activity ${scenario} uses real production data and scope`, async t 
         assert.equal(await visibleRows(timeline).count(), 6);
         assert.equal(await timeline.locator('.native-issue-activity__count').textContent(), '8');
         assert.equal(await timeline.getByRole('button', {name: 'Show all 8 entries', exact: true}).count(), 1);
+        await page.waitForFunction(() => {
+          const wrappers = [...document.querySelectorAll('.native-issue-activity__time')]
+            .filter(node => node.getClientRects().length > 0);
+          return wrappers.length === 6 && wrappers.every(node => {
+            const time = node.querySelector('time');
+            const transport = node.textContent.split(' via ').at(-1);
+            return time.title !== time.dateTime && node.title === `${time.title} · via ${transport}`;
+          });
+        });
         const navigations = requests.filter(request => request.isNavigationRequest()).length;
         await page.evaluate(() => {
           window.activityDocument = document;

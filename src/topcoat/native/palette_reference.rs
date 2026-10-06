@@ -1,3 +1,5 @@
+use super::super::runtime::whitespace::{is_ecmascript_whitespace, trim_ecmascript};
+
 // Initial native issue-reference slice. These cases come from pinned master
 // 9683d38, web/src/lib/paletteSearch.ts and web/tests/paletteSearch.test.ts.
 // Page references are classified so the issue resolver cannot consume them;
@@ -17,7 +19,7 @@ pub(crate) struct Reference {
 }
 
 pub(crate) fn parse_reference(query: &str) -> Option<Reference> {
-    let query = query.trim_matches(js_whitespace);
+    let query = trim_ecmascript(query);
     let prefix = query.trim_end_matches(|ch: char| ch.is_ascii_digit());
     let digits = &query[prefix.len()..];
     if digits.is_empty() {
@@ -31,7 +33,7 @@ pub(crate) fn parse_reference(query: &str) -> Option<Reference> {
             number,
         });
     }
-    let stem = prefix.trim_end_matches(|ch| ch == '-' || js_whitespace(ch));
+    let stem = prefix.trim_end_matches(|ch| ch == '-' || is_ecmascript_whitespace(ch));
     if stem.eq_ignore_ascii_case("doc") {
         return Some(Reference {
             kind: ReferenceKind::Page,
@@ -44,7 +46,8 @@ pub(crate) fn parse_reference(query: &str) -> Option<Reference> {
         .get(doc_start..)
         .is_some_and(|suffix| suffix.eq_ignore_ascii_case("doc"))
     {
-        let project = stem[..doc_start].trim_end_matches(|ch| ch == '-' || js_whitespace(ch));
+        let project =
+            stem[..doc_start].trim_end_matches(|ch| ch == '-' || is_ecmascript_whitespace(ch));
         if valid_project(project) {
             return Some(Reference {
                 kind: ReferenceKind::Page,
@@ -64,21 +67,6 @@ fn valid_project(project: &str) -> bool {
     let mut chars = project.chars();
     chars.next().is_some_and(|ch| ch.is_ascii_alphabetic())
         && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
-}
-
-// Match JavaScript trim/\s, rather than Rust's different Unicode whitespace set.
-fn js_whitespace(ch: char) -> bool {
-    matches!(
-        ch,
-        '\t' | '\n' | '\u{000b}' | '\u{000c}' | '\r' | ' ' | '\u{00a0}' | '\u{1680}' | '\u{2000}'
-            ..='\u{200a}'
-                | '\u{2028}'
-                | '\u{2029}'
-                | '\u{202f}'
-                | '\u{205f}'
-                | '\u{3000}'
-                | '\u{feff}'
-    )
 }
 
 #[derive(Debug, PartialEq, Eq)]

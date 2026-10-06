@@ -47,7 +47,7 @@ test('native Insights matches Main cards, week selection and hovered chart witho
   const cache=fs.mkdtempSync(path.join(tmpdir(),'lific-insights-vite-'));
   const sockets=new Set();
   const configure=proxy=>proxy.on('open',socket=>{sockets.add(socket);socket.once('close',()=>sockets.delete(socket));});
-  const vite=await createServer({root:snapshot,cacheDir:cache,configFile:path.join(snapshot,'vite.config.ts'),logLevel:'silent',server:{host:'127.0.0.1',port:0,proxy:{'/api':{target:origin,ws:true,configure},'/public/api':{target:origin,ws:true,configure}}}});
+  const vite=await createServer({root:snapshot,cacheDir:cache,configFile:path.join(snapshot,'vite.config.ts'),logLevel:'silent',server:{host:'127.0.0.1',port:0,strictPort:false,proxy:{'/api':{target:origin,ws:true,configure},'/public/api':{target:origin,ws:true,configure}}}});
   const browser=await launchBrowser(), report=[];
   try {
     await vite.listen();await prepareOriginalVite(vite);

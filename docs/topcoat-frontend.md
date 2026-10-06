@@ -12,6 +12,13 @@ after changing classes; `lific:topcoat:styles-check` detects stale output.
 The compiler is a development dependency. Cargo builds and the application
 need neither Node nor Vite for these styles.
 
+Shared presentation helpers live in `native/avatar.rs` (display names and
+picker/member initials) and `native/dates.rs` (localized dates, relative times,
+and the clock that pauses while the document is hidden). Activity tooltips
+combine the shared localized date signal with a transport label. Text matching
+and trimming reuse
+`runtime/whitespace.rs` so native views preserve Main's whitespace rules.
+
 All intermediate JavaScript application controllers and their fallback screens
 are removed. Unfinished features remain unavailable until they are implemented
 in Rust; see `topcoat-migration.md`. Browser-only APIs are accessed through the

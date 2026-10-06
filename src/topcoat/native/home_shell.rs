@@ -16,6 +16,17 @@ use topcoat::{
 
 pub(crate) const STYLESHEET: &str = include_str!("assets/home-shell.css");
 
+fn account_display(user: &AuthUser) -> (String, String) {
+    let name = super::avatar::display_name(Some(&user.display_name), Some(&user.username), "");
+    let initials = name
+        .split([' ', '_', '-'])
+        .filter_map(|part| part.chars().next())
+        .take(2)
+        .flat_map(char::to_uppercase)
+        .collect();
+    (name.to_owned(), initials)
+}
+
 #[derive(Clone)]
 pub(crate) struct MobileNavigation {
     open: Signal<bool>,
@@ -341,17 +352,7 @@ fn render_shell<'a>(
         mobile_catalog.push_str(&serde_json::to_string(&project.identifier).unwrap());
         mobile_catalog.push('|');
     }
-    let display_name = if user.display_name.is_empty() {
-        user.username.clone()
-    } else {
-        user.display_name.clone()
-    };
-    let initials = display_name
-        .split([' ', '_', '-'])
-        .filter_map(|part| part.chars().next())
-        .take(2)
-        .flat_map(char::to_uppercase)
-        .collect::<String>();
+    let (display_name, initials) = account_display(user);
     let content = match region {
         PageRegion::Wrapped { content, topbar } => page_region(cx, content, topbar, initial_label),
         PageRegion::Workspace(region) => region,
@@ -486,17 +487,7 @@ async fn native_home_phone(
         )
         .into());
     }
-    let display_name = if user.display_name.is_empty() {
-        user.username
-    } else {
-        user.display_name
-    };
-    let initials = display_name
-        .split([' ', '_', '-'])
-        .filter_map(|part| part.chars().next())
-        .take(2)
-        .flat_map(char::to_uppercase)
-        .collect::<String>();
+    let (display_name, initials) = account_display(&user);
     let sidebar = super::project_sidebar::Sidebar::from_handles(sidebar);
     let sidebar_menu_open = sidebar.menu_open();
     let navigation = MobileNavigation::from_handles(navigation);
