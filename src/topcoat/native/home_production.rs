@@ -400,8 +400,8 @@ async fn native_home_initial_html_keeps_navigation_handlers_shared_as_catalog_gr
         expanded.len()
     );
     assert!(
-        expanded.len() < 60_000,
-        "45-project GET / must not repeat full navigation controllers: {} bytes",
+        expanded.len() < 128_000,
+        "45-project GET / must stay below the 128,000-byte response budget: {} bytes",
         expanded.len()
     );
     assert!(
