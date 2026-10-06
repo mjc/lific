@@ -25,14 +25,23 @@ function unchangedMembership(before,after){assert.deepEqual(after.actor_groups.m
 function eventIndex(kind){return kind==='group'?0:1;}
 function canonical(db,kind){return kind==='group'?db.actor_groups.map(group=>group.id):db.actor_order;}
 async function completed(page,url,operation,admission){
+  const transport=[],errors=[];
+  const request=record=>{if(new URL(record.url()).pathname.includes('/__native_'))transport.push({event:'request',url:record.url(),method:record.method()});};
+  const response=record=>{if(new URL(record.url()).pathname.includes('/__native_'))transport.push({event:'response',url:record.url(),status:record.status()});};
+  const failed=record=>transport.push({event:'failed',url:record.url(),failure:record.failure()});
+  const pageError=error=>errors.push(error.message);
+  page.on('request',request);page.on('response',response);page.on('requestfailed',failed);page.on('pageerror',pageError);
   // Observe rejection immediately; an action failure must not abandon the waiter.
   const finish=page.waitForResponse(response=>response.url()===url&&response.request().method()==='POST').then(response=>({response}),error=>({error}));
   try{
     await operation();if(admission)await admission();
     const outcome=await finish;if(outcome.error)throw outcome.error;
     assert.equal(outcome.response.status(),200);await outcome.response.finished();
-  }finally{await finish;}
+  }catch(error){
+    error.message+=`\nActual rollback transport: ${JSON.stringify({url,transport,errors})}`;throw error;
+  }finally{await finish;page.off('request',request);page.off('response',response);page.off('requestfailed',failed);page.off('pageerror',pageError);}
 }
+
 test(`personal group and grouped project order payloads rollback; auth ${fixture.auth_required?'required':'optional'}`,async t=>{
   const browser=await launchBrowser();
   try{for(const prefix of ['', '/app','/ACC'])for(const phone of [false,true])await t.test(`${prefix||'root'} ${phone?'phone':'desktop'}`,async caseT=>{

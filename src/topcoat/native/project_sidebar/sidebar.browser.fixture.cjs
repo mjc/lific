@@ -21,10 +21,14 @@ async function nativeContract(page,seen){
   assert.equal(await page.getByText('Private hidden project',{exact:true}).count(),0);
   assert.deepEqual(seen.errors,[]);
 }
+async function openPhoneNavigation(page){
+  const trigger=page.getByRole('button',{name:'Open navigation',exact:true});
+  if(await trigger.getAttribute('aria-expanded')!=='true')await trigger.click();
+  const nav=page.locator('[data-native-mobile-nav]');await nav.waitFor({state:'visible'});return nav;
+}
 async function surface(page,phone){
   if(!phone)return page.getByRole('complementary',{name:'Workspace sidebar',exact:true});
-  if(!await page.locator('[data-native-mobile-nav]').isVisible())await page.getByRole('button',{name:'Open navigation',exact:true}).click();
-  await page.locator('[data-native-mobile-nav]').waitFor();
+  await openPhoneNavigation(page);
   const root=page.locator('[data-native-mobile-root]');await root.waitFor();return root;
 }
 // Original master attr predicate keeps its exact four-second observation bound.
@@ -95,4 +99,4 @@ async function holdApply(page,url,token,account){
   },{times:1});
   return {entered,fetched,finished,dispatch,deliver,release(){dispatch();deliver();}};
 }
-module.exports={mountedProxy,launchBrowser,cookie,observations,nativeContract,surface,attr,action,appliedRequests,frozenWrite,holdApply,settle,called,bounded};
+module.exports={openPhoneNavigation,mountedProxy,launchBrowser,cookie,observations,nativeContract,surface,attr,action,appliedRequests,frozenWrite,holdApply,settle,called,bounded};
