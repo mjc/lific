@@ -29,28 +29,6 @@ impl OptionRow {
     }
 }
 
-pub(super) fn initials(label: &str) -> String {
-    // The original /[\s_-]+/ split collapses each separator run, while a
-    // leading run still consumes the first of the two initial positions.
-    let separator = |character: char| {
-        character == '_'
-            || character == '-'
-            || super::super::super::runtime::whitespace::is_ecmascript_whitespace(character)
-    };
-    let count = if label.chars().next().is_some_and(separator) {
-        1
-    } else {
-        2
-    };
-    label
-        .split(separator)
-        .filter(|word| !word.is_empty())
-        .take(count)
-        .filter_map(|word| word.chars().next())
-        .flat_map(char::to_uppercase)
-        .collect()
-}
-
 pub(super) fn select<'a>(
     cx: &'a Cx,
     id: &'static str,
@@ -261,19 +239,4 @@ pub(super) fn select<'a>(
             </div>
         </div>
     }.boxed()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::initials;
-
-    #[test]
-    fn initials_collapse_repeated_separators_like_the_original_user_select() {
-        assert_eq!(initials("Mary  Jane"), "MJ");
-        assert_eq!(initials("foo__bar"), "FB");
-        assert_eq!(initials("one_- two-three"), "OT");
-        assert_eq!(initials("  Mary Jane"), "M");
-        assert_eq!(initials("\u{feff}Mary Jane"), "M");
-        assert_eq!(initials("Mary\u{0085}Jane Smith"), "MS");
-    }
 }

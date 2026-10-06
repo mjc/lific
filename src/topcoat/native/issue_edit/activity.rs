@@ -2,11 +2,11 @@
 
 use topcoat::{
     context::Cx,
-    runtime::{Event, Signal, expr, shard, signal},
-    view::{Attributes, BoxView, View, ViewExt, component, view},
+    runtime::{Event, Signal, shard, signal},
+    view::{BoxView, View, ViewExt, component, view},
 };
 
-use super::super::{context, icons, session};
+use super::super::{avatar, context, dates, icons, session};
 use crate::{
     db::{
         DbPool,
@@ -59,15 +59,11 @@ pub(crate) fn timeline(cx: &Cx, items: Vec<Activity>) -> BoxView<'_> {
 }
 
 fn actor_name(item: &Activity) -> &str {
-    item.actor_display_name
-        .as_deref()
-        .filter(|value| !value.is_empty())
-        .or_else(|| {
-            item.actor_username
-                .as_deref()
-                .filter(|value| !value.is_empty())
-        })
-        .unwrap_or("system")
+    avatar::display_name(
+        item.actor_display_name.as_deref(),
+        item.actor_username.as_deref(),
+        "system",
+    )
 }
 
 fn short_value(value: Option<&str>, max: usize) -> String {
@@ -79,13 +75,7 @@ fn short_value(value: Option<&str>, max: usize) -> String {
         regex::Regex::new(r"\n+").expect("pinned activity newline expression is valid")
     });
     let flat = NEWLINES.replace_all(value, " ");
-    let flat = flat.trim_matches(|character: char| {
-        matches!(character,
-            '\u{0009}'..='\u{000d}' | ' ' | '\u{00a0}' | '\u{1680}' |
-            '\u{2000}'..='\u{200a}' | '\u{2028}' | '\u{2029}' | '\u{202f}' |
-            '\u{205f}' | '\u{3000}' | '\u{feff}'
-        )
-    });
+    let flat = super::super::super::runtime::whitespace::trim_ecmascript(&flat);
     if flat.is_empty() {
         return "(none)".into();
     }
@@ -176,45 +166,12 @@ fn generic_verb(item: &Activity, field: &str) -> String {
     }
 }
 
-fn clock_mount(cx: &Cx, now: Signal<f64>) -> Attributes {
-    let handler = expr!(|_event: Event| {
-        raw!("let interval;", ());
-        let _tick = || {
-            now.set(raw!("cx.hydrate(Date.now())", 0.0));
-        };
-        let _visible = |_event: Event| {
-            let hidden = raw!("cx.hydrate(document.visibilityState === 'hidden')", false);
-            if hidden {
-                raw!("clearInterval(interval); interval=undefined;", ());
-            } else {
-                raw!("${_tick}();", ());
-                raw!(
-                    "if(interval===undefined) interval=setInterval(()=>${_tick}(),30000);",
-                    ()
-                );
-            };
-        };
-        raw!("${_visible}(${_event});", ());
-        raw!(
-            "document.addEventListener('visibilitychange',event=>${_visible}(cx.event(event)),{signal:cx.abortSignal}); cx.abortSignal.addEventListener('abort',()=>clearInterval(interval),{once:true});",
-            ()
-        );
-    });
-    let mut attributes = Attributes::with_capacity(1);
-    attributes.insert(
-        cx,
-        "data-topcoat-on:mount",
-        handler.into_evaluated_and_js().1,
-    );
-    attributes
-}
-
 #[component]
 async fn timeline_component(cx: &Cx, items: Vec<Activity>) -> topcoat::Result<impl View> {
     let count = items.len();
     let expanded = signal(cx, || false);
     let now = signal(cx, || chrono::Utc::now().timestamp_millis() as f64);
-    let mounted = clock_mount(cx, now.clone());
+    let mounted = dates::clock_mount(cx, now.clone());
     Ok(view! { cx =>
         if count > 0 {
             <section class="native-issue-activity" data-native-issue-activity="" (mounted)>
@@ -354,39 +311,12 @@ fn value_icon<'a>(cx: &'a Cx, field: &str, value: &str) -> BoxView<'a> {
 }
 
 fn time_view<'a>(cx: &'a Cx, timestamp: &str, transport: &str, now: Signal<f64>) -> BoxView<'a> {
-    let date = chrono::NaiveDateTime::parse_from_str(timestamp, "%Y-%m-%d %H:%M:%S")
-        .map_or(f64::NAN, |date| date.and_utc().timestamp_millis() as f64);
-    let datetime = timestamp.to_owned();
-    let timestamp = timestamp.to_owned();
     let transport = transport.to_owned();
-    let full = signal(cx, || timestamp.clone());
-    let fallback = signal(cx, || timestamp.clone());
-    let title = signal(cx, || format!("{timestamp} · via {transport}"));
-    view! { cx =>
-        <span class="native-issue-activity__time" :title=$(title.get())>
-            "· "<time datetime=(datetime) :title=$(full.get()) @mount=$(|_event: Event| {
-                full.set(raw!("cx.hydrate(new Date(${timestamp}.toString()+'Z').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'}))", String::new()));
-                let _local = full.get();
-                title.set(raw!("cx.hydrate(${_local}.toString()+' · via '+${transport}.toString())", String::new()));
-                fallback.set(raw!("cx.hydrate(new Date(${timestamp}.toString()+'Z').toLocaleDateString('en-US',{month:'short',day:'numeric'}))", String::new()));
-            })>
-                $(if (now.get() - date) < 60000.0 { "just now".to_owned() }
-                else { if (now.get() - date) < 3600000.0 {
-                    let epoch = now.get();
-                    let minutes = raw!("cx.hydrate(Math.floor((Number(${epoch}.toString())-Number(${date}.toString()))/60000))", ((epoch - date) / 60000.0).floor());
-                    raw!("cx.hydrate(${minutes}.toString()+'m ago')", format!("{minutes}m ago"))
-                } else { if (now.get() - date) < 86400000.0 {
-                    let epoch = now.get();
-                    let hours = raw!("cx.hydrate(Math.floor((Number(${epoch}.toString())-Number(${date}.toString()))/3600000))", ((epoch - date) / 3600000.0).floor());
-                    raw!("cx.hydrate(${hours}.toString()+'h ago')", format!("{hours}h ago"))
-                } else { if (now.get() - date) < 604800000.0 {
-                    let epoch = now.get();
-                    let days = raw!("cx.hydrate(Math.floor((Number(${epoch}.toString())-Number(${date}.toString()))/86400000))", ((epoch - date) / 86400000.0).floor());
-                    raw!("cx.hydrate(${days}.toString()+'d ago')", format!("{days}d ago"))
-                } else { fallback.get() } } } })
-            </time>" via "(transport)
-        </span>
-    }.boxed()
+    let (time, full) = dates::relative(cx, timestamp, now);
+    view! { cx => <span class="native-issue-activity__time" :title=$({
+        let local = full.get();
+        raw!("cx.hydrate(${local}.toString()+' · via '+${transport}.toString())",format!("{local} · via {transport}"))
+    })>"· "(time)" via "(transport)</span> }.boxed()
 }
 
 #[cfg(test)]

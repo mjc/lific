@@ -12,18 +12,12 @@ pub(crate) struct ActivityRow {
 }
 
 pub(crate) fn activity_row(activity: &Activity, projects: &[Project]) -> ActivityRow {
-    let actor = activity
-        .actor_display_name
-        .as_deref()
-        .filter(|name| !name.is_empty())
-        .or_else(|| {
-            activity
-                .actor_username
-                .as_deref()
-                .filter(|name| !name.is_empty())
-        })
-        .unwrap_or("system")
-        .to_owned();
+    let actor = super::avatar::display_name(
+        activity.actor_display_name.as_deref(),
+        activity.actor_username.as_deref(),
+        "system",
+    )
+    .to_owned();
     let verb = match activity.action.as_str() {
         "create" if activity.entity_type == "comment" => "commented on".into(),
         "delete" if activity.entity_type == "comment" => "deleted a comment on".into(),

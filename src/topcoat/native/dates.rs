@@ -34,7 +34,7 @@ pub(crate) fn clock_mount(cx: &Cx, now: Signal<f64>) -> Attributes {
     attributes
 }
 
-pub(super) fn absolute<'a>(cx: &'a Cx, timestamp: &str) -> BoxView<'a> {
+pub(crate) fn absolute<'a>(cx: &'a Cx, timestamp: &str) -> BoxView<'a> {
     let datetime = timestamp.to_owned();
     let timestamp = timestamp.to_owned();
     let text = signal(cx, || timestamp.clone());
@@ -43,14 +43,19 @@ pub(super) fn absolute<'a>(cx: &'a Cx, timestamp: &str) -> BoxView<'a> {
     })>$(text.get())</time> }.boxed()
 }
 
-pub(crate) fn relative<'a>(cx: &'a Cx, timestamp: &str, now: Signal<f64>) -> BoxView<'a> {
+pub(crate) fn relative<'a>(
+    cx: &'a Cx,
+    timestamp: &str,
+    now: Signal<f64>,
+) -> (BoxView<'a>, Signal<String>) {
     let date = chrono::NaiveDateTime::parse_from_str(timestamp, "%Y-%m-%d %H:%M:%S%.f")
         .map_or(f64::NAN, |date| date.and_utc().timestamp_millis() as f64);
     let datetime = timestamp.to_owned();
     let timestamp = timestamp.to_owned();
     let full = signal(cx, || timestamp.clone());
     let fallback = signal(cx, || timestamp.clone());
-    view! { cx => <time datetime=(datetime) :title=$(full.get()) @mount=$(|_event: Event| {
+    let local_full = full.clone();
+    let time = view! { cx => <time datetime=(datetime) :title=$(full.get()) @mount=$(|_event: Event| {
         full.set(raw!("cx.hydrate(new Date(${timestamp}.toString()+'Z').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'}))", String::new()));
         fallback.set(raw!("cx.hydrate(new Date(${timestamp}.toString()+'Z').toLocaleDateString('en-US',{month:'short',day:'numeric'}))", String::new()));
     })>
@@ -59,5 +64,6 @@ pub(crate) fn relative<'a>(cx: &'a Cx, timestamp: &str, now: Signal<f64>) -> Box
         else { if (now.get() - date) < 86400000.0 { let epoch = now.get(); let hours = raw!("cx.hydrate(Math.floor((Number(${epoch}.toString())-Number(${date}.toString()))/3600000))", ((epoch-date)/3600000.0).floor()); raw!("cx.hydrate(${hours}.toString()+'h ago')",format!("{hours}h ago")) }
         else { if (now.get() - date) < 604800000.0 { let epoch = now.get(); let days = raw!("cx.hydrate(Math.floor((Number(${epoch}.toString())-Number(${date}.toString()))/86400000))", ((epoch-date)/86400000.0).floor()); raw!("cx.hydrate(${days}.toString()+'d ago')",format!("{days}d ago")) }
         else { fallback.get() } } } })
-    </time> }.boxed()
+    </time> }.boxed();
+    (time, local_full)
 }
