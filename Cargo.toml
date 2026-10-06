@@ -1,21 +1,20 @@
 [package]
 name = "lific"
-version = "2.10.0"
+version = "3.0.0"
 edition = "2024"
 description = "Local-first, lightweight issue tracker. Single binary, SQLite-backed, MCP-native."
 license = "Apache-2.0"
 repository = "https://github.com/VoidNullable/lific"
 keywords = ["issue-tracker", "project-management", "mcp", "sqlite", "local-first"]
 categories = ["command-line-utilities", "development-tools"]
-rust-version = "1.88"
+rust-version = "1.99.0"
 include = [
-    "src/**/*",
-    "build.rs",
-    "migrations/**/*",
-    "web/dist/**/*",
-    "Cargo.toml",
-    "LICENSE",
-    "README.md",
+    "/src/**/*",
+    "/build.rs",
+    "/migrations/**/*",
+    "/Cargo.toml",
+    "/LICENSE",
+    "/README.md",
 ]
 
 [lints.clippy]
@@ -31,7 +30,7 @@ match_wildcard_for_single_variants = "deny"
 needless_collect = "deny"
 or_fun_call = "deny"
 redundant_clone = "deny"
-unchecked_duration_subtraction = "deny"
+unchecked_time_subtraction = "deny"
 unnecessary_struct_initialization = "deny"
 unnecessary_wraps = "deny"
 # Defer format-string interpolation cleanup to the dedicated formatting pass.
@@ -40,15 +39,31 @@ useless_let_if_seq = "deny"
 unused_async = "deny"
 
 [dependencies]
+# Browser-locale ordering for the native overview label manager.
+icu_collator = { version = "=2.3.1", default-features = false, features = ["compiled_data"] }
+icu_locale_core = { version = "=2.3.0", default-features = false, features = ["alloc"] }
+lru = "=0.12.5"
+# Native Markdown parsing and final HTML sanitization.
+comrak = { version = "=0.55.0", default-features = false }
+ammonia = "=4.2.0"
+scraper = { version = "=0.27.0", default-features = false }
+regex = "1"
+# Semantic UI icon names and glyph mappings derive from one enum.
+strum = { version = "=0.28.0", default-features = false, features = ["derive"] }
 # HTTP
 axum = { version = "0.8", features = ["json", "multipart", "ws"] }
+topcoat = { version = "=0.9.0", default-features = false, features = ["asset", "discover", "router", "runtime", "tower", "view"] }
+# Shared framework types used by the packaged native socket bridge.
+topcoat-core = "=0.9.0"
+topcoat-router = { version = "=0.9.0", features = ["websocket"] }
+topcoat-view = "=0.9.0"
 tokio = { version = "1", features = ["full"] }
 futures-util = "0.3"
 tower-http = { version = "0.6", features = ["cors", "compression-gzip", "compression-br"] }
 # HTTP client — used by `lific doctor` to probe a running server (reachability,
 # OAuth discovery, MCP round-trip). rustls-tls (no OpenSSL linkage) so the
 # static single-binary build stays clean and `public_url` https checks work.
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls", "blocking"] }
 
 # Database
 rusqlite = { version = "0.32", features = ["bundled", "vtab", "backup", "hooks"] }
@@ -93,9 +108,6 @@ keyring = { version = "3", features = [
     "vendored",
 ] }
 
-# Static assets (embedded frontend)
-rust-embed = { version = "8", features = ["mime-guess"] }
-mime_guess = "2"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 # Backup/restore archive format (LIF-266): `lific dump` / `lific restore`
 # produce a single self-contained tar.gz (gitea-dump style). flate2 is already
@@ -138,6 +150,7 @@ fs2 = "0.4"
 # Line diffs for get_page(since_seq) (LIF-480). No dependencies with only the
 # `text` feature; 2.x because 3.x needs a newer toolchain than rust-version.
 similar = { version = "2", default-features = false, features = ["text"] }
+chrono-tz = "0.10"
 
 # SIGPIPE handling for piped CLI output (see main.rs); unix only.
 [target.'cfg(unix)'.dependencies]
@@ -162,6 +175,9 @@ windows-sys = { version = "0.61", features = [
 embed-manifest = "1.5"
 
 [dev-dependencies]
+# Inspect and bound actual accepted TCP sockets in backpressure proofs.
+socket2 = "0.6"
+hyper = "1"
 assert_cmd = "2"
 predicates = "3"
 proptest = "1"
@@ -176,8 +192,6 @@ http-body-util = "0.1"
 tempfile = "3"
 tokio = { version = "1", features = ["test-util"] }
 tokio-tungstenite = "0.28"
-# tests/build_contract.rs compiles build.rs as a module.
-embed-manifest = "1.5"
 
 # Argon2 password hashing is memory-hard by design; in unoptimized debug
 # builds each hash/verify costs ~0.4s of CPU, and the test suite performs

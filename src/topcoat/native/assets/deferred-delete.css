@@ -1,0 +1,16 @@
+/* Original Toaster composition outside the disposable workspace page region. */
+#native-deferred-delete-owner{position:fixed;z-index:110;left:50%;bottom:max(16px,env(safe-area-inset-bottom));transform:translateX(-50%);width:calc(100% - 32px);max-width:384px;display:flex;flex-direction:column;align-items:center;gap:8px;pointer-events:none}
+.native-toast{display:flex;align-items:flex-start;gap:10px;width:100%;padding:10px 8px 10px 12px;border:1px solid var(--tc-border);border-left:3px solid var(--tc-accent);border-radius:8px;background:var(--tc-surface);color:var(--tc-text);box-shadow:0 0 #0000,0 0 #0000,0 0 #0000,0 0 #0000,0 8px 28px rgba(0,0,0,.18);font:inherit;pointer-events:auto;box-sizing:border-box}
+.native-toast[role=alert]{border-left-color:var(--tc-danger)}
+.native-toast[data-native-toast-kind=success]{border-left-color:var(--tc-success)}
+.native-toast>svg{flex-shrink:0;margin-top:2px;color:var(--tc-accent)}
+.native-toast[role=alert]>svg{color:var(--tc-danger)}
+.native-toast[data-native-toast-kind=success]>svg{color:var(--tc-success)}
+.native-toast p{flex:1;margin:0;padding:2px 0;font-size:13px;line-height:1.375}
+.native-toast button{flex-shrink:0;border:0;border-radius:4px;background:none;color:var(--tc-accent);padding:2px 6px;cursor:pointer;font:500 13px/1.6 var(--tc-font);transition:color .15s,background-color .15s,border-color .15s}
+.native-toast button:hover{text-decoration:underline}
+.native-toast button[aria-label]{display:flex;align-items:center;justify-content:center;width:24px;height:24px;color:var(--tc-faint);padding:0;border-radius:6px;font:inherit}
+.native-toast button[aria-label]:hover{color:var(--tc-text);background:var(--tc-bg-subtle);text-decoration:none}
+.native-toast button:focus-visible{outline:2px solid var(--tc-accent);outline-offset:2px}
+@media(min-width:640px){#native-deferred-delete-owner{left:auto;right:16px;transform:none;align-items:flex-end}.native-toast{width:auto;min-width:280px;max-width:384px}}
+.native-toast[hidden]{display:none}

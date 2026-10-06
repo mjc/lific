@@ -1,0 +1,233 @@
+/* Application chrome uses the shared Topcoat control tokens. */
+.tc-shell {
+  min-height: 100dvh;
+  background: var(--tc-bg);
+  color: var(--tc-text);
+  font-family: var(--tc-font);
+}
+
+.tc-shell a { color: inherit; }
+.tc-shell a:focus-visible,
+.tc-shell summary:focus-visible,
+.tc-shell button:focus-visible {
+  outline: 3px solid var(--tc-focus);
+  outline-offset: 3px;
+}
+
+.tc-shell__skip {
+  position: fixed;
+  z-index: 10;
+  top: 0.5rem;
+  left: 0.5rem;
+  padding: 0.75rem 1rem;
+  background: var(--tc-surface);
+  transform: translateY(-200%);
+}
+.tc-shell__skip:focus { transform: translateY(0); }
+
+.tc-shell__header {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 1rem;
+  min-height: 4rem;
+  padding: 0.5rem 1.5rem;
+  background: var(--tc-surface);
+  border-bottom: 1px solid var(--tc-border);
+}
+.tc-shell__brand { font-size: 1.25rem; font-weight: 700; text-decoration: none; }
+.tc-shell__hint { color: var(--tc-muted); line-height: 1.5; }
+.tc-shell__body { display: grid; grid-template-columns: var(--tc-sidebar-width, 14.375rem) minmax(0, 1fr); }
+.tc-shell__desktop { position: relative; min-width: 0; padding: 1rem; border-right: 1px solid var(--tc-border); }
+.tc-shell[data-sidebar-collapsed="true"] .tc-shell__body { grid-template-columns: minmax(0, 1fr); }
+.tc-shell[data-sidebar-collapsed="true"] .tc-shell__desktop { display: none; }
+.tc-shell__sidebar-toggle {
+  min-height: 2.75rem;
+  padding: 0.5rem 0.75rem;
+  margin-left: auto;
+  border: 1px solid var(--tc-border);
+  border-radius: var(--tc-radius);
+  background: var(--tc-surface);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.tc-shell__sidebar-probe {
+  position: absolute;
+  width: 1rem;
+  height: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+.tc-shell__sidebar-resize {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: -0.25rem;
+  width: 0.5rem;
+  cursor: col-resize;
+  touch-action: none;
+}
+.tc-shell__sidebar-resize:hover,
+.tc-shell__sidebar-resize:focus-visible {
+  background: var(--tc-accent);
+  outline: 2px solid var(--tc-focus);
+  outline-offset: 1px;
+}
+.tc-shell__navigation { display: flex; flex-direction: column; gap: 0.25rem; }
+.tc-shell__navigation a,
+.tc-shell__auth-links a {
+  display: flex;
+  align-items: center;
+  min-height: 2.75rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--tc-radius);
+  text-decoration: none;
+}
+.tc-shell__navigation a:hover { background: var(--tc-surface); }
+.tc-shell a[aria-current="page"] {
+  background: var(--tc-accent);
+  color: var(--tc-accent-text);
+  font-weight: 600;
+}
+.tc-shell__project { margin: 1.5rem 0 0.5rem; font-size: 1rem; overflow-wrap: anywhere; }
+.tc-shell__main { min-width: 0; padding: 2rem; }
+.tc-shell__placeholder { max-width: 70ch; }
+.tc-shell__placeholder h1 { font-size: 1.75rem; line-height: 1.25; }
+.tc-shell__placeholder p { line-height: 1.6; overflow-wrap: anywhere; }
+.tc-shell__auth-links { display: flex; gap: 0.5rem; margin-left: auto; }
+.tc-shell[data-layout="auth"] .tc-shell__body { display: block; }
+.tc-shell[data-layout="auth"] .tc-shell__main { max-width: 36rem; margin: 0 auto; }
+.tc-shell__mobile { display: none; }
+
+@media (max-width: 47.99rem) {
+  .tc-shell__header { padding: max(0.5rem, env(safe-area-inset-top)) 1rem 0.5rem; }
+  .tc-shell__body { display: block; }
+  .tc-shell__desktop { display: none; }
+  .tc-shell__sidebar-toggle { display: none; }
+  .tc-shell__main { padding: 1.5rem 1rem max(1.5rem, env(safe-area-inset-bottom)); }
+  .tc-shell__mobile { display: block; margin-left: auto; }
+  .tc-shell__mobile summary {
+    min-height: 2.75rem;
+    padding: 0.75rem;
+    cursor: pointer;
+  }
+  .tc-shell__mobile[open] { flex: 1 0 100%; }
+  .tc-shell__mobile[open] summary { width: fit-content; margin-left: auto; }
+  .tc-shell__mobile .tc-shell__navigation {
+    padding: 0.5rem 0 max(1rem, env(safe-area-inset-bottom));
+  }
+  .tc-shell__mobile .tc-shell__navigation a { min-height: 3rem; }
+}
+
+/* The original application uses continuous sidebar/topbar chrome around a
+   recessed content panel. Keep the existing navigation mounts and controls. */
+.tc-shell[data-layout="private"] {
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+  display: grid;
+  grid-template-columns: var(--tc-sidebar-width, 14.375rem) minmax(0, 1fr);
+  grid-template-rows: 6.375rem minmax(0, 1fr);
+  background: var(--tc-chrome);
+  font-size: .8125rem;
+}
+.tc-shell[data-layout="private"] .tc-shell__body { display: contents; }
+.tc-shell[data-layout="private"] .tc-shell__header {
+  grid-column: 1; grid-row: 1;
+  position: relative;
+  display: block;
+  min-height: 0;
+  padding: .75rem;
+  border: 0;
+  background: var(--tc-chrome);
+}
+.tc-shell[data-layout="private"] .tc-shell__brand {
+  display: flex; align-items: center; gap: .625rem;
+  font-family: var(--tc-font-display); font-size: 1.125rem; font-weight: 400;
+  line-height: 1; padding: .25rem; width: fit-content;
+}
+.tc-shell[data-layout="private"] .tc-shell__brand::before {
+  content: ""; width: 1.625rem; height: 1.625rem;
+  border-radius: .375rem; background: url("./icon-192.png") center / cover;
+}
+.tc-shell__version { position: absolute; right: 3.125rem; top: 1.3125rem; font-size: .6875rem; color: var(--tc-faint); }
+.tc-shell[data-layout="private"] .tc-shell__header > [data-palette-open] {
+  position: absolute; left: .75rem; right: .75rem; bottom: 1rem;
+  justify-content: start; height: 2rem; min-height: 0; padding: 0 .625rem;
+  background: color-mix(in oklab, var(--tc-bg) 55%, var(--tc-chrome));
+  color: var(--tc-muted);
+}
+.tc-shell[data-layout="private"] .tc-shell__header > [data-palette-open]::before {
+  content: "⌕"; font-size: 1.25rem; line-height: 1;
+}
+.tc-shell[data-layout="private"] .tc-shell__header > [data-palette-open]::after {
+  content: "⌘K"; margin-left: auto; font-size: .6875rem; color: var(--tc-faint);
+}
+.tc-shell[data-layout="private"] .tc-shell__sidebar-toggle {
+  position: absolute; right: .75rem; top: 1rem;
+  width: 1.75rem; height: 1.75rem; min-height: 0; padding: 0;
+  border: 0; background: transparent; font-size: 0; color: var(--tc-faint);
+}
+.tc-shell[data-layout="private"] .tc-shell__sidebar-toggle::before { content: "◧"; font-size: .9375rem; }
+.tc-shell[data-layout="private"] .tc-shell__desktop {
+  grid-column: 1; grid-row: 2; border: 0; padding: 0 .5rem .5rem;
+  background: var(--tc-chrome); overflow-y: auto; min-height: 0;
+  display: flex; flex-direction: column;
+}
+.tc-shell[data-layout="private"] .tc-shell__navigation { font-size: .8125rem; gap: .125rem; }
+.tc-shell[data-layout="private"] .tc-shell__navigation { margin-top: 0; }
+.tc-shell[data-layout="private"] .tc-shell__navigation a[href$="/projects/new"],
+.tc-shell[data-layout="private"] .tc-shell__navigation a[href$="/projects/import"],
+.tc-shell[data-layout="private"] .tc-shell__navigation .tc-shell__hint { display: none; }
+.tc-shell[data-layout="private"] .tc-shell__project-tree { margin-top: 3rem; }
+.tc-shell[data-layout="private"] .tc-shell__desktop > [data-shortcut-open] {
+  width: 1.75rem; padding: 0; margin-left: auto; background: transparent; border: 0;
+}
+.tc-shell[data-layout="private"] .tc-shell__navigation a { min-height: 2rem; padding: .375rem .625rem; }
+.tc-shell[data-layout="private"] a[aria-current="page"] {
+  background: color-mix(in oklab, var(--tc-accent) 11%, var(--tc-chrome));
+  color: var(--tc-text); font-weight: 500;
+}
+.tc-shell[data-layout="private"] .tc-shell__main {
+  grid-column: 2; grid-row: 1 / 3; padding: 0; min-height: 0; overflow-y: auto;
+  background: var(--tc-bg);
+  box-shadow: inset .625rem .625rem 1.5rem -.625rem var(--tc-shadow-recess);
+}
+.tc-shell[data-layout="private"][data-sidebar-collapsed="true"] { grid-template-columns: minmax(0, 1fr); grid-template-rows: 2.75rem minmax(0, 1fr); }
+.tc-shell[data-layout="private"][data-sidebar-collapsed="true"] .tc-shell__header { grid-column: 1; }
+.tc-shell[data-layout="private"][data-sidebar-collapsed="true"] .tc-shell__brand,
+.tc-shell[data-layout="private"][data-sidebar-collapsed="true"] .tc-shell__header > [data-palette-open] { display: none; }
+.tc-shell[data-layout="private"][data-sidebar-collapsed="true"] .tc-shell__sidebar-toggle { left: .75rem; top: .5rem; }
+.tc-shell[data-layout="private"][data-sidebar-collapsed="true"] .tc-shell__desktop { display: none; }
+.tc-shell[data-layout="private"][data-sidebar-collapsed="true"] .tc-shell__main { grid-column: 1; grid-row: 2; }
+@media (max-width: 47.99rem) {
+  .tc-shell[data-layout="private"] { grid-template-columns: minmax(0, 1fr); grid-template-rows: 3rem minmax(0, 1fr); }
+  .tc-shell[data-layout="private"] .tc-shell__header { grid-column: 1; padding: .5rem 3.625rem; }
+  .tc-shell[data-layout="private"] .tc-shell__brand { font-size: 1.125rem; padding: .25rem 0; }
+  .tc-shell[data-layout="private"] .tc-shell__brand::before { width: 1.375rem; height: 1.375rem; }
+  .tc-shell[data-layout="private"] .tc-shell__header > [data-palette-open],
+  .tc-shell__version,
+  .tc-shell[data-layout="private"] .tc-shell__desktop { display: none; }
+  .tc-shell[data-layout="private"] .tc-shell__main { grid-column: 1; grid-row: 2; }
+  .tc-shell[data-layout="private"] .tc-mobile-trigger { position: absolute; left: .25rem; top: .125rem; width: 2.75rem; padding: .75rem; font-size: 0; }
+  .tc-shell[data-layout="private"] .tc-mobile-trigger::before { content: "☰"; font-size: 1.125rem; color: var(--tc-muted); }
+}
+
+.tc-shell[data-layout="private"] .tc-shell__header > [data-palette-open]::before { content: ""; width: .875rem; height: .875rem; background: currentColor; mask: var(--tc-icon-search) center / contain no-repeat; }
+.tc-shell[data-layout="private"] .tc-shell__sidebar-toggle::before { content: ""; display: block; margin: auto; width: .9375rem; height: .9375rem; background: currentColor; mask: var(--tc-icon-panel-left-close) center / contain no-repeat; }
+.tc-shell[data-layout="private"] .tc-shell__navigation a[href$="/settings"] { position: absolute; left: .5rem; bottom: 1rem; }
+.tc-shell[data-layout="private"] .tc-shell__navigation a[href$="/settings/instance"] { position: absolute; left: 5.5rem; bottom: 1rem; font-size: .6875rem; }
+.tc-shell[data-layout="private"] .tc-shell__desktop > [data-shortcut-open] { position: absolute; right: .5rem; bottom: 1rem; }
+.tc-shell[data-layout="private"] .tc-shell__project { display: none; }
+@media (max-width: 47.99rem) {
+  .tc-shell[data-layout="private"] .tc-mobile-trigger::before { content: ""; width: 1.25rem; height: 1.25rem; background: currentColor; mask: var(--tc-icon-menu) center / contain no-repeat; }
+}
+
+.tc-shell__brand-mobile { display: none; }
+.tc-shell[data-layout="private"] .tc-shell__main > .tc-page-chrome + * { border-top-left-radius: .75rem; box-shadow: inset .75rem .75rem 1.5rem -.75rem var(--tc-shadow-recess); }
+@media (max-width: 47.99rem) {
+  .tc-shell__brand-desktop { display: none; }
+  .tc-shell__brand-mobile { display: inline; }
+  .tc-shell[data-layout="private"] .tc-shell__main > .tc-page-chrome + * { border-top-left-radius: 0; }
+}

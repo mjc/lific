@@ -1,0 +1,352 @@
+{
+  "baseline": "9683d38af8e1e6f9b076439fe90d9519109b2218",
+  "files": [
+    {
+      "source": "e2e/mobile-nav.ts",
+      "target": "src/topcoat/tests/main/shell/mobile-nav.browser.test.js",
+      "cases": [],
+      "kind": "component-browser",
+      "additional_targets": [
+        "src/topcoat/tests/main/shell/mobile-equivalents.browser.test.mjs",
+        "src/topcoat/tests/main/shell/mobile-history.browser.test.js"
+      ],
+      "mappings": [
+        {
+          "original": "lines105\u2013151: focus/inert/trap, root/project Back/Forward, native tab, one destination request",
+          "target": "root/project focus trap + native modified destination links; existing focus stays in active pane; existing Back/Forward/reload; existing destination selection unwinds both entries"
+        },
+        {
+          "original": "lines153\u2013167: direct trigger focus; context menu focused; first Move up disabled; Inspect; Move down payload",
+          "target": "mobile-history direct project trigger + mobile-nav project context menu"
+        },
+        {
+          "original": "lines169\u2013191: rename Tab preserves draft, Save failure retains error/name, Escape focus, Enter success/focus, group Move down",
+          "target": "mobile-nav group rename preserves failed draft, Cancel/Escape focus, retries and Move down"
+        },
+        {
+          "original": "lines193\u2013212: external navigation cancels queued destination, New project menu, desktop resize closes shared open state",
+          "target": "existing external navigation cancels queued destination; mobile-nav new project command; existing desktop resize"
+        },
+        {
+          "original": "lines214\u2013267: root reload adoption, delayed mount project adoption, external Back/Forward, rapid and reversed traversal",
+          "target": "existing Back/Forward/reload; mobile-history delayed catalog mount + rapid repeated and reversed traversals"
+        },
+        {
+          "original": "lines269\u2013286: removed project empty links on Forward, theme menu aria/title, order error",
+          "target": "existing read-only catalog updates; mobile-nav theme chooser + order failure"
+        },
+        {
+          "original": "lines288\u2013301: all seven malformed namespace field variants rejected/reopen/close/Forward",
+          "target": "mobile-history rejects every malformed or foreign original namespace field"
+        },
+        {
+          "original": "lines303\u2013358: LAN crypto fallback entropy, UUID shape, close/unwind, reload state/history and Back/Forward namespace",
+          "target": "mobile-nav LAN HTTP UUID fallback"
+        },
+        {
+          "original": "line362: browser errors empty",
+          "target": "mobile-history errors assertion and existing mobile component errors assertion"
+        }
+      ]
+    },
+    {
+      "source": "e2e/native-links.ts",
+      "target": "src/topcoat/tests/main/shell/native-links.js",
+      "cases": [],
+      "kind": "helper",
+      "notes": "All diagnostic lifecycle, window.open recording, popup creation/click/close/focus, source-state capture, errors and tracing assertions preserved by TypeScript erasure; consumed in shell sidebar and mobile browser tests."
+    },
+    {
+      "source": "e2e/palette-search.ts",
+      "target": "src/topcoat/tests/main/shell/palette-search.browser.test.js",
+      "cases": [],
+      "kind": "real-executable-browser",
+      "notes": "Actual authenticated executable/database, API-seeded projects/issues/pages; no HTTP mock substitution. Preserves slow local-index/catalog races, qualified and bare references, current project priority, Enter selection and navigation, text search local/server merge/debounce, duplicate suppression, per-kind quotas and selection identity."
+    },
+    {
+      "source": "e2e/public-projects.ts",
+      "target": "src/topcoat/tests/main/shell/public-projects.browser.test.js",
+      "cases": [],
+      "kind": "real-executable-browser",
+      "notes": "All11 original collectFail scenarios retained with executable/database and API publication instead of directSQL: aliases/bookmarks, read-only affordances, hostile markdown checklist, complete bulk120 list, prefixed navigation, auth boundary, pendingprivate-to-publicrace, private/unpublished refusals."
+    },
+    {
+      "source": "e2e/sidebar-visual.ts",
+      "target": "src/topcoat/tests/main/shell/sidebar-visual.js",
+      "cases": [],
+      "kind": "helper",
+      "notes": "All six accents/light+dark contrast ratios, minimum text4.5/marker3/focus3, selected vs hover, transparent parent, width190/230/360, three font scales/two densities,44px touch targets/48px main rows/nohorizontal overflow, scrollpositions and screenshot matrix remain. Current production font loading replaces removed external Svelte font fixture. Focus color uses actual tc-focus token."
+    },
+    {
+      "source": "e2e/sidebar.ts",
+      "target": "src/topcoat/tests/main/shell/sidebar.browser.test.js",
+      "cases": [
+        "separate disclosure and Overview links",
+        "sidebar selection and readable accents in both themes",
+        "selected account metadata remains readable across accents",
+        "desktop visual matrix",
+        "mobile visual grammar contrast and touch targets",
+        "direct link reveal and deliberate collapse survives revalidation",
+        "failed initial groups recover and reveal the active project exactly once",
+        "later failed group snapshot defers newly visible project reveal until recovery",
+        "long sidebar reveals nearest once and respects subsequent user scrolling",
+        "stable destinations and cached recents across slow failed refreshes",
+        "long titles focus hover and 230 190 pixel widths",
+        "focused recent tooltip does not steal another project click",
+        "text-scaled default preserves pixel preference and resize semantics",
+        "native modified sidebar links",
+        "group create rename failure retry Cancel Escape",
+        "personal group and grouped project order payloads rollback",
+        "Settings identity and theme share live shell state",
+        "real Layout mobile menus history and palette suppression"
+      ],
+      "kind": "component-browser",
+      "notes": "Original18 named case bodies and fake HTTP gates/quota/payload assertions retained. Real executable serves current production documents/assets; controlled HTTP remains the original component seam. Real database also seeds every SSR route used. Old project disclosure/menu controls remain asserted; these missing behaviors are not replaced by mocks. Renamed recents/groups/native pathname selectors translated. Collapsed-ID storage assertions observe the complement of current expanded-ID preferences under the actual new storage key."
+    },
+    {
+      "source": "web/tests/activityRate.test.ts",
+      "target": "src/topcoat/native/home_activity_rate.rs",
+      "cases": [
+        "combines a daily baseline with live time buckets",
+        "seeding and resetting discard stale live buckets",
+        "expires an initial daily baseline without reconnecting",
+        "excludes buckets that start before each trailing window",
+        "counts only audit-backed realtime events",
+        "accepts only non-negative safe-integer baselines",
+        "selects the shortest active rate window"
+      ],
+      "kind": "native-rust-unit",
+      "notes": "All seven original observable contracts are executed by native_activity_rate_ Rust tests in the workspace suite, including original second/minute bucket boundaries, daily-baseline expiry, reset, audit event filtering, safe integer inputs and shortest rate-window selection. No dashboard JavaScript adapter or copied browser model remains."
+    },
+    {
+      "source": "web/tests/authSession.test.ts",
+      "target": "src/topcoat/tests/main/shell/authSession.test.js",
+      "cases": [
+        "adopts the replacement session so the next request is authenticated",
+        "leaves the current session alone when the change is rejected",
+        "clears the local session once the server confirms the revocation",
+        "keeps the local session when the request fails, so the retry has a credential",
+        "keeps the local session when the server is unreachable"
+      ],
+      "kind": "live-source-unit",
+      "notes": "All original named case bodies and assertions retained; adapter invokes the corresponding live Topcoat runtime."
+    },
+    {
+      "source": "web/tests/autoRefresh.test.ts",
+      "target": "src/topcoat/native/home_live_production.rs",
+      "cases": [
+        "bounds refresh delay during a continuous realtime event burst"
+      ],
+      "kind": "native-production-browser",
+      "notes": "The original maximum-wait assertion runs against native_home_live_continuous_real_edits_refresh_within_five_seconds using real shared-service issue updates and actual mounted Home refreshes. The native quiet-burst, owner replacement and busy-render cases retain scheduling and disposal coverage. Run workspace tests with ignored cases enabled; no hybrid controller is used.",
+      "additional_targets": [
+        "src/topcoat/native/home_live.browser.test.cjs"
+      ]
+    },
+    {
+      "source": "web/tests/dompurify.ssr.ts",
+      "target": "src/topcoat/tests/main/shell/dompurify.ssr.js",
+      "cases": [],
+      "kind": "helper",
+      "notes": "Original SSR stand-in has no assertions; preserved exact sanitize identity export for fixture equivalence. Browser ports use actual vendor DOMPurify for production sanitization."
+    },
+    {
+      "source": "web/tests/labelColors.test.ts",
+      "target": "src/topcoat/native/project_overview/labels_model.rs",
+      "cases": [
+        "preserves hex colors and rejects CSS source"
+      ],
+      "kind": "native-unit",
+      "notes": "Original named case maps to native safe_color: exact mixed-case #12aBcF is preserved, and CSS source red; background-image: url(https://example.test) falls back to #6B7280. The native tests label_hex_and_safe_legacy_colors_preserve_source_input_rules and label_unsafe_stored_color_uses_native_component_fallback own these assertions; no removed JavaScript helper is loaded.",
+      "mappings": [
+        {
+          "original": "preserves hex colors and rejects CSS source",
+          "target": "src/topcoat/native/project_overview/labels_model.rs",
+          "translated": [
+            "label_hex_and_safe_legacy_colors_preserve_source_input_rules",
+            "label_unsafe_stored_color_uses_native_component_fallback"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "web/tests/mermaidLimits.test.ts",
+      "target": "src/topcoat/tests/main/shell/mermaid.browser.test.js",
+      "cases": [
+        "accepts ordinary diagrams and rejects large or dense input",
+        "rejects tiny inputs that trigger known Mermaid resource exhaustion",
+        "rejects Mermaid architecture prototype pollution keys",
+        "preserves safe ranges and quoted labels containing directive-like text",
+        "shares aggregate block and source limits",
+        "does not consume rejected source"
+      ],
+      "kind": "component-browser",
+      "notes": "All6 declarations and four parameter rows run actual browser renderer; real installed Mermaid parser confirms dangerous syntax is valid before rejection. Aggregate source/block charging and safe directives preserved."
+    },
+    {
+      "source": "web/tests/mermaidRender.test.ts",
+      "target": "src/topcoat/tests/main/shell/mermaid.browser.test.js",
+      "cases": [
+        "rejects a forged complex placeholder before rendering",
+        "rejects malformed encoded source without throwing",
+        "enforces one shared budget across blocks",
+        "does not update after cancellation",
+        "a pass cancelled before it starts charges nothing and leaves the node alone",
+        "a rerender gets a fresh budget, so a cancelled pass costs the next one nothing",
+        "a refreshed thread budget still counts the bodies already on screen",
+        "a mention-roster rerender charges one shared budget, not one per body",
+        "reports success and failure while active"
+      ],
+      "kind": "component-browser",
+      "notes": "All9 original render lifecycle/budget/error cases run actual marked/DOMPurify/public renderer with original controlled Mermaid async seam. Numeric renderer-owned placeholder index replaces deleted URI encoding. Budget/cancellation/error expectations remain active. Cross-container cases retain original assertions against connected DOM, but separate public render calls are internal renderer contracts and do not independently establish private CommentsView thread behavior."
+    },
+    {
+      "source": "web/tests/paletteSearch.test.ts",
+      "target": "src/topcoat/tests/main/shell/palette-search.test.js",
+      "cases": [
+        "splits on whitespace and lowercases",
+        "keeps punctuation attached so a reference stays one term",
+        "an empty query yields no terms",
+        "keeps metadata for the same project identities regardless of order",
+        "invalidates metadata when projects are added, removed, or renamed",
+        "an exact field beats a prefix beats a word prefix beats a substring",
+        "prefix credit needs ${PREFIX_MIN_TERM} characters",
+        "a one-character term still matches exactly",
+        "typo tolerance starts at ${FUZZY_MIN_TERM} characters",
+        "tolerates one typo per five characters",
+        "fuzzy can be refused, for numeric fields",
+        "no match is zero, and empty inputs are zero",
+        "measures edits up to the budget",
+        "abandons once the budget cannot be met",
+        "takes the trailing number of a reference",
+        "a title hit outranks the same hit in a label or a preview",
+        "an exact reference scores the reference weight, not the title weight",
+        "a bare number matches the reference's number field",
+        "an exact title match is the ceiling",
+        "no terms scores nothing",
+        "every term must land somewhere",
+        "terms may match different fields",
+        "adding a term narrows rather than widens",
+        "ranks stronger matches first",
+        "breaks ties on updated_at, newest first",
+        "finds a typo'd title and a prefix alike",
+        "searches issues and pages together",
+        "honours the limit and returns nothing for an empty query",
+        "every local hit outranks every server hit",
+        "no local hit reaches the identifier fast path or an exact project",
+        "the current project's reference outranks every other result",
+        "the mapping is monotonic and clamped",
+        "the server is consulted only when the local answer is thin",
+        "a bare or hashed number leaves the project to the caller",
+        "doc n names a page in the current project",
+        "qualified issue references in every spelling",
+        "qualified page references in every spelling",
+        "ordinary text is not a reference",
+        "refIdentifier builds the canonical identifier",
+        "drops server hits the local pass already produced",
+        "compares identifiers case-insensitively",
+        "collapses duplicates inside the server list too",
+        "keeps hits with no identifier, and ignores empty taken entries",
+        "preserves the server's own order",
+        "keeps the first occurrence, in order",
+        "an empty list stays empty",
+        "the identifier fast path and the local hit never emit two rows",
+        "the exact reference is the row that survives",
+        "a server hit for a row already shown locally collapses too",
+        "every key in a published set is unique",
+        "local rows still outrank server rows after deduping",
+        "a page survives a flood of stronger issue matches",
+        "caps each kind independently",
+        "still ranks the combined set by score",
+        "an empty query yields nothing",
+        "a response for the current generation and project is fresh",
+        "a newer keystroke, mode change or close invalidates it",
+        "navigating to another project invalidates it",
+        "leaving a project entirely invalidates it",
+        "two responses racing: only the last one issued may land",
+        "follows the selected item when a merge reorders the list",
+        "keeps the cursor put when the server appends below it",
+        "falls back to the clamped index when the item is gone",
+        "an empty list selects nothing"
+      ],
+      "kind": "live-source-unit",
+      "notes": "All64 original cases preserved against live palette functions and extracted scoring/filter/selection expressions; constants and trailing-number expression derive from production. Stale-generation cases mount the actual controller, expose its generation gate, and dispatch registered popstate route listeners. Legacy scoring/no-limit helper assertions remain active and separate from browser regressions."
+    },
+    {
+      "source": "web/tests/projectIcons.test.ts",
+      "target": "src/topcoat/tests/main/shell/colors-icons.test.js",
+      "cases": [
+        "accepts installed icons, emoji sequences, and the logo",
+        "rejects arbitrary text and inherited properties instead of rendering them"
+      ],
+      "kind": "live-renderer-unit",
+      "notes": "All installed-icon/logo/emoji and invalid/inherited-property inputs preserved; inspect actual projectLink rendered output instead of removed internal icon representation. Installed icon and logo acceptance positively require actual SVG/image children, rejecting fallback-only rendering."
+    },
+    {
+      "source": "web/tests/publicScope.test.ts",
+      "target": "src/topcoat/tests/main/shell/publicScope.test.js",
+      "cases": [
+        "is off by default and uppercases the project it is set to",
+        "notifies listeners on transitions only",
+        "prefixes in-app routes only while set",
+        "maps every read the public components make",
+        "refuses everything that has no public twin",
+        "answers identity, role and history locally without a request",
+        "encodes the project identifier into the path"
+      ],
+      "kind": "live-source-unit",
+      "notes": "All original named case bodies and assertions retained; adapter invokes the corresponding live Topcoat runtime."
+    },
+    {
+      "source": "web/tests/reauth.test.ts",
+      "target": "src/topcoat/tests/main/shell/reauth.test.js",
+      "cases": [
+        "matches only the staleness refusal, not other 403s",
+        "saves the fresh session so the retry carries it",
+        "a wrong password leaves the existing session in place",
+        "a network failure leaves the existing session in place",
+        "saves the fresh session on a passwordless instance",
+        "refuses a session belonging to a different admin",
+        "the same identity check applies to the password path",
+        "passes a successful attempt straight through without re-authenticating",
+        "re-authenticates once and retries once",
+        "never retries more than once, even if it is refused again",
+        "does not retry when re-authentication itself fails",
+        "a non-staleness failure is returned untouched",
+        "a refused passwordless refresh is recoverable so callers can prompt",
+        "a refresh naming another account is recoverable, and the token is untouched",
+        "a recoverable failure surfaces as staleness so the caller prompts",
+        "an unrecoverable failure surfaces its own message instead",
+        "a refused passwordless refresh then a successful password path retries once",
+        "both routes call the same-user refresh endpoint"
+      ],
+      "kind": "live-controller-unit",
+      "notes": "All18 assertions retained via actual controller sensitive-action/re-authenticate replay and session transport. Old recoverable hint maps to pending-action prompt state. Two endpoint assertions now scope refresh calls because controller reloads account sections after replay; absent passwordless POST body is normalized to JSON {} (same server meaning)."
+    },
+    {
+      "source": "web/tests/sidebarWidth.test.ts",
+      "target": "src/topcoat/tests/main/shell/sidebarWidth.test.js",
+      "cases": [
+        "default follows text size without creating a manual preference",
+        "legacy pixel widths survive load, text changes and reload unchanged",
+        "a temporary minimum restores the user's narrow width on return",
+        "deliberate resizing persists; reset returns to proportional defaults",
+        "invalid or unavailable storage and font sizes use safe defaults"
+      ],
+      "kind": "live-source-unit",
+      "notes": "All original named case bodies and assertions retained; adapter invokes the corresponding live Topcoat runtime."
+    },
+    {
+      "source": "web/tests/userState.test.ts",
+      "target": "src/topcoat/tests/main/shell/userState.test.js",
+      "cases": [
+        "successful profile publication reaches all subscribers immediately",
+        "late me response cannot replace a newer profile",
+        "unchanged revision accepts me, sign-out invalidates pending loads",
+        "direct store updates also invalidate stale loads"
+      ],
+      "kind": "live-controller-unit",
+      "notes": "All4 original store publication/revision cases translated to actual session refreshAccount and identity changeProfile, account-change subscribers and direct session state mutation. Direct mutable-state case is an internal contract expectation, separately noted from UI profile races."
+    }
+  ]
+}

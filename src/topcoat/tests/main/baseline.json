@@ -1,0 +1,776 @@
+{
+  "baseline": "9683d38af8e1e6f9b076439fe90d9519109b2218",
+  "sources": [
+    {
+      "source": "e2e/context-menu.ts",
+      "blob": "a6813caaecca803ca1bf0207055586251d82a60f",
+      "group": "issues",
+      "kind": "browser",
+      "case_titles": []
+    },
+    {
+      "source": "e2e/discord-feedback.ts",
+      "blob": "2970e87b48f196a6ce729fb9fe9c1bd872f501bb",
+      "group": "resources",
+      "kind": "browser",
+      "case_titles": []
+    },
+    {
+      "source": "e2e/duplicate-relations.ts",
+      "blob": "64f386a1c5b5319db92f1d8753942f6c69a9b76b",
+      "group": "issues",
+      "kind": "browser",
+      "case_titles": []
+    },
+    {
+      "source": "e2e/issue-topbar.ts",
+      "blob": "7af2eb210c2df0116c3c80bcd69e2c247bf248d4",
+      "group": "issues",
+      "kind": "browser",
+      "case_titles": []
+    },
+    {
+      "source": "e2e/issue-waits.ts",
+      "blob": "376daacc379c8f3b9e2d960c206d22826f6ef84d",
+      "group": "issues",
+      "kind": "browser",
+      "case_titles": []
+    },
+    {
+      "source": "e2e/mobile-nav.ts",
+      "blob": "d34a14606b193f94f36b60219ebc28adacfb06e1",
+      "group": "shell",
+      "kind": "browser",
+      "case_titles": []
+    },
+    {
+      "source": "e2e/native-links.ts",
+      "blob": "ab86a8a78b900bb72a81407f65c03046ceafacb3",
+      "group": "shell",
+      "kind": "browser",
+      "case_titles": []
+    },
+    {
+      "source": "e2e/palette-search.ts",
+      "blob": "d9a1a6a9b33e043cb8c3bddf9dd94b6f02270842",
+      "group": "shell",
+      "kind": "browser",
+      "case_titles": []
+    },
+    {
+      "source": "e2e/peek-permissions.ts",
+      "blob": "6eb7134cb446fc05f67730191595eba52e8b171c",
+      "group": "issues",
+      "kind": "browser",
+      "case_titles": []
+    },
+    {
+      "source": "e2e/project-archives.ts",
+      "blob": "291444e7c4c83cc9176b6e46bd272a11fa54cdd4",
+      "group": "resources",
+      "kind": "browser",
+      "case_titles": []
+    },
+    {
+      "source": "e2e/public-projects.ts",
+      "blob": "22c517a05e1bc0be2330d1b9b8610f38b0c3dc64",
+      "group": "shell",
+      "kind": "browser",
+      "case_titles": []
+    },
+    {
+      "source": "e2e/sidebar-visual.ts",
+      "blob": "d46c3bed0ad4c0bc038c70beaac14bd3d11c9542",
+      "group": "shell",
+      "kind": "browser",
+      "case_titles": []
+    },
+    {
+      "source": "e2e/sidebar.ts",
+      "blob": "19a7c17357ff0b2200ef36380d9bca5ab1ffa333",
+      "group": "shell",
+      "kind": "browser",
+      "case_titles": [
+        "separate disclosure and Overview links",
+        "sidebar selection and readable accents in both themes",
+        "selected account metadata remains readable across accents",
+        "desktop visual matrix",
+        "mobile visual grammar contrast and touch targets",
+        "direct link reveal and deliberate collapse survives revalidation",
+        "failed initial groups recover and reveal the active project exactly once",
+        "later failed group snapshot defers newly visible project reveal until recovery",
+        "long sidebar reveals nearest once and respects subsequent user scrolling",
+        "stable destinations and cached recents across slow failed refreshes",
+        "long titles focus hover and 230 190 pixel widths",
+        "focused recent tooltip does not steal another project click",
+        "text-scaled default preserves pixel preference and resize semantics",
+        "native modified sidebar links",
+        "group create rename failure retry Cancel Escape",
+        "personal group and grouped project order payloads rollback",
+        "Settings identity and theme share live shell state",
+        "real Layout mobile menus history and palette suppression"
+      ]
+    },
+    {
+      "source": "e2e/smoke.ts",
+      "blob": "7faf937811621b3b0e6a8bfad59dde0c7fc29db6",
+      "group": "issues",
+      "kind": "browser",
+      "case_titles": []
+    },
+    {
+      "source": "web/tests/activityRate.test.ts",
+      "blob": "4876ac573c17299f272d8e6dab7ea2dc032cb3a0",
+      "group": "shell",
+      "kind": "unit",
+      "case_titles": [
+        "combines a daily baseline with live time buckets",
+        "seeding and resetting discard stale live buckets",
+        "expires an initial daily baseline without reconnecting",
+        "excludes buckets that start before each trailing window",
+        "counts only audit-backed realtime events",
+        "accepts only non-negative safe-integer baselines",
+        "selects the shortest active rate window"
+      ]
+    },
+    {
+      "source": "web/tests/altText.test.ts",
+      "blob": "6335b9be84640623c2fe182025cbaa923c0a3d94",
+      "group": "resources",
+      "kind": "unit",
+      "case_titles": [
+        "folds newlines and collapses runs of whitespace",
+        "strips brackets that would terminate the alt early",
+        "reduces a whitespace-only input to nothing",
+        "locates the alt of the reference at the insertion point",
+        "ignores a bracket pair that is not an image reference",
+        "falls back to searching from the start when the offset is past it",
+        "returns null when there is no image reference",
+        "replaces the filename placeholder with the description",
+        "rewrites the reference at the offset, not an earlier one",
+        "fills an empty alt slot",
+        "treats a blank description as a skip",
+        "leaves the document alone when the reference is gone",
+        "sanitizes on the way in so the reference cannot be broken",
+        "tolerates an out-of-range offset"
+      ]
+    },
+    {
+      "source": "web/tests/annotateMath.test.ts",
+      "blob": "b2b63fe14712c8d99da750ba7969fc6ae2e3d771",
+      "group": "resources",
+      "kind": "unit",
+      "case_titles": [
+        "normalizes a drag in any direction to a positive rect",
+        "clips a rect that overhangs the image",
+        "collapses a rect that lies entirely outside the image",
+        "block size scales with the region's short side, within bounds",
+        "downsamples to one pixel per block and paints back over the region",
+        "the intermediate buffer holds far fewer samples than the region",
+        "clips the sampled region to the image before sampling",
+        "returns null for a degenerate region",
+        "never produces a zero-dimension buffer for a sub-block region",
+        "fits a large image into the viewport and never upscales a small one",
+        "stroke width tracks the image's short side within sane limits",
+        "moves a single edge and leaves the others alone",
+        "moves both axes for a corner handle",
+        "pins the rect at the minimum instead of inverting it",
+        "keeps the rect inside the image",
+        "returns snapshots newest first and reports emptiness",
+        "drops the oldest entries past the limit",
+        "clear empties the history",
+        "keeps jpeg as jpeg and flattens everything else to png",
+        "marks the annotated copy and fixes the extension"
+      ]
+    },
+    {
+      "source": "web/tests/ansi.test.ts",
+      "blob": "32ba204f14ea1396e9072d9bec4eae692facd4c0",
+      "group": "resources",
+      "kind": "unit",
+      "case_titles": [
+        "plain text becomes one unstyled span",
+        "colors the run between an SGR code and its reset",
+        "combines attributes and clears them individually",
+        "reads bright, 256-color and truecolor forms",
+        "an empty parameter list is a reset",
+        "strips sequences it does not support instead of printing them",
+        "carries style across a line boundary",
+        "a line of pure escapes still yields one empty span",
+        "merges adjacent runs that share a style",
+        "detects and removes escapes",
+        "maps style to css, swapping colors when inverted"
+      ]
+    },
+    {
+      "source": "web/tests/attachmentDeepLink.test.ts",
+      "blob": "71eb4f54c2c5ff2ec9381b18a09c8b49b4c6eac5",
+      "group": "resources",
+      "kind": "unit",
+      "case_titles": [
+        "formats single lines and ranges",
+        "normalizes a backwards range",
+        "parses with or without the leading hash",
+        "rejects anything that is not an attachment line anchor",
+        "reads the path-style fragment",
+        "reads the query carried on a hash route",
+        "returns null for routes and anchors that carry no target",
+        "adds and removes the query without disturbing other params",
+        "keeps the hash route intact when selecting a line",
+        "uses the bare fragment when the route is not in the hash",
+        "turns a hash route into a path-style URL",
+        "preserves a sub-path deployment prefix",
+        "keeps an existing path-style location as-is",
+        "reads extensions off a filename",
+        "mime wins for media and images",
+        "extension decides what kind of text a text/plain file is",
+        "works with no mime at all, as markdown links do",
+        "unknown types fall back to the download chip"
+      ]
+    },
+    {
+      "source": "web/tests/authSession.test.ts",
+      "blob": "8b4ed102392e47405f6e3264a5bbe0fd00fb1564",
+      "group": "shell",
+      "kind": "unit",
+      "case_titles": [
+        "adopts the replacement session so the next request is authenticated",
+        "leaves the current session alone when the change is rejected",
+        "clears the local session once the server confirms the revocation",
+        "keeps the local session when the request fails, so the retry has a credential",
+        "keeps the local session when the server is unreachable"
+      ]
+    },
+    {
+      "source": "web/tests/autoRefresh.test.ts",
+      "blob": "9f5c0fb0bcb21e7b4b7cd1ea4e4292d250e9feaf",
+      "group": "shell",
+      "kind": "unit",
+      "case_titles": [
+        "bounds refresh delay during a continuous realtime event burst"
+      ]
+    },
+    {
+      "source": "web/tests/bigPaste.test.ts",
+      "blob": "3605078a52dbb91958ae04a39ecc1b81141d8344",
+      "group": "resources",
+      "kind": "unit",
+      "case_titles": [
+        "counts lines without inventing one for empty text",
+        "the line threshold is strict at 60",
+        "the character threshold is strict at 6000",
+        "ordinary pastes are left alone",
+        "generates a local-time paste-YYYYMMDD-HHMM.txt filename",
+        "wraps the pasted text as a text/plain file",
+        "describes the paste by whichever threshold it tripped"
+      ]
+    },
+    {
+      "source": "web/tests/commentLinks.test.ts",
+      "blob": "04004833219ea5e66f26bdf8241473d20b5b7253",
+      "group": "issues",
+      "kind": "unit",
+      "case_titles": [
+        "keeps a public prefix inside the route rather than the base path",
+        "reads canonical anchors and normalized hash-route queries",
+        "preserves route query parameters while carrying the comment target",
+        "keeps plain anchors on the current route and adopts routed hashes",
+        "separates a public URL base path from the resource route"
+      ]
+    },
+    {
+      "source": "web/tests/comments.test.ts",
+      "blob": "b7ea1031c75c306a8b22da4fb59e1df8eb155b21",
+      "group": "issues",
+      "kind": "unit",
+      "case_titles": [
+        "only the comment author gets web mutation actions",
+        "routes comment shortcuts by the focused interaction",
+        "renders mutation actions only for the comment author",
+        "renders unsafe stored label colors through the component fallback",
+        "the thread revision changes for every way the rendered thread can change",
+        "the thread revision tracks the mention roster the bodies render with",
+        "every comment body renders its diagrams inside the thread",
+        "marks comments edited only when the update timestamp changes",
+        "renders the original time and exact edited timestamp",
+        "folding a comment in by id is idempotent and keeps thread order",
+        "the thread comparator is the key the cursor pages by",
+        "updates a comment through its typed API call",
+        "requests the newest bounded comment page and shows it chronologically",
+        "infers hasMore from the over-fetched row without ever showing it",
+        "trusts the server about what lies past a page the byte budget cut short",
+        "the cursor the client pages by is the row the server named",
+        "a short page from a server that says nothing is still the end of the thread",
+        "a full page is more comments even when the header disagrees",
+        "paging a budget-limited thread walks it whole, without repeats",
+        "sends the keyset cursor pair for older pages and never exceeds the cap",
+        "pages back through a thread that is being written to, without duplicates",
+        "dedupes defensively when two pages overlap",
+        "olderCursor names the oldest loaded comment, or nothing when empty",
+        "a refresh reconciles every loaded page, not just the newest",
+        "a refresh never fetches more than the reader already loaded",
+        "a refresh keeps exactly the rows it was asked for, not whole pages",
+        "an exact page boundary needs no trimming",
+        "a thread shorter than the window is returned whole",
+        "an automatic refresh is capped no matter how much history is loaded",
+        "refresh bounds are enforced against any caller argument",
+        "a fractional page size rounds down and still pages",
+        "a capped refresh keeps the older rows the reader loaded by hand",
+        "reconciliation replaces the window when nothing older was preserved",
+        "reconciliation orders preserved rows by the same key the cursor uses",
+        "only the newest comment-window operation may write",
+        "a replacement window applies, re-reads, or stands down",
+        "a failed page aborts the refresh instead of showing a half window",
+        "an empty thread refreshes to an empty window without looping",
+        "a deep link to an unloaded comment asks for the previous page",
+        "a failing anchor fetch is not retried until more comments arrive",
+        "the automatic anchor walk stops after its page budget",
+        "a manual load older does not hand the automatic walk a fresh budget",
+        "navigating to another thread starts the anchor walk over",
+        "deletes a comment through its typed API call"
+      ]
+    },
+    {
+      "source": "web/tests/csv.test.ts",
+      "blob": "b721a801500a20d2f619f4e47ff9b43076a71edc",
+      "group": "resources",
+      "kind": "unit",
+      "case_titles": [
+        "reads a header row and body rows",
+        "honors quotes, escaped quotes, and embedded separators",
+        "keeps newlines inside a quoted field",
+        "tolerates CRLF and a UTF-8 BOM",
+        "caps rows but still reports the true total",
+        "reports the widest row for a ragged file",
+        "an empty document yields no headers and no rows",
+        "splits on tabs when told to",
+        "prefers the extension",
+        "falls back to the most common candidate in the first line",
+        "compares numbers numerically and text case-insensitively",
+        "sinks blanks in both directions",
+        "does not mutate the input",
+        "treats a missing cell as blank"
+      ]
+    },
+    {
+      "source": "web/tests/diff.test.ts",
+      "blob": "c8bd0324f8e2c9c13d007537f191fcb64334c3d6",
+      "group": "resources",
+      "kind": "unit",
+      "case_titles": [
+        "splits files and counts each side",
+        "numbers lines from the hunk header, per side",
+        "keeps the +/- marker out of the line text",
+        "summarizes with correct pluralization",
+        "handles a bare diff -u with no git header",
+        "names new and deleted files from the surviving side",
+        "flags binary files and gives them no hunk lines",
+        "discards a format-patch preamble",
+        "an empty or prose-only document parses to nothing",
+        "sniffs a diff by its hunk header"
+      ]
+    },
+    {
+      "source": "web/tests/dompurify.ssr.ts",
+      "blob": "b408caf5e7aee52fb6dca1a2f289d3967f81d6da",
+      "group": "shell",
+      "kind": "unit",
+      "case_titles": []
+    },
+    {
+      "source": "web/tests/downscale.test.ts",
+      "blob": "e8ffaae8d61f4aafb4d7d91216cf24506478f477",
+      "group": "resources",
+      "kind": "unit",
+      "case_titles": [
+        "offers a resize for an image past the long-edge threshold",
+        "offers a resize once the file passes 80% of the cap",
+        "declines to offer when resizing would change nothing",
+        "leaves ordinary images alone",
+        "never offers for formats the canvas cannot re-encode",
+        "ignores images with no measurable dimensions",
+        "a smaller cap pulls the offer threshold down with it",
+        "output mime preserves the source type where the canvas can",
+        "scaled dimensions keep the aspect ratio and never upscale",
+        "the size estimate tracks pixel count and stays plausible",
+        "reads the byte cap out of the server's rejection"
+      ]
+    },
+    {
+      "source": "web/tests/files.test.ts",
+      "blob": "ff3a200e5715f0723202d4f157c4b5c79f358fb7",
+      "group": "resources",
+      "kind": "unit",
+      "case_titles": [
+        "rounds to the coarsest useful unit",
+        "a file past the grace window goes on the next pass",
+        "states how many references go with the file",
+        "admins and maintainers may delete anyone's file",
+        "a viewer may delete only their own upload",
+        "fails open while the viewer is unknown",
+        "an uploaderless file is not deletable by a plain viewer",
+        "issues route by identifier, pages by numeric id",
+        "a comment lands on the entity its thread lives on",
+        "an unresolvable link has no route",
+        "a comment reference says so on the chip",
+        "uploader options are distinct, sorted, and skip deleted accounts",
+        "every class has a label"
+      ]
+    },
+    {
+      "source": "web/tests/insertSnippet.test.ts",
+      "blob": "1e7568ec08d81d6d146ba113377301f80aa61a55",
+      "group": "issues",
+      "kind": "unit",
+      "case_titles": [
+        "images embed, everything else links",
+        "inserting into an empty composer adds no leading break",
+        "inserting mid-line breaks onto its own block",
+        "inserting at the start of a fresh line keeps it inline",
+        "inserting in the middle keeps the tail and lands the caret before it",
+        "a selection is replaced, not pushed aside",
+        "a backwards selection is normalised",
+        "out-of-range offsets clamp to the text instead of throwing",
+        "consecutive inserts stack one per line"
+      ]
+    },
+    {
+      "source": "web/tests/issueExport.test.ts",
+      "blob": "0c04e35f5c44c510e1e7ee74d1858e4f133b5c1f",
+      "group": "resources",
+      "kind": "unit",
+      "case_titles": [
+        "exports only requested issues, in order, using authentication",
+        "refuses a partial export when a selected issue fails",
+        "cancels the response when aggregate bytes exceed the limit"
+      ]
+    },
+    {
+      "source": "web/tests/labelColors.test.ts",
+      "blob": "3eb1aba8e6a19d98157a470fd586f458db748b99",
+      "group": "shell",
+      "kind": "unit",
+      "case_titles": [
+        "preserves hex colors and rejects CSS source"
+      ]
+    },
+    {
+      "source": "web/tests/mermaidLimits.test.ts",
+      "blob": "6637e260b8c69a8420c23586513fc21b7758f2d6",
+      "group": "shell",
+      "kind": "unit",
+      "case_titles": [
+        "accepts ordinary diagrams and rejects large or dense input",
+        "rejects tiny inputs that trigger known Mermaid resource exhaustion",
+        "rejects Mermaid architecture prototype pollution keys",
+        "preserves safe ranges and quoted labels containing directive-like text",
+        "shares aggregate block and source limits",
+        "does not consume rejected source"
+      ]
+    },
+    {
+      "source": "web/tests/mermaidRender.test.ts",
+      "blob": "51d13506d1c0c17aa3e2f1ee9aec80efdc932fc5",
+      "group": "shell",
+      "kind": "unit",
+      "case_titles": [
+        "rejects a forged complex placeholder before rendering",
+        "rejects malformed encoded source without throwing",
+        "enforces one shared budget across blocks",
+        "does not update after cancellation",
+        "a pass cancelled before it starts charges nothing and leaves the node alone",
+        "a rerender gets a fresh budget, so a cancelled pass costs the next one nothing",
+        "a refreshed thread budget still counts the bodies already on screen",
+        "a mention-roster rerender charges one shared budget, not one per body",
+        "reports success and failure while active"
+      ]
+    },
+    {
+      "source": "web/tests/paletteSearch.test.ts",
+      "blob": "c0bf3c87bed3c5c9b5cd3a060a09efcf2bc659e6",
+      "group": "shell",
+      "kind": "unit",
+      "case_titles": [
+        "splits on whitespace and lowercases",
+        "keeps punctuation attached so a reference stays one term",
+        "an empty query yields no terms",
+        "keeps metadata for the same project identities regardless of order",
+        "invalidates metadata when projects are added, removed, or renamed",
+        "an exact field beats a prefix beats a word prefix beats a substring",
+        "prefix credit needs ${PREFIX_MIN_TERM} characters",
+        "a one-character term still matches exactly",
+        "typo tolerance starts at ${FUZZY_MIN_TERM} characters",
+        "tolerates one typo per five characters",
+        "fuzzy can be refused, for numeric fields",
+        "no match is zero, and empty inputs are zero",
+        "measures edits up to the budget",
+        "abandons once the budget cannot be met",
+        "takes the trailing number of a reference",
+        "a title hit outranks the same hit in a label or a preview",
+        "an exact reference scores the reference weight, not the title weight",
+        "a bare number matches the reference's number field",
+        "an exact title match is the ceiling",
+        "no terms scores nothing",
+        "every term must land somewhere",
+        "terms may match different fields",
+        "adding a term narrows rather than widens",
+        "ranks stronger matches first",
+        "breaks ties on updated_at, newest first",
+        "finds a typo'd title and a prefix alike",
+        "searches issues and pages together",
+        "honours the limit and returns nothing for an empty query",
+        "every local hit outranks every server hit",
+        "no local hit reaches the identifier fast path or an exact project",
+        "the current project's reference outranks every other result",
+        "the mapping is monotonic and clamped",
+        "the server is consulted only when the local answer is thin",
+        "a bare or hashed number leaves the project to the caller",
+        "doc n names a page in the current project",
+        "qualified issue references in every spelling",
+        "qualified page references in every spelling",
+        "ordinary text is not a reference",
+        "refIdentifier builds the canonical identifier",
+        "drops server hits the local pass already produced",
+        "compares identifiers case-insensitively",
+        "collapses duplicates inside the server list too",
+        "keeps hits with no identifier, and ignores empty taken entries",
+        "preserves the server's own order",
+        "keeps the first occurrence, in order",
+        "an empty list stays empty",
+        "the identifier fast path and the local hit never emit two rows",
+        "the exact reference is the row that survives",
+        "a server hit for a row already shown locally collapses too",
+        "every key in a published set is unique",
+        "local rows still outrank server rows after deduping",
+        "a page survives a flood of stronger issue matches",
+        "caps each kind independently",
+        "still ranks the combined set by score",
+        "an empty query yields nothing",
+        "a response for the current generation and project is fresh",
+        "a newer keystroke, mode change or close invalidates it",
+        "navigating to another project invalidates it",
+        "leaving a project entirely invalidates it",
+        "two responses racing: only the last one issued may land",
+        "follows the selected item when a merge reorders the list",
+        "keeps the cursor put when the server appends below it",
+        "falls back to the clamped index when the item is gone",
+        "an empty list selects nothing"
+      ]
+    },
+    {
+      "source": "web/tests/pendingPatch.test.ts",
+      "blob": "2c2cabfde94f1109a0627e6e035e11d07737014b",
+      "group": "issues",
+      "kind": "unit",
+      "case_titles": [
+        "with nothing parked, a patch is sent",
+        "with a patch parked, later ones merge instead of being sent",
+        "a later edit to the same field wins",
+        "the drain's own send is always dispatched",
+        "an edit during the replay parks instead of racing it",
+        "a merged patch names every field that has to be restored on cancel",
+        "a stale refusal plus two queued fields yields one merged patch and no more sends",
+        "stops on a failure, leaving whatever is parked for the prompt",
+        "finishes when a send lands and nothing arrived meanwhile",
+        "continues with whatever arrived while the send was in flight",
+        "taking a snapshot clears the slot so new edits start a fresh one",
+        "A refused, B merged, C edited mid-replay: all three land",
+        "a failed replay retains an edit made during it"
+      ]
+    },
+    {
+      "source": "web/tests/projectArchives.test.ts",
+      "blob": "a1e8d87e454d6694896faf2c55d559d335a2d602",
+      "group": "resources",
+      "kind": "unit",
+      "case_titles": [
+        "archive fetch returns bytes without saving and forwards cancellation and session",
+        "session observers see same-tab refresh and logout and unsubscribe cleanly"
+      ]
+    },
+    {
+      "source": "web/tests/projectIcons.test.ts",
+      "blob": "f5a033e24f05d6d914e27e447a1e9ebbdc5b3f42",
+      "group": "shell",
+      "kind": "unit",
+      "case_titles": [
+        "accepts installed icons, emoji sequences, and the logo",
+        "rejects arbitrary text and inherited properties instead of rendering them"
+      ]
+    },
+    {
+      "source": "web/tests/publicScope.test.ts",
+      "blob": "84fb00222937ddddd48b7d6244c8871b92c16223",
+      "group": "shell",
+      "kind": "unit",
+      "case_titles": [
+        "is off by default and uppercases the project it is set to",
+        "notifies listeners on transitions only",
+        "prefixes in-app routes only while set",
+        "maps every read the public components make",
+        "refuses everything that has no public twin",
+        "answers identity, role and history locally without a request",
+        "encodes the project identifier into the path"
+      ]
+    },
+    {
+      "source": "web/tests/reauth.test.ts",
+      "blob": "b46738010b1933a378803a10e09e97e264cbe4ab",
+      "group": "shell",
+      "kind": "unit",
+      "case_titles": [
+        "matches only the staleness refusal, not other 403s",
+        "saves the fresh session so the retry carries it",
+        "a wrong password leaves the existing session in place",
+        "a network failure leaves the existing session in place",
+        "saves the fresh session on a passwordless instance",
+        "refuses a session belonging to a different admin",
+        "the same identity check applies to the password path",
+        "passes a successful attempt straight through without re-authenticating",
+        "re-authenticates once and retries once",
+        "never retries more than once, even if it is refused again",
+        "does not retry when re-authentication itself fails",
+        "a non-staleness failure is returned untouched",
+        "a refused passwordless refresh is recoverable so callers can prompt",
+        "a refresh naming another account is recoverable, and the token is untouched",
+        "a recoverable failure surfaces as staleness so the caller prompts",
+        "an unrecoverable failure surfaces its own message instead",
+        "a refused passwordless refresh then a successful password path retries once",
+        "both routes call the same-user refresh endpoint"
+      ]
+    },
+    {
+      "source": "web/tests/references.test.ts",
+      "blob": "173e8d9b9f8d9b0cc082cb698e3b150d08c6c271",
+      "group": "issues",
+      "kind": "unit",
+      "case_titles": [
+        "does not reuse an account's issue snapshot after the session changes",
+        "retries a transient failure",
+        "caches stable not-found responses",
+        "re-fetches a status after realtime invalidation",
+        "resolves a shared status once for every subscriber",
+        "isolates subscriber exceptions",
+        "returns but does not cache a direct response invalidated in the same session",
+        "suppresses a direct response from an old session",
+        "drops unsubscribed status work before it reaches the server",
+        "caps concurrent issue resolution",
+        "releases active status work when its last subscriber leaves",
+        "restarts a status request after immediate same-key resubscription",
+        "an old cleanup cannot remove a replacement same-key subscription",
+        "releases queue slots after abortable direct consumers leave",
+        "does not join an aborted queued request for the same identifier",
+        "refreshes subscribers after the session changes during a request",
+        "shares one browser refresh listener and removes it after teardown",
+        "keeps a shared request alive for a direct caller after status teardown",
+        "caps direct cached issue resolution",
+        "returns but does not cache module data invalidated in the same session",
+        "does not return or cache module data from an old session"
+      ]
+    },
+    {
+      "source": "web/tests/saveQueue.test.ts",
+      "blob": "8828c7f080ce65bac2015166b64c286fea04e27d",
+      "group": "issues",
+      "kind": "unit",
+      "case_titles": [
+        "sends one patch straight through",
+        "an edit made during an in-flight save is not dropped",
+        "queued patches coalesce, last write winning per field",
+        "everyone who pushed into a coalesced batch learns how it went",
+        "a failure does not stall the queue",
+        "reports busy while a save is in flight and idle again afterwards",
+        "an edit arriving after dispatch is not merged into the sent patch"
+      ]
+    },
+    {
+      "source": "web/tests/sidebarWidth.test.ts",
+      "blob": "4d39cc1982564c8038d63fbaab2aa17ebf07589f",
+      "group": "shell",
+      "kind": "unit",
+      "case_titles": [
+        "default follows text size without creating a manual preference",
+        "legacy pixel widths survive load, text changes and reload unchanged",
+        "a temporary minimum restores the user's narrow width on return",
+        "deliberate resizing persists; reset returns to proportional defaults",
+        "invalid or unavailable storage and font sizes use safe defaults"
+      ]
+    },
+    {
+      "source": "web/tests/uploadQueue.test.ts",
+      "blob": "849bb1908f61df925d35d7f9f94ad4db6e08070a",
+      "group": "resources",
+      "kind": "unit",
+      "case_titles": [
+        "runs at most `limit` tasks at once",
+        "a rejected task frees its slot and does not stall the queue",
+        "a task that throws synchronously rejects rather than wedging a slot",
+        "resolves with each task's own value, in completion order",
+        "a limit below one is clamped to serial execution"
+      ]
+    },
+    {
+      "source": "web/tests/userState.test.ts",
+      "blob": "9770a8799fea47dd006abfee907cd277ac87da1e",
+      "group": "shell",
+      "kind": "unit",
+      "case_titles": [
+        "successful profile publication reaches all subscribers immediately",
+        "late me response cannot replace a newer profile",
+        "unchanged revision accepts me, sign-out invalidates pending loads",
+        "direct store updates also invalidate stale loads"
+      ]
+    },
+    {
+      "source": "web/tests/viteConfig.test.ts",
+      "blob": "025312156b004c7aae34ddf78538ee2ad7a50818",
+      "group": "routing",
+      "kind": "unit",
+      "case_titles": [
+        "the dev server proxies private and public API routes to Rust"
+      ]
+    },
+    {
+      "source": "web/tests/voiceNote.test.ts",
+      "blob": "2dd49ccd2951bd46b29e637852695b7a44f49175",
+      "group": "resources",
+      "kind": "unit",
+      "case_titles": [
+        "stamps local date and time to the minute",
+        "zero-pads every field",
+        "sorts lexicographically in chronological order",
+        "follows the container the platform actually recorded",
+        "ignores codec parameters",
+        "falls back to webm for anything unrecognised",
+        "prefers opus in webm when it is available",
+        "falls through to the first supported container",
+        "returns undefined when nothing is supported",
+        "treats a throwing isTypeSupported as unsupported",
+        "every candidate is a concrete audio type",
+        "renders m:ss under an hour",
+        "adds an hours field past an hour",
+        "clamps a negative elapsed time to zero",
+        "reads silence as zero",
+        "saturates at one for a full-scale signal",
+        "scales quiet speech into a visible range",
+        "handles an empty buffer"
+      ]
+    },
+    {
+      "source": "web/tests/waits.test.ts",
+      "blob": "ba2bdbc4ec595e5d8c39c4f9d89d4f0fbb1acea6",
+      "group": "issues",
+      "kind": "unit",
+      "case_titles": [
+        "a date wait holds, comes due on its first day, and goes overdue after its last",
+        "a user wait holds until cleared",
+        "date arithmetic stays on the calendar",
+        "today is the server's day at its UTC offset, not the browser's",
+        "with no server clock yet, the server's own state stands",
+        "windows collapse a shared month",
+        "the detail headline names the state",
+        "the chip shows the most pressing wait and counts the rest"
+      ]
+    }
+  ]
+}

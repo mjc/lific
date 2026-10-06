@@ -17,11 +17,70 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  check:
+  topcoat:
     runs-on: ubuntu-latest
+    env:
+      LIFIC_SVELTE_SNAPSHOT: ${{ github.workspace }}/.devenv/original-reference/web
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
+          persist-credentials: false
+      - name: Check out the original frontend reference
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          repository: VoidNullable/lific
+          ref: 9683d38af8e1e6f9b076439fe90d9519109b2218
+          path: .devenv/original-reference
+          persist-credentials: false
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
+      - name: Restore the Devenv toolchain
+        uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7
+        with:
+          primary-key: devenv-tools-${{ runner.os }}-${{ runner.arch }}-topcoat-${{ hashFiles('devenv.lock', 'devenv.yaml', 'devenv.nix') }}
+          restore-prefixes-first-match: devenv-tools-${{ runner.os }}-${{ runner.arch }}-topcoat-
+          paths: ~/.cache/nix
+          gc-max-store-size: 0
+      - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
+        with:
+          name: devenv
+      - name: Install devenv
+        shell: bash
+        run: nix profile add "github:cachix/devenv/$(jq -r '.nodes.devenv.locked.rev' devenv.lock)#devenv"
+      - name: Prepare the Topcoat environment
+        run: devenv --profile topcoat shell -- true
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          cmd-format: devenv --profile topcoat shell -- {0}
+          prefix-key: devenv-rust-${{ hashFiles('devenv.lock', 'devenv.yaml', 'devenv.nix', 'Cargo.lock', 'Cargo.toml', '.cargo/config.toml') }}
+          shared-key: linux-debug-topcoat
+          add-rust-environment-hash-key: false
+          cache-bin: false
+          cache-workspace-crates: true
+      - name: Install original frontend reference dependencies
+        run: devenv --profile topcoat shell -- bun install --cwd "$LIFIC_SVELTE_SNAPSHOT" --frozen-lockfile
+      - name: Run Topcoat browser tests
+        run: devenv --profile e2e tasks run lific:e2e
+      - name: Run translated frontend unit tests
+        if: always()
+        run: devenv --profile topcoat tasks run lific:topcoat:main-test
+      - name: Run translated frontend browser tests
+        if: always()
+        run: devenv --profile e2e tasks run lific:topcoat:main-e2e
+
+  check:
+    runs-on: ubuntu-latest
+    env:
+      LIFIC_SVELTE_SNAPSHOT: ${{ github.workspace }}/.devenv/original-reference/web
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Check out the original frontend reference
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          repository: VoidNullable/lific
+          ref: 9683d38af8e1e6f9b076439fe90d9519109b2218
+          path: .devenv/original-reference
           persist-credentials: false
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
       - name: Restore the Devenv toolchain
@@ -51,38 +110,69 @@ jobs:
           add-rust-environment-hash-key: false
           cache-bin: false
           cache-workspace-crates: true
+      - name: Install original frontend reference dependencies
+        run: devenv --profile topcoat shell -- bun install --cwd "$LIFIC_SVELTE_SNAPSHOT" --frozen-lockfile
+      - name: Check the packaged application
+        run: devenv shell -- cargo package --locked
       - name: Run project, hook, and documentation checks
         run: devenv tasks run lific:check devenv:git-hooks:run lific:docs:check
-      - name: Run the browser task graph
-        run: devenv --profile e2e tasks run lific:e2e
-      - name: Retain native-link browser traces on failure
-        if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: native-link-traces
-          path: /tmp/lific-native-links-*/trace.zip
-          if-no-files-found: ignore
-          retention-days: 7
 
   windows:
     # Keep native Windows-only code and tests covered in addition to executing
     # the cross-built release artifact. A startup smoke test cannot replace them.
     runs-on: windows-latest
+    env:
+      LIFIC_SVELTE_SNAPSHOT: ${{ github.workspace }}/.devenv/original-reference/web
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
+      - name: Check out the original frontend reference
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          repository: VoidNullable/lific
+          ref: 9683d38af8e1e6f9b076439fe90d9519109b2218
+          path: .devenv/original-reference
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: 1.99.0
           components: clippy
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
-      - name: Ensure web/dist exists for rust-embed
-        run: mkdir -p web/dist
-        shell: bash
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      - name: Install original frontend reference dependencies
+        working-directory: .devenv/original-reference/web
+        run: bun install --frozen-lockfile
+      - name: Install browser test dependencies
+        working-directory: e2e
+        run: bun install --frozen-lockfile
+      - name: Install headless Chromium
+        working-directory: e2e
+        run: bunx --no-install playwright install chromium
       - name: Test
-        run: cargo test --all-targets
+        id: windows_test
+        timeout-minutes: 20
+        run: cargo test --all-targets -- --test-threads=2
+      - name: Diagnose failed native Windows stopped-reader boundary
+        if: failure() && steps.windows_test.outcome == 'failure'
+        timeout-minutes: 3
+        shell: pwsh
+        run: ./scripts/diagnose-windows-stopped-reader.ps1
+      - name: Preserve native Windows stopped-reader diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-stopped-reader-diagnostic
+          path: target/windows-stopped-reader-diagnostic/
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Test runtime lifecycle
+        run: cargo test --locked --manifest-path src/topcoat/vendor/topcoat-runtime/Cargo.toml --features router --target-dir target
 
   windows-msvc-cross-build:
     # This is the proposed release path: Linux owns the reproducible Devenv

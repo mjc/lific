@@ -347,6 +347,18 @@ pub fn fresh_identity(
     }
 }
 
+/// Refresh optional caller authority in the supplied snapshot, retaining transport.
+pub(crate) fn refresh_identity(
+    conn: &rusqlite::Connection,
+    identity: Option<&crate::resolve_caller::ResolvedIdentity>,
+) -> Result<Option<crate::resolve_caller::ResolvedIdentity>, crate::error::LificError> {
+    identity
+        .map(|caller| {
+            fresh_caller(conn, caller.user.id).map(|user| fresh_identity(&user, caller.transport))
+        })
+        .transpose()
+}
+
 /// Re-read the calling user inside a transaction, and refuse if the account
 /// can no longer authenticate.
 ///
@@ -562,7 +574,7 @@ pub struct ApiKeyInfo {
 /// accepted via cookie — the cookie path authenticates the browser session and
 /// nothing else. Returns `None` when the header/cookie is absent or the value
 /// isn't a session token.
-fn session_cookie_token(headers: &HeaderMap) -> Option<String> {
+pub(crate) fn session_cookie_token(headers: &HeaderMap) -> Option<String> {
     let cookies = headers.get("cookie").and_then(|v| v.to_str().ok())?;
     let value = cookies.split(';').find_map(|c| {
         c.trim()
@@ -570,6 +582,27 @@ fn session_cookie_token(headers: &HeaderMap) -> Option<String> {
             .map(|v| v.trim().to_string())
     })?;
     value.starts_with("lific_sess_").then_some(value)
+}
+
+/// Read native browser credentials without treating a rejected token as absent.
+pub(crate) fn browser_session_token(
+    headers: &HeaderMap,
+) -> Result<Option<String>, crate::error::LificError> {
+    if headers.contains_key("authorization") {
+        return session_bearer_token(headers).map(Some);
+    }
+    let denied = || crate::error::LificError::Forbidden("authentication required".into());
+    let Some(cookies) = headers.get("cookie") else {
+        return Ok(None);
+    };
+    let cookies = cookies.to_str().map_err(|_| denied())?;
+    match cookies
+        .split(';')
+        .find_map(|pair| pair.trim().strip_prefix("lific_token="))
+    {
+        Some(_) => session_cookie_token(headers).map(Some).ok_or_else(denied),
+        None => Ok(None),
+    }
 }
 
 /// LIF-267: is this request a `GET /api/attachments/{id}` download, where `{id}`
@@ -1457,6 +1490,77 @@ mod tests {
     use axum::{Extension, Router, middleware, routing::get};
     use http_body_util::BodyExt;
     use tower::ServiceExt;
+
+    #[test]
+    fn refresh_identity_preserves_optional_transport_and_rechecks_account() {
+        let (pool, _, _, _, viewer, _, _) = crate::api::test_helpers::setup_membership_test();
+        let identity = fresh_identity(&viewer, crate::actor::Transport::Mcp);
+        let conn = pool.write().unwrap();
+        assert!(refresh_identity(&conn, None).unwrap().is_none());
+        conn.execute("UPDATE users SET is_admin=1 WHERE id=?1", [viewer.id])
+            .unwrap();
+        let current = refresh_identity(&conn, Some(&identity)).unwrap().unwrap();
+        assert_eq!(current.user.id, viewer.id);
+        assert!(current.user.is_admin);
+        assert_eq!(current.transport, crate::actor::Transport::Mcp);
+        conn.execute("UPDATE users SET is_active=0 WHERE id=?1", [viewer.id])
+            .unwrap();
+        assert!(matches!(
+            refresh_identity(&conn, Some(&identity)),
+            Err(crate::error::LificError::Forbidden(message)) if message == "authentication required"
+        ));
+    }
+
+    #[test]
+    fn native_browser_credentials_accept_session_cookie_and_prefer_bearer() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "cookie",
+            "theme=dark; lific_token=lific_sess_cookie".parse().unwrap(),
+        );
+        assert_eq!(
+            browser_session_token(&headers).unwrap().as_deref(),
+            Some("lific_sess_cookie")
+        );
+        headers.insert("authorization", "Bearer lific_sess_header".parse().unwrap());
+        assert_eq!(
+            browser_session_token(&headers).unwrap().as_deref(),
+            Some("lific_sess_header")
+        );
+    }
+
+    #[test]
+    fn native_browser_credentials_reject_present_invalid_credentials() {
+        for cookie in [
+            "lific_token=",
+            "lific_token=lific_sk_key",
+            "lific_token=broken",
+        ] {
+            let mut headers = HeaderMap::new();
+            headers.insert("cookie", cookie.parse().unwrap());
+            assert!(matches!(
+                browser_session_token(&headers),
+                Err(crate::error::LificError::Forbidden(_))
+            ));
+        }
+        for authorization in ["Basic broken", "Bearer lific_sk_key", "Bearer broken"] {
+            let mut headers = HeaderMap::new();
+            headers.insert("authorization", authorization.parse().unwrap());
+            headers.insert("cookie", "lific_token=lific_sess_cookie".parse().unwrap());
+            assert!(matches!(
+                browser_session_token(&headers),
+                Err(crate::error::LificError::Forbidden(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn native_browser_credentials_distinguish_missing_from_unrelated_cookies() {
+        let mut headers = HeaderMap::new();
+        assert_eq!(browser_session_token(&headers).unwrap(), None);
+        headers.insert("cookie", "theme=dark; other=value".parse().unwrap());
+        assert_eq!(browser_session_token(&headers).unwrap(), None);
+    }
 
     fn test_db() -> db::DbPool {
         db::open_memory().expect("test db")

@@ -30,7 +30,7 @@ use crate::authz;
 use crate::db::queries::members;
 use crate::db::{DbPool, models::*};
 use crate::error::LificError;
-use crate::realtime::{RealtimeEvent, RealtimeHub};
+use crate::realtime::RealtimeHub;
 
 use super::with_read;
 
@@ -41,11 +41,7 @@ pub(super) async fn list_project_members(
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
     Path(project_id): Path<i64>,
 ) -> Result<Json<Vec<MemberWithUser>>, LificError> {
-    authz::require_role(&db, &identity, project_id, Role::Viewer)?;
-    with_read(&db, |conn| {
-        members::list_members_with_users(conn, project_id)
-    })
-    .map(Json)
+    crate::services::project_members::list(&db, &identity, project_id).map(Json)
 }
 
 /// GET /api/projects/{id}/my-role — the caller's own effective role on this
@@ -93,17 +89,6 @@ pub(super) async fn my_project_role(
     })))
 }
 
-/// Parse a role name the way the DB's CHECK constraint does, so a comparison
-/// against the current role is made on the same values the write will use.
-fn parse_role(raw: &str) -> Result<Role, LificError> {
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "viewer" => Ok(Role::Viewer),
-        "maintainer" => Ok(Role::Maintainer),
-        "lead" => Ok(Role::Lead),
-        other => Err(LificError::BadRequest(format!("unknown role '{other}'"))),
-    }
-}
-
 /// POST /api/projects/{id}/members — add a member. `role` defaults to
 /// `viewer` when omitted (design: "default grant = viewer"). 409 if the
 /// user is already a member (use `PATCH` to change an existing role), 404
@@ -126,31 +111,19 @@ pub(super) async fn add_project_member(
     headers: axum::http::HeaderMap,
     Json(input): Json<AddMember>,
 ) -> Result<Json<ProjectMember>, LificError> {
-    // Cheap pre-check on a read connection, so an unauthorized caller never
-    // reaches the writer. Re-run authoritatively inside the transaction below.
     authz::require_role(&db, &identity, project_id, Role::Lead)?;
-    let granter = super::require_user(&identity)?;
-    let session_token = crate::auth::recent_session_token(&headers)?;
-    let role = input.role.as_deref().unwrap_or("viewer").to_string();
-
-    let member = db.transaction(|tx| {
-        // A session token is always a human's, so the identity the middleware
-        // resolved IS the session's user; `revalidate_recent_session` asserts
-        // exactly that. Bot callers cannot reach here at all, because they do
-        // not present a `lific_sess_` token.
-        let fresh = crate::auth::revalidate_recent_session(tx, &session_token, granter.id)?;
-        // The gate runs against the identity as it is *now*: the middleware's
-        // copy carries an `is_admin` snapshot, and a lead membership revoked
-        // since would still look present in it.
-        let fresh_identity = Some(crate::auth::fresh_identity(
-            &fresh,
-            crate::actor::Transport::Web,
-        ));
-        authz::require_role_conn(tx, &fresh_identity, project_id, Role::Lead)?;
-        members::add_member(tx, project_id, input.user_id, &role)
-    })?;
-    realtime.send(RealtimeEvent::ProjectUpdated { project_id });
-    Ok(Json(member))
+    super::require_user(&identity)?;
+    let token = crate::auth::recent_session_token(&headers)?;
+    crate::services::project_members::add(
+        &db,
+        &realtime,
+        &identity,
+        Some(&token),
+        project_id,
+        input.user_id,
+        input.role.as_deref().unwrap_or("viewer"),
+    )
+    .map(Json)
 }
 
 /// PATCH /api/projects/{id}/members/{user_id} — change an existing
@@ -173,48 +146,17 @@ pub(super) async fn update_project_member(
     headers: axum::http::HeaderMap,
     Json(input): Json<ChangeMemberRole>,
 ) -> Result<Json<ProjectMember>, LificError> {
-    authz::require_role(&db, &identity, project_id, Role::Lead)?;
-    let requested = parse_role(&input.role)?;
-    // Parsed before the transaction so a malformed body is a 400 rather than a
-    // recent-auth refusal, but only *used* inside it.
-    let session_token = crate::auth::recent_session_token(&headers).ok();
-    let granter = super::require_user(&identity).ok();
-
-    let member = db.transaction(|tx| {
-        let current = members::get_member_role(tx, project_id, user_id)?;
-        let is_increase = current.is_none_or(|role| requested > role);
-        if is_increase {
-            // A raise is a grant, so both the recency check and the lead check
-            // run against freshly read state.
-            let (Some(token), Some(user)) = (&session_token, &granter) else {
-                return Err(LificError::Forbidden(
-                    "recent authentication required".into(),
-                ));
-            };
-            let fresh = crate::auth::revalidate_recent_session(tx, token, user.id)?;
-            let fresh_identity = Some(crate::auth::fresh_identity(
-                &fresh,
-                crate::actor::Transport::Web,
-            ));
-            authz::require_role_conn(tx, &fresh_identity, project_id, Role::Lead)?;
-        } else {
-            // A reduction: no recency, but the lead check is re-run inside the
-            // transaction *against freshly read state*. The middleware's
-            // identity carries an `is_admin` snapshot, and `require_role_conn`
-            // lets an admin through before it looks at membership at all, so a
-            // demoted admin would otherwise keep downgrading people.
-            let caller = super::require_user(&identity)?;
-            let fresh = crate::auth::fresh_caller(tx, caller.id)?;
-            let fresh_identity = Some(crate::auth::fresh_identity(
-                &fresh,
-                crate::actor::Transport::Web,
-            ));
-            authz::require_role_conn(tx, &fresh_identity, project_id, Role::Lead)?;
-        }
-        members::change_role(tx, project_id, user_id, &input.role)
-    })?;
-    realtime.send(RealtimeEvent::ProjectUpdated { project_id });
-    Ok(Json(member))
+    let token = crate::auth::recent_session_token(&headers).ok();
+    crate::services::project_members::change_role(
+        &db,
+        &realtime,
+        &identity,
+        token.as_deref(),
+        project_id,
+        user_id,
+        &input.role,
+    )
+    .map(Json)
 }
 
 /// DELETE /api/projects/{id}/members/{user_id} — remove a member. 404 if
@@ -229,22 +171,8 @@ pub(super) async fn remove_project_member(
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
     Path((project_id, user_id)): Path<(i64, i64)>,
 ) -> Result<Json<serde_json::Value>, LificError> {
-    authz::require_role(&db, &identity, project_id, Role::Lead)?;
-    let caller = super::require_user(&identity)?;
-    db.transaction(|tx| {
-        // Same reasoning as the downgrade path: the authoritative check reads
-        // the caller inside the transaction, so a demoted admin or a removed
-        // lead cannot act on a stale snapshot.
-        let fresh = crate::auth::fresh_caller(tx, caller.id)?;
-        let fresh_identity = Some(crate::auth::fresh_identity(
-            &fresh,
-            crate::actor::Transport::Web,
-        ));
-        authz::require_role_conn(tx, &fresh_identity, project_id, Role::Lead)?;
-        members::remove_member_guarded(tx, project_id, user_id)
-    })?;
-    realtime.send(RealtimeEvent::ProjectUpdated { project_id });
-    Ok(Json(serde_json::json!({"deleted": true})))
+    crate::services::project_members::remove(&db, &realtime, &identity, project_id, user_id)?;
+    Ok(Json(serde_json::json!({"deleted":true})))
 }
 
 #[cfg(test)]

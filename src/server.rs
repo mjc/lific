@@ -11,20 +11,20 @@
 
 use std::{net::SocketAddr, sync::Arc};
 
+use axum::http::StatusCode;
 use axum::{
     Router,
     body::Body,
     extract::Request,
-    http::{HeaderName, HeaderValue, Method, StatusCode, header},
+    http::{HeaderName, HeaderValue, Method, header},
     middleware,
     response::{IntoResponse, Response},
-    routing::{any, get},
+    routing::any,
 };
 use rmcp::transport::streamable_http_server::{
     session::local::LocalSessionManager,
     tower::{StreamableHttpServerConfig, StreamableHttpService},
 };
-use rust_embed::Embed;
 use tower_http::compression::Compression;
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tracing::{info, warn};
@@ -34,70 +34,670 @@ use crate::{
     actor, api, auth, backup, db, links, mcp, oauth, ratelimit, realtime, resolve_caller, storage,
 };
 
-/// Embedded frontend assets compiled from web/dist/.
-/// Falls back gracefully if dist/ doesn't exist (e.g. dev builds without frontend).
-#[derive(Embed)]
-#[folder = "web/dist/"]
-#[allow(dead_code)]
-struct WebAssets;
+#[path = "topcoat/mod.rs"]
+mod topcoat_frontend;
+mod topcoat_app {
+    use super::topcoat_frontend::native::transport::{mounted_url, trusted_mount};
+    #[cfg(test)]
+    use topcoat::view::attributes;
 
-/// Serve an embedded static file, or fall back to index.html for SPA routing.
-async fn serve_frontend(uri: axum::http::Uri) -> impl IntoResponse {
-    let path = uri.path().trim_start_matches('/');
+    use topcoat::{
+        Result,
+        router::{Slot, layout, page, response::Response, route},
+        view::{View, view},
+    };
 
-    // Try the exact path first (e.g. assets/index-abc.js)
-    if let Some(file) = WebAssets::get(path) {
-        let mime = mime_guess::from_path(path)
-            .first_or_octet_stream()
-            .to_string();
-        // Vite emits content-hashed filenames under assets/ (e.g.
-        // index-xkSiPCqs.js), so those are safe to cache forever — a new
-        // build changes the hash and thus the URL. Everything else
-        // (index.html, favicon) stays uncached so a redeploy is picked up
-        // immediately.
-        let cache_control = if path.starts_with("assets/") {
-            "public, max-age=31536000, immutable"
+    use super::topcoat_frontend::native::workspace::{NativeRoute, native_route};
+
+    #[layout("/")]
+    async fn document_layout(cx: &topcoat::context::Cx, slot: Slot<'_>) -> Result<impl View> {
+        let uri = topcoat::router::request::uri(cx);
+        let route_target = uri
+            .path_and_query()
+            .map_or_else(|| uri.path(), |path| path.as_str());
+        let route = super::topcoat_frontend::shell::ParsedRoute::parse(route_target);
+        let native = native_route(&route, uri.query().is_some());
+        let native_page = native.is_some();
+        let title = if native_page {
+            "Lific"
         } else {
-            "no-cache"
+            route.page.title()
         };
-        return (
-            StatusCode::OK,
-            [
-                (header::CONTENT_TYPE, mime),
-                (header::CACHE_CONTROL, cache_control.to_string()),
-            ],
-            file.data.to_vec(),
-        )
-            .into_response();
+        if native_page && !matches!(native, Some(NativeRoute::Login | NativeRoute::Signup)) {
+            super::topcoat_frontend::native::home::authorize(cx)?;
+        }
+        Ok(view! {
+            <!DOCTYPE html>
+            <html lang="en" data-topcoat-runtime-prefix=(trusted_mount(cx))>
+                <head>
+                    <meta charset="utf-8">
+                    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+                    <title>(title)</title>
+                    <link rel="icon" type="image/png" href=(mounted_url(cx, "/favicon.png"))>
+                    <link rel="manifest" href=(mounted_url(cx, "/manifest.webmanifest"))>
+                    <link rel="apple-touch-icon" href=(mounted_url(cx, "/apple-touch-icon.png"))>
+                    <meta name="apple-mobile-web-app-title" content="Lific">
+                    <meta name="theme-color" content="#fafcfb" media="(prefers-color-scheme: light)">
+                    <meta name="theme-color" content="#1c221f" media="(prefers-color-scheme: dark)">
+                    <link rel="stylesheet" href=(mounted_url(cx, super::topcoat_frontend::assets::app_stylesheet_url()))>
+                    <script type="module" src=(mounted_url(cx, super::topcoat_frontend::assets::runtime_url()))></script>
+                </head>
+                <body data-lific-base-path=(trusted_mount(cx))>
+                    (slot)
+                </body>
+            </html>
+        })
     }
 
-    // SPA fallback: serve index.html for all unmatched routes. Same
-    // no-cache as the exact-file branch above: this IS index.html, so a
-    // cached copy pins the browser to the previous build's asset URLs and a
-    // redeploy is invisible until a hard refresh.
-    match WebAssets::get("index.html") {
-        Some(file) => (
-            StatusCode::OK,
-            [
-                (header::CONTENT_TYPE, "text/html".to_string()),
-                (header::CACHE_CONTROL, "no-cache".to_string()),
-            ],
-            file.data.to_vec(),
+    #[page("/")]
+    async fn shell_home(cx: &topcoat::context::Cx) -> Result<impl View> {
+        super::topcoat_frontend::native::home::screen(cx)
+    }
+
+    #[page("/{*path}")]
+    async fn shell_route(cx: &topcoat::context::Cx) -> Result<impl View> {
+        shell_page(cx)
+    }
+
+    fn shell_page<'a>(cx: &'a topcoat::context::Cx) -> Result<topcoat::view::BoxView<'a>> {
+        let uri = topcoat::router::request::uri(cx);
+        let route_target = uri
+            .path_and_query()
+            .map_or_else(|| uri.path(), |path| path.as_str());
+        let route = super::topcoat_frontend::shell::ParsedRoute::parse(route_target);
+        if let Some(destination) = route.redirect.as_deref() {
+            return Err(topcoat::router::error::redirect_permanent(destination).into());
+        }
+        match native_route(&route, uri.query().is_some()) {
+            Some(NativeRoute::Login) => super::topcoat_frontend::native::login::screen(cx),
+            Some(NativeRoute::Signup) => super::topcoat_frontend::native::signup::screen(cx),
+            Some(NativeRoute::Home) => super::topcoat_frontend::native::home::screen(cx),
+            Some(NativeRoute::Workspace) => {
+                super::topcoat_frontend::native::workspace::screen(cx, &route)
+            }
+            Some(NativeRoute::ProjectNew) => {
+                super::topcoat_frontend::native::project_create::screen(cx, &route)
+            }
+            Some(NativeRoute::ProjectOverview) => {
+                super::topcoat_frontend::native::project_overview::screen(cx, &route)
+            }
+            Some(NativeRoute::Insights) => {
+                super::topcoat_frontend::native::insights::screen(cx, &route)
+            }
+            Some(NativeRoute::Activity) => {
+                super::topcoat_frontend::native::project_activity::screen(cx, &route)
+            }
+            None => Err(topcoat::router::error::not_found().into()),
+        }
+    }
+
+    #[cfg(test)]
+    #[page("/__topcoat-runtime-test")]
+    async fn runtime_test_page(cx: &topcoat::context::Cx) -> Result<impl View> {
+        let mut increment = super::topcoat_frontend::controls::Button::new("Increment");
+        increment.attrs = attributes! { cx =>
+            id="increment"
+            @click="() => { const count = document.querySelector('#click-count'); count.textContent = String(Number(count.textContent) + 1); }"
+        };
+        let mut disabled = super::topcoat_frontend::controls::Button::new("Disabled");
+        disabled.disabled = true;
+        disabled.attrs = attributes! { cx =>
+            id="disabled"
+            @click="() => { const count = document.querySelector('#click-count'); count.textContent = String(Number(count.textContent) + 100); }"
+        };
+        Ok(view! { cx =>
+            <section>
+                (super::topcoat_frontend::controls::button(cx, increment))
+                (super::topcoat_frontend::controls::button(cx, disabled))
+                <output id="click-count">"0"</output>
+            </section>
+        })
+    }
+
+    fn font_response(bytes: &'static [u8]) -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "font/woff2")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(bytes))?)
+    }
+
+    #[route(GET "/__topcoat-font-dm-sans-italic-latin-ext.woff2")]
+    async fn font_dm_sans_italic_latin_ext() -> Result<Response> {
+        font_response(super::topcoat_frontend::assets::DM_SANS_ITALIC_LATIN_EXT)
+    }
+
+    #[route(GET "/__topcoat-font-dm-sans-italic-latin.woff2")]
+    async fn font_dm_sans_italic_latin() -> Result<Response> {
+        font_response(super::topcoat_frontend::assets::DM_SANS_ITALIC_LATIN)
+    }
+
+    #[route(GET "/__topcoat-font-dm-sans-normal-latin-ext.woff2")]
+    async fn font_dm_sans_normal_latin_ext() -> Result<Response> {
+        font_response(super::topcoat_frontend::assets::DM_SANS_NORMAL_LATIN_EXT)
+    }
+
+    #[route(GET "/__topcoat-font-dm-sans-normal-latin.woff2")]
+    async fn font_dm_sans_normal_latin() -> Result<Response> {
+        font_response(super::topcoat_frontend::assets::DM_SANS_NORMAL_LATIN)
+    }
+
+    #[route(GET "/__topcoat-font-space-grotesk-normal-vietnamese.woff2")]
+    async fn font_space_grotesk_normal_vietnamese() -> Result<Response> {
+        font_response(super::topcoat_frontend::assets::SPACE_GROTESK_NORMAL_VIETNAMESE)
+    }
+
+    #[route(GET "/__topcoat-font-space-grotesk-normal-latin-ext.woff2")]
+    async fn font_space_grotesk_normal_latin_ext() -> Result<Response> {
+        font_response(super::topcoat_frontend::assets::SPACE_GROTESK_NORMAL_LATIN_EXT)
+    }
+
+    #[route(GET "/__topcoat-font-space-grotesk-normal-latin.woff2")]
+    async fn font_space_grotesk_normal_latin() -> Result<Response> {
+        font_response(super::topcoat_frontend::assets::SPACE_GROTESK_NORMAL_LATIN)
+    }
+
+    #[route(GET "/__topcoat-app.css")]
+    async fn stylesheet() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "text/css; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::assets::app_stylesheet(),
+            ))?)
+    }
+
+    #[route(GET "/__native_login/mascot.png")]
+    async fn login_mascot() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "image/png")
+            .header("cache-control", "public, max-age=86400")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::native::login::MASCOT.to_vec(),
+            ))?)
+    }
+
+    #[route(GET "/__native_signup/mascot.png")]
+    async fn signup_mascot() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "image/png")
+            .header("cache-control", "public, max-age=86400")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::native::signup::MASCOT.to_vec(),
+            ))?)
+    }
+
+    #[route(GET "/__native_home/mascot.png")]
+    async fn home_mascot() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "image/png")
+            .header("cache-control", "public, max-age=86400")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::native::home_view::MASCOT.to_vec(),
+            ))?)
+    }
+
+    #[route(GET "/__topcoat-runtime.js")]
+    pub(super) async fn runtime_script() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "text/javascript; charset=utf-8")
+            .header("cache-control", "no-cache")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::assets::runtime_source(),
+            ))?)
+    }
+
+    #[route(GET "/__native_error/mascot.png")]
+    async fn error_mascot() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "image/png")
+            .header("cache-control", "public, max-age=86400")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::native::error_state::MASCOT.to_vec(),
+            ))?)
+    }
+
+    fn generated_handler_response(
+        cx: &topcoat::context::Cx,
+        url: &str,
+        source: &'static str,
+    ) -> Result<Response> {
+        let uri = topcoat::router::request::uri(cx);
+        match (uri.query(), url.split_once('?')) {
+            (Some(requested), Some((_, version))) if requested == version => {
+                Ok(Response::builder()
+                    .header("content-type", "text/javascript; charset=utf-8")
+                    .header("cache-control", "public, max-age=31536000, immutable")
+                    .header("x-content-type-options", "nosniff")
+                    .body(topcoat::router::Body::from(source))?)
+            }
+            _ => Ok(Response::builder()
+                .status(404)
+                .body(topcoat::router::Body::empty())?),
+        }
+    }
+
+    #[route(GET "/__native-home-shell.js")]
+    pub(super) async fn home_shell_handler(cx: &topcoat::context::Cx) -> Result<Response> {
+        use super::topcoat_frontend::native::home_shell;
+        generated_handler_response(cx, home_shell::handler_url(), home_shell::handler_source())
+    }
+
+    #[route(GET "/__native-workspace.js")]
+    pub(super) async fn workspace_handler(cx: &topcoat::context::Cx) -> Result<Response> {
+        use super::topcoat_frontend::native::workspace;
+        generated_handler_response(
+            cx,
+            workspace::navigation_handler_url(),
+            workspace::navigation_handler_source(),
         )
-            .into_response(),
-        None => (
-            StatusCode::NOT_FOUND,
-            "Frontend not built. Run: cd web && bun run build",
+    }
+
+    #[route(GET "/__native-sidebar.js")]
+    pub(super) async fn sidebar_handler(cx: &topcoat::context::Cx) -> Result<Response> {
+        use super::topcoat_frontend::native::project_sidebar;
+        generated_handler_response(
+            cx,
+            project_sidebar::handler_url(),
+            project_sidebar::handler_source(),
         )
-            .into_response(),
+    }
+
+    pub(super) fn router_builder() -> topcoat::router::RouterBuilder {
+        use topcoat::router::RouterBuilderDiscoverExt;
+        use topcoat::runtime::RouterBuilderRuntimeExt;
+
+        topcoat::router::Router::builder()
+            .discover()
+            .runtime()
+            .layer(super::topcoat_frontend::runtime::SocketLayer)
+            .layer(super::topcoat_frontend::native::socket_admission::SocketAdmission)
+    }
+
+    #[cfg(test)]
+    pub(super) fn router() -> topcoat::router::Router {
+        router_builder().build()
     }
 }
 
-/// Apply browser security policy to every response, including OAuth consent
-/// pages and CORS preflights. Route-specific policies such as the attachment
-/// sandbox win when they are already present.
-async fn add_security_headers(request: Request<Body>, next: middleware::Next) -> Response {
+#[cfg(test)]
+mod topcoat_app_tests {
+    use super::topcoat_app;
+    use axum::{body::Body, http::Request};
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn intermediate_application_assets_are_not_served_or_loaded() {
+        let router = topcoat::router::tower::TowerService::new(topcoat_app::router());
+        let retired = [
+            "/__topcoat-activity-insights.css",
+            "/__topcoat-activity-insights.js",
+            "/__topcoat-attachments.css",
+            "/__topcoat-attachments.js",
+            "/__topcoat-bootstrap.js",
+            "/__topcoat-dashboard.css",
+            "/__topcoat-dashboard.js",
+            "/__topcoat-files.css",
+            "/__topcoat-files.js",
+            "/__topcoat-identity.css",
+            "/__topcoat-identity.js",
+            "/__topcoat-issue-collaboration.css",
+            "/__topcoat-issue-collaboration.js",
+            "/__topcoat-issue-create.css",
+            "/__topcoat-issue-create.js",
+            "/__topcoat-issue-detail.css",
+            "/__topcoat-issue-detail.js",
+            "/__topcoat-issue-editor.css",
+            "/__topcoat-issue-editor.js",
+            "/__topcoat-issue-fields.css",
+            "/__topcoat-issue-fields.js",
+            "/__topcoat-issue-list.css",
+            "/__topcoat-issue-list.js",
+            "/__topcoat-mobile.css",
+            "/__topcoat-mobile.js",
+            "/__topcoat-modules.css",
+            "/__topcoat-modules.js",
+            "/__topcoat-page-chrome.css",
+            "/__topcoat-page-chrome.js",
+            "/__topcoat-pages.css",
+            "/__topcoat-pages.js",
+            "/__topcoat-palette.css",
+            "/__topcoat-palette.js",
+            "/__topcoat-plans.css",
+            "/__topcoat-plans.js",
+            "/__topcoat-preferences.js",
+            "/__topcoat-project-icons.js",
+            "/__topcoat-project-settings.css",
+            "/__topcoat-project-settings.js",
+            "/__topcoat-projects.css",
+            "/__topcoat-projects.js",
+            "/__topcoat-public-media.js",
+            "/__topcoat-public.css",
+            "/__topcoat-public.js",
+            "/__topcoat-recents.css",
+            "/__topcoat-recents.js",
+            "/__topcoat-shell.css",
+            "/__topcoat-shell.js",
+            "/__topcoat-session.js",
+            "/__topcoat-sync.js",
+        ];
+        for asset in retired {
+            let response = router
+                .clone()
+                .oneshot(Request::builder().uri(asset).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                axum::http::StatusCode::NOT_FOUND,
+                "{asset}"
+            );
+        }
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/__topcoat-runtime-test")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let body = String::from_utf8_lossy(&body);
+        assert!(body.contains("/__topcoat-runtime.js"));
+        assert!(body.contains("/__topcoat-app.css"));
+        for asset in retired {
+            assert!(!body.contains(asset), "{asset}");
+        }
+    }
+
+    #[tokio::test]
+    async fn unfinished_feature_routes_have_no_intermediate_fallback() {
+        let router = topcoat::router::tower::TowerService::new(topcoat_app::router());
+        for path in [
+            "/settings",
+            "/projects/import",
+            "/LIF/issues/new",
+            "/LIF/issues?status=started",
+            "/LIF/board?assignee=me",
+            "/LIF/files",
+            "/LIF/pages",
+            "/LIF/plans",
+            "/LIF/modules",
+            "/LIF/graph",
+            "/public/LIF/issues",
+        ] {
+            let response = router
+                .clone()
+                .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                axum::http::StatusCode::NOT_FOUND,
+                "{path}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn production_fonts_are_embedded_at_every_mount() {
+        for prefix in ["", "/app", "/ACC"] {
+            let service = topcoat::router::tower::TowerService::new(topcoat_app::router());
+            let inner = axum::Router::new().fallback_service(service);
+            let router = if prefix.is_empty() {
+                inner
+            } else {
+                axum::Router::new().nest(prefix, inner)
+            };
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("{prefix}/__topcoat-app.css"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), axum::http::StatusCode::OK);
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            let css = std::str::from_utf8(&bytes).unwrap();
+            assert!(
+                !css.contains("fonts.googleapis.com"),
+                "production CSS must not fetch external font stylesheets"
+            );
+            assert!(!css.contains("fonts.gstatic.com"));
+            assert!(css.contains("@font-face"));
+            let fonts: std::collections::BTreeSet<_> = css
+                .split("url(")
+                .skip(1)
+                .filter_map(|part| part.split_once(')').map(|(url, _)| url))
+                .filter(|url| url.ends_with(".woff2"))
+                .collect();
+            assert_eq!(
+                fonts.len(),
+                7,
+                "all returned Unicode subsets of all three font styles"
+            );
+            for font in fonts {
+                assert!(
+                    font.starts_with("__topcoat-font-"),
+                    "relative URL preserves mounted stylesheet base"
+                );
+                let response = router
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .uri(format!("{prefix}/{font}"))
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    response.status(),
+                    axum::http::StatusCode::OK,
+                    "{prefix}/{font}"
+                );
+                assert_eq!(
+                    response
+                        .headers()
+                        .get(axum::http::header::CONTENT_TYPE)
+                        .unwrap(),
+                    "font/woff2"
+                );
+                let bytes = response.into_body().collect().await.unwrap().to_bytes();
+                assert!(bytes.starts_with(b"wOF2"));
+                assert!(bytes.len() > 1_000);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn native_home_mascot_is_served_without_vite() {
+        let response = topcoat::router::tower::TowerService::new(topcoat_app::router())
+            .oneshot(
+                Request::builder()
+                    .uri("/__native_home/mascot.png")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::CONTENT_TYPE)
+                .unwrap(),
+            "image/png"
+        );
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert!(body.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]));
+    }
+
+    #[tokio::test]
+    async fn topcoat_runtime_script_serves_as_a_javascript_module() {
+        let response = topcoat::router::tower::TowerService::new(topcoat_app::router())
+            .oneshot(
+                Request::builder()
+                    .uri("/__topcoat-runtime.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::CONTENT_TYPE)
+                .unwrap(),
+            "text/javascript; charset=utf-8"
+        );
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(
+            body.as_ref(),
+            super::topcoat_frontend::assets::runtime_source().as_bytes()
+        );
+        assert!(body.ends_with(include_str!("topcoat/assets/runtime.js").as_bytes()));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires devenv --profile topcoat-e2e with repository Playwright/Chromium"]
+    async fn controls_runtime_executes_control_handlers_from_the_shared_layout() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = axum::Router::new()
+            .route(
+                "/api/auth/me",
+                axum::routing::get(|| async {
+                    axum::Json(serde_json::json!({"id": 1, "username": "runtime-fixture"}))
+                }),
+            )
+            .fallback_service(topcoat::router::tower::TowerService::new(
+                topcoat_app::router(),
+            ));
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let playwright = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("e2e/node_modules/playwright/index.mjs");
+        let script = r#"
+            import assert from 'node:assert/strict';
+            const { chromium } = await import(process.env.LIFIC_PLAYWRIGHT_MODULE);
+            const browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH });
+            try {
+                const page = await browser.newPage();
+                await page.addInitScript(() => localStorage.setItem('lific_token', 'runtime-fixture'));
+                const failures = [];
+                page.on('pageerror', error => failures.push(error.message));
+                await page.goto(process.env.LIFIC_TOPCOAT_RUNTIME_URL);
+                await page.getByRole('button', { name: 'Increment' }).click();
+                await page.waitForFunction(() => document.querySelector('#click-count').textContent === '1');
+                await page.getByRole('button', { name: 'Disabled' }).click({ force: true });
+                assert.equal(await page.locator('#click-count').textContent(), '1');
+                assert.deepEqual(failures, []);
+                console.log('Topcoat runtime dispatched the enabled button handler and kept the disabled control inert');
+            } finally { await browser.close(); }
+        "#;
+        let output = tokio::task::spawn_blocking(move || {
+            std::process::Command::new("bun")
+                .args(["--eval", script])
+                .env("LIFIC_PLAYWRIGHT_MODULE", playwright)
+                .env(
+                    "LIFIC_TOPCOAT_RUNTIME_URL",
+                    format!("http://{address}/__topcoat-runtime-test"),
+                )
+                .output()
+                .unwrap()
+        })
+        .await
+        .unwrap();
+        server.abort();
+        assert!(
+            output.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+async fn add_security_headers(mut request: Request<Body>, next: middleware::Next) -> Response {
+    let image_preloads = (request.method() == Method::GET
+        && !request.headers().contains_key(header::UPGRADE))
+    .then(topcoat_frontend::native::preloads::ImagePreloads::default);
+    if let Some(images) = &image_preloads {
+        request.extensions_mut().insert(images.clone());
+    }
+    let prefix = trusted_forwarded_prefix(&request).map(str::to_owned);
+    // The framework carries the server's verified peer into native requests and sockets.
+    if let Some(peer) = request
+        .extensions()
+        .get::<axum::extract::ConnectInfo<SocketAddr>>()
+        .map(|peer| peer.0)
+    {
+        request
+            .extensions_mut()
+            .insert(topcoat::router::RemoteAddr(peer));
+    }
+    let oauth_document = request.uri().path().starts_with("/oauth/");
     let mut response = next.run(request).await;
+    if let Some(prefix) = prefix {
+        if let Some(location) = response
+            .headers()
+            .get(header::LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|location| prefix_same_origin_location(&prefix, location))
+        {
+            response
+                .headers_mut()
+                .insert(header::LOCATION, HeaderValue::from_str(&location).unwrap());
+        }
+
+        // OAuth's existing finite templates retain their mounting behavior.
+        // Native components generate mounted URLs while rendering; leave their body streaming.
+        if oauth_document
+            && response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| value.starts_with("text/html"))
+        {
+            let body = std::mem::replace(response.body_mut(), Body::empty());
+            match axum::body::to_bytes(body, usize::MAX).await {
+                Ok(body) => {
+                    let document = String::from_utf8_lossy(&body);
+                    let prefixed = prefix_oauth_document(&prefix, &document);
+                    response
+                        .headers_mut()
+                        .insert(header::CONTENT_LENGTH, HeaderValue::from(prefixed.len()));
+                    *response.body_mut() = Body::from(prefixed);
+                }
+                Err(error) => {
+                    tracing::error!(%error, "failed to apply the trusted proxy path prefix");
+                    response = (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "failed to render document",
+                    )
+                        .into_response();
+                }
+            }
+        }
+    }
+    if response.status().is_success()
+        && response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with("text/html"))
+        && let Some(images) = image_preloads
+    {
+        images.append_to(response.headers_mut());
+    }
     let headers = response.headers_mut();
     for (name, value) in [
         (header::X_FRAME_OPTIONS, "DENY"),
@@ -116,6 +716,48 @@ async fn add_security_headers(request: Request<Body>, next: middleware::Next) ->
         .entry(HeaderName::from_static("cross-origin-resource-policy"))
         .or_insert(HeaderValue::from_static("same-origin"));
     response
+}
+
+fn trusted_forwarded_prefix(request: &Request<Body>) -> Option<&str> {
+    let peer = request
+        .extensions()
+        .get::<axum::extract::ConnectInfo<SocketAddr>>()?;
+    let trusted_proxies = request.extensions().get::<Arc<[ratelimit::IpNetwork]>>()?;
+    if !trusted_proxies
+        .iter()
+        .any(|network| network.contains(peer.0.ip()))
+    {
+        return None;
+    }
+
+    request
+        .headers()
+        .get("x-forwarded-prefix")
+        .and_then(|value| value.to_str().ok())
+        .and_then(topcoat_frontend::session::forwarded_prefix)
+}
+
+fn prefix_same_origin_location(prefix: &str, location: &str) -> Option<String> {
+    if !location.starts_with('/') || location.starts_with("//") {
+        return None;
+    }
+    Some(format!("{prefix}{location}"))
+}
+
+fn prefix_oauth_document(prefix: &str, document: &str) -> String {
+    let mut prefixed = document.to_owned();
+    for attribute in ["href", "src", "action"] {
+        for quote in ['"', '\''] {
+            let root_url = format!("{attribute}={quote}/");
+            let prefixed_url = format!("{attribute}={quote}{prefix}/");
+            prefixed = prefixed.replace(&root_url, &prefixed_url);
+        }
+    }
+    prefixed.replacen(
+        "<body",
+        &format!("<body data-lific-base-path=\"{prefix}\""),
+        1,
+    )
 }
 
 /// How far this instance can be reached from, as configured.
@@ -259,6 +901,24 @@ pub(crate) fn build_app_with_store(
     trusted_proxies: Arc<[ratelimit::IpNetwork]>,
     attachment_store: storage::AttachmentStore,
 ) -> Router {
+    build_app_with_store_and_frontend(
+        cfg,
+        pool,
+        realtime,
+        trusted_proxies,
+        attachment_store,
+        topcoat_app::router_builder(),
+    )
+}
+
+fn build_app_with_store_and_frontend(
+    cfg: &Config,
+    pool: db::DbPool,
+    realtime: realtime::RealtimeHub,
+    trusted_proxies: Arc<[ratelimit::IpNetwork]>,
+    attachment_store: storage::AttachmentStore,
+    frontend: topcoat::router::RouterBuilder,
+) -> Router {
     // Auth state for middleware. When no public_url is configured the
     // issuer is derived from the bind address — but 0.0.0.0/:: are
     // bind-any addresses, not dialable URLs. They leak into
@@ -363,10 +1023,10 @@ pub(crate) fn build_app_with_store(
             }),
         )
         .layer(axum::Extension(realtime.clone()))
-        .layer(axum::Extension(login_limiter))
+        .layer(axum::Extension(login_limiter.clone()))
         .layer(axum::Extension(trusted_proxies.clone()))
-        .layer(axum::Extension(attachment_config))
-        .layer(axum::Extension(attachment_upload_limiter))
+        .layer(axum::Extension(attachment_config.clone()))
+        .layer(axum::Extension(attachment_upload_limiter.clone()))
         .layer(axum::Extension(crate::config::AuthConfig::from_server(
             &cfg.auth,
             cfg.server.public_url.as_deref(),
@@ -375,7 +1035,7 @@ pub(crate) fn build_app_with_store(
         // guard before it may turn web auto-login on.
         .layer(axum::Extension(Reachability::from_config(cfg)))
         .layer(middleware::from_fn_with_state(
-            auth_state,
+            auth_state.clone(),
             auth_middleware_wrapper,
         ));
 
@@ -460,9 +1120,40 @@ pub(crate) fn build_app_with_store(
     // neither is layered onto this router. Only
     // published projects are reachable through it (the flag is checked in the
     // SQL of every read), and only with `GET`.
-    let app = app.merge(api::public::router(pool, attachment_store, trusted_proxies));
+    let app = app.merge(api::public::router(
+        pool,
+        attachment_store.clone(),
+        trusted_proxies.clone(),
+    ));
+    // A trusted host may provide the shared store; production still defaults once.
+    let frontend = if frontend
+        .get_app_context::<topcoat_frontend::native::project_sidebar::SidebarWriteStore>()
+        .is_some()
+    {
+        frontend
+    } else {
+        frontend
+            .app_context(topcoat_frontend::native::project_sidebar::SidebarWriteStore::default())
+    };
+    let app = app
+        .route("/assets/{*path}", any(|| async { StatusCode::NOT_FOUND }))
+        .fallback_service(topcoat::router::tower::TowerService::new(
+            frontend
+                .app_context(auth_state)
+                .app_context(realtime)
+                .app_context(attachment_store)
+                .app_context(login_limiter)
+                .app_context(attachment_upload_limiter)
+                .app_context(attachment_config)
+                .app_context(trusted_proxies.clone())
+                .app_context(cfg.clone())
+                .app_context(topcoat_frontend::native::project_create::DraftStore::default())
+                .app_context(topcoat_frontend::native::project_overview::ManagementStore::default())
+                .build(),
+        ));
+
     with_compression(
-        app.fallback(get(serve_frontend))
+        app
             // Top-level CORS layer.
             //
             // This wraps EVERYTHING (REST API, /mcp, OAuth, frontend). Two
@@ -491,7 +1182,8 @@ pub(crate) fn build_app_with_store(
             // Compression's DefaultPredicate already skips SSE
             // (text/event-stream — so MCP streaming is untouched), gRPC,
             // already-compressed images, and bodies under 32 bytes.
-            .layer(middleware::from_fn(add_security_headers)),
+            .layer(middleware::from_fn(add_security_headers))
+            .layer(axum::Extension(trusted_proxies)),
     )
 }
 
@@ -1378,64 +2070,212 @@ mod compression_tests {
     }
 }
 
-#[cfg(test)]
-mod frontend_security_headers_tests {
-    use super::*;
-    use tower::ServiceExt;
-
-    #[tokio::test]
-    async fn frontend_responses_cannot_be_framed_or_mime_sniffed() {
-        let app = Router::new()
-            .fallback(get(serve_frontend))
-            .layer(middleware::from_fn(add_security_headers));
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/public/PUB")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let headers = response.headers();
-
-        assert_eq!(
-            headers
-                .get(header::X_FRAME_OPTIONS)
-                .and_then(|v| v.to_str().ok()),
-            Some("DENY")
-        );
-        assert_eq!(
-            headers
-                .get(header::X_CONTENT_TYPE_OPTIONS)
-                .and_then(|v| v.to_str().ok()),
-            Some("nosniff")
-        );
-        assert_eq!(
-            headers
-                .get(header::CONTENT_SECURITY_POLICY)
-                .and_then(|v| v.to_str().ok()),
-            Some("frame-ancestors 'none'; base-uri 'self'; object-src 'none'")
-        );
-        assert_eq!(
-            headers
-                .get(header::REFERRER_POLICY)
-                .and_then(|v| v.to_str().ok()),
-            Some("no-referrer")
-        );
-        assert_eq!(
-            headers
-                .get("cross-origin-resource-policy")
-                .and_then(|v| v.to_str().ok()),
-            Some("same-origin")
-        );
-    }
-}
-
 /// LIF-465: the anonymous project view through the router `lific start`
 /// builds. `api::public`'s own tests prove the handlers and the SQL; only the
 /// assembled app can prove that mounting it did not put it behind the auth
 /// middleware, or the authenticated API in front of it.
+#[cfg(test)]
+mod topcoat_prefix_tests {
+    use super::*;
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn trusted_native_html_streams_before_its_body_finishes() {
+        use futures_util::StreamExt;
+        use http_body_util::BodyExt;
+
+        let proxies = Arc::<[ratelimit::IpNetwork]>::from(vec![
+            ratelimit::IpNetwork::parse("127.0.0.1").unwrap(),
+        ]);
+        let app = Router::new()
+            .route(
+                "/stream",
+                axum::routing::get(|| async {
+                    let first = futures_util::stream::once(async {
+                        Ok::<_, std::convert::Infallible>(axum::body::Bytes::from_static(
+                            b"<!doctype html><html><body>streaming",
+                        ))
+                    });
+                    Response::builder()
+                        .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+                        .body(Body::from_stream(
+                            first.chain(futures_util::stream::pending()),
+                        ))
+                        .unwrap()
+                }),
+            )
+            .layer(middleware::from_fn(add_security_headers))
+            .layer(axum::Extension(proxies));
+        let mut request = Request::builder()
+            .uri("/stream")
+            .header("x-forwarded-prefix", "/app")
+            .body(Body::empty())
+            .unwrap();
+        request.extensions_mut().insert(axum::extract::ConnectInfo(
+            "127.0.0.1:3000".parse::<SocketAddr>().unwrap(),
+        ));
+        let response =
+            tokio::time::timeout(std::time::Duration::from_millis(250), app.oneshot(request))
+                .await
+                .expect("native HTML response waited for the streaming body to end")
+                .unwrap();
+        assert_eq!(
+            response.headers().get(header::X_FRAME_OPTIONS).unwrap(),
+            "DENY"
+        );
+        let mut body = response.into_body();
+        let first = body.frame().await.unwrap().unwrap().into_data().unwrap();
+        assert_eq!(&first[..], b"<!doctype html><html><body>streaming");
+    }
+
+    #[test]
+    fn finite_oauth_documents_keep_root_urls_inside_the_forwarded_prefix() {
+        let html = concat!(
+            "<html><head></head><body>",
+            "<link href=\"/__topcoat-app.css\">",
+            "<script src=\"/__topcoat-shell.js\"></script>",
+            "<form action=\"/login\"></form>",
+            "<a href=\"/LIF/issues\">Issues</a>",
+            "</body></html>"
+        );
+
+        assert_eq!(
+            prefix_oauth_document("/app", html),
+            concat!(
+                "<html><head></head><body data-lific-base-path=\"/app\">",
+                "<link href=\"/app/__topcoat-app.css\">",
+                "<script src=\"/app/__topcoat-shell.js\"></script>",
+                "<form action=\"/app/login\"></form>",
+                "<a href=\"/app/LIF/issues\">Issues</a>",
+                "</body></html>"
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn native_rendering_mounts_documents_and_ignores_untrusted_headers() {
+        let proxies = Arc::<[ratelimit::IpNetwork]>::from(vec![
+            ratelimit::IpNetwork::parse("127.0.0.1").unwrap(),
+        ]);
+        let fixture = super::topcoat_frontend::native::home_fixture::fixture();
+        let app = fixture
+            .app
+            .clone()
+            .route(
+                "/redirect",
+                axum::routing::get(|| async {
+                    axum::response::Redirect::permanent("/public/LIF/issues/LIF-42")
+                }),
+            )
+            .route(
+                "/external",
+                axum::routing::get(|| async {
+                    axum::response::Redirect::temporary("https://identity.example/callback")
+                }),
+            )
+            .layer(middleware::from_fn(add_security_headers))
+            .layer(axum::Extension(proxies));
+
+        let mut trusted = Request::builder()
+            .uri("/")
+            .header(header::COOKIE, format!("lific_token={}", fixture.token))
+            .header("x-forwarded-prefix", "/app")
+            .body(Body::empty())
+            .unwrap();
+        trusted.extensions_mut().insert(axum::extract::ConnectInfo(
+            "127.0.0.1:3000".parse::<SocketAddr>().unwrap(),
+        ));
+        let response = app.clone().oneshot(trusted).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let trusted_document = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let trusted_document = String::from_utf8(trusted_document.to_vec()).unwrap();
+        assert!(trusted_document.contains("data-lific-base-path=\"/app\""));
+        assert!(trusted_document.contains("data-topcoat-runtime-prefix=\"/app\""));
+        assert!(trusted_document.contains("href=\"/app/ACC/overview\""));
+        assert!(trusted_document.contains(&format!(
+            "src=\"/app{}\"",
+            super::topcoat_frontend::assets::runtime_url()
+        )));
+
+        let mut untrusted = Request::builder()
+            .uri("/")
+            .header(header::COOKIE, format!("lific_token={}", fixture.token))
+            .header("x-forwarded-prefix", "/app")
+            .body(Body::empty())
+            .unwrap();
+        untrusted
+            .extensions_mut()
+            .insert(axum::extract::ConnectInfo(
+                "198.51.100.8:3000".parse::<SocketAddr>().unwrap(),
+            ));
+        let response = app.clone().oneshot(untrusted).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let untrusted_document = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let untrusted_document = String::from_utf8(untrusted_document.to_vec()).unwrap();
+        assert!(!untrusted_document.contains("data-lific-base-path="));
+        assert!(untrusted_document.contains("href=\"/ACC/overview\""));
+
+        let mut collision = Request::builder()
+            .uri("/ACC/issues")
+            .header(header::COOKIE, format!("lific_token={}", fixture.token))
+            .header("x-forwarded-prefix", "/ACC")
+            .body(Body::empty())
+            .unwrap();
+        collision
+            .extensions_mut()
+            .insert(axum::extract::ConnectInfo(
+                "127.0.0.1:3000".parse::<SocketAddr>().unwrap(),
+            ));
+        let response = app.clone().oneshot(collision).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let document = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let document = String::from_utf8(document.to_vec()).unwrap();
+        assert!(document.contains("href=\"/ACC/ACC/issues\""));
+        assert!(document.contains("data-native-issue-list=\"ACC\""));
+        assert!(document.contains("Visible active initial work"));
+        assert!(document.contains("href=\"/ACC/ACC/issues/ACC-1\""));
+        assert!(!document.contains("Private hidden initial work"));
+        assert!(document.contains(&format!(
+            "href=\"/ACC{}\"",
+            super::topcoat_frontend::assets::app_stylesheet_url()
+        )));
+
+        let mut redirect = Request::builder()
+            .uri("/redirect")
+            .header("x-forwarded-prefix", "/app")
+            .body(Body::empty())
+            .unwrap();
+        redirect.extensions_mut().insert(axum::extract::ConnectInfo(
+            "127.0.0.1:3000".parse::<SocketAddr>().unwrap(),
+        ));
+        let response = app.clone().oneshot(redirect).await.unwrap();
+        assert_eq!(
+            response.headers().get(header::LOCATION).unwrap(),
+            "/app/public/LIF/issues/LIF-42"
+        );
+
+        let mut external = Request::builder()
+            .uri("/external")
+            .header("x-forwarded-prefix", "/app")
+            .body(Body::empty())
+            .unwrap();
+        external.extensions_mut().insert(axum::extract::ConnectInfo(
+            "127.0.0.1:3000".parse::<SocketAddr>().unwrap(),
+        ));
+        let response = app.oneshot(external).await.unwrap();
+        assert_eq!(
+            response.headers().get(header::LOCATION).unwrap(),
+            "https://identity.example/callback"
+        );
+    }
+}
+
 #[cfg(test)]
 mod public_surface_tests {
     use super::*;
@@ -1552,6 +2392,7 @@ mod public_surface_tests {
         let mut cfg = Config::default();
         cfg.auth.required = true;
         cfg.server.host = "127.0.0.1".into();
+        cfg.server.trusted_proxies = vec!["127.0.0.1".into()];
         let trusted_proxies = Arc::<[ratelimit::IpNetwork]>::from(
             cfg.server.trusted_proxy_ranges().expect("proxy ranges"),
         );
@@ -1728,15 +2569,185 @@ mod public_surface_tests {
         );
     }
 
-    /// `/public/PUB` is the address a person shares. It is not an API route;
-    /// it falls through to the SPA, which then renders the public view from
-    /// the JSON endpoints above. The assertion is only that it is not a 401
-    /// or a 404, the same treatment `/DEMO/issues` gets.
+    /// The public alias stays outside the private authentication boundary.
     #[tokio::test]
     async fn the_shareable_address_serves_the_app_without_a_login() {
         let d = deploy();
         let response = anonymous(&d.app, "GET", "/public/PUB").await;
         assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn production_frontend_serves_topcoat_routes_and_keeps_api_boundaries() {
+        let d = deploy();
+        for path in ["/login", "/LIF/pages", "/LIF/plans", "/public/PUB/issues"] {
+            let response = anonymous(&d.app, "GET", path).await;
+            assert_eq!(
+                response.status(),
+                if path == "/login" {
+                    StatusCode::OK
+                } else {
+                    StatusCode::NOT_FOUND
+                },
+                "{path}"
+            );
+            if path == "/login" {
+                assert_eq!(
+                    response.headers().get(header::X_FRAME_OPTIONS).unwrap(),
+                    "DENY"
+                );
+                assert_eq!(
+                    response
+                        .headers()
+                        .get(header::X_CONTENT_TYPE_OPTIONS)
+                        .unwrap(),
+                    "nosniff"
+                );
+                assert_eq!(
+                    response
+                        .headers()
+                        .get(header::CONTENT_SECURITY_POLICY)
+                        .unwrap(),
+                    "frame-ancestors 'none'; base-uri 'self'; object-src 'none'"
+                );
+            }
+            let body = body_string(response).await;
+            assert!(!body.contains("class=\"tc-shell\""), "{path}: {body}");
+            if path == "/login" {
+                assert!(body.contains("Welcome back."));
+                assert!(body.contains("/__topcoat-runtime.js"));
+                assert!(!body.contains("classified"));
+            } else {
+                assert!(!body.contains("/__topcoat-runtime.js"), "{path}: {body}");
+            }
+        }
+
+        // The canonical private list now resolves current native authority.
+        // Retain the original route's anonymous coverage, including nonexistent
+        // projects, without rendering protected list content before sign-in.
+        for path in ["/LIF/issues", "/PRIV/issues"] {
+            let response = anonymous(&d.app, "GET", path).await;
+            assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT, "{path}");
+            assert_eq!(response.headers()[header::LOCATION], "/login");
+            let body = body_string(response).await;
+            assert!(!body.contains("classified"));
+            assert!(!body.contains("data-native-issue-list"));
+        }
+        let response = with_session(&d.app, &d.session_token, "/PRIV/issues").await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_string(response).await;
+        let list_document = scraper::Html::parse_document(&body);
+        assert_eq!(
+            list_document
+                .select(&scraper::Selector::parse(".native-home-shell").unwrap())
+                .count(),
+            1
+        );
+        assert_eq!(
+            list_document
+                .select(&scraper::Selector::parse("[data-native-issue-list=\"PRIV\"]").unwrap())
+                .count(),
+            1
+        );
+        assert!(body.contains("Private issue"));
+        assert!(body.contains("href=\"/PRIV/issues/PRIV-1\""));
+        assert!(!body.contains("data-lific-session-state"));
+        assert_eq!(
+            list_document
+                .select(&scraper::Selector::parse("script[src]").unwrap())
+                .count(),
+            1
+        );
+        for script in list_document.select(&scraper::Selector::parse("script[src]").unwrap()) {
+            assert_eq!(
+                script.value().attr("src"),
+                Some(super::topcoat_frontend::assets::runtime_url())
+            );
+        }
+
+        let issue_path = "/PRIV/issues/PRIV-1";
+        let anonymous_issue = anonymous(&d.app, "GET", issue_path).await;
+        assert_eq!(anonymous_issue.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(anonymous_issue.headers()[header::LOCATION], "/login");
+        assert!(!body_string(anonymous_issue).await.contains("classified"));
+
+        let mut document = Request::builder()
+            .uri(issue_path)
+            .header(header::COOKIE, format!("lific_token={}", d.session_token))
+            .body(Body::empty())
+            .unwrap();
+        document.extensions_mut().insert(axum::extract::ConnectInfo(
+            "127.0.0.1:3000".parse::<SocketAddr>().unwrap(),
+        ));
+        let response = d.app.clone().oneshot(document).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_string(response).await;
+        let document = scraper::Html::parse_document(&body);
+        assert_eq!(
+            document
+                .select(&scraper::Selector::parse(".native-home-shell").unwrap())
+                .count(),
+            1,
+            "the native issue owns one application shell",
+        );
+        for expected in [
+            "/__topcoat-runtime.js",
+            "data-native-issue-editor=\"PRIV-1\"",
+            "Private issue",
+            "classified",
+            "native-issue-body-input-PRIV-1",
+        ] {
+            assert!(
+                body.contains(expected),
+                "authenticated native issue: {body}"
+            );
+        }
+        assert!(!body.contains("issue-detail.js"));
+        assert!(!body.contains("bootstrap.js"));
+
+        let mut proxied_document = Request::builder()
+            .uri("/PRIV/issues")
+            .header(header::COOKIE, format!("lific_token={}", d.session_token))
+            .header("x-forwarded-prefix", "/app")
+            .body(Body::empty())
+            .unwrap();
+        proxied_document
+            .extensions_mut()
+            .insert(axum::extract::ConnectInfo(
+                "127.0.0.1:3000".parse::<SocketAddr>().unwrap(),
+            ));
+        let response = d.app.clone().oneshot(proxied_document).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_string(response).await;
+        assert!(body.contains("data-lific-base-path=\"/app\""));
+        assert!(body.contains(&format!(
+            "href=\"/app{}\"",
+            super::topcoat_frontend::assets::app_stylesheet_url()
+        )));
+
+        let mut proxied_api = Request::builder()
+            .uri("/api/health")
+            .header("x-forwarded-prefix", "/app")
+            .body(Body::empty())
+            .unwrap();
+        proxied_api
+            .extensions_mut()
+            .insert(axum::extract::ConnectInfo(
+                "127.0.0.1:3000".parse::<SocketAddr>().unwrap(),
+            ));
+        let response = d.app.clone().oneshot(proxied_api).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_string(response).await, "ok");
+
+        let health = anonymous(&d.app, "GET", "/api/health").await;
+        assert_eq!(health.status(), StatusCode::OK);
+        assert_eq!(body_string(health).await, "ok");
+
+        let private_api = anonymous(&d.app, "GET", "/api/projects").await;
+        assert_eq!(private_api.status(), StatusCode::UNAUTHORIZED);
+
+        let retired_bundle = anonymous(&d.app, "GET", "/assets/index-retired.js").await;
+        assert_eq!(retired_bundle.status(), StatusCode::NOT_FOUND);
     }
 }
 

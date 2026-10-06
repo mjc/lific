@@ -2212,10 +2212,13 @@ mod tests {
         // and the blob scan would archive a database referencing blobs the
         // archive does not contain. The dump takes the same store lock those
         // operations take, so it cannot interleave with them.
-        use std::sync::mpsc::sync_channel;
+        use std::sync::mpsc::{RecvTimeoutError, sync_channel};
         use std::time::Duration;
 
         let (dir_tmp, db_path) = seed_data_dir("dump_store_lock");
+        // Opening the real pool is fixture setup, not part of the lock wait
+        // or an archive-speed deadline under a concurrently running suite.
+        let pool = crate::db::open(&db_path).unwrap();
         let store = crate::storage::AttachmentStore::from_db_path(&db_path);
         let out = dir_tmp.path().join("locked.tar.gz");
 
@@ -2224,32 +2227,36 @@ mod tests {
         let holder = std::thread::spawn(move || {
             store.with_lock(|_| {
                 holding_tx.send(()).unwrap();
-                let _ = release_rx.recv_timeout(Duration::from_secs(10));
+                release_rx.recv().expect("the test releases the store lock");
                 Ok(())
             })
         });
-        holding_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        holding_rx
+            .recv()
+            .expect("the holder acquires the store lock");
 
+        let (started_tx, started_rx) = sync_channel::<()>(1);
         let (done_tx, done_rx) = sync_channel::<()>(1);
         let dumper = std::thread::spawn({
             let out = out.clone();
             move || {
-                let result = write_dump(&crate::db::open(&db_path).unwrap(), &db_path, &out);
+                started_tx.send(()).unwrap();
+                let result = write_dump(&pool, &db_path, &out);
                 done_tx.send(()).unwrap();
                 result
             }
         });
+        started_rx.recv().expect("the dump worker starts");
 
-        assert!(
-            done_rx.recv_timeout(Duration::from_millis(250)).is_err(),
+        assert_eq!(
+            done_rx.recv_timeout(Duration::from_millis(250)),
+            Err(RecvTimeoutError::Timeout),
             "the dump must wait for the store lock instead of racing the store"
         );
 
         release_tx.send(()).unwrap();
         holder.join().unwrap().unwrap();
-        done_rx
-            .recv_timeout(Duration::from_secs(10))
-            .expect("the dump proceeds once the store lock is free");
+        // Join the real dump without imposing a separate archive-speed budget.
         dumper.join().unwrap().expect("dump succeeds");
         assert!(out.exists());
     }

@@ -26,6 +26,7 @@ mod repo_identity;
 mod resolve_caller;
 mod retention;
 mod server;
+mod services;
 mod storage;
 #[cfg(test)]
 mod test_env;

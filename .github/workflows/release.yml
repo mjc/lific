@@ -321,8 +321,8 @@ jobs:
       - name: Install devenv
         shell: bash
         run: nix profile add "github:cachix/devenv/$(jq -r '.nodes.devenv.locked.rev' devenv.lock)#devenv"
-      # The Devenv publish task builds web/dist first so the source tarball
-      # contains the embedded UI, then publishes with the locked toolchain.
+      # The crate includes the Topcoat source and embedded assets, published
+      # with the locked toolchain.
       - name: Publish to crates.io through devenv
         run: devenv tasks run lific:publish
         env:

@@ -10,6 +10,7 @@ mod pages;
 pub(crate) mod plans;
 pub(crate) mod project_groups;
 mod projects;
+pub(crate) use projects::validate_identifier as validate_project_identifier;
 /// Anonymous reads use explicit project publication predicates.
 pub(crate) mod public;
 pub(crate) mod repo_bindings;

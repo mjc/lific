@@ -16,34 +16,15 @@ use axum::{
     extract::{Json, Path, State},
 };
 
-use crate::authz;
-use crate::db::queries::project_groups;
 use crate::db::{DbPool, models::*};
 use crate::error::LificError;
-use crate::realtime::{RealtimeEvent, RealtimeHub};
-
-use super::{require_user, with_read, with_write};
+use crate::realtime::RealtimeHub;
 
 pub(super) async fn list_groups(
     State(db): State<DbPool>,
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
 ) -> Result<Json<Vec<ProjectGroup>>, LificError> {
-    let user = require_user(&identity)?;
-    let groups = with_read(&db, |conn| {
-        let tx = conn.unchecked_transaction()?;
-        let visible = super::projects::sidebar_visibility(&tx, user.id)?;
-        let mut groups = project_groups::list_groups(&tx, user.id)?;
-        // Group membership can outlive project access. Resolve both from the
-        // same snapshot so stale middleware roles cannot reveal hidden IDs.
-        if let Some(ids) = &visible {
-            for group in &mut groups {
-                group.project_ids.retain(|id| ids.contains(id));
-            }
-        }
-        tx.commit()?;
-        Ok(groups)
-    })?;
-    Ok(Json(groups))
+    crate::services::project_form::list_groups(&db, &identity).map(Json)
 }
 
 pub(super) async fn reorder_groups(
@@ -52,19 +33,8 @@ pub(super) async fn reorder_groups(
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
     Json(input): Json<ReorderProjectGroups>,
 ) -> Result<Json<Vec<ProjectGroup>>, LificError> {
-    let user = require_user(&identity)?;
-    let groups = db.transaction(|tx| {
-        let visible = super::projects::sidebar_visibility(tx, user.id)?;
-        let mut groups = project_groups::reorder_groups(tx, user.id, &input.ids)?;
-        if let Some(ids) = &visible {
-            for group in &mut groups {
-                group.project_ids.retain(|id| ids.contains(id));
-            }
-        }
-        Ok(groups)
-    })?;
-    realtime.send_to_users(RealtimeEvent::ProjectGroupsChanged, vec![user.id]);
-    Ok(Json(groups))
+    crate::services::project_sidebar::reorder_groups(&db, &realtime, &identity, &input.ids)
+        .map(Json)
 }
 
 pub(super) async fn create_group(
@@ -73,12 +43,7 @@ pub(super) async fn create_group(
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
     Json(input): Json<CreateProjectGroup>,
 ) -> Result<Json<ProjectGroup>, LificError> {
-    let user = require_user(&identity)?;
-    let group = with_write(&db, |conn| {
-        project_groups::create_group(conn, user.id, &input)
-    })?;
-    realtime.send_to_users(RealtimeEvent::ProjectGroupsChanged, vec![user.id]);
-    Ok(Json(group))
+    crate::services::project_sidebar::create_group(&db, &realtime, &identity, input).map(Json)
 }
 
 pub(super) async fn update_group(
@@ -88,12 +53,7 @@ pub(super) async fn update_group(
     Path(id): Path<i64>,
     Json(input): Json<UpdateProjectGroup>,
 ) -> Result<Json<ProjectGroup>, LificError> {
-    let user = require_user(&identity)?;
-    let group = with_write(&db, |conn| {
-        project_groups::update_group(conn, id, user.id, &input)
-    })?;
-    realtime.send_to_users(RealtimeEvent::ProjectGroupsChanged, vec![user.id]);
-    Ok(Json(group))
+    crate::services::project_sidebar::rename_group(&db, &realtime, &identity, id, input).map(Json)
 }
 
 pub(super) async fn delete_group(
@@ -102,9 +62,7 @@ pub(super) async fn delete_group(
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
     Path(id): Path<i64>,
 ) -> Result<Json<serde_json::Value>, LificError> {
-    let user = require_user(&identity)?;
-    let deleted = with_write(&db, |conn| project_groups::delete_group(conn, id, user.id))?;
-    realtime.send_to_users(RealtimeEvent::ProjectGroupsChanged, vec![user.id]);
+    let deleted = crate::services::project_sidebar::delete_group(&db, &realtime, &identity, id)?;
     Ok(Json(serde_json::json!({ "deleted": deleted })))
 }
 
@@ -114,12 +72,13 @@ pub(super) async fn assign_project(
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
     Json(input): Json<AssignProjectGroup>,
 ) -> Result<Json<serde_json::Value>, LificError> {
-    authz::require_role(&db, &identity, input.project_id, Role::Viewer)?;
-    let user = require_user(&identity)?;
-    with_write(&db, |conn| {
-        project_groups::assign_project(conn, user.id, input.project_id, input.group_id)
-    })?;
-    realtime.send_to_users(RealtimeEvent::ProjectGroupsChanged, vec![user.id]);
+    crate::services::project_form::assign_project(
+        &db,
+        &realtime,
+        &identity,
+        input.project_id,
+        input.group_id,
+    )?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -534,3 +493,7 @@ mod tests {
         assert_eq!(groups[0]["project_ids"][0].as_i64().unwrap(), project_id);
     }
 }
+
+#[cfg(test)]
+#[path = "project_groups_sidebar_contract.rs"]
+mod sidebar_contract;

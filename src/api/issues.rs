@@ -8,28 +8,14 @@ use crate::db::{DbPool, models::*};
 use crate::error::LificError;
 use crate::realtime::{RealtimeEvent, RealtimeHub};
 
-use super::{filter_visible, retain_visible_relations, with_read, with_write};
+use super::{retain_visible_relations, with_read, with_write};
 
 pub(super) async fn list_issues(
     State(db): State<DbPool>,
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
     Query(q): Query<ListIssuesQuery>,
 ) -> Result<Json<Vec<Issue>>, LificError> {
-    if let Some(pid) = q.project_id {
-        authz::require_role(&db, &identity, pid, Role::Viewer)?;
-        let mut issues = with_read(&db, |conn| crate::db::queries::list_issues(conn, &q))?;
-        retain_visible_relations(&db, &identity, &mut issues)?;
-        return Ok(Json(issues));
-    }
-    // Cross-project list: filter instead of denying (LIF-197 scope item 2).
-    let visible = authz::visible_project_ids(&db, &identity)?;
-    let mut issues = with_read(&db, |conn| {
-        let mut issues = crate::db::queries::list_issues(conn, &q)?;
-        crate::db::queries::retain_visible_relations(conn, &mut issues, visible.as_ref());
-        Ok(issues)
-    })?;
-    issues = filter_visible(issues, &visible, |i| Some(i.project_id));
-    Ok(Json(issues))
+    crate::services::issues::list_issues(&db, &identity, &q).map(Json)
 }
 
 pub(super) async fn get_issue(
@@ -37,10 +23,7 @@ pub(super) async fn get_issue(
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
     Path(id): Path<i64>,
 ) -> Result<Json<Issue>, LificError> {
-    let mut issue = with_read(&db, |conn| crate::db::queries::get_issue(conn, id))?;
-    authz::require_role(&db, &identity, issue.project_id, Role::Viewer)?;
-    retain_visible_relations(&db, &identity, std::slice::from_mut(&mut issue))?;
-    Ok(Json(issue))
+    crate::services::issues::get_issue(&db, &identity, id).map(Json)
 }
 
 pub(super) async fn resolve_issue(
@@ -48,14 +31,7 @@ pub(super) async fn resolve_issue(
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
     Path(identifier): Path<String>,
 ) -> Result<Json<Issue>, LificError> {
-    let issue = with_read(&db, |conn| {
-        let id = crate::db::queries::resolve_identifier(conn, &identifier)?;
-        crate::db::queries::get_issue(conn, id)
-    })?;
-    authz::require_role(&db, &identity, issue.project_id, Role::Viewer)?;
-    let mut issue = issue;
-    retain_visible_relations(&db, &identity, std::slice::from_mut(&mut issue))?;
-    Ok(Json(issue))
+    crate::services::issues::resolve_issue(&db, &identity, &identifier).map(Json)
 }
 
 pub(super) async fn create_issue(
@@ -96,9 +72,7 @@ pub(super) async fn update_issue(
 ) -> Result<Json<Issue>, LificError> {
     let project_id = with_read(&db, |conn| crate::db::queries::get_issue(conn, id))?.project_id;
     authz::require_role(&db, &identity, project_id, Role::Maintainer)?;
-    let mut issue = commit_issue_update(&db, &realtime, &identity, id, input)?;
-    retain_visible_relations(&db, &identity, std::slice::from_mut(&mut issue))?;
-    Ok(Json(issue))
+    commit_issue_update(&db, &realtime, &identity, id, input).map(Json)
 }
 
 /// The REST editor and commit-message hook share one authorized transaction
@@ -109,29 +83,9 @@ pub(super) fn commit_issue_update(
     realtime: &RealtimeHub,
     identity: &Option<crate::resolve_caller::ResolvedIdentity>,
     id: i64,
-    mut input: UpdateIssue,
+    input: UpdateIssue,
 ) -> Result<Issue, LificError> {
-    let user = super::require_user(identity)?;
-    input.attachments = AttachmentActor::Authenticated(CommentActor::from(&user));
-    let issue = db.transaction(|conn| {
-        // Same recheck as the create path, against the issue's project as it
-        // stands inside this transaction rather than as it read a moment ago.
-        // An update cannot move an issue between projects, so reading it here
-        // and writing below are the same project by construction.
-        let project_id = crate::db::queries::get_issue(conn, id)?.project_id;
-        authz::require_role_conn(conn, identity, project_id, Role::Maintainer)?;
-        // LIF-262: `update_issue` re-scans the stored description and
-        // reconciles links in the same savepoint as the edit.
-        crate::db::queries::update_issue(conn, id, &input)
-    })?;
-    realtime.send_with_seq(
-        RealtimeEvent::IssueUpdated {
-            project_id: issue.project_id,
-            issue_id: issue.id,
-        },
-        issue.seq,
-    );
-    Ok(issue)
+    crate::services::issues::commit_issue_update(db, realtime, identity, id, input)
 }
 
 pub(super) async fn delete_issue_handler(
@@ -140,22 +94,7 @@ pub(super) async fn delete_issue_handler(
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
     Path(id): Path<i64>,
 ) -> Result<Json<serde_json::Value>, LificError> {
-    let project_id = with_read(&db, |conn| crate::db::queries::get_issue(conn, id))?.project_id;
-    authz::require_role(&db, &identity, project_id, Role::Maintainer)?;
-    let (issue, seq) = with_write(&db, |conn| {
-        let issue = crate::db::queries::get_issue(conn, id)?;
-        crate::db::queries::delete_issue(conn, id)?;
-        // The tombstone's seq, not the pre-delete one (LIF-440).
-        let seq = crate::db::queries::issue_seq(conn, id)?;
-        Ok((issue, seq))
-    })?;
-    realtime.send_with_seq(
-        RealtimeEvent::IssueDeleted {
-            project_id: issue.project_id,
-            issue_id: issue.id,
-        },
-        seq,
-    );
+    crate::services::issues::commit_issue_delete(&db, &realtime, &identity, id)?;
     Ok(Json(serde_json::json!({"deleted": true})))
 }
 

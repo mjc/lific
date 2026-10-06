@@ -9,26 +9,10 @@ use std::{net::SocketAddr, sync::Arc};
 use crate::db::{DbPool, models::*};
 use crate::error::LificError;
 use crate::realtime::{RealtimeEvent, RealtimeHub};
+use crate::services::project_form::LeadOption as UserListItem;
+use crate::services::sessions::session_cookie;
 
 use super::{require_admin, require_user, with_read, with_write};
-
-/// Build a Set-Cookie header for the session token with security flags.
-///
-/// LIF-207: `secure` gates the `Secure` attribute. It's on by default and only
-/// disabled for an explicitly-`http://` deployment, because browsers silently
-/// drop a `Secure` cookie over plain HTTP — which would break the OAuth approve
-/// flow (the one place the cookie is actually read) on a local-first install.
-fn session_cookie(token: &str, expires_at: &str, secure: bool) -> String {
-    use chrono::DateTime;
-    // Parse expiry for Max-Age calculation; fall back to 30 days
-    let max_age = DateTime::parse_from_rfc3339(expires_at).map_or(30 * 24 * 3600, |exp| {
-        let exp_utc: DateTime<chrono::Utc> = exp.into();
-        (exp_utc - chrono::Utc::now()).num_seconds().max(0)
-    });
-
-    let secure_attr = if secure { "; Secure" } else { "" };
-    format!("lific_token={token}; Path=/; Max-Age={max_age}; HttpOnly{secure_attr}; SameSite=Lax")
-}
 
 /// Build the Set-Cookie that clears the session cookie. Mirrors the `Secure`
 /// flag of the set path so the browser reliably matches and removes it.
@@ -45,11 +29,11 @@ fn clear_cookie(secure: bool) -> String {
 /// handler itself (LIF-364), because a client-supplied flag and a
 /// server-decided bootstrap are different threat models.
 #[derive(serde::Deserialize)]
-pub(super) struct SignupRequest {
-    username: String,
-    email: String,
-    password: String,
-    display_name: Option<String>,
+pub(crate) struct SignupRequest {
+    pub(crate) username: String,
+    pub(crate) email: String,
+    pub(crate) password: String,
+    pub(crate) display_name: Option<String>,
 }
 
 /// Whether this instance's signup policy accepts a signup for `email`.
@@ -81,7 +65,7 @@ fn signup_policy_allows(
     Ok(())
 }
 
-pub(super) async fn auth_signup(
+pub(crate) async fn auth_signup(
     State(db): State<DbPool>,
     Extension(auth_cfg): Extension<crate::config::AuthConfig>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -240,7 +224,7 @@ async fn authenticate_off_writer(
     challenge.finish(password_ok)
 }
 
-pub(super) async fn auth_login(
+pub(crate) async fn auth_login(
     State(db): State<DbPool>,
     Extension(auth_cfg): Extension<crate::config::AuthConfig>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -349,7 +333,7 @@ pub(super) async fn auth_login(
 /// tokens. On a publicly-reachable instance this is equivalent to handing
 /// admin to anyone who can load the page, which is why it is off by default and
 /// surfaced with a warning in the admin UI.
-pub(super) async fn auth_auto_login(
+pub(crate) async fn auth_auto_login(
     State(db): State<DbPool>,
     Extension(auth_cfg): Extension<crate::config::AuthConfig>,
 ) -> Result<impl IntoResponse, LificError> {
@@ -684,138 +668,18 @@ pub(super) async fn refresh_session(
     headers: HeaderMap,
     body: Option<Json<RefreshSessionRequest>>,
 ) -> Result<impl IntoResponse, LificError> {
-    let caller = require_user(&identity)?;
-    // Shape check only. Which user it names, and whether it is still live, is
-    // established inside the transaction below.
-    let session_token = crate::auth::session_bearer_token(&headers)?;
-    let supplied_password = body.and_then(|Json(input)| input.password);
-
-    // Read the mode and the current hash on a pooled connection so the
-    // expensive verify happens with no lock held. Both are re-read
-    // authoritatively inside the transaction.
-    let (passwordless, current_hash) = with_read(&db, |conn| {
-        let settings = crate::db::queries::settings::get(conn)?;
-        let user = crate::db::queries::users::get_user_by_id(conn, caller.id)?;
-        Ok((
-            settings.web_auto_login || !auth_cfg.required,
-            user.password_hash,
-        ))
-    })?;
-
-    // A password-bearing refresh runs Argon2, so it is rate-limited on the
-    // same reserve-then-refund terms as login, on its own key namespace: this
-    // is an authenticated caller re-proving themselves, and it must not share
-    // (or drain) the login budget for the same account. Both slots are taken
-    // before the verify, so at most `max_attempts` verifies can be in flight.
-    // A passwordless refresh does no expensive work and needs no reservation.
-    let ip_key = format!(
-        "reauth_ip:{}",
-        crate::ratelimit::client_ip(peer.ip(), &headers, &trusted_proxies)
-            .map_err(|_| LificError::Unavailable("invalid proxy identity".into()))?
-    );
-    let user_key = format!("reauth_user:{}", caller.id);
-    let reservation = match (&supplied_password, &limiter) {
-        (Some(_), Some(Extension(rl))) => {
-            match crate::ratelimit::Reservation::acquire(rl, &ip_key, &user_key) {
-                Ok(reservation) => Some(reservation),
-                Err(rejected) => {
-                    let retry = match rejected {
-                        crate::ratelimit::ReservationRejection::First => rl.retry_after(&ip_key),
-                        crate::ratelimit::ReservationRejection::Second => rl.retry_after(&user_key),
-                    };
-                    return Err(LificError::BadRequest(
-                        crate::ratelimit::retry_after_message(
-                            "too many confirmation attempts",
-                            retry,
-                        ),
-                    ));
-                }
-            }
-        }
-        _ => None,
-    };
-
-    let verified_hash = match supplied_password {
-        Some(password) => {
-            crate::db::queries::users::reject_oversized_password(&password)?;
-            let hash = current_hash.clone();
-            let ok = tokio::task::spawn_blocking(move || {
-                crate::db::queries::users::verify_password(&password, &hash).unwrap_or(false)
-            })
-            .await
-            .map_err(|e| LificError::Internal(format!("password verification task failed: {e}")))?;
-            if !ok {
-                return Err(LificError::BadRequest("incorrect password".into()));
-            }
-            Some(current_hash)
-        }
-        None => {
-            if !passwordless {
-                return Err(LificError::BadRequest(
-                    "your password is required to confirm this".into(),
-                ));
-            }
-            None
-        }
-    };
-
-    let (user, session) = db.transaction(|tx| {
-        // The presented session must still be live, and must still be this
-        // caller's. Not `revalidate_recent_session`: an old session is exactly
-        // what this endpoint is for.
-        let user =
-            crate::db::queries::users::validate_session(tx, &session_token).map_err(|_| {
-                LificError::BadRequest(crate::db::queries::users::INVALID_SESSION_MESSAGE.into())
-            })?;
-        if user.id != caller.id {
-            return Err(LificError::BadRequest(
-                crate::db::queries::users::INVALID_SESSION_MESSAGE.into(),
-            ));
-        }
-        if !crate::db::queries::users::credential_is_live(tx, &user)? {
-            return Err(LificError::BadRequest(
-                "this account has been deactivated. Ask an admin to restore it.".into(),
-            ));
-        }
-
-        let settings = crate::db::queries::settings::get(tx)?;
-        match &verified_hash {
-            // Password path: the hash verified moments ago must still be the
-            // stored one, or the password presented is the old one.
-            Some(hash) => {
-                if &user.password_hash != hash {
-                    return Err(LificError::BadRequest("incorrect password".into()));
-                }
-            }
-            // Passwordless path: re-read the mode, so an admin who has just
-            // turned it off wins.
-            None => {
-                if !settings.web_auto_login && auth_cfg.required {
-                    return Err(LificError::BadRequest(
-                        "your password is required to confirm this".into(),
-                    ));
-                }
-            }
-        }
-
-        // Only the presented session is replaced. Nothing here consults
-        // `resolve_caller`, so there is no first-admin fallback to land on:
-        // the new session is for `user.id` and can be for nobody else.
-        crate::db::queries::users::delete_session(tx, &session_token)?;
-        let session = crate::db::queries::users::create_session(
-            tx,
-            user.id,
-            Some(settings.session_lifetime_days * 24),
-        )?;
-        Ok((user, session))
-    })?;
-
-    // The confirmation worked, so it was not an attack: give the slots back.
-    // Every failure above returns with the reservation intact, which is what
-    // makes repeated wrong passwords hit the limit.
-    if let Some(reservation) = reservation {
-        reservation.refund();
-    }
+    let crate::services::sessions::RefreshedSession { user, session } =
+        crate::services::sessions::refresh_session(
+            &db,
+            &auth_cfg,
+            &identity,
+            peer,
+            &trusted_proxies,
+            limiter.as_ref().map(|Extension(limiter)| limiter),
+            &headers,
+            body.and_then(|Json(input)| input.password),
+        )
+        .await?;
 
     let mut resp_headers = HeaderMap::new();
     resp_headers.insert(
@@ -1238,33 +1102,6 @@ pub(super) async fn delete_bot(
 
 // ── User endpoints ──────────────────────────────────────────
 
-#[derive(serde::Serialize)]
-pub(super) struct UserListItem {
-    id: i64,
-    username: String,
-    display_name: String,
-    is_admin: bool,
-    /// LIF-214: false for a deactivated account. Deactivated users stay in
-    /// the list so an admin can find and restore them; clients that are
-    /// picking someone to hand work to (the project-member picker) filter
-    /// them out.
-    is_active: bool,
-    created_at: String,
-}
-
-impl From<User> for UserListItem {
-    fn from(u: User) -> Self {
-        UserListItem {
-            id: u.id,
-            username: u.username,
-            display_name: u.display_name,
-            is_admin: u.is_admin,
-            is_active: u.is_active,
-            created_at: u.created_at,
-        }
-    }
-}
-
 pub(super) async fn list_users(
     State(db): State<DbPool>,
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
@@ -1275,16 +1112,7 @@ pub(super) async fn list_users(
     // handler refuses to serve without a resolved user of its own accord.
     // Any authenticated member may read it (project leads need the roster
     // for the member picker); mutations stay admin-gated below.
-    require_user(&identity)?;
-    with_read(&db, |conn| {
-        let users = crate::db::queries::users::list_users(conn)?;
-        Ok(users
-            .into_iter()
-            .filter(|u| !u.is_bot)
-            .map(UserListItem::from)
-            .collect())
-    })
-    .map(Json)
+    crate::services::project_form::list_leads(&db, &identity).map(Json)
 }
 
 // ── Instance-admin roster management (LIF-214) ───────────────

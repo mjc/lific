@@ -1,5 +1,16 @@
 import { expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import {
+  existsSync,
+  readFileSync,
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  chmodSync,
+  statSync,
+  rmSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 function evaluate(attributes: string[], testing = false, profile?: string) {
   const profileArgs = profile ? ["--profile", profile] : [];
@@ -34,33 +45,36 @@ test("shell setup cannot select the project checks or rewrite formatting", () =>
     expect(config.tasks[name].before).toEqual([]);
   }
   expect(config["languages.javascript.bun.install.enable"]).toBe(false);
-  const install = config.tasks["lific:install:web"];
-  expect(install.exec).toContain("locks/lific-web-bun-install");
-  expect(install.exec).toContain('mkdir "$lock"');
-  expect(install.exec).toContain("bun install --frozen-lockfile");
-  expect(install.execIfModified).toEqual([]);
-  expect(install.before).toContain("devenv:enterShell");
-  expect(config.tasks["lific:web:lock-update"].exec).toBe("bun2nix -o bun.nix");
-  expect(config.tasks["lific:web:build"].after).toEqual(["lific:install:web"]);
-  expect(config.tasks["lific:check"].after).toContain("lific:web:check");
+  expect(Object.keys(config.tasks).some((name) => name.startsWith("lific:web:") || name === "lific:install:web")).toBe(false);
+  expect(config.tasks["lific:debug-build"].after).toEqual([]);
+  expect(config.tasks["lific:rust-test"].exec).toBe("cargo test --all-targets --locked");
+  expect(config.tasks["lific:check"].after).toContain("lific:topcoat:test");
+  expect(config.tasks["lific:topcoat:main-test"].exec).toBe("node src/topcoat/tests/main/run.js unit");
   expect(config.tasks["lific:install:site"].before).toEqual([]);
   expect(config.tasks["lific:docs:check"].after).toContain("lific:docs:build");
 }, 360_000);
 
-test("e2e profile runs backend and component suites concurrently", () => {
-  const { tasks } = evaluate(["tasks"], false, "e2e");
-  expect(tasks["lific:e2e:app"].after).toEqual([
-    "lific:debug-build",
-    "lific:install:e2e",
-  ]);
-  expect(tasks["lific:e2e:components"].after).toEqual([
-    "lific:web:build",
-    "lific:install:e2e",
-  ]);
+test("e2e profile runs the production frontend without a development bundler", () => {
+  const { tasks, processes } = evaluate(["tasks", "processes"], false, "e2e");
+  const install = tasks["lific:install:e2e"];
+  expect(install.exec).toContain("locks/lific-e2e-bun-install");
+  expect(install.exec).toContain("bun install --frozen-lockfile");
+  expect(install.before).toContain("devenv:enterShell");
   expect(tasks["lific:e2e"].after).toEqual([
-    "lific:e2e:app",
-    "lific:e2e:components",
+    "lific:install:e2e",
+    "lific:debug-build",
   ]);
+  expect(tasks["lific:e2e"].exec).not.toContain("src/topcoat/public/");
+  expect(tasks["lific:e2e"].exec).toContain("native::project_overview::");
+  expect(tasks["lific:e2e"].exec).toContain("src/topcoat/acceptance/*.browser.test.js");
+  expect(tasks["lific:e2e"].exec).toContain("src/topcoat/visual_parity/*.browser.test.cjs");
+  expect(tasks["lific:e2e"].exec).not.toContain("topcoat-spike");
+  expect(tasks["lific:topcoat:main-e2e"].exec).toBe("node src/topcoat/tests/main/run.js browser");
+  expect(tasks["lific:topcoat:main-e2e"].after).toEqual([
+    "lific:install:e2e",
+    "lific:debug-build",
+  ]);
+  expect(Object.keys(processes)).toEqual(["backend"]);
 }, 360_000);
 
 test("docs profile omits Rust and source formatting tools", () => {
@@ -86,19 +100,51 @@ test("docs profile omits Rust and source formatting tools", () => {
   expect(config.tasks["lific:install:site"].before).toContain("devenv:enterShell");
 }, 360_000);
 
-test("tests check formatting before compilation and use the native processes", () => {
+test("test graph checks formatting before compilation and isolates the backend", () => {
   const { tasks, processes } = evaluate(["tasks", "processes"], true);
   expect(tasks["lific:check"].before).toContain("devenv:enterTest");
   expect(tasks["devenv:treefmt:run"].exec).toBe("treefmt --ci");
-  expect(tasks["lific:web:check"].after).toContain("devenv:treefmt:run");
-  expect(tasks["devenv:git-hooks:run"].after).toContain("lific:web:build");
-  expect(tasks["devenv:git-hooks:run"].after).toContain("lific:web:check");
-  expect(tasks["lific:rust-test"].after).toContain("lific:web:check");
+  expect(tasks["devenv:git-hooks:run"].after).toContain("lific:topcoat:test");
+  expect(tasks["lific:rust-test"].after).toContain("devenv:treefmt:run");
   expect(processes.backend.exec).toContain("mktemp -d");
-  expect(processes.backend.exec).toMatch(/--config \/nix\/store\/[^\s]+-lific-dev\.toml/);
-  expect(processes.frontend.after).toContain("devenv:processes:backend@ready");
+  expect(Object.keys(processes)).toEqual(["backend"]);
   const watchedPaths = processes.backend.watch.paths;
   expect(watchedPaths.join()).toMatch(/\/build\.rs/);
+  expect(processes.backend.watch.extensions).toEqual(expect.arrayContaining(["js", "css", "png", "webmanifest"]));
+}, 360_000);
+
+test("backend starts with a private runtime config instead of an immutable store config", () => {
+  const { processes } = evaluate(["processes"], true);
+  const runtime = mkdtempSync(join(tmpdir(), "lific-backend-config-"));
+  try {
+    const bin = join(runtime, "bin");
+    mkdirSync(bin);
+    const capture = join(runtime, "arguments");
+    const cargo = join(bin, "cargo");
+    writeFileSync(cargo, '#!/bin/sh\nprintf "%s\\n" "$@" > "$LIFIC_TEST_ARGUMENTS"\n');
+    chmodSync(cargo, 0o700);
+    const result = Bun.spawnSync(["bash", "-e", "-c", processes.backend.exec], {
+      env: {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH}`,
+        DEVENV_RUNTIME: runtime,
+        LIFIC_TEST_ARGUMENTS: capture,
+        LIFIC_DEV_PORT: "3456",
+      },
+    });
+    expect(result.exitCode, result.stderr.toString()).toBe(0);
+    const args = readFileSync(capture, "utf8").trim().split("\n");
+    const configPath = args[args.indexOf("--config") + 1];
+    expect(configPath.startsWith(`${runtime}/`)).toBe(true);
+    expect(statSync(configPath).mode & 0o777).toBe(0o600);
+    const config = readFileSync(configPath, "utf8");
+    expect(config).toContain('host = "127.0.0.1"');
+    expect(config).toContain("required = true");
+    expect(config).toContain("enabled = false");
+    expect(args[args.indexOf("--db") + 1].startsWith(`${runtime}/`)).toBe(true);
+  } finally {
+    rmSync(runtime, { recursive: true, force: true });
+  }
 }, 360_000);
 
 test("the MSVC release profile owns its cross-linker environment", () => {
@@ -113,8 +159,9 @@ test("the MSVC release profile owns its cross-linker environment", () => {
   expect(config.env.CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER).toContain(
     "lific-msvc-linker",
   );
-  expect(config.tasks["lific:release:x86_64-pc-windows-msvc"].after).toContain(
-    "lific:web:build",
+  expect(config.tasks["lific:release:x86_64-pc-windows-msvc"].after).toEqual([]);
+  expect(config.tasks["lific:release:x86_64-pc-windows-msvc"].exec).toBe(
+    "cargo build --locked --profile dist --target x86_64-pc-windows-msvc",
   );
 }, 360_000);
 
@@ -126,7 +173,6 @@ test("packages use the selected compiler, release profile, and bounded sources",
     "outputs.lific.cargoBuildType",
     "outputs.lific.nativeBuildInputs",
     "outputs.lific.src.outPath",
-    "outputs.web.src.outPath",
   ]);
   expect(config["treefmt.config.programs.rustfmt.package.version"]).toBe(
     config["languages.rust.toolchainPackage.version"],
@@ -135,22 +181,20 @@ test("packages use the selected compiler, release profile, and bounded sources",
   expect(config["outputs.lific.nativeBuildInputs"]).toContain(
     config["languages.rust.toolchainPackage.outPath"],
   );
-  for (const key of ["outputs.lific.src.outPath", "outputs.web.src.outPath"]) {
+  for (const key of ["outputs.lific.src.outPath"]) {
     for (const path of [
       "target",
       ".devenv",
       "lific.db",
-      "web/node_modules",
-      "web/dist",
+      "web",
     ]) {
       expect(existsSync(`${config[key]}/${path}`)).toBe(false);
     }
   }
-  const web = config["outputs.web.src.outPath"];
-  expect(readFileSync(`${web}/Cargo.toml`, "utf8")).toBe(
+  const source = config["outputs.lific.src.outPath"];
+  expect(readFileSync(`${source}/Cargo.toml`, "utf8")).toBe(
     readFileSync("Cargo.toml", "utf8"),
   );
-  expect(readFileSync(`${web}/web/bun.lock`, "utf8")).toBe(
-    readFileSync("web/bun.lock", "utf8"),
-  );
+  expect(existsSync(`${source}/src/topcoat/assets/controls.css`)).toBe(true);
+  expect(existsSync(`${source}/migrations`)).toBe(true);
 }, 360_000);
