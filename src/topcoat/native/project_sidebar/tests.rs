@@ -23,7 +23,7 @@ async fn destination_icons_preserve_main_glyphs() {
             .unwrap()
             .render(&cx);
         assert!(
-            html.contains(&format!("/ui.svg#{glyph}\"")),
+            html.contains(&format!("data-icon=\"{glyph}\"")),
             "{destination:?}: {html}"
         );
     }
