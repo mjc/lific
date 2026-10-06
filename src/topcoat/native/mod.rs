@@ -7,6 +7,7 @@ pub(crate) mod bookmark;
 pub(crate) mod browser_inputs;
 pub(crate) mod context;
 pub(crate) mod deferred_delete;
+pub(crate) mod handler_asset;
 pub(crate) mod home;
 pub(crate) mod home_activity;
 pub(crate) mod home_activity_rate;

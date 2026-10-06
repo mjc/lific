@@ -104,9 +104,9 @@ fn project_row<'a>(
             let overview_active = path.eq_ignore_ascii_case(&format!("/{identifier}/overview"));
             view!{cx=><div data-native-sidebar-project=(id.to_string())>
                 <div class="sidebar-row sidebar-project native-sidebar-project-row">
-                    <button class="native-sidebar-project-toggle" aria-label=(disclosure) aria-expanded=(open.to_string()) aria-controls=(panel.clone()) (toggle)>(icons::project_icon(cx,Some("lucide:ChevronRight"),13))</button>
+                    <button class="native-sidebar-project-toggle" aria-label=(disclosure) aria-expanded=(open.to_string()) aria-controls=(panel.clone()) (toggle)>(icons::compact_icon(cx,icons::CompactIcon::ChevronRight,13))</button>
                     <a id=(format!("native-sidebar-project-link-{id}")) href=(overview) data-sidebar-project=(id.to_string()) title=(name.clone()) aria-current=(overview_active.then_some("page")) class="sidebar-project-link native-sidebar-project-link" (context_menu) (keyboard_menu)><span class="sidebar-project-icon">(icon)</span><span>(name.clone())</span></a>
-                    <button id=(trigger) class="sidebar-overflow native-sidebar-overflow" aria-label=(actions) aria-haspopup="menu" (menu)>(icons::project_icon(cx,Some("lucide:Ellipsis"),15))</button>
+                    <button id=(trigger) class="sidebar-overflow native-sidebar-overflow" aria-label=(actions) aria-haspopup="menu" (menu)>(icons::compact_icon(cx,icons::CompactIcon::Ellipsis,15))</button>
                 </div>
                 <div id=(panel) hidden=(!open) class="project-subnav">if let Some((links,recent))=contents{(links)(recent)}</div>
             </div>}.boxed()
@@ -114,7 +114,7 @@ fn project_row<'a>(
         Layout::Phone => {
             let open = phone_action(&identifier);
             let label = format!("Open {name} navigation");
-            view!{cx=><div class="native-sidebar-phone-row"><button id=(format!("native-sidebar-phone-project-{id}")) class="mobile-project-row native-sidebar-mobile-project" data-current-project=(current.then_some("true")) data-mobile-project-trigger=(identifier.clone()) data-native-project-trigger=(identifier.clone()) aria-label=(label) (open) (context_menu) (keyboard_menu)><span class="mobile-project-icon">(icon)</span><span><span>(name)</span><small>(identifier)</small></span>(icons::project_icon(cx,Some("lucide:ChevronRight"),17))</button><button id=(trigger) class="native-sidebar-phone-actions" aria-label=(actions) aria-haspopup="menu" (menu)>(icons::project_icon(cx,Some("lucide:Ellipsis"),18))</button></div>}.boxed()
+            view!{cx=><div class="native-sidebar-phone-row"><button id=(format!("native-sidebar-phone-project-{id}")) class="mobile-project-row native-sidebar-mobile-project" data-current-project=(current.then_some("true")) data-mobile-project-trigger=(identifier.clone()) data-native-project-trigger=(identifier.clone()) aria-label=(label) (open) (context_menu) (keyboard_menu)><span class="mobile-project-icon">(icon)</span><span><span>(name)</span><small>(identifier)</small></span>(icons::compact_icon(cx,icons::CompactIcon::ChevronRight,17))</button><button id=(trigger) class="native-sidebar-phone-actions" aria-label=(actions) aria-haspopup="menu" (menu)>(icons::compact_icon(cx,icons::CompactIcon::Ellipsis,18))</button></div>}.boxed()
         }
     }
 }
@@ -223,7 +223,7 @@ fn group<'a>(
     let show_hint = matches!(layout, Layout::Desktop) && collapsed;
     let hint_toggle = state::invoke(cx, signals, "toggle_group", id, String::new(), "click");
     view!{cx=><section data-native-sidebar-group=(id.to_string())>
-        if editing{(field)}else{<div class="sidebar-row native-sidebar-group-heading"><button id=(format!("native-sidebar-group-toggle-{panel}")) class="native-sidebar-group-toggle" aria-expanded=((!collapsed).to_string()) aria-controls=(panel.clone()) title=(name.clone()) (toggle) (context_menu)>(icons::project_icon(cx,Some("lucide:ChevronRight"),if matches!(layout,Layout::Phone){15}else{13}))<span>(name)</span></button><button id=(trigger) class="sidebar-overflow native-sidebar-overflow" aria-label=(actions) aria-haspopup="menu" data-sidebar-group-actions=(id.to_string()) (menu)>(icons::project_icon(cx,Some("lucide:Ellipsis"),if matches!(layout,Layout::Phone){18}else{15}))</button></div>}
+        if editing{(field)}else{<div class="sidebar-row native-sidebar-group-heading"><button id=(format!("native-sidebar-group-toggle-{panel}")) class="native-sidebar-group-toggle" aria-expanded=((!collapsed).to_string()) aria-controls=(panel.clone()) title=(name.clone()) (toggle) (context_menu)>(icons::compact_icon(cx,icons::CompactIcon::ChevronRight,if matches!(layout,Layout::Phone){15}else{13}))<span>(name)</span></button><button id=(trigger) class="sidebar-overflow native-sidebar-overflow" aria-label=(actions) aria-haspopup="menu" data-sidebar-group-actions=(id.to_string()) (menu)>(icons::compact_icon(cx,icons::CompactIcon::Ellipsis,if matches!(layout,Layout::Phone){18}else{15}))</button></div>}
         if show_hint{if let Some(name)=current{<button class="native-sidebar-current" (hint_toggle)>(format!("Current: {name}"))</button>}}
         <div id=(panel) class="sidebar-group-projects native-sidebar-group-projects" hidden=(collapsed)>for row in rows{(row)}</div>
     </section>}.boxed()

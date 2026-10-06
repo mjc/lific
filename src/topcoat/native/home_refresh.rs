@@ -2,7 +2,10 @@
 
 use topcoat::{
     context::Cx,
-    runtime::{BoolSurrogate, Event, F64Surrogate, Signal, StringSurrogate, expr, signal},
+    runtime::{
+        BoolSurrogate, Event, F64Surrogate, Js, Signal, SignalSurrogate, StringSurrogate,
+        Surrogated, expr, signal,
+    },
     view::Attributes,
 };
 
@@ -14,36 +17,81 @@ pub(super) fn mount(cx: &Cx, inputs: Signal<String>, revision: Signal<usize>) ->
     let maximum_scheduled = signal(cx, || false);
     let retry_scheduled = signal(cx, || false);
     let disposed = signal(cx, || false);
-    let mount_maximum = maximum_scheduled.clone();
-    let mount_retry = retry_scheduled.clone();
-    let quiet_maximum = maximum_scheduled.clone();
-    let quiet_disposed = disposed.clone();
-    let retry_pending = pending.clone();
-    let retry_scheduled_callback = retry_scheduled.clone();
-    let run_inputs = inputs.clone();
-    let run_disposed = disposed.clone();
-    let run_ready = ready.clone();
-    let run_refreshing = refreshing.clone();
-    let run_pending = pending.clone();
-    let run_retry_scheduled = retry_scheduled;
-    let schedule_disposed = disposed.clone();
-    let schedule_maximum = maximum_scheduled;
-    let dispose_pending = pending.clone();
-    let mount_ready = ready.clone();
-    let mount_refreshing = refreshing.clone();
-    let mount_pending = pending.clone();
-    let mount_disposed = disposed.clone();
-    let handler = expr!(|_event: Event| {
+    let handles = (
+        &inputs,
+        &revision,
+        &ready,
+        &refreshing,
+        &pending,
+        &maximum_scheduled,
+        &retry_scheduled,
+        &disposed,
+    )
+        .into_surrogate();
+    let arguments = Js::builder()
+        .source("[")
+        .surrogate(&handles)
+        .source(",")
+        .surrogate(&content_path)
+        .source("]")
+        .build();
+    let key = format!("{}#home-refresh", super::home_shell::handler_url());
+    super::handler_asset::mount(cx, &key, arguments)
+}
+
+type RefreshSignals<'a> = (
+    &'a SignalSurrogate<String>,
+    &'a SignalSurrogate<usize>,
+    &'a SignalSurrogate<bool>,
+    &'a SignalSurrogate<bool>,
+    &'a SignalSurrogate<bool>,
+    &'a SignalSurrogate<bool>,
+    &'a SignalSurrogate<bool>,
+    &'a SignalSurrogate<bool>,
+);
+
+/// Timers and callbacks remain owned by the actual Home section and its signals.
+pub(crate) fn handler_factory() -> Js {
+    let handler = expr!(|_event: Event,
+                         handles: RefreshSignals<'_>,
+                         content_path: &StringSurrogate| {
+        let inputs = handles.0;
+        let revision = handles.1;
+        let ready = handles.2;
+        let refreshing = handles.3;
+        let pending = handles.4;
+        let maximum_scheduled = handles.5;
+        let retry_scheduled = handles.6;
+        let disposed = handles.7;
+        let mount_maximum = maximum_scheduled;
+        let mount_retry = retry_scheduled;
+        let quiet_maximum = maximum_scheduled;
+        let quiet_disposed = disposed;
+        let retry_pending = pending;
+        let retry_scheduled_callback = retry_scheduled;
+        let run_inputs = inputs;
+        let run_disposed = disposed;
+        let run_ready = ready;
+        let run_refreshing = refreshing;
+        let run_pending = pending;
+        let run_retry_scheduled = retry_scheduled;
+        let schedule_disposed = disposed;
+        let schedule_maximum = maximum_scheduled;
+        let dispose_pending = pending;
+        let mount_ready = ready;
+        let mount_refreshing = refreshing;
+        let mount_pending = pending;
+        let mount_disposed = disposed;
         let _read = || {
             raw!(
                 r#"cx.hydrate((() => {
-                    const now = new Date();
-                    let storedValue = null;
-                    try { storedValue = localStorage.getItem('lific_recents'); } catch {}
-                    return JSON.stringify({epochMilliseconds: now.getTime(),
-                        timezoneOffsetMinutes: now.getTimezoneOffset(),
-                        locale: new Intl.Collator().resolvedOptions().locale, storedValue});
-                })())"#,
+                        const now = new Date();
+                        let storedValue = null;
+                        try { storedValue = localStorage.getItem('lific_recents'); } catch {}
+                        return JSON.stringify({epochMilliseconds: now.getTime(),
+                            timezoneOffsetMinutes: now.getTimezoneOffset(),
+                            locale: new Intl.Collator().resolvedOptions().locale, storedValue});
+                    })())"#,
                 String::new()
             )
         };
@@ -170,13 +218,7 @@ pub(super) fn mount(cx: &Cx, inputs: Signal<String>, revision: Signal<usize>) ->
         let initial_inputs = raw!("${_read}()", String::new());
         inputs.set(initial_inputs);
     });
-    let mut attributes = Attributes::with_capacity(1);
-    attributes.insert(
-        cx,
-        "data-topcoat-on:mount",
-        handler.into_evaluated_and_js().1,
-    );
-    attributes
+    handler.into_evaluated_and_js().1
 }
 
 /// Invokes a callback authored above; the mount span carries no application state.

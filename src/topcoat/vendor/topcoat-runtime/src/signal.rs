@@ -5,7 +5,7 @@ use topcoat_core::{
     context::{Cx, identity, try_request_context},
     identity::{Identity, SiteKey},
 };
-use topcoat_view::{HoistKey, hoist, hoist_once};
+use topcoat_view::{Formatter, HoistKey, HtmlContext, hoist, hoist_once};
 
 use crate::{Surrogate, Surrogated};
 
@@ -310,11 +310,16 @@ where
     let declaration = signal.declaration();
     hoist(move |parts| {
         parts.push_comment(|comment| {
-            // The declaration carries untrusted application data, so it is
-            // escaped like any other comment body rather than pushed raw.
+            // Signal markers decode the complete JSON payload, so its quotes
+            // need no delimiter escaping. Text escaping seals markup and
+            // comment terminators while preserving one-layer entity decoding.
+            let mut escaped = String::with_capacity(declaration.len());
+            HtmlContext::Text
+                .writer(&mut Formatter::new(&mut escaped))
+                .write_str(&declaration);
             comment
                 .push_promoted_str_unescaped(&"::topcoat::signal(")
-                .push_string(declaration)
+                .push_string_unescaped(escaped)
                 .push_promoted_str_unescaped(&")");
         });
     });
@@ -523,18 +528,72 @@ mod tests {
         assert!(html.ends_with("--><p>x</p>"), "{html}");
     }
 
+    /// Decode exactly the named entities emitted by the marker writer. The
+    /// browser integration exercises its DOMParser-based decoder separately.
+    fn signal_comment_payload(html: &str) -> (String, serde_json::Value) {
+        let body = html
+            .strip_prefix("<!--::topcoat::signal(")
+            .unwrap()
+            .split_once(")-->")
+            .unwrap()
+            .0;
+        // Decode one layer: literal entity text in a value must stay literal.
+        let decoded = body
+            .replace("&quot;", "\"")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&amp;", "&");
+        (body.to_owned(), serde_json::from_str(&decoded).unwrap())
+    }
+
+    #[test]
+    fn signal_json_comment_preserves_quotes_without_attribute_escaping() {
+        let html = render_with_signal("x");
+        let (_, declaration) = signal_comment_payload(&html);
+        let id = declaration["id"].as_str().unwrap();
+        assert_eq!(
+            html,
+            format!(
+                "<!--::topcoat::signal({{\"t\":\"signal\",\"id\":\"{id}\",\"v\":\"x\"}})--><p>x</p>"
+            ),
+            "JSON field quotes do not delimit an HTML comment"
+        );
+    }
+
+    #[test]
+    fn hostile_signal_json_comment_round_trips_without_markup_delimiters() {
+        for value in [
+            "a-->b\"c&d",
+            "--!><script>alert(1)</script>",
+            "</textarea><!-- nested --><img src=x onerror=alert(1)>",
+            "&quot; &#34; &amp; &lt; &gt;",
+            "\"single' \\ newline\n unicode 🦀",
+        ] {
+            let html = render_with_signal(value);
+            let (body, declaration) = signal_comment_payload(&html);
+            assert_eq!(declaration["t"], "signal");
+            assert_eq!(declaration["v"], value, "{html}");
+            assert_eq!(html.matches("-->").count(), 1, "{html}");
+            assert!(!body.contains('<') && !body.contains('>'), "{html}");
+            assert!(!body.contains("-->"), "{html}");
+            assert!(!body.contains("--!>"), "{html}");
+        }
+    }
+
     #[test]
     fn payload_cannot_terminate_the_comment() {
         // A value carrying `-->`, a quote, and an ampersand: the characters
         // that could break out of the comment or corrupt its JSON payload.
         let html = render_with_signal("a-->b\"c&d");
 
-        // The comment context escaped `>`, so the only `-->` left is the
+        // Text escaping seals `>`, so the only `-->` left is the
         // marker's own terminator; the payload cannot end the comment early.
         assert_eq!(html.matches("-->").count(), 1, "{html}");
         assert!(html.contains("--&gt;"), "{html}");
-        // The JSON's own quotes round-trip as entities the client decodes.
-        assert!(html.contains("&quot;"), "{html}");
+        // JSON quotes stay literal; markup delimiters stay encoded.
+        let (_, declaration) = signal_comment_payload(&html);
+        assert_eq!(declaration["v"], "a-->b\"c&d");
+        assert!(!html.contains("&quot;"), "{html}");
     }
 
     #[test]

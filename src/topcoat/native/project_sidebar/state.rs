@@ -5,7 +5,9 @@ use super::{
 };
 use topcoat::{
     context::Cx,
-    runtime::{Event, Signal, Surrogated, expr, signal},
+    runtime::{
+        BoolSurrogate, Event, I64Surrogate, Js, Signal, SignalSurrogate, Surrogated, expr, signal,
+    },
     view::Attributes,
 };
 
@@ -97,10 +99,19 @@ impl Signals {
 #[derive(serde::Serialize)]
 struct ActionArguments<'a>(&'a str, &'a str, String, &'a str);
 
+fn encode_action_arguments(mode: &str, command: &str, id: i64, value: &str) -> String {
+    // The two private callers supply fixed ASCII command names. Nonempty values
+    // and ambiguous fields retain JSON, including arbitrary editor text.
+    if value.is_empty() && !mode.contains(':') && !command.contains(':') && !mode.starts_with('[') {
+        format!("{mode}:{command}:{id}")
+    } else {
+        serde_json::to_string(&ActionArguments(mode, command, id.to_string(), value))
+            .expect("Sidebar event arguments contain only serializable scalar values")
+    }
+}
+
 fn row_action(cx: &Cx, mode: &str, command: &str, id: i64, value: &str, event: &str) -> Attributes {
-    let arguments = ActionArguments(mode, command, id.to_string(), value);
-    let encoded = serde_json::to_string(&arguments)
-        .expect("Sidebar event arguments contain only serializable scalar values");
+    let encoded = encode_action_arguments(mode, command, id, value);
     let mut attributes = Attributes::with_capacity(1);
     attributes.insert(cx, format!("data-native-sidebar-event-{event}"), encoded);
     attributes
@@ -118,24 +129,8 @@ pub(super) fn invoke(
     if event_name == "mount" {
         // The route-reveal shard has a genuine mount lifecycle, not a DOM event.
         // Its one wrapper uses the same Rust dispatcher and preserves that entry.
-        let handler = topcoat::runtime::Js::builder()
-            .source("event => (")
-            .source(dispatcher(state).to_source())
-            .source(")(event,")
-            .surrogate(&"invoke")
-            .source(",")
-            .surrogate(&command)
-            .source(",")
-            .surrogate(&id.into_surrogate())
-            .source(",")
-            .surrogate(&value)
-            .source(",")
-            .surrogate(&"")
-            .source(")")
-            .build();
-        let mut attributes = Attributes::with_capacity(1);
-        attributes.insert(cx, "data-topcoat-on:mount", handler);
-        attributes
+        let arguments = handler_arguments(state, "", true, command, id, &value);
+        super::super::handler_asset::mount(cx, handler_url(), arguments)
     } else {
         row_action(cx, "invoke", command, id, &value, event_name)
     }
@@ -156,52 +151,95 @@ pub(super) fn open_menu(
 /// genuine event/current target. Command and keyboard decisions remain Rust.
 pub(super) fn mount(cx: &Cx, state: &Signals) -> Attributes {
     let id = format!("native-sidebar-dispatcher-{}", state.account);
-    let source = topcoat::runtime::Js::builder()
-        .source("() => {const ownerId=")
-        .surrogate(&id)
-        .source(";const root=document.getElementById(ownerId.toString())?.closest('.native-home-shell');if(!root)return;const run=(")
-        .source(dispatcher(state).to_source())
-        .source(r#");const dispatch=event=>{
-            const attribute='data-native-sidebar-event-'+event.type;
-            const target=event.target instanceof Element?event.target:event.target?.parentElement;
-            const node=target?.closest('['+attribute+']');
-            if(!node||!root.contains(node)||node.closest('.native-home-shell')!==root)return;
-            const args=JSON.parse(node.getAttribute(attribute));
-            run(cx.event(event),cx.hydrate(args[0]),cx.hydrate(args[1]),cx.hydrate({t:'i64',bits:64,v:args[2]}),cx.hydrate(args[3]),cx.hydrate(node.id));
-        };
-        for(const type of ['click','contextmenu','keydown','submit'])root.addEventListener(type,dispatch,{signal:cx.abortSignal});
-        }"#)
-        .build();
-    let mut attributes = Attributes::with_capacity(2);
+    let arguments = handler_arguments(state, &id, false, "", 0, "");
+    let mut attributes = super::super::handler_asset::mount(cx, handler_url(), arguments);
     attributes.insert(cx, "id", id);
-    attributes.insert(cx, "data-topcoat-on:mount", source);
     attributes
 }
 
-fn dispatcher(state: &Signals) -> topcoat::runtime::Js {
-    let account = state.account;
-    let model = state.model.clone();
-    let revision = state.revision.clone();
-    let draft = state.draft.clone();
-    let busy = state.busy.clone();
-    let error = state.error.clone();
-    let menu = state.menu_kind.clone();
-    let focus = state.focus.clone();
-    let dom = state.dom.clone();
-    let frozen = state.frozen.clone();
-    let recovery_model = model.clone();
-    let recovery_revision = revision.clone();
-    let recovery_focus = focus.clone();
-    let recovery_frozen = frozen.clone();
-    let recovery_error = error.clone();
-    let recovery_busy = busy.clone();
-    let unknown_busy = busy.clone();
-    let unknown_error = error.clone();
-    let selected = state.menu_id.clone();
-    let x = state.menu_x.clone();
-    let y = state.menu_y.clone();
-    let handler = expr!(
-        async |event: Event,
+fn handler_arguments(
+    state: &Signals,
+    owner: &str,
+    initial: bool,
+    command: &str,
+    id: i64,
+    value: &str,
+) -> Js {
+    Js::builder()
+        .raw("[")
+        .surrogate(&(
+            (&state.model).into_surrogate(),
+            (&state.draft).into_surrogate(),
+            (&state.revision).into_surrogate(),
+            (&state.busy).into_surrogate(),
+            (&state.error).into_surrogate(),
+            (&state.menu_kind).into_surrogate(),
+            (&state.menu_id).into_surrogate(),
+            (&state.menu_x).into_surrogate(),
+            (&state.menu_y).into_surrogate(),
+            (&state.focus).into_surrogate(),
+            (&state.dom).into_surrogate(),
+            (&state.frozen).into_surrogate(),
+        ))
+        .raw(",")
+        .surrogate(&state.account.into_surrogate())
+        .raw(",")
+        .surrogate(&(
+            owner.into_surrogate(),
+            initial.into_surrogate(),
+            command.into_surrogate(),
+            id.into_surrogate(),
+            value.into_surrogate(),
+        ))
+        .raw("]")
+        .build()
+}
+
+type SidebarHandlerSignals<'a> = (
+    &'a SignalSurrogate<String>,
+    &'a SignalSurrogate<String>,
+    &'a SignalSurrogate<usize>,
+    &'a SignalSurrogate<bool>,
+    &'a SignalSurrogate<String>,
+    &'a SignalSurrogate<String>,
+    &'a SignalSurrogate<i64>,
+    &'a SignalSurrogate<f64>,
+    &'a SignalSurrogate<f64>,
+    &'a SignalSurrogate<String>,
+    &'a SignalSurrogate<String>,
+    &'a SignalSurrogate<String>,
+);
+
+pub(super) fn handler_source() -> &'static str {
+    static SOURCE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    SOURCE.get_or_init(|| {
+        let factory = expr!(|_mount_event: Event, signals: SidebarHandlerSignals<'_>, account: I64Surrogate, request: (&topcoat::runtime::StrSurrogate, BoolSurrogate, &topcoat::runtime::StrSurrogate, I64Surrogate, &topcoat::runtime::StrSurrogate)| {
+            let model = signals.0;
+            let draft = signals.1;
+            let revision = signals.2;
+            let busy = signals.3;
+            let error = signals.4;
+            let menu = signals.5;
+            let selected = signals.6;
+            let x = signals.7;
+            let y = signals.8;
+            let focus = signals.9;
+            let dom = signals.10;
+            let frozen = signals.11;
+            let recovery_model = model;
+            let recovery_revision = revision;
+            let recovery_focus = focus;
+            let recovery_frozen = frozen;
+            let recovery_error = error;
+            let recovery_busy = busy;
+            let unknown_busy = busy;
+            let unknown_error = error;
+            let _owner = request.0;
+            let initial = request.1;
+            let _command = request.2;
+            let _id = request.3;
+            let _value = request.4;
+            let _dispatch =         async |event: Event,
                mode: topcoat::runtime::StringSurrogate,
                command: topcoat::runtime::StringSurrogate,
                id: topcoat::runtime::I64Surrogate,
@@ -405,9 +443,33 @@ fn dispatcher(state: &Signals) -> topcoat::runtime::Js {
                     }
                 }
             }
-        }
-    );
-    handler.into_evaluated_and_js().1
+        };
+            if initial {
+                raw!("${_dispatch}(${_mount_event},cx.hydrate('invoke'),${_command}.to_owned(),${_id},${_value}.to_owned(),cx.hydrate(''));", ());
+            } else {
+                raw!(r#"const root=document.getElementById(${_owner}.toString())?.closest('.native-home-shell');
+                    if(!root)return;
+                    const dispatch=event=>{
+                        const attribute='data-native-sidebar-event-'+event.type;
+                        const target=event.target instanceof Element?event.target:event.target?.parentElement;
+                        const node=target?.closest('['+attribute+']');
+                        if(!node||!root.contains(node)||node.closest('.native-home-shell')!==root)return;
+                        const wire=node.getAttribute(attribute);
+                        const args=wire.startsWith('[')?JSON.parse(wire):wire.split(':');
+                        ${_dispatch}(cx.event(event),cx.hydrate(args[0]),cx.hydrate(args[1]),cx.hydrate({t:'i64',bits:64,v:args[2]}),cx.hydrate(args[3]??''),cx.hydrate(node.id));
+                    };
+                    for(const type of ['click','contextmenu','keydown','submit'])root.addEventListener(type,dispatch,{signal:cx.abortSignal});"#, ());
+            }
+        });
+        let mut source = super::super::handler_asset::source(factory.into_evaluated_and_js().1);
+        source.push_str(&super::super::handler_asset::source_named("recentsRefresh", super::recents_state::handler_factory()));
+        source
+    })
+}
+
+pub(super) fn handler_url() -> &'static str {
+    static URL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    URL.get_or_init(|| super::super::handler_asset::url("/__native-sidebar.js", handler_source()))
 }
 
 /// Browser code only measures/focuses nodes; placement and key decisions stay Rust.
@@ -633,13 +695,77 @@ fn focus_on_mount(cx: &Cx, state: &Signals, id: String, ready: bool, initial: bo
 mod action_encoding_tests {
     use super::*;
 
+    async fn rendered_action(
+        mode: &str,
+        command: &str,
+        id: i64,
+        value: &str,
+        event: &str,
+    ) -> String {
+        use topcoat::view::{ViewExt, view};
+        let context = Cx::default();
+        let cx = &context;
+        let action = row_action(cx, mode, command, id, value, event);
+        view! { cx => <button (action)>"Action"</button> }
+            .single()
+            .await
+            .unwrap()
+            .render(cx)
+    }
+
+    #[tokio::test]
+    async fn sidebar_empty_action_metadata_omits_json_quotes_and_preserves_exact_i64() {
+        for (mode, command, event) in [
+            ("menu", "project", "click"),
+            ("menu", "project", "contextmenu"),
+            ("menu", "project", "keydown"),
+            ("invoke", "toggle_project", "click"),
+        ] {
+            let html = rendered_action(mode, command, i64::MAX, "", event).await;
+            let document = scraper::Html::parse_fragment(&html);
+            let button = document
+                .select(&scraper::Selector::parse("button").unwrap())
+                .next()
+                .unwrap();
+            let metadata = button
+                .value()
+                .attr(&format!("data-native-sidebar-event-{event}"))
+                .unwrap();
+            assert_eq!(metadata, format!("{mode}:{command}:9223372036854775807"));
+            assert!(!html.contains("&quot;"), "Repeated action metadata: {html}");
+        }
+    }
+
+    #[tokio::test]
+    async fn sidebar_nonempty_action_metadata_preserves_arbitrary_values_as_json() {
+        let value = "quoted \"group\": [<>&]\n雪";
+        let html = rendered_action("invoke", "rename_group", i64::MAX, value, "submit").await;
+        let document = scraper::Html::parse_fragment(&html);
+        let button = document
+            .select(&scraper::Selector::parse("button").unwrap())
+            .next()
+            .unwrap();
+        let metadata = button
+            .value()
+            .attr("data-native-sidebar-event-submit")
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<(String, String, String, String)>(metadata).unwrap(),
+            (
+                "invoke".to_owned(),
+                "rename_group".to_owned(),
+                i64::MAX.to_string(),
+                value.to_owned()
+            )
+        );
+    }
+
     #[test]
     fn sidebar_action_metadata_is_compact_and_preserves_maximum_i64() {
-        let arguments = ActionArguments("menu", "project", i64::MAX.to_string(), "");
-        let encoded = serde_json::to_string(&arguments).unwrap();
-        assert_eq!(encoded, r#"["menu","project","9223372036854775807",""]"#);
+        let encoded = encode_action_arguments("menu", "project", i64::MAX, "");
+        assert_eq!(encoded, "menu:project:9223372036854775807");
         assert!(
-            encoded.len() <= 48,
+            encoded.len() <= 32,
             "One row must carry only its scalar arguments"
         );
     }

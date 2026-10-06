@@ -16,7 +16,19 @@ use crate::db::models::{Priority, Status};
 
 type IconNodes = Vec<(String, BTreeMap<String, String>)>;
 
-pub(crate) const STYLESHEET: &str = include_str!("assets/icons.css");
+pub(crate) fn stylesheet() -> &'static str {
+    static CSS: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    CSS.get_or_init(|| {
+        let mut css = include_str!("assets/icons.css").to_owned();
+        for (name, class) in [("ChevronRight", "chevron"), ("Ellipsis", "ellipsis")] {
+            css.push_str(&format!(
+                "\n.native-icon-{class} {{ mask-image: url(\"__native_icons/{}/{name}.mask.svg\"); }}",
+                ICON_VERSION.as_str()
+            ));
+        }
+        css
+    })
+}
 
 // These are checked-in package data, never markup supplied by a project.
 // See assets/icons.LICENSE.txt for the original versions and provenance.
@@ -32,7 +44,7 @@ static EMOJI: LazyLock<HashSet<String>> = LazyLock::new(|| {
 // The version includes the renderer revision so cached geometry changes with its format.
 static ICON_VERSION: LazyLock<String> = LazyLock::new(|| {
     let mut hash = blake3::Hasher::new();
-    hash.update(b"native-icon-asset-v1");
+    hash.update(b"native-icon-asset-v2-mask");
     hash.update(include_bytes!("assets/project-icons.json"));
     hash.finalize().to_hex().to_string()
 });
@@ -43,6 +55,13 @@ static ICON_ASSETS: LazyLock<BTreeMap<String, tokio::sync::OnceCell<String>>> =
             .map(|name| (name.clone(), tokio::sync::OnceCell::new()))
             .collect()
     });
+static MASK_ASSETS: LazyLock<BTreeMap<String, tokio::sync::OnceCell<String>>> =
+    LazyLock::new(|| {
+        ["ChevronRight", "Ellipsis"]
+            .into_iter()
+            .map(|name| (name.to_owned(), tokio::sync::OnceCell::new()))
+            .collect()
+    });
 
 path_param!(icon_version);
 path_param!(icon_file);
@@ -51,11 +70,23 @@ path_param!(icon_file);
 async fn icon_asset(cx: &Cx) -> topcoat::Result<Response> {
     let version = path_param::<IconVersion>(cx);
     let file = path_param::<IconFile>(cx);
-    let name = file.strip_suffix(".svg").unwrap_or("");
-    if version != ICON_VERSION.as_str() || !ICONS.contains_key(name) {
+    let (name, mask) = match file.strip_suffix(".mask.svg") {
+        Some(name) => (name, true),
+        None => (file.strip_suffix(".svg").unwrap_or(""), false),
+    };
+    let allowed = if mask {
+        MASK_ASSETS.contains_key(name)
+    } else {
+        ICONS.contains_key(name)
+    };
+    if version != ICON_VERSION.as_str() || !allowed {
         return Ok(Response::builder().status(404).body(Body::empty())?);
     }
-    let svg = icon_svg(name).await?;
+    let svg = if mask {
+        rendered_icon(name, true).await?
+    } else {
+        icon_svg(name).await?
+    };
     Ok(Response::builder()
         .header("content-type", "image/svg+xml")
         .header("cache-control", "public, max-age=31536000, immutable")
@@ -64,13 +95,28 @@ async fn icon_asset(cx: &Cx) -> topcoat::Result<Response> {
 }
 
 async fn icon_svg(name: &str) -> topcoat::Result<&'static str> {
-    let cache = ICON_ASSETS
-        .get(name)
-        .expect("caller checked the icon allowlist");
+    rendered_icon(name, false).await
+}
+
+async fn rendered_icon(name: &str, mask: bool) -> topcoat::Result<&'static str> {
+    let assets = if mask { &MASK_ASSETS } else { &ICON_ASSETS };
+    let cache = assets.get(name).expect("caller checked the icon allowlist");
     let svg = cache
         .get_or_try_init(|| async {
             let context = Cx::default();
             let cx = &context;
+            let mut presentation = Attributes::default();
+            if mask {
+                for (key, value) in [
+                    ("stroke", "black"),
+                    ("fill", "none"),
+                    ("stroke-width", "2"),
+                    ("stroke-linecap", "round"),
+                    ("stroke-linejoin", "round"),
+                ] {
+                    presentation.insert(cx, key, value);
+                }
+            }
             let nodes: Vec<_> = ICONS
                 .get(name)
                 .expect("approved icon")
@@ -84,7 +130,7 @@ async fn icon_svg(name: &str) -> topcoat::Result<&'static str> {
                 })
                 .collect();
             let html = view! { cx =>
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" (presentation)>
                     <g id="icon">
                         for (tag, attributes) in nodes { <(tag) (attributes)/> }
                     </g>
@@ -97,6 +143,21 @@ async fn icon_svg(name: &str) -> topcoat::Result<&'static str> {
         })
         .await?;
     Ok(svg.as_str())
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum CompactIcon {
+    ChevronRight,
+    Ellipsis,
+}
+
+pub(crate) fn compact_icon(cx: &Cx, icon: CompactIcon, size: u32) -> BoxView<'_> {
+    let class = match icon {
+        CompactIcon::ChevronRight => "native-icon-mask native-icon-chevron",
+        CompactIcon::Ellipsis => "native-icon-mask native-icon-ellipsis",
+    };
+    let style = format!("width:{size}px;height:{size}px");
+    view! { cx => <span class=(class) style=(style) aria-hidden="true"></span> }.boxed()
 }
 
 pub(crate) fn project_icon<'a>(cx: &'a Cx, value: Option<&str>, size: u32) -> BoxView<'a> {
@@ -185,6 +246,85 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn repeated_sidebar_icons_use_compact_masks_with_original_immutable_geometry() {
+        use tower::ServiceExt;
+
+        let fixture = super::super::home_fixture::fixture();
+        let stylesheet = super::super::super::assets::app_stylesheet();
+        for (name, icon) in [
+            ("ChevronRight", CompactIcon::ChevronRight),
+            ("Ellipsis", CompactIcon::Ellipsis),
+        ] {
+            let context = Cx::default();
+            let html = compact_icon(&context, icon, 13)
+                .single()
+                .await
+                .unwrap()
+                .render(&context);
+            assert!(html.starts_with("<span "), "repeated icon wrapper: {html}");
+            assert!(html.contains("aria-hidden=\"true\""), "{html}");
+            assert!(html.len() <= 125, "repeated icon arguments: {html}");
+            assert!(!html.contains("<svg") && !html.contains("__native_icons"));
+            let asset = format!("__native_icons/{}/{name}.mask.svg", ICON_VERSION.as_str());
+            assert!(
+                stylesheet.contains(&asset),
+                "shared mask reference for {name}"
+            );
+            assert!(
+                !stylesheet.contains(&format!("url(\"/{asset}")),
+                "Mask URLs resolve relative to the mounted stylesheet"
+            );
+            let response = fixture
+                .app
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri(format!("/{asset}"))
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), axum::http::StatusCode::OK);
+            assert_eq!(
+                response.headers()["cache-control"],
+                "public, max-age=31536000, immutable"
+            );
+            let svg = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let svg = std::str::from_utf8(&svg).unwrap();
+            for attribute in [
+                "stroke=\"black\"",
+                "fill=\"none\"",
+                "stroke-width=\"2\"",
+                "stroke-linecap=\"round\"",
+                "stroke-linejoin=\"round\"",
+            ] {
+                assert!(
+                    svg.contains(attribute),
+                    "mask presentation {attribute}: {svg}"
+                );
+            }
+            let document = scraper::Html::parse_document(svg);
+            let actual: IconNodes = document
+                .select(&scraper::Selector::parse("#icon > *").unwrap())
+                .map(|node| {
+                    let element = node.value();
+                    (
+                        element.name().to_owned(),
+                        element
+                            .attrs()
+                            .map(|(key, value)| (key.to_owned(), value.to_owned()))
+                            .collect(),
+                    )
+                })
+                .collect();
+            assert_eq!(&actual, ICONS.get(name).unwrap());
+        }
+    }
+
+    #[tokio::test]
     async fn empty_project_icon_renders_nothing() {
         let cx = Cx::default();
         for value in [None, Some("")] {
@@ -240,6 +380,7 @@ mod tests {
         let mut asset = None;
         for name in ICONS.keys() {
             let html = render(&cx, Some(&format!("lucide:{name}")), 15).await;
+            assert!(html.starts_with("<svg "), "Generic Lucide icon: {html}");
             let href = html
                 .split("href=\"")
                 .nth(1)
@@ -251,6 +392,7 @@ mod tests {
             assert_eq!(fragment, "icon");
             assert!(path.ends_with(&format!("/{name}.svg")));
             let catalog = path.rsplit_once('/').unwrap().0;
+            let catalog = catalog.trim_start_matches('/');
             assert_eq!(asset.get_or_insert_with(|| catalog.to_owned()), catalog);
             assert!(!html.contains("<path ") && !html.contains("<circle "));
         }

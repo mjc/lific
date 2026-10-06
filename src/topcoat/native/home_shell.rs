@@ -7,7 +7,10 @@ use super::session::native_home_session;
 use crate::db::models::{AuthUser, Project};
 use topcoat::{
     context::Cx,
-    runtime::{BoolSurrogate, Event, Signal, StringSurrogate, Surrogated, expr, shard, signal},
+    runtime::{
+        BoolSurrogate, Event, I64Surrogate, Js, Signal, SignalSurrogate, StringSurrogate,
+        Surrogated, expr, shard, signal,
+    },
     view::{Attributes, BoxView, View, ViewExt, view},
 };
 
@@ -298,7 +301,7 @@ fn render_shell<'a>(
         home_path.get().starts_with("/?")
     });
     let sidebar = super::project_sidebar::Sidebar::load(cx, account_id, &initial_path)?;
-    let sidebar_menu_open = sidebar.menu_open();
+    let sidebar_menu_kind = sidebar.menu_kind();
     let collapsed = signal(cx, || false);
     let query = signal(cx, String::new);
     let palette = PaletteState {
@@ -360,7 +363,7 @@ fn render_shell<'a>(
             <span hidden="hidden" (super::motion::mount(cx))></span>
             (sidebar.route(cx, path.clone()))
             <a class="tc-shell__skip" href="#main-content" :inert=$(mobile_open.get())>"Skip to content"</a>
-            <span hidden="hidden" (shell_mount(cx, collapsed.clone(), theme.clone(), (theme_menu.clone(), sidebar_menu_open.clone()), navigation.clone(), mobile_catalog, palette.clone()))></span>
+            <span hidden="hidden" (shell_mount(cx, collapsed.clone(), theme.clone(), (theme_menu.clone(), sidebar_menu_kind.clone()), navigation.clone(), mobile_catalog, palette.clone()))></span>
             <span hidden="hidden" (mobile_action_mount(cx, &navigation))></span>
             <button id="native-home-collapse" class="native-home-fold native-home-icon-button"
                 :aria-label=$(if collapsed.get() { "Expand sidebar" } else { "Collapse sidebar" })
@@ -609,93 +612,147 @@ pub(crate) fn mobile_action(
 }
 
 fn mobile_action_mount(cx: &Cx, navigation: &MobileNavigation) -> Attributes {
-    let id = "native-mobile-action-owner";
-    let source = topcoat::runtime::Js::builder()
-        .source("() => {const ownerId=")
-        .surrogate(&id)
-        .source(";const root=document.getElementById(ownerId.toString())?.closest('.native-home-shell');if(!root)return;const run=(")
-        .source(mobile_dispatcher(navigation).to_source())
-        .source(r#");root.addEventListener('click',event=>{
-            const target=event.target instanceof Element?event.target:event.target?.parentElement;
-            const node=target?.closest('[data-native-mobile-action]');
-            if(!node||!root.contains(node)||node.closest('.native-home-shell')!==root)return;
-            const args=JSON.parse(node.getAttribute('data-native-mobile-action'));
-            run(cx.hydrate(args[0]),cx.hydrate(args[1]));
-        },{signal:cx.abortSignal});}"#)
+    let arguments = Js::builder()
+        .raw("[")
+        .surrogate(&(
+            (&navigation.open).into_surrogate(),
+            (&navigation.pane).into_surrogate(),
+            (&navigation.project).into_surrogate(),
+            (&navigation.owner).into_surrogate(),
+            (&navigation.href).into_surrogate(),
+            (&navigation.pending_palette).into_surrogate(),
+            (&navigation.view_identifier).into_surrogate(),
+            (&navigation.initialized).into_surrogate(),
+        ))
+        .raw("]")
         .build();
-    let mut attributes = Attributes::with_capacity(2);
-    attributes.insert(cx, "id", id);
-    attributes.insert(cx, "data-topcoat-on:mount", source);
+    let key = format!("{}#mobile-dispatch", handler_url());
+    let mut attributes = super::handler_asset::mount(cx, &key, arguments);
+    attributes.insert(cx, "id", "native-mobile-action-owner");
     attributes
 }
 
-fn mobile_dispatcher(navigation: &MobileNavigation) -> topcoat::runtime::Js {
-    let MobileNavigation {
-        open,
-        pane,
-        project,
-        owner,
-        href,
-        pending_palette,
-        view_identifier,
-        initialized,
-    } = navigation.clone();
-    expr!(|action: StringSurrogate, identifier: StringSurrogate| {
-        if !pending_palette.get() {
-            if action == "back" {
-                raw!("history.back();", ());
-            } else {
-                let closing = if action == "search" {
-                    pending_palette.set(true);
-                    open.set(false);
-                    true
+type MobileHandlerSignals<'a> = (
+    &'a SignalSurrogate<bool>,
+    &'a SignalSurrogate<String>,
+    &'a SignalSurrogate<String>,
+    &'a SignalSurrogate<String>,
+    &'a SignalSurrogate<String>,
+    &'a SignalSurrogate<bool>,
+    &'a SignalSurrogate<String>,
+    &'a SignalSurrogate<bool>,
+);
+
+type ChromeHandlerSignals<'a> = (
+    &'a SignalSurrogate<bool>,
+    &'a SignalSurrogate<String>,
+    &'a SignalSurrogate<bool>,
+    &'a SignalSurrogate<bool>,
+    &'a SignalSurrogate<String>,
+    &'a SignalSurrogate<String>,
+    &'a SignalSurrogate<String>,
+    &'a SignalSurrogate<String>,
+    &'a SignalSurrogate<bool>,
+    &'a SignalSurrogate<String>,
+    &'a SignalSurrogate<bool>,
+    &'a SignalSurrogate<String>,
+);
+
+type PaletteHandlerSignals<'a> = (
+    &'a SignalSurrogate<bool>,
+    &'a SignalSurrogate<String>,
+    &'a SignalSurrogate<String>,
+    &'a SignalSurrogate<usize>,
+    &'a SignalSurrogate<usize>,
+    &'a SignalSurrogate<usize>,
+    &'a SignalSurrogate<usize>,
+    &'a SignalSurrogate<String>,
+    &'a SignalSurrogate<bool>,
+    &'a SignalSurrogate<usize>,
+    &'a SignalSurrogate<bool>,
+    &'a SignalSurrogate<bool>,
+);
+
+fn mobile_dispatch_factory() -> Js {
+    let handler = expr!(|_event: Event, handles: MobileHandlerSignals<'_>| {
+        let open = handles.0;
+        let pane = handles.1;
+        let project = handles.2;
+        let owner = handles.3;
+        let href = handles.4;
+        let pending_palette = handles.5;
+        let view_identifier = handles.6;
+        let initialized = handles.7;
+        let _dispatch = |action: StringSurrogate, identifier: StringSurrogate| {
+            if !pending_palette.get() {
+                if action == "back" {
+                    raw!("history.back();", ());
                 } else {
-                    action == "close"
-                };
-                if closing {
-                    if pane.get() == "root" {
-                        raw!("history.back();", ());
+                    let closing = if action == "search" {
+                        pending_palette.set(true);
+                        open.set(false);
+                        true
                     } else {
-                        raw!("history.go(-2);", ());
-                    }
-                } else {
-                    let _owner = owner.get();
-                    let _href = href.get();
-                    if action == "open" {
-                        raw!(
-                            "history.replaceState({...history.state,lificNativeHomeNav:{version:'1',owner:${_owner}.toString(),href:${_href}.toString(),pane:'closed',project:''}},'');",
-                            ()
-                        );
-                        let _pane = "root";
-                        let _project = "";
-                        raw!(
-                            "history.pushState({...history.state,lificNativeHomeNav:{version:'1',owner:${_owner}.toString(),href:${_href}.toString(),pane:${_pane}.toString(),project:${_project}.toString()}},'');",
-                            ()
-                        );
-                        project.set("".to_owned());
-                        pane.set("root".to_owned());
+                        action == "close"
+                    };
+                    if closing {
+                        if pane.get() == "root" {
+                            raw!("history.back();", ());
+                        } else {
+                            raw!("history.go(-2);", ());
+                        }
                     } else {
-                        let _pane = "project";
+                        let _owner = owner.get();
+                        let _href = href.get();
+                        if action == "open" {
+                            raw!(
+                                "history.replaceState({...history.state,lificNativeHomeNav:{version:'1',owner:${_owner}.toString(),href:${_href}.toString(),pane:'closed',project:''}},'');",
+                                ()
+                            );
+                            let _pane = "root";
+                            let _project = "";
+                            raw!(
+                                "history.pushState({...history.state,lificNativeHomeNav:{version:'1',owner:${_owner}.toString(),href:${_href}.toString(),pane:${_pane}.toString(),project:${_project}.toString()}},'');",
+                                ()
+                            );
+                            project.set("".to_owned());
+                            pane.set("root".to_owned());
+                        } else {
+                            let _pane = "project";
+                            raw!(
+                                "history.pushState({...history.state,lificNativeHomeNav:{version:'1',owner:${_owner}.toString(),href:${_href}.toString(),pane:${_pane}.toString(),project:${identifier}.toString()}},'');",
+                                ()
+                            );
+                            view_identifier.set(identifier.clone());
+                            project.set(identifier.clone());
+                            pane.set("project".to_owned());
+                        }
+                        if !initialized.get() {
+                            initialized.set(true);
+                        }
+                        open.set(true);
                         raw!(
-                            "history.pushState({...history.state,lificNativeHomeNav:{version:'1',owner:${_owner}.toString(),href:${_href}.toString(),pane:${_pane}.toString(),project:${identifier}.toString()}},'');",
+                            "queueMicrotask(() => document.querySelector('[data-native-mobile-nav] :is([data-native-mobile-root],[data-native-mobile-project]):not([hidden]) button')?.focus());",
                             ()
                         );
-                        view_identifier.set(identifier.clone());
-                        project.set(identifier.clone());
-                        pane.set("project".to_owned());
                     }
-                    if !initialized.get() {
-                        initialized.set(true);
-                    }
-                    open.set(true);
-                    raw!(
-                        "queueMicrotask(() => document.querySelector('[data-native-mobile-nav] :is([data-native-mobile-root],[data-native-mobile-project]):not([hidden]) button')?.focus());",
-                        ()
-                    );
                 }
             }
-        }
-    }).into_evaluated_and_js().1
+        };
+        raw!(
+            r#"const root=document.getElementById('native-mobile-action-owner')?.closest('.native-home-shell');
+            if(!root)return;
+            root.addEventListener('click',event=>{
+                const target=event.target instanceof Element?event.target:event.target?.parentElement;
+                const node=target?.closest('[data-native-mobile-action]');
+                if(!node||!root.contains(node)||node.closest('.native-home-shell')!==root)return;
+                const args=JSON.parse(node.getAttribute('data-native-mobile-action'));
+                ${_dispatch}(cx.hydrate(args[0]),cx.hydrate(args[1]));
+            },{signal:cx.abortSignal});"#,
+            ()
+        );
+    });
+    handler.into_evaluated_and_js().1
 }
 
 fn theme_button<'a>(cx: &'a Cx, theme: Signal<String>, open: Signal<bool>) -> BoxView<'a> {
@@ -719,7 +776,7 @@ fn shell_mount(
     cx: &Cx,
     collapsed: Signal<bool>,
     theme: Signal<String>,
-    menus: (Signal<bool>, topcoat::runtime::Expr<bool>),
+    menus: (Signal<bool>, Signal<String>),
     navigation: MobileNavigation,
     mobile_catalog: String,
     palette: PaletteState,
@@ -755,61 +812,91 @@ fn shell_mount(
     } = palette;
     let login = super::transport::mounted_url(cx, "/login");
     let palette_return_focus = signal(cx, || "native-home-palette-open".to_owned());
-    // Borrowed surrogates are Copy across the generated move callbacks.
-    let collapsed = &collapsed;
-    let theme = &theme;
-    let theme_menu = &theme_menu;
-    let mobile_open = &mobile_open;
-    let mobile_pane = &mobile_pane;
-    let mobile_project = &mobile_project;
-    let owner = &owner;
-    let href = &href;
-    let pending_palette = &pending_palette;
-    let view_identifier = &view_identifier;
-    let initialized = &initialized;
-    let palette_open = &palette_open;
-    let palette_query = &palette_query;
-    let palette_searched = &palette_searched;
-    let palette_revision = &palette_revision;
-    let palette_authorized = &palette_authorized;
-    let palette_rendered = &palette_rendered;
-    let palette_selected = &palette_selected;
-    let palette_selected_href = &palette_selected_href;
-    let palette_cursor_moved = &palette_cursor_moved;
-    let palette_count = &palette_count;
-    let palette_pending_enter = &palette_pending_enter;
-    let palette_pending_new_tab = &palette_pending_new_tab;
-    let palette_waiting = &palette_waiting;
-    let palette_error = &palette_error;
-    let palette_return_focus = &palette_return_focus;
-    let handler = expr!(|_mount: Event| {
-        // Typed locals hydrate each shared handle once for this owning scope.
-        let collapsed = collapsed;
-        let theme = theme;
-        let theme_menu = theme_menu;
-        let mobile_open = mobile_open;
-        let mobile_pane = mobile_pane;
-        let mobile_project = mobile_project;
-        let owner = owner;
-        let href = href;
-        let pending_palette = pending_palette;
-        let view_identifier = view_identifier;
-        let initialized = initialized;
-        let palette_open = palette_open;
-        let palette_query = palette_query;
-        let palette_searched = palette_searched;
-        let palette_revision = palette_revision;
-        let palette_authorized = palette_authorized;
-        let palette_rendered = palette_rendered;
-        let palette_selected = palette_selected;
-        let palette_selected_href = palette_selected_href;
-        let palette_cursor_moved = palette_cursor_moved;
-        let palette_count = palette_count;
-        let palette_pending_enter = palette_pending_enter;
-        let palette_pending_new_tab = palette_pending_new_tab;
-        let palette_waiting = palette_waiting;
-        let palette_error = palette_error;
-        let palette_return_focus = palette_return_focus;
+    let arguments = Js::builder()
+        .raw("[")
+        .surrogate(&(
+            (&collapsed).into_surrogate(),
+            (&theme).into_surrogate(),
+            (&theme_menu).into_surrogate(),
+            (&mobile_open).into_surrogate(),
+            (&mobile_pane).into_surrogate(),
+            (&mobile_project).into_surrogate(),
+            (&owner).into_surrogate(),
+            (&href).into_surrogate(),
+            (&pending_palette).into_surrogate(),
+            (&view_identifier).into_surrogate(),
+            (&initialized).into_surrogate(),
+            (&sidebar_menu).into_surrogate(),
+        ))
+        .raw(",")
+        .surrogate(&(
+            (&palette_open).into_surrogate(),
+            (&palette_query).into_surrogate(),
+            (&palette_searched).into_surrogate(),
+            (&palette_revision).into_surrogate(),
+            (&palette_authorized).into_surrogate(),
+            (&palette_rendered).into_surrogate(),
+            (&palette_selected).into_surrogate(),
+            (&palette_selected_href).into_surrogate(),
+            (&palette_cursor_moved).into_surrogate(),
+            (&palette_count).into_surrogate(),
+            (&palette_pending_enter).into_surrogate(),
+            (&palette_pending_new_tab).into_surrogate(),
+        ))
+        .raw(",")
+        .surrogate(&(
+            (&palette_waiting).into_surrogate(),
+            (&palette_error).into_surrogate(),
+            (&palette_return_focus).into_surrogate(),
+        ))
+        .raw(",")
+        .surrogate(&(
+            (&mobile_catalog).into_surrogate(),
+            (&login).into_surrogate(),
+            account_id.into_surrogate(),
+            is_admin.into_surrogate(),
+        ))
+        .raw("]")
+        .build();
+    super::handler_asset::mount(cx, handler_url(), arguments)
+}
+
+/// Browser code is generated from Rust once; every owning scope supplies its handles.
+pub(crate) fn handler_source() -> &'static str {
+    static SOURCE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    SOURCE.get_or_init(|| {
+        let handler = expr!(|_mount: Event, chrome: ChromeHandlerSignals<'_>, palette: PaletteHandlerSignals<'_>, status: (&SignalSurrogate<bool>, &SignalSurrogate<String>, &SignalSurrogate<String>,), request: (&StringSurrogate, &StringSurrogate, I64Surrogate, BoolSurrogate)| {
+        let collapsed = chrome.0;
+        let theme = chrome.1;
+        let theme_menu = chrome.2;
+        let mobile_open = chrome.3;
+        let mobile_pane = chrome.4;
+        let mobile_project = chrome.5;
+        let owner = chrome.6;
+        let href = chrome.7;
+        let pending_palette = chrome.8;
+        let view_identifier = chrome.9;
+        let initialized = chrome.10;
+        let sidebar_menu = chrome.11;
+        let palette_open = palette.0;
+        let palette_query = palette.1;
+        let palette_searched = palette.2;
+        let palette_revision = palette.3;
+        let palette_authorized = palette.4;
+        let palette_rendered = palette.5;
+        let palette_selected = palette.6;
+        let palette_selected_href = palette.7;
+        let palette_cursor_moved = palette.8;
+        let palette_count = palette.9;
+        let palette_pending_enter = palette.10;
+        let palette_pending_new_tab = palette.11;
+        let palette_waiting = status.0;
+        let palette_error = status.1;
+        let palette_return_focus = status.2;
+        let mobile_catalog = request.0;
+        let _login = request.1;
+        let account_id = request.2;
+        let is_admin = request.3;
         // A replacement owning scope never inherits a queued browser action.
         pending_palette.set(false);
         let _dispose_palette = || {
@@ -843,7 +930,7 @@ fn shell_mount(
                     if !raw!("cx.hydrate(cx.abortSignal.aborted)", false) {
                         if palette_revision.get() == sent_revision {
                             if current.0.is_none() {
-                                raw!("window.location.assign(${login}.toString())", ());
+                                raw!("window.location.assign(${_login}.toString())", ());
                             } else {
                                 let current_id = current.0.unwrap();
                                 let changed = if current_id != account_id {
@@ -1154,7 +1241,7 @@ fn shell_mount(
             }
         };
         let _keyboard = |_event: Event| {
-            if !sidebar_menu {
+            if sidebar_menu.get().is_empty() {
                 let key = raw!("cx.hydrate(${_event}.key)", String::new());
                 if key == "Escape" {
                     if theme_menu.get() {
@@ -1308,7 +1395,7 @@ fn shell_mount(
             }
         };
         let _focus = |_event: Event| {
-            if !sidebar_menu {
+            if sidebar_menu.get().is_empty() {
                 if mobile_open.get() {
                     if !theme_menu.get() {
                         let _pane = if mobile_pane.get() == "root" {
@@ -1371,13 +1458,17 @@ fn shell_mount(
             ()
         );
     });
-    let mut attributes = Attributes::with_capacity(1);
-    attributes.insert(
-        cx,
-        "data-topcoat-on:mount",
-        handler.into_evaluated_and_js().1,
-    );
-    attributes
+        let mut source = super::handler_asset::source(handler.into_evaluated_and_js().1);
+        source.push_str(&super::handler_asset::source_named("homeRefresh", super::home_refresh::handler_factory()));
+        source.push_str(&super::handler_asset::source_named("accountFocus", super::session::account_handler_factory()));
+        source.push_str(&super::handler_asset::source_named("mobileDispatch", mobile_dispatch_factory()));
+        source
+    })
+}
+
+pub(crate) fn handler_url() -> &'static str {
+    static URL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    URL.get_or_init(|| super::handler_asset::url("/__native-home-shell.js", handler_source()))
 }
 
 fn matching_projects<'a>(

@@ -5,7 +5,7 @@ mod socket;
 #[cfg(not(target_family = "wasm"))]
 pub use socket::{SocketLifetime, SocketPolicy, SocketRetirement};
 
-use crate::{ConnectedRender, SignalValues};
+use crate::{ConnectedRender, ConnectionEpoch, SignalValues};
 pub use rerun::*;
 use topcoat_core::context::Cx;
 use topcoat_router::{Body, Layer, LayerFuture, Next, Path};

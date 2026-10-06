@@ -113,3 +113,25 @@ async fn native_home_shell_theme_preferences_persist_and_follow_system_and_other
 async fn controls_preferences_keep_motion_and_synchronize_other_tabs() {
     browser("motion").await;
 }
+
+#[tokio::test]
+async fn native_home_connection_waits_for_generated_handlers_at_every_mount() {
+    let fixture = home_fixture::fixture();
+    let (origin, task) = home_fixture::serve(&fixture).await;
+    let mut command = home_fixture::browser_command(
+        "src/topcoat/native/handler_admission.browser.test.cjs",
+        &origin,
+        &fixture.token,
+    );
+    let result = tokio::time::timeout(std::time::Duration::from_secs(180), command.output()).await;
+    task.abort();
+    let output = result
+        .expect("generated handler admission browser timed out")
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "generated handler admission:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

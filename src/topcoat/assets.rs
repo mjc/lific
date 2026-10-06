@@ -6,6 +6,40 @@ use sha2::{Digest, Sha256};
 
 pub(crate) const RUNTIME: &str = include_str!("assets/runtime.js");
 
+pub(crate) fn runtime_source() -> &'static str {
+    static SOURCE: OnceLock<String> = OnceLock::new();
+    SOURCE.get_or_init(|| {
+        let handlers = [
+            (super::native::home_shell::handler_url(), "mount as native0,homeRefresh as nativeHomeRefresh,mobileDispatch as nativeMobileDispatch,accountFocus as nativeAccountFocus"),
+            (super::native::workspace::navigation_handler_url(), "mount as native1"),
+            (super::native::project_sidebar::handler_url(), "mount as native2,recentsRefresh as nativeRecentsRefresh"),
+        ];
+        let mut source = String::new();
+        let mut bindings = Vec::new();
+        for (index, (url, exports)) in handlers.into_iter().enumerate() {
+            let import = serde_json::to_string(&format!(".{url}")).expect("static handler URL");
+            let key = serde_json::to_string(url).expect("static handler URL");
+            source.push_str(&format!("import {{{exports}}} from {import};\n"));
+            bindings.push(format!("{key}:native{index}"));
+        }
+        for (key, function) in [
+            (format!("{}#home-refresh", super::native::home_shell::handler_url()), "nativeHomeRefresh"),
+            (format!("{}#mobile-dispatch", super::native::home_shell::handler_url()), "nativeMobileDispatch"),
+            (format!("{}#account-focus", super::native::home_shell::handler_url()), "nativeAccountFocus"),
+            (format!("{}#recents-refresh", super::native::project_sidebar::handler_url()), "nativeRecentsRefresh"),
+        ] {
+            let key = serde_json::to_string(&key).expect("static handler URL");
+            bindings.push(format!("{key}:{function}"));
+        }
+        source.push_str(&format!(
+            "Object.defineProperty(globalThis,'__lificNativeMounts',{{value:Object.freeze({{{}}}),writable:false,configurable:false}});\n",
+            bindings.join(",")
+        ));
+        source.push_str(RUNTIME);
+        source
+    })
+}
+
 pub(crate) const DM_SANS_ITALIC_LATIN_EXT: &[u8] =
     include_bytes!("assets/fonts/dm-sans-italic-latin-ext.woff2");
 pub(crate) const DM_SANS_ITALIC_LATIN: &[u8] =
@@ -28,7 +62,7 @@ pub(crate) fn app_stylesheet() -> &'static str {
             include_str!("assets/base.css"),
             super::controls::STYLESHEET,
             super::shell::STYLESHEET,
-            super::native::icons::STYLESHEET,
+            super::native::icons::stylesheet(),
             super::native::home_view::STYLESHEET,
             super::native::home_sections::STYLESHEET,
             super::native::home_shell::STYLESHEET,
@@ -61,5 +95,5 @@ pub(crate) fn app_stylesheet_url() -> &'static str {
 
 pub(crate) fn runtime_url() -> &'static str {
     static URL: OnceLock<String> = OnceLock::new();
-    URL.get_or_init(|| fingerprinted_url("/__topcoat-runtime.js", RUNTIME))
+    URL.get_or_init(|| fingerprinted_url("/__topcoat-runtime.js", runtime_source()))
 }

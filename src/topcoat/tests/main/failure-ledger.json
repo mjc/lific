@@ -2723,5 +2723,76 @@
       "command": "cargo nextest run --workspace --all-targets --locked --no-fail-fast --test-threads 4 --stress-count 3 -E test(order_production)"
     },
     "documentation": "cargo doc --workspace --no-deps --locked completes; existing documentation warnings remain. The binary-only workspace has no library doctest targets."
+  },
+  "native_home_shared_handler_assets": {
+    "scope": "Shared Rust-generated handler assets, compact sidebar event arguments, and typed masks for repeated sidebar icons. Unfinished native features and original adapter gaps remain open.",
+    "production_router_measurement": {
+      "projects": 45,
+      "document_bytes_before": 214724,
+      "document_bytes_after": 132294,
+      "one_project_document_bytes": 72023,
+      "document_budget_bytes": 135000,
+      "per_additional_project_budget_bytes": 1450
+    },
+    "production_executable_measurement": {
+      "projects": 45,
+      "document_bytes_before": 213857,
+      "document_bytes_after": 131427,
+      "reduction_percent": 38.54,
+      "largest_decoded_mount_handler_bytes": 2153,
+      "source": "Actual GET / bodies without HTTP content compression, using the same disposable production database before and after. These are fixture sizes, not an operator database measurement."
+    },
+    "asset_contracts": "Three versioned immutable modules contain seven Rust-generated handler families. The runtime imports them before hydration. Immutable factories receive each owner context and exact signal/scalar arguments; they retain no account data globally. Missing or stale module versions return 404.",
+    "red_evidence": [
+      "The final decoded mount bound observed 3548 bytes against 2500; the 45-project HTML bound observed 139641 bytes against 135000 before mobile and account handlers were shared.",
+      "Holding each genuine module response at each of three mounts exposed connected controls before handlers were available. All nine held-response cases pass with static imports and synchronous invocation.",
+      "Compact scalar metadata and repeated icon wrapper bounds failed before implementation. Arbitrary text retains JSON encoding and 64-bit IDs retain decimal strings.",
+      "The first mask renderer left the expanded chevron unrotated. The actual browser rotation assertion passed after its CSS selector included masks.",
+      "A new paired Overview breadcrumb check observed native rgb(24,32,29) against original rgb(88,106,96). The first full suite also timed out in the unchanged Issue More SVG inspection. Masks are now explicitly limited to fixed sidebar icons; generic icons retain their original SVG contract."
+    ],
+    "focused_before_runtime_expectation_update": {
+      "tests": 90,
+      "passed": 89,
+      "failed": 1,
+      "failure": "The browser fingerprint expectation hashed only the raw framework file. It now verifies the exact served entry point, including generated imports, while retaining the complete framework bytes and single-entry-point checks."
+    },
+    "corrected_runtime_browser": {
+      "tests": 1,
+      "passed": 1,
+      "failed": 0
+    },
+    "workspace_before_scoped_icons": {
+      "tests": 3398,
+      "passed": 3397,
+      "failed": 1,
+      "skipped": 0,
+      "failure": "Issue More inspected an SVG replaced by the initial global mask renderer and reached the 180-second outer bound. The scoped sidebar renderer restores the existing SVG geometry assertions."
+    },
+    "scoped_icon_correction": {
+      "tests": 13,
+      "passed": 13,
+      "failed": 0,
+      "contracts": "Every approved generic icon geometry, compact sidebar mask geometry/caching, the 45-project HTML budget, and actual pinned-original Home, Issue More and Overview comparisons, including breadcrumb colors."
+    },
+    "workspace": {
+      "command": "cargo nextest run --workspace --all-targets --locked --run-ignored all --test-threads 4 --no-fail-fast --success-output immediate",
+      "tests": 3398,
+      "passed": 3398,
+      "failed": 0,
+      "skipped": 0
+    },
+    "isolated_framework_tests": {
+      "unit_tests": 68,
+      "passed": 68,
+      "failed": 0,
+      "doctests": 1,
+      "doctests_passed": 1,
+      "application_adoption": false,
+      "scope": "Signal-only compact comment encoding and hostile content round trips in the standalone runtime facade. The published application signal renderer is unchanged; upstream submission and actual browser hydration coverage remain required. No projected signal-encoding savings are included in the application measurements."
+    },
+    "clippy": "cargo clippy --workspace --all-targets --locked -- -D warnings passes.",
+    "documentation": "cargo doc --workspace --no-deps --locked completes with the existing 33 documentation warnings. The binary-only workspace has no library doctest targets.",
+    "remaining_coverage": "Original native adapter gaps, unfinished routes, and the separate unreproduced rollback completion timeout remain open. Passing the Rust workspace does not close those gaps.",
+    "test_cleanup_audit": "Luna reviewed native browser callers through sem and the pinned-original inventory. No confirmed obsolete, orphaned or duplicate hybrid tests were found. Rust wrappers launch distinct browser scenarios; the 48 original mappings preserve missing native contracts. No tests were deleted."
   }
 }

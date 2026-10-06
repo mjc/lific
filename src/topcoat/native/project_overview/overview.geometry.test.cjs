@@ -87,6 +87,13 @@ test('real native Overview matches unchanged master identity, sections, drafts a
         assert.equal((await native.page.goto(`${proxy.origin}${prefix}/ACC/overview`)).status(),200);
         for(const [kind,item]of sides){evidence.readiness={kind,phase:'construct controls',url:item.page.url(),headings:await item.page.getByRole('heading').allTextContents(),buttons:await item.page.getByRole('button').allTextContents()};item.controls=controls(item.page,kind==='topcoat');const c=item.controls;evidence.readiness.phase='name';await c.name.waitFor();evidence.readiness.phase='archive';await c.archiveButton.waitFor();evidence.readiness.phase='person';await c.person.waitFor();evidence.readiness.phase='fonts';await item.page.evaluate(()=>document.fonts.ready);assert.ok(await c.publishButton.isDisabled());assert.ok(await c.archiveButton.isDisabled());assert.ok(await c.preview.isDisabled());}
         await captureOriginalFonts(original.page,path.join(output,`${name}-fonts.json`));
+        evidence.breadcrumbSeparator={};
+        for(const [kind,item]of sides){
+          const separator=kind==='topcoat'?item.controls.topbar.locator('.native-overview__breadcrumb > :is(svg,.native-icon-mask)'):item.controls.topbar.locator('svg').first();
+          assert.equal(await separator.count(),1,`${kind} has one breadcrumb separator`);
+          evidence.breadcrumbSeparator[kind]=await separator.evaluate(element=>getComputedStyle(element).color);
+        }
+        assert.equal(evidence.breadcrumbSeparator.topcoat,evidence.breadcrumbSeparator.svelte,'Breadcrumb separator keeps the original faint color');
         const capture=async(phase,targetFactory)=>{
           evidence.phases[phase]={};
           for(const [kind,item]of sides){
