@@ -50,7 +50,7 @@ test(`native common owner ${scenario}; auth ${seed.auth_required?'required':'opt
    const cases=scenario==='phone'?['focus','forward','forward_hash','foreign_pop','held_back']:scenario==='held'?['newer','hash','account']:scenario==='redirect'?['account']:scenario==='menu'?['menu_focus','menu_keyboard']:scenario==='panel'?['panel_normal','panel_focus','panel_menu','panel_palette']:[scenario];
    for(const kind of cases)await t.test(`${prefix||'root'} ${kind}`,async()=>{
     const proxy=await mountedProxy(upstream,prefix),context=await browser.newContext({viewport:(scenario==='phone'||scenario==='menu'||scenario==='panel')?{width:390,height:844}:{width:1280,height:1000},reducedMotion:'reduce',colorScheme:'light'});
-    const gates=[];let diagnostic;
+    const gates=[];let diagnostic,failure;
     try{
       const currentToken=(scenario==='held'||scenario==='redirect')?(await control('renew')).token:token;await cookie(context,proxy.origin,currentToken);
       if(kind==='foreign_pop')await context.addInitScript(()=>{const original=history.go;history.go=function(delta){if(window.holdNativeHistoryTraversal){window.heldNativeHistoryDelta=Number(delta);return;}return original.call(this,delta);};});
@@ -198,7 +198,22 @@ test(`native common owner ${scenario}; auth ${seed.auth_required?'required':'opt
         await page.waitForFunction(()=>window.noticePaletteSockets.length===2);assert.equal(await notice.textContent(),message,'Entered presentation survives genuine sibling framework reconnection.');await owner(page,seen,documents);
       }
       if(kind!=='account')await adopted(page,seen);await nativeContract(page,seen);
-    }catch(error){throw new Error(`${error.message}\nActual transport: ${JSON.stringify(diagnostic?.())}`,{cause:error});}finally{for(const gate of gates){gate.release();await bounded(gate.done,5000,'Held transport cleanup');}await context.close();await proxy.close();}
+    }catch(error){failure=new Error(`${error.message}\nActual transport: ${JSON.stringify(diagnostic?.())}`,{cause:error});}finally{
+      const cleanupErrors=[];
+      for(const gate of gates){try{gate.release();}catch(error){cleanupErrors.push(error);}}
+      const outcomes=await Promise.allSettled(gates.map(gate=>bounded(gate.done,5000,'Held transport cleanup')));
+      for(const outcome of outcomes){
+        if(outcome.status==='rejected')cleanupErrors.push(outcome.reason);
+        else if(outcome.value?.error)cleanupErrors.push(outcome.value.error);
+      }
+      try{await context.close();}catch(error){cleanupErrors.push(error);}
+      try{await proxy.close();}catch(error){cleanupErrors.push(error);}
+      if(cleanupErrors.length){
+        if(failure){const details=`\nCleanup failures: ${cleanupErrors.map(error=>error.stack||error.message).join('\n')}`;failure.message+=details;failure.stack+=details;}
+        else failure=new AggregateError(cleanupErrors,'Native common owner cleanup failed');
+      }
+    }
+    if(failure)throw failure;
    });
- }}finally{await browser.close();input.close();}
+ }}finally{try{await browser.close();}finally{input.close();}}
 });
