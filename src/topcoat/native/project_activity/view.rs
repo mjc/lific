@@ -401,7 +401,7 @@ mod tests {
         let cx = CxTestBuilder::new().build();
         for value in [None, Some(""), Some("unknown")] {
             let html = status(&cx, value).single().await.unwrap().render(&cx);
-            assert!(html.contains("/ui.svg#Circle\""), "{value:?}: {html}");
+            assert!(html.contains("data-icon=\"Circle\""), "{value:?}: {html}");
             assert!(html.contains("width=\"12\""), "{value:?}: {html}");
             assert!(html.contains("var(--tc-faint)"), "{value:?}: {html}");
         }
