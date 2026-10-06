@@ -142,6 +142,46 @@ pub(crate) fn list_activity_since_visible(
     offset: Option<i64>,
     visible: Option<&HashSet<i64>>,
 ) -> Result<ActivityFeed, LificError> {
+    list_activity_selection_visible(conn, scope, since, limit, offset, visible, None)
+}
+
+/// Retained native IDs are re-read through the same authorized projection as pages.
+/// Chunking keeps the bound-parameter count below SQLite's legacy limit.
+pub(crate) fn list_project_activity_ids_visible(
+    conn: &Connection,
+    project: i64,
+    ids: &[i64],
+    visible: Option<&HashSet<i64>>,
+) -> Result<Vec<Activity>, LificError> {
+    let mut items = Vec::new();
+    for chunk in ids.chunks(200) {
+        items.extend(
+            list_activity_selection_visible(
+                conn,
+                ActivityScope::Project(project),
+                None,
+                Some(MAX_LIMIT),
+                None,
+                visible,
+                Some(chunk),
+            )?
+            .items,
+        );
+    }
+    items.sort_unstable_by_key(|item| std::cmp::Reverse(item.id));
+    items.dedup_by_key(|item| item.id);
+    Ok(items)
+}
+
+fn list_activity_selection_visible(
+    conn: &Connection,
+    scope: ActivityScope,
+    since: Option<&str>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+    visible: Option<&HashSet<i64>>,
+    selected_ids: Option<&[i64]>,
+) -> Result<ActivityFeed, LificError> {
     if visible.is_some_and(HashSet::is_empty) {
         return Ok(ActivityFeed {
             items: Vec::new(),
@@ -197,6 +237,20 @@ pub(crate) fn list_activity_since_visible(
             )
         }
         None => (where_clause, "a.id DESC"),
+    };
+
+    let where_clause = if let Some(ids) = selected_ids {
+        let placeholders = ids
+            .iter()
+            .map(|id| {
+                sp.push(Box::new(*id) as Box<dyn rusqlite::types::ToSql>);
+                format!("?{}", sp.len())
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("({where_clause}) AND a.id IN ({placeholders})")
+    } else {
+        where_clause
     };
 
     let (visibility_cte, where_clause) = if let Some(visible) = visible {

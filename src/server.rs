@@ -123,6 +123,9 @@ mod topcoat_app {
             Some(NativeRoute::Insights) => {
                 super::topcoat_frontend::native::insights::screen(cx, &route)
             }
+            Some(NativeRoute::Activity) => {
+                super::topcoat_frontend::native::project_activity::screen(cx, &route)
+            }
             None => Err(topcoat::router::error::not_found().into()),
         }
     }
@@ -412,7 +415,6 @@ mod topcoat_app_tests {
             "/LIF/pages",
             "/LIF/plans",
             "/LIF/modules",
-            "/LIF/activity",
             "/LIF/graph",
             "/public/LIF/issues",
         ] {

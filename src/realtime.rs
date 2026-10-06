@@ -1191,7 +1191,7 @@ pub(crate) fn visible_to(
 }
 
 impl RealtimeEvent {
-    fn project_id(&self) -> Option<i64> {
+    pub(crate) fn project_id(&self) -> Option<i64> {
         match self {
             Self::ProjectCreated { project_id }
             | Self::ProjectUpdated { project_id }

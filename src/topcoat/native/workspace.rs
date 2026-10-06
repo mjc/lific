@@ -21,6 +21,7 @@ pub(crate) enum NativeRoute {
     ProjectNew,
     ProjectOverview,
     Insights,
+    Activity,
 }
 
 pub(crate) fn native_route(route: &ParsedRoute<'_>, has_query: bool) -> Option<NativeRoute> {
@@ -30,6 +31,7 @@ pub(crate) fn native_route(route: &ParsedRoute<'_>, has_query: bool) -> Option<N
         (Layout::Private, _, Page::ProjectNew) => Some(NativeRoute::ProjectNew),
         (Layout::Private, Some(_), Page::Overview) => Some(NativeRoute::ProjectOverview),
         (Layout::Private, Some(_), Page::Insights) => Some(NativeRoute::Insights),
+        (Layout::Private, Some(_), Page::Activity) => Some(NativeRoute::Activity),
         (Layout::Private, Some(_), Page::IssueDetail(_)) => Some(NativeRoute::Workspace),
         (Layout::Private, Some(_), Page::Issues | Page::Board) if !has_query => {
             Some(NativeRoute::Workspace)
@@ -48,7 +50,7 @@ pub(crate) fn common_screen<'a>(
             let snapshot = super::home::authorized_snapshot(cx)?;
             (snapshot.user, snapshot.projects, String::new())
         }
-        Some(NativeRoute::Insights) => {
+        Some(NativeRoute::Insights | NativeRoute::Activity) => {
             let caller = session::read(cx, context::caller(cx))?;
             let user = session::read(cx, crate::api::require_user(&caller.identity))?;
             let projects = session::read(
@@ -108,6 +110,9 @@ async fn native_common_page(
             super::project_overview::region(cx, &route, account, &entry)
         }
         Some(NativeRoute::Insights) => super::insights::region(cx, &route, account, &caller),
+        Some(NativeRoute::Activity) => {
+            super::project_activity::region(cx, &route, account, &caller)
+        }
         _ => Err(topcoat::router::error::not_found().into()),
     }
 }
@@ -227,7 +232,7 @@ fn destination(candidate: &str, project: &str) -> Option<String> {
     match native_route(&route, uri.query().is_some()) {
         Some(NativeRoute::Home) if project.is_empty() => Some(candidate.to_owned()),
         // Query handles keep the established fresh-document, once-per-entry handoff.
-        Some(NativeRoute::ProjectOverview | NativeRoute::Insights)
+        Some(NativeRoute::ProjectOverview | NativeRoute::Insights | NativeRoute::Activity)
             if project.is_empty() && uri.query().is_none() =>
         {
             Some(candidate.to_owned())
@@ -263,7 +268,7 @@ async fn native_workspace_destination(
     }
     let route = ParsedRoute::parse(&path);
     let entry = match native_route(&route, !route.query.is_empty()) {
-        Some(NativeRoute::Home | NativeRoute::Insights) => String::new(),
+        Some(NativeRoute::Home | NativeRoute::Insights | NativeRoute::Activity) => String::new(),
         Some(NativeRoute::ProjectOverview) => {
             let identifier = route
                 .project

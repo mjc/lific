@@ -1,3 +1,4 @@
+pub(crate) mod activity_text;
 #[cfg(test)]
 mod admission_contract;
 #[cfg(test)]
@@ -41,6 +42,7 @@ pub(crate) mod login;
 pub(crate) mod markdown;
 #[cfg(test)]
 mod markdown_edit;
+pub(crate) mod numbers;
 pub(crate) mod palette_reference;
 #[cfg(test)]
 mod palette_reference_production;
@@ -72,6 +74,7 @@ pub(crate) mod project_overview;
 
 pub(crate) mod project_create;
 
+pub(crate) mod project_activity;
 pub(crate) mod project_sidebar;
 
 mod motion;
