@@ -23,7 +23,16 @@ async fn get(
     cookie: Option<&str>,
     prefix: Option<&str>,
 ) -> axum::response::Response {
-    let mut request = Request::builder().uri("/");
+    get_path(fixture, "/", cookie, prefix).await
+}
+
+async fn get_path(
+    fixture: &Fixture,
+    path: &str,
+    cookie: Option<&str>,
+    prefix: Option<&str>,
+) -> axum::response::Response {
+    let mut request = Request::builder().uri(path);
     if let Some(cookie) = cookie {
         request = request.header("cookie", cookie);
     }
@@ -35,6 +44,65 @@ async fn get(
         "127.0.0.1:3000".parse::<SocketAddr>().unwrap(),
     ));
     fixture.app.clone().oneshot(request).await.unwrap()
+}
+
+#[tokio::test]
+async fn native_home_icons_use_selected_immutable_assets_at_every_mount() {
+    let fixture = fixture();
+    let cookie = format!("lific_token={}", fixture.token);
+    for prefix in ["", "/app", "/ACC"] {
+        let response = get(&fixture, Some(&cookie), Some(prefix)).await;
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let html = std::str::from_utf8(&body).unwrap();
+        let href = html
+            .split("<use href=\"")
+            .nth(1)
+            .expect("Home uses shared SVG geometry")
+            .split('"')
+            .next()
+            .unwrap();
+        assert!(href.starts_with(&format!("{prefix}/__native_icons/")));
+        let path = href
+            .strip_prefix(prefix)
+            .unwrap()
+            .split('#')
+            .next()
+            .unwrap();
+        // Static, allowlisted geometry contains no private account data.
+        let response = get_path(&fixture, path, None, Some(prefix)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["content-type"], "image/svg+xml");
+        assert_eq!(
+            response.headers()["cache-control"],
+            "public, max-age=31536000, immutable"
+        );
+        assert_eq!(response.headers()["x-content-type-options"], "nosniff");
+        let svg = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(
+            svg.len() < 2_000,
+            "Serve only the selected icon, not the catalog"
+        );
+        let svg = std::str::from_utf8(&svg).unwrap();
+        assert!(svg.contains("xmlns=\"http://www.w3.org/2000/svg\""));
+        assert!(svg.contains("id=\"icon\""));
+        assert!(!svg.contains("<script") && !svg.contains("<use"));
+        let base = path.rsplit_once('/').unwrap().0;
+        for invalid in [
+            format!("{base}/Unknown.svg"),
+            "/__native_icons/stale/Circle.svg".to_owned(),
+        ] {
+            assert_eq!(
+                get_path(&fixture, &invalid, None, Some(prefix))
+                    .await
+                    .status(),
+                StatusCode::NOT_FOUND
+            );
+        }
+    }
 }
 
 #[tokio::test]
@@ -115,22 +183,29 @@ async fn native_home_initial_html_keeps_navigation_handlers_shared_as_catalog_gr
     let html = std::str::from_utf8(&expanded).unwrap();
     for number in 2..=45 {
         assert!(html.contains(&format!("title=\"Project {number}\"")));
-        assert!(html.contains(&format!("aria-label=\"Open Project {number} navigation\"")));
+        assert!(
+            !html.contains(&format!("aria-label=\"Open Project {number} navigation\"")),
+            "Unopened phone navigation must not duplicate the project catalog"
+        );
     }
     assert!(html.contains("Visible active initial work"));
     assert!(!html.contains("Private hidden"));
+    assert!(
+        !html.contains("class=\"sidebar-destination native-sidebar-destination\""),
+        "Collapsed project panels must not serialize their destination trees"
+    );
     println!(
         "GET / initial HTML: {} bytes for one project; {} bytes for 45 projects",
         initial.len(),
         expanded.len()
     );
     assert!(
-        expanded.len() < 750_000,
+        expanded.len() < 300_000,
         "45-project GET / must not repeat full navigation controllers: {} bytes",
         expanded.len()
     );
     assert!(
-        expanded.len() < initial.len() + 44 * 10_000,
+        expanded.len() < initial.len() + 44 * 3_000,
         "Catalog growth must add markup and action arguments, not controller bodies: {} -> {} bytes",
         initial.len(),
         expanded.len()

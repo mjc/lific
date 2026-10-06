@@ -1,6 +1,7 @@
 // The original and native views consume the same production database.
 // node <driver> <fixture-origin> <token> <browser-helper> <pinned-master-web>
 const {test} = require('node:test');
+const {inspectSvg} = require('../svg_geometry_fixture.cjs');
 const {installOriginalFonts, captureOriginalFonts} = require('../original_fonts_fixture.cjs');
 const {prepareOriginalVite, closeOriginalVite} = require('../original_vite_fixture.cjs');
 const assert = require('node:assert/strict');
@@ -91,13 +92,7 @@ test('native issue More and confirmation match pinned master at every mount',asy
             for(const key of Object.keys(expected).filter(key=>!['x','y','width','height'].includes(key)))
               assert.equal(actual[key],expected[key],`${label}.${key}`);
           };
-          const icon = locator => locator.evaluate(svg => ({
-            width:svg.getBoundingClientRect().width,height:svg.getBoundingClientRect().height,
-            color:getComputedStyle(svg).color,viewBox:svg.getAttribute('viewBox'),
-            stroke:svg.getAttribute('stroke'),strokeWidth:svg.getAttribute('stroke-width'),
-            shape:[...svg.children].map(node=>({tag:node.localName,attributes:Object.fromEntries([...node.attributes]
-              .filter(attr=>!['class','style'].includes(attr.name)).map(attr=>[attr.name,attr.value]))})),
-          }));
+          const icon = locator => locator.evaluate(inspectSvg);
           const originalMore=original.page.getByTitle('More actions',{exact:true});
           const nativeMore=native.page.getByTitle('More actions',{exact:true});
           assert.equal(await originalMore.count(),1,'Pinned Maintainer More is present.');

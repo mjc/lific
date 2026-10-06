@@ -78,8 +78,8 @@ async fn native_session_expired_post_uses_303_and_get_keeps_307_across_auth_and_
                 .unwrap();
             assert_eq!(
                 login.status().as_u16(),
-                200,
-                "The genuine redirect target accepts GET, never requiring POST/login"
+                404,
+                "GET reaches the unported login route without restoring a fallback screen"
             );
         }
         // Root mount additionally exercises an actual HTTP client's automatic
@@ -99,8 +99,8 @@ async fn native_session_expired_post_uses_303_and_get_keeps_307_across_auth_and_
             .unwrap();
         assert_eq!(
             followed.status().as_u16(),
-            200,
-            "Following expired POST must reach GET login instead of method-preserving 405"
+            404,
+            "Following expired POST reaches the unported GET login route, not a method-preserving 405"
         );
         assert_eq!(followed.url().path(), "/login");
         server.abort();

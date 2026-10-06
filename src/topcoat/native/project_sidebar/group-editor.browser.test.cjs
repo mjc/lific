@@ -38,6 +38,15 @@ test('group create rename failure retry Cancel Escape',async t=>{
      // Retain both original cancellation paths and also exercise native
      // keyboard activation of Cancel: Enter must not submit this draft.
      for(const cancel of ['Cancel','Escape','Cancel Enter']){
+      if(cancel==='Cancel Enter')await page.evaluate(()=>{
+       const original=window.requestAnimationFrame.bind(window);
+       window.nativeInitialFocusFrames=[];
+       window.releaseNativeInitialFocus=()=>{window.requestAnimationFrame=original;for(const frame of window.nativeInitialFocusFrames.splice(0))frame(performance.now());};
+       window.requestAnimationFrame=frame=>{
+        if(frame.toString().includes('node.select()')){window.nativeInitialFocusFrames.push(frame);return 0;}
+        return original(frame);
+       };
+      });
       await start();await input.fill('Discard this draft');
       const before=calls.length,dbBefore=await control('inspect');
       if(cancel==='Escape')await input.press('Escape');
@@ -45,6 +54,10 @@ test('group create rename failure retry Cancel Escape',async t=>{
        const cancelButton=surface.getByRole('button',{name:'Cancel',exact:true});
        await cancelButton.focus();
        assert.equal(await cancelButton.evaluate(el=>document.activeElement===el),true);
+       await page.waitForFunction(()=>window.nativeInitialFocusFrames.length>0);
+       await page.evaluate(()=>window.releaseNativeInitialFocus());
+       assert.equal(await cancelButton.evaluate(el=>document.activeElement===el),true,
+        'Delayed initial editor focus preserves a newer keyboard focus choice.');
        await cancelButton.press('Enter');
       }else await surface.getByRole('button',{name:'Cancel',exact:true}).click();
       await input.waitFor({state:'hidden'});

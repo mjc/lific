@@ -366,7 +366,7 @@ mod tests {
         .await;
         assert!(html.contains("Pinned pages"));
         assert!(!html.contains("Missing project page"));
-        assert!(!html.contains("href="));
+        assert!(!html.contains("<a "));
         assert!(!html.contains("Recently viewed"));
         assert!(!html.contains("Recent activity"));
     }
@@ -383,7 +383,7 @@ mod tests {
         assert!(html.contains("disabled"));
         assert!(html.contains("&lt;img onerror=alert(1)&gt;"));
         assert!(!html.contains("<img"));
-        assert!(!html.contains("href="));
+        assert!(!html.contains("<a "));
     }
 
     #[tokio::test]
@@ -398,7 +398,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let html = render(&cx(None), &[project()], &[], &[], &recents).await;
-        assert_eq!(html.matches("href=").count(), 8);
+        assert_eq!(html.matches("<a ").count(), 8);
         assert!(html.find("Recent entry 1").unwrap() < html.find("Recent entry 8").unwrap());
         assert!(!html.contains("Recent entry 9"));
     }

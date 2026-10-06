@@ -621,8 +621,9 @@ fn focus_on_mount(cx: &Cx, state: &Signals, id: String, ready: bool, initial: bo
                 }
             } else {
                 if initial {
+                    // Keep the actual input and focus choice across the frame.
                     raw!(
-                        "if(!document.activeElement?.closest('[data-native-sidebar-projects]'))requestAnimationFrame(()=>{const node=document.getElementById(${id}.toString());if(node?.offsetParent&&!node.closest('[hidden],[inert]')){node.focus();node.select();}});",
+                        "if(!document.activeElement?.closest('[data-native-sidebar-projects]')){const node=document.getElementById(${id}.toString());const source=document.activeElement;requestAnimationFrame(()=>{const unchanged=document.activeElement===source||(!source?.isConnected&&document.activeElement===document.body);if(unchanged&&node?.isConnected&&node.offsetParent&&!node.closest('[hidden],[inert]')){node.focus();node.select();}});}",
                         ()
                     );
                 }

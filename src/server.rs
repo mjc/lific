@@ -2098,7 +2098,8 @@ mod topcoat_prefix_tests {
             .layer(axum::Extension(proxies));
 
         let mut trusted = Request::builder()
-            .uri("/login")
+            .uri("/")
+            .header(header::COOKIE, format!("lific_token={}", fixture.token))
             .header("x-forwarded-prefix", "/app")
             .body(Body::empty())
             .unwrap();
@@ -2106,20 +2107,22 @@ mod topcoat_prefix_tests {
             "127.0.0.1:3000".parse::<SocketAddr>().unwrap(),
         ));
         let response = app.clone().oneshot(trusted).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
         let trusted_document = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
         let trusted_document = String::from_utf8(trusted_document.to_vec()).unwrap();
         assert!(trusted_document.contains("data-lific-base-path=\"/app\""));
         assert!(trusted_document.contains("data-topcoat-runtime-prefix=\"/app\""));
-        assert!(trusted_document.contains("href=\"/app/login\""));
+        assert!(trusted_document.contains("href=\"/app/ACC/overview\""));
         assert!(trusted_document.contains(&format!(
             "src=\"/app{}\"",
             super::topcoat_frontend::assets::runtime_url()
         )));
 
         let mut untrusted = Request::builder()
-            .uri("/login")
+            .uri("/")
+            .header(header::COOKIE, format!("lific_token={}", fixture.token))
             .header("x-forwarded-prefix", "/app")
             .body(Body::empty())
             .unwrap();
@@ -2129,12 +2132,13 @@ mod topcoat_prefix_tests {
                 "198.51.100.8:3000".parse::<SocketAddr>().unwrap(),
             ));
         let response = app.clone().oneshot(untrusted).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
         let untrusted_document = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
         let untrusted_document = String::from_utf8(untrusted_document.to_vec()).unwrap();
         assert!(!untrusted_document.contains("data-lific-base-path="));
-        assert!(untrusted_document.contains("href=\"/login\""));
+        assert!(untrusted_document.contains("href=\"/ACC/overview\""));
 
         let mut collision = Request::builder()
             .uri("/ACC/issues")
@@ -2486,10 +2490,7 @@ mod public_surface_tests {
         );
     }
 
-    /// `/public/PUB` is the address a person shares. It is not an API route;
-    /// it falls through to the SPA, which then renders the public view from
-    /// the JSON endpoints above. The assertion is only that it is not a 401
-    /// or a 404, the same treatment `/DEMO/issues` gets.
+    /// The public alias stays outside the private authentication boundary.
     #[tokio::test]
     async fn the_shareable_address_serves_the_app_without_a_login() {
         let d = deploy();
@@ -2502,7 +2503,7 @@ mod public_surface_tests {
         let d = deploy();
         for path in ["/login", "/LIF/pages", "/LIF/plans", "/public/PUB/issues"] {
             let response = anonymous(&d.app, "GET", path).await;
-            assert_eq!(response.status(), StatusCode::OK, "{path}");
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
             if path == "/login" {
                 assert_eq!(
                     response.headers().get(header::X_FRAME_OPTIONS).unwrap(),
@@ -2524,8 +2525,8 @@ mod public_surface_tests {
                 );
             }
             let body = body_string(response).await;
-            assert!(body.contains("class=\"tc-shell\""), "{path}: {body}");
-            assert!(body.contains("/__topcoat-runtime.js"), "{path}: {body}");
+            assert!(!body.contains("class=\"tc-shell\""), "{path}: {body}");
+            assert!(!body.contains("/__topcoat-runtime.js"), "{path}: {body}");
         }
 
         // The canonical private list now resolves current native authority.
@@ -2612,7 +2613,8 @@ mod public_surface_tests {
         assert!(!body.contains("bootstrap.js"));
 
         let mut proxied_document = Request::builder()
-            .uri("/login")
+            .uri("/PRIV/issues")
+            .header(header::COOKIE, format!("lific_token={}", d.session_token))
             .header("x-forwarded-prefix", "/app")
             .body(Body::empty())
             .unwrap();

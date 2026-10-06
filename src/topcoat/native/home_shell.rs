@@ -24,6 +24,8 @@ pub(crate) struct MobileNavigation {
     // One last-viewed pane remains parked across root/closed presentation.
     // Fresh Sidebar projection still controls whether its content exists.
     view_identifier: Signal<String>,
+    // Keep the phone tree after first use; unopened desktop documents omit it.
+    initialized: Signal<bool>,
 }
 
 pub(crate) type MobileNavigationSignals = (
@@ -34,6 +36,7 @@ pub(crate) type MobileNavigationSignals = (
     Signal<String>,
     Signal<bool>,
     Signal<String>,
+    Signal<bool>,
 );
 impl MobileNavigation {
     pub(crate) fn new(cx: &Cx) -> Self {
@@ -45,6 +48,7 @@ impl MobileNavigation {
             href: signal(cx, String::new),
             pending_palette: signal(cx, || false),
             view_identifier: signal(cx, String::new),
+            initialized: signal(cx, || false),
         }
     }
     pub(crate) fn handles(&self) -> MobileNavigationSignals {
@@ -56,6 +60,7 @@ impl MobileNavigation {
             self.href.clone(),
             self.pending_palette.clone(),
             self.view_identifier.clone(),
+            self.initialized.clone(),
         )
     }
     pub(crate) fn from_handles(handles: MobileNavigationSignals) -> Self {
@@ -67,6 +72,7 @@ impl MobileNavigation {
             href: handles.4,
             pending_palette: handles.5,
             view_identifier: handles.6,
+            initialized: handles.7,
         }
     }
 }
@@ -544,6 +550,7 @@ fn mobile_dispatcher(navigation: &MobileNavigation) -> topcoat::runtime::Js {
         href,
         pending_palette,
         view_identifier,
+        initialized,
     } = navigation.clone();
     expr!(|action: StringSurrogate, identifier: StringSurrogate| {
         if !pending_palette.get() {
@@ -589,6 +596,7 @@ fn mobile_dispatcher(navigation: &MobileNavigation) -> topcoat::runtime::Js {
                         project.set(identifier.clone());
                         pane.set("project".to_owned());
                     }
+                    initialized.set(true);
                     open.set(true);
                     raw!(
                         "queueMicrotask(() => document.querySelector('[data-native-mobile-nav] :is([data-native-mobile-root],[data-native-mobile-project]):not([hidden]) button')?.focus());",
@@ -635,6 +643,7 @@ fn shell_mount(
         href,
         pending_palette,
         view_identifier,
+        initialized,
     } = navigation;
     let mount_pending = pending_palette.clone();
     let present_open = mobile_open.clone();
@@ -949,6 +958,7 @@ fn shell_mount(
                 if record_pane == "project" {
                     view_identifier.set(record_project.clone());
                 }
+                initialized.set(true);
                 present_open.set(true);
                 present_pane.set(pane.to_owned());
                 if pane == "project" {
@@ -1634,7 +1644,7 @@ mod tests {
         for expected in [
             "Accounts &lt;script&gt;",
             "href=\"/ACC/overview\"",
-            "href=\"/DCS/issues\"",
+            "href=\"/DCS/overview\"",
             "href=\"/settings\"",
             "Actual Home content",
             "native-home-collapse",
@@ -1651,6 +1661,7 @@ mod tests {
         // visible text and attribute values have distinct escaping contexts.
         assert!(html.contains("title=\"Accounts <script>\""));
         assert!(html.contains("aria-label=\"Expand Accounts <script>\""));
+        assert!(!html.contains("href=\"/DCS/issues\""));
         assert!(!html.contains("data-lific-"));
     }
 }

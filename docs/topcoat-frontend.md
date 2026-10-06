@@ -9,6 +9,11 @@ are removed. Unfinished features remain unavailable until they are implemented
 in Rust; see `topcoat-migration.md`. Browser-only APIs are accessed through the
 native Topcoat components, while Rust owns application decisions and state.
 
+Home omits collapsed project destination trees and initializes the phone project
+tree on first use. Shared sidebar state survives disclosure and navigation.
+Lucide geometry is served as versioned, immutable assets for the selected icons;
+repeated instances reuse cached geometry and share presentation CSS.
+
 The pinned framework source and distribution are retained for reproducible
 runtime patches. Its tests compare the served runtime against the upstream
 artifact plus documented fixes. Framework transport is distinct from an

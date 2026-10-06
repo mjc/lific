@@ -28,6 +28,7 @@ pub(crate) fn app_stylesheet() -> &'static str {
             include_str!("assets/base.css"),
             super::controls::STYLESHEET,
             super::shell::STYLESHEET,
+            super::native::icons::STYLESHEET,
             super::native::home_view::STYLESHEET,
             super::native::home_sections::STYLESHEET,
             super::native::home_shell::STYLESHEET,
