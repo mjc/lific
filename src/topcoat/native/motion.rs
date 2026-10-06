@@ -1,11 +1,16 @@
 //! One native shell owner resolves stored motion and current OS preference.
 use topcoat::{
     context::Cx,
-    runtime::{Event, expr},
+    runtime::{Event, Js, expr},
     view::Attributes,
 };
 
 pub(super) fn mount(cx: &Cx) -> Attributes {
+    let key = format!("{}#motion", super::home_shell::handler_url());
+    super::handler_asset::mount(cx, &key, Js::source("[]"))
+}
+
+pub(crate) fn handler_factory() -> Js {
     let handler = expr!(|_mount: Event| {
         let _refresh = || {
             let stored = raw!(
@@ -40,11 +45,5 @@ pub(super) fn mount(cx: &Cx) -> Attributes {
             ()
         );
     });
-    let mut attributes = Attributes::with_capacity(1);
-    attributes.insert(
-        cx,
-        "data-topcoat-on:mount",
-        handler.into_evaluated_and_js().1,
-    );
-    attributes
+    handler.into_evaluated_and_js().1
 }

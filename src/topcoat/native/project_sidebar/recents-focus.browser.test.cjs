@@ -88,7 +88,7 @@ test(`native recents production ${scenario}`,async t=>{
             assert.ok(html.includes('native-home-shell'));assert.ok(!html.includes('data-lific-session-state'));
             const scripts=[...html.matchAll(/<script\b[^>]*\bsrc="([^"]+)"/g)].map(match=>match[1]);assert.equal(scripts.length,1);assert.ok(scripts[0].includes('__topcoat-runtime'));
             await page.locator(selector).waitFor();
-            assert.equal(await page.locator('[data-native-sidebar-project]').count(),1,'Only the fixture account’s visible project reaches desktop native chrome.');
+            assert.equal(await page.locator('[data-ns-project]').count(),1,'Only the fixture account’s visible project reaches desktop native chrome.');
             assert.equal(await page.getByText('Private hidden project',{exact:true}).count(),0);
             if(route==='/ACC/issues'){
               for(const expected of seed.rows){assert.ok(html.includes(`href="${prefix}${expected.href}"`));assert.ok(html.includes(expected.label));}

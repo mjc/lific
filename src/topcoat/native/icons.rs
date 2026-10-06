@@ -20,9 +20,12 @@ pub(crate) fn stylesheet() -> &'static str {
     static CSS: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     CSS.get_or_init(|| {
         let mut css = include_str!("assets/icons.css").to_owned();
-        for (name, class) in [("ChevronRight", "chevron"), ("Ellipsis", "ellipsis")] {
+        for (name, selector) in [
+            ("ChevronRight", ".ns-project-toggle::before,.native-sidebar-group-toggle::before,.native-sidebar-mobile-project::after"),
+            ("Ellipsis", ".ns-overflow::before,.native-sidebar-phone-actions::before"),
+        ] {
             css.push_str(&format!(
-                "\n.native-icon-{class} {{ mask-image: url(\"__native_icons/{}/{name}.mask.svg\"); }}",
+                "\n{selector} {{ mask-image: url(\"__native_icons/{}/{name}.mask.svg\"); }}",
                 ICON_VERSION.as_str()
             ));
         }
@@ -145,21 +148,6 @@ async fn rendered_icon(name: &str, mask: bool) -> topcoat::Result<&'static str> 
     Ok(svg.as_str())
 }
 
-#[derive(Clone, Copy)]
-pub(crate) enum CompactIcon {
-    ChevronRight,
-    Ellipsis,
-}
-
-pub(crate) fn compact_icon(cx: &Cx, icon: CompactIcon, size: u32) -> BoxView<'_> {
-    let class = match icon {
-        CompactIcon::ChevronRight => "native-icon-mask native-icon-chevron",
-        CompactIcon::Ellipsis => "native-icon-mask native-icon-ellipsis",
-    };
-    let style = format!("width:{size}px;height:{size}px");
-    view! { cx => <span class=(class) style=(style) aria-hidden="true"></span> }.boxed()
-}
-
 pub(crate) fn project_icon<'a>(cx: &'a Cx, value: Option<&str>, size: u32) -> BoxView<'a> {
     let Some(value) = value.filter(|value| !value.is_empty()) else {
         return view! { cx => "" }.boxed();
@@ -251,20 +239,14 @@ mod tests {
 
         let fixture = super::super::home_fixture::fixture();
         let stylesheet = super::super::super::assets::app_stylesheet();
-        for (name, icon) in [
-            ("ChevronRight", CompactIcon::ChevronRight),
-            ("Ellipsis", CompactIcon::Ellipsis),
+        for (name, selector) in [
+            ("ChevronRight", ".ns-project-toggle::before"),
+            ("Ellipsis", ".ns-overflow::before"),
         ] {
-            let context = Cx::default();
-            let html = compact_icon(&context, icon, 13)
-                .single()
-                .await
-                .unwrap()
-                .render(&context);
-            assert!(html.starts_with("<span "), "repeated icon wrapper: {html}");
-            assert!(html.contains("aria-hidden=\"true\""), "{html}");
-            assert!(html.len() <= 125, "repeated icon arguments: {html}");
-            assert!(!html.contains("<svg") && !html.contains("__native_icons"));
+            assert!(
+                stylesheet.contains(selector),
+                "Fixed control mask selector {selector}"
+            );
             let asset = format!("__native_icons/{}/{name}.mask.svg", ICON_VERSION.as_str());
             assert!(
                 stylesheet.contains(&asset),

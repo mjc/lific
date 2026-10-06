@@ -7,6 +7,7 @@ pub(crate) mod bookmark;
 pub(crate) mod browser_inputs;
 pub(crate) mod context;
 pub(crate) mod deferred_delete;
+pub(crate) mod error_state;
 pub(crate) mod handler_asset;
 pub(crate) mod home;
 pub(crate) mod home_activity;
@@ -30,6 +31,7 @@ pub(crate) mod home_shell;
 mod home_shell_production;
 pub(crate) mod home_view;
 pub(crate) mod icons;
+pub(crate) mod insights;
 pub(crate) mod issue_edit;
 #[cfg(test)]
 mod limit_contract;

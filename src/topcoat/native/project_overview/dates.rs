@@ -5,7 +5,7 @@ use topcoat::{
     view::{Attributes, BoxView, ViewExt, view},
 };
 
-pub(super) fn clock_mount(cx: &Cx, now: Signal<f64>) -> Attributes {
+pub(crate) fn clock_mount(cx: &Cx, now: Signal<f64>) -> Attributes {
     let handler = expr!(|_event: Event| {
         raw!("let interval;", ());
         let _tick = || now.set(raw!("cx.hydrate(Date.now())", 0.0));
@@ -43,7 +43,7 @@ pub(super) fn absolute<'a>(cx: &'a Cx, timestamp: &str) -> BoxView<'a> {
     })>$(text.get())</time> }.boxed()
 }
 
-pub(super) fn relative<'a>(cx: &'a Cx, timestamp: &str, now: Signal<f64>) -> BoxView<'a> {
+pub(crate) fn relative<'a>(cx: &'a Cx, timestamp: &str, now: Signal<f64>) -> BoxView<'a> {
     let date = chrono::NaiveDateTime::parse_from_str(timestamp, "%Y-%m-%d %H:%M:%S%.f")
         .map_or(f64::NAN, |date| date.and_utc().timestamp_millis() as f64);
     let datetime = timestamp.to_owned();

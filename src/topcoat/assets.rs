@@ -10,7 +10,7 @@ pub(crate) fn runtime_source() -> &'static str {
     static SOURCE: OnceLock<String> = OnceLock::new();
     SOURCE.get_or_init(|| {
         let handlers = [
-            (super::native::home_shell::handler_url(), "mount as native0,homeRefresh as nativeHomeRefresh,mobileDispatch as nativeMobileDispatch,accountFocus as nativeAccountFocus"),
+            (super::native::home_shell::handler_url(), "mount as native0,homeRefresh as nativeHomeRefresh,mobileDispatch as nativeMobileDispatch,accountFocus as nativeAccountFocus,sessionStorage as nativeSessionStorage,motion as nativeMotion"),
             (super::native::workspace::navigation_handler_url(), "mount as native1"),
             (super::native::project_sidebar::handler_url(), "mount as native2,recentsRefresh as nativeRecentsRefresh"),
         ];
@@ -26,6 +26,8 @@ pub(crate) fn runtime_source() -> &'static str {
             (format!("{}#home-refresh", super::native::home_shell::handler_url()), "nativeHomeRefresh"),
             (format!("{}#mobile-dispatch", super::native::home_shell::handler_url()), "nativeMobileDispatch"),
             (format!("{}#account-focus", super::native::home_shell::handler_url()), "nativeAccountFocus"),
+            (format!("{}#session-storage", super::native::home_shell::handler_url()), "nativeSessionStorage"),
+            (format!("{}#motion", super::native::home_shell::handler_url()), "nativeMotion"),
             (format!("{}#recents-refresh", super::native::project_sidebar::handler_url()), "nativeRecentsRefresh"),
         ] {
             let key = serde_json::to_string(&key).expect("static handler URL");
@@ -79,6 +81,7 @@ pub(crate) fn app_stylesheet() -> &'static str {
             super::native::project_create::STYLESHEET,
             super::native::project_overview::STYLESHEET,
             include_str!("native/assets/motion.css"),
+            include_str!("assets/tailwind.css"),
         ]
         .join("\n")
     })

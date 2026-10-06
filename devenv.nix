@@ -393,6 +393,26 @@ in
       cwd = repoRoot;
       exec = "cargo build --locked";
     };
+    "lific:install:styles" = {
+      cwd = "${repoRoot}/scripts/tailwind";
+      exec = "bun install --frozen-lockfile";
+    };
+    "lific:topcoat:styles" = {
+      cwd = "${repoRoot}/scripts/tailwind";
+      exec = "bun run build";
+      after = [ "lific:install:styles" ];
+    };
+    "lific:topcoat:styles-check" = {
+      cwd = "${repoRoot}/scripts/tailwind";
+      exec = ''
+        set -eu
+        generated_styles=$(mktemp)
+        trap 'rm -f "$generated_styles"' EXIT
+        bunx --no-install @tailwindcss/cli -i input.css -o "$generated_styles" --minify
+        cmp ../../src/topcoat/assets/tailwind.css "$generated_styles"
+      '';
+      after = [ "lific:install:styles" ];
+    };
     "lific:topcoat:runtime-test" = {
       cwd = repoRoot;
       exec = "cargo test --locked --manifest-path src/topcoat/vendor/topcoat-runtime/Cargo.toml --features router --target-dir target";
@@ -454,6 +474,7 @@ in
         "lific:rust-test"
         "lific:topcoat:runtime-test"
         "lific:topcoat:test"
+        "lific:topcoat:styles-check"
         "lific:release-test"
         "lific:community-proxy:check"
         "lific:devenv-test"

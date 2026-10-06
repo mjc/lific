@@ -57,7 +57,7 @@ test('native connection waits for every generated handler at every mount', async
             const documents = requests.filter(request => request.type === 'document').length;
             await aside.getByRole('button', {name: 'Expand Visible project', exact: true}).click();
             await aside.getByRole('button', {name: 'Collapse Visible project', exact: true}).waitFor();
-            await aside.locator(`a[data-sidebar-project][href="${prefix}/ACC/overview"]`).click();
+            await aside.locator(`a[data-ns-link][href="${prefix}/ACC/overview"]`).click();
             await page.waitForURL(`${proxy.origin}${prefix}/ACC/overview`);
             await page.locator('.native-overview').waitFor();
             assert.equal(await page.evaluate(() => window.nativeHandlerAdmissionDocument), 'retained',

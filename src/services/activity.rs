@@ -38,13 +38,7 @@ pub(crate) fn list_activity_conn(
     limit: Option<i64>,
     offset: Option<i64>,
 ) -> Result<ActivityFeed, LificError> {
-    let current = identity
-        .as_ref()
-        .map(|caller| {
-            crate::auth::fresh_caller(conn, caller.user.id)
-                .map(|user| crate::auth::fresh_identity(&user, caller.transport))
-        })
-        .transpose()?;
+    let current = crate::auth::refresh_identity(conn, identity.as_ref())?;
     let project_id = match scope {
         ActivityScope::Issue(id) => Some(queries::get_issue(conn, id)?.project_id),
         ActivityScope::Page(id) => queries::get_page(conn, id)?.project_id,

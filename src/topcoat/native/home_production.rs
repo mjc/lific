@@ -106,6 +106,28 @@ async fn native_home_icons_use_selected_immutable_assets_at_every_mount() {
 }
 
 #[tokio::test]
+async fn native_home_sidebar_actions_use_compact_scalar_event_metadata() {
+    let fixture = fixture();
+    let response = get(
+        &fixture,
+        Some(&format!("lific_token={}", fixture.token)),
+        None,
+    )
+    .await;
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let html = std::str::from_utf8(&bytes).unwrap();
+    for event in ["click", "contextmenu", "keydown"] {
+        assert!(
+            html.contains(&format!("data-ns-{event}=\"")),
+            "Missing compact {event} action metadata"
+        );
+    }
+    assert!(!html.contains("data-native-sidebar-event-"));
+}
+
+#[tokio::test]
 async fn native_home_initial_html_serializes_the_sidebar_catalog_once() {
     let fixture = fixture();
     let cookie = format!("lific_token={}", fixture.token);
@@ -378,7 +400,7 @@ async fn native_home_initial_html_keeps_navigation_handlers_shared_as_catalog_gr
         expanded.len()
     );
     assert!(
-        expanded.len() < 135_000,
+        expanded.len() < 60_000,
         "45-project GET / must not repeat full navigation controllers: {} bytes",
         expanded.len()
     );

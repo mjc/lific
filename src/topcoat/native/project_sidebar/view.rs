@@ -37,14 +37,21 @@ pub(super) fn destinations<'a>(
     };
     view!{cx=>for(href,label,icon,active)in links{<a class=(class) href=(href) aria-current=(active.then_some("page"))>(icons::project_icon(cx,Some(icon),if matches!(layout,Layout::Phone){20}else{14}))(label)</a>}}.boxed()
 }
-fn mark<'a>(cx: &'a Cx, project: &Project, size: u32) -> BoxView<'a> {
+fn mark<'a>(cx: &'a Cx, project: &Project, layout: Layout) -> BoxView<'a> {
+    let (class, size) = match layout {
+        Layout::Desktop => ("ns-project-icon", 16),
+        Layout::Phone => ("mobile-project-icon", 20),
+    };
     if let Some(icon) = project.emoji.as_deref().filter(|icon| !icon.is_empty()) {
-        icons::project_icon(cx, Some(icon), size)
+        let icon = icons::project_icon(cx, Some(icon), size);
+        view! {cx=><span class=(class)>(icon)</span>}.boxed()
     } else {
         let initials = project.identifier.chars().take(2).collect::<String>();
-        view! {cx=><span class="sidebar-initials native-sidebar-initials">(initials)</span>}.boxed()
+        let class = format!("{class} ns-initials");
+        view! {cx=><span class=(class)>(initials)</span>}.boxed()
     }
 }
+
 fn project_row<'a>(
     cx: &'a Cx,
     project: &Project,
@@ -69,30 +76,22 @@ fn project_row<'a>(
         .is_some_and(|p| p.id == id);
     let actions = format!("Actions for {name}");
     let trigger = format!(
-        "native-sidebar-project-actions-{id}-{}",
+        "ns-a-{id}-{}",
         if matches!(layout, Layout::Phone) {
-            "phone"
+            "p"
         } else {
-            "desktop"
+            "d"
         }
     );
     let menu = state::open_menu(cx, signals, "project", id, "click");
     let context_menu = state::open_menu(cx, signals, "project", id, "contextmenu");
     let keyboard_menu = state::open_menu(cx, signals, "project", id, "keydown");
-    let icon = mark(
-        cx,
-        project,
-        if matches!(layout, Layout::Phone) {
-            20
-        } else {
-            16
-        },
-    );
+    let icon = mark(cx, project, layout);
     match layout {
         Layout::Desktop => {
             let open = model.expanded.contains(&id) && !model.dragging;
             let disclosure = format!("{} {name}", if open { "Collapse" } else { "Expand" });
-            let panel = format!("project-nav-{id}");
+            let panel = format!("ns-nav-{id}");
             let toggle = state::invoke(cx, signals, "toggle_project", id, String::new(), "click");
             let contents = open.then(|| {
                 (
@@ -102,11 +101,11 @@ fn project_row<'a>(
             });
             let overview = transport::mounted_url(cx, &format!("/{identifier}/overview"));
             let overview_active = path.eq_ignore_ascii_case(&format!("/{identifier}/overview"));
-            view!{cx=><div data-native-sidebar-project=(id.to_string())>
-                <div class="sidebar-row sidebar-project native-sidebar-project-row">
-                    <button class="native-sidebar-project-toggle" aria-label=(disclosure) aria-expanded=(open.to_string()) aria-controls=(panel.clone()) (toggle)>(icons::compact_icon(cx,icons::CompactIcon::ChevronRight,13))</button>
-                    <a id=(format!("native-sidebar-project-link-{id}")) href=(overview) data-sidebar-project=(id.to_string()) title=(name.clone()) aria-current=(overview_active.then_some("page")) class="sidebar-project-link native-sidebar-project-link" (context_menu) (keyboard_menu)><span class="sidebar-project-icon">(icon)</span><span>(name.clone())</span></a>
-                    <button id=(trigger) class="sidebar-overflow native-sidebar-overflow" aria-label=(actions) aria-haspopup="menu" (menu)>(icons::compact_icon(cx,icons::CompactIcon::Ellipsis,15))</button>
+            view!{cx=><div data-ns-project=(id.to_string())>
+                <div class="ns-project-row">
+                    <button class="ns-project-toggle" aria-label=(disclosure) aria-expanded=(open.to_string()) aria-controls=(panel.clone()) (toggle)></button>
+                    <a id=(format!("ns-p-{id}")) href=(overview) data-ns-link=(id.to_string()) title=(name.clone()) aria-current=(overview_active.then_some("page")) class="ns-project-link" (context_menu) (keyboard_menu)>(icon)<span>(name.clone())</span></a>
+                    <button id=(trigger) class="ns-overflow" aria-label=(actions) aria-haspopup="menu" (menu)></button>
                 </div>
                 <div id=(panel) hidden=(!open) class="project-subnav">if let Some((links,recent))=contents{(links)(recent)}</div>
             </div>}.boxed()
@@ -114,7 +113,7 @@ fn project_row<'a>(
         Layout::Phone => {
             let open = phone_action(&identifier);
             let label = format!("Open {name} navigation");
-            view!{cx=><div class="native-sidebar-phone-row"><button id=(format!("native-sidebar-phone-project-{id}")) class="mobile-project-row native-sidebar-mobile-project" data-current-project=(current.then_some("true")) data-mobile-project-trigger=(identifier.clone()) data-native-project-trigger=(identifier.clone()) aria-label=(label) (open) (context_menu) (keyboard_menu)><span class="mobile-project-icon">(icon)</span><span><span>(name)</span><small>(identifier)</small></span>(icons::compact_icon(cx,icons::CompactIcon::ChevronRight,17))</button><button id=(trigger) class="native-sidebar-phone-actions" aria-label=(actions) aria-haspopup="menu" (menu)>(icons::compact_icon(cx,icons::CompactIcon::Ellipsis,18))</button></div>}.boxed()
+            view!{cx=><div class="native-sidebar-phone-row"><button id=(format!("native-sidebar-phone-project-{id}")) class="mobile-project-row native-sidebar-mobile-project" data-current-project=(current.then_some("true")) data-mobile-project-trigger=(identifier.clone()) data-native-project-trigger=(identifier.clone()) aria-label=(label) (open) (context_menu) (keyboard_menu)>(icon)<span><span>(name)</span><small>(identifier)</small></span></button><button id=(trigger) class="native-sidebar-phone-actions" aria-label=(actions) aria-haspopup="menu" (menu)></button></div>}.boxed()
         }
     }
 }
@@ -223,7 +222,7 @@ fn group<'a>(
     let show_hint = matches!(layout, Layout::Desktop) && collapsed;
     let hint_toggle = state::invoke(cx, signals, "toggle_group", id, String::new(), "click");
     view!{cx=><section data-native-sidebar-group=(id.to_string())>
-        if editing{(field)}else{<div class="sidebar-row native-sidebar-group-heading"><button id=(format!("native-sidebar-group-toggle-{panel}")) class="native-sidebar-group-toggle" aria-expanded=((!collapsed).to_string()) aria-controls=(panel.clone()) title=(name.clone()) (toggle) (context_menu)>(icons::compact_icon(cx,icons::CompactIcon::ChevronRight,if matches!(layout,Layout::Phone){15}else{13}))<span>(name)</span></button><button id=(trigger) class="sidebar-overflow native-sidebar-overflow" aria-label=(actions) aria-haspopup="menu" data-sidebar-group-actions=(id.to_string()) (menu)>(icons::compact_icon(cx,icons::CompactIcon::Ellipsis,if matches!(layout,Layout::Phone){18}else{15}))</button></div>}
+        if editing{(field)}else{<div class="native-sidebar-group-heading"><button id=(format!("native-sidebar-group-toggle-{panel}")) class="native-sidebar-group-toggle" aria-expanded=((!collapsed).to_string()) aria-controls=(panel.clone()) title=(name.clone()) (toggle) (context_menu)><span>(name)</span></button><button id=(trigger) class="ns-overflow" aria-label=(actions) aria-haspopup="menu" data-sidebar-group-actions=(id.to_string()) (menu)></button></div>}
         if show_hint{if let Some(name)=current{<button class="native-sidebar-current" (hint_toggle)>(format!("Current: {name}"))</button>}}
         <div id=(panel) class="sidebar-group-projects native-sidebar-group-projects" hidden=(collapsed)>for row in rows{(row)}</div>
     </section>}.boxed()
@@ -280,11 +279,11 @@ pub(super) fn projects<'a>(
         }
     }
     let empty = model.catalog.projects.is_empty() && model.catalog.groups.is_empty() && !new;
-    let has_groups = !model.catalog.groups.is_empty();
     let error = model.error.clone();
     let transport_error = signals.error.clone();
     let pending_receipt = signals.frozen.clone();
     let confirm = state::invoke(cx, signals, "recover", 0, String::new(), "click");
+
     let create_group = state::invoke(cx, signals, "new_group", 0, String::new(), "click");
     let create_url = transport::mounted_url(cx, "/projects/new");
     let region = if matches!(layout, Layout::Phone) {
@@ -296,7 +295,7 @@ pub(super) fn projects<'a>(
         <div :hidden=$(transport_error.get().is_empty()) class="native-sidebar-order-error"><p role="alert">$(transport_error.get())</p><button type="button" :hidden=$(pending_receipt.get().is_empty()) (confirm)>"Confirm change"</button><button type="button" @click=$(|_event:Event|{raw!("window.location.reload();",());})>"Reload page"</button></div>
         if new{(field)}if !error.is_empty(){<p role="alert" class="native-sidebar-order-error">(error)</p>}
         for group in groups{(group)}
-        <div data-native-sidebar-drag-zone="" class=(if has_groups{"sidebar-ungrouped native-sidebar-ungrouped"}else{"native-sidebar-ungrouped"})>for project in ungrouped{(project)}</div>
+        <div data-native-sidebar-drag-zone="" class="native-sidebar-ungrouped">for project in ungrouped{(project)}</div>
         if empty{<div class="native-sidebar-empty"><p>"No projects yet."</p><a href=(create_url)>"Create a project"</a>if matches!(layout,Layout::Desktop){<button (create_group)>"Create a group"</button>}</div>}
     </div>}.boxed()
 }

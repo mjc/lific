@@ -14,13 +14,7 @@ fn authorize(
     identity: &Option<ResolvedIdentity>,
     project_id: i64,
 ) -> Result<Option<ResolvedIdentity>, LificError> {
-    let fresh = identity
-        .as_ref()
-        .map(|caller| {
-            crate::auth::fresh_caller(conn, caller.user.id)
-                .map(|user| crate::auth::fresh_identity(&user, caller.transport))
-        })
-        .transpose()?;
+    let fresh = crate::auth::refresh_identity(conn, identity.as_ref())?;
     authz::require_role_conn(conn, &fresh, project_id, Role::Viewer)?;
     Ok(fresh)
 }

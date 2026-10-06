@@ -66,6 +66,11 @@ fn read_with_auth_destination<T>(
 }
 
 pub(crate) fn mount(cx: &Cx) -> Attributes {
+    let key = format!("{}#session-storage", super::home_shell::handler_url());
+    super::handler_asset::mount(cx, &key, Js::source("[]"))
+}
+
+pub(crate) fn handler_factory() -> Js {
     let handler = expr!(|_mount: Event| {
         let _storage_handler = |_event: Event| {
             let local = raw!(
@@ -107,13 +112,7 @@ pub(crate) fn mount(cx: &Cx) -> Attributes {
             ()
         );
     });
-    let mut attributes = Attributes::with_capacity(1);
-    attributes.insert(
-        cx,
-        "data-topcoat-on:mount",
-        handler.into_evaluated_and_js().1,
-    );
-    attributes
+    handler.into_evaluated_and_js().1
 }
 
 fn current_account(cx: &Cx) -> Result<Option<(i64, bool)>, LificError> {

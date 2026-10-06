@@ -84,7 +84,7 @@ lines and reverse the following substitutions:
 | `url(){return topcoatMountedEndpoint(this.path)}` | `url(){return this.path}` | 1 |
 | `function V(t,e){if(Array.isArray(t))return topcoatHydrateTuple(t,e);if(t!==null)` | `function V(t,e){if(t!==null)` | 1 |
 | `function f(t){if(t==null)return null;if(Array.isArray(t))return t.map(f);` | `function f(t){if(t==null)return null;` | 1 |
-| ``let r=e.name.substring(ke.length);if(r==="mount"){topcoatMount(t,()=>T(e.value,`event @${r}`)(Object.assign(Object.create(n.runtime.context),{abortSignal:n.abortSignal})),n);return}let o=T(e.value,`event @${r}`)(n.runtime.context);`` | ``let r=e.name.substring(ke.length),o=T(e.value,`event @${r}`)(n.runtime.context);`` | 1 |
+| ``let r=e.name.substring(ke.length),i=Object.assign(Object.create(n.runtime.context),{abortSignal:n.abortSignal});if(r==="mount"){topcoatMount(t,()=>T(e.value,`event @${r}`)(i),n);return}let o=T(e.value,`event @${r}`)(i);`` | ``let r=e.name.substring(ke.length),o=T(e.value,`event @${r}`)(n.runtime.context);`` | 1 |
 | `refresh(){if(this.isDisposed)return Promise.resolve();if(this.connection!==null)return this.connection.requestRun(),Promise.resolve();if(this.requiresConnection){for(let n of this.ancestors())if(n.connection!==null\|\|n.requiresConnection)return n.refresh();return this.connectIfRequired(),Promise.resolve()}` | `refresh(){if(this.connection?.isOpen)return this.connection.requestRun(),Promise.resolve();if(this.requiresConnection){for(let n of this.ancestors())if(n.connection?.isOpen)return n.refresh()}` | 1 |
 | `case"redirect":t.runtime.redirect(e.location);break;` | `case"redirect":location.assign(e.location);break;` | 1 |
 | `constructor(e,n,r){this.lifetime=e;this.reportError=n;this.redirect=r;e.addEventListener` | `constructor(e,n){this.lifetime=e;this.reportError=n;e.addEventListener` | 1 |
@@ -122,7 +122,7 @@ A transient listener receives only the runtime's own native event, preserving
 event targets while preventing early or bubbling synthetic events from
 consuming initialization. Callback errors go through the runtime reporter.
 
-Each mount callback receives a private context exposing the owning scope’s
+Every event factory and callback receives a private context exposing the owning scope’s
 `abortSignal`. The shared runtime context remains unchanged. Global listeners
 registered with this signal stop when their owner is disposed; replacement
 scopes register their own listeners.
@@ -240,8 +240,9 @@ exact pinned upstream SHA-256. Lifecycle browser tests cover later signal
 declarations, one refresh with a persistent sentinel, reused DOM elements,
 scope cancellation, error isolation and early synthetic event dispatch. They
 also prove that mount contexts expose their real owning abort signal, that
-normal event contexts remain unchanged, and that global subscriptions stop
-across retained-element scope replacements.
+ordinary event contexts expose the same lifetime without mutating the shared
+runtime context, and that global subscriptions stop across retained-element scope
+replacements. Awaited ordinary callbacks observe scope disposal before completing work.
 
 Rust unit tests exercise trusted proxy context, prefix validation and missing
 configuration, and logical URL mounting. These framework-focused tests do not

@@ -5,6 +5,13 @@ components are under `src/topcoat/native/`; `src/server.rs` serves their routes,
 shared stylesheet, fonts, images, the framework runtime, and Rust-generated
 handler assets.
 
+New native views use Tailwind utilities with Main's typography tokens. The
+pinned CLI scans Rust templates and generates `src/topcoat/assets/tailwind.css`,
+which is embedded in the binary. Run `devenv tasks run lific:topcoat:styles`
+after changing classes; `lific:topcoat:styles-check` detects stale output.
+The compiler is a development dependency. Cargo builds and the application
+need neither Node nor Vite for these styles.
+
 All intermediate JavaScript application controllers and their fallback screens
 are removed. Unfinished features remain unavailable until they are implemented
 in Rust; see `topcoat-migration.md`. Browser-only APIs are accessed through the
@@ -22,7 +29,7 @@ mount scope. Home refresh, recents, mobile navigation, and account checks reuse
 those assets. Sidebar rows carry compact scalar event arguments, preserving
 exact 64-bit IDs and JSON encoding for arbitrary editor text.
 Lucide geometry is served as versioned, immutable assets for the selected icons.
-Repeated sidebar chevrons and overflow icons use compact spans and shared CSS
+Repeated sidebar chevrons and overflow icons use CSS pseudo-elements and shared
 masks; other icons reuse SVG geometry.
 
 The pinned framework source and distribution are retained for reproducible

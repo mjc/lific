@@ -66,7 +66,7 @@ test('vendored patches reconstruct the exact pinned upstream runtime', () => {
     ['url(){return topcoatMountedEndpoint(this.path)}', 'url(){return this.path}', 1],
     ['function V(t,e){if(Array.isArray(t))return topcoatHydrateTuple(t,e);if(t!==null)', 'function V(t,e){if(t!==null)', 1],
     ['function f(t){if(t==null)return null;if(Array.isArray(t))return t.map(f);', 'function f(t){if(t==null)return null;', 1],
-    ['let r=e.name.substring(ke.length);if(r==="mount"){topcoatMount(t,()=>T(e.value,`event @${r}`)(Object.assign(Object.create(n.runtime.context),{abortSignal:n.abortSignal})),n);return}let o=T(e.value,`event @${r}`)(n.runtime.context);',
+    ['let r=e.name.substring(ke.length),i=Object.assign(Object.create(n.runtime.context),{abortSignal:n.abortSignal});if(r==="mount"){topcoatMount(t,()=>T(e.value,`event @${r}`)(i),n);return}let o=T(e.value,`event @${r}`)(i);',
       'let r=e.name.substring(ke.length),o=T(e.value,`event @${r}`)(n.runtime.context);', 1],
     ['refresh(){if(this.isDisposed)return Promise.resolve();if(this.connection!==null)return this.connection.requestRun(),Promise.resolve();if(this.requiresConnection){for(let n of this.ancestors())if(n.connection!==null||n.requiresConnection)return n.refresh();return this.connectIfRequired(),Promise.resolve()}',
       'refresh(){if(this.connection?.isOpen)return this.connection.requestRun(),Promise.resolve();if(this.requiresConnection){for(let n of this.ancestors())if(n.connection?.isOpen)return n.refresh()}', 1],

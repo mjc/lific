@@ -105,10 +105,10 @@ impl Sidebar {
         let handles = self.signals.handles();
         let model = self.signals.model.clone();
         let revision = self.signals.revision.clone();
-        let recents = self.recents.handles();
         let catalog = model.clone();
         let storage = recents_state::storage(cx, &self.recents);
         let reveal = (path.clone(), self.scrolled.clone());
+        let recents = self.recents.handles();
         view! {cx => <span hidden="hidden" (storage)></span> recents_view::driver(account:account,path:$(path.get()),handles:recents.clone(),catalog:catalog) native_sidebar_desktop(account:account, wire:$(model.get()), path:$(path.get()), revision:$(revision.get()), handles:handles,recents:recents,reveal:reveal)}.boxed()
     }
     pub(crate) fn phone<'a>(
@@ -256,7 +256,7 @@ mod desktop_shard {
                                             false
                                         ) {
                                             raw!(
-                                                "document.getElementById('native-sidebar-project-link-'+${target}.toString())?.scrollIntoView({block:'nearest'});",
+                                                "document.getElementById('ns-p-'+${target}.toString())?.scrollIntoView({block:'nearest'});",
                                                 ()
                                             );
                                         }
