@@ -2,6 +2,8 @@
 const {test}=require('node:test');
 const assert=require('node:assert/strict');
 const path=require('node:path');
+const fs=require('node:fs');
+const {tmpdir}=require('node:os');
 const readline=require('node:readline');
 const {mountedProxy,launchBrowser}=require(path.join(process.cwd(),'src/topcoat/native/browser_fixture.cjs'));
 const upstream=new URL(process.argv[2]),token=process.argv[3];
@@ -16,8 +18,8 @@ test('before-send abort and lost committed reply recover without duplicate group
    await control('reset');const proxy=await mountedProxy(upstream,prefix);
    const context=await browser.newContext({viewport:phone?{width:360,height:740}:{width:1000,height:760},isMobile:phone,hasTouch:phone});
    await context.addCookies([{name:'lific_token',value:token,url:proxy.origin,httpOnly:true,sameSite:'Lax'}]);
-   let release;try{
-    const page=await context.newPage();page.setDefaultTimeout(15000);const errors=[],calls=[],requests=[];
+   let release,page;const errors=[],calls=[],requests=[];try{
+    page=await context.newPage();page.setDefaultTimeout(15000);
     page.on('pageerror',error=>errors.push(error.message));
     page.on('request',request=>{const pathname=new URL(request.url()).pathname;requests.push(pathname);if(pathname.endsWith('/__native_sidebar/apply'))calls.push(JSON.parse(request.postData())[1]);});
     assert.equal((await page.goto(`${proxy.origin}${prefix}/ACC/overview`)).status(),200);await page.locator('.native-overview').waitFor();
@@ -41,7 +43,9 @@ test('before-send abort and lost committed reply recover without duplicate group
       assert.equal(await trigger.evaluate(el=>document.activeElement===el),true,'Recovered commit returns focus to its original trigger.');
       assert.equal(calls.length,1,'Recovery replays the receipt; it does not send another domain mutation.');
     }else{
-      await page.waitForFunction(()=>{const input=document.querySelector('[aria-label="Group name"]');return input&&!input.disabled;});
+      // Both responsive editors exist; wait on the editor selected from this surface.
+      const editorId=await input.getAttribute('id');assert.ok(editorId);
+      await page.waitForFunction(id=>{const input=document.getElementById(id);return input&&!input.disabled;},editorId);
       const alert=surface.getByRole('alert');await alert.waitFor();assert.match(await alert.innerText(),/wasn't sent.*[Tt]ry again/);
       assert.equal(await input.inputValue(),name);assert.equal(await input.evaluate(el=>document.activeElement===el),true);
       assert.deepEqual(await input.evaluate(el=>[el.selectionStart,el.selectionEnd,el.selectionDirection]),[4,8,'backward'],'Transport recovery retains the draft selection.');
@@ -51,6 +55,18 @@ test('before-send abort and lost committed reply recover without duplicate group
     }
     const final=await control('inspect');assert.equal(final.groups.length,1);assert.equal(final.groups[0].name,name);assert.equal(final.events,1,'Only one successful shared mutation publishes its event.');
     assert.equal(requests.some(url=>url.split('/').includes('api')),false);assert.deepEqual(errors,[]);
+   }catch(error){
+    const output=path.join(tmpdir(),'lific-native-sidebar-recovery');fs.mkdirSync(output,{recursive:true});
+    const name=`${prefix.replaceAll('/','_')||'root'}-${phone?'phone':'desktop'}-${afterCommit?'lost-reply':'before-send'}`;
+    if(page){
+      await page.screenshot({path:path.join(output,`${name}-failure.png`),fullPage:true}).catch(()=>{});
+      fs.writeFileSync(path.join(output,`${name}-failure.html`),await page.content().catch(()=>''));
+      const editors=await page.locator('[aria-label="Group name"]').evaluateAll(elements=>elements.map(el=>({id:el.id,disabled:el.disabled,
+        visible:!!el.getClientRects().length,value:el.value,focused:document.activeElement===el,
+        selection:[el.selectionStart,el.selectionEnd,el.selectionDirection]}))).catch(()=>[]);
+      fs.writeFileSync(path.join(output,`${name}-failure.json`),JSON.stringify({error:error.stack,errors,calls,requests,editors},null,2));
+    }
+    throw error;
    }finally{if(release)release();await context.close();await proxy.close();}
   });
  }finally{await browser.close();inputLines.close();}
