@@ -402,7 +402,6 @@ mod topcoat_app_tests {
     async fn unfinished_feature_routes_have_no_intermediate_fallback() {
         let router = topcoat::router::tower::TowerService::new(topcoat_app::router());
         for path in [
-            "/login",
             "/signup",
             "/settings",
             "/projects/import",
@@ -2555,7 +2554,15 @@ mod public_surface_tests {
         let d = deploy();
         for path in ["/login", "/LIF/pages", "/LIF/plans", "/public/PUB/issues"] {
             let response = anonymous(&d.app, "GET", path).await;
-            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+            assert_eq!(
+                response.status(),
+                if path == "/login" {
+                    StatusCode::OK
+                } else {
+                    StatusCode::NOT_FOUND
+                },
+                "{path}"
+            );
             if path == "/login" {
                 assert_eq!(
                     response.headers().get(header::X_FRAME_OPTIONS).unwrap(),
@@ -2578,7 +2585,13 @@ mod public_surface_tests {
             }
             let body = body_string(response).await;
             assert!(!body.contains("class=\"tc-shell\""), "{path}: {body}");
-            assert!(!body.contains("/__topcoat-runtime.js"), "{path}: {body}");
+            if path == "/login" {
+                assert!(body.contains("Welcome back."));
+                assert!(body.contains("/__topcoat-runtime.js"));
+                assert!(!body.contains("classified"));
+            } else {
+                assert!(!body.contains("/__topcoat-runtime.js"), "{path}: {body}");
+            }
         }
 
         // The canonical private list now resolves current native authority.
