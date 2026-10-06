@@ -248,7 +248,7 @@ test('mount context exposes its owning AbortSignal and disposes global subscript
     return () => { window.mountCalls++; };
   })()`;
   const normal = `(() => {
-    window.sharedContextHasSignal = 'abortSignal' in cx;
+    window.sharedContextHasSignal = 'abortSignal' in Object.getPrototypeOf(cx);
     return () => { window.clickCalls++; };
   })()`;
   const content = `<section id="mount" ${handler('mount', mount)}>Retained subscription owner</section>
@@ -288,6 +288,56 @@ test('mount context exposes its owning AbortSignal and disposes global subscript
     assert.equal(await page.evaluate(() => window.mountCalls), 3, 'The disposed intermediate scope never creates a subscription.');
     await page.getByRole('button', {name: 'Normal event'}).click();
     assert.equal(await page.evaluate(() => window.clickCalls), 1);
+    assert.equal(requests.length, 0);
+    assert.deepEqual(errors, []);
+    assert.deepEqual(pageErrors, []);
+  });
+});
+
+test('ordinary event context exposes owning lifetime and cancels async work after scope disposal', async () => {
+  const normal = `(() => {
+    if (!(cx.abortSignal instanceof AbortSignal)) throw new Error('Missing ordinary event AbortSignal');
+    window.eventSignals.push(cx.abortSignal);
+    window.sharedContextHasSignal = 'abortSignal' in Object.getPrototypeOf(cx);
+    return async () => {
+      window.clickCalls++;
+      window.addEventListener('event-ping', () => { window.pings++; }, {signal: cx.abortSignal});
+      await new Promise(resolve => { window.resumeCallbacks.push(resolve); });
+      if (cx.abortSignal.aborted) { window.cancelled++; return; }
+      window.completed++;
+    };
+  })()`;
+  const content = `<button id="event-owner" ${handler('click', normal)}>Start owned work</button>`;
+  await fixture(content, {eventSignals: [], resumeCallbacks: [], clickCalls: 0, pings: 0, cancelled: 0, completed: 0}, async ({page, requests, errors, pageErrors}) => {
+    assert.equal(await page.evaluate(() => window.runtimeStartupError), undefined);
+    assert.equal(await page.evaluate(() => window.sharedContextHasSignal), false, 'The runtime context itself remains unchanged.');
+    await page.getByRole('button', {name: 'Start owned work'}).click();
+    await page.evaluate(() => {
+      window.initialOwner = document.querySelector('#event-owner');
+      window.dispatchEvent(new Event('event-ping'));
+      const detail = {};
+      window.dispatchEvent(new CustomEvent('topcoat:dev-runtime:v1', {detail}));
+      detail.runtime.replace(() => {});
+    });
+    await settle(page);
+    assert.equal(await page.evaluate(() => window.eventSignals[0].aborted), true);
+    assert.equal(await page.evaluate(() => window.initialOwner === document.querySelector('#event-owner') && window.initialOwner.isConnected), true);
+    await page.evaluate(() => {
+      window.dispatchEvent(new Event('event-ping'));
+      window.resumeCallbacks.shift()();
+    });
+    await page.waitForFunction(() => window.cancelled === 1);
+    assert.equal(await page.evaluate(() => window.pings), 1, 'Disposed scopes remove ordinary-event subscriptions.');
+    assert.equal(await page.evaluate(() => window.completed), 0, 'An awaited callback sees its owner disposed.');
+    await page.getByRole('button', {name: 'Start owned work'}).click();
+    await page.evaluate(() => {
+      window.dispatchEvent(new Event('event-ping'));
+      window.resumeCallbacks.shift()();
+    });
+    await page.waitForFunction(() => window.completed === 1);
+    assert.equal(await page.evaluate(() => window.eventSignals.filter(signal => !signal.aborted).length), 1);
+    assert.equal(await page.evaluate(() => window.clickCalls), 2, 'The retained button has only its current event handler.');
+    assert.equal(await page.evaluate(() => window.pings), 2);
     assert.equal(requests.length, 0);
     assert.deepEqual(errors, []);
     assert.deepEqual(pageErrors, []);

@@ -136,21 +136,25 @@ test(`native Home original shell: ${scenario}`, async t => {
             },mode==='desktop'?'#native-home-collapse svg use':'#native-home-mobile-open svg use');
             if (mode === 'desktop') {
               await Promise.all(maskDownloads);
-              await page.waitForFunction(() => ['chevron', 'ellipsis'].every(kind => {
-                const icon = document.querySelector(`.native-home-sidebar .native-icon-${kind}`);
-                if (!icon) return false;
-                const style = getComputedStyle(icon), size = icon.getBoundingClientRect();
-                const name = kind === 'chevron' ? 'ChevronRight' : 'Ellipsis';
-                return size.width > 0 && size.height > 0 && style.maskSize === 'contain'
+              await page.waitForFunction(() => ['.ns-project-toggle', '.ns-overflow'].every(selector => {
+                const control = document.querySelector(`.native-home-sidebar ${selector}`);
+                if (!control) return false;
+                const style = getComputedStyle(control, '::before');
+                const name = selector === '.ns-project-toggle' ? 'ChevronRight' : 'Ellipsis';
+                return parseFloat(style.width) > 0 && parseFloat(style.height) > 0 && style.maskSize === 'contain'
                   && style.backgroundColor === style.color
                   && style.maskImage.includes(`${name}.mask.svg`);
               }));
-              for (const [kind, name, size] of [['chevron', 'ChevronRight', 13], ['ellipsis', 'Ellipsis', 15]]) {
-                const icon = page.locator(`.native-home-sidebar .native-icon-${kind}`).first();
-                const mask = await icon.evaluate(element => getComputedStyle(element).maskImage);
-                assert.ok(mask.includes(`${proxy.origin}${prefix}/__native_icons/`) && mask.endsWith(`/${name}.mask.svg")`));
-                assert.equal((await icon.boundingBox()).width, size);
-                assert.equal((await icon.boundingBox()).height, size);
+              for (const [selector, name, size] of [['.ns-project-toggle', 'ChevronRight', 13], ['.ns-overflow', 'Ellipsis', 15]]) {
+                const control = page.locator(`.native-home-sidebar ${selector}`).first();
+                const style = await control.evaluate(element => {
+                  const style = getComputedStyle(element, '::before');
+                  return {mask: style.maskImage, width: parseFloat(style.width), height: parseFloat(style.height)};
+                });
+                assert.ok(style.mask.includes(`${proxy.origin}${prefix}/__native_icons/`) && style.mask.endsWith(`/${name}.mask.svg")`));
+                assert.equal(style.width, size);
+                assert.equal(style.height, size);
+                assert.equal(await control.locator(':scope > :is(svg,.native-icon-mask)').count(), 0);
               }
             }
             const iconRequests=requests.filter(url=>new URL(url).pathname.includes('/__native_icons/'));
@@ -163,9 +167,9 @@ test(`native Home original shell: ${scenario}`, async t => {
             // shared sidebar layouts expose that same ID on their native rows.
             let projectId;
             if (['disclosure', 'mobile', 'mobile_lifetime', 'mobile_unavailable', 'hostile_project'].includes(scenario)) {
-              const overview = page.locator(`.native-home-sidebar a[data-sidebar-project][href="${prefix}/ACC/overview"]`);
+              const overview = page.locator(`.native-home-sidebar a[data-ns-link][href="${prefix}/ACC/overview"]`);
               assert.equal(await overview.count(), 1);
-              projectId = await overview.getAttribute('data-sidebar-project');
+              projectId = await overview.getAttribute('data-ns-link');
               assert.match(projectId, /^\d+$/);
             }
             const phoneProject = async (nav, name = 'Visible project') => {
@@ -179,7 +183,7 @@ test(`native Home original shell: ${scenario}`, async t => {
             };
 
             if (scenario === 'disclosure') {
-              const project = page.locator(`[data-native-sidebar-project="${projectId}"]`);
+              const project = page.locator(`[data-ns-project="${projectId}"]`);
               const toggle = project.getByRole('button', {name: 'Expand Visible project', exact: true});
               assert.equal(await toggle.count(), 1, 'Home has a project disclosure distinct from overview navigation.');
               assert.equal(await toggle.getAttribute('aria-expanded'), 'false');
@@ -190,9 +194,9 @@ test(`native Home original shell: ${scenario}`, async t => {
               await page.keyboard.press('Enter');
               assert.equal(await project.getByRole('button', {name: 'Collapse Visible project', exact: true}).getAttribute('aria-expanded'), 'true');
               await page.waitForFunction(() => {
-                const icon = document.querySelector('.native-sidebar-project-toggle[aria-expanded=true] > :is(svg,.native-icon-mask)');
+                const icon = document.querySelector('.ns-project-toggle[aria-expanded=true]');
                 if (!icon) return false;
-                const rotation = new DOMMatrix(getComputedStyle(icon).transform);
+                const rotation = new DOMMatrix(getComputedStyle(icon, '::before').transform);
                 return Math.abs(rotation.a) < .01 && rotation.b > .99;
               }, undefined, {timeout: 5000});
               const links = page.locator(`#${controlled}`).getByRole('link');
@@ -200,7 +204,7 @@ test(`native Home original shell: ${scenario}`, async t => {
               for (const [index, slug] of destinations.map(label => label.toLowerCase()).entries()) {
                 assert.equal(await links.nth(index).getAttribute('href'), `${prefix}/ACC/${slug}`);
               }
-              const overview = project.locator(`a[data-sidebar-project="${projectId}"]`);
+              const overview = project.locator(`a[data-ns-link="${projectId}"]`);
               assert.equal(await overview.textContent(), 'ACVisible project');
               assert.equal(await overview.getAttribute('href'), `${prefix}/ACC/overview`);
               assert.equal(await page.getByText('Private hidden project', {exact: true}).count(), 0);
@@ -440,8 +444,8 @@ test(`native Home original shell: ${scenario}`, async t => {
                   await page.getByText('Visible active initial work', {exact: true}).waitFor();
                 }
                 if (mode === 'desktop') {
-                  const project = page.locator(`[data-native-sidebar-project="${projectId}"]`);
-                  const title = project.locator(`a[data-sidebar-project="${projectId}"]`);
+                  const project = page.locator(`[data-ns-project="${projectId}"]`);
+                  const title = project.locator(`a[data-ns-link="${projectId}"]`);
                   assert.equal(await title.textContent(), `AC${hostileProjectName}`);
                   assert.equal(await title.locator('span').last().textContent(), hostileProjectName);
                   assert.equal(await title.getAttribute('title'), hostileProjectName);

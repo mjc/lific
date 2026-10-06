@@ -29,7 +29,7 @@ impl OptionRow {
     }
 }
 
-pub(super) fn initials(label: &str) -> String {
+pub(crate) fn initials(label: &str) -> String {
     // The original /[\s_-]+/ split collapses each separator run, while a
     // leading run still consumes the first of the two initial positions.
     let separator = |character: char| {

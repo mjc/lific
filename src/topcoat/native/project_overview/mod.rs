@@ -4,7 +4,7 @@ mod archive;
 mod collation;
 mod controls;
 mod danger;
-mod dates;
+pub(super) mod dates;
 mod export;
 mod import;
 mod import_model;
@@ -31,6 +31,7 @@ use topcoat::{
 };
 
 pub(crate) use management_store::ManagementStore;
+pub(super) use select::initials;
 
 pub(crate) const STYLESHEET: &str = include_str!("overview.css");
 

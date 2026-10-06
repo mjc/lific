@@ -54,7 +54,7 @@ test(`native common owner ${scenario}; auth ${seed.auth_required?'required':'opt
     try{
       const currentToken=(scenario==='held'||scenario==='redirect')?(await control('renew')).token:token;await cookie(context,proxy.origin,currentToken);
       if(kind==='foreign_pop')await context.addInitScript(()=>{const original=history.go;history.go=function(delta){if(window.holdNativeHistoryTraversal){window.heldNativeHistoryDelta=Number(delta);return;}return original.call(this,delta);};});
-      if(scenario==='scroll')await context.addInitScript(()=>{window.sidebarScrollCalls=[];const original=Element.prototype.scrollIntoView;Element.prototype.scrollIntoView=function(options){const id=this.getAttribute('data-sidebar-project');if(id)window.sidebarScrollCalls.push({id,options});return original.call(this,options);};});
+      if(scenario==='scroll')await context.addInitScript(()=>{window.sidebarScrollCalls=[];const original=Element.prototype.scrollIntoView;Element.prototype.scrollIntoView=function(options){const id=this.getAttribute('data-ns-link');if(id)window.sidebarScrollCalls.push({id,options});return original.call(this,options);};});
       if(scenario==='notice')await context.addInitScript(()=>{const send=WebSocket.prototype.send;window.noticePaletteSockets=[];WebSocket.prototype.send=function(value){if(new URL(this.url).pathname.endsWith('/__native_home/palette')&&!window.noticePaletteSockets.includes(this))window.noticePaletteSockets.push(this);return send.call(this,value);};});
       const page=await context.newPage();page.setDefaultTimeout(5000);const seen=observations(page),responses=[],consoleErrors=[];
       page.on('response',response=>responses.push({url:response.url(),method:response.request().method(),status:response.status(),location:response.headers().location,from:response.request().redirectedFrom()?.url()}));
@@ -178,13 +178,13 @@ test(`native common owner ${scenario}; auth ${seed.auth_required?'required':'opt
           assert.equal(await page.getByText('Visible active initial work',{exact:true}).count(),0);assert.equal(await page.getByText('One',{exact:true}).count(),0);assert.ok(seen.requests.filter(r=>r.type==='document').length>documents,'A replacement account starts a genuine fresh document owner.');
         }
       }else if(kind==='scroll'){
-        const aside=page.getByRole('complementary',{name:'Workspace sidebar',exact:true}),nav=aside.locator('nav'),target=aside.locator(`a[data-sidebar-project="${seed.far[44]}"]`);
+        const aside=page.getByRole('complementary',{name:'Workspace sidebar',exact:true}),nav=aside.locator('nav'),target=aside.locator(`a[data-ns-link="${seed.far[44]}"]`);
         // Observe genuine large-catalog bootstrap completion, then retain the
         // original independent 150+150ms idle predicate unchanged.
         await adopted(page,seen,'Actual 45-row native bootstrap adoption');
-        assert.equal(await aside.locator('[data-native-sidebar-project]').count(),45);const navBox=await nav.boundingBox();assert.ok((await target.boundingBox()).y>navBox.y+navBox.height);assert.equal(await nav.evaluate(n=>n.scrollTop),0);
+        assert.equal(await aside.locator('[data-ns-project]').count(),45);const navBox=await nav.boundingBox();assert.ok((await target.boundingBox()).y>navBox.y+navBox.height);assert.equal(await nav.evaluate(n=>n.scrollTop),0);
         await jump(page,'Project 45');await overview(page,proxy.origin,prefix,'P45');
-        await attr(target,'aria-current','page');await attr(aside.locator(`#project-nav-${seed.far[44]}`),'hidden',null);
+        await attr(target,'aria-current','page');await attr(aside.locator(`#ns-nav-${seed.far[44]}`),'hidden',null);
         await adopted(page,seen,'Actual route and reveal adoption');const box=await target.boundingBox();
         assert.ok(box.y>=navBox.y&&box.y+box.height<=navBox.y+navBox.height+1,'Route entry scrolls the actual row into view.');assert.ok(Math.abs(box.y+box.height-navBox.y-navBox.height)<=2,'Nearest scroll aligns the row to the lower edge.');
         assert.deepEqual(await page.evaluate(()=>window.sidebarScrollCalls),[{id:String(seed.far[44]),options:{block:'nearest'}}]);

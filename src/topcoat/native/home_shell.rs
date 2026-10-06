@@ -1462,6 +1462,8 @@ pub(crate) fn handler_source() -> &'static str {
         source.push_str(&super::handler_asset::source_named("homeRefresh", super::home_refresh::handler_factory()));
         source.push_str(&super::handler_asset::source_named("accountFocus", super::session::account_handler_factory()));
         source.push_str(&super::handler_asset::source_named("mobileDispatch", mobile_dispatch_factory()));
+        source.push_str(&super::handler_asset::source_named("sessionStorage", super::session::handler_factory()));
+        source.push_str(&super::handler_asset::source_named("motion", super::motion::handler_factory()));
         source
     })
 }

@@ -118,6 +118,9 @@ mod topcoat_app {
             Some(NativeRoute::ProjectOverview) => {
                 super::topcoat_frontend::native::project_overview::screen(cx, &route)
             }
+            Some(NativeRoute::Insights) => {
+                super::topcoat_frontend::native::insights::screen(cx, &route)
+            }
             None => Err(topcoat::router::error::not_found().into()),
         }
     }
@@ -214,6 +217,16 @@ mod topcoat_app {
             .header("cache-control", "no-cache")
             .body(topcoat::router::Body::from(
                 super::topcoat_frontend::assets::runtime_source(),
+            ))?)
+    }
+
+    #[route(GET "/__native_error/mascot.png")]
+    async fn error_mascot() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "image/png")
+            .header("cache-control", "public, max-age=86400")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::native::error_state::MASCOT.to_vec(),
             ))?)
     }
 
@@ -389,7 +402,6 @@ mod topcoat_app_tests {
             "/LIF/plans",
             "/LIF/modules",
             "/LIF/activity",
-            "/LIF/insights",
             "/LIF/graph",
             "/public/LIF/issues",
         ] {

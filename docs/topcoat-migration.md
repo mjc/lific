@@ -8,18 +8,21 @@ than frontend REST calls.
 ## Current implementation
 
 Home, the shared workspace/sidebar, query-free issue lists and boards, issue
-editing, project creation, and Project Overview have native implementations.
+editing, project creation, Project Overview, and project Insights have native
+implementations.
+
 The intermediate JavaScript frontend is deleted, including controllers,
 frontend API clients, vendor libraries used by those controllers, generated
 controller fixtures, and dormant Rust screen scaffolds. The only production
-JavaScript asset is Topcoat's framework runtime.
+JavaScript assets are Topcoat's framework runtime and Rust-generated bindings.
 
 ## Unfinished features
 
 Login/signup, settings, archive import, issue creation, filtered issue lists and
-boards, pages, files, plans, modules, analytics, and public readers have no
-intermediate fallback. Their canonical routes return404 until native ports are
-implemented. Existing backend REST/MCP interfaces remain available. The user
+boards, pages, files, plans, modules, project activity, dependency graphs, and
+public readers have no intermediate fallback. Their canonical routes return 404
+until native ports are implemented. Existing backend REST/MCP interfaces remain
+available. The user
 accepted unfinished features staying broken while the native build compiles.
 
 Each feature must still match main's behavior, text, visual layout, permissions,

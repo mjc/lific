@@ -113,7 +113,7 @@ fn encode_action_arguments(mode: &str, command: &str, id: i64, value: &str) -> S
 fn row_action(cx: &Cx, mode: &str, command: &str, id: i64, value: &str, event: &str) -> Attributes {
     let encoded = encode_action_arguments(mode, command, id, value);
     let mut attributes = Attributes::with_capacity(1);
-    attributes.insert(cx, format!("data-native-sidebar-event-{event}"), encoded);
+    attributes.insert(cx, format!("data-ns-{event}"), encoded);
     attributes
 }
 
@@ -450,7 +450,7 @@ pub(super) fn handler_source() -> &'static str {
                 raw!(r#"const root=document.getElementById(${_owner}.toString())?.closest('.native-home-shell');
                     if(!root)return;
                     const dispatch=event=>{
-                        const attribute='data-native-sidebar-event-'+event.type;
+                        const attribute='data-ns-'+event.type;
                         const target=event.target instanceof Element?event.target:event.target?.parentElement;
                         const node=target?.closest('['+attribute+']');
                         if(!node||!root.contains(node)||node.closest('.native-home-shell')!==root)return;
@@ -727,10 +727,7 @@ mod action_encoding_tests {
                 .select(&scraper::Selector::parse("button").unwrap())
                 .next()
                 .unwrap();
-            let metadata = button
-                .value()
-                .attr(&format!("data-native-sidebar-event-{event}"))
-                .unwrap();
+            let metadata = button.value().attr(&format!("data-ns-{event}")).unwrap();
             assert_eq!(metadata, format!("{mode}:{command}:9223372036854775807"));
             assert!(!html.contains("&quot;"), "Repeated action metadata: {html}");
         }
@@ -745,10 +742,7 @@ mod action_encoding_tests {
             .select(&scraper::Selector::parse("button").unwrap())
             .next()
             .unwrap();
-        let metadata = button
-            .value()
-            .attr("data-native-sidebar-event-submit")
-            .unwrap();
+        let metadata = button.value().attr("data-ns-submit").unwrap();
         assert_eq!(
             serde_json::from_str::<(String, String, String, String)>(metadata).unwrap(),
             (

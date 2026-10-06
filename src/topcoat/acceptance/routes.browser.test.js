@@ -93,7 +93,11 @@ test('real server loads every private route family through a stripping proxy',
           assert.equal(await root.locator('[data-plan-title]').inputValue(), fixture.plan.title);
         }],
         [`/${project}/activity`, '[data-topcoat-analytics="activity"]', root => contains(root.locator('[data-analytics-content]'), 'Activity')],
-        [`/${project}/insights`, '[data-topcoat-analytics="insights"]', root => contains(root.locator('[data-analytics-content]'), 'Insights')],
+        [`/${project}/insights`, '[data-topcoat-analytics="insights"]', async root => {
+          await contains(page.locator('.native-insights__breadcrumb'), 'Insights');
+          await contains(root, 'Created vs. closed');
+          assert.equal(await root.locator('svg[aria-label="Issues created vs closed per week"]').count(), 1);
+        }, true],
         [`/${project}/graph`, '[data-topcoat-analytics="graph"]', root => contains(root.locator('[data-analytics-content]'), 'Dependency graph')],
       ];
       for (const [route, selector, check, native = false] of routes) {
