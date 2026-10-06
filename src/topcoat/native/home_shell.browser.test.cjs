@@ -125,6 +125,15 @@ test(`native Home original shell: ${scenario}`, async t => {
             assert.equal((await page.goto(`${proxy.origin}${prefix}/`)).status(), 200);
             await page.locator('[data-native-home-connected="true"]').first().waitFor();
             await page.getByText('Visible active initial work', {exact: true}).waitFor();
+            await page.waitForFunction(selector=>{
+              const icon=document.querySelector(selector);
+              return icon && icon.getBBox().width>0 && icon.getBBox().height>0;
+            },mode==='desktop'?'#native-home-collapse svg use':'#native-home-mobile-open svg use');
+            const iconRequests=requests.filter(url=>new URL(url).pathname.includes('/__native_icons/'));
+            assert.equal(new Set(iconRequests).size,iconRequests.length,
+              'Repeated icon instances share one browser asset request.');
+            assert.equal(await page.locator('[data-native-sidebar-layout="phone"]').count(),0,
+              'Hydrated unopened Home does not eagerly request or render the phone project tree.');
 
             // Resolve the real catalog ID from the mounted overview link. Both
             // shared sidebar layouts expose that same ID on their native rows.
@@ -224,7 +233,9 @@ test(`native Home original shell: ${scenario}`, async t => {
               assert.equal(await nav.isVisible(), true);
               const rect = await nav.boundingBox();
               assert.deepEqual([rect.x, rect.y, rect.width, rect.height], [0, 0, viewport.width, viewport.height]);
-              await (await phoneProject(nav)).click();
+              const phoneRow=await phoneProject(nav);
+              await phoneRow.evaluate(node=>{window.retainedNativePhoneRow=node;});
+              await phoneRow.click();
               assert.equal(await nav.locator('[data-native-mobile-root]').isVisible(), false);
               await nav.locator('[data-native-mobile-project]:not([hidden])').waitFor({state: 'visible'});
               assert.deepEqual(await nav.locator('[data-native-mobile-project]').getByRole('link').allTextContents(), destinations);
@@ -236,6 +247,11 @@ test(`native Home original shell: ${scenario}`, async t => {
               await page.waitForFunction(() => document.getElementById('native-home-mobile-open') === document.activeElement);
               assert.equal(await nav.isVisible(), false);
               assert.equal(await open.evaluate(element => element === document.activeElement), true);
+              await open.click();
+              await nav.waitFor({state:'visible'});
+              assert.equal(await (await phoneProject(nav)).evaluate(node=>node===window.retainedNativePhoneRow),true,
+                'Reopening navigation keeps the initialized project row.');
+              await page.keyboard.press('Escape');await nav.waitFor({state:'hidden'});
             } else if (scenario === 'mobile_lifetime') {
               const current = page.url();
               const open = page.getByRole('button', {name: 'Open navigation', exact: true});

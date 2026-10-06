@@ -90,7 +90,8 @@ impl Sidebar {
         let model = self.signals.model.clone();
         let revision = self.signals.revision.clone();
         let recents = self.recents.handles();
-        view! {cx => native_sidebar_phone(account:account, wire:$(model.get()), path:$(path.get()), revision:$(revision.get()), handles:handles, navigation:navigation,recents:recents)}.boxed()
+        let initialized = navigation.7.clone();
+        view! {cx => native_sidebar_phone(account:account, wire:$(model.get()), path:$(path.get()), revision:$(revision.get()), handles:handles, navigation:navigation,recents:recents, initialized:$(initialized.get()))}.boxed()
     }
     pub(crate) fn phone_panels<'a>(
         &self,
@@ -274,29 +275,38 @@ mod phone_shard {
         handles: state::Handles,
         navigation: home_shell::MobileNavigationSignals,
         recents: recents_state::Handles,
+        initialized: bool,
     ) -> topcoat::Result<impl View> {
         let _ = revision;
         let model = projection(cx, account, &wire)?;
         let signals = state::Signals::from_handles(account, handles);
         let navigation = home_shell::MobileNavigation::from_handles(navigation);
-        let restore = state::restore_region_focus(
-            cx,
-            &signals,
-            wire,
-            "phone".to_owned(),
-            model.edit.is_none(),
-        );
-        let projects = view::projects(
-            cx,
-            &model,
-            &signals,
-            &path,
-            view::Layout::Phone,
-            &|identifier| {
-                home_shell::mobile_action(cx, &navigation, "project", identifier.to_owned())
-            },
-            &recents_state::Signals::from_handles(account, recents),
-        );
+        let restore = if initialized {
+            state::restore_region_focus(
+                cx,
+                &signals,
+                wire,
+                "phone".to_owned(),
+                model.edit.is_none(),
+            )
+        } else {
+            Attributes::with_capacity(0)
+        };
+        let projects = if initialized {
+            view::projects(
+                cx,
+                &model,
+                &signals,
+                &path,
+                view::Layout::Phone,
+                &|identifier| {
+                    home_shell::mobile_action(cx, &navigation, "project", identifier.to_owned())
+                },
+                &recents_state::Signals::from_handles(account, recents),
+            )
+        } else {
+            view! {cx=>}.boxed()
+        };
         Ok(view! {cx => <span hidden="hidden" (restore)></span>(projects)}.boxed())
     }
 }
@@ -365,7 +375,7 @@ mod phone_panels_shard {
         let current_wire = signals.model;
         let menu = signals.menu_kind;
         let navigation = home_shell::MobileNavigation::from_handles(navigation);
-        let (open, pane, current_selected, _, _, pending_palette, _) = navigation.handles();
+        let (open, pane, current_selected, _, _, pending_palette, _, _) = navigation.handles();
         let mounted = expr!(|_event: Event| {
             let _focus = || {
                 if !raw!("cx.hydrate(cx.abortSignal.aborted)", false) {

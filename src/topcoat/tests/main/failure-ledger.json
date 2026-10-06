@@ -1,6 +1,6 @@
 {
   "baseline": "9683d38af8e1e6f9b076439fe90d9519109b2218",
-  "checkpoint": "Intermediate application-wide frontend purge; older suite results below are historical.",
+  "checkpoint": "Native Home payload reduction after the intermediate frontend purge; earlier runs remain historical.",
   "status": "Native code builds; original48source mappings retained. Unported features and native adapter coverage remain incomplete.",
   "notes": [
     "Native test counts include aggregate parents; failed_assertions excludes suite/aggregate duplicates.",
@@ -2627,5 +2627,45 @@
       "frontend_rest_requests": 0,
       "headless": true
     }
+  },
+  "native_home_payload_reduction": {
+    "scope": "Lazy native navigation and shared icon geometry/presentation; unfinished feature and adapter gaps remain open.",
+    "measurement": {
+      "projects": 45,
+      "document_bytes_before": 585079,
+      "document_bytes_after": 283352,
+      "unique_icon_requests": 16,
+      "icon_bytes": 3123,
+      "frontend_rest_requests": 0,
+      "phone_project_rows_before_first_open": 0,
+      "inline_svg_style": null,
+      "source": "Actual production executable and headless Chromium fixture; these are fixture sizes, not a measurement of an operator's database."
+    },
+    "red_evidence": [
+      "The tightened 45-project payload/disclosure regression failed before lazy rendering.",
+      "Selected-asset references and shared presentation class assertions failed before the icon changes.",
+      "Holding the production initial-focus frame failed all six desktop/phone mounted cases before preserving the newer focus choice."
+    ],
+    "workspace": {
+      "command": "cargo nextest run --workspace --all-targets --locked --run-ignored all --test-threads 4 --no-fail-fast",
+      "tests": 3388,
+      "passed": 3386,
+      "failed": 2,
+      "skipped": 0,
+      "failures": "Two retained tests expected the removed login fallback. Their fixture/route expectations were corrected; production code was unchanged after this run."
+    },
+    "corrected_cases": {
+      "tests": 2,
+      "passed": 2,
+      "failed": 0,
+      "cases": [
+        "native_rendering_mounts_documents_and_ignores_untrusted_headers",
+        "native_session_expired_post_uses_303_and_get_keeps_307_across_auth_and_mounts"
+      ],
+      "contracts": "Authenticated native Home replaces the absent login document in mount checks. POST303, GET307, exact mounted destinations, redirect method conversion, proxy trust, and API boundaries remain asserted."
+    },
+    "browser_evidence": "Original desktop/phone light/dark shell comparisons, issue-detail geometry, shared-icon painting, project disclosure independence, retained phone rows, and group Cancel focus pass through actual native procedures and sockets.",
+    "documentation": "cargo doc --workspace --no-deps --locked passes; the binary-only workspace has no library doctest targets.",
+    "remaining_coverage": "The earlier missing native adapters and unported routes are still gaps. Passing the Rust workspace does not close them."
   }
 }

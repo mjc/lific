@@ -94,8 +94,12 @@ fn project_row<'a>(
             let disclosure = format!("{} {name}", if open { "Collapse" } else { "Expand" });
             let panel = format!("project-nav-{id}");
             let toggle = state::invoke(cx, signals, "toggle_project", id, String::new(), "click");
-            let links = destinations(cx, project, path, layout);
-            let recent = super::recents_view::slot(cx, recents, project, path, layout);
+            let contents = open.then(|| {
+                (
+                    destinations(cx, project, path, layout),
+                    super::recents_view::slot(cx, recents, project, path, layout),
+                )
+            });
             let overview = transport::mounted_url(cx, &format!("/{identifier}/overview"));
             let overview_active = path.eq_ignore_ascii_case(&format!("/{identifier}/overview"));
             view!{cx=><div data-native-sidebar-project=(id.to_string())>
@@ -104,7 +108,7 @@ fn project_row<'a>(
                     <a id=(format!("native-sidebar-project-link-{id}")) href=(overview) data-sidebar-project=(id.to_string()) title=(name.clone()) aria-current=(overview_active.then_some("page")) class="sidebar-project-link native-sidebar-project-link" (context_menu) (keyboard_menu)><span class="sidebar-project-icon">(icon)</span><span>(name.clone())</span></a>
                     <button id=(trigger) class="sidebar-overflow native-sidebar-overflow" aria-label=(actions) aria-haspopup="menu" (menu)>(icons::project_icon(cx,Some("lucide:Ellipsis"),15))</button>
                 </div>
-                <div id=(panel) hidden=(!open) class="project-subnav">(links)(recent)</div>
+                <div id=(panel) hidden=(!open) class="project-subnav">if let Some((links,recent))=contents{(links)(recent)}</div>
             </div>}.boxed()
         }
         Layout::Phone => {

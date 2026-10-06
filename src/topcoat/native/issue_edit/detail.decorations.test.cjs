@@ -1,6 +1,7 @@
 // The original and native views consume the same production database.
 // node <driver> <fixture-origin> <token> <browser-helper> <pinned-master-web>
 const {test} = require('node:test');
+const {inspectSvg} = require('../svg_geometry_fixture.cjs');
 const {installOriginalFonts, captureOriginalFonts} = require('../original_fonts_fixture.cjs');
 const {prepareOriginalVite, closeOriginalVite} = require('../original_vite_fixture.cjs');
 const assert = require('node:assert/strict');
@@ -76,13 +77,7 @@ test('native issue decorations match pinned master at every mount',async t=>{
           const color=locator=>locator.evaluate(element=>getComputedStyle(element).color);
           const icon=async locator=>{
             assert.equal(await locator.count(),1,'The actual value has one decorative SVG.');
-            return locator.evaluate(svg=>{
-              const rect=svg.getBoundingClientRect(),style=getComputedStyle(svg);
-              return {width:rect.width,height:rect.height,color:style.color,
-                viewBox:svg.getAttribute('viewBox'),stroke:svg.getAttribute('stroke'),strokeWidth:svg.getAttribute('stroke-width'),
-                shape:[...svg.children].map(node=>({tag:node.localName,attributes:Object.fromEntries([...node.attributes]
-                  .filter(attribute=>!['class','style'].includes(attribute.name)).map(attribute=>[attribute.name,attribute.value]))}))};
-            });
+            return locator.evaluate(inspectSvg);
           };
           const decoratedIcon = async (value, nativeView) => {
             const glyph = value.locator(nativeView ? '.native-issue-detail__decoration svg:visible' : 'svg:visible');
