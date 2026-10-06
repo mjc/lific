@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const {tmpdir} = require('node:os');
-const {execFileSync} = require('node:child_process');
+const {assertOriginalSources} = require('../original_source_fixture.cjs');
 const {pathToFileURL} = require('node:url');
 const {launchBrowser, mountedProxy, settleScroll} = require('../browser_fixture.cjs');
 const {installOriginalFonts} = require('../original_fonts_fixture.cjs');
@@ -41,7 +41,7 @@ async function session(browser, url, viewport, theme, native) {
 
 test('native Insights matches Main cards, week selection and hovered chart without frontend API requests',async()=>{
   assert.ok(snapshot,'Pinned Main reference directory is required');
-  for (const file of ['src/routes/Insights.svelte','src/lib/insights/TrendChart.svelte','src/lib/insights/DistributionList.svelte','src/lib/insights/ActorList.svelte','src/lib/insights/curve.ts']) assert.deepEqual(fs.readFileSync(path.join(snapshot,file)),execFileSync('git',['show',`9683d38af8e1e6f9b076439fe90d9519109b2218:web/${file}`]),`Unmodified Main ${file}`);
+  assertOriginalSources(snapshot, ['src/routes/Insights.svelte','src/lib/insights/TrendChart.svelte','src/lib/insights/DistributionList.svelte','src/lib/insights/ActorList.svelte','src/lib/insights/curve.ts']);
   fs.mkdirSync(output,{recursive:true});
   const {createServer}=await import(pathToFileURL(path.join(snapshot,'node_modules/vite/dist/node/index.js')).href);
   const cache=fs.mkdtempSync(path.join(tmpdir(),'lific-insights-vite-'));

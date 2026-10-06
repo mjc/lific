@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const {tmpdir} = require('node:os');
-const {execFileSync} = require('node:child_process');
+const {originalHead: referenceHead, assertOriginalSources} = require('../original_source_fixture.cjs');
 const {pathToFileURL} = require('node:url');
 const {installOriginalFonts, captureOriginalFonts} = require('../original_fonts_fixture.cjs');
 const {prepareOriginalVite, closeOriginalVite} = require('../original_vite_fixture.cjs');
@@ -73,11 +73,8 @@ async function contextFor(browser, url, viewport, theme, native) {
 
 test('native ProjectNew matches actual pinned master form and controls on desktop and mobile in both themes',async t=>{
   assert.ok(snapshot,'Pinned master web directory is mandatory.');
-  const referenceHead='9683d38af8e1e6f9b076439fe90d9519109b2218';
-  const referenceRoot=fs.existsSync(path.join(path.dirname(snapshot),'.git'))?path.dirname(snapshot):process.cwd();
   const referenceFiles=['src/routes/ProjectNew.svelte','src/lib/ProjectForm.svelte','src/lib/Select.svelte','src/lib/IconPicker.svelte'];
-  for (const file of referenceFiles) assert.deepEqual(fs.readFileSync(path.join(snapshot,file)),
-    execFileSync('git',['-C',referenceRoot,'show',`${referenceHead}:web/${file}`]),`Pinned source is unchanged: ${file}`);
+  assertOriginalSources(snapshot, referenceFiles);
   fs.mkdirSync(output,{recursive:true});
   const browser=await launchBrowser();let vite,cache;
   const sockets=new Set(), report=[];

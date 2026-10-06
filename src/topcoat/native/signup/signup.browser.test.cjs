@@ -5,12 +5,11 @@ const fs = require('node:fs');
 const path = require('node:path');
 const {tmpdir} = require('node:os');
 const {pathToFileURL} = require('node:url');
-const {execFileSync} = require('node:child_process');
+const {assertOriginalSources} = require('../original_source_fixture.cjs');
 const {launchBrowser, mountedProxy, settleScroll} = require('../browser_fixture.cjs');
 const {installOriginalFonts} = require('../original_fonts_fixture.cjs');
 const {prepareOriginalVite, closeOriginalVite} = require('../original_vite_fixture.cjs');
 const [origin, token, snapshot, freshOrigin, closedOrigin, openOriginsJson] = process.argv.slice(2);
-const pinned = '9683d38af8e1e6f9b076439fe90d9519109b2218';
 const output = path.join(tmpdir(), 'lific-native-signup-browser');
 
 async function session(browser, url, viewport, theme, original, title = 'Create your account.', backend = origin, systemColor = theme) {
@@ -200,7 +199,7 @@ function compareMeasurements(actual,expected,name) {
 
 test('Signup matches pinned Main across mounts, desktop/mobile and both themes, then creates a real mounted session',async()=>{
   assert.ok(origin&&snapshot,'Production origin and pinned Main web directory are required.');
-  for(const file of ['src/routes/Signup.svelte','src/lib/AuthShell.svelte','src/lib/Mascot.svelte'])assert.deepEqual(fs.readFileSync(path.join(snapshot,file)),execFileSync('git',['show',`${pinned}:web/${file}`]));
+  assertOriginalSources(snapshot, ['src/routes/Signup.svelte','src/lib/AuthShell.svelte','src/lib/Mascot.svelte']);
   fs.mkdirSync(output,{recursive:true});
   const cache=fs.mkdtempSync(path.join(tmpdir(),'lific-signup-vite-'));
   const {createServer}=await import(pathToFileURL(path.join(snapshot,'node_modules/vite/dist/node/index.js')).href);
