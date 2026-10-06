@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const {mountedProxy, launchBrowser} = require('./browser_fixture.cjs');
+const {inspectSvg} = require('./svg_geometry_fixture.cjs');
 
 const upstream = new URL(process.argv[2]);
 const token = process.argv[3];
@@ -53,34 +54,40 @@ test(`production native Home ${scenario}`, async t => {
         if (scenario === 'preloads') {
           const hints = [...((await response.headers()).link || '').matchAll(/<([^>]+)>; rel=preload; as=image/g)]
             .map(match => match[1]);
-          assert.ok(hints.some(url => url.endsWith('/ui.svg')));
-          assert.ok(hints.includes(`${prefix}/logo.webp`));
-          assert.equal(new Set(hints).size, hints.length);
+          assert.deepEqual(hints, [`${prefix}/logo.webp`]);
           for (const url of hints) {
             const downloads = proxy.requests.filter(request => request.path === url);
             assert.equal(downloads.length, 1, `One actual download for preloaded ${url}`);
           }
           for (const name of ['Circle', 'CircleDot']) {
-            const uses = page.locator(`svg.native-icon > use[href$="/ui.svg#${name}"]`);
-            assert.ok(await uses.count() > 0);
+            const icons = page.locator(`svg.native-icon[data-icon="${name}"]`);
+            assert.ok(await icons.count() > 0);
             await page.waitForFunction(name => {
-              const use = document.querySelector(`svg.native-icon > use[href$="/ui.svg#${name}"]`);
-              const box = use?.getBBox();
-              return box?.width === 20 && box?.height === 20;
+              const icon = document.querySelector(`svg.native-icon[data-icon="${name}"]`);
+              return icon && getComputedStyle(icon).maskImage.startsWith('url("data:image/svg+xml,');
             }, name);
-            const paint = await uses.first().evaluate(use => {
-              const style = getComputedStyle(use);
-              return {fill: style.fill, stroke: style.stroke, width: style.strokeWidth};
-            });
-            assert.equal(paint.fill, 'none');
+            const paint = await icons.first().evaluate(inspectSvg);
+            assert.ok(paint.width > 0 && paint.height > 0);
+            assert.equal(paint.viewBox, '0 0 24 24');
             assert.notEqual(paint.stroke, 'none');
-            assert.equal(paint.width, '2px');
+            assert.equal(paint.strokeWidth, '2px');
+            const circles = [{tag: 'circle', attributes: {cx: '12', cy: '12', r: '10'}}];
+            if (name === 'CircleDot') circles.push({tag: 'circle', attributes: {cx: '12', cy: '12', r: '1'}});
+            assert.deepEqual(paint.shape, circles);
           }
           const timings = await page.evaluate(() => performance.getEntriesByType('resource')
-            .filter(entry => new URL(entry.name).pathname.endsWith('/ui.svg'))
+            .filter(entry => new URL(entry.name).pathname.endsWith('/logo.webp'))
             .map(entry => ({url: entry.name, initiator: entry.initiatorType, transfer: entry.transferSize})));
           assert.ok(timings.some(entry => entry.initiator === 'link' && entry.transfer > 0),
-            `Browser starts the actual SVG download from the response header: ${JSON.stringify(timings)}`);
+            `Browser starts the actual logo download from the response header: ${JSON.stringify(timings)}`);
+          await page.reload();
+          await page.locator('[data-native-home-connected="true"]').first().waitFor();
+          await page.locator('svg.native-icon[data-icon="Circle"]').first().evaluate(inspectSvg);
+          assert.equal(await page.locator('svg.native-icon > use').count(), 0);
+          assert.deepEqual(requests.filter(url => new URL(url).pathname.includes('/__native_icons/')), [],
+            'Native icons make no external SVG requests before or after reload.');
+          assert.deepEqual(proxy.requests.filter(request => request.path.includes('/__native_icons/')), [],
+            'The production origin serves no external icon assets before or after reload.');
         } else if (scenario === 'accessibility') {
           const skip = page.locator('a[href="#main-content"]');
           assert.equal(await skip.count(), 1, 'Native Home exposes one skip link.');

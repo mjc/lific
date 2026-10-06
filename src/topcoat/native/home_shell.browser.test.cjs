@@ -8,6 +8,7 @@ const path = require('node:path');
 const {pathToFileURL} = require('node:url');
 const {tmpdir} = require('node:os');
 const {mountedProxy, launchBrowser} = require('./browser_fixture.cjs');
+const {inspectSvg} = require('./svg_geometry_fixture.cjs');
 
 const upstream = new URL(process.argv[2]), token = process.argv[3], scenario = process.argv[4];
 const snapshot = process.argv[5];
@@ -108,11 +109,6 @@ test(`native Home original shell: ${scenario}`, async t => {
               globalThis.__nativeProjectInjected = false;
             }, theme);
             context.on('request', request => requests.push(request.url()));
-            const maskDownloads = ['ChevronRight', 'Ellipsis'].map(name => new Promise(resolve => {
-              context.on('requestfinished', request => {
-                if (new URL(request.url()).pathname.endsWith(`/${name}.mask.svg`)) resolve();
-              });
-            }));
             context.on('requestfailed', request => networkFailures.push({url: request.url(), error: request.failure()?.errorText}));
             page = await context.newPage();
             page.setDefaultTimeout(7000);
@@ -132,36 +128,33 @@ test(`native Home original shell: ${scenario}`, async t => {
             await page.getByText('Visible active initial work', {exact: true}).waitFor();
             await page.waitForFunction(selector=>{
               const icon=document.querySelector(selector);
-              return icon && icon.getBBox().width>0 && icon.getBBox().height>0;
-            },mode==='desktop'?'#native-home-collapse svg use':'#native-home-mobile-open svg use');
+              return icon && icon.getBBox().width>0 && icon.getBBox().height>0
+                && getComputedStyle(icon).maskImage.includes('data:image/svg+xml,');
+            },mode==='desktop'?'#native-home-collapse svg.native-icon[data-icon]':'#native-home-mobile-open svg.native-icon[data-icon]');
             if (mode === 'desktop') {
-              await Promise.all(maskDownloads);
               await page.waitForFunction(() => ['.ns-project-toggle', '.ns-overflow'].every(selector => {
                 const control = document.querySelector(`.native-home-sidebar ${selector}`);
                 if (!control) return false;
                 const style = getComputedStyle(control, '::before');
-                const name = selector === '.ns-project-toggle' ? 'ChevronRight' : 'Ellipsis';
                 return parseFloat(style.width) > 0 && parseFloat(style.height) > 0 && style.maskSize === 'contain'
                   && style.backgroundColor === style.color
-                  && style.maskImage.includes(`${name}.mask.svg`);
+                  && style.maskImage.includes('data:image/svg+xml,');
               }));
               for (const [selector, name, size] of [['.ns-project-toggle', 'ChevronRight', 13], ['.ns-overflow', 'Ellipsis', 15]]) {
                 const control = page.locator(`.native-home-sidebar ${selector}`).first();
-                const style = await control.evaluate(element => {
-                  const style = getComputedStyle(element, '::before');
-                  return {mask: style.maskImage, width: parseFloat(style.width), height: parseFloat(style.height)};
-                });
-                assert.ok(style.mask.includes(`${proxy.origin}${prefix}/__native_icons/`) && style.mask.endsWith(`/${name}.mask.svg")`));
-                assert.equal(style.width, size);
-                assert.equal(style.height, size);
+                const paint = await control.evaluate(inspectSvg, '::before');
+                assert.equal(paint.width, size);
+                assert.equal(paint.height, size);
+                assert.equal(paint.viewBox, '0 0 24 24');
+                const shape = name === 'ChevronRight'
+                  ? [{tag: 'path', attributes: {d: 'm9 18 6-6-6-6'}}]
+                  : [12, 19, 5].map(cx => ({tag: 'circle', attributes: {cx: `${cx}`, cy: '12', r: '1'}}));
+                assert.deepEqual(paint.shape, shape, `${name} pseudo-element paints its original geometry.`);
                 assert.equal(await control.locator(':scope > :is(svg,.native-icon-mask)').count(), 0);
               }
             }
-            // Browser request events also include cached consumption after preload.
-            const iconRequests=proxy.requests.filter(request=>request.path.includes('/__native_icons/'))
-              .map(request=>request.path);
-            assert.equal(new Set(iconRequests).size,iconRequests.length,
-              'Repeated icon instances share one actual server download.');
+            assert.deepEqual(proxy.requests.filter(request => request.path.includes('/__native_icons/')), [],
+              'Initial native icons and sidebar masks make no external SVG requests.');
             assert.equal(await page.locator('[data-native-sidebar-layout="phone"]').count(),0,
               'Hydrated unopened Home does not eagerly request or render the phone project tree.');
 
@@ -496,6 +489,9 @@ test(`native Home original shell: ${scenario}`, async t => {
               await page.getByRole('button', {name: 'Choose theme, current: dark', exact: true}).waitFor();
             }
             assert.equal(requests.some(url => new URL(url).pathname.split('/').includes('api')), false, 'Native shell state and preferences never call REST.');
+            assert.deepEqual(requests.filter(url => new URL(url).pathname.includes('/__native_icons/')), [],
+              'Native shell interactions and reloads make no external SVG requests.');
+            assert.deepEqual(proxy.requests.filter(request => request.path.includes('/__native_icons/')), []);
             assert.deepEqual(errors, []);
           } finally {
             try {if (page) await evidence(page, proxy, name, requests, errors, networkFailures);}

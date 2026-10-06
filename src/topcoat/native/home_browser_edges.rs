@@ -28,7 +28,7 @@ async fn browser(fixture: &Fixture, scenario: &str) {
 }
 
 #[tokio::test]
-async fn native_home_browser_preloads_share_downloads_with_external_svg_references() {
+async fn native_home_browser_preloads_logo_without_external_icon_requests() {
     browser(&home_fixture::fixture(), "preloads").await;
 }
 
