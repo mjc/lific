@@ -24,7 +24,7 @@ it("sends argument arrays for empty, unit, and multiple arguments", async () => 
 		await procedure.call(...args);
 		expect(fetch).toHaveBeenLastCalledWith(
 			"/api/example",
-			expect.objectContaining({ method: "POST", body }),
+			expect.objectContaining({ method: "POST", body, redirect: "manual" }),
 		);
 	}
 });
@@ -48,12 +48,12 @@ it("keepalive preserves procedure argument framing, hydration, and lazy single e
 		await future;
 		expect(fetch).toHaveBeenCalledTimes(count + 1);
 		expect(fetch).toHaveBeenLastCalledWith("/app/native/example", {
-			method: "POST", headers: { "Content-Type": "application/json" }, body, keepalive: true,
+			method: "POST", headers: { "Content-Type": "application/json" }, body, redirect: "manual", keepalive: true,
 		});
 	}
 	await procedure.call(new RuntimeString("ordinary"));
 	expect(fetch).toHaveBeenLastCalledWith("/app/native/example", {
-		method: "POST", headers: { "Content-Type": "application/json" }, body: '["ordinary"]',
+		method: "POST", headers: { "Content-Type": "application/json" }, body: '["ordinary"]', redirect: "manual",
 	});
 });
 
@@ -69,6 +69,23 @@ it("keepalive rejects unsuccessful responses once without decoding or retrying",
 	expect(json).not.toHaveBeenCalled();
 });
 
+it("ordinary and keepalive procedures refuse redirects before decoding unrelated HTML", async () => {
+	for (const keepalive of [false, true]) {
+		const response = new Response("login document", { status: 303, statusText: "See Other" });
+		const json = vi.spyOn(response, "json");
+		const fetch = vi.fn(async () => response);
+		vi.stubGlobal("fetch", fetch);
+		const procedure = new Procedure(new Context(new SignalRegistry()), "/native/expired");
+		const future = keepalive ? procedure.call_keepalive() : procedure.call();
+		expect(fetch).not.toHaveBeenCalled();
+		await expect(Promise.resolve(future)).rejects.toThrow("Procedure call failed: 303 See Other");
+		await expect(Promise.resolve(future)).rejects.toThrow("Procedure call failed: 303 See Other");
+		expect(fetch).toHaveBeenCalledTimes(1);
+		expect(fetch).toHaveBeenCalledWith("/native/expired", expect.objectContaining({ redirect: "manual" }));
+		expect(json).not.toHaveBeenCalled();
+	}
+});
+
 
 it("callable keepalive adapter retains zero, unit, and multiple argument arrays", async () => {
 	const fetch = vi.fn(async () => new Response('"result"'));
@@ -81,7 +98,7 @@ it("callable keepalive adapter retains zero, unit, and multiple argument arrays"
 		const result = await procedure.with_keepalive().call(...args);
 		expect((result as RuntimeString).v).toBe("result");
 		expect(fetch).toHaveBeenLastCalledWith("/native/adapter", {
-			method: "POST", headers: { "Content-Type": "application/json" }, body, keepalive: true,
+			method: "POST", headers: { "Content-Type": "application/json" }, body, redirect: "manual", keepalive: true,
 		});
 	}
 	expect(fetch).toHaveBeenCalledTimes(3);

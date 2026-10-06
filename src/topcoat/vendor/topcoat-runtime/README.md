@@ -130,14 +130,21 @@ runtime claims navigation once across sibling framework redirects.
 
 `browser/src/surrogate/procedure.ts` adds `call_keepalive` and the callable
 `with_keepalive` adapter, sharing the original lazy Future transport. Ordinary
-`call` retains its request options; keepalive calls add only Fetch's keepalive
-flag. The application uses the registry Rust type graph and a typed extension
+and keepalive calls use `redirect: 'manual'`: a typed JSON procedure rejects an
+HTTP redirect before requesting unrelated document HTML. Keepalive calls also
+set Fetch's keepalive flag. The application uses the registry Rust type graph and a typed extension
 in `src/topcoat/runtime/procedure.rs`, rather than this copy's Rust procedure
 module. Its expression adapter preserves the registry Args/Output contract.
 The packaged application browser asset carries a matching reversible patch;
 its license provenance and reconstruction oracle describe that addition.
 The browser source therefore differs from the original package in this file;
 the checked-in vendor distribution has not been rebuilt by this change.
+
+Procedure unit tests cover lazy, once-only rejection without JSON decoding for
+both call paths. The native browser regression exercises real authentication
+redirects across both authentication modes and three mounts, and requires zero
+login GET requests before recovery with the replacement cookie. LIF-246 tracks
+submission of the generic redirect policy upstream.
 
 ## Generic vector signal writes
 

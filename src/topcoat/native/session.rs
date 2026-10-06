@@ -37,7 +37,7 @@ fn read_with_auth_destination<T>(
             } else {
                 auth_destination.to_owned()
             };
-            // Procedure POSTs must follow authentication redirects as GETs.
+            // Clients that follow authentication redirects must use GET, not POST.
             if topcoat::router::request::original_method(cx) == axum::http::Method::POST {
                 Err(topcoat::router::error::see_other(destination).into())
             } else {

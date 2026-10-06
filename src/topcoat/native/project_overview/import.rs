@@ -10,6 +10,10 @@ use topcoat::{
 
 // Result, issues, comments, labels, existing, excluded PRs.
 type Outcome = (Result<String, String>, usize, usize, usize, usize, usize);
+fn import_error_message(error: crate::error::LificError) -> String {
+    tracing::warn!(error = %error, "native GitHub import failed");
+    error.client_message().to_owned()
+}
 // Keep primitive wire arguments separate because expr! does not support tuple literals.
 #[allow(clippy::too_many_arguments)]
 #[procedure("/__native_overview/import_github")]
@@ -82,7 +86,36 @@ async fn run(
             summary.issues_skipped_existing,
             summary.skipped_non_issues,
         )),
-        Err(error) => Ok((Err(super::actions::error_message(error)), 0, 0, 0, 0, 0)),
+        Err(error) => Ok((Err(import_error_message(error)), 0, 0, 0, 0, 0)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::error::LificError;
+
+    #[test]
+    fn native_import_errors_keep_main_public_messages_and_hide_internal_details() {
+        for (error, expected) in [
+            (
+                LificError::Internal("private upstream diagnostic".into()),
+                "internal server error",
+            ),
+            (
+                LificError::PayloadTooLarge("GitHub issue limit exceeded".into()),
+                "GitHub issue limit exceeded",
+            ),
+            (
+                LificError::Unavailable("Import store is busy".into()),
+                "Import store is busy",
+            ),
+            (
+                LificError::Forbidden("Only a project lead may import".into()),
+                "Only a project lead may import",
+            ),
+        ] {
+            assert_eq!(super::import_error_message(error), expected);
+        }
     }
 }
 #[derive(Clone)]

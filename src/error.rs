@@ -56,6 +56,21 @@ pub enum LificError {
 }
 
 impl LificError {
+    /// Public copy shared by HTTP and native views; internal diagnostics stay in logs.
+    pub(crate) fn client_message(&self) -> &str {
+        match self {
+            Self::Database(_) | Self::Internal(_) => "internal server error",
+            Self::NotFound(message)
+            | Self::BadRequest(message)
+            | Self::Forbidden(message)
+            | Self::Conflict(message)
+            | Self::TooManyRequests(message)
+            | Self::PayloadTooLarge(message)
+            | Self::Unavailable(message)
+            | Self::UpdateConflict { message, .. } => message,
+        }
+    }
+
     /// Build the LIF-441 precondition failure for `entity` (an identifier the
     /// caller recognizes, e.g. `LIF-441` or `LIF-DOC-2`).
     ///
@@ -119,31 +134,25 @@ impl From<crate::import::github::GithubImportError> for LificError {
 
 impl IntoResponse for LificError {
     fn into_response(self) -> Response {
-        let (status, message) = match &self {
+        let status = match &self {
             LificError::Database(e) => {
                 // Log the real error server-side, return generic message to client
                 error!(error = %e, "database error");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "internal server error".to_string(),
-                )
+                StatusCode::INTERNAL_SERVER_ERROR
             }
-            LificError::NotFound(msg) => (StatusCode::NOT_FOUND, msg.clone()),
-            LificError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
-            LificError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg.clone()),
-            LificError::Conflict(msg) => (StatusCode::CONFLICT, msg.clone()),
-            LificError::UpdateConflict { message, .. } => (StatusCode::CONFLICT, message.clone()),
-            LificError::TooManyRequests(msg) => (StatusCode::TOO_MANY_REQUESTS, msg.clone()),
-            LificError::PayloadTooLarge(msg) => (StatusCode::PAYLOAD_TOO_LARGE, msg.clone()),
-            LificError::Unavailable(msg) => (StatusCode::SERVICE_UNAVAILABLE, msg.clone()),
+            LificError::NotFound(_) => StatusCode::NOT_FOUND,
+            LificError::BadRequest(_) => StatusCode::BAD_REQUEST,
+            LificError::Forbidden(_) => StatusCode::FORBIDDEN,
+            LificError::Conflict(_) | LificError::UpdateConflict { .. } => StatusCode::CONFLICT,
+            LificError::TooManyRequests(_) => StatusCode::TOO_MANY_REQUESTS,
+            LificError::PayloadTooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
+            LificError::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             LificError::Internal(msg) => {
                 error!(error = %msg, "internal error");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "internal server error".to_string(),
-                )
+                StatusCode::INTERNAL_SERVER_ERROR
             }
         };
+        let message = self.client_message();
 
         let body = match &self {
             // LIF-441: the standard `error` field, plus a machine-readable

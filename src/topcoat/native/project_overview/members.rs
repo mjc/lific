@@ -117,7 +117,6 @@ mod shards {
             pending_previous,
             pending_label,
         ) = grant_state;
-        let _ = revision;
         let caller = session::read(cx, context::caller(cx))?;
         let user = session::read(cx, crate::api::require_user(&caller.identity))?;
         if user.id != account {
@@ -161,6 +160,10 @@ mod shards {
             "Choose a person…"
         })];
         options.extend(eligible);
+        // Refresh controls from the persisted roster. Picker indices from the
+        // previous roster can be invalid after an add, and rejected role
+        // changes must discard their optimistic selection.
+        let controls_cx = cx.keyed(revision);
         let pending = Pending::from_rows(
             cx,
             pending_open,
@@ -193,9 +196,9 @@ mod shards {
         let member_count = members.len();
         Ok(
             view! {cx=><div @mount=$(|_event:Event|{count.set(member_count);confirming.set(0_i64);})>
-                if can_manage{<div class="native-overview__member-add">(select::select(cx,format!("native-overview-member-person-{project}"),options,chosen_user.clone(),locked.clone()))(select::select(cx,format!("native-overview-member-role-{project}"),roles(),chosen_role.clone(),locked.clone()))<button type="button" class="native-overview__success" :disabled=$(if locked.get(){true}else{chosen_user.get().is_none()}) (add)>(icons::project_icon(cx,Some("lucide:UserPlus"),14))$(if busy.get(){"Adding…"}else{"Add"})</button></div>}
+                if can_manage{<div class="native-overview__member-add">(select::select_scoped(cx,&controls_cx,format!("native-overview-member-person-{project}"),options,chosen_user.clone(),locked.clone()))(select::select_scoped(cx,&controls_cx,format!("native-overview-member-role-{project}"),roles(),chosen_role.clone(),locked.clone()))<button type="button" class="native-overview__success" :disabled=$(if locked.get(){true}else{chosen_user.get().is_none()}) (add)>(icons::project_icon(cx,Some("lucide:UserPlus"),14))$(if busy.get(){"Adding…"}else{"Add"})</button></div>}
                 if members.is_empty(){<p class="native-overview__empty">"No members yet."</p>}
-                else{for member in members{(row(cx,account,project,&member,can_manage,&pending,owner_revision.clone(),owner_error.clone(),owner_error_target.clone(),confirming.clone()))}}
+                else{for member in members{(row(cx,&controls_cx,account,project,&member,can_manage,&pending,owner_revision.clone(),owner_error.clone(),owner_error_target.clone(),confirming.clone()))}}
                 if !can_manage{<p class="native-overview__member-readonly">"Read-only — only a project lead can add, change, or remove members."</p>}
             </div>},
         )
@@ -205,6 +208,7 @@ mod shards {
 #[allow(clippy::too_many_arguments)]
 fn row<'a>(
     cx: &'a Cx,
+    state_cx: &Cx,
     account: i64,
     project: i64,
     member: &MemberWithUser,
@@ -216,6 +220,7 @@ fn row<'a>(
     confirming: Signal<i64>,
 ) -> BoxView<'a> {
     let user = member.user_id;
+    let row_cx = state_cx.keyed(user);
     let display = if member.display_name.is_empty() {
         member.username.clone()
     } else {
@@ -224,8 +229,8 @@ fn row<'a>(
     let label = format!("@{}", member.username);
     let previous = member.role.as_str().to_owned();
     let number = management_controls::role_number(&previous);
-    let selected = signal(cx, || Some(number));
-    let target = signal(cx, || Some(user));
+    let selected = signal(&row_cx, || Some(number));
+    let target = signal(&row_cx, || Some(user));
     let locked = pending.locked.clone();
     let busy = pending.busy.clone();
     let change = management_controls::attempt(
@@ -251,7 +256,7 @@ fn row<'a>(
         project,
         "member_remove",
         target,
-        signal(cx, || Some(number)),
+        signal(&row_cx, || Some(number)),
         String::new(),
         label.clone(),
         None,
@@ -272,7 +277,7 @@ fn row<'a>(
     };
     let since = super::dates::absolute(cx, &member.created_at);
     view!{cx=><div class="native-overview__member-row"><span class="native-overview__member-avatar">(select::initials(&display))</span><div class="native-overview__member-name"><p>(display.clone())if user==account{<span>" (you)"</span>}</p><p>(label)</p></div>
-        if can_manage{<div class="native-overview__member-role" data-role=(badge) (change)>(select::select(cx,format!("native-overview-member-{project}-{user}"),roles(),selected,locked.clone()))</div>}
+        if can_manage{<div class="native-overview__member-role" data-role=(badge) (change)>(select::select_scoped(cx,&row_cx,format!("native-overview-member-{project}-{user}"),roles(),selected,locked.clone()))</div>}
         else{<span class="native-overview__member-badge" data-role=(badge)>(role_label)</span>}
         <span class="native-overview__member-since">(since)</span>
         if can_manage{<button type="button" aria-label=(format!("Remove {display}")) class="native-overview__member-trash" :hidden=$(confirming.get()==user) :disabled=$(locked.get()) @click=$(|_event:Event|confirming.set(user))>(icons::project_icon(cx,Some("lucide:Trash2"),14))</button><div class="native-overview__member-remove" :hidden=$(confirming.get()!=user)><button type="button" class="native-overview__destructive" :disabled=$(busy.get()) (remove)>$(if busy.get(){"…"}else{"Remove"})</button><button type="button" @click=$(|_event:Event|confirming.set(0_i64))>"Cancel"</button></div>}

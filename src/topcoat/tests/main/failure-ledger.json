@@ -2396,5 +2396,166 @@
         "note": "Activity-rate model, serialization, view, and direct authority baseline tests after the final explicit checked-conversion lint fix."
       }
     }
+  },
+  "native_overview_followup": {
+    "notes": [
+      "Earlier native_cleanup and runs are historical checkpoints; current follow-up evidence is below.",
+      "Repository binding controls and their two native browser cases were invented on the hybrid branch, absent from pinned main, and removed with documented provenance; they are not omitted main functionality.",
+      "Native member add, display name, username, joined timestamp, role save and last-lead rollback now pass. Role rollback waits for the actual canonical picker value; CSS uppercase text is not a domain value.",
+      "Wrong-password confirmation checks the actual native confirmation_failed response, rendered error, unchanged cookie, verified retry and exactly one grant.",
+      "All four Home desktop/phone light/dark larger-text geometry cases pass; font scale follows pinned main and storage events.",
+      "A genuine GitHub preview and commit passed in the focused two-case run. The latest full browser run keeps the genuine preview failure active: internal server error. A direct anonymous GitHub API probe at this checkpoint returned403 and remaining quota0; this does not establish the cause of every earlier refusal.",
+      "The unrelated translated frontend unit failures remain active. No failed product assertion is skipped.",
+      "Final Rust workspace run passes3473/3473, including paired geometry and both required/optional authentication redirect regressions. Clippy, formatting and original frontend inventory checks pass."
+    ],
+    "focused_rust": {
+      "tests": 55,
+      "passed": 55,
+      "failed": 0,
+      "filtered_out": 3416
+    },
+    "runs": [
+      {
+        "mode": "native-browser",
+        "command": "node --test --test-concurrency=1 src/topcoat/tests/main/issues/overview-administration.browser.test.js src/topcoat/project_settings/assets/project-settings.test.js src/topcoat/project_settings/assets/project-settings.browser.test.js src/topcoat/visual_parity/geometry.browser.test.cjs",
+        "counts": {
+          "tests": 20,
+          "failed": 1,
+          "passed": 19,
+          "cancelled": 0,
+          "skipped": 0,
+          "todo": 0,
+          "topLevel": 16,
+          "suites": 0
+        },
+        "files": [
+          {
+            "path": "src/topcoat/project_settings/assets/project-settings.browser.test.js",
+            "counts": {
+              "tests": 1,
+              "failed": 0,
+              "passed": 1,
+              "cancelled": 0,
+              "skipped": 0,
+              "todo": 0,
+              "topLevel": 1,
+              "suites": 0
+            },
+            "failed_assertions": []
+          },
+          {
+            "path": "src/topcoat/project_settings/assets/project-settings.test.js",
+            "counts": {
+              "tests": 5,
+              "failed": 0,
+              "passed": 5,
+              "cancelled": 0,
+              "skipped": 0,
+              "todo": 0,
+              "topLevel": 5,
+              "suites": 0
+            },
+            "failed_assertions": []
+          },
+          {
+            "path": "src/topcoat/tests/main/issues/overview-administration.browser.test.js",
+            "counts": {
+              "tests": 9,
+              "failed": 1,
+              "passed": 8,
+              "cancelled": 0,
+              "skipped": 0,
+              "todo": 0,
+              "topLevel": 9,
+              "suites": 0
+            },
+            "failed_assertions": [
+              {
+                "case": "native GitHub preview commits the exact previewed repository and mappings through the real importer",
+                "classification": "external_dependency",
+                "evidence": "[Error [ERR_TEST_FAILURE]: The real upstream import returns a successful preview.\n+ actual - expected\n\n  {\n+   err: 'internal server error',\n-   ok: 'preview',\n    t: 'Result'\n  }\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: The real upstream import returns a successful preview.\n  + actual - expected\n  \n    {\n  +   err: 'internal server error',\n  -   ok: 'preview',\n      t: 'Result'\n    }\n  \n      at src/topcoat/tests/main/issues/overview-administration.browser.test.js:293:12\n      at async withPage (src/topcoat/tests/main/issues/overview-administration.browser.test.js:33:5)\n      at async TestContext.<anonymous> (src/topcoat/tests/main/issues/overview-administration.browser.test.js:282:3)\n      at async Test.run (node:internal/test_runner/test:1404:7)\n      at async Test.processPendingSubtests (node:internal/test_runner/test:969:7) {\n    generatedMessage: false,\n    code: 'ERR_ASSERTION',\n    actual: { t: 'Result', err: 'internal server error' },\n    expected: { t: 'Result', ok: 'preview' },\n    operator: 'deepStrictEqual',\n    diff: 'simple'\n  }\n}"
+              }
+            ]
+          },
+          {
+            "path": "src/topcoat/visual_parity/geometry.browser.test.cjs",
+            "counts": {
+              "tests": 5,
+              "failed": 0,
+              "passed": 5,
+              "cancelled": 0,
+              "skipped": 0,
+              "todo": 0,
+              "topLevel": 1,
+              "suites": 0
+            },
+            "failed_assertions": []
+          }
+        ]
+      }
+    ],
+    "workspace_before_navigation_fix": {
+      "tests": 3471,
+      "passed": 3470,
+      "failed": 1,
+      "skipped": 0,
+      "failed_tests": [
+        "native_common_owner_held_destination_latest_click_and_current_cookie_auth_optional"
+      ],
+      "evidence": "The held request correctly returned303 for its expired original cookie. The root account subcase never started the fallback document with the current replacement cookie; investigating navigation cancellation ownership."
+    },
+    "framework_redirect": {
+      "source_runtime": {
+        "tests": 232,
+        "passed": 232,
+        "failed": 0
+      },
+      "packaged_runtime": {
+        "tests": 15,
+        "passed": 15,
+        "failed": 0
+      },
+      "red": {
+        "source_test": "ordinary and keepalive procedures refuse redirects before decoding unrelated HTML",
+        "native_tests": [
+          "native_common_owner_rejected_destination_does_not_fetch_login_document",
+          "native_common_owner_rejected_destination_does_not_fetch_login_document_auth_optional"
+        ],
+        "evidence": "Missing manual redirect policy and actual login GET observed at all three mounts and both auth modes before the framework fix."
+      },
+      "notes": [
+        "Typed procedure fetch rejects HTTP redirects before fetching unrelated login HTML; lazy and keepalive contracts, server303 responses and application cancellation checks are retained.",
+        "Original held navigation stress passed20/20 before this framework fix. This does not prove why the earlier full-run recovery timed out.",
+        "The browser asserts actual proxy HTTP arrivals, not Chromium provisional redirect events; exact303 and replacement-cookie recovery remain active at all mounts/auth modes.",
+        "After the packaged redirect fix, the fresh20-case browser replay passes19; only the real upstream GitHub preview refusal remains failed."
+      ],
+      "focused_native": {
+        "tests": 4,
+        "passed": 4,
+        "failed": 0,
+        "filtered_out": 3469
+      }
+    },
+    "unit_replay": {
+      "command": "node src/topcoat/tests/main/run.js unit",
+      "counts": {
+        "tests": 338,
+        "failed": 57,
+        "passed": 281,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 161,
+        "suites": 56
+      },
+      "prior_assertions": "native_cleanup.runs[0].files",
+      "same_failed_cases": true
+    },
+    "rust_workspace": {
+      "tests": 3473,
+      "passed": 3473,
+      "failed": 0,
+      "skipped": 0
+    }
   }
 }
