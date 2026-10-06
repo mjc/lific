@@ -121,7 +121,11 @@ async fn native_runtime_document_url_fingerprints_the_shipped_framework_runtime(
         let runtime = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
-        assert_eq!(runtime.as_ref(), include_bytes!("../assets/runtime.js"));
+        assert_eq!(
+            runtime.as_ref(),
+            super::super::assets::runtime_source().as_bytes()
+        );
+        assert!(runtime.ends_with(include_bytes!("../assets/runtime.js")));
         assert_eq!(
             src,
             format!(

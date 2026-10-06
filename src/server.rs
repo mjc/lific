@@ -213,8 +213,54 @@ mod topcoat_app {
             .header("content-type", "text/javascript; charset=utf-8")
             .header("cache-control", "no-cache")
             .body(topcoat::router::Body::from(
-                super::topcoat_frontend::assets::RUNTIME,
+                super::topcoat_frontend::assets::runtime_source(),
             ))?)
+    }
+
+    fn generated_handler_response(
+        cx: &topcoat::context::Cx,
+        url: &str,
+        source: &'static str,
+    ) -> Result<Response> {
+        let uri = topcoat::router::request::uri(cx);
+        match (uri.query(), url.split_once('?')) {
+            (Some(requested), Some((_, version))) if requested == version => {
+                Ok(Response::builder()
+                    .header("content-type", "text/javascript; charset=utf-8")
+                    .header("cache-control", "public, max-age=31536000, immutable")
+                    .header("x-content-type-options", "nosniff")
+                    .body(topcoat::router::Body::from(source))?)
+            }
+            _ => Ok(Response::builder()
+                .status(404)
+                .body(topcoat::router::Body::empty())?),
+        }
+    }
+
+    #[route(GET "/__native-home-shell.js")]
+    pub(super) async fn home_shell_handler(cx: &topcoat::context::Cx) -> Result<Response> {
+        use super::topcoat_frontend::native::home_shell;
+        generated_handler_response(cx, home_shell::handler_url(), home_shell::handler_source())
+    }
+
+    #[route(GET "/__native-workspace.js")]
+    pub(super) async fn workspace_handler(cx: &topcoat::context::Cx) -> Result<Response> {
+        use super::topcoat_frontend::native::workspace;
+        generated_handler_response(
+            cx,
+            workspace::navigation_handler_url(),
+            workspace::navigation_handler_source(),
+        )
+    }
+
+    #[route(GET "/__native-sidebar.js")]
+    pub(super) async fn sidebar_handler(cx: &topcoat::context::Cx) -> Result<Response> {
+        use super::topcoat_frontend::native::project_sidebar;
+        generated_handler_response(
+            cx,
+            project_sidebar::handler_url(),
+            project_sidebar::handler_source(),
+        )
     }
 
     pub(super) fn router_builder() -> topcoat::router::RouterBuilder {
@@ -478,8 +524,9 @@ mod topcoat_app_tests {
         let body = response.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(
             body.as_ref(),
-            include_str!("topcoat/assets/runtime.js").as_bytes()
+            super::topcoat_frontend::assets::runtime_source().as_bytes()
         );
+        assert!(body.ends_with(include_str!("topcoat/assets/runtime.js").as_bytes()));
     }
 
     #[tokio::test]

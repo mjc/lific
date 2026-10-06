@@ -108,6 +108,11 @@ test(`native Home original shell: ${scenario}`, async t => {
               globalThis.__nativeProjectInjected = false;
             }, theme);
             context.on('request', request => requests.push(request.url()));
+            const maskDownloads = ['ChevronRight', 'Ellipsis'].map(name => new Promise(resolve => {
+              context.on('requestfinished', request => {
+                if (new URL(request.url()).pathname.endsWith(`/${name}.mask.svg`)) resolve();
+              });
+            }));
             context.on('requestfailed', request => networkFailures.push({url: request.url(), error: request.failure()?.errorText}));
             page = await context.newPage();
             page.setDefaultTimeout(7000);
@@ -129,6 +134,25 @@ test(`native Home original shell: ${scenario}`, async t => {
               const icon=document.querySelector(selector);
               return icon && icon.getBBox().width>0 && icon.getBBox().height>0;
             },mode==='desktop'?'#native-home-collapse svg use':'#native-home-mobile-open svg use');
+            if (mode === 'desktop') {
+              await Promise.all(maskDownloads);
+              await page.waitForFunction(() => ['chevron', 'ellipsis'].every(kind => {
+                const icon = document.querySelector(`.native-home-sidebar .native-icon-${kind}`);
+                if (!icon) return false;
+                const style = getComputedStyle(icon), size = icon.getBoundingClientRect();
+                const name = kind === 'chevron' ? 'ChevronRight' : 'Ellipsis';
+                return size.width > 0 && size.height > 0 && style.maskSize === 'contain'
+                  && style.backgroundColor === style.color
+                  && style.maskImage.includes(`${name}.mask.svg`);
+              }));
+              for (const [kind, name, size] of [['chevron', 'ChevronRight', 13], ['ellipsis', 'Ellipsis', 15]]) {
+                const icon = page.locator(`.native-home-sidebar .native-icon-${kind}`).first();
+                const mask = await icon.evaluate(element => getComputedStyle(element).maskImage);
+                assert.ok(mask.includes(`${proxy.origin}${prefix}/__native_icons/`) && mask.endsWith(`/${name}.mask.svg")`));
+                assert.equal((await icon.boundingBox()).width, size);
+                assert.equal((await icon.boundingBox()).height, size);
+              }
+            }
             const iconRequests=requests.filter(url=>new URL(url).pathname.includes('/__native_icons/'));
             assert.equal(new Set(iconRequests).size,iconRequests.length,
               'Repeated icon instances share one browser asset request.');
@@ -165,6 +189,12 @@ test(`native Home original shell: ${scenario}`, async t => {
               await toggle.focus();
               await page.keyboard.press('Enter');
               assert.equal(await project.getByRole('button', {name: 'Collapse Visible project', exact: true}).getAttribute('aria-expanded'), 'true');
+              await page.waitForFunction(() => {
+                const icon = document.querySelector('.native-sidebar-project-toggle[aria-expanded=true] > :is(svg,.native-icon-mask)');
+                if (!icon) return false;
+                const rotation = new DOMMatrix(getComputedStyle(icon).transform);
+                return Math.abs(rotation.a) < .01 && rotation.b > .99;
+              }, undefined, {timeout: 5000});
               const links = page.locator(`#${controlled}`).getByRole('link');
               assert.deepEqual(await links.allTextContents(), destinations);
               for (const [index, slug] of destinations.map(label => label.toLowerCase()).entries()) {

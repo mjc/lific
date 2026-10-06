@@ -15,6 +15,14 @@ use topcoat::{
     view::{Attributes, BoxView, View, ViewExt, view},
 };
 
+pub(crate) fn handler_source() -> &'static str {
+    state::handler_source()
+}
+
+pub(crate) fn handler_url() -> &'static str {
+    state::handler_url()
+}
+
 /// Shared projection owner. The shell passes these same handles to its desktop
 /// and phone slots; neither wrapper loads a second catalog or owns group drafts.
 pub(crate) struct Sidebar {
@@ -74,6 +82,9 @@ impl Sidebar {
     pub(crate) fn menu_open(&self) -> topcoat::runtime::Expr<bool> {
         let kind = self.signals.menu_kind.clone();
         topcoat::runtime::expr!(!kind.get().is_empty())
+    }
+    pub(crate) fn menu_kind(&self) -> Signal<String> {
+        self.signals.menu_kind.clone()
     }
     /// Route changes reveal a project once through the existing local transition.
     pub(crate) fn route<'a>(&self, cx: &'a Cx, path: Signal<String>) -> BoxView<'a> {

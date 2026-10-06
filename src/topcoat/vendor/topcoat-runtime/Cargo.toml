@@ -84,6 +84,9 @@ optional = true
 [dependencies.topcoat-view]
 version = "0.9.0"
 
+[dependencies.rand]
+version = "0.9"
+
 [dev-dependencies]
 
 [dev-dependencies.topcoat]
@@ -125,6 +128,6 @@ unsafe_code = "deny"
 [lints.rustdoc]
 broken_intra_doc_links = "deny"
 
-# Keep the standalone test facade on this runtime, as in the application.
+# Keep the standalone test facade on this runtime.
 [patch.crates-io]
 topcoat-runtime = { path = "." }

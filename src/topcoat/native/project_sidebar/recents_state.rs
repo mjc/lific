@@ -6,7 +6,10 @@ use super::{
 };
 use topcoat::{
     context::Cx,
-    runtime::{Event, Signal, expr, signal},
+    runtime::{
+        BoolSurrogate, Event, I64Surrogate, Js, Signal, SignalSurrogate, StringSurrogate,
+        Surrogated, expr, signal,
+    },
     view::Attributes,
 };
 
@@ -125,27 +128,79 @@ pub(super) fn refresh(
     event_name: &str,
     force: bool,
 ) -> Attributes {
-    let account = state.account;
-    let cache = state.cache.clone();
-    let rows = state.rows.clone();
-    let label = state.label.clone();
-    let project = state.project.clone();
-    let visible = state.visible.clone();
-    let loading = state.loading.clone();
-    let error = state.error.clone();
-    let open = state.open.clone();
-    let focus = state.focus.clone();
-    let status = state.status.clone();
-    let entered = state.entered.clone();
-    let request = state.request.clone();
-    let transport_loading = loading.clone();
-    let transport_status = status.clone();
-    let transport_error = error.clone();
-    let transport_request = request.clone();
-    let run_cache = cache.clone();
-    let failed_cache = cache.clone();
-    let failed_request = request.clone();
-    let handler = expr!(|event: Event| {
+    let arguments = Js::builder()
+        .raw("[")
+        .surrogate(&(
+            (&state.cache).into_surrogate(),
+            (&state.rows).into_surrogate(),
+            (&state.label).into_surrogate(),
+            (&state.project).into_surrogate(),
+            (&state.visible).into_surrogate(),
+            (&state.loading).into_surrogate(),
+            (&state.error).into_surrogate(),
+            (&state.open).into_surrogate(),
+            (&state.focus).into_surrogate(),
+            (&state.status).into_surrogate(),
+            (&state.entered).into_surrogate(),
+            (&state.request).into_surrogate(),
+        ))
+        .raw(",")
+        .surrogate(&(&catalog).into_surrogate())
+        .raw(",")
+        .surrogate(&state.account.into_surrogate())
+        .raw(",")
+        .surrogate(&(&path).into_surrogate())
+        .raw(",")
+        .surrogate(&force.into_surrogate())
+        .raw("]")
+        .build();
+    let key = format!("{}#recents-refresh", super::handler_url());
+    super::super::handler_asset::event(cx, &key, arguments, event_name)
+}
+
+type RecentsHandlerSignals<'a> = (
+    &'a SignalSurrogate<String>,
+    &'a SignalSurrogate<String>,
+    &'a SignalSurrogate<String>,
+    &'a SignalSurrogate<i64>,
+    &'a SignalSurrogate<bool>,
+    &'a SignalSurrogate<bool>,
+    &'a SignalSurrogate<String>,
+    &'a SignalSurrogate<bool>,
+    &'a SignalSurrogate<String>,
+    &'a SignalSurrogate<String>,
+    &'a SignalSurrogate<String>,
+    &'a SignalSurrogate<i64>,
+);
+
+/// Shared Rust browser code receives the subordinate owner on every invocation.
+pub(crate) fn handler_factory() -> Js {
+    let handler = expr!(|event: Event,
+                         handles: RecentsHandlerSignals<'_>,
+                         catalog: &SignalSurrogate<String>,
+                         account: I64Surrogate,
+                         path: &StringSurrogate,
+                         force: BoolSurrogate| {
+        let cache = handles.0;
+        let rows = handles.1;
+        let label = handles.2;
+        let project = handles.3;
+        let visible = handles.4;
+        let loading = handles.5;
+        let error = handles.6;
+        let open = handles.7;
+        let focus = handles.8;
+        let status = handles.9;
+        let entered = handles.10;
+        let request = handles.11;
+        let transport_loading = loading;
+        let transport_status = status;
+        let transport_error = error;
+        let transport_request = request;
+        let run_cache = cache;
+        let failed_cache = cache;
+        let failed_request = request;
+
         if force {
             event.prevent_default();
         }
@@ -271,14 +326,9 @@ pub(super) fn refresh(
             }
         }
     });
-    let mut attributes = Attributes::with_capacity(1);
-    attributes.insert(
-        cx,
-        format!("data-topcoat-on:{event_name}"),
-        handler.into_evaluated_and_js().1,
-    );
-    attributes
+    handler.into_evaluated_and_js().1
 }
+
 pub(super) fn disclosure(cx: &Cx, state: &Signals) -> Attributes {
     let open = state.open.clone();
     let toggle = expr!(|_event: Event| {

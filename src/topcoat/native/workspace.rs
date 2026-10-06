@@ -2,7 +2,10 @@
 
 use topcoat::{
     context::Cx,
-    runtime::{BoolSurrogate, Event, Signal, StringSurrogate, expr, procedure, shard, signal},
+    runtime::{
+        BoolSurrogate, Event, I64Surrogate, Js, Signal, SignalSurrogate, StringSurrogate,
+        Surrogated, expr, procedure, shard, signal,
+    },
     view::{Attributes, BoxView, View, ViewExt, component, view},
 };
 
@@ -279,73 +282,147 @@ fn navigation_mount(
     let palette = page.palette;
     let (open, pane, mobile_project, owner, href, pending_palette, _, _) =
         page.chrome.navigation.handles();
-    let failure_revision = revision.clone();
-    let commit_revision = revision.clone();
-    let commit_path = path.clone();
-    let pop_path = path;
     let unwinding = signal(cx, || false);
-    let pop_unwinding = unwinding.clone();
-    let pop_revision = revision.clone();
-    let hash_unwinding = unwinding.clone();
-    let hash_revision = revision.clone();
-    let hash_owner = owner.clone();
     let mount = transport::trusted_mount(cx).unwrap_or_default().to_owned();
-    let handler = expr!(|_mount: Event| {
-        let _navigate = |candidate: StringSurrogate, push: BoolSurrogate| {
-            revision.increment();
-            let observed = revision.get();
-            let _fallback_candidate = candidate.clone();
-            let _failed = || {
-                if failure_revision.get() == observed {
-                    if !raw!("cx.hydrate(cx.abortSignal.aborted)", false) {
-                        raw!(
-                            "location.assign(${mount}.toString() + ${_fallback_candidate}.toString())",
-                            ()
-                        );
-                    }
-                }
-            };
-            let _request = async || {
-                let next =
-                    native_workspace_destination(candidate.clone(), project.clone(), account).await;
-                if revision.get() == observed {
-                    if !raw!("cx.hydrate(cx.abortSignal.aborted)", false) {
-                        if next.0.is_some() {
-                            let url = next.0.unwrap();
-                            let presentation = next.1;
-                            let title = next.2;
-                            let base_owner = owner.get();
-                            let base_href = href.get();
-                            let _commit = |unwound: BoolSurrogate| {
-                                let admitted = if unwound {
-                                    let record_version = raw!(
-                                        r#"cx.hydrate((() => {const value=history.state?.lificNativeHomeNav?.version;return typeof value==='string'?value:'';})())"#,
-                                        String::new()
-                                    );
-                                    let record_owner = raw!(
-                                        r#"cx.hydrate((() => {const value=history.state?.lificNativeHomeNav?.owner;return typeof value==='string'?value:'';})())"#,
-                                        String::new()
-                                    );
-                                    let record_href = raw!(
-                                        r#"cx.hydrate((() => {const value=history.state?.lificNativeHomeNav?.href;return typeof value==='string'?value:'';})())"#,
-                                        String::new()
-                                    );
-                                    let record_pane = raw!(
-                                        r#"cx.hydrate((() => {const value=history.state?.lificNativeHomeNav?.pane;return typeof value==='string'?value:'';})())"#,
-                                        String::new()
-                                    );
-                                    let record_project = raw!(
-                                        r#"cx.hydrate((() => {const value=history.state?.lificNativeHomeNav?.project;return typeof value==='string'?value:'invalid';})())"#,
-                                        String::new()
-                                    );
-                                    let current_href =
-                                        raw!("cx.hydrate(location.href)", String::new());
-                                    if record_version == "1" {
-                                        if record_owner == base_owner {
-                                            if record_href == base_href {
-                                                if current_href == base_href {
-                                                    if record_pane == "closed" {
-                                                        record_project.is_empty()
+    let handles = (
+        &revision,
+        &path,
+        &unwinding,
+        &entry,
+        &label,
+        &palette,
+        &open,
+        &pane,
+        &mobile_project,
+        &owner,
+        &href,
+        &pending_palette,
+    )
+        .into_surrogate();
+    let arguments = Js::builder()
+        .source("[")
+        .surrogate(&handles)
+        .source(",")
+        .surrogate(&common)
+        .source(",")
+        .surrogate(&project)
+        .source(",")
+        .surrogate(&account.into_surrogate())
+        .source(",")
+        .surrogate(&mount)
+        .source("]")
+        .build();
+    super::handler_asset::mount(cx, navigation_handler_url(), arguments)
+}
+
+type NavigationHandlerSignals<'a> = (
+    &'a SignalSurrogate<usize>,
+    &'a SignalSurrogate<String>,
+    &'a SignalSurrogate<bool>,
+    &'a SignalSurrogate<String>,
+    &'a SignalSurrogate<String>,
+    &'a SignalSurrogate<bool>,
+    &'a SignalSurrogate<bool>,
+    &'a SignalSurrogate<String>,
+    &'a SignalSurrogate<String>,
+    &'a SignalSurrogate<String>,
+    &'a SignalSurrogate<String>,
+    &'a SignalSurrogate<bool>,
+);
+
+/// Immutable Rust-generated navigation code; request handles stay in the document.
+pub(crate) fn navigation_handler_source() -> &'static str {
+    static SOURCE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    SOURCE.get_or_init(|| {
+        let handler = expr!(
+            |_event: Event,
+             handles: NavigationHandlerSignals<'_>,
+             common: BoolSurrogate,
+             project: &StringSurrogate,
+             account: I64Surrogate,
+             _mount: &StringSurrogate| {
+                let revision = handles.0;
+                let path = handles.1;
+                let unwinding = handles.2;
+                let entry = handles.3;
+                let label = handles.4;
+                let palette = handles.5;
+                let open = handles.6;
+                let pane = handles.7;
+                let mobile_project = handles.8;
+                let owner = handles.9;
+                let href = handles.10;
+                let pending_palette = handles.11;
+                let failure_revision = revision;
+                let commit_revision = revision;
+                let commit_path = path;
+                let pop_path = path;
+                let pop_unwinding = unwinding;
+                let pop_revision = revision;
+                let hash_unwinding = unwinding;
+                let hash_revision = revision;
+                let hash_owner = owner;
+                let _navigate = |candidate: StringSurrogate, push: BoolSurrogate| {
+                    revision.increment();
+                    let observed = revision.get();
+                    let _fallback_candidate = candidate.clone();
+                    let _failed = || {
+                        if failure_revision.get() == observed {
+                            if !raw!("cx.hydrate(cx.abortSignal.aborted)", false) {
+                                raw!(
+                                    "location.assign(${_mount}.toString() + ${_fallback_candidate}.toString())",
+                                    ()
+                                );
+                            }
+                        }
+                    };
+                    let _request = async || {
+                        let next =
+                            native_workspace_destination(candidate.clone(), project.clone(), account).await;
+                        if revision.get() == observed {
+                            if !raw!("cx.hydrate(cx.abortSignal.aborted)", false) {
+                                if next.0.is_some() {
+                                    let url = next.0.unwrap();
+                                    let presentation = next.1;
+                                    let title = next.2;
+                                    let base_owner = owner.get();
+                                    let base_href = href.get();
+                                    let _commit = |unwound: BoolSurrogate| {
+                                        let admitted = if unwound {
+                                            let record_version = raw!(
+                                                r#"cx.hydrate((() => {const value=history.state?.lificNativeHomeNav?.version;return typeof value==='string'?value:'';})())"#,
+                                                String::new()
+                                            );
+                                            let record_owner = raw!(
+                                                r#"cx.hydrate((() => {const value=history.state?.lificNativeHomeNav?.owner;return typeof value==='string'?value:'';})())"#,
+                                                String::new()
+                                            );
+                                            let record_href = raw!(
+                                                r#"cx.hydrate((() => {const value=history.state?.lificNativeHomeNav?.href;return typeof value==='string'?value:'';})())"#,
+                                                String::new()
+                                            );
+                                            let record_pane = raw!(
+                                                r#"cx.hydrate((() => {const value=history.state?.lificNativeHomeNav?.pane;return typeof value==='string'?value:'';})())"#,
+                                                String::new()
+                                            );
+                                            let record_project = raw!(
+                                                r#"cx.hydrate((() => {const value=history.state?.lificNativeHomeNav?.project;return typeof value==='string'?value:'invalid';})())"#,
+                                                String::new()
+                                            );
+                                            let current_href =
+                                                raw!("cx.hydrate(location.href)", String::new());
+                                            if record_version == "1" {
+                                                if record_owner == base_owner {
+                                                    if record_href == base_href {
+                                                        if current_href == base_href {
+                                                            if record_pane == "closed" {
+                                                                record_project.is_empty()
+                                                            } else {
+                                                                false
+                                                            }
+                                                        } else {
+                                                            false
+                                                        }
                                                     } else {
                                                         false
                                                     }
@@ -356,192 +433,189 @@ fn navigation_mount(
                                                 false
                                             }
                                         } else {
+                                            true
+                                        };
+                                        if admitted {
+                                            if commit_revision.get() == observed {
+                                                if !raw!("cx.hydrate(cx.abortSignal.aborted)", false) {
+                                                    let changed = commit_path.get() != url;
+                                                    if changed {
+                                                        if common {
+                                                            entry.set(presentation);
+                                                            label.set(title);
+                                                            palette.set(false);
+                                                            if push {
+                                                                mobile_project.set("".to_owned());
+                                                                pending_palette.set(false);
+                                                            }
+                                                        }
+                                                        commit_path.set(url.clone());
+                                                        if push {
+                                                            raw!(
+                                                                "history.pushState(null, '', ${_mount}.toString() + ${url}.toString())",
+                                                                ()
+                                                            );
+                                                        }
+                                                    }
+                                                    if common {
+                                                        href.set(raw!(
+                                                            "cx.hydrate(location.href)",
+                                                            String::new()
+                                                        ));
+                                                        let _owner = owner.get();
+                                                        let _href = href.get();
+                                                        if push {
+                                                            raw!(
+                                                                "history.replaceState({...history.state,lificNativeHomeNav:{version:'1',owner:${_owner}.toString(),href:${_href}.toString(),pane:'closed',project:''}},'');",
+                                                                ()
+                                                            );
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    };
+                                    let wait = if common {
+                                        if push {
+                                            if unwinding.get() { true } else { open.get() }
+                                        } else {
                                             false
                                         }
                                     } else {
                                         false
+                                    };
+                                    if wait {
+                                        raw!(
+                                            "window.addEventListener('popstate', () => ${_commit}(cx.hydrate(true)), {once:true, signal:cx.abortSignal});",
+                                            ()
+                                        );
+                                        if !unwinding.get() {
+                                            unwinding.set(true);
+                                            let _steps = if pane.get() == "root" { -1_i32 } else { -2_i32 };
+                                            raw!("history.go(${_steps});", ());
+                                        }
+                                    } else {
+                                        raw!("${_commit}(cx.hydrate(false));", ());
                                     }
                                 } else {
-                                    true
-                                };
-                                if admitted {
-                                    if commit_revision.get() == observed {
-                                        if !raw!("cx.hydrate(cx.abortSignal.aborted)", false) {
-                                            let changed = commit_path.get() != url;
-                                            if changed {
-                                                if common {
-                                                    entry.set(presentation);
-                                                    label.set(title);
-                                                    palette.set(false);
-                                                    if push {
-                                                        mobile_project.set("".to_owned());
-                                                        pending_palette.set(false);
-                                                    }
-                                                }
-                                                commit_path.set(url.clone());
-                                                if push {
-                                                    raw!(
-                                                        "history.pushState(null, '', ${mount}.toString() + ${url}.toString())",
-                                                        ()
-                                                    );
-                                                }
+                                    let _url = candidate;
+                                    raw!(
+                                        "location.assign(${_mount}.toString() + ${_url}.toString())",
+                                        ()
+                                    );
+                                }
+                            }
+                        }
+                    };
+                    raw!(
+                        "Promise.resolve().then(() => ${_request}()).catch(() => ${_failed}());",
+                        ()
+                    );
+                };
+                let _pop = || {
+                    let expected_unwind = pop_unwinding.get();
+                    if expected_unwind {
+                        pop_unwinding.set(false);
+                    }
+                    let candidate = raw!(
+                        "cx.hydrate(location.pathname.slice(${_mount}.toString().length) + location.search)",
+                        String::new()
+                    );
+                    if candidate != pop_path.get() {
+                        raw!("${_navigate}(${candidate}, cx.hydrate(false));", ());
+                    } else {
+                        if !expected_unwind {
+                            pop_revision.increment();
+                        }
+                    }
+                };
+                let _hash = || {
+                    // A genuine Back/Forward may emit both popstate and hashchange.
+                    // Its valid owned entry must retain the classification begun by pop.
+                    let record_version = raw!(
+                        r#"cx.hydrate((() => {const value=history.state?.lificNativeHomeNav?.version;return typeof value==='string'?value:'';})())"#,
+                        String::new()
+                    );
+                    let record_owner = raw!(
+                        r#"cx.hydrate((() => {const value=history.state?.lificNativeHomeNav?.owner;return typeof value==='string'?value:'';})())"#,
+                        String::new()
+                    );
+                    let record_href = raw!(
+                        r#"cx.hydrate((() => {const value=history.state?.lificNativeHomeNav?.href;return typeof value==='string'?value:'';})())"#,
+                        String::new()
+                    );
+                    let record_pane = raw!(
+                        r#"cx.hydrate((() => {const value=history.state?.lificNativeHomeNav?.pane;return typeof value==='string'?value:'';})())"#,
+                        String::new()
+                    );
+                    let record_project = raw!(
+                        r#"cx.hydrate((() => {const value=history.state?.lificNativeHomeNav?.project;return typeof value==='string'?value:'';})())"#,
+                        String::new()
+                    );
+                    let project_is_string = raw!(
+                        "cx.hydrate(typeof history.state?.lificNativeHomeNav?.project === 'string')",
+                        false
+                    );
+                    let current_href = raw!("cx.hydrate(location.href)", String::new());
+                    let owned = if record_version == "1" {
+                        if record_owner == hash_owner.get() {
+                            if record_href == current_href {
+                                if project_is_string {
+                                    if record_pane == "project" {
+                                        !record_project.is_empty()
+                                    } else {
+                                        if record_project.is_empty() {
+                                            if record_pane == "closed" {
+                                                true
+                                            } else {
+                                                record_pane == "root"
                                             }
-                                            if common {
-                                                href.set(raw!(
-                                                    "cx.hydrate(location.href)",
-                                                    String::new()
-                                                ));
-                                                let _owner = owner.get();
-                                                let _href = href.get();
-                                                if push {
-                                                    raw!(
-                                                        "history.replaceState({...history.state,lificNativeHomeNav:{version:'1',owner:${_owner}.toString(),href:${_href}.toString(),pane:'closed',project:''}},'');",
-                                                        ()
-                                                    );
-                                                }
-                                            }
+                                        } else {
+                                            false
                                         }
                                     }
-                                }
-                            };
-                            let wait = if common {
-                                if push {
-                                    if unwinding.get() { true } else { open.get() }
                                 } else {
                                     false
                                 }
                             } else {
                                 false
-                            };
-                            if wait {
-                                raw!(
-                                    "window.addEventListener('popstate', () => ${_commit}(cx.hydrate(true)), {once:true, signal:cx.abortSignal});",
-                                    ()
-                                );
-                                if !unwinding.get() {
-                                    unwinding.set(true);
-                                    let _steps = if pane.get() == "root" { -1_i32 } else { -2_i32 };
-                                    raw!("history.go(${_steps});", ());
-                                }
-                            } else {
-                                raw!("${_commit}(cx.hydrate(false));", ());
-                            }
-                        } else {
-                            let _url = candidate;
-                            raw!(
-                                "location.assign(${mount}.toString() + ${_url}.toString())",
-                                ()
-                            );
-                        }
-                    }
-                }
-            };
-            raw!(
-                "Promise.resolve().then(() => ${_request}()).catch(() => ${_failed}());",
-                ()
-            );
-        };
-        let _pop = || {
-            let expected_unwind = pop_unwinding.get();
-            if expected_unwind {
-                pop_unwinding.set(false);
-            }
-            let candidate = raw!(
-                "cx.hydrate(location.pathname.slice(${mount}.toString().length) + location.search)",
-                String::new()
-            );
-            if candidate != pop_path.get() {
-                raw!("${_navigate}(${candidate}, cx.hydrate(false));", ());
-            } else {
-                if !expected_unwind {
-                    pop_revision.increment();
-                }
-            }
-        };
-        let _hash = || {
-            // A genuine Back/Forward may emit both popstate and hashchange.
-            // Its valid owned entry must retain the classification begun by pop.
-            let record_version = raw!(
-                r#"cx.hydrate((() => {const value=history.state?.lificNativeHomeNav?.version;return typeof value==='string'?value:'';})())"#,
-                String::new()
-            );
-            let record_owner = raw!(
-                r#"cx.hydrate((() => {const value=history.state?.lificNativeHomeNav?.owner;return typeof value==='string'?value:'';})())"#,
-                String::new()
-            );
-            let record_href = raw!(
-                r#"cx.hydrate((() => {const value=history.state?.lificNativeHomeNav?.href;return typeof value==='string'?value:'';})())"#,
-                String::new()
-            );
-            let record_pane = raw!(
-                r#"cx.hydrate((() => {const value=history.state?.lificNativeHomeNav?.pane;return typeof value==='string'?value:'';})())"#,
-                String::new()
-            );
-            let record_project = raw!(
-                r#"cx.hydrate((() => {const value=history.state?.lificNativeHomeNav?.project;return typeof value==='string'?value:'';})())"#,
-                String::new()
-            );
-            let project_is_string = raw!(
-                "cx.hydrate(typeof history.state?.lificNativeHomeNav?.project === 'string')",
-                false
-            );
-            let current_href = raw!("cx.hydrate(location.href)", String::new());
-            let owned = if record_version == "1" {
-                if record_owner == hash_owner.get() {
-                    if record_href == current_href {
-                        if project_is_string {
-                            if record_pane == "project" {
-                                !record_project.is_empty()
-                            } else {
-                                if record_project.is_empty() {
-                                    if record_pane == "closed" {
-                                        true
-                                    } else {
-                                        record_pane == "root"
-                                    }
-                                } else {
-                                    false
-                                }
                             }
                         } else {
                             false
                         }
                     } else {
                         false
+                    };
+                    if !owned {
+                        hash_revision.increment();
+                        hash_unwinding.set(false);
                     }
-                } else {
-                    false
-                }
-            } else {
-                false
-            };
-            if !owned {
-                hash_revision.increment();
-                hash_unwinding.set(false);
+                };
+                raw!(
+                    r#"
+                    document.addEventListener('click', event => {
+                        if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+                        const link = event.target?.closest?.('a[href]');
+                        if (!link || link.hasAttribute('download') || (link.target && link.target !== '_self')) return;
+                        const url = new URL(link.href, location.href), prefix = ${_mount}.toString();
+                        if (url.origin !== location.origin || url.hash || (prefix && url.pathname !== prefix && !url.pathname.startsWith(prefix + '/'))) return;
+                        event.preventDefault();
+                        ${_navigate}(cx.hydrate(url.pathname.slice(prefix.length) + url.search), cx.hydrate(true));
+                    }, {signal: cx.abortSignal});
+                    window.addEventListener('popstate', ${_pop}, {signal:cx.abortSignal});
+                    window.addEventListener('hashchange', ${_hash}, {signal:cx.abortSignal});
+                "#,
+                    ()
+                );
             }
-        };
-        raw!(
-            r#"
-            document.addEventListener('click', event => {
-                if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-                const link = event.target?.closest?.('a[href]');
-                if (!link || link.hasAttribute('download') || (link.target && link.target !== '_self')) return;
-                const url = new URL(link.href, location.href), prefix = ${mount}.toString();
-                if (url.origin !== location.origin || url.hash || (prefix && url.pathname !== prefix && !url.pathname.startsWith(prefix + '/'))) return;
-                event.preventDefault();
-                ${_navigate}(cx.hydrate(url.pathname.slice(prefix.length) + url.search), cx.hydrate(true));
-            }, {signal: cx.abortSignal});
-            window.addEventListener('popstate', ${_pop}, {signal:cx.abortSignal});
-            window.addEventListener('hashchange', ${_hash}, {signal:cx.abortSignal});
-        "#,
-            ()
         );
-    });
-    let mut attributes = Attributes::with_capacity(1);
-    attributes.insert(
-        cx,
-        "data-topcoat-on:mount",
-        handler.into_evaluated_and_js().1,
-    );
-    attributes
+        super::handler_asset::source(handler.into_evaluated_and_js().1)
+    })
+}
+
+pub(crate) fn navigation_handler_url() -> &'static str {
+    static URL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    URL.get_or_init(|| {
+        super::handler_asset::url("/__native-workspace.js", navigation_handler_source())
+    })
 }

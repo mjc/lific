@@ -958,6 +958,7 @@ version = "0.9.0"
 dependencies = [
  "futures-util",
  "pin-project-lite",
+ "rand",
  "ref-cast",
  "serde",
  "serde_json",

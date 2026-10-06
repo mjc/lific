@@ -184,8 +184,118 @@ async fn native_home_initial_mount_handlers_bind_shared_signal_handles_once() {
         .max()
         .expect("Home installs native mount handlers");
     assert!(
-        largest < 22_000,
-        "Shared signal handles must not repeat throughout the largest mount handler: {largest} bytes"
+        largest < 2_500,
+        "Home must load shared generated handlers rather than inline their bodies: {largest} bytes"
+    );
+}
+
+#[tokio::test]
+async fn native_home_generated_handler_is_shared_immutable_and_free_of_account_data() {
+    let fixture = fixture();
+    let cookie = format!("lific_token={}", fixture.token);
+    for filename in [
+        "__native-home-shell.js",
+        "__native-workspace.js",
+        "__native-sidebar.js",
+    ] {
+        let mut first = None;
+        for prefix in ["", "/app", "/ACC"] {
+            let response = get(&fixture, Some(&cookie), Some(prefix)).await;
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let html = std::str::from_utf8(&body).unwrap();
+            let document = scraper::Html::parse_document(html);
+            let marker = format!("/{filename}?v=");
+            let mount = document
+                .select(&scraper::Selector::parse("*").unwrap())
+                .filter_map(|element| element.value().attr("data-topcoat-on:mount"))
+                .find(|handler| handler.contains(&marker))
+                .expect("Home loads its generated handler from a fingerprinted shared asset");
+            assert!(mount.len() < 8_000, "Home bootstrap: {} bytes", mount.len());
+            let digest: String = mount
+                .split(&marker)
+                .nth(1)
+                .unwrap()
+                .chars()
+                .take(64)
+                .collect();
+            assert_eq!(digest.len(), 64);
+            assert!(
+                digest
+                    .chars()
+                    .all(|character| character.is_ascii_hexdigit())
+            );
+            let path = format!("/{filename}?v={digest}");
+            let response = get_path(&fixture, &path, None, Some(prefix)).await;
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(
+                response.headers()["content-type"],
+                "text/javascript; charset=utf-8"
+            );
+            assert_eq!(
+                response.headers()["cache-control"],
+                "public, max-age=31536000, immutable"
+            );
+            assert_eq!(response.headers()["x-content-type-options"], "nosniff");
+            let asset = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let source = std::str::from_utf8(&asset).unwrap();
+            assert!(source.contains("export"));
+            for private in [
+                fixture.token.as_str(),
+                "Visible active initial work",
+                "Private hidden",
+                "Project 1",
+            ] {
+                assert!(
+                    !source.contains(private),
+                    "Shared handler leaked request data"
+                );
+            }
+            if let Some((previous_path, previous_asset)) = &first {
+                assert_eq!(&path, previous_path);
+                assert_eq!(&asset, previous_asset);
+            } else {
+                first = Some((path, asset));
+            }
+            for invalid in [format!("/{filename}"), format!("/{filename}?v=stale")] {
+                assert_eq!(
+                    get_path(&fixture, &invalid, None, Some(prefix))
+                        .await
+                        .status(),
+                    StatusCode::NOT_FOUND
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn native_home_runtime_loads_shared_handlers_before_hydration() {
+    use sha2::{Digest, Sha256};
+    let fixture = fixture();
+    let url = super::super::assets::runtime_url();
+    let response = get_path(&fixture, url, None, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let source = std::str::from_utf8(&body).unwrap();
+    for (line, filename) in source.lines().take(3).zip([
+        "__native-home-shell.js",
+        "__native-workspace.js",
+        "__native-sidebar.js",
+    ]) {
+        assert!(
+            line.starts_with("import ") && line.contains(&format!("./{filename}?v=")),
+            "Runtime must finish loading generated handlers before it hydrates controls: {line}"
+        );
+    }
+    assert_eq!(
+        url,
+        format!("/__topcoat-runtime.js?v={:x}", Sha256::digest(&body))
     );
 }
 
@@ -268,12 +378,12 @@ async fn native_home_initial_html_keeps_navigation_handlers_shared_as_catalog_gr
         expanded.len()
     );
     assert!(
-        expanded.len() < 220_000,
+        expanded.len() < 135_000,
         "45-project GET / must not repeat full navigation controllers: {} bytes",
         expanded.len()
     );
     assert!(
-        expanded.len() < initial.len() + 44 * 2_200,
+        expanded.len() < initial.len() + 44 * 1_450,
         "Catalog growth must add markup and action arguments, not controller bodies: {} -> {} bytes",
         initial.len(),
         expanded.len()

@@ -13,7 +13,7 @@ const {mountedProxy, launchBrowser} = require('./browser_fixture.cjs');
 const snapshot = process.argv[4];
 const output = '/tmp/lific-native-home-production';
 const fixedTime = '2026-10-03T16:00:00Z';
-const runtimeVersion = createHash('sha256').update(fs.readFileSync(path.resolve(__dirname, '../assets/runtime.js'))).digest('hex');
+const runtimeSource = fs.readFileSync(path.resolve(__dirname, '../assets/runtime.js'), 'utf8');
 function checkpoint(message) {
   const line = `${new Date().toISOString()} ${message}\n`;
   process.stderr.write(line);
@@ -115,8 +115,17 @@ async function assertNativeHome(state, proxy, prefix) {
   }
   assert.equal(initial.includes('Private hidden'), false, 'Initial HTML must not contain inaccessible project or issue data.');
   assert.equal(initial.includes('Loading your dashboard'), false);
-  assert.deepEqual(await page.locator('script[src]').evaluateAll(elements => elements.map(element => element.getAttribute('src'))),
-    [`${prefix}/__topcoat-runtime.js?v=${runtimeVersion}`], 'The production Home loads only the framework runtime.');
+  const scripts = await page.locator('script[src]').evaluateAll(elements => elements.map(element => element.getAttribute('src')));
+  assert.equal(scripts.length, 1, 'Home has one framework entry point and no retired controllers.');
+  const runtimeUrl = new URL(scripts[0], proxy.origin);
+  assert.equal(runtimeUrl.pathname, `${prefix}/__topcoat-runtime.js`);
+  assert.equal(runtimeUrl.origin, proxy.origin);
+  const runtimeResponse = await page.request.get(runtimeUrl.href);
+  assert.equal(runtimeResponse.status(), 200);
+  const servedRuntime = await runtimeResponse.body();
+  assert.equal(runtimeUrl.searchParams.get('v'), createHash('sha256').update(servedRuntime).digest('hex'),
+    'The runtime URL fingerprints its generated imports and complete framework bytes.');
+  assert.ok(servedRuntime.toString('utf8').endsWith(runtimeSource), 'The entry point retains the complete framework runtime.');
   await page.locator('#native-home-greeting').filter({hasText: 'Good morning, viewer'}).waitFor();
   assert.equal(await page.locator('#native-home-greeting').textContent(), 'Good morning, viewer');
   assert.equal(await page.locator('#native-home-date').textContent(), 'Saturday, October 3');

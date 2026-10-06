@@ -3,7 +3,10 @@
 use super::super::runtime::{SocketLifetime, SocketRetirement, connected_untracked};
 use topcoat::{
     context::{Cx, app_context},
-    runtime::{Event, expr, procedure, signal},
+    runtime::{
+        BoolSurrogate, Event, I64Surrogate, Js, SignalSurrogate, Surrogated, expr, procedure,
+        signal,
+    },
     view::Attributes,
 };
 
@@ -177,19 +180,45 @@ pub(crate) fn account_mount(cx: &Cx, account_id: i64, is_admin: bool) -> Attribu
     let busy = signal(cx, || false);
     let pending = signal(cx, || false);
     let revision = signal(cx, || 0usize);
-    let failed_busy = busy.clone();
-    let failed_pending = pending.clone();
-    let failed_revision = revision.clone();
-    let ready_pending = pending.clone();
-    let ready_revision = revision.clone();
-    let request_busy = busy.clone();
-    let request_pending = pending.clone();
-    let request_revision = revision.clone();
-    let check_pending = pending.clone();
-    let disposed_busy = busy.clone();
-    let disposed_pending = pending.clone();
-    let disposed_revision = revision.clone();
-    let handler = expr!(|_mount: Event| {
+    let handles = (&busy, &pending, &revision).into_surrogate();
+    let arguments = Js::builder()
+        .source("[")
+        .surrogate(&handles)
+        .source(",")
+        .surrogate(&account_id.into_surrogate())
+        .source(",")
+        .surrogate(&is_admin.into_surrogate())
+        .source("]")
+        .build();
+    let key = format!("{}#account-focus", super::home_shell::handler_url());
+    super::handler_asset::mount(cx, &key, arguments)
+}
+
+/// The mounted account owner retains focus coalescing and fresh-cookie checks.
+pub(crate) fn account_handler_factory() -> Js {
+    let handler = expr!(|_mount: Event,
+                         handles: (
+        &SignalSurrogate<bool>,
+        &SignalSurrogate<bool>,
+        &SignalSurrogate<usize>,
+    ),
+                         account_id: I64Surrogate,
+                         is_admin: BoolSurrogate| {
+        let busy = handles.0;
+        let pending = handles.1;
+        let revision = handles.2;
+        let failed_busy = busy;
+        let failed_pending = pending;
+        let failed_revision = revision;
+        let ready_pending = pending;
+        let ready_revision = revision;
+        let request_busy = busy;
+        let request_pending = pending;
+        let request_revision = revision;
+        let check_pending = pending;
+        let disposed_busy = busy;
+        let disposed_pending = pending;
+        let disposed_revision = revision;
         let _dispose = || {
             disposed_revision.increment();
             disposed_busy.set(false);
@@ -281,13 +310,7 @@ pub(crate) fn account_mount(cx: &Cx, account_id: i64, is_admin: bool) -> Attribu
             ()
         );
     });
-    let mut attributes = Attributes::with_capacity(1);
-    attributes.insert(
-        cx,
-        "data-topcoat-on:mount",
-        handler.into_evaluated_and_js().1,
-    );
-    attributes
+    handler.into_evaluated_and_js().1
 }
 
 #[cfg(test)]

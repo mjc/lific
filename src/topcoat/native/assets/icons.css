@@ -6,3 +6,12 @@ svg.native-icon {
   stroke-linejoin: round;
   flex-shrink: 0;
 }
+
+span.native-icon-mask {
+  display: inline-block;
+  flex-shrink: 0;
+  background-color: currentColor;
+  mask-size: contain;
+  mask-position: center;
+  mask-repeat: no-repeat;
+}
