@@ -4,6 +4,7 @@ const assert=require('node:assert/strict');
 const path=require('node:path');
 const readline=require('node:readline');
 const {mountedProxy,launchBrowser}=require(path.join(process.cwd(),'src/topcoat/native/browser_fixture.cjs'));
+const {openPhoneNavigation}=require('./sidebar.browser.fixture.cjs');
 const upstream=new URL(process.argv[2]),token=process.argv[3],scenario=process.argv[4],seed=JSON.parse(process.argv[5]);
 const input=readline.createInterface({input:process.stdin});
 let pending;
@@ -14,9 +15,7 @@ const recent=page=>page.locator('[data-topcoat-recents]:visible').first();
 function recentLink(page,href){return recent(page).locator(`a[data-recents-href="${href}"]`);}
 async function openPhone(page,phone){
   if(!phone)return;
-  const nav=page.locator('[data-native-mobile-nav]');
-  if(!await nav.isVisible())await page.getByRole('button',{name:'Open navigation',exact:true}).click();
-  await nav.waitFor({state:'visible'});
+  await openPhoneNavigation(page);
   if(await page.locator('[data-native-mobile-root]').isVisible())await page.getByRole('button',{name:'Open Visible project navigation',exact:true}).click();
 }
 async function showRows(page,phone){

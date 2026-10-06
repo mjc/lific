@@ -2672,8 +2672,8 @@
     "scope": "One initial catalog, compact sidebar action metadata, shared signal captures, and first-use phone chrome. Unfinished native features and original adapter gaps remain open.",
     "measurement": {
       "projects": 45,
-      "document_bytes": 214832,
-      "one_project_document_bytes": 136477,
+      "document_bytes": 214724,
+      "one_project_document_bytes": 136369,
       "document_budget_bytes": 220000,
       "per_additional_project_budget_bytes": 2200,
       "source": "Actual GET / response bodies from the production router fixture. These are fixture sizes, not a measurement of an operator database."
@@ -2689,14 +2689,39 @@
       "failed": 0,
       "contracts": "Closed phone/palette omission, one catalog, shared captures, first-use/history focus, held-panel adoption, newer focus, and recents retention."
     },
-    "workspace": {
+    "browser_evidence": "Actual native transport and pinned-original desktop/phone light/dark comparisons pass. Phone initialization stays at exactly one parent POST through project selection and Back/Forward. Existing focus, held-response, authorization, retained-row, and frontend REST boundaries remain asserted.",
+    "remaining_coverage": "Historical missing native adapters and unported routes remain gaps. Passing the Rust workspace does not close them.",
+    "workspace_before_argument_refactor": {
       "command": "cargo nextest run --workspace --all-targets --locked --run-ignored all --test-threads 4 --no-fail-fast",
       "tests": 3392,
       "passed": 3392,
       "failed": 0,
       "skipped": 0
     },
-    "browser_evidence": "Actual native transport and pinned-original desktop/phone light/dark comparisons pass. Phone initialization stays at exactly one parent POST through project selection and Back/Forward. Existing focus, held-response, authorization, retained-row, and frontend REST boundaries remain asserted.",
-    "remaining_coverage": "Historical missing native adapters and unported routes remain gaps. Passing the Rust workspace does not close them."
+    "workspace": {
+      "command": "cargo nextest run --workspace --all-targets --locked --run-ignored all --test-threads 4 --no-fail-fast --success-output immediate",
+      "source_commit": "081b2f0d",
+      "tests": 3392,
+      "passed": 3391,
+      "failed": 1,
+      "skipped": 0,
+      "failure": "A shared phone test helper clicked Open navigation during owned-history restoration before lazy dialog arrival. The helper now observes the actual trigger aria-expanded state and waits for admitted DOM."
+    },
+    "corrected_cases": {
+      "tests": 6,
+      "passed": 6,
+      "failed": 0,
+      "scope": "Both authenticated and optional-auth personal-order rollback suites, plus all four recents suites. Shared phone-open helper uses the declared owner state; original transaction, focus, and retained-node assertions remain."
+    },
+    "rollback_timeout_observation": "A separate focused rollback run timed out waiting for the genuine finish response. The listener was installed before delivery. Transport diagnostics preserve the original five-second bound; the subsequent six-case run passed. No production fix or cause is claimed for this additional timeout.",
+    "rollback_stress": {
+      "distinct_tests": 2,
+      "iterations": 3,
+      "executions": 6,
+      "passed": 6,
+      "failed": 0,
+      "command": "cargo nextest run --workspace --all-targets --locked --no-fail-fast --test-threads 4 --stress-count 3 -E test(order_production)"
+    },
+    "documentation": "cargo doc --workspace --no-deps --locked completes; existing documentation warnings remain. The binary-only workspace has no library doctest targets."
   }
 }
