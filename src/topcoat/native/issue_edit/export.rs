@@ -1,5 +1,6 @@
 //! Viewer-authorized native downloads and their independent toolbar state.
 
+use super::super::icons::UiIcon;
 use topcoat::{
     context::Cx,
     router::{Body, path_param, response::Response, route},
@@ -92,7 +93,7 @@ pub(crate) fn toolbar_fragments<'a>(cx: &'a Cx, identifier: &str) -> (BoxView<'a
                     ()
                 );
             })>
-            (super::super::icons::project_icon(cx, Some("lucide:Download"), 14))
+            (super::super::icons::ui_icon(cx, UiIcon::Download, 14))
             <span class="native-issue-detail__export-label" :hidden=$(exporting.get())>"Export"</span>
             <span class="native-issue-detail__export-label" :hidden=$(!exporting.get())>"Exporting..."</span>
         </button>

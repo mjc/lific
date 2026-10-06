@@ -28,6 +28,11 @@ async fn browser(fixture: &Fixture, scenario: &str) {
 }
 
 #[tokio::test]
+async fn native_home_browser_preloads_share_downloads_with_external_svg_references() {
+    browser(&home_fixture::fixture(), "preloads").await;
+}
+
+#[tokio::test]
 async fn native_home_browser_skip_link_focuses_main_at_every_mount() {
     browser(&home_fixture::fixture(), "accessibility").await;
 }

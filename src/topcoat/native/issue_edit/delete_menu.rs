@@ -1,4 +1,5 @@
 //! Issue confirmation UI; the persistent workspace owns deferred deletion.
+use super::super::icons::UiIcon;
 use topcoat::{
     context::Cx,
     runtime::{BoolSurrogate, Event, StringSurrogate, expr, signal},
@@ -97,10 +98,10 @@ async fn delete_menu(cx: &Cx, request: Request, project: String) -> topcoat::Res
             <button type="button" class="native-issue-detail__more" title="More actions" @click=$(|_event: Event| {
                 if confirming.get() { confirming.set(false); menu_open.set(false); }
                 else { menu_open.set(!menu_open.get()); }
-            })>(super::super::icons::project_icon(cx, Some("lucide:Ellipsis"), 14))</button>
+            })>(super::super::icons::ui_icon(cx, UiIcon::MoreActions, 14))</button>
             <div class="native-issue-detail__delete-menu" :hidden=$(if menu_open.get() { confirming.get() } else { true })>
                 <button type="button" class="native-issue-detail__delete-option" @click=$(|_event: Event| confirming.set(true))>
-                    (super::super::icons::project_icon(cx, Some("lucide:Trash2"), 14))"Delete issue"
+                    (super::super::icons::ui_icon(cx, UiIcon::Delete, 14))"Delete issue"
                 </button>
             </div>
             <div class="native-issue-detail__delete-confirm" :hidden=$(!confirming.get())>

@@ -1,5 +1,6 @@
 //! Sidebar decisions shared by desktop and phone wrappers.
 
+use super::super::icons::UiIcon;
 use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -553,18 +554,18 @@ pub(crate) const DESTINATIONS: [Destination; 10] = [
     Destination::Insights,
 ];
 impl Destination {
-    pub(crate) fn row(self) -> (&'static str, &'static str, &'static str) {
+    pub(crate) fn row(self) -> (&'static str, &'static str, UiIcon) {
         match self {
-            Self::Overview => ("overview", "Overview", "lucide:LayoutDashboard"),
-            Self::Issues => ("issues", "Issues", "lucide:List"),
-            Self::Board => ("board", "Board", "lucide:LayoutGrid"),
-            Self::Graph => ("graph", "Graph", "lucide:Waypoints"),
-            Self::Modules => ("modules", "Modules", "lucide:Layers"),
-            Self::Pages => ("pages", "Pages", "lucide:FileText"),
-            Self::Files => ("files", "Files", "lucide:Paperclip"),
-            Self::Plans => ("plans", "Plans", "lucide:ListChecks"),
-            Self::Activity => ("activity", "Activity", "lucide:History"),
-            Self::Insights => ("insights", "Insights", "lucide:TrendingUp"),
+            Self::Overview => ("overview", "Overview", UiIcon::Overview),
+            Self::Issues => ("issues", "Issues", UiIcon::Issues),
+            Self::Board => ("board", "Board", UiIcon::Board),
+            Self::Graph => ("graph", "Graph", UiIcon::Graph),
+            Self::Modules => ("modules", "Modules", UiIcon::Modules),
+            Self::Pages => ("pages", "Pages", UiIcon::Pages),
+            Self::Files => ("files", "Files", UiIcon::Files),
+            Self::Plans => ("plans", "Plans", UiIcon::Plans),
+            Self::Activity => ("activity", "Activity", UiIcon::Activity),
+            Self::Insights => ("insights", "Insights", UiIcon::Insights),
         }
     }
     pub(crate) fn active(self, identifier: &str, path: &str) -> bool {

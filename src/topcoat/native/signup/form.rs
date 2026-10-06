@@ -1,5 +1,6 @@
 //! Main's signup form, validation feedback and completion state in Rust.
 use super::super::super::runtime::whitespace::StrEcmaTrimExt;
+use super::super::icons::UiIcon;
 use super::super::{icons, transport};
 use super::{actions::sign_up, validation};
 use topcoat::{
@@ -115,7 +116,7 @@ pub(super) fn content(cx: &Cx, open: bool) -> BoxView<'_> {
     if !open {
         let login = transport::mounted_url(cx, "/login");
         return view! {cx=> <div class="flex flex-col gap-5">
-            <div class="flex items-start gap-2.5 text-body-sm text-[var(--text-muted)] bg-[var(--bg-subtle)] px-3.5 py-3 rounded-lg"><span class="shrink-0 mt-0.5 inline-flex">(icons::project_icon(cx,Some("lucide:Lock"),15))</span><span>"New accounts on this instance are created by whoever runs it. Ask them to add you, then come back and sign in."</span></div>
+            <div class="flex items-start gap-2.5 text-body-sm text-[var(--text-muted)] bg-[var(--bg-subtle)] px-3.5 py-3 rounded-lg"><span class="shrink-0 mt-0.5 inline-flex">(icons::ui_icon(cx,UiIcon::Restricted,15))</span><span>"New accounts on this instance are created by whoever runs it. Ask them to add you, then come back and sign in."</span></div>
             <button type="button" class=(BUTTON) @click=$(|_event:Event|{raw!("window.location.assign(${login}.toString());",());})>"Go to sign in"</button>
         </div>}.boxed();
     }
@@ -206,7 +207,7 @@ pub(super) fn content(cx: &Cx, open: bool) -> BoxView<'_> {
     );
     view! {cx=>
         <form class="flex flex-col gap-5 [--signup-weak:#c2492f] dark:[--signup-weak:#e06a50] [--signup-fair:#c97a17] dark:[--signup-fair:#e0a54a]" novalidate="novalidate" (command)>
-            <div aria-live="polite"><div role="alert" :hidden=$(error.get().is_empty()) class="[&[hidden]]:hidden flex items-start gap-2.5 text-body-sm text-[var(--error)] bg-[var(--tc-error-bg)] px-3.5 py-3 rounded-lg"><span class="shrink-0 mt-0.5 inline-flex">(icons::project_icon(cx,Some("lucide:AlertTriangle"),15))</span><span>$(error.get())</span></div></div>
+            <div aria-live="polite"><div role="alert" :hidden=$(error.get().is_empty()) class="[&[hidden]]:hidden flex items-start gap-2.5 text-body-sm text-[var(--error)] bg-[var(--tc-error-bg)] px-3.5 py-3 rounded-lg"><span class="shrink-0 mt-0.5 inline-flex">(icons::ui_icon(cx,UiIcon::Warning,15))</span><span>$(error.get())</span></div></div>
             <div class="flex flex-col gap-1.5">
                 <label for="signup-username" class="text-micro font-semibold uppercase tracking-widest text-[var(--text-faint)]">"Username"</label>
                 <input id="signup-username" type="text" placeholder="jane" autocomplete="username" autocapitalize="none" spellcheck="false" class=(INPUT)

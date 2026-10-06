@@ -1,4 +1,5 @@
 //! Whole-project archives use native HTTP adapters with fresh human-cookie fences.
+use super::super::icons::UiIcon;
 use super::super::{context, icons, session, transport};
 use topcoat::{
     context::{Cx, app_context},
@@ -132,6 +133,6 @@ pub(super) fn panel<'a>(
             }
             };
             raw!("document.getElementById(${_listener_id}.toString()).addEventListener('click',${_click},{signal:cx.abortSignal})",());
-        })>(icons::project_icon(cx,Some("lucide:Download"),14))$(if busy.get(){"Preparing archive..."}else{"Download project archive"})</button>
+        })>(icons::ui_icon(cx,UiIcon::Download,14))$(if busy.get(){"Preparing archive..."}else{"Download project archive"})</button>
     </section>}.boxed())
 }

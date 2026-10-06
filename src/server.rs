@@ -627,6 +627,12 @@ mod topcoat_app_tests {
 }
 
 async fn add_security_headers(mut request: Request<Body>, next: middleware::Next) -> Response {
+    let image_preloads = (request.method() == Method::GET
+        && !request.headers().contains_key(header::UPGRADE))
+    .then(topcoat_frontend::native::preloads::ImagePreloads::default);
+    if let Some(images) = &image_preloads {
+        request.extensions_mut().insert(images.clone());
+    }
     let prefix = trusted_forwarded_prefix(&request).map(str::to_owned);
     // The framework carries the server's verified peer into native requests and sockets.
     if let Some(peer) = request
@@ -681,6 +687,16 @@ async fn add_security_headers(mut request: Request<Body>, next: middleware::Next
                 }
             }
         }
+    }
+    if response.status().is_success()
+        && response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with("text/html"))
+        && let Some(images) = image_preloads
+    {
+        images.append_to(response.headers_mut());
     }
     let headers = response.headers_mut();
     for (name, value) in [

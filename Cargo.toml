@@ -48,6 +48,8 @@ comrak = { version = "=0.55.0", default-features = false }
 ammonia = "=4.2.0"
 scraper = { version = "=0.27.0", default-features = false }
 regex = "1"
+# Semantic UI icon names and sprite membership derive from one enum.
+strum = { version = "=0.28.0", default-features = false, features = ["derive"] }
 # HTTP
 axum = { version = "0.8", features = ["json", "multipart", "ws"] }
 topcoat = { version = "=0.9.0", default-features = false, features = ["asset", "discover", "router", "runtime", "tower", "view"] }

@@ -71,7 +71,7 @@ pub(super) async fn choices(
                             raw!("document.getElementById('native-project-icon-trigger')?.dispatchEvent(new Event('native-project-icon-change',{bubbles:true}));",());
                             raw!("queueMicrotask(() => document.getElementById('native-project-icon-trigger')?.focus());", ());
                         })>
-                        (super::super::icons::project_icon(cx, Some(&value), if value == "lific:logo" { 20 } else { 18 }))
+                        (super::super::icons::picker_choice_icon(cx, Some(&value), if value == "lific:logo" { 20 } else { 18 }))
                     </button>
                 }
             </div>

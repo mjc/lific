@@ -47,6 +47,153 @@ async fn get_path(
 }
 
 #[tokio::test]
+async fn native_document_preloads_selected_images_once_before_body_at_every_mount() {
+    use std::collections::BTreeSet;
+
+    let fixture = fixture();
+    let cookie = format!("lific_token={}", fixture.token);
+    for prefix in ["", "/app", "/ACC"] {
+        let response = get(&fixture, Some(&cookie), Some(prefix)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        // Headers must be ready before the caller reads any response body.
+        let links = response
+            .headers()
+            .get_all("link")
+            .iter()
+            .flat_map(|value| value.to_str().unwrap().split(", ").map(str::to_owned))
+            .collect::<Vec<_>>();
+        assert!(!links.is_empty(), "initial images need HTTP preload hints");
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let html = std::str::from_utf8(&body).unwrap();
+        let document = scraper::Html::parse_document(html);
+        let uses = scraper::Selector::parse("svg.native-icon > use[href]").unwrap();
+        let mut images = document
+            .select(&uses)
+            .map(|node| {
+                node.value()
+                    .attr("href")
+                    .unwrap()
+                    .split('#')
+                    .next()
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect::<BTreeSet<_>>();
+        images.insert(format!("{prefix}/logo.webp"));
+        assert!(images.iter().any(|url| url.ends_with("/ui.svg")));
+        for name in ["Circle", "CircleDot"] {
+            assert!(document.select(&uses).any(|node| {
+                node.value()
+                    .attr("href")
+                    .unwrap()
+                    .ends_with(&format!("/ui.svg#{name}"))
+            }));
+        }
+        assert!(
+            links.iter().map(String::len).sum::<usize>() < 1_024,
+            "fixed UI hints fit comfortably within proxy header buffers"
+        );
+        let expected = images
+            .iter()
+            .map(|url| format!("<{url}>; rel=preload; as=image"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            links, expected,
+            "preload exactly the selected static images"
+        );
+    }
+
+    for (path, token) in [("/", None), ("/api/projects", Some(cookie.as_str()))] {
+        let response = get_path(&fixture, path, token, None).await;
+        assert!(
+            !response.headers().contains_key("link"),
+            "redirects and REST responses must not preload page images"
+        );
+    }
+}
+
+#[tokio::test]
+async fn native_document_preloads_use_one_http_field_for_selected_assets() {
+    let fixture = fixture();
+    let cookie = format!("lific_token={}", fixture.token);
+    let response = get(&fixture, Some(&cookie), None).await;
+    assert_eq!(response.headers().get_all("link").iter().count(), 1);
+}
+
+#[tokio::test]
+async fn native_document_preloads_omit_unopened_icon_picker_choices() {
+    use std::collections::BTreeSet;
+
+    let fixture = fixture();
+    let token = {
+        let conn = fixture.db.write().unwrap();
+        let admin = queries::users::get_user_by_username(&conn, "admin").unwrap();
+        queries::users::create_session(&conn, admin.id, None)
+            .unwrap()
+            .token
+    };
+    let cookie = format!("lific_token={token}");
+    for prefix in ["", "/app", "/ACC"] {
+        let response = get_path(&fixture, "/ACC/overview", Some(&cookie), Some(prefix)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let links = response
+            .headers()
+            .get_all("link")
+            .iter()
+            .flat_map(|value| value.to_str().unwrap().split(", ").map(str::to_owned))
+            .collect::<Vec<_>>();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let html = std::str::from_utf8(&body).unwrap();
+        let document = scraper::Html::parse_document(html);
+        let choices = scraper::Selector::parse(".native-project-picker-choice").unwrap();
+        assert_eq!(
+            document.select(&choices).count(),
+            80,
+            "retain the original picker grid"
+        );
+        let uses = scraper::Selector::parse("svg.native-icon > use[href]").unwrap();
+        let mut images = document
+            .select(&uses)
+            .filter(|node| {
+                !node.ancestors().any(|ancestor| {
+                    ancestor
+                        .value()
+                        .as_element()
+                        .and_then(|element| element.attr("class"))
+                        .is_some_and(|class| {
+                            class
+                                .split_whitespace()
+                                .any(|value| value == "native-project-picker-choice")
+                        })
+                })
+            })
+            .map(|node| {
+                node.value()
+                    .attr("href")
+                    .unwrap()
+                    .split('#')
+                    .next()
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect::<BTreeSet<_>>();
+        images.insert(format!("{prefix}/logo.webp"));
+        let expected = images
+            .iter()
+            .map(|url| format!("<{url}>; rel=preload; as=image"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            links, expected,
+            "unopened picker choices are not initial image hints"
+        );
+    }
+}
+
+#[tokio::test]
 async fn native_home_icons_use_selected_immutable_assets_at_every_mount() {
     let fixture = fixture();
     let cookie = format!("lific_token={}", fixture.token);
@@ -83,12 +230,13 @@ async fn native_home_icons_use_selected_immutable_assets_at_every_mount() {
             .await
             .unwrap();
         assert!(
-            svg.len() < 2_000,
-            "Serve only the selected icon, not the catalog"
+            svg.len() < 16_000,
+            "Serve the fixed UI sprite, not the picker catalog"
         );
         let svg = std::str::from_utf8(&svg).unwrap();
         assert!(svg.contains("xmlns=\"http://www.w3.org/2000/svg\""));
-        assert!(svg.contains("id=\"icon\""));
+        let fragment = href.split_once('#').unwrap().1;
+        assert!(svg.contains(&format!("id=\"{fragment}\"")));
         assert!(!svg.contains("<script") && !svg.contains("<use"));
         let base = path.rsplit_once('/').unwrap().0;
         for invalid in [

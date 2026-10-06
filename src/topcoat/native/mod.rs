@@ -49,6 +49,7 @@ pub(crate) mod numbers;
 pub(crate) mod palette_reference;
 #[cfg(test)]
 mod palette_reference_production;
+pub(crate) mod preloads;
 #[cfg(test)]
 pub(crate) mod probe;
 pub(crate) mod public_route;

@@ -1,5 +1,6 @@
 //! Original Home right rail. Inputs are display data, never authorization.
 
+use super::icons::UiIcon;
 use topcoat::{
     context::Cx,
     view::{BoxView, ViewExt, view},
@@ -48,9 +49,9 @@ pub(crate) fn right_rail_with_rate<'a>(
         .filter_map(|recent| {
             let destination = home_local::recent_route(&recent)?;
             let icon = match recent.kind {
-                RecentType::Issue => "lucide:CircleDot",
-                RecentType::Page => "lucide:FileText",
-                RecentType::Plan => "lucide:ListChecks",
+                RecentType::Issue => UiIcon::IssueLink,
+                RecentType::Page => UiIcon::Page,
+                RecentType::Plan => UiIcon::Plans,
             };
             Some((
                 mounted_url(cx, &destination),
@@ -91,11 +92,11 @@ pub(crate) fn right_rail_with_rate<'a>(
         <aside class="tc-home-sections">
             if has_recents {
                 <section data-home-section="recents">
-                    (heading(cx, "lucide:History", "Recently viewed"))
+                    (heading(cx, UiIcon::History, "Recently viewed"))
                     <div class="tc-home-sections__rows">
                         for (destination, title, project, icon) in recent_rows {
                             <a class="tc-home-sections__row" href=(destination)>
-                                <span class="tc-home-sections__icon">(super::icons::project_icon(cx, Some(icon), 13))</span>
+                                <span class="tc-home-sections__icon">(super::icons::ui_icon(cx, icon, 13))</span>
                                 <span class="tc-home-sections__title">(title)</span>
                                 <span class="tc-home-sections__project">(project)</span>
                             </a>
@@ -105,11 +106,11 @@ pub(crate) fn right_rail_with_rate<'a>(
             }
             if has_pinned_pages {
                 <section data-home-section="pinned">
-                    (heading(cx, "lucide:Pin", "Pinned pages"))
+                    (heading(cx, UiIcon::Pinned, "Pinned pages"))
                     <div class="tc-home-sections__rows">
                         for (destination, title, project) in pinned_rows {
                             <a class="tc-home-sections__row" href=(destination)>
-                                <span class="tc-home-sections__icon">(super::icons::project_icon(cx, Some("lucide:FileText"), 13))</span>
+                                <span class="tc-home-sections__icon">(super::icons::ui_icon(cx, UiIcon::Page, 13))</span>
                                 <span class="tc-home-sections__title">(title)</span>
                                 <span class="tc-home-sections__project">(project)</span>
                             </a>
@@ -121,7 +122,7 @@ pub(crate) fn right_rail_with_rate<'a>(
                 <section data-home-section="activity">
                     <div class="tc-home-sections__heading" style="justify-content:space-between">
                         <div style="display:flex;align-items:center;gap:.5rem;min-width:0">
-                            <span class="tc-home-sections__icon">(super::icons::project_icon(cx, Some("lucide:ArrowUpRight"), 12))</span>
+                            <span class="tc-home-sections__icon">(super::icons::ui_icon(cx, UiIcon::RecentActivity, 12))</span>
                             <h2>"Recent activity"</h2>
                         </div>
                         <span style="font-size:.6875rem;color:var(--tc-faint);font-variant-numeric:tabular-nums;text-align:right">(activity_rate)</span>
@@ -147,14 +148,15 @@ pub(crate) fn right_rail_with_rate<'a>(
     }.boxed()
 }
 
-fn heading<'a>(cx: &'a Cx, icon: &'static str, title: &str) -> BoxView<'a> {
+fn heading<'a>(cx: &'a Cx, icon: UiIcon, title: &str) -> BoxView<'a> {
     let title = title.to_owned();
     view! { cx =>
         <div class="tc-home-sections__heading">
-            <span class="tc-home-sections__icon">(super::icons::project_icon(cx, Some(icon), 12))</span>
+            <span class="tc-home-sections__icon">(super::icons::ui_icon(cx, icon, 12))</span>
             <h2>(title)</h2>
         </div>
-    }.boxed()
+    }
+    .boxed()
 }
 
 fn activity_text(cx: &Cx, actor: String, verb: String, label: Option<String>) -> BoxView<'_> {

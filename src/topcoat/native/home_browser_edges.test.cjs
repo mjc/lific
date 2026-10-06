@@ -13,7 +13,7 @@ const output = '/tmp/lific-native-home-edges';
 const fixedTime = '2026-10-03T16:00:00Z';
 
 test(`production native Home ${scenario}`, async t => {
-  assert.ok(['accessibility', 'storage', 'quiet'].includes(scenario));
+  assert.ok(['accessibility', 'storage', 'quiet', 'preloads'].includes(scenario));
 
   fs.mkdirSync(output, {recursive: true});
 
@@ -37,17 +37,51 @@ test(`production native Home ${scenario}`, async t => {
       }, scenario === 'storage');
       const page = await context.newPage();
       page.setDefaultTimeout(15000);
-      await page.clock.setFixedTime(fixedTime);
+      // Playwright's clock replaces resource timing with empty arrays.
+      if (scenario !== 'preloads') await page.clock.setFixedTime(fixedTime);
       page.on('pageerror', error => errors.push(error.message));
       page.on('console', message => {if (message.type() === 'error') errors.push(message.text());});
       try {
         const response = await page.goto(`${proxy.origin}${prefix}/`);
         assert.equal(response.status(), 200);
         await page.locator('[data-native-home-connected="true"]').first().waitFor();
-        await page.locator('#native-home-greeting').filter({hasText: 'Good morning, viewer'}).waitFor();
-        assert.equal(await page.locator('#native-home-date').textContent(), 'Saturday, October 3');
+        if (scenario !== 'preloads') {
+          await page.locator('#native-home-greeting').filter({hasText: 'Good morning, viewer'}).waitFor();
+          assert.equal(await page.locator('#native-home-date').textContent(), 'Saturday, October 3');
+        }
 
-        if (scenario === 'accessibility') {
+        if (scenario === 'preloads') {
+          const hints = [...((await response.headers()).link || '').matchAll(/<([^>]+)>; rel=preload; as=image/g)]
+            .map(match => match[1]);
+          assert.ok(hints.some(url => url.endsWith('/ui.svg')));
+          assert.ok(hints.includes(`${prefix}/logo.webp`));
+          assert.equal(new Set(hints).size, hints.length);
+          for (const url of hints) {
+            const downloads = proxy.requests.filter(request => request.path === url);
+            assert.equal(downloads.length, 1, `One actual download for preloaded ${url}`);
+          }
+          for (const name of ['Circle', 'CircleDot']) {
+            const uses = page.locator(`svg.native-icon > use[href$="/ui.svg#${name}"]`);
+            assert.ok(await uses.count() > 0);
+            await page.waitForFunction(name => {
+              const use = document.querySelector(`svg.native-icon > use[href$="/ui.svg#${name}"]`);
+              const box = use?.getBBox();
+              return box?.width === 20 && box?.height === 20;
+            }, name);
+            const paint = await uses.first().evaluate(use => {
+              const style = getComputedStyle(use);
+              return {fill: style.fill, stroke: style.stroke, width: style.strokeWidth};
+            });
+            assert.equal(paint.fill, 'none');
+            assert.notEqual(paint.stroke, 'none');
+            assert.equal(paint.width, '2px');
+          }
+          const timings = await page.evaluate(() => performance.getEntriesByType('resource')
+            .filter(entry => new URL(entry.name).pathname.endsWith('/ui.svg'))
+            .map(entry => ({url: entry.name, initiator: entry.initiatorType, transfer: entry.transferSize})));
+          assert.ok(timings.some(entry => entry.initiator === 'link' && entry.transfer > 0),
+            `Browser starts the actual SVG download from the response header: ${JSON.stringify(timings)}`);
+        } else if (scenario === 'accessibility') {
           const skip = page.locator('a[href="#main-content"]');
           assert.equal(await skip.count(), 1, 'Native Home exposes one skip link.');
           const main = page.locator('main#main-content');

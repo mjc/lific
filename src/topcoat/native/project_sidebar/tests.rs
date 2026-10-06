@@ -1,5 +1,34 @@
 use super::*;
 
+#[tokio::test]
+async fn destination_icons_preserve_main_glyphs() {
+    use topcoat::view::ViewExt;
+    let cx = topcoat::context::Cx::default();
+    for (destination, glyph) in [
+        (Destination::Overview, "LayoutDashboard"),
+        (Destination::Issues, "List"),
+        (Destination::Board, "LayoutGrid"),
+        (Destination::Graph, "Waypoints"),
+        (Destination::Modules, "Layers"),
+        (Destination::Pages, "FileText"),
+        (Destination::Files, "Paperclip"),
+        (Destination::Plans, "ListChecks"),
+        (Destination::Activity, "History"),
+        (Destination::Insights, "TrendingUp"),
+    ] {
+        let (_, _, icon) = destination.row();
+        let html = super::super::super::icons::ui_icon(&cx, icon, 14)
+            .single()
+            .await
+            .unwrap()
+            .render(&cx);
+        assert!(
+            html.contains(&format!("/ui.svg#{glyph}\"")),
+            "{destination:?}: {html}"
+        );
+    }
+}
+
 fn catalog(generation: u64) -> Catalog {
     Catalog {
         owner: 7,

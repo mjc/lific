@@ -1,4 +1,5 @@
 //! Native label vocabulary: create, rename, recolor, delete, merge and usage.
+use super::super::icons::UiIcon;
 use super::super::{context, icons, session, transport};
 use super::labels_actions::{mutate, normalize_color, stamp_filter};
 use super::{collation, labels_model as model};
@@ -238,7 +239,7 @@ pub(super) fn panel<'a>(
     );
     let identifier = identifier.to_owned();
     view!{cx=><section class="native-overview__labels" @mount=$(|_event:Event|collation.set(raw!("cx.hydrate(JSON.stringify(new Intl.Collator().resolvedOptions()))",String::new())))>
-        <div class="native-overview__heading"><h2>(icons::project_icon(cx,Some("lucide:Tag"),14))" Labels "<span :hidden=$(count.get()==0_usize)>$(count.get())</span></h2>
+        <div class="native-overview__heading"><h2>(icons::ui_icon(cx,UiIcon::Labels,14))" Labels "<span :hidden=$(count.get()==0_usize)>$(count.get())</span></h2>
             <div class="native-overview__label-toolbar" :hidden=$(count.get()<=1_usize)><input aria-label="Filter labels" placeholder="Filter…" :hidden=$(count.get()<=8_usize) :value=$(filter.get()) @input=$(|event:Event|filter.set(event.target.value.to_owned())) />
             <span>"Sort"</span>for (value,label) in [("name","A–Z"),("usage","Most used"),("newest","Newest")] {<button type="button" :aria-pressed=$(sort.get()==value) @click=$(|_event:Event|sort.set(value.to_owned()))>(label)</button>}
             </div>
@@ -248,7 +249,7 @@ pub(super) fn panel<'a>(
                 native_overview_label_create_color(account:account,project:project,name:$(name.get()),color:color.clone(),touched:touched.clone(),chosen:$(color.get()),locked:$(touched.get()))
                 <input maxlength="40" aria-label="New label name" placeholder="New label name…" :value=$(name.get()) @input=$(|event:Event|name.set(event.target.value.to_owned())) (enter) />
                 native_overview_label_preview(account:account,project:project,name:$(name.get()),color:$(color.get()),touched:$(touched.get()),revision:$(revision.get()),duplicate:duplicate.clone())
-                <button type="button" class="native-overview__success" :disabled=$(if creating.get(){true}else if name.get().trim().is_empty(){true}else{duplicate.get()}) (click)>(icons::project_icon(cx,Some("lucide:Plus"),14))$(if creating.get(){"Adding…"}else{"Add"})</button>
+                <button type="button" class="native-overview__success" :disabled=$(if creating.get(){true}else if name.get().trim().is_empty(){true}else{duplicate.get()}) (click)>(icons::ui_icon(cx,UiIcon::Add,14))$(if creating.get(){"Adding…"}else{"Add"})</button>
             </div>}
             <div role="alert" class="native-overview__label-error" :hidden=$(error.get().is_empty())>$(error.get())</div>
             native_overview_label_rows(account:account,project:project,identifier:identifier,can_edit:can_edit,revision:$(revision.get()),filter:$(filter.get()),sort:$(sort.get()),collation:$(collation.get()),owner_state:(count,revision,error,editing,draft,confirming,merge,busy,creating))
@@ -441,7 +442,7 @@ mod shards {
             .collect::<Vec<_>>();
         Ok(view! {cx=>
             if collation.is_empty(){for _ in 0..3 {<div class="native-overview__label-skeleton" aria-hidden="true"><span></span><span></span><span></span></div>}}
-            else if labels.is_empty(){if can_edit{<div class="native-overview__label-empty"><p>"No labels yet. Start from a common set, or create your own above."</p><div>for (name,color) in model::PRESETS {<button type="button" class="native-overview__preset" style=(format!("color:{color};border-color:{color}55;background:{color}12")) (mutation(cx,&state,"create",-1,signal(cx,||name.into()),signal(cx,||color.into()),signal(cx,||true),"click"))>(icons::project_icon(cx,Some("lucide:Plus"),11))(name)</button>}<button type="button" class="native-overview__label-add-all" (all)>"Add all"</button></div></div>}else{<div class="native-overview__empty">"No labels yet."</div>}}
+            else if labels.is_empty(){if can_edit{<div class="native-overview__label-empty"><p>"No labels yet. Start from a common set, or create your own above."</p><div>for (name,color) in model::PRESETS {<button type="button" class="native-overview__preset" style=(format!("color:{color};border-color:{color}55;background:{color}12")) (mutation(cx,&state,"create",-1,signal(cx,||name.into()),signal(cx,||color.into()),signal(cx,||true),"click"))>(icons::ui_icon(cx,UiIcon::Add,11))(name)</button>}<button type="button" class="native-overview__label-add-all" (all)>"Add all"</button></div></div>}else{<div class="native-overview__empty">"No labels yet."</div>}}
             else if rows.is_empty(){<div class="native-overview__empty">(format!("No labels match “{}”.",filter.trim_matches(model::js_whitespace)))</div>}
             else{for rendered in rows{(rendered)}}
         })
@@ -539,7 +540,7 @@ fn row<'a>(
                 let _stamp=async ||{let _value=stamp_filter(account,project,_stored,name.clone()).await;raw!("if(!cx.abortSignal.aborted){try{localStorage.setItem(${key}.toString(),${_value}.toString())}catch{}window.location.assign(${destination}.toString())}",());};
                 raw!("Promise.resolve().then(()=>${_stamp}()).catch(()=>${_failed}());",());
             })>(if usage.total()>0 {usage.text()}else{"unused".into()})</button>
-            if can_edit{<button type="button" aria-label=(format!("Delete {name}")) class="native-overview__label-trash" @click=$(|_event:Event|{confirming.set(id);editing.set(0_i64);merge.set("".to_owned());})>(icons::project_icon(cx,Some("lucide:Trash2"),13))</button>}
+            if can_edit{<button type="button" aria-label=(format!("Delete {name}")) class="native-overview__label-trash" @click=$(|_event:Event|{confirming.set(id);editing.set(0_i64);merge.set("".to_owned());})>(icons::ui_icon(cx,UiIcon::Delete,13))</button>}
         </div>
         if can_edit{<div class="native-overview__label-confirm" :hidden=$(confirming.get()!=id)><span class="native-overview__label-dot" style=(format!("background:{color_safe}"))></span><div><p>"Delete "<strong>(name.clone())</strong>"? "if (usage.total()>0){<span>(format!("Detaches from {}.",usage.text()))</span>}</p>
             if !others.is_empty(){<div class="native-overview__label-merge"><span>"or merge into"</span><select aria-label="Merge into label" :value=$(merge.get()) @change=$(|event:Event|merge.set(event.target.value.to_owned()))><option value="">"Choose label…"</option>for (value,name) in others{<option value=(value)>(name)</option>}</select><button type="button" class="native-overview__accent" :disabled=$(if merge.get().is_empty(){true}else{busy.get()==id}) (merger)>"Merge"</button></div>}
@@ -669,7 +670,7 @@ fn color_picker<'a>(
     keydown.insert(cx, "data-topcoat-on:keydown", set);
     view!{cx=><div id=(root) class="native-overview__color" @mount=$(|_event:Event|{let _outside=|_event:Event|{if !raw!("cx.hydrate(document.getElementById(${mount_root}.toString())?.contains(${_event}.target)??false)",false){open.set(false);}};raw!("window.addEventListener('click',${_outside},{signal:cx.abortSignal});",());})>
         <button type="button" class="native-overview__color-trigger" :style=$({let _chosen=shown.get();raw!("cx.hydrate('background:'+${_chosen}.toString())",String::new())}) aria-label=(format!("Color: {color_name}. Click to change.")) title=(format!("{color_name} · {display}")) :aria-expanded=$(open.get()) @click=$(|event:Event|{event.stop_propagation();open.set(!open.get());bad.set(false);})></button>
-        <div class="native-overview__color-panel" :hidden=$(!open.get()) @keydown=$(|event:Event|event.stop_propagation()) @click=$(|event:Event|event.stop_propagation())><div class="native-overview__color-palette">for (name,value) in palette{<button type="button" style=(format!("background:{value}")) aria-label=(name) title=(name) :aria-pressed=$(shown.get()==value) (palette_choice(cx,&picker_state,id,&value,(color.clone(),shown.clone(),touched.clone(),open.clone())))><span :hidden=$(shown.get()!=value)>(icons::project_icon(cx,Some("lucide:Check"),12))</span></button>}</div><div class="native-overview__color-hex"><span>"#"</span><input aria-label="Custom label hex color" maxlength="7" spellcheck="false" placeholder="hex" :value=$(hex.get()) :aria-invalid=$(bad.get()) @input=$(|event:Event|{hex.set(event.target.value.to_owned());bad.set(false);}) (keydown) /><button type="button" (click)>"Set"</button></div></div>
+        <div class="native-overview__color-panel" :hidden=$(!open.get()) @keydown=$(|event:Event|event.stop_propagation()) @click=$(|event:Event|event.stop_propagation())><div class="native-overview__color-palette">for (name,value) in palette{<button type="button" style=(format!("background:{value}")) aria-label=(name) title=(name) :aria-pressed=$(shown.get()==value) (palette_choice(cx,&picker_state,id,&value,(color.clone(),shown.clone(),touched.clone(),open.clone())))><span :hidden=$(shown.get()!=value)>(icons::ui_icon(cx,UiIcon::Selected,12))</span></button>}</div><div class="native-overview__color-hex"><span>"#"</span><input aria-label="Custom label hex color" maxlength="7" spellcheck="false" placeholder="hex" :value=$(hex.get()) :aria-invalid=$(bad.get()) @input=$(|event:Event|{hex.set(event.target.value.to_owned());bad.set(false);}) (keydown) /><button type="button" (click)>"Set"</button></div></div>
     </div>}.boxed()
 }
 

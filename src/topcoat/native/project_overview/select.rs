@@ -1,5 +1,6 @@
 //! Native custom Select: selection and disclosure are Rust runtime state.
 
+use super::super::icons::UiIcon;
 use topcoat::{
     context::Cx,
     runtime::{Event, Signal, expr, signal},
@@ -221,7 +222,7 @@ pub(super) fn select_scoped<'a>(
                     <span class="native-project-select__avatar" :hidden=$(marks.index(selected.get()).is_empty())>$(marks.index(selected.get()).to_owned())</span>
                     <span>$(labels.index(selected.get()).to_owned())</span>
                 </span>
-                <span class="native-project-select__chevron" aria-hidden="true">(super::super::icons::project_icon(cx,Some("lucide:ChevronDown"),12))</span>
+                <span class="native-project-select__chevron" aria-hidden="true">(super::super::icons::ui_icon(cx,UiIcon::Expand,12))</span>
             </button>
             <div id=(format!("{id}-menu")) class="native-project-select__options" role="listbox" :hidden=$(!open.get())
                 @click=$(|event: Event| event.stop_propagation()) (menu_interaction)>

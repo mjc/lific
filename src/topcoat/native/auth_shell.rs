@@ -1,4 +1,5 @@
 //! Shared signed-out chrome, theme cycle, and recessed authentication panel.
+use super::icons::UiIcon;
 use super::{icons, transport};
 use topcoat::{
     context::Cx,
@@ -32,9 +33,9 @@ fn theme_button<'a>(cx: &'a Cx, theme: Signal<String>, mobile: bool) -> BoxView<
             else {raw!("try {localStorage.setItem('lific_theme',${preference}.toString());} catch {}",());}
             raw!("document.documentElement.setAttribute('data-theme',${preference}.toString());",());
         })>
-        <span :hidden=$(theme.get()!="system")>(icons::project_icon(cx,Some("lucide:Monitor"),15))</span>
-        <span :hidden=$(theme.get()!="dark")>(icons::project_icon(cx,Some("lucide:Moon"),15))</span>
-        <span :hidden=$(theme.get()!="light")>(icons::project_icon(cx,Some("lucide:Sun"),15))</span>
+        <span :hidden=$(theme.get()!="system")>(icons::ui_icon(cx,UiIcon::SystemTheme,15))</span>
+        <span :hidden=$(theme.get()!="dark")>(icons::ui_icon(cx,UiIcon::DarkTheme,15))</span>
+        <span :hidden=$(theme.get()!="light")>(icons::ui_icon(cx,UiIcon::LightTheme,15))</span>
     </button>}.boxed()
 }
 
@@ -86,7 +87,7 @@ pub(super) fn content<'a>(
     };
     let active_tab = "flex items-center gap-1 px-2.5 py-1 rounded text-caption font-medium transition-all bg-[var(--surface)] text-[var(--text)] shadow-[0_1px_2px_rgba(0,0,0,0.16),0_1px_1px_rgba(0,0,0,0.10)] no-underline";
     let inactive_tab = "flex items-center gap-1 px-2.5 py-1 rounded text-caption font-medium transition-all text-[var(--text-muted)] hover:text-[var(--text)] no-underline";
-    let logo = transport::mounted_url(cx, "/logo.webp");
+    let logo = super::preloads::image_url(cx, "/logo.webp");
     let signup = transport::mounted_url(cx, "/signup");
     let login = transport::mounted_url(cx, "/login");
     let mascot = transport::mounted_url(
@@ -107,17 +108,17 @@ pub(super) fn content<'a>(
         <aside class="hidden lg:flex w-[230px] shrink-0 flex-col bg-[var(--chrome)] select-none">
             <div class="px-3 pt-3 pb-2"><div class="flex items-center gap-2.5 px-1 py-1"><img src=(logo.clone()) alt="" width="26" height="26" class="rounded-md shrink-0"/><span class="font-display text-heading tracking-tight text-[var(--text)] leading-none flex-1">"Lific"</span><span class="font-mono text-micro tracking-tight text-[var(--text-faint)] px-1.5 py-0.5 rounded-md bg-[var(--bg-subtle)]">(concat!("v",env!("CARGO_PKG_VERSION")))</span></div></div>
             <div class="flex-1"></div>
-            <div class="p-2 flex items-center gap-1"><div class="flex-1 min-w-0 flex items-center gap-2.5 px-2 py-1.5 rounded-md"><div class="size-7 rounded-full border border-solid border-[var(--border)] bg-[var(--bg-subtle)] grid place-items-center shrink-0">(icons::project_icon(cx,Some("lucide:LogIn"),13))</div><div class="flex-1 min-w-0"><div class="text-body-sm text-[var(--text-muted)] truncate leading-tight">"Not signed in"</div><div class="text-micro text-[var(--text-faint)] leading-tight mt-0.5">(footer)</div></div></div>(theme_desktop)</div>
+            <div class="p-2 flex items-center gap-1"><div class="flex-1 min-w-0 flex items-center gap-2.5 px-2 py-1.5 rounded-md"><div class="size-7 rounded-full border border-solid border-[var(--border)] bg-[var(--bg-subtle)] grid place-items-center shrink-0">(icons::ui_icon(cx,UiIcon::SignIn,13))</div><div class="flex-1 min-w-0"><div class="text-body-sm text-[var(--text-muted)] truncate leading-tight">"Not signed in"</div><div class="text-micro text-[var(--text-faint)] leading-tight mt-0.5">(footer)</div></div></div>(theme_desktop)</div>
         </aside>
         <div class="flex-1 min-w-0 flex flex-col">
             <div class="shrink-0 flex items-center gap-3 px-4 sm:px-6 py-2 bg-[var(--chrome)]">
                 <div class="flex items-center gap-1.5 min-w-0"><img src=(logo) alt="" width="20" height="20" class="rounded shrink-0 lg:hidden"/>
                     if let Some(name)=name {<span class="hidden sm:inline text-body-sm font-medium text-[var(--text-muted)] truncate max-w-[16rem]" :title=$(host.get())>(name)</span>}
                     else {<span class="hidden sm:inline font-mono text-body-sm font-medium text-[var(--text-muted)] truncate max-w-[16rem]" :title=$(host.get())>$(host.get())</span>}
-                    <span class="hidden sm:inline text-[var(--text-faint)] shrink-0">(icons::project_icon(cx,Some("lucide:ChevronRight"),12))</span><span class="text-body-sm font-medium text-[var(--text)]">(crumb)</span>
+                    <span class="hidden sm:inline text-[var(--text-faint)] shrink-0">(icons::ui_icon(cx,UiIcon::Next,12))</span><span class="text-body-sm font-medium text-[var(--text)]">(crumb)</span>
                 </div>
-                <div class="ml-auto flex items-center gap-2"><div class="flex items-center gap-0.5 p-0.5 rounded-md bg-[var(--bg)] shadow-[inset_0_1px_2px_rgba(0,0,0,0.10)]"><a href=(login) aria-current=((!signup_mode).then_some("page")) class=(if signup_mode {inactive_tab} else {active_tab})>(icons::project_icon(cx,Some("lucide:LogIn"),11))"Sign in"</a>
-                    if allow_signup || signup_mode {<a href=(signup) aria-current=(signup_mode.then_some("page")) class=(if signup_mode {active_tab} else {inactive_tab})>(icons::project_icon(cx,Some("lucide:UserPlus"),11))"Create account"</a>}
+                <div class="ml-auto flex items-center gap-2"><div class="flex items-center gap-0.5 p-0.5 rounded-md bg-[var(--bg)] shadow-[inset_0_1px_2px_rgba(0,0,0,0.10)]"><a href=(login) aria-current=((!signup_mode).then_some("page")) class=(if signup_mode {inactive_tab} else {active_tab})>(icons::ui_icon(cx,UiIcon::SignIn,11))"Sign in"</a>
+                    if allow_signup || signup_mode {<a href=(signup) aria-current=(signup_mode.then_some("page")) class=(if signup_mode {active_tab} else {inactive_tab})>(icons::ui_icon(cx,UiIcon::AddMember,11))"Create account"</a>}
                 </div>(theme_mobile)</div>
             </div>
             <div class="relative flex-1 min-w-0 lg:rounded-tl-xl overflow-hidden"><main class="absolute inset-0 bg-[var(--bg)] overflow-y-auto"><div class="min-h-full flex flex-col"><div class="flex-1 px-6 sm:px-10 lg:px-14 py-10 lg:py-14"><div class="w-full max-w-[28rem]">

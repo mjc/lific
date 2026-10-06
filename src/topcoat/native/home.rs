@@ -1,5 +1,6 @@
 //! Production Home. Application reads and presentation run in Rust.
 
+use super::icons::UiIcon;
 use topcoat::{
     context::{Cx, app_context},
     runtime::{Signal, shard, signal},
@@ -121,14 +122,14 @@ pub(super) fn content_view<'a>(
             greeting.text,
             greeting.date_label,
             match greeting.icon {
-                home_local::GreetingIcon::Moon => "lucide:Moon",
-                home_local::GreetingIcon::Sunrise => "lucide:Sunrise",
-                home_local::GreetingIcon::Sun => "lucide:Sun",
-                home_local::GreetingIcon::Sunset => "lucide:Sunset",
+                home_local::GreetingIcon::Moon => UiIcon::Night,
+                home_local::GreetingIcon::Sunrise => UiIcon::Morning,
+                home_local::GreetingIcon::Sun => UiIcon::Day,
+                home_local::GreetingIcon::Sunset => UiIcon::Evening,
             },
         ),
         // The browser supplies its clock after mount. Do not invent its date.
-        None => (format!("Welcome, {name}"), String::new(), "lucide:Sun"),
+        None => (format!("Welcome, {name}"), String::new(), UiIcon::Day),
     };
     let model = home_model::derive_home(&snapshot.projects, &snapshot.issues);
     let quick_issue_url = model
@@ -147,15 +148,15 @@ pub(super) fn content_view<'a>(
         <div class="tc-native-home__page" data-native-home-connected=(if connected { "true" } else { "false" })>
             <header class="tc-native-home__hero">
                 <div class="tc-native-home__greeting">
-                    <span class="tc-native-home__greeting-icon" aria-hidden="true">(super::icons::project_icon(cx, Some(icon), 20))</span>
+                    <span class="tc-native-home__greeting-icon" aria-hidden="true">(super::icons::ui_icon(cx, icon, 20))</span>
                     <div><h1 id="native-home-greeting">(text)</h1><p id="native-home-date">(date)</p></div>
                 </div>
                 <div class="tc-native-home__actions">
                     if let Some(url) = quick_issue_url {
-                        <a class="tc-native-home__new" href=(url)>(super::icons::project_icon(cx, Some("lucide:Plus"), 14)) "New issue"</a>
+                        <a class="tc-native-home__new" href=(url)>(super::icons::ui_icon(cx, UiIcon::Add, 14)) "New issue"</a>
                     }
                     <button type="button" id="native-home-quick-jump" @click=$(|_event| palette_open.set(true))>
-                        (super::icons::project_icon(cx, Some("lucide:Command"), 13)) "Jump to…"
+                        (super::icons::ui_icon(cx, UiIcon::KeyboardShortcut, 13)) "Jump to…"
                         <kbd>"⌘K"</kbd>
                     </button>
                 </div>

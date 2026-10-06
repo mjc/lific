@@ -1,5 +1,6 @@
 //! Rust-authored field controls and issue document composition.
 
+use super::super::icons::UiIcon;
 use topcoat::{
     context::Cx,
     runtime::{Event, Signal, expr, procedure, shard, signal},
@@ -724,15 +725,15 @@ fn document_topbar<'a>(
                 <nav class="native-issue-detail__breadcrumbs" aria-label="Breadcrumb"><ol>
                     <li data-hide-phone=""><a data-mono="" href=(overview) title=(project_label.clone())><span data-label="">(project_label)</span></a>
                         <button class="native-issue-detail__copy" type="button" aria-label=(format!("Copy {copy_project}")) @click=$(|_event: Event| {raw!("navigator.clipboard.writeText(${copy_project}.toString()).catch(() => {})", ());})>
-                            (super::super::icons::project_icon(cx, Some("lucide:Copy"), 12))
+                            (super::super::icons::ui_icon(cx, UiIcon::Copy, 12))
                         </button>
                     </li>
-                    <li data-separator="" data-hide-phone="" aria-hidden="true">(super::super::icons::project_icon(cx, Some("lucide:ChevronRight"), 12))</li>
+                    <li data-separator="" data-hide-phone="" aria-hidden="true">(super::super::icons::ui_icon(cx, UiIcon::BreadcrumbSeparator, 12))</li>
                     <li data-hide-phone="">(breadcrumb)</li>
-                    <li data-separator="" data-hide-phone="" aria-hidden="true">(super::super::icons::project_icon(cx, Some("lucide:ChevronRight"), 12))</li>
+                    <li data-separator="" data-hide-phone="" aria-hidden="true">(super::super::icons::ui_icon(cx, UiIcon::BreadcrumbSeparator, 12))</li>
                     <li><span data-mono="" aria-current="page" title=(identifier.clone())><span data-label="">(identifier)</span></span>
                         <button class="native-issue-detail__copy" type="button" aria-label=(format!("Copy {copy_identifier}")) @click=$(|_event: Event| {raw!("navigator.clipboard.writeText(${copy_identifier}.toString()).catch(() => {})", ());})>
-                            (super::super::icons::project_icon(cx, Some("lucide:Copy"), 12))
+                            (super::super::icons::ui_icon(cx, UiIcon::Copy, 12))
                         </button>
                     </li>
                 </ol></nav>
@@ -741,7 +742,7 @@ fn document_topbar<'a>(
                     if can_edit {
                         <button class="native-issue-detail__field-value" type="button" title="Change status" aria-haspopup="menu" :aria-expanded=$(if header_status_open.get() { "true" } else { "false" }) @click=$(|_event: Event| {
                             header_status_open.set(!header_status_open.get()); status_open.set(false); priority_open.set(false);
-                        })>(status_decoration(cx, status.clone(), 13))<span :data-status=$(status.get())>$(status.get())</span>(super::super::icons::project_icon(cx, Some("lucide:ChevronDown"), 11))</button>
+                        })>(status_decoration(cx, status.clone(), 13))<span :data-status=$(status.get())>$(status.get())</span>(super::super::icons::ui_icon(cx, UiIcon::Expand, 11))</button>
                         <div class="native-issue-detail__menu" role="menu" :hidden=$(!header_status_open.get())>(status_options)</div>
                     } else {
                         (status_decoration(cx, status.clone(), 13))<span :data-status=$(status.get())>$(status.get())</span><span class="native-issue-detail__readonly">"Read-only"</span>
@@ -753,10 +754,10 @@ fn document_topbar<'a>(
                 if can_edit {
                     <div class="native-issue-detail__mode" role="radiogroup" aria-label="Content view mode" :hidden=$(description.get().trim().is_empty())>
                         <button id=(edit_id) class="native-issue-detail__mode-option" type="button" role="radio" aria-label="Edit" title="Edit (E)" :aria-checked=$(if editing.get() { "true" } else { "false" }) :disabled=$(busy.get()) (edit)>
-                            (super::super::icons::project_icon(cx, Some("lucide:Pencil"), 14))<span>"Edit"</span>
+                            (super::super::icons::ui_icon(cx, UiIcon::Edit, 14))<span>"Edit"</span>
                         </button>
                         <button class="native-issue-detail__mode-option" type="button" role="radio" aria-label="Preview" title="Preview" :aria-checked=$(if editing.get() { "false" } else { "true" }) :disabled=$(busy.get()) (save)>
-                            (super::super::icons::project_icon(cx, Some("lucide:Eye"), 14))<span>"Preview"</span>
+                            (super::super::icons::ui_icon(cx, UiIcon::Preview, 14))<span>"Preview"</span>
                         </button>
                     </div>
                 }
@@ -764,7 +765,7 @@ fn document_topbar<'a>(
                 (export_button)
                 (delete_menu)
                 <button id="native-issue-details-open" class="native-issue-detail__properties-toggle" type="button" aria-label="Show details" :aria-expanded=$(if properties_open.get() { "true" } else { "false" }) @click=$(|_event: Event| properties_open.set(true))>
-                    (super::super::icons::project_icon(cx, Some("lucide:PanelRight"), 16))
+                    (super::super::icons::ui_icon(cx, UiIcon::DetailsPanel, 16))
                 </button>
             </div>
         </div>
@@ -1136,7 +1137,7 @@ fn render_editor<'a>(
                     <button class="native-issue-detail__properties-close" type="button" aria-label="Close details" @click=$(|_event: Event| {
                         properties_open.set(false);
                         raw!("requestAnimationFrame(() => document.getElementById('native-issue-details-open')?.focus())", ());
-                    })>(super::super::icons::project_icon(cx, Some("lucide:X"), 18))</button>
+                    })>(super::super::icons::ui_icon(cx, UiIcon::Close, 18))</button>
                 }
                 <section><h2>"Status"</h2>
                     if document && can_edit {

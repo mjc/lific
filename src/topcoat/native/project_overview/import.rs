@@ -1,4 +1,5 @@
 //! Three-step GitHub import using the shared Rust collector/application service.
+use super::super::icons::UiIcon;
 use super::super::{context, icons, session};
 use super::import_model::valid_repository;
 use crate::realtime::RealtimeHub;
@@ -245,20 +246,20 @@ pub(super) fn panel(cx: &Cx, account: i64, project: i64, revision: Signal<usize>
     let excluded = state.excluded.clone();
     let preview = run_attributes(cx, &state, account, project, true, revision.clone());
     let import_attributes = run_attributes(cx, &state, account, project, false, revision);
-    view!{cx => <section class="native-overview-import" data-native-overview-import=""><h2>(icons::project_icon(cx,Some("lucide:Download"),16))" Import from GitHub"</h2><p>"Pull issues from a GitHub repo into this project. Pull requests are skipped. Re-running never duplicates — already-imported issues are recognized and left alone."</p><div class="native-overview-import__card">
+    view!{cx => <section class="native-overview-import" data-native-overview-import=""><h2>(icons::ui_icon(cx,UiIcon::Download,16))" Import from GitHub"</h2><p>"Pull issues from a GitHub repo into this project. Pull requests are skipped. Re-running never duplicates — already-imported issues are recognized and left alone."</p><div class="native-overview-import__card">
   <div :hidden=$(step.get()!="configure")>
    <label>"Repository"<input type="text" spellcheck="false" placeholder="owner/name" :value=$(repo.get()) :disabled=$(busy.get()) @input=$(|event:Event|{repository_valid.set(false);repo.set(event.target.value);})></label>
    <label>"Token "<span>"optional for public repos"</span><input type="password" spellcheck="false" autocomplete="off" placeholder="ghp_…" :value=$(token.get()) :disabled=$(busy.get()) @input=$(|event:Event|token.set(event.target.value))></label>
    <div class="native-overview-import__mapping"><label>"Issues"<select :value=$(filter.get()) :disabled=$(busy.get()) @change=$(|event:Event|filter.set(event.target.value))><option value="all">"Open + closed"</option><option value="open">"Open only"</option><option value="closed">"Closed only"</option></select></label><label>"Open →"<select :value=$(open.get()) :disabled=$(busy.get()) @change=$(|event:Event|open.set(event.target.value))>for status in ["backlog","todo","active","done","cancelled"]{<option value=(status)>(status)</option>}</select></label><label>"Closed →"<select :value=$(closed.get()) :disabled=$(busy.get()) @change=$(|event:Event|closed.set(event.target.value))>for status in ["backlog","todo","active","done","cancelled"]{<option value=(status)>(status)</option>}</select></label></div>
    native_overview_repository_valid(repo:$(repo.get()), valid:repository_valid.clone())
-   <button type="button" :disabled=$(if busy.get(){true}else{!repository_valid.get()}) (preview)><span :hidden=$(busy.get())>"Preview import"</span><span :hidden=$(!busy.get())>"Previewing…"</span>(icons::project_icon(cx,Some("lucide:ArrowRight"),14))</button>
+   <button type="button" :disabled=$(if busy.get(){true}else{!repository_valid.get()}) (preview)><span :hidden=$(busy.get())>"Preview import"</span><span :hidden=$(!busy.get())>"Previewing…"</span>(icons::ui_icon(cx,UiIcon::Forward,14))</button>
   </div>
   <div :hidden=$(step.get()!="preview")><p>"Previewing "<span class="native-overview-import__repo">$(repo.get().trim().to_owned())</span>". This will create:"</p>
    (stats(cx,issues.clone(),comments.clone(),labels.clone()))
    <p :hidden=$(existing.get()==0_usize)>$(existing.get())" already imported (will be skipped)."</p><p :hidden=$(excluded.get()==0_usize)>$(excluded.get())" pull request(s) excluded."</p>
    <div class="native-overview-import__actions"><button type="button" :disabled=$(if busy.get(){true}else{issues.get()==0_usize}) (import_attributes)><span :hidden=$(busy.get())>"Import "$(issues.get())" issue"<span :hidden=$(issues.get()==1_usize)>"s"</span></span><span :hidden=$(!busy.get())>"Importing…"</span></button><button type="button" :disabled=$(busy.get()) @click=$(|_event:Event|{step.set("configure".to_owned());error.set("".to_owned());})>"Back"</button></div>
   </div>
-  <div :hidden=$(step.get()!="done")><h3>(icons::project_icon(cx,Some("lucide:Check"),15))" Import complete"</h3>(stats(cx,issues,comments,labels))<p :hidden=$(existing.get()==0_usize)>$(existing.get())" already-imported issue(s) skipped."</p><button type="button" @click=$(|_event:Event|{step.set("configure".to_owned());error.set("".to_owned());})>"Import another repo"</button></div>
+  <div :hidden=$(step.get()!="done")><h3>(icons::ui_icon(cx,UiIcon::Complete,15))" Import complete"</h3>(stats(cx,issues,comments,labels))<p :hidden=$(existing.get()==0_usize)>$(existing.get())" already-imported issue(s) skipped."</p><button type="button" @click=$(|_event:Event|{step.set("configure".to_owned());error.set("".to_owned());})>"Import another repo"</button></div>
   <p role="alert" :hidden=$(error.get().is_empty())>$(error.get())</p>
  </div></section>}.boxed()
 }

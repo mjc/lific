@@ -38,7 +38,8 @@ async function completed(page,url,operation,admission){
     const outcome=await finish;if(outcome.error)throw outcome.error;
     assert.equal(outcome.response.status(),200);await outcome.response.finished();
   }catch(error){
-    error.message+=`\nActual rollback transport: ${JSON.stringify({url,transport,errors})}`;throw error;
+    const details=`\nActual rollback transport: ${JSON.stringify({url,transport,errors})}`;
+    error.message+=details;error.stack+=details;throw error;
   }finally{await finish;page.off('request',request);page.off('response',response);page.off('requestfailed',failed);page.off('pageerror',pageError);}
 }
 
