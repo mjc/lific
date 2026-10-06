@@ -135,7 +135,7 @@
     },
     {
       "source": "web/tests/comments.test.ts",
-      "target": "src/topcoat/tests/main/issues/comments.test.js",
+      "target": "src/topcoat/tests/main/issues/comments-window.browser.test.js",
       "cases": [
         "only the comment author gets web mutation actions",
         "routes comment shortcuts by the focused interaction",
@@ -182,7 +182,7 @@
         "navigating to another thread starts the anchor walk over",
         "deletes a comment through its typed API call"
       ],
-      "notes": "Original named cases remain mapped to live collaboration unit/browser tests and the native label-color boundary. Actual collaboration refreshComments/fetchCommentPage/renderCommentList/resolveCommentHash and current manual older click branch are exposed for controlled component tests; real browser update/delete/keyboard requests use the actual database. Retired configurable page geometry maps to current fixed 50 rows/51 fetch and actual ten-page anchor bound.",
+      "notes": "All 34 former comment unit case names are preserved as mounted native browser/SQLite test targets in comments-window.browser.test.js; coverage is partial or unproven as listed in comments-native-coverage.md. No removed controller is evaluated. Comments.browser retains real server mutation/rendering assertions. Native Comments/thread absence remains active DOM RED tracked in #228; later window/budget expectations are documented in comments-native-coverage.md. Retired configurable page arguments map to the fixed 50-row protocol and ten-page anchor bound; they are not recreated as application JavaScript.",
       "additionalTargets": [
         "src/topcoat/tests/main/issues/comments.browser.test.js",
         "src/topcoat/native/project_overview/labels_model.rs"
@@ -190,7 +190,7 @@
       "mappings": [
         {
           "original": "only the comment author gets web mutation actions",
-          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "target": "src/topcoat/tests/main/issues/comments-window.browser.test.js",
           "translated": "only the comment author gets web mutation actions"
         },
         {
@@ -229,7 +229,7 @@
         },
         {
           "original": "marks comments edited only when the update timestamp changes",
-          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "target": "src/topcoat/tests/main/issues/comments-window.browser.test.js",
           "translated": "marks comments edited only when the update timestamp changes"
         },
         {
@@ -239,12 +239,12 @@
         },
         {
           "original": "folding a comment in by id is idempotent and keeps thread order",
-          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "target": "src/topcoat/tests/main/issues/comments-window.browser.test.js",
           "translated": "folding a comment in by id is idempotent and keeps thread order"
         },
         {
           "original": "the thread comparator is the key the cursor pages by",
-          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "target": "src/topcoat/tests/main/issues/comments-window.browser.test.js",
           "translated": "the thread comparator is the key the cursor pages by"
         },
         {
@@ -254,37 +254,37 @@
         },
         {
           "original": "requests the newest bounded comment page and shows it chronologically",
-          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "target": "src/topcoat/tests/main/issues/comments-window.browser.test.js",
           "translated": "requests the newest bounded comment page and shows it chronologically"
         },
         {
           "original": "infers hasMore from the over-fetched row without ever showing it",
-          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "target": "src/topcoat/tests/main/issues/comments-window.browser.test.js",
           "translated": "infers hasMore from the over-fetched row without ever showing it"
         },
         {
           "original": "trusts the server about what lies past a page the byte budget cut short",
-          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "target": "src/topcoat/tests/main/issues/comments-window.browser.test.js",
           "translated": "trusts the server about what lies past a page the byte budget cut short"
         },
         {
           "original": "the cursor the client pages by is the row the server named",
-          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "target": "src/topcoat/tests/main/issues/comments-window.browser.test.js",
           "translated": "the cursor the client pages by is the row the server named"
         },
         {
           "original": "a short page from a server that says nothing is still the end of the thread",
-          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "target": "src/topcoat/tests/main/issues/comments-window.browser.test.js",
           "translated": "a short page from a server that says nothing is still the end of the thread"
         },
         {
           "original": "a full page is more comments even when the header disagrees",
-          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "target": "src/topcoat/tests/main/issues/comments-window.browser.test.js",
           "translated": "a full page is more comments even when the header disagrees"
         },
         {
           "original": "paging a budget-limited thread walks it whole, without repeats",
-          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "target": "src/topcoat/tests/main/issues/comments-window.browser.test.js",
           "translated": "paging a budget-limited thread walks it whole, without repeats"
         },
         {
@@ -295,123 +295,123 @@
         },
         {
           "original": "pages back through a thread that is being written to, without duplicates",
-          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "target": "src/topcoat/tests/main/issues/comments-window.browser.test.js",
           "translated": "pages back through a thread that is being written to, without duplicates",
           "notes": "Original three2-row pages scaled to150 actual rows; arrival during pagination preserves cursor and uniqueness."
         },
         {
           "original": "dedupes defensively when two pages overlap",
-          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "target": "src/topcoat/tests/main/issues/comments-window.browser.test.js",
           "translated": "dedupes defensively when two pages overlap"
         },
         {
           "original": "olderCursor names the oldest loaded comment, or nothing when empty",
-          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "target": "src/topcoat/tests/main/issues/comments-window.browser.test.js",
           "translated": "olderCursor names the oldest loaded comment, or nothing when empty"
         },
         {
           "original": "a refresh reconciles every loaded page, not just the newest",
-          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "target": "src/topcoat/tests/main/issues/comments-window.browser.test.js",
           "translated": "a refresh reconciles every loaded page, not just the newest",
           "notes": "Original three 2-row pages scaled to three actual50-row pages (150 total): deletion/edit/order and cursor-pair requirements retained."
         },
         {
           "original": "a refresh never fetches more than the reader already loaded",
-          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "target": "src/topcoat/tests/main/issues/comments-window.browser.test.js",
           "translated": "a refresh never fetches more than the reader already loaded",
           "notes": "Actual expanded150-row window over500 rows, three51-row requests and exact newest150 result."
         },
         {
           "original": "a refresh keeps exactly the rows it was asked for, not whole pages",
-          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "target": "src/topcoat/tests/main/issues/comments-window.browser.test.js",
           "translated": "a refresh keeps exactly the rows it was asked for, not whole pages"
         },
         {
           "original": "an exact page boundary needs no trimming",
-          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "target": "src/topcoat/tests/main/issues/comments-window.browser.test.js",
           "translated": "an exact page boundary needs no trimming"
         },
         {
           "original": "a thread shorter than the window is returned whole",
-          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "target": "src/topcoat/tests/main/issues/comments-window.browser.test.js",
           "translated": "a thread shorter than the window is returned whole"
         },
         {
           "original": "an automatic refresh is capped no matter how much history is loaded",
-          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "target": "src/topcoat/tests/main/issues/comments-window.browser.test.js",
           "translated": "an automatic refresh is capped no matter how much history is loaded"
         },
         {
           "original": "refresh bounds are enforced against any caller argument",
-          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "target": "src/topcoat/tests/main/issues/comments-window.browser.test.js",
           "translated": "refresh bounds are enforced against any caller argument",
           "notes": "Former external pageSize/budget arguments cannot alter current fixed50-row protocol. Positive integer request limits and bounded traversal remain required."
         },
         {
           "original": "a fractional page size rounds down and still pages",
-          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "target": "src/topcoat/tests/main/issues/comments-window.browser.test.js",
           "translated": "a fractional page size rounds down and still pages",
           "notes": "Retired caller pageSize argument replaced by production integer geometry: two actual51-row fetches,100 retained rows in ascending order, remaining history. Arrays cannot have fractional length; actual anchor traversal bound separately tested."
         },
         {
           "original": "a capped refresh keeps the older rows the reader loaded by hand",
-          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "target": "src/topcoat/tests/main/issues/comments-window.browser.test.js",
           "translated": "a capped refresh keeps the older rows the reader loaded by hand"
         },
         {
           "original": "reconciliation replaces the window when nothing older was preserved",
-          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "target": "src/topcoat/tests/main/issues/comments-window.browser.test.js",
           "translated": "reconciliation replaces the window when nothing older was preserved"
         },
         {
           "original": "reconciliation orders preserved rows by the same key the cursor uses",
-          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "target": "src/topcoat/tests/main/issues/comments-window.browser.test.js",
           "translated": "reconciliation orders preserved rows by the same key the cursor uses"
         },
         {
           "original": "only the newest comment-window operation may write",
-          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "target": "src/topcoat/tests/main/issues/comments-window.browser.test.js",
           "translated": "only the newest comment-window operation may write"
         },
         {
           "original": "a replacement window applies, re-reads, or stands down",
-          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "target": "src/topcoat/tests/main/issues/comments-window.browser.test.js",
           "translated": "a replacement window applies, re-reads, or stands down"
         },
         {
           "original": "a failed page aborts the refresh instead of showing a half window",
-          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "target": "src/topcoat/tests/main/issues/comments-window.browser.test.js",
           "translated": "a failed page aborts the refresh instead of showing a half window"
         },
         {
           "original": "an empty thread refreshes to an empty window without looping",
-          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "target": "src/topcoat/tests/main/issues/comments-window.browser.test.js",
           "translated": "an empty thread refreshes to an empty window without looping"
         },
         {
           "original": "a deep link to an unloaded comment asks for the previous page",
-          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "target": "src/topcoat/tests/main/issues/comments-window.browser.test.js",
           "translated": "a deep link to an unloaded comment asks for the previous page"
         },
         {
           "original": "a failing anchor fetch is not retried until more comments arrive",
-          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "target": "src/topcoat/tests/main/issues/comments-window.browser.test.js",
           "translated": "a failing anchor fetch is not retried until more comments arrive"
         },
         {
           "original": "the automatic anchor walk stops after its page budget",
-          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "target": "src/topcoat/tests/main/issues/comments-window.browser.test.js",
           "translated": "the automatic anchor walk stops after its page budget"
         },
         {
           "original": "a manual load older does not hand the automatic walk a fresh budget",
-          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "target": "src/topcoat/tests/main/issues/comments-window.browser.test.js",
           "translated": "a manual load older does not hand the automatic walk a fresh budget",
           "notes": "Live source onClick older branch plus resolveCommentHash over controlled pages: ten automatic reads, one manual read, then no fresh automatic ten-read allowance."
         },
         {
           "original": "navigating to another thread starts the anchor walk over",
-          "target": "src/topcoat/tests/main/issues/comments.test.js",
+          "target": "src/topcoat/tests/main/issues/comments-window.browser.test.js",
           "translated": "navigating to another thread starts the anchor walk over"
         },
         {

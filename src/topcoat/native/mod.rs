@@ -40,6 +40,7 @@ pub(crate) mod palette_reference;
 mod palette_reference_production;
 #[cfg(test)]
 pub(crate) mod probe;
+pub(crate) mod public_route;
 #[cfg(test)]
 mod raw_lifecycle;
 pub(crate) mod session;

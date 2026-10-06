@@ -182,34 +182,8 @@ let
         exec = ''
           set -e
           cargo test --locked controls_runtime_executes_control_handlers_from_the_shared_layout -- --include-ignored
-          cargo test --locked controls_tooltip_stays_inside_viewport_edges_with_enlarged_text -- --include-ignored
-          cargo test --locked controls_preferences_ -- --include-ignored
-          node --test src/topcoat/shell/assets/mobile.test.js
-          node --test src/topcoat/shell/assets/recents.browser.test.js
-          node --test src/topcoat/shell/assets/shell.browser.test.js
-          node --test src/topcoat/palette/assets/palette.browser.test.js
-          node --test src/topcoat/attachments/assets/attachments.browser.test.js
           cargo test --locked native_home_ -- --include-ignored
           cargo test --locked native::project_overview:: -- --include-ignored
-          node --test src/topcoat/issue_list/assets/issue-list.browser.test.js
-          node --test src/topcoat/issue_detail/assets/fields.test.js src/topcoat/issue_detail/assets/route.test.js
-          node --test src/topcoat/issue_detail/editor/assets/editor.test.js
-          node --test src/topcoat/issue_detail/editor/assets/editor.browser.test.js
-          node --test src/topcoat/issue_detail/assets/route.browser.test.js
-          node --test src/topcoat/issue_detail/collaboration/assets/collaboration.test.js
-          node --test src/topcoat/issue_detail/collaboration/assets/collaboration.browser.test.js
-          node --test src/topcoat/issue_create/assets/issue-create.test.js
-          node --test src/topcoat/issue_create/assets/issue-create.browser.test.js
-          node --test src/topcoat/project_settings/assets/project-settings.browser.test.js
-          node --test src/topcoat/identity/assets/identity.test.js
-          node --test src/topcoat/identity/assets/identity.browser.test.js
-          node --test src/topcoat/files/assets/files.browser.test.js
-          node --test src/topcoat/plans/assets/plans.browser.test.js
-          node --test src/topcoat/modules/assets/modules.browser.test.js
-          node --test src/topcoat/activity_insights/assets/routes.browser.test.js
-          node --test src/topcoat/pages/assets/pages.browser.test.js
-          node --test src/topcoat/public/assets/public.markdown-media.browser.test.js
-          node --test src/topcoat/public/assets/public.browser.test.js
           node --test src/topcoat/acceptance/*.browser.test.js
           node --test src/topcoat/visual_parity/*.browser.test.cjs
         '';
@@ -428,31 +402,8 @@ in
       cwd = repoRoot;
       exec = ''
         set -e
-        node --test src/topcoat/assets/sync.test.js
         node --test src/topcoat/assets/controls.test.mjs
-        node --test src/topcoat/shell/assets/shell.test.js
-        node --test src/topcoat/shell/assets/bootstrap.test.js
-        node --test src/topcoat/shell/assets/page-chrome.test.js
-        node --test src/topcoat/shell/assets/projects.test.js
-        node --test src/topcoat/shell/assets/recents.test.js
-        node --test src/topcoat/palette/assets/palette.test.js
-        node --test src/topcoat/attachments/assets/attachments.test.js
         cargo test --locked native_activity_rate_
-        node --test src/topcoat/issue_list/assets/issue-list.test.js
-        node --test src/topcoat/issue_detail/editor/assets/editor.test.js
-        node --test src/topcoat/issue_detail/collaboration/assets/collaboration.test.js
-        node --test src/topcoat/issue_create/assets/issue-create.test.js
-        node --test src/topcoat/issue_detail/assets/fields.test.js
-        node --test src/topcoat/issue_detail/assets/route.test.js
-        node --test src/topcoat/project_settings/assets/project-settings.test.js
-        node --test src/topcoat/identity/assets/identity.test.js
-        node --test src/topcoat/pages/assets/pages.test.js
-        node --test src/topcoat/files/assets/files.test.js
-        node --test src/topcoat/plans/assets/plans.test.js
-        node --test src/topcoat/modules/assets/modules.test.js
-        node --test src/topcoat/activity_insights/assets/model.test.js
-        node --test src/topcoat/public/assets/public.test.js
-        node --test src/topcoat/public/assets/public.media-worker.test.js
       '';
     };
     "lific:topcoat:main-test" = {
