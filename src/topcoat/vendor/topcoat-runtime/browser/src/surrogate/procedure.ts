@@ -29,6 +29,8 @@ export class Procedure<A extends unknown[] = unknown[], R = unknown> {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify(args.map(dehydrate)),
+				// A typed procedure returns JSON; reject redirects before fetching a document.
+				redirect: "manual",
 				...(keepalive ? { keepalive: true } : {}),
 			});
 			if (!response.ok) {

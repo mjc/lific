@@ -1,5 +1,5 @@
 // Removed administration contracts, exercised only through the real mounted native UI.
-// Missing native features deliberately fail and remain in the failure ledger.
+// Contracts are checked against pinned main; branch-only binding controls were removed.
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
 const {createHash} = require('node:crypto');
@@ -7,8 +7,6 @@ const {gunzipSync} = require('node:zlib');
 const {DatabaseSync} = require('node:sqlite');
 const {startFixture} = require('../../../acceptance/server.js');
 const {settleScroll} = require('../../../native/browser_fixture.cjs');
-const rootAlias = 'v1:0123456789abcdef0123456789abcdef01234567';
-const remoteAlias = 'v1:github.com/acme/app';
 
 async function ready(page) {
   await page.locator('nav.native-home-palette-results[data-native-home-connected="true"]').waitFor({state:'attached'});
@@ -59,69 +57,6 @@ async function choose(page, id, label) {
 function member(page, username) {
   return page.locator('.native-overview__member-row').filter({hasText:`@${username}`});
 }
-function bindingRows(fixture) {
-  return rows(fixture, 'SELECT b.id,b.project_id,i.kind,i.value FROM repo_bindings b JOIN repo_identities i ON i.binding_id=b.id WHERE b.project_id=? ORDER BY i.id', fixture.project.id);
-}
-
-test('native repository binding conflict, canonical remote/root aliases, and cancelled or completed removal', async () => {
-  await withPage(async ({fixture,page}) => {
-    fixture.cli(['project','create','--name','Conflicting repository','--identifier','OTHER','--json']);
-    database(fixture, db => {
-      const other = db.prepare("SELECT id FROM projects WHERE identifier='OTHER'").get();
-      const owner = db.prepare("SELECT id FROM users WHERE is_admin=1 LIMIT 1").get();
-      const inserted = db.prepare('INSERT INTO repo_bindings(project_id,created_by) VALUES(?,?)').run(other.id,owner.id);
-      db.prepare('INSERT INTO repo_identities(binding_id,kind,value) VALUES(?,?,?)').run(inserted.lastInsertRowid,'remote',remoteAlias);
-    });
-    const alias = page.getByLabel('Repository alias',{exact:true});
-    await alias.fill(` ${remoteAlias} `);
-    await page.getByRole('button',{name:'Bind repository',exact:true}).click();
-    await page.getByText(/already (?:bound|claimed)/).first().waitFor();
-    assert.deepEqual(bindingRows(fixture),[],'Conflict does not publish a local binding.');
-    database(fixture, db => db.exec("DELETE FROM repo_identities; DELETE FROM repo_bindings"));
-    await page.getByRole('button',{name:'Bind repository',exact:true}).click();
-    await page.getByText(`remote: ${remoteAlias}`,{exact:true}).waitFor();
-    const [canonical] = bindingRows(fixture);
-    assert.equal(canonical.value,remoteAlias);assert.equal(canonical.kind,'remote');
-    page.once('dialog',dialog => dialog.dismiss());
-    await page.getByRole('button',{name:'Remove binding',exact:true}).click();
-    assert.deepEqual(bindingRows(fixture),[canonical],'Cancelled removal retains canonical record.');
-    page.once('dialog',dialog => dialog.accept());
-    await page.getByRole('button',{name:'Remove binding',exact:true}).click();
-    await page.getByText('No repositories are bound to this project.',{exact:true}).waitFor();
-    assert.deepEqual(bindingRows(fixture),[]);
-    await page.getByLabel('Repository alias type',{exact:true}).selectOption('root');
-    await alias.fill(` ${rootAlias} `);
-    await page.getByRole('button',{name:'Bind repository',exact:true}).click();
-    await page.getByText(`root: ${rootAlias}`,{exact:true}).waitFor();
-    assert.equal(bindingRows(fixture)[0].value,rootAlias,'Canonical first-parent root alias is unchanged.');
-  });
-});
-
-test('native binding readers have no mutation controls even when role enforcement is off', async () => {
-  await withPage(async ({fixture,page,requests}) => {
-    const reader = await user(fixture,'binding-reader');
-    const token = await login(fixture,reader.username);
-    database(fixture, db => {
-      db.exec('UPDATE instance_settings SET authz_enforced=0');
-      const inserted=db.prepare('INSERT INTO repo_bindings(project_id,created_by) VALUES(?,?)').run(fixture.project.id,reader.id);
-      db.prepare('INSERT INTO repo_identities(binding_id,kind,value) VALUES(?,?,?)').run(inserted.lastInsertRowid,'root',rootAlias);
-    });
-    await replaceCookie(page,fixture,token);
-    for (const role of ['viewer','maintainer',null]) {
-      database(fixture, db => {
-        db.prepare('DELETE FROM project_members WHERE project_id=? AND user_id=?').run(fixture.project.id,reader.id);
-        if(role)db.prepare('INSERT INTO project_members(project_id,user_id,role) VALUES(?,?,?)').run(fixture.project.id,reader.id,role);
-      });
-      const before=requests.length;
-      await page.goto(fixture.url('/ACC/overview'));await ready(page);
-      await page.getByText(`root: ${rootAlias}`,{exact:true}).waitFor();
-      assert.equal(await page.getByRole('button',{name:'Bind repository',exact:true}).count(),0);
-      assert.equal(await page.getByRole('button',{name:'Remove binding',exact:true}).count(),0);
-      assert.equal(requests.slice(before).filter(request=>request.method()!=='GET'&&/bind/.test(request.url())).length,0);
-    }
-  });
-});
-
 // Observers delegate to the browser's real Blob URL and anchor primitives.
 // They record lifecycle timing and never replace a result or an application action.
 async function observeDownloads(page) {
@@ -271,12 +206,15 @@ test('native member add retains joined metadata and role refusal rolls back pers
     assert.deepEqual((await (await addResponse).json())[0],'saved','Actual member add persists before metadata is rendered.');
     const row=member(page,person.username);await row.waitFor();
     assert.ok((await row.innerText()).includes('Metadata person'));
+    const joined=rows(fixture,'SELECT created_at FROM project_members WHERE project_id=? AND user_id=?',fixture.project.id,person.id)[0].created_at;
+    assert.equal(await row.locator('time').getAttribute('datetime'),joined);
     const roleResponse=page.waitForResponse(response=>response.url().endsWith('/__native_overview/manage'));
     await choose(page,`native-overview-member-${fixture.project.id}-${person.id}`,'Maintainer');
     assert.ok((await roleResponse).ok());
     await page.waitForFunction(id=>document.querySelector(`#native-overview-member-${id}-trigger`)?.textContent.includes('Maintainer'),`${fixture.project.id}-${person.id}`);
     assert.equal(rows(fixture,'SELECT role FROM project_members WHERE project_id=? AND user_id=?',fixture.project.id,person.id)[0].role,'maintainer');
     assert.ok((await row.innerText()).includes('Metadata person'));assert.ok((await row.innerText()).includes(`@${person.username}`));
+    assert.equal(await row.locator('time').getAttribute('datetime'),joined,'Changing role preserves joined metadata.');
     // The real last-lead guard supplies a refusal without a synthetic server response.
     const admin=rows(fixture,'SELECT id FROM users WHERE username=?',fixture.credentials.identity)[0];
     database(fixture,db=>{
@@ -286,7 +224,9 @@ test('native member add retains joined metadata and role refusal rolls back pers
     await choose(page,`native-overview-member-${fixture.project.id}-${admin.id}`,'Viewer');
     await page.getByRole('alert').filter({visible:true}).first().waitFor();
     assert.equal(rows(fixture,'SELECT role FROM project_members WHERE project_id=? AND user_id=?',fixture.project.id,admin.id)[0].role,'lead');
-    assert.ok((await member(page,fixture.credentials.identity).innerText()).includes('Lead'));
+    const lead=page.locator(`#native-overview-member-${fixture.project.id}-${admin.id}-trigger .native-project-select__selected`);
+    await page.waitForFunction(selector=>document.querySelector(selector)?.textContent==='Lead',`#native-overview-member-${fixture.project.id}-${admin.id}-trigger .native-project-select__selected`);
+    assert.equal(await lead.textContent(),'Lead','Refused role change restores the canonical picker label.');
   });
 });
 
@@ -302,7 +242,12 @@ test('native Overview recent-auth refusal freezes member grant, retries password
     const prompt=page.locator('.native-overview__members .native-overview__grant');
     const password=prompt.getByPlaceholder('your current password',{exact:true});await password.waitFor({state:'visible'});
     assert.deepEqual(rows(fixture,'SELECT role FROM project_members WHERE project_id=? AND user_id=?',fixture.project.id,person.id),[]);
-    await password.fill('wrong password');await prompt.getByRole('button',{name:'Confirm and continue',exact:true}).click();
+    await password.fill('wrong password');
+    const refusal=page.waitForResponse(response=>response.url().endsWith('/__native_overview/manage_confirm'));
+    await prompt.getByRole('button',{name:'Confirm and continue',exact:true}).click();
+    const refused=await refusal;
+    assert.ok(refused.ok(),'Wrong-password refusal completes through the real native procedure.');
+    assert.equal((await refused.json())[0],'confirmation_failed');
     await prompt.getByRole('alert').waitFor({state:'visible'});assert.equal(await password.inputValue(),'');
     assert.equal((await page.context().cookies()).find(cookie=>cookie.name==='lific_token').value,fixture.token);
     await password.fill(fixture.credentials.password);
@@ -356,7 +301,11 @@ test('native GitHub preview commits the exact previewed repository and mappings 
     // The real confirmation step keeps the previewed configuration out of editable UI.
     assert.ok(await importer.getByPlaceholder('owner/name',{exact:true}).isHidden());
     assert.ok(await importer.getByPlaceholder('ghp_…',{exact:true}).isHidden());
-    await commit.click();await importer.getByRole('heading',{name:'Import complete',exact:true}).waitFor();
+    const commitResponse=page.waitForResponse(response=>response.url().endsWith('/__native_overview/import_github'));
+    await commit.click();
+    assert.deepEqual((await (await commitResponse).json())[0],{t:'Result',ok:'done'},
+      'The real upstream import returns a successful commit.');
+    await importer.getByRole('heading',{name:'Import complete',exact:true}).waitFor();
     const confirmed=requests.filter(request=>request.url().endsWith('/__native_overview/import_github')).at(-1).postDataJSON();
     assert.deepEqual(confirmed.slice(0,7),preview.slice(0,7));assert.equal(confirmed[7],false);
     const imported=rows(fixture,"SELECT source,status FROM issues WHERE source LIKE 'github:%'");

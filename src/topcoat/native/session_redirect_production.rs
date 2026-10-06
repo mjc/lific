@@ -83,8 +83,8 @@ async fn native_session_expired_post_uses_303_and_get_keeps_307_across_auth_and_
             );
         }
         // Root mount additionally exercises an actual HTTP client's automatic
-        // redirect handling. Mounted browser automatic follows stay covered by
-        // the unchanged common-owner held-account cases and real mounted proxy.
+        // redirect handling. Mounted browser cases cover typed RPC rejection and
+        // fresh-cookie document fallback through the real mounted proxy.
         let following = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::limited(3))
             .timeout(std::time::Duration::from_secs(5))

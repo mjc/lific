@@ -63,12 +63,23 @@ pub(super) fn select<'a>(
     value: Signal<Option<i64>>,
     disabled: Signal<bool>,
 ) -> BoxView<'a> {
-    // Every caller supplies the null option first, so value always has a row.
+    select_scoped(cx, cx, id, rows, value, disabled)
+}
+
+pub(super) fn select_scoped<'a>(
+    cx: &'a Cx,
+    state_cx: &Cx,
+    id: String,
+    rows: Vec<OptionRow>,
+    value: Signal<Option<i64>>,
+    disabled: Signal<bool>,
+) -> BoxView<'a> {
+    // A refreshed value without a matching option starts at the first row.
     let initial = rows
         .iter()
         .position(|row| row.value == value.get_untracked())
         .unwrap_or(0);
-    let controls_cx = cx.keyed(id.as_str());
+    let controls_cx = state_cx.keyed(id.as_str());
     let selected = signal(&controls_cx, || initial);
     let open = signal(&controls_cx, || false);
     let values = rows.iter().map(|row| row.value).collect::<Vec<_>>();

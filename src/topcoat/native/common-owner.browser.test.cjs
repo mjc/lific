@@ -47,12 +47,12 @@ async function jump(page,name){await page.locator('#native-home-palette-open').c
 test(`native common owner ${scenario}; auth ${seed.auth_required?'required':'optional'}`,async t=>{
  const browser=await launchBrowser();
  try{for(const prefix of ['', '/app','/ACC']){
-   const cases=scenario==='phone'?['focus','forward','forward_hash','foreign_pop','held_back']:scenario==='held'?['newer','hash','account']:scenario==='menu'?['menu_focus','menu_keyboard']:scenario==='panel'?['panel_normal','panel_focus','panel_menu','panel_palette']:[scenario];
+   const cases=scenario==='phone'?['focus','forward','forward_hash','foreign_pop','held_back']:scenario==='held'?['newer','hash','account']:scenario==='redirect'?['account']:scenario==='menu'?['menu_focus','menu_keyboard']:scenario==='panel'?['panel_normal','panel_focus','panel_menu','panel_palette']:[scenario];
    for(const kind of cases)await t.test(`${prefix||'root'} ${kind}`,async()=>{
     const proxy=await mountedProxy(upstream,prefix),context=await browser.newContext({viewport:(scenario==='phone'||scenario==='menu'||scenario==='panel')?{width:390,height:844}:{width:1280,height:1000},reducedMotion:'reduce',colorScheme:'light'});
     const gates=[];let diagnostic;
     try{
-      const currentToken=scenario==='held'?(await control('renew')).token:token;await cookie(context,proxy.origin,currentToken);
+      const currentToken=(scenario==='held'||scenario==='redirect')?(await control('renew')).token:token;await cookie(context,proxy.origin,currentToken);
       if(kind==='foreign_pop')await context.addInitScript(()=>{const original=history.go;history.go=function(delta){if(window.holdNativeHistoryTraversal){window.heldNativeHistoryDelta=Number(delta);return;}return original.call(this,delta);};});
       if(scenario==='scroll')await context.addInitScript(()=>{window.sidebarScrollCalls=[];const original=Element.prototype.scrollIntoView;Element.prototype.scrollIntoView=function(options){const id=this.getAttribute('data-sidebar-project');if(id)window.sidebarScrollCalls.push({id,options});return original.call(this,options);};});
       if(scenario==='notice')await context.addInitScript(()=>{const send=WebSocket.prototype.send;window.noticePaletteSockets=[];WebSocket.prototype.send=function(value){if(new URL(this.url).pathname.endsWith('/__native_home/palette')&&!window.noticePaletteSockets.includes(this))window.noticePaletteSockets.push(this);return send.call(this,value);};});
@@ -171,7 +171,10 @@ test(`native common owner ${scenario}; auth ${seed.auth_required?'required':'opt
           await adopted(page,seen);assert.equal(page.url(),`${proxy.origin}${prefix}/#main-content`,'Main cancels a pending destination when newer genuine hash navigation wins.');assert.equal(await page.locator('.native-overview').count(),0);await page.locator('[data-native-home]').waitFor();await owner(page,seen,documents);
         }else{
           await cookie(context,proxy.origin,seed.other_token);assert.equal((await control('expire')).expired,true);gate.release();const result=await bounded(gate.done,5000,'Stale current-cookie dispatch');if(result.error)throw result.error;assert.ok(result.status>=300,'The real server rejects the held expired credential.');
+          if(scenario==='redirect')assert.equal(result.status,303,'The genuine authentication redirect exercises the typed RPC policy.');
           await page.getByRole('heading',{name:"Couldn't load this project",exact:true}).waitFor();await page.locator('.native-home-account').getByText('non_member',{exact:true}).waitFor();
+          // Chromium emits a provisional redirect request even when manual Fetch cancels it; observe real HTTP arrivals.
+          if(scenario==='redirect')assert.equal(proxy.requests.some(request=>request.method==='GET'&&request.path===`${prefix}/login`),false,'Typed procedure rejection does not fetch a login HTML document.');
           assert.equal(await page.getByText('Visible active initial work',{exact:true}).count(),0);assert.equal(await page.getByText('One',{exact:true}).count(),0);assert.ok(seen.requests.filter(r=>r.type==='document').length>documents,'A replacement account starts a genuine fresh document owner.');
         }
       }else if(kind==='scroll'){

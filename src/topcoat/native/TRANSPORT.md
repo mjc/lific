@@ -35,8 +35,26 @@ preserved.
 Procedure and shard paths remain logical inside framework objects, markers,
 and serialized values. The helper resolves the mount at each request. Passing
 or returning nested procedure values therefore does not accumulate prefixes.
-No global `fetch` interception, fetch options, credentials, or origin policy
-changes are introduced. No HTML response buffering is required.
+Mount resolution uses the existing credentials and origin policy. It does not
+intercept global `fetch` or buffer HTML responses.
+
+## Procedure redirects
+
+Typed procedure calls require JSON responses. Ordinary and keepalive calls use
+Fetch's `redirect: 'manual'` so an authentication redirect rejects the procedure
+before requesting an unrelated login document. The existing non-OK response
+check also rejects the browser's opaque redirect response without decoding it.
+Callers retain their existing failure recovery and navigation revision checks.
+The server's HTTP redirect status and document navigation remain unchanged.
+
+The packaged Procedure request adds `redirect:"manual"` inside its existing
+keepalive substitution. The reconstruction oracle reverses that entire method
+to the pinned upstream implementation; the vendor distribution stays unchanged.
+The native redirect browser regression observes real 303 responses, zero login
+GET requests, and recovery using the replacement cookie for both authentication
+modes and all three mounts. This proves the RPC redirect contract; it does not
+identify the suppressed callback in the earlier intermittent suite failure.
+Upstream submission is tracked by LIF-246.
 
 ## Rust tuple compatibility
 

@@ -49,7 +49,8 @@ SOFTWARE.
   share this terminal claim; each new document has a fresh Runtime.
 - Lific procedure keepalive patch: add generic `call_keepalive` and typed-call
   `with_keepalive` adapter methods sharing the existing POST/Future pipeline.
-  Ordinary `call` options are unchanged; only keepalive calls set `keepalive: true`.
+  Both call paths reject HTTP redirects without following them; only keepalive
+  calls set `keepalive: true`.
 - Lific generic vector signal patch: add immutable typed push/remove writes to
   WriteSignal and cloning Vec helpers. Index validation preserves usize width
   and bounds; no application policy is included.
@@ -60,7 +61,7 @@ SOFTWARE.
 - All remaining upstream framework code is unchanged. Removing the 27
   prepended helper/comment lines and reversing these twenty-two substitutions
   reproduces the unmodified upstream bytes. See `../native/TRANSPORT.md`.
-- Patched file SHA-256: `8419312a4341b2f20cd1fc6d26964e705a24ce70f696965438bcd52c67d7e060`
+- Patched file SHA-256: `80c08d7fbc45bc682c8b82d9a0786f05243ed282ab472123dc7ba33e3f984b75`
 
 Generic Unicode string operations add to_uppercase and unicode_scalars. Scalar
 strings use the existing owned String and Vec values; target usize width is

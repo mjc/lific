@@ -226,6 +226,14 @@ async fn native_common_owner_held_destination_latest_click_and_current_cookie_au
     browser("held", false).await;
 }
 #[tokio::test]
+async fn native_common_owner_rejected_destination_does_not_fetch_login_document() {
+    browser("redirect", true).await;
+}
+#[tokio::test]
+async fn native_common_owner_rejected_destination_does_not_fetch_login_document_auth_optional() {
+    browser("redirect", false).await;
+}
+#[tokio::test]
 async fn native_common_owner_notice_once_survives_genuine_sibling_reconnect() {
     browser("notice", true).await;
 }

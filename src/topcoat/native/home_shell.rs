@@ -802,14 +802,30 @@ fn shell_mount(
                 ()
             );
         };
-        raw!("${_refresh_theme}();", ());
+        // Main stores sm/lg and applies rem typography through the root element.
+        let _refresh_font_scale = || {
+            let stored = raw!(
+                r#"cx.hydrate((() => {try {return localStorage.getItem('lific_font_scale') || '';} catch {return '';}})())"#,
+                String::new()
+            );
+            let _scale = if stored == "sm" {
+                "sm"
+            } else {
+                if stored == "lg" { "lg" } else { "md" }
+            };
+            raw!(
+                "document.documentElement.setAttribute('data-font-scale', ${_scale}.toString())",
+                ()
+            );
+        };
+        raw!("${_refresh_theme}(); ${_refresh_font_scale}();", ());
         let folded = raw!(
             r#"cx.hydrate((() => {try {return localStorage.getItem('lific:sidebar:collapsed') || '';} catch {return '';}})())"#,
             String::new()
         );
         collapsed.set(folded == "1");
         let _storage = |_event: Event| {
-            raw!("${_refresh_theme}();", ());
+            raw!("${_refresh_theme}(); ${_refresh_font_scale}();", ());
         };
         href.set(raw!("cx.hydrate(window.location.href)", String::new()));
         let previous_owner = raw!(
