@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const {tmpdir} = require('node:os');
-const {execFileSync} = require('node:child_process');
+const {assertOriginalSources} = require('../original_source_fixture.cjs');
 const {pathToFileURL} = require('node:url');
 const {launchBrowser, mountedProxy, settleScroll} = require('../browser_fixture.cjs');
 const {installOriginalFonts} = require('../original_fonts_fixture.cjs');
@@ -11,7 +11,6 @@ const {prepareOriginalVite, closeOriginalVite} = require('../original_vite_fixtu
 
 const [origin, token, snapshot = process.env.LIFIC_MAIN_FRONTEND] = process.argv.slice(2);
 const output = path.join(tmpdir(), 'lific-native-project-activity-visual');
-const pinned = '9683d38af8e1e6f9b076439fe90d9519109b2218';
 const actorName = actor => actor.display_name || actor.username || 'system';
 
 function measure(element) {
@@ -141,10 +140,7 @@ async function paired(main, native, name, state, report, extra = {}) {
 
 test('native project Activity matches Main history, actor filters, expansion, pagination and refresh', async () => {
   assert.ok(snapshot, 'Pass the external pinned Main web directory as the third argument.');
-  for (const file of ['src/routes/ProjectActivity.svelte', 'src/lib/linediff.ts']) {
-    assert.deepEqual(fs.readFileSync(path.join(snapshot, file)),
-      execFileSync('git', ['show', `${pinned}:web/${file}`]), `Unmodified Main ${file}`);
-  }
+  assertOriginalSources(snapshot, ['src/routes/ProjectActivity.svelte', 'src/lib/linediff.ts']);
   fs.mkdirSync(output, {recursive:true});
   const projects = await api('/api/projects');
   const project = projects.find(project => project.identifier === 'ACC');

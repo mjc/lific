@@ -151,3 +151,21 @@ async fn native_browser_discovery_io_contract() {
         String::from_utf8_lossy(&output.stderr),
     );
 }
+
+#[tokio::test]
+async fn native_original_source_checkout_io_contract() {
+    let output = browser_command(
+        "src/topcoat/native/original_source_fixture.test.cjs",
+        "",
+        "",
+    )
+    .output()
+    .await
+    .unwrap();
+    assert!(
+        output.status.success(),
+        "original reference checkout contracts failed:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}

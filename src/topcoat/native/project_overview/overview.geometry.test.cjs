@@ -4,13 +4,12 @@ const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const path=require('node:path');
 const {tmpdir}=require('node:os');
-const {execFileSync}=require('node:child_process');
+const {originalHead:referenceHead,assertOriginalSources}=require('../original_source_fixture.cjs');
 const {pathToFileURL}=require('node:url');
 const {installOriginalFonts,captureOriginalFonts}=require('../original_fonts_fixture.cjs');
 const {prepareOriginalVite,closeOriginalVite}=require('../original_vite_fixture.cjs');
 const {mountedProxy,launchBrowser,settleScroll}=require(process.argv[4]);
 const [origin,token,,snapshot]=process.argv.slice(2);
-const referenceHead='9683d38af8e1e6f9b076439fe90d9519109b2218';
 const output=process.env.LIFIC_PROJECT_OVERVIEW_VISUAL_OUTPUT||path.join(tmpdir(),'lific-native-project-overview-visual');
 function measure(element){
   const rect=element.getBoundingClientRect(),style=getComputedStyle(element);
@@ -66,8 +65,7 @@ async function session(browser,url,viewport,theme,native){
 }
 test('real native Overview matches unchanged master identity, sections, drafts and disclosures in all mounts, dimensions and themes',async t=>{
   assert.ok(snapshot,'Pinned master web directory required.');fs.mkdirSync(output,{recursive:true});
-  const referenceRoot=fs.existsSync(path.join(path.dirname(snapshot),'.git'))?path.dirname(snapshot):process.cwd();
-  for(const file of ['src/routes/ProjectSettings.svelte','src/lib/IconPicker.svelte','src/lib/ProjectIcon.svelte','src/lib/ProgressRing.svelte','src/lib/CopyIdButton.svelte','src/lib/ColorPicker.svelte','src/lib/LabelManager.svelte','src/lib/ProjectMembers.svelte','src/lib/PublishPanel.svelte','src/lib/ArchiveTransferPanel.svelte','src/lib/ImportPanel.svelte','src/lib/Select.svelte'])assert.deepEqual(fs.readFileSync(path.join(snapshot,file)),execFileSync('git',['-C',referenceRoot,'show',`${referenceHead}:web/${file}`]),`Unmodified reference ${file}`);
+  assertOriginalSources(snapshot, ['src/routes/ProjectSettings.svelte','src/lib/IconPicker.svelte','src/lib/ProjectIcon.svelte','src/lib/ProgressRing.svelte','src/lib/CopyIdButton.svelte','src/lib/ColorPicker.svelte','src/lib/LabelManager.svelte','src/lib/ProjectMembers.svelte','src/lib/PublishPanel.svelte','src/lib/ArchiveTransferPanel.svelte','src/lib/ImportPanel.svelte','src/lib/Select.svelte']);
   const browser=await launchBrowser(),upstream=new URL(origin),sockets=new Set(),report=[];let vite,cache;
   try{
     const {createServer}=await import(pathToFileURL(path.join(snapshot,'node_modules/vite/dist/node/index.js')).href);
