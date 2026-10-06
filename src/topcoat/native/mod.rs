@@ -3,6 +3,9 @@ pub(crate) mod activity_text;
 mod admission_contract;
 #[cfg(test)]
 mod assembled;
+mod auth_actions;
+mod auth_form;
+mod auth_shell;
 pub(crate) mod avatar;
 pub(crate) mod board;
 pub(crate) mod bookmark;
@@ -56,6 +59,7 @@ pub(crate) mod session;
 mod session_idle;
 #[cfg(test)]
 mod session_redirect_production;
+pub(crate) mod signup;
 pub(crate) mod socket_admission;
 #[cfg(test)]
 mod stylesheet;

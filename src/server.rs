@@ -63,7 +63,7 @@ mod topcoat_app {
         } else {
             route.page.title()
         };
-        if native_page && !matches!(native, Some(NativeRoute::Login)) {
+        if native_page && !matches!(native, Some(NativeRoute::Login | NativeRoute::Signup)) {
             super::topcoat_frontend::native::home::authorize(cx)?;
         }
         Ok(view! {
@@ -110,6 +110,7 @@ mod topcoat_app {
         }
         match native_route(&route, uri.query().is_some()) {
             Some(NativeRoute::Login) => super::topcoat_frontend::native::login::screen(cx),
+            Some(NativeRoute::Signup) => super::topcoat_frontend::native::signup::screen(cx),
             Some(NativeRoute::Home) => super::topcoat_frontend::native::home::screen(cx),
             Some(NativeRoute::Workspace) => {
                 super::topcoat_frontend::native::workspace::screen(cx, &route)
@@ -212,6 +213,16 @@ mod topcoat_app {
             .header("cache-control", "public, max-age=86400")
             .body(topcoat::router::Body::from(
                 super::topcoat_frontend::native::login::MASCOT.to_vec(),
+            ))?)
+    }
+
+    #[route(GET "/__native_signup/mascot.png")]
+    async fn signup_mascot() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "image/png")
+            .header("cache-control", "public, max-age=86400")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::native::signup::MASCOT.to_vec(),
             ))?)
     }
 
@@ -405,7 +416,6 @@ mod topcoat_app_tests {
     async fn unfinished_feature_routes_have_no_intermediate_fallback() {
         let router = topcoat::router::tower::TowerService::new(topcoat_app::router());
         for path in [
-            "/signup",
             "/settings",
             "/projects/import",
             "/LIF/issues/new",

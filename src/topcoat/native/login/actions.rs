@@ -1,44 +1,17 @@
 //! HTTP procedures reuse the established Argon2, rate-limit, and session path.
 use std::sync::Arc;
 
-use super::super::{context, transport};
-use crate::{
-    config::{AuthConfig, Config},
-    error::LificError,
-};
+use super::super::context;
+use crate::config::{AuthConfig, Config};
 use axum::{
     Extension,
     extract::{ConnectInfo, Json, State},
-    response::IntoResponse,
 };
 use topcoat::{
     context::{Cx, app_context},
-    router::{
-        header,
-        request::{headers, remote_addr},
-        response::response_headers,
-    },
+    router::request::{headers, remote_addr},
     runtime::procedure,
 };
-
-fn finish(cx: &Cx, result: Result<impl IntoResponse, LificError>) -> (bool, String) {
-    match result {
-        Ok(result) => {
-            let response = result.into_response();
-            // The existing adapter owns the cookie flags. Its JSON token never
-            // crosses the native procedure boundary or enters browser state.
-            for cookie in response.headers().get_all(header::SET_COOKIE) {
-                response_headers(cx).append(header::SET_COOKIE, cookie.clone());
-            }
-            (true, transport::mounted_url(cx, "/"))
-        }
-        Err(LificError::BadRequest(message) | LificError::Forbidden(message)) => (false, message),
-        Err(error) => {
-            tracing::error!(error=%error, "native login failed");
-            (false, "Unable to sign in. Try again.".into())
-        }
-    }
-}
 
 #[procedure("/__native_login/sign_in")]
 pub(super) async fn sign_in(
@@ -65,7 +38,11 @@ pub(super) async fn sign_in(
         Json(crate::db::models::LoginRequest { identity, password }),
     )
     .await;
-    Ok(finish(cx, result))
+    Ok(super::super::auth_actions::finish(
+        cx,
+        result,
+        "Unable to sign in. Try again.",
+    ))
 }
 
 #[procedure("/__native_login/automatic")]
@@ -79,5 +56,9 @@ pub(super) async fn automatic(cx: &Cx) -> topcoat::Result<(bool, String)> {
         )),
     )
     .await;
-    Ok(finish(cx, result))
+    Ok(super::super::auth_actions::finish(
+        cx,
+        result,
+        "Unable to sign in. Try again.",
+    ))
 }

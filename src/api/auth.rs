@@ -29,11 +29,11 @@ fn clear_cookie(secure: bool) -> String {
 /// handler itself (LIF-364), because a client-supplied flag and a
 /// server-decided bootstrap are different threat models.
 #[derive(serde::Deserialize)]
-pub(super) struct SignupRequest {
-    username: String,
-    email: String,
-    password: String,
-    display_name: Option<String>,
+pub(crate) struct SignupRequest {
+    pub(crate) username: String,
+    pub(crate) email: String,
+    pub(crate) password: String,
+    pub(crate) display_name: Option<String>,
 }
 
 /// Whether this instance's signup policy accepts a signup for `email`.
@@ -65,7 +65,7 @@ fn signup_policy_allows(
     Ok(())
 }
 
-pub(super) async fn auth_signup(
+pub(crate) async fn auth_signup(
     State(db): State<DbPool>,
     Extension(auth_cfg): Extension<crate::config::AuthConfig>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
