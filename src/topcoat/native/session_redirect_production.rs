@@ -78,9 +78,10 @@ async fn native_session_expired_post_uses_303_and_get_keeps_307_across_auth_and_
                 .unwrap();
             assert_eq!(
                 login.status().as_u16(),
-                404,
-                "GET reaches the unported login route without restoring a fallback screen"
+                200,
+                "GET reaches the native login document after an expired session"
             );
+            assert!(login.text().await.unwrap().contains("Welcome back."));
         }
         // Root mount additionally exercises an actual HTTP client's automatic
         // redirect handling. Mounted browser cases cover typed RPC rejection and
@@ -99,10 +100,11 @@ async fn native_session_expired_post_uses_303_and_get_keeps_307_across_auth_and_
             .unwrap();
         assert_eq!(
             followed.status().as_u16(),
-            404,
-            "Following expired POST reaches the unported GET login route, not a method-preserving 405"
+            200,
+            "Following expired POST reaches native GET login, not a method-preserving 405"
         );
         assert_eq!(followed.url().path(), "/login");
+        assert!(followed.text().await.unwrap().contains("Welcome back."));
         server.abort();
     }
 }

@@ -56,13 +56,14 @@ mod topcoat_app {
             .path_and_query()
             .map_or_else(|| uri.path(), |path| path.as_str());
         let route = super::topcoat_frontend::shell::ParsedRoute::parse(route_target);
-        let native_page = native_route(&route, uri.query().is_some()).is_some();
+        let native = native_route(&route, uri.query().is_some());
+        let native_page = native.is_some();
         let title = if native_page {
             "Lific"
         } else {
             route.page.title()
         };
-        if native_page {
+        if native_page && !matches!(native, Some(NativeRoute::Login)) {
             super::topcoat_frontend::native::home::authorize(cx)?;
         }
         Ok(view! {
@@ -108,6 +109,7 @@ mod topcoat_app {
             return Err(topcoat::router::error::redirect_permanent(destination).into());
         }
         match native_route(&route, uri.query().is_some()) {
+            Some(NativeRoute::Login) => super::topcoat_frontend::native::login::screen(cx),
             Some(NativeRoute::Home) => super::topcoat_frontend::native::home::screen(cx),
             Some(NativeRoute::Workspace) => {
                 super::topcoat_frontend::native::workspace::screen(cx, &route)
@@ -197,6 +199,16 @@ mod topcoat_app {
             .header("cache-control", "no-cache")
             .body(topcoat::router::Body::from(
                 super::topcoat_frontend::assets::app_stylesheet(),
+            ))?)
+    }
+
+    #[route(GET "/__native_login/mascot.png")]
+    async fn login_mascot() -> Result<Response> {
+        Ok(Response::builder()
+            .header("content-type", "image/png")
+            .header("cache-control", "public, max-age=86400")
+            .body(topcoat::router::Body::from(
+                super::topcoat_frontend::native::login::MASCOT.to_vec(),
             ))?)
     }
 

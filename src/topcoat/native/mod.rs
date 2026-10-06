@@ -37,6 +37,7 @@ pub(crate) mod insights;
 pub(crate) mod issue_edit;
 #[cfg(test)]
 mod limit_contract;
+pub(crate) mod login;
 pub(crate) mod markdown;
 #[cfg(test)]
 mod markdown_edit;
