@@ -14,7 +14,9 @@ const recent=page=>page.locator('[data-topcoat-recents]:visible').first();
 function recentLink(page,href){return recent(page).locator(`a[data-recents-href="${href}"]`);}
 async function openPhone(page,phone){
   if(!phone)return;
-  if(!await page.locator('[data-native-mobile-nav]').isVisible())await page.getByRole('button',{name:'Open navigation',exact:true}).click();
+  const nav=page.locator('[data-native-mobile-nav]');
+  if(!await nav.isVisible())await page.getByRole('button',{name:'Open navigation',exact:true}).click();
+  await nav.waitFor({state:'visible'});
   if(await page.locator('[data-native-mobile-root]').isVisible())await page.getByRole('button',{name:'Open Visible project navigation',exact:true}).click();
 }
 async function showRows(page,phone){

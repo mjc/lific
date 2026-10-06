@@ -9,8 +9,11 @@ are removed. Unfinished features remain unavailable until they are implemented
 in Rust; see `topcoat-migration.md`. Browser-only APIs are accessed through the
 native Topcoat components, while Rust owns application decisions and state.
 
-Home omits collapsed project destination trees and initializes the phone project
-tree on first use. Shared sidebar state survives disclosure and navigation.
+Home omits collapsed project destination trees, the unopened phone dialog, and
+closed palette result handlers. The phone dialog initializes on first use and
+retains its shared sidebar state through closing and browser history. Initial
+HTML contains one project catalog; stale projection checks use its revision.
+The shell binds each shared signal handle once within its owning mount scope.
 Lucide geometry is served as versioned, immutable assets for the selected icons;
 repeated instances reuse cached geometry and share presentation CSS.
 

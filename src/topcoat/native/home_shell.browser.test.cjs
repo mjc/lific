@@ -230,6 +230,7 @@ test(`native Home original shell: ${scenario}`, async t => {
               assert.equal(await open.count(), 1, 'Phone has the original navigation entry point.');
               await open.click();
               const nav = page.locator('[data-native-mobile-nav]');
+              await nav.waitFor({state: 'visible'});
               assert.equal(await nav.isVisible(), true);
               const rect = await nav.boundingBox();
               assert.deepEqual([rect.x, rect.y, rect.width, rect.height], [0, 0, viewport.width, viewport.height]);
@@ -254,13 +255,23 @@ test(`native Home original shell: ${scenario}`, async t => {
               await page.keyboard.press('Escape');await nav.waitFor({state:'hidden'});
             } else if (scenario === 'mobile_lifetime') {
               const current = page.url();
+              const phonePosts = [];
+              page.on('request', request => {
+                if (request.method() === 'POST' && new URL(request.url()).pathname === `${prefix}/__native_home/phone`) {
+                  phonePosts.push(request.url());
+                }
+              });
               const open = page.getByRole('button', {name: 'Open navigation', exact: true});
+              assert.equal(await page.locator('[data-native-mobile-nav]').count(), 0,
+                'The unopened phone dialog is admitted on first use.');
               await open.click();
               const nav = page.getByRole('dialog', {name: 'Workspace navigation', exact: true});
               await nav.waitFor();
               assert.equal(await page.locator('.native-home-body').evaluate(element => element.inert), true,
                 'Original phone navigation isolates the background while its owned modal is open.');
               const first = nav.getByRole('button', {name: 'Close navigation', exact: true});
+              await page.waitForFunction(() => document.querySelector('[data-native-mobile-root] button') === document.activeElement);
+              await nav.evaluate(element => { element.__retainedPhoneChrome = true; });
               const last = nav.getByRole('button', {name: 'Choose theme, current: light', exact: true});
               await first.focus();
               await page.keyboard.press('Shift+Tab');
@@ -281,16 +292,23 @@ test(`native Home original shell: ${scenario}`, async t => {
                 'Popping the project pane returns focus to its original row.');
               await page.goBack();
               await nav.waitFor({state: 'hidden'});
+              assert.equal(await page.locator('[data-native-mobile-nav]').count(), 1,
+                'The initialized phone dialog survives close and history reopen.');
               assert.equal(page.url(), current, 'Owned Back closes the root instead of leaving Home.');
               assert.equal(await page.locator('.native-home-body').evaluate(element => element.inert), false);
               assert.equal(await open.evaluate(element => element === document.activeElement), true);
               await page.goForward();
               await nav.waitFor();
+              assert.equal(await nav.evaluate(element => element.__retainedPhoneChrome), true,
+                'History reopen retains the admitted dialog and its subordinate owners.');
               assert.equal(page.url(), current, 'Forward restores the owned root navigation entry.');
               await (await phoneProject(nav)).click();
               await page.goBack();
               await nav.locator('[data-native-mobile-root]').waitFor();
               assert.equal(page.url(), current);
+              await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+              assert.equal(phonePosts.length, 1,
+                'Project selection and owned Back/Forward retain the admitted phone scope without another parent render.');
               await page.setViewportSize({width: 1440, height: 900});
               await nav.waitFor({state: 'hidden'});
               assert.equal(await page.locator('.native-home-sidebar').isVisible(), true);
