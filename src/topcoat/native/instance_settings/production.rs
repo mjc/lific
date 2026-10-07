@@ -383,6 +383,27 @@ async fn native_instance_settings_admin_name_blur_saves_trimmed_value() {
     let input_handler = input.value().attr("data-topcoat-on:input").unwrap();
     let blur_handler = input.value().attr("data-topcoat-on:blur").unwrap();
     let value_binding = input.value().attr("data-topcoat-bind:value").unwrap();
+    let reauth = document
+        .select(&scraper::Selector::parse("[data-native-instance-reauth]").unwrap())
+        .next()
+        .unwrap();
+    let reauth_input = reauth
+        .select(&scraper::Selector::parse("input[data-native-instance-reauth-password]").unwrap())
+        .next()
+        .unwrap();
+    let confirm_button = reauth
+        .select(&scraper::Selector::parse("button").unwrap())
+        .find(|button| {
+            button
+                .text()
+                .collect::<String>()
+                .contains("Confirm and continue")
+        })
+        .unwrap();
+    let cancel_button = reauth
+        .select(&scraper::Selector::parse("button").unwrap())
+        .find(|button| button.text().collect::<String>().contains("Cancel"))
+        .unwrap();
     assert_eq!(input.value().attr("value"), Some("Old name"));
     assert_eq!(input.value().attr("maxlength"), Some("60"));
     assert_eq!(input.value().attr("placeholder"), Some("localhost"));
@@ -401,8 +422,7 @@ async fn native_instance_settings_admin_name_blur_saves_trimmed_value() {
     assert!(
         field
             .select(&scraper::Selector::parse("button").unwrap())
-            .next()
-            .is_none(),
+            .all(|button| !button.text().collect::<String>().contains("Save")),
         "the name autosaves on blur without a Save button"
     );
     let signals = home_fixture::page_signals(&html);
@@ -442,6 +462,43 @@ async fn native_instance_settings_admin_name_blur_saves_trimmed_value() {
     )
     .await;
     assert_eq!(clear_status, StatusCode::OK);
+    assert_eq!(
+        crate::db::queries::settings::get(&fixture.db.read().unwrap())
+            .unwrap()
+            .instance_name,
+        None,
+        "blank instance name restores the host-name fallback",
+    );
+    let (confirm_queued_status, confirm_queued_reply) = home_fixture::procedure(
+        &fixture,
+        "/__native_instance_settings/save_text",
+        serde_json::to_value(
+            (
+                account,
+                "name".to_owned(),
+                "Queued after confirm".to_owned(),
+            )
+                .into_surrogate(),
+        )
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(confirm_queued_status, StatusCode::OK);
+    let (followup_retry_status, followup_retry_reply) = home_fixture::procedure(
+        &fixture,
+        "/__native_instance_settings/save_text",
+        serde_json::to_value(
+            (
+                account,
+                "name".to_owned(),
+                "Newest after failed follow-up".to_owned(),
+            )
+                .into_surrogate(),
+        )
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(followup_retry_status, StatusCode::OK);
     {
         let conn = fixture.db.write().unwrap();
         conn.execute(
@@ -460,6 +517,23 @@ async fn native_instance_settings_admin_name_blur_saves_trimmed_value() {
     )
     .await;
     assert_eq!(error_status, StatusCode::OK);
+    let (wrong_password_status, wrong_password_reply) = home_fixture::procedure(
+        &fixture,
+        "/__native_instance_settings/confirm_name",
+        serde_json::to_value(
+            (
+                account,
+                "Coalesced name".to_owned(),
+                "incorrect-password".to_owned(),
+            )
+                .into_surrogate(),
+        )
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(wrong_password_status, StatusCode::OK);
+    assert_eq!(wrong_password_reply[0], false);
+    assert_eq!(wrong_password_reply[1], "incorrect password");
     {
         let conn = fixture.db.write().unwrap();
         conn.execute(
@@ -480,6 +554,28 @@ async fn native_instance_settings_admin_name_blur_saves_trimmed_value() {
     )
     .await;
     assert_eq!(ordinary_status, StatusCode::OK);
+    {
+        let conn = fixture.db.write().unwrap();
+        conn.execute("UPDATE users SET is_admin=1 WHERE id=?1", [account])
+            .unwrap();
+    }
+    let (confirm_success_status, confirm_success_reply) = home_fixture::procedure(
+        &fixture,
+        "/__native_instance_settings/confirm_name",
+        serde_json::to_value(
+            (
+                account,
+                "Coalesced name".to_owned(),
+                "testpassword1".to_owned(),
+            )
+                .into_surrogate(),
+        )
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(confirm_success_status, StatusCode::OK);
+    assert_eq!(confirm_success_reply[0], true, "{confirm_success_reply}");
+    assert_eq!(confirm_success_reply[1], "Coalesced name");
 
     let result = home_fixture::evaluate_handler(
         "src/topcoat/native/instance_settings/name_handler.test.cjs",
@@ -488,6 +584,10 @@ async fn native_instance_settings_admin_name_blur_saves_trimmed_value() {
             "input_handler": input_handler,
             "blur_handler": blur_handler,
             "value_binding": value_binding,
+            "confirmation_binding": reauth.attr("data-topcoat-bind:hidden").unwrap(),
+            "reauth_password_handler": reauth_input.attr("data-topcoat-on:input").unwrap(),
+            "confirm_handler": confirm_button.attr("data-topcoat-on:click").unwrap(),
+            "cancel_handler": cancel_button.attr("data-topcoat-on:click").unwrap(),
             "name_signal_value": "Old name",
             "account": account,
             "save_reply": save_reply,
@@ -495,11 +595,19 @@ async fn native_instance_settings_admin_name_blur_saves_trimmed_value() {
             "queued_reply": queued_reply,
             "revert_reply": revert_reply,
             "error_reply": error_reply,
+            "wrong_password_reply": wrong_password_reply,
+            "confirm_success_reply": confirm_success_reply,
+            "confirm_queued_reply": confirm_queued_reply,
+            "followup_retry_reply": followup_retry_reply,
             "ordinary_reply": ordinary_reply,
             "expected_save_args": serde_json::to_value((account, "name".to_owned(), "New name".to_owned()).into_surrogate()).unwrap(),
             "expected_clear_args": serde_json::to_value((account, "name".to_owned(), String::new()).into_surrogate()).unwrap(),
             "expected_queued_args": serde_json::to_value((account, "name".to_owned(), "Latest name".to_owned()).into_surrogate()).unwrap(),
             "expected_revert_args": serde_json::to_value((account, "name".to_owned(), "Old name".to_owned()).into_surrogate()).unwrap(),
+            "expected_confirm_args": serde_json::to_value((account, "Coalesced name".to_owned(), "incorrect-password".to_owned()).into_surrogate()).unwrap(),
+            "expected_confirm_success_args": serde_json::to_value((account, "Coalesced name".to_owned(), "testpassword1".to_owned()).into_surrogate()).unwrap(),
+            "expected_confirm_queued_args": serde_json::to_value((account, "name".to_owned(), "Queued after confirm".to_owned()).into_surrogate()).unwrap(),
+            "expected_followup_retry_args": serde_json::to_value((account, "name".to_owned(), "Newest after failed follow-up".to_owned()).into_surrogate()).unwrap(),
         }),
     );
     assert_eq!(result["trimmed_save"], true);
@@ -514,8 +622,8 @@ async fn native_instance_settings_admin_name_blur_saves_trimmed_value() {
         crate::db::queries::settings::get(&fixture.db.read().unwrap())
             .unwrap()
             .instance_name,
-        None,
-        "blank instance name restores the host-name fallback",
+        Some("Coalesced name".into()),
+        "the successful emitted-handler reply came from the canonical confirmation write",
     );
 }
 
