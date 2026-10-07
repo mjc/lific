@@ -502,10 +502,11 @@ fn action_button<'a>(
                 else if action == "blocks_reverse" { link_relation(account,project_id,target_value.clone(),source_value.clone(),"blocks".to_owned()).await }
                 else { let kind = if action == "blocks" { "blocks" } else if action == "duplicate" { "duplicate" } else { "relates_to" }; link_relation(account,project_id,source_value.clone(),target_value.clone(),kind.to_owned()).await }
             };
-            raw!("Promise.resolve().then(() => ${_run}()).then(value => ${_success}(cx.hydrate(value))).catch(() => ${_failure}());",());
+            raw!("Promise.resolve().then(() => ${_run}()).then(value => ${_success}(value)).catch(() => ${_failure}());",());
         })>(label)</button>
     }.boxed()
 }
+
 fn edges(relations: &[ProjectRelation]) -> Vec<RelationEdge> {
     relations
         .iter()
@@ -525,4 +526,102 @@ fn linked_count(issues: &[Issue], relations: &[ProjectRelation], closed: bool) -
 }
 fn unlinked_count(issues: &[Issue], relations: &[ProjectRelation], closed: bool) -> usize {
     model::project(issues, relations, closed).counts.unlinked
+}
+
+#[cfg(test)]
+mod action_button_tests {
+    use std::{io::Write, process::Stdio};
+
+    use super::*;
+    use serde_json::json;
+    use topcoat::context::CxTestBuilder;
+    use topcoat::runtime::Surrogated;
+
+    fn test_signal_id(value: impl serde::Serialize) -> String {
+        serde_json::to_value(value).unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    }
+
+    #[component]
+    async fn remove_button_fixture(cx: &Cx) -> topcoat::Result<impl View> {
+        let busy = signal(cx, || false);
+        let error = signal(cx, String::new);
+        let revision = signal(cx, || 0_usize);
+        let menu = signal(cx, || "edge".to_owned());
+        let source = signal(cx, || "ACC-1".to_owned());
+        let target = signal(cx, || "ACC-2".to_owned());
+        let busy_id = test_signal_id((&busy).into_surrogate());
+        let error_id = test_signal_id((&error).into_surrogate());
+        let revision_id = test_signal_id((&revision).into_surrogate());
+        let menu_id = test_signal_id((&menu).into_surrogate());
+        let button = action_button(
+            cx,
+            "Remove relation",
+            "Remove",
+            9,
+            11,
+            source,
+            target,
+            "remove",
+            busy,
+            error,
+            revision,
+            menu,
+        );
+        Ok(view! { cx =>
+            (button)
+            <span data-test-busy-id=(busy_id)
+                data-test-error-id=(error_id)
+                data-test-revision-id=(revision_id)
+                data-test-menu-id=(menu_id)></span>
+        })
+    }
+
+    #[tokio::test]
+    async fn successful_relation_procedure_clears_busy_and_menu_and_advances_revision() {
+        let cx = CxTestBuilder::new().build();
+        let cx = &cx;
+        let html = view! { cx => remove_button_fixture() }
+            .single()
+            .await
+            .unwrap()
+            .render(&cx);
+        let document = scraper::Html::parse_document(&html);
+        let button = scraper::Selector::parse("[aria-label='Remove relation']").unwrap();
+        let button = document.select(&button).next().unwrap();
+        let state = scraper::Selector::parse("[data-test-busy-id]").unwrap();
+        let state = document.select(&state).next().unwrap();
+        let signals = super::super::super::home_fixture::page_signals(&html);
+        let input = json!({
+            "handler": button.value().attr("data-topcoat-on:click").unwrap(),
+            "signals": signals,
+            "busy": state.value().attr("data-test-busy-id").unwrap(),
+            "error": state.value().attr("data-test-error-id").unwrap(),
+            "revision": state.value().attr("data-test-revision-id").unwrap(),
+            "menu": state.value().attr("data-test-menu-id").unwrap(),
+        });
+        let mut child = std::process::Command::new("node")
+            .arg("src/topcoat/native/dependency_graph/action_button.test.cjs")
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.to_string().as_bytes())
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "successful native relation handler:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }
