@@ -1,5 +1,5 @@
 use super::super::session;
-use super::actions::{change_password, sign_out, sign_out_all};
+use super::actions::{change_password, profile_session, sign_out, sign_out_all};
 use topcoat::{
     context::Cx,
     runtime::{Event, Signal, expr, shard, signal},
@@ -16,6 +16,12 @@ async fn native_settings_security(cx: &Cx, account: i64) -> topcoat::Result<impl
     Ok(render_section(cx, account))
 }
 
+#[derive(Clone)]
+struct PasswordFeedback {
+    visible: Signal<bool>,
+    generation: Signal<usize>,
+}
+
 fn password_attrs(
     cx: &Cx,
     account: i64,
@@ -23,20 +29,26 @@ fn password_attrs(
     next: Signal<String>,
     busy: Signal<bool>,
     error: Signal<String>,
-    success: Signal<bool>,
+    feedback: PasswordFeedback,
 ) -> Attributes {
+    let success = feedback.visible;
+    let generation = feedback.generation;
+    let destination = super::super::transport::mounted_url(cx, "/");
+    let unavailable: Result<Option<String>, String> =
+        Err("Unable to verify the current session.".to_owned());
     let failed_busy = busy.clone();
     let failed_error = error.clone();
     let handler = expr!(|_event: Event| {
         if !busy.get() {
+            error.set("".to_owned());
+            success.set(false);
+            generation.increment();
             let old = current.get();
             let new = next.get();
             if new.len() < 8 {
                 error.set("New password must be at least 8 characters.".to_owned());
             } else {
                 busy.set(true);
-                error.set("".to_owned());
-                success.set(false);
                 let _failed = || {
                     if raw!("cx.hydrate(cx.abortSignal.aborted)", false) {
                         return;
@@ -49,17 +61,48 @@ fn password_attrs(
                     if raw!("cx.hydrate(cx.abortSignal.aborted)", false) {
                         return;
                     }
+                    let _read = async || profile_session(account).await;
+                    let fresh = raw!(
+                        "await ${_read}().catch(()=>${unavailable})",
+                        Result::<Option<String>, String>::Err(String::new())
+                    );
+                    if raw!("cx.hydrate(cx.abortSignal.aborted)", false) {
+                        return;
+                    }
+                    let authorized = if fresh.is_ok() {
+                        fresh.unwrap().is_some()
+                    } else {
+                        false
+                    };
+                    if !authorized {
+                        current.set("".to_owned());
+                        next.set("".to_owned());
+                        raw!("cx.redirect(${destination}.toString())", ());
+                        return;
+                    }
                     if result.0 {
                         current.set("".to_owned());
                         next.set("".to_owned());
                         success.set(true);
+                        let current_generation = generation.get();
+                        let _expire = || {
+                            if !raw!("cx.hydrate(cx.abortSignal.aborted)", false) {
+                                if generation.get() == current_generation {
+                                    success.set(false);
+                                }
+                            }
+                        };
+                        raw!(
+                            "const cancel=()=>clearTimeout(timer);const timer=setTimeout(()=>{cx.abortSignal.removeEventListener('abort',cancel);${_expire}();},6000);cx.abortSignal.addEventListener('abort',cancel,{once:true});",
+                            ()
+                        );
                     } else {
                         error.set(result.1);
                     }
                     busy.set(false);
                 };
                 raw!(
-                    "Promise.resolve().then(()=>${_run}()).catch(()=>${_failed}());",
+                    "cx.withSessionChange(cx.abortSignal,()=>${_run}()).catch(()=>${_failed}());",
                     ()
                 );
             }
@@ -132,7 +175,11 @@ fn render_section(cx: &Cx, account: i64) -> BoxView<'_> {
     let next = signal(&state_cx, String::new);
     let busy = signal(&state_cx, || false);
     let error = signal(&state_cx, String::new);
-    let success = signal(&state_cx, || false);
+    let feedback = PasswordFeedback {
+        visible: signal(&state_cx, || false),
+        generation: signal(&state_cx, || 0_usize),
+    };
+    let success = feedback.visible.clone();
     let signout_error = signal(&state_cx, String::new);
     let signout_busy = signal(&state_cx, || false);
     let confirm_all = signal(&state_cx, || false);
@@ -143,7 +190,7 @@ fn render_section(cx: &Cx, account: i64) -> BoxView<'_> {
         next.clone(),
         busy.clone(),
         error.clone(),
-        success.clone(),
+        feedback,
     );
     let signout_everywhere = signout_attrs(
         cx,
