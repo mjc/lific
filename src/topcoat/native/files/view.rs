@@ -341,7 +341,7 @@ async fn files_body(
         }
     };
     let mut cache = serde_json::from_str::<
-        std::collections::HashMap<String, Option<CachedWhereUsed>>,
+        std::collections::BTreeMap<String, Option<CachedWhereUsed>>,
     >(&links_cache_wire)
     .unwrap_or_default();
     let where_used = expanded_id.and_then(|id| {
