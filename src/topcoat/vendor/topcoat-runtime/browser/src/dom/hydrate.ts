@@ -1,3 +1,4 @@
+import { LINK_ATTRIBUTE } from "../render/navigation";
 import { ShardUnit } from "../render/shard";
 import { type Region, Scope } from "../scope";
 import type { SignalId } from "../signal-registry";
@@ -31,6 +32,8 @@ type Frame = {
  * - `adoptable`: signal IDs retained from replaced content. A matching
  *   declaration keeps the existing value, assigns ownership to the current
  *   scope, and removes the ID from this set. Remaining IDs were not reused.
+ * - `syncText`: reconciles replacement text with current signal values.
+ *   Initial hydration preserves the server's text until a signal changes.
  */
 export function hydrate(
 	root: Node,
@@ -38,6 +41,7 @@ export function hydrate(
 	to: Node | null,
 	initialScope: Scope,
 	adoptable: Set<SignalId> = new Set(),
+	syncText = false,
 ): void {
 	const walker = document.createTreeWalker(
 		root,
@@ -63,7 +67,14 @@ export function hydrate(
 		const marker = parseComment(node as Comment);
 		if (!marker) continue;
 
-		processMarker(marker, node as Comment, stack, textExpressions, adoptable);
+		processMarker(
+			marker,
+			node as Comment,
+			stack,
+			textExpressions,
+			adoptable,
+			syncText,
+		);
 	}
 }
 
@@ -71,6 +82,12 @@ function processElement(el: Element, scope: Scope): void {
 	for (const attr of Array.from(el.attributes)) {
 		setupBinding(el, attr, scope);
 		setupEventHandler(el, attr, scope);
+	}
+	if (
+		el instanceof HTMLAnchorElement &&
+		el.getAttribute(LINK_ATTRIBUTE) === "viewport"
+	) {
+		scope.runtime.navigation.observe(el, scope.abortSignal);
 	}
 }
 
@@ -80,6 +97,7 @@ function processMarker(
 	stack: Frame[],
 	textExpressions: PendingTextExpression[],
 	adoptable: Set<SignalId>,
+	syncText: boolean,
 ): void {
 	// The last stack entry owns the content around this marker.
 	const current = stack[stack.length - 1]?.scope;
@@ -124,7 +142,13 @@ function processMarker(
 			if (!pending) {
 				throw new Error("Unbalanced text expression: end marker has no start");
 			}
-			setupTextExpression(pending.start, node, pending.js, pending.scope);
+			setupTextExpression(
+				pending.start,
+				node,
+				pending.js,
+				pending.scope,
+				syncText,
+			);
 			break;
 		}
 

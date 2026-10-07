@@ -1,34 +1,40 @@
-# Native runtime sources
+# Lific Topcoat runtime bridge
 
-`connection.rs` and `socket.rs` originate in
-[`topcoat-runtime` 0.9.0](https://github.com/tokio-rs/topcoat/tree/v0.9.0/crates/topcoat-runtime).
-The upstream MIT license and copyright are preserved in `LICENSE`.
+The vendored framework source under `src/topcoat/vendor/topcoat-runtime` is from
+`mjc/topcoat` commit `9c909ed4ea16b7058ae23c5e1938c83039f3e985`, rebased on
+official Topcoat `main` commit `8cdc2bfd`. `UPSTREAM-SHA256SUMS` records the
+fork package files before Lific's path and manifest changes. These source hashes
+do not represent a crates.io package checksum.
 
-Original package SHA-256:
-`c4c4dc39a1c6ef6f0f604ecba3949baf401a30b5b44e7b3f830c3509e6b560dd`.
-The unchanged `connection.rs` SHA-256 is
-`67aaeaf4f39ba790d4dad72234e998467635ef41ab92f124d31ee4b9920d59ca`.
-The original upstream `src/layer/socket.rs` SHA-256 was
-`960d8e516a4178d5f47a30648abb44b21aba7a1f06b0fc5dde779e617ccdc026`.
+Lific compiles the vendored runtime's canonical bridge files from
+`src/topcoat/runtime/connection.rs` and `socket.rs`, both in the application and
+in the standalone vendor package. `ConnectionEpoch` gives every render on one
+physical socket the same identity. `ConnectionTarget` retains the handshake
+context until all aborted render tasks release their references.
 
-Lific's socket changes retain the upgrade request context, accept an application
-retirement future, bound outbound sends, send protocol pings, enforce inbound
-progress deadlines, and cancel active renders when the socket retires. The
-driver imports its connection marker and wire values from its parent module.
-Application authentication and quota decisions run in the admission layer.
+The bridge implements Topcoat 0.10's concurrent Run/Stop protocol. Each Run
+carries its HTTP method, logical path, allowed headers and body; every output
+frame is wrapped with its run ID. Stop aborts and awaits only that run. A socket
+can carry up to 64 simultaneous runs by default. The application bridge limit is configured
+by `SocketPolicy`. In the standalone vendored framework layer, the public
+`RouterBuilderRuntimeExt::max_runs_per_connection` setting is forwarded to the
+same policy before the upgrade.
 
-`string.rs` adds local Unicode uppercase and scalar-vector operations to the
-registry string values. The browser uses the same owned String and Vec wire
-types; a typed usize supplies the vector's target width. Source and packaged
-browser tests compare actual Rust expressions and serialized values, including
-case expansion, astral scalars, hydration and index bounds.
+The bridge preserves handshake authority headers and allows per-run overrides
+only for `Content-Type`, `X-Topcoat-Runtime` and the shard identity header. An
+optional route-agnostic `SocketRunPolicy`, installed by the application's
+admission layer, authorizes every requested method and URI before dispatch.
+Application authentication, public/private route scope and socket quotas stay
+in Lific.
 
-`mod.rs` uses the registry runtime's signal values and protocol constant with
-the registry core, router and view crates, all pinned to 0.9.0. Native connection
-checks and the driver use the same local marker. HTTP reruns, signals, procedures,
-shards and macros continue to use the registry runtime.
+The bridge also keeps the local bounded output queue, send and progress
+deadlines, ping handling, one-shot retirement hook, and abort-and-await cleanup.
+It wraps raw NDJSON frame bytes directly instead of parsing and serializing the
+frame body again. The retained connection context remains alive while any run
+is still unwinding.
 
-These canonical sources live here so Cargo includes them in application packages.
-The [standalone source test crate](../vendor/topcoat-runtime/README.md) compiles
-these same files through relative module paths in a repository checkout. Its
-`UPSTREAM-SHA256SUMS` preserves checksums at the original upstream paths.
+The standalone manifest points all framework dependencies at the same fork
+revision and patches that revision's `topcoat-runtime` dependency to this local
+copy. This keeps the framework context, signal and surrogate types unified.
+The package's standalone lockfile is updated separately from the application
+lockfile.

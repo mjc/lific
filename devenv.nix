@@ -7,7 +7,10 @@
 }:
 let
   repoRoot = if config.git.root != null then config.git.root else builtins.toString ./.;
-  lificVersion = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).package.version;
+  manifest = builtins.fromTOML (builtins.readFile ./Cargo.toml);
+  lificVersion = manifest.package.version;
+  topcoatDependency = manifest.dependencies.topcoat;
+  topcoatFormatTargets = "src/server.rs src/topcoat/native src/topcoat/runtime";
   # An explicit config prevents local development and `devenv test` from
   # inheriting an operator's production URL, credentials, or backup location.
   devConfig = pkgs.writeText "lific-dev.toml" ''
@@ -75,7 +78,10 @@ let
       ./LICENSE
       ./README.md
     ];
-    cargoLock.lockFile = ./Cargo.lock;
+    cargoLock = {
+      lockFile = ./Cargo.lock;
+      outputHashes."topcoat-0.10.0" = "sha256-oK2rRV9ZHTzy3UL0txc65A/sFPxD/5uvEUFMemQffUY=";
+    };
     buildType = "dist";
     doCheck = false;
   };
@@ -336,6 +342,7 @@ in
     config.settings.excludes = [
       "site/.next/*"
       "promo/out/*"
+      "src/topcoat/vendor/*"
       "target/*"
     ];
   };
@@ -423,6 +430,7 @@ in
       exec = ''
         set -e
         node --test src/topcoat/assets/controls.test.mjs
+        node --test src/topcoat/native/transport.test.cjs
         cargo test --locked native_activity_rate_
       '';
     };
@@ -432,11 +440,16 @@ in
     };
     "lific:topcoat:install-cli" = {
       cwd = repoRoot;
-      exec = "cargo install --locked --version 0.9.0 topcoat-cli";
+      exec = "cargo install --locked --git ${topcoatDependency.git} --rev ${topcoatDependency.rev} topcoat-cli";
     };
     "lific:topcoat:fmt" = {
       cwd = repoRoot;
-      exec = "${config.devenv.state}/cargo-install/bin/topcoat fmt src/server.rs";
+      exec = "${config.devenv.state}/cargo-install/bin/topcoat fmt --rustfmt ${topcoatFormatTargets}";
+      after = [ "lific:topcoat:install-cli" ];
+    };
+    "lific:topcoat:fmt-check" = {
+      cwd = repoRoot;
+      exec = "${config.devenv.state}/cargo-install/bin/topcoat fmt --check --rustfmt ${topcoatFormatTargets}";
       after = [ "lific:topcoat:install-cli" ];
     };
     "lific:community-proxy:check" = {

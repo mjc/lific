@@ -23,6 +23,7 @@ topcoat-asset.workspace = true
 topcoat-core.workspace = true
 topcoat-router = { workspace = true, optional = true }
 topcoat-view.workspace = true
+topcoat-view-macro.workspace = true
 
 pin-project-lite = { workspace = true, optional = true }
 ref-cast.workspace = true
@@ -37,7 +38,7 @@ tokio = { workspace = true, optional = true, features = ["rt", "sync"] }
 
 [dev-dependencies]
 # We cannot use `workspace = true` with `default-features = false`.
-topcoat = { path = "../topcoat", default-features = false, features = ["view"] }
+topcoat = { path = "../topcoat", default-features = false, features = ["asset", "router", "runtime", "view"] }
 
 [lints]
 workspace = true

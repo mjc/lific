@@ -1,9 +1,6 @@
 import { expect, it } from "vitest";
-import { Context } from "../expression/context";
-import { SignalRegistry } from "../signal-registry";
-import { Integer } from "./integer";
-import { Vec } from "./sequence";
 
+import { Integer, integerType, setServerUsizeBits } from "./integer";
 import { String as RuntimeString, Str } from "./string";
 
 // Regression for #192: `String.deref()` returned `this`, so any loop that
@@ -44,9 +41,18 @@ it("ref-unwrapping an owned string terminates", () => {
 
 // Regression for #126: `len()` counted UTF-16 code units.
 it("counts length in UTF-8 bytes", () => {
+	setServerUsizeBits(64);
 	expect(new Str("한😊").len().toString()).toBe("7");
 	expect(new Str("a").len().toString()).toBe("1");
 	expect(new Str("é").len().toString()).toBe("2");
+});
+
+it("measures length as the server's usize", () => {
+	setServerUsizeBits(32);
+	const length = new Str("abc").len();
+	const index = new Integer(3n, integerType("usize", 32));
+	expect(length.eq(index).toString()).toBe("true");
+	expect(() => length.eq(new Integer(3n, integerType("usize", 64)))).toThrow();
 });
 
 // Regression for #236: `<` and friends order by UTF-16 code unit, which puts
@@ -95,25 +101,3 @@ it("trims only the requested end", () => {
 	);
 	expect(new Str("x\u{FEFF}").trim_end().toNodeText()).toBe("x\u{FEFF}");
 });
-
-for (const bits of [32, 64]) {
-    it(`Unicode case expansion and scalar Vec preserve target ${bits}-bit width`, () => {
-        const cx = new Context(new SignalRegistry());
-        const index = (value: number, width = bits) => Integer.hydrate({t:"usize", bits:width, v:String(value)});
-        expect(new Str("Straße ﬃ iıİ σς").to_uppercase().toString()).toBe("STRASSE FFI IIİ ΣΣ");
-        for (const text of ["", "ascii", "😀a", "𝕒ß", "a\u{301}😀"]) {
-            const values = new Str(text).unicode_scalars(index(0));
-            const expected = Array.from(text);
-            const wire = {t:"Vec", bits, v:expected};
-            expect(values.dehydrate()).toEqual(wire);
-            expect(values.len().dehydrate()).toEqual({t:"usize", bits, v:String(expected.length)});
-            expect((cx.hydrate(wire) as Vec<RuntimeString>).dehydrate()).toEqual(wire);
-            if (expected.length) expect(values.index(index(0)).toString()).toBe(expected[0]);
-            expect(() => values.index(index(expected.length))).toThrow();
-            expect(() => values.index(index(0, bits === 32 ? 64 : 32))).toThrow();
-            expect(() => values.index(Integer.hydrate({t:"u64", bits:64, v:"0"}))).toThrow();
-        }
-        expect(() => new Str("a").unicode_scalars(Integer.hydrate({t:"u64", bits:64, v:"0"}))).toThrow();
-        expect(() => cx.hydrate({t:"usize", bits:24, v:"0"})).toThrow();
-    });
-}

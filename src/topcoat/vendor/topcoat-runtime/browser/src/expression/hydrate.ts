@@ -3,10 +3,12 @@ import { F64 } from "../surrogate/f64";
 import { Integer, integerType } from "../surrogate/integer";
 import { Option } from "../surrogate/option";
 import { Procedure } from "../surrogate/procedure";
+import { Record } from "../surrogate/record";
 import { Ref } from "../surrogate/ref";
 import { Result } from "../surrogate/result";
 import { FixedArray, Slice, Vec } from "../surrogate/sequence";
 import { String as RuntimeString, Str } from "../surrogate/string";
+import { Tuple } from "../surrogate/tuple";
 import type { Context } from "./context";
 import type { DehydratedSurrogate } from "./serialized";
 
@@ -26,6 +28,9 @@ export function hydrate(value: DehydratedSurrogate, cx: Context): unknown {
 		case "function":
 			throw new Error(`Unknown surrogate type: ${typeof value}`);
 		case "object":
+			if (Array.isArray(value)) {
+				return new Tuple(value.map((item) => hydrate(item, cx)));
+			}
 			switch (value.t) {
 				case "u8":
 				case "u16":
@@ -65,6 +70,22 @@ export function hydrate(value: DehydratedSurrogate, cx: Context): unknown {
 					if (value.t === "Array") return new FixedArray(items, type);
 					const slice = new Slice(items, type);
 					return Ref.shared(() => slice);
+				}
+				case "Record": {
+					if (
+						typeof value.v !== "object" ||
+						value.v === null ||
+						Array.isArray(value.v) ||
+						Object.keys(value).some((key) => !["t", "v"].includes(key))
+					) {
+						throw new Error("Invalid record payload");
+					}
+					return new Record(
+						Object.entries(value.v).map(([name, field]) => [
+							name,
+							hydrate(field, cx),
+						]),
+					);
 				}
 				case "Signal":
 					return cx.signal(value.id);

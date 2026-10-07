@@ -1,7 +1,7 @@
 use ref_cast::RefCast;
 
 use crate::{
-    BoolSurrogate, F64Surrogate, StringSurrogate, impl_surrogate_mut, impl_surrogate_ref,
+    BoolSurrogate, StringSurrogate, UsizeSurrogate, impl_surrogate_mut, impl_surrogate_ref,
     serialize_tagged,
 };
 
@@ -60,9 +60,8 @@ impl StrSurrogate {
 
     #[inline]
     #[must_use]
-    #[allow(clippy::cast_precision_loss)]
-    pub fn len(&self) -> F64Surrogate {
-        F64Surrogate::new(self.0.len() as f64)
+    pub fn len(&self) -> UsizeSurrogate {
+        UsizeSurrogate::new(self.0.len())
     }
 
     #[inline]

@@ -29,6 +29,7 @@ export interface SerializedSequence {
 export type DehydratedSurrogate =
 	| SerializedInteger
 	| SerializedSequence
+	| DehydratedSurrogate[]
 	| null
 	| boolean
 	| number
@@ -37,5 +38,6 @@ export type DehydratedSurrogate =
 	| { t: "Option"; v: DehydratedSurrogate | null }
 	| { t: "Result"; ok: DehydratedSurrogate }
 	| { t: "Result"; err: DehydratedSurrogate }
+	| { t: "Record"; v: { [field: string]: DehydratedSurrogate } }
 	| { t: "Signal"; id: SignalId; v?: DehydratedSurrogate }
 	| { t: "Procedure"; path: string };

@@ -88,20 +88,6 @@ export class Vec<T> extends Slice<T> {
 		return this.to_vec();
 	}
 
-	clone_with_push(value: T): Vec<T> {
-		const next = this.items.map(cloneValue);
-		next.push(cloneValue(value));
-		return new Vec(next, this.usizeType);
-	}
-
-	clone_without_index(index: Integer): Vec<T> {
-		const offset = index.toIndex(this.items.length, this.usizeType.bits);
-		if (offset === undefined) throw new RangeError("Vec index out of bounds");
-		const next = this.items.map(cloneValue);
-		next.splice(offset, 1);
-		return new Vec(next, this.usizeType);
-	}
-
 	dehydrate(): SerializedSequence {
 		return {
 			t: "Vec",
