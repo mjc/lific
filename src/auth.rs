@@ -235,12 +235,14 @@ impl PreparedApiKey {
     }
 }
 
+pub(crate) const RECENT_AUTH_REQUIRED_MESSAGE: &str = "recent authentication required";
+
 /// The error every failure of [`recent_session_token`] /
 /// [`revalidate_recent_session`] returns. One string on purpose: which of
 /// "no token", "not a session token", "expired", "too old" or "wrong user"
 /// applies is not something an unauthorized caller should get to probe for.
 fn recent_auth_required() -> crate::error::LificError {
-    crate::error::LificError::Forbidden("recent authentication required".into())
+    crate::error::LificError::Forbidden(RECENT_AUTH_REQUIRED_MESSAGE.into())
 }
 
 /// Pull the browser session token out of an `Authorization: Bearer` header for
