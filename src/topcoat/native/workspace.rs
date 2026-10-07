@@ -26,6 +26,7 @@ pub(crate) enum NativeRoute {
     Modules,
     Files,
     Graph,
+    Settings,
 }
 
 #[cfg(test)]
@@ -103,6 +104,7 @@ pub(crate) fn native_route(route: &ParsedRoute<'_>, has_query: bool) -> Option<N
         (Layout::Auth, _, Page::Login) => Some(NativeRoute::Login),
         (Layout::Auth, _, Page::Signup) => Some(NativeRoute::Signup),
         (Layout::Private, _, Page::Home) => Some(NativeRoute::Home),
+        (Layout::Private, None, Page::Settings) => Some(NativeRoute::Settings),
         (Layout::Private, _, Page::ProjectNew) => Some(NativeRoute::ProjectNew),
         (Layout::Private, Some(_), Page::Overview) => Some(NativeRoute::ProjectOverview),
         (Layout::Private, Some(_), Page::Insights) => Some(NativeRoute::Insights),
@@ -141,7 +143,8 @@ pub(crate) fn common_screen<'a>(
             | NativeRoute::IssueCreate
             | NativeRoute::Modules
             | NativeRoute::Files
-            | NativeRoute::Graph,
+            | NativeRoute::Graph
+            | NativeRoute::Settings,
         ) => {
             let caller = session::read(cx, context::caller(cx))?;
             let user = session::read(cx, crate::api::require_user(&caller.identity))?;
@@ -220,6 +223,7 @@ async fn native_common_page(
         Some(NativeRoute::Modules) => super::modules::region(cx, &route, account, &caller),
         Some(NativeRoute::Files) => super::files::region(cx, &route, account, &caller),
         Some(NativeRoute::Graph) => super::dependency_graph::region(cx, &route, account, &caller),
+        Some(NativeRoute::Settings) => super::settings::region(cx, &route, account, &caller),
         _ => Err(topcoat::router::error::not_found().into()),
     }
 }
@@ -350,7 +354,7 @@ pub(crate) async fn native_navigation_authorized(
         return Ok("denied".into());
     }
     match (route.project, route.page) {
-        (None, Page::Home | Page::ProjectNew) => Ok("allow".into()),
+        (None, Page::Home | Page::ProjectNew | Page::Settings) => Ok("allow".into()),
         (Some(identifier), page) => {
             let db = context::db(cx);
             let project_id = match db

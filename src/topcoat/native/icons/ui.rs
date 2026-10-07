@@ -94,10 +94,13 @@ pub(crate) enum UiIcon {
     DetailsPanel,
     #[strum(serialize = "Paperclip")]
     Attachment,
+    #[strum(serialize = "Palette")]
+    Appearance,
     #[strum(serialize = "Pencil")]
     Edit,
     #[strum(serialize = "Pin")]
     Pinned,
+    Plug,
     #[strum(serialize = "Plus")]
     Add,
     Search,
