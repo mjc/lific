@@ -205,3 +205,106 @@ async fn production_graph_relation_procedure_rechecks_viewer_role() {
         "denied procedure leaves persisted graph unchanged"
     );
 }
+
+#[tokio::test]
+async fn rendered_zoom_in_handler_updates_the_graph_transform() {
+    use std::{io::Write, process::Stdio};
+
+    let (fixture, _, _, _, _) = linked_graph_fixture();
+    let (status, html) = home_fixture::document(&fixture, "/app", "/ACC/graph", true, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let document = scraper::Html::parse_document(&html);
+    let zoom_in = document
+        .select(&scraper::Selector::parse("[data-native-graph-zoom='in']").unwrap())
+        .next()
+        .unwrap();
+    let zoom_out = document
+        .select(&scraper::Selector::parse("[data-native-graph-zoom='out']").unwrap())
+        .next()
+        .unwrap();
+    let transform = document
+        .select(&scraper::Selector::parse("[data-native-graph-transform]").unwrap())
+        .next()
+        .unwrap();
+    let signals = home_fixture::page_signals(&html);
+    let mut child = std::process::Command::new("node")
+        .arg("src/topcoat/native/dependency_graph/zoom_handler.test.cjs")
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(
+            serde_json::json!({
+                "handlers":[
+                    zoom_in.value().attr("data-topcoat-on:click"),
+                    zoom_out.value().attr("data-topcoat-on:click")
+                ],
+                "actions": ["in", "out"]
+                    .into_iter()
+                    .chain(std::iter::repeat_n("in", 10))
+                    .chain(std::iter::repeat_n("out", 20))
+                    .chain(["in", "out"])
+                    .collect::<Vec<_>>(),
+                "style_binding":transform.value().attr("data-topcoat-bind:style"),
+                "signals":signals
+            })
+            .to_string()
+            .as_bytes(),
+        )
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "actual graph zoom handler:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let styles = result["styles"].as_array().unwrap();
+    assert!(styles[0].as_str().unwrap().contains("scale(1.2)"));
+    assert!(styles[1].as_str().unwrap().contains("scale(1)"));
+    assert!(styles[11].as_str().unwrap().contains("scale(2)"));
+    assert!(styles[31].as_str().unwrap().contains("scale(0.1)"));
+    assert!(styles[32].as_str().unwrap().contains("scale(0.12)"));
+    assert!(styles[33].as_str().unwrap().contains("scale(0.1)"));
+    let first_signals = result["snapshots"][0].as_object().unwrap().clone();
+    let (status, updated_html) =
+        home_fixture::document(&fixture, "/app", "/ACC/graph", true, Some(first_signals)).await;
+    assert_eq!(status, StatusCode::OK);
+    let updated = scraper::Html::parse_document(&updated_html);
+    let surface = updated
+        .select(&scraper::Selector::parse("[data-native-graph-transform]").unwrap())
+        .next()
+        .unwrap();
+    assert!(
+        surface
+            .value()
+            .attr("style")
+            .unwrap_or_default()
+            .contains("scale(1.2)"),
+        "zoom-in signal is reflected in rendered graph transform: {updated_html}"
+    );
+    let second_signals = result["snapshots"][1].as_object().unwrap().clone();
+    let (status, updated_html) =
+        home_fixture::document(&fixture, "/app", "/ACC/graph", true, Some(second_signals)).await;
+    assert_eq!(status, StatusCode::OK);
+    let updated = scraper::Html::parse_document(&updated_html);
+    let surface = updated
+        .select(&scraper::Selector::parse("[data-native-graph-transform]").unwrap())
+        .next()
+        .unwrap();
+    assert!(
+        surface
+            .value()
+            .attr("style")
+            .unwrap_or_default()
+            .contains("scale(1)"),
+        "reciprocal zoom-out restores scale 1: {updated_html}"
+    );
+}
