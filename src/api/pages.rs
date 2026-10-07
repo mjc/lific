@@ -21,21 +21,7 @@ fn require_page_role(
     project_id: Option<i64>,
     min: Role,
 ) -> Result<(), LificError> {
-    match project_id {
-        Some(pid) => authz::require_role(db, identity, pid, min),
-        None => authz::require_workspace_admin(db, identity),
-    }
-}
-
-/// [`require_page_role`] against a caller-supplied connection, for gates that
-/// must be decided inside the transaction that writes.
-fn require_page_role_conn(
-    conn: &rusqlite::Connection,
-    identity: &Option<crate::resolve_caller::ResolvedIdentity>,
-    project_id: Option<i64>,
-    min: Role,
-) -> Result<(), LificError> {
-    authz::require_project_or_workspace_role_conn(conn, identity, project_id, min)
+    crate::services::pages::require_page_role(db, identity, project_id, min)
 }
 
 #[derive(serde::Deserialize)]
@@ -106,9 +92,7 @@ pub(super) async fn get_page(
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
     Path(id): Path<i64>,
 ) -> Result<Json<Page>, LificError> {
-    let page = with_read(&db, |conn| crate::db::queries::get_page(conn, id))?;
-    require_page_role(&db, &identity, page.project_id, Role::Viewer)?;
-    Ok(Json(page))
+    crate::services::pages::get(&db, &identity, id).map(Json)
 }
 
 pub(super) async fn resolve_page(
@@ -116,37 +100,16 @@ pub(super) async fn resolve_page(
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
     Path(identifier): Path<String>,
 ) -> Result<Json<Page>, LificError> {
-    let page = with_read(&db, |conn| {
-        let id = crate::db::queries::resolve_page_identifier(conn, &identifier)?;
-        crate::db::queries::get_page(conn, id)
-    })?;
-    require_page_role(&db, &identity, page.project_id, Role::Viewer)?;
-    Ok(Json(page))
+    crate::services::pages::resolve(&db, &identity, &identifier).map(Json)
 }
 
 pub(super) async fn create_page(
     State(db): State<DbPool>,
     Extension(realtime): Extension<RealtimeHub>,
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
-    Json(mut input): Json<CreatePage>,
+    Json(input): Json<CreatePage>,
 ) -> Result<Json<Page>, LificError> {
-    require_page_role(&db, &identity, input.project_id, Role::Maintainer)?;
-    let user = super::require_user(&identity)?;
-    // LIF-262/LIF-409: `create_page` links the content's attachment references
-    // inside its own savepoint, with the caller's reach.
-    input.attachments = AttachmentActor::Authenticated(CommentActor::from(&user));
-    let page = db.transaction(|conn| {
-        // The gate above ran on a read connection before this write began.
-        // Re-run it on the connection that writes the links, in one immediate
-        // transaction, so the authorization deciding which references may be
-        // linked cannot go stale between the check and the insert.
-        require_page_role_conn(conn, &identity, input.project_id, Role::Maintainer)?;
-        crate::db::queries::create_page(conn, &input)
-    })?;
-    if let Some(project_id) = page.project_id {
-        realtime.send_with_seq(RealtimeEvent::ProjectUpdated { project_id }, page.seq);
-    }
-    Ok(Json(page))
+    crate::services::pages::commit_create(&db, &realtime, &identity, input).map(Json)
 }
 
 pub(super) async fn update_page(
@@ -154,26 +117,9 @@ pub(super) async fn update_page(
     Extension(realtime): Extension<RealtimeHub>,
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
     Path(id): Path<i64>,
-    Json(mut input): Json<UpdatePage>,
+    Json(input): Json<UpdatePage>,
 ) -> Result<Json<Page>, LificError> {
-    let project_id = with_read(&db, |conn| crate::db::queries::get_page(conn, id))?.project_id;
-    require_page_role(&db, &identity, project_id, Role::Maintainer)?;
-    let user = super::require_user(&identity)?;
-    input.attachments = AttachmentActor::Authenticated(CommentActor::from(&user));
-    let page = db.transaction(|conn| {
-        // Same recheck as the create path, against the page's project as it
-        // stands inside this transaction rather than as it read a moment ago.
-        // An update cannot move a page between projects.
-        let project_id = crate::db::queries::get_page(conn, id)?.project_id;
-        require_page_role_conn(conn, &identity, project_id, Role::Maintainer)?;
-        // LIF-262: `update_page` re-scans the stored content and reconciles
-        // links in the same savepoint as the edit.
-        crate::db::queries::update_page(conn, id, &input)
-    })?;
-    if let Some(project_id) = page.project_id {
-        realtime.send_with_seq(RealtimeEvent::ProjectUpdated { project_id }, page.seq);
-    }
-    Ok(Json(page))
+    crate::services::pages::commit_update(&db, &realtime, &identity, id, input).map(Json)
 }
 
 pub(super) async fn delete_page_handler(
@@ -182,17 +128,7 @@ pub(super) async fn delete_page_handler(
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
     Path(id): Path<i64>,
 ) -> Result<Json<serde_json::Value>, LificError> {
-    let project_id = with_read(&db, |conn| crate::db::queries::get_page(conn, id))?.project_id;
-    require_page_role(&db, &identity, project_id, Role::Maintainer)?;
-    let seq = with_write(&db, |conn| {
-        crate::db::queries::delete_page(conn, id)?;
-        // The tombstone's seq (LIF-440), so a resuming client's cursor lands
-        // after the deletion rather than before it.
-        crate::db::queries::page_seq(conn, id)
-    })?;
-    if let Some(project_id) = project_id {
-        realtime.send_with_seq(RealtimeEvent::ProjectUpdated { project_id }, seq);
-    }
+    crate::services::pages::commit_delete(&db, &realtime, &identity, id)?;
     Ok(Json(serde_json::json!({"deleted": true})))
 }
 

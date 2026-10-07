@@ -23,6 +23,46 @@ pub(crate) enum NativeRoute {
     ProjectOverview,
     Insights,
     Activity,
+    Pages,
+    Plans,
+}
+
+#[cfg(test)]
+mod route_tests {
+    use super::*;
+
+    #[test]
+    fn native_knowledge_routes_admit_lists_details_and_queries() {
+        for path in [
+            "/ACC/pages",
+            "/ACC/pages/42",
+            "/ACC/pages?search=design",
+            "/ACC/plans",
+            "/ACC/plans/42",
+            "/ACC/plans?status=active",
+        ] {
+            let route = ParsedRoute::parse(path);
+            assert!(
+                native_route(&route, !route.query.is_empty()).is_some(),
+                "{path}"
+            );
+            assert_eq!(destination(path, ""), Some(path.to_owned()), "{path}");
+        }
+    }
+
+    #[test]
+    fn native_knowledge_navigation_rejects_public_external_and_issue_owner_targets() {
+        for path in [
+            "/public/ACC/pages",
+            "/public/ACC/plans",
+            "https://other.example/ACC/pages",
+        ] {
+            assert_eq!(destination(path, ""), None, "{path}");
+        }
+        for path in ["/ACC/pages", "/ACC/plans"] {
+            assert_eq!(destination(path, "ACC"), None, "{path}");
+        }
+    }
 }
 
 pub(crate) fn native_route(route: &ParsedRoute<'_>, has_query: bool) -> Option<NativeRoute> {
@@ -34,6 +74,8 @@ pub(crate) fn native_route(route: &ParsedRoute<'_>, has_query: bool) -> Option<N
         (Layout::Private, Some(_), Page::Overview) => Some(NativeRoute::ProjectOverview),
         (Layout::Private, Some(_), Page::Insights) => Some(NativeRoute::Insights),
         (Layout::Private, Some(_), Page::Activity) => Some(NativeRoute::Activity),
+        (Layout::Private, Some(_), Page::Pages | Page::Record(_)) => Some(NativeRoute::Pages),
+        (Layout::Private, Some(_), Page::Plans | Page::PlanDetail(_)) => Some(NativeRoute::Plans),
         (Layout::Private, Some(_), Page::IssueDetail(_)) => Some(NativeRoute::Workspace),
         (Layout::Private, Some(_), Page::Issues | Page::Board) if !has_query => {
             Some(NativeRoute::Workspace)
@@ -52,7 +94,9 @@ pub(crate) fn common_screen<'a>(
             let snapshot = super::home::authorized_snapshot(cx)?;
             (snapshot.user, snapshot.projects, String::new())
         }
-        Some(NativeRoute::Insights | NativeRoute::Activity) => {
+        Some(
+            NativeRoute::Insights | NativeRoute::Activity | NativeRoute::Pages | NativeRoute::Plans,
+        ) => {
             let caller = session::read(cx, context::caller(cx))?;
             let user = session::read(cx, crate::api::require_user(&caller.identity))?;
             let projects = session::read(
@@ -115,6 +159,8 @@ async fn native_common_page(
         Some(NativeRoute::Activity) => {
             super::project_activity::region(cx, &route, account, &caller)
         }
+        Some(NativeRoute::Pages) => super::pages::region(cx, &route, account, &caller),
+        Some(NativeRoute::Plans) => super::plans::region(cx, &route, account, &caller),
         _ => Err(topcoat::router::error::not_found().into()),
     }
 }
@@ -233,6 +279,9 @@ fn destination(candidate: &str, project: &str) -> Option<String> {
     let route = ParsedRoute::parse(candidate);
     match native_route(&route, uri.query().is_some()) {
         Some(NativeRoute::Home) if project.is_empty() => Some(candidate.to_owned()),
+        Some(NativeRoute::Pages | NativeRoute::Plans) if project.is_empty() => {
+            Some(candidate.to_owned())
+        }
         // Query handles keep the established fresh-document, once-per-entry handoff.
         Some(NativeRoute::ProjectOverview | NativeRoute::Insights | NativeRoute::Activity)
             if project.is_empty() && uri.query().is_none() =>
@@ -270,7 +319,13 @@ async fn native_workspace_destination(
     }
     let route = ParsedRoute::parse(&path);
     let entry = match native_route(&route, !route.query.is_empty()) {
-        Some(NativeRoute::Home | NativeRoute::Insights | NativeRoute::Activity) => String::new(),
+        Some(
+            NativeRoute::Home
+            | NativeRoute::Insights
+            | NativeRoute::Activity
+            | NativeRoute::Pages
+            | NativeRoute::Plans,
+        ) => String::new(),
         Some(NativeRoute::ProjectOverview) => {
             let identifier = route
                 .project

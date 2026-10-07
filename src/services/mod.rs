@@ -16,4 +16,6 @@ pub(crate) mod project_members;
 
 pub(crate) mod project_sidebar;
 
+pub(crate) mod pages;
+pub(crate) mod plans;
 pub(crate) mod project_recents;

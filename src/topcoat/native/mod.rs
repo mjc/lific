@@ -45,10 +45,13 @@ pub(crate) mod login;
 pub(crate) mod markdown;
 #[cfg(test)]
 mod markdown_edit;
+pub(crate) mod mascot;
 pub(crate) mod numbers;
+pub(crate) mod pages;
 pub(crate) mod palette_reference;
 #[cfg(test)]
 mod palette_reference_production;
+pub(crate) mod plans;
 pub(crate) mod preloads;
 #[cfg(test)]
 pub(crate) mod probe;
@@ -86,3 +89,6 @@ mod motion;
 
 #[cfg(test)]
 mod common_owner_production;
+
+#[cfg(test)]
+mod knowledge_production;

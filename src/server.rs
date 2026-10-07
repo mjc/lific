@@ -127,6 +127,8 @@ mod topcoat_app {
             Some(NativeRoute::Activity) => {
                 super::topcoat_frontend::native::project_activity::screen(cx, &route)
             }
+            Some(NativeRoute::Pages) => super::topcoat_frontend::native::pages::screen(cx, &route),
+            Some(NativeRoute::Plans) => super::topcoat_frontend::native::plans::screen(cx, &route),
             None => Err(topcoat::router::error::not_found().into()),
         }
     }
@@ -422,8 +424,6 @@ mod topcoat_app_tests {
             "/LIF/issues?status=started",
             "/LIF/board?assignee=me",
             "/LIF/files",
-            "/LIF/pages",
-            "/LIF/plans",
             "/LIF/modules",
             "/LIF/graph",
             "/public/LIF/issues",
@@ -2580,7 +2580,7 @@ mod public_surface_tests {
     #[tokio::test]
     async fn production_frontend_serves_topcoat_routes_and_keeps_api_boundaries() {
         let d = deploy();
-        for path in ["/login", "/LIF/pages", "/LIF/plans", "/public/PUB/issues"] {
+        for path in ["/login", "/public/PUB/issues"] {
             let response = anonymous(&d.app, "GET", path).await;
             assert_eq!(
                 response.status(),
@@ -2625,13 +2625,22 @@ mod public_surface_tests {
         // The canonical private list now resolves current native authority.
         // Retain the original route's anonymous coverage, including nonexistent
         // projects, without rendering protected list content before sign-in.
-        for path in ["/LIF/issues", "/PRIV/issues"] {
+        for path in [
+            "/LIF/issues",
+            "/PRIV/issues",
+            "/LIF/pages",
+            "/PRIV/pages",
+            "/LIF/plans",
+            "/PRIV/plans",
+        ] {
             let response = anonymous(&d.app, "GET", path).await;
             assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT, "{path}");
             assert_eq!(response.headers()[header::LOCATION], "/login");
             let body = body_string(response).await;
             assert!(!body.contains("classified"));
             assert!(!body.contains("data-native-issue-list"));
+            assert!(!body.contains("data-native-pages"));
+            assert!(!body.contains("data-native-plans"));
         }
         let response = with_session(&d.app, &d.session_token, "/PRIV/issues").await;
         assert_eq!(response.status(), StatusCode::OK);
