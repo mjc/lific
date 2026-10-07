@@ -228,7 +228,7 @@ async fn graph_content(
     let zoom_out_state = zoom.clone();
     let _graph_width = graph_width + 8.0;
     let _graph_height = graph_height + 8.0;
-    let _zoom_style = zoom.clone();
+    let _zoom_style = zoom;
     let transform_initial = format!(
         "width:{_graph_width}px;height:{_graph_height}px;transform-origin:0 0;transform:scale({})",
         _zoom_style.get_untracked()
@@ -370,7 +370,10 @@ async fn graph_content(
                     </div>
                     <div class="absolute inset-0 overflow-auto" style="background-image: radial-gradient(var(--border) 1px, transparent 1px); background-size: 24px 24px;">
                         <div class="relative mx-auto" data-native-graph-surface="" style=(format!("width:{}px;height:{}px;min-width:100%;min-height:100%", graph_width + 8.0, graph_height + 8.0))>
-                            <div class="absolute left-0 top-0" data-native-graph-transform="" :style=$(raw!("cx.hydrate('width:'+${_graph_width}.toString()+'px;height:'+${_graph_height}.toString()+'px;transform-origin:0 0;transform:scale('+${_zoom_style}.get().toString()+')')", transform_initial.clone()))>
+                            <div class="absolute left-0 top-0" data-native-graph-transform="" :style=$({
+                                let _current_zoom = _zoom_style.get();
+                                raw!("cx.hydrate('width:'+${_graph_width}.toString()+'px;height:'+${_graph_height}.toString()+'px;transform-origin:0 0;transform:scale('+${_current_zoom}.toString()+')')", transform_initial.clone())
+                            })>
                                 <svg class="pointer-events-none absolute inset-0 overflow-visible" width=(graph_width + 8.0) height=(graph_height + 8.0) viewBox=(format!("0 0 {} {}", graph_width + 8.0, graph_height + 8.0)) aria-hidden="true">
                                     <defs>
                                         <marker id="native-graph-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="var(--text-faint)"></path></marker>
