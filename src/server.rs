@@ -162,6 +162,9 @@ mod topcoat_app {
             Some(NativeRoute::ProjectNew) => {
                 super::topcoat_frontend::native::project_create::screen(cx, &route)
             }
+            Some(NativeRoute::ProjectImport) => {
+                super::topcoat_frontend::native::project_import::view::screen(cx, &route)
+            }
             Some(NativeRoute::ProjectOverview) => {
                 super::topcoat_frontend::native::project_overview::screen(cx, &route)
             }
@@ -471,7 +474,6 @@ mod topcoat_app_tests {
     async fn unfinished_feature_routes_have_no_intermediate_fallback() {
         let router = topcoat::router::tower::TowerService::new(topcoat_app::router());
         for path in [
-            "/projects/import",
             "/LIF/issues?status=started",
             "/LIF/board?assignee=me",
             "/public/LIF/issues",

@@ -17,6 +17,7 @@ pub(crate) enum NativeRoute {
     Home,
     Workspace,
     ProjectNew,
+    ProjectImport,
     ProjectOverview,
     Insights,
     Activity,
@@ -108,6 +109,7 @@ pub(crate) fn native_route(route: &ParsedRoute<'_>, has_query: bool) -> Option<N
         (Layout::Private, None, Page::Settings) => Some(NativeRoute::Settings),
         (Layout::Private, None, Page::InstanceSettings) => Some(NativeRoute::InstanceSettings),
         (Layout::Private, _, Page::ProjectNew) => Some(NativeRoute::ProjectNew),
+        (Layout::Private, None, Page::ProjectImport) => Some(NativeRoute::ProjectImport),
         (Layout::Private, Some(_), Page::Overview) => Some(NativeRoute::ProjectOverview),
         (Layout::Private, Some(_), Page::Insights) => Some(NativeRoute::Insights),
         (Layout::Private, Some(_), Page::Activity) => Some(NativeRoute::Activity),
@@ -147,6 +149,7 @@ pub(crate) fn common_screen<'a>(
             | NativeRoute::Files
             | NativeRoute::Graph
             | NativeRoute::Settings
+            | NativeRoute::ProjectImport
             | NativeRoute::InstanceSettings,
         ) => {
             let caller = session::read(cx, context::caller(cx))?;
@@ -232,6 +235,9 @@ async fn native_common_page(
         }
         Some(NativeRoute::InstanceSettings) => {
             super::instance_settings::region(cx, &route, account, &caller)
+        }
+        Some(NativeRoute::ProjectImport) => {
+            super::project_import::view::region(cx, &route, account, &caller)
         }
         _ => Err(topcoat::router::error::not_found().into()),
     }
@@ -368,6 +374,19 @@ pub(crate) async fn native_navigation_authorized(
         (None, Page::Home | Page::ProjectNew | Page::Settings) => Ok("allow".into()),
         (None, Page::InstanceSettings) => {
             Ok(if current.is_admin { "allow" } else { "denied" }.into())
+        }
+        (None, Page::ProjectImport) => {
+            let allowed = caller
+                .session_headers()
+                .and_then(|headers| {
+                    crate::services::project_archive_export::require_human_session(
+                        context::db(cx),
+                        &caller.identity,
+                        &headers,
+                    )
+                })
+                .is_ok_and(|session| session.is_admin);
+            Ok(if allowed { "allow" } else { "denied" }.into())
         }
         (Some(identifier), page) => {
             let db = context::db(cx);
