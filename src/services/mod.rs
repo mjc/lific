@@ -1,4 +1,5 @@
 pub(crate) mod activity;
+pub(crate) mod dependency_graph;
 pub(crate) mod export;
 pub(crate) mod home;
 pub(crate) mod insights;

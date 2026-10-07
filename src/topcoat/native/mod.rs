@@ -13,6 +13,7 @@ pub(crate) mod browser_inputs;
 pub(crate) mod context;
 pub(crate) mod dates;
 pub(crate) mod deferred_delete;
+pub(crate) mod dependency_graph;
 pub(crate) mod error_state;
 pub(crate) mod handler_asset;
 pub(crate) mod home;
