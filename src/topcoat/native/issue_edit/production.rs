@@ -146,7 +146,13 @@ fn assert_native_initial_html(html: &str, prefix: &str, issue: &Issue) -> Html {
     );
     assert_eq!(
         text("span[data-native-issue-priority='']").trim(),
-        issue.priority.as_str()
+        match issue.priority {
+            Priority::Urgent => "Urgent",
+            Priority::High => "High",
+            Priority::Medium => "Medium",
+            Priority::Low => "Low",
+            Priority::None => "No priority",
+        }
     );
     let relation_href = format!("{prefix}/ACC/issues/ACC-2");
     assert!(
@@ -249,6 +255,14 @@ async fn native_issue_production_viewer_get_renders_scoped_content_without_edit_
         assert_eq!(response.status(), StatusCode::OK);
         let html = html(response).await;
         assert_native_initial_html(&html, prefix, &issue);
+        let document = Html::parse_document(&html);
+        let priority = document
+            .select(&Selector::parse("span[data-native-issue-priority='']").unwrap())
+            .next()
+            .unwrap()
+            .text()
+            .collect::<String>();
+        assert_eq!(priority, "Medium", "Viewer priority uses display text");
         for editable in [
             "id=\"native-issue-title-ACC-1\"",
             "aria-label=\"Issue title\"",
@@ -261,6 +275,53 @@ async fn native_issue_production_viewer_get_renders_scoped_content_without_edit_
             assert!(
                 !html.contains(editable),
                 "Viewer received edit control: {editable}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn native_issue_production_priority_labels_match_main_for_both_roles() {
+    let fixture = fixture();
+    let cookie = format!("lific_token={}", fixture.token);
+    for (role, can_edit) in [(Role::Viewer, false), (Role::Maintainer, true)] {
+        for priority in [
+            Priority::Urgent,
+            Priority::High,
+            Priority::Medium,
+            Priority::Low,
+            Priority::None,
+        ] {
+            let issue = {
+                let conn = fixture.db.write().unwrap();
+                let actor = queries::users::validate_session(&conn, &fixture.token).unwrap();
+                let issue_id = queries::resolve_identifier(&conn, "ACC-1").unwrap();
+                queries::members::upsert_member(
+                    &conn,
+                    queries::get_issue(&conn, issue_id).unwrap().project_id,
+                    actor.id,
+                    role,
+                )
+                .unwrap();
+                queries::update_issue(
+                    &conn,
+                    issue_id,
+                    &UpdateIssue {
+                        priority: Some(priority),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                queries::get_issue(&conn, issue_id).unwrap()
+            };
+            let response = get(&fixture, "/ACC/issues/ACC-1", Some(&cookie), "").await;
+            assert_eq!(response.status(), StatusCode::OK);
+            let rendered = html(response).await;
+            assert_native_initial_html(&rendered, "", &issue);
+            assert_eq!(
+                rendered.contains("data-native-issue-priority-option="),
+                can_edit,
+                "edit controls follow {role:?} role"
             );
         }
     }
@@ -352,7 +413,13 @@ async fn native_issue_production_dom_checks_ignore_comments_and_quoted_delimiter
 </body></html>"#,
         issue.seq,
         issue.status.as_str(),
-        issue.priority.as_str(),
+        match issue.priority {
+            Priority::Urgent => "Urgent",
+            Priority::High => "High",
+            Priority::Medium => "Medium",
+            Priority::Low => "Low",
+            Priority::None => "No priority",
+        },
         super::super::super::assets::runtime_url(),
     );
     assert_native_initial_html(&html, "", &issue);
