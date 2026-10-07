@@ -1003,6 +1003,9 @@ async fn native_raw_authority_one_receiver_survives_page_rerenders_and_peer_clos
             )
             .await;
         for run in 1..=4 {
+            if run > 1 {
+                stop_render(&mut socket, run - 1).await;
+            }
             let title = format!("Raw authority current render {run}");
             fixture.rename(&title);
             request_render(&mut socket, run).await;
@@ -1012,7 +1015,7 @@ async fn native_raw_authority_one_receiver_survives_page_rerenders_and_peer_clos
                     &[(fixture.user_id, 1)],
                     1,
                     1,
-                    "rerenders keep one raw authority listener and one body event listener",
+                    &format!("after Run {run}, rerenders keep one raw authority listener and one body event listener"),
                 )
                 .await;
         }
