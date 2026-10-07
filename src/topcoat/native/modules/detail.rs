@@ -1,3 +1,4 @@
+use super::super::super::runtime::whitespace::StrEcmaTrimExt;
 use super::super::{
     context, dates, icons, markdown, mascot, navigation, project_authority, session, transport,
 };
@@ -43,9 +44,14 @@ pub(super) fn content<'a>(
     let project_identifier = project.identifier.clone();
     let route = transport::mounted_url(cx, &format!("/{project_identifier}/modules/{}", module.id));
     let title = signal(&owner, || module.name.clone());
+    let title_draft = signal(&owner, || module.name.clone());
+    let name_editing = signal(&owner, || false);
+    let name_error = signal(&owner, String::new);
     let description = signal(&owner, || module.description.clone());
     let icon = signal(&owner, || module.emoji.clone().unwrap_or_default());
     let status = signal(&owner, || module.status.clone());
+    let status_open = signal(&owner, || false);
+    let status_error = signal(&owner, String::new);
     let props_open = signal(&owner, || false);
     let description_initial = module.description.clone();
     let issues = sorted_issues(data.issues);
@@ -108,13 +114,17 @@ pub(super) fn content<'a>(
         cx,
         &format!("/{project_identifier}/issues/new?module={}", module.id),
     );
-    let save_name = update_attributes(
+    let name_trigger =
+        name_trigger_attributes(cx, title.clone(), title_draft.clone(), name_editing.clone());
+    let name_input = name_input_attributes(
         cx,
         account,
         project.id,
         module.id,
-        "name",
         title.clone(),
+        title_draft.clone(),
+        name_editing.clone(),
+        name_error.clone(),
         route.clone(),
     );
     let save_description = update_attributes(
@@ -135,7 +145,28 @@ pub(super) fn content<'a>(
         icon.clone(),
         route.clone(),
     );
-    let status_attrs = status_attributes(cx, account, project.id, module.id, status.clone(), route);
+    let status_trigger = status_trigger_attributes(cx, status_open.clone());
+    let status_choices = MODULE_STATUSES
+        .into_iter()
+        .zip(MODULE_STATUS_LABELS)
+        .map(|(value, label)| {
+            (
+                value,
+                label,
+                status_choice_attributes(
+                    cx,
+                    account,
+                    project.id,
+                    module.id,
+                    value,
+                    status.clone(),
+                    status_open.clone(),
+                    status_error.clone(),
+                    route.clone(),
+                ),
+            )
+        })
+        .collect::<Vec<_>>();
     let delete_attrs = delete_attributes(
         cx,
         account,
@@ -164,7 +195,16 @@ pub(super) fn content<'a>(
     let module_id = module.id;
     let issue_count = issues.len();
     let empty = issues.is_empty();
-    let aside_status = status_sidebar(cx, &module, can_edit, status, status_attrs);
+    let aside_status = status_sidebar(
+        cx,
+        &module,
+        can_edit,
+        status,
+        status_open,
+        status_error,
+        status_trigger,
+        status_choices,
+    );
     view! {
         owner =>
         <main
@@ -193,20 +233,28 @@ pub(super) fn content<'a>(
                                     "Save icon"
                                 </button>
                             </form>
-                            <form class="flex-1 min-w-0 flex gap-2" (save_name)>
-                                <input
-                                    aria-label="Module name"
-                                    class="flex-1 min-w-0 bg-transparent outline-none text-display font-display tracking-tight text-[var(--text)] py-1"
-                                    :value=$(title.get())
-                                    @input=$(|event: Event| title.set(event.target.value))
-                                />
+                            <div class="flex-1 min-w-0">
                                 <button
-                                    class="text-caption text-[var(--accent)]"
-                                    type="submit"
+                                    type="button"
+                                    class="text-left w-full rounded-md bg-transparent outline-none text-display font-display tracking-tight text-[var(--text)] py-1 hover:bg-[var(--bg-subtle)] cursor-text"
+                                    aria-label=(format!("Edit module name: {name}"))
+                                    (name_trigger)
+                                    :hidden=$(name_editing.get())
                                 >
-                                    "Save"
+                                    (name)
                                 </button>
-                            </form>
+                                <input
+                                    data-native-module-name-editor=""
+                                    aria-label="Module name"
+                                    class="w-full min-w-0 bg-transparent outline-none text-display font-display tracking-tight text-[var(--text)] py-1"
+                                    :value=$(title_draft.get())
+                                    :hidden=$(!name_editing.get())
+                                    (name_input)
+                                />
+                                <p class="text-caption text-[var(--error)]" role="status">
+                                    $(name_error.get())
+                                </p>
+                            </div>
                         } else {
                             <div
                                 class="shrink-0 size-10 rounded-lg border border-[var(--border)] bg-[var(--bg-subtle)] flex items-center justify-center"
@@ -395,9 +443,17 @@ fn status_sidebar<'a>(
     module: &Module,
     can_edit: bool,
     status: Signal<String>,
-    status_attrs: Attributes,
+    status_open: Signal<bool>,
+    status_error: Signal<String>,
+    status_trigger: Attributes,
+    status_choices: Vec<(&'static str, &'static str, Attributes)>,
 ) -> BoxView<'a> {
     let current = module.status.clone();
+    let current_label = MODULE_STATUSES
+        .iter()
+        .position(|value| *value == current)
+        .map(|index| MODULE_STATUS_LABELS[index].to_owned())
+        .unwrap_or_else(|| current.clone());
     view! {
         cx =>
         <div class="mb-5">
@@ -407,28 +463,43 @@ fn status_sidebar<'a>(
                 "Status"
             </p>
             if can_edit {
-                <form class="flex flex-col gap-1" (status_attrs)>
-                    <select
-                        class="rounded-md bg-[var(--surface)] px-2 py-1 text-body-sm text-[var(--text)]"
-                        aria-label="Module status"
-                        :value=$(status.get())
-                        @change=$(|event: Event| status.set(event.target.value))
-                    >
-                        for (value, label) in MODULE_STATUSES
-                            .into_iter()
-                            .zip(MODULE_STATUS_LABELS) {
-                            <option value=(value) selected=(value == current)>
-                                (label)
-                            </option>
-                        }
-                    </select>
+                <div class="relative">
                     <button
-                        class="text-caption text-[var(--accent)] text-left"
-                        type="submit"
+                        type="button"
+                        class="rounded-md bg-[var(--surface)] px-2 py-1 text-body-sm text-[var(--text)]"
+                        aria-label="Change module status"
+                        :aria-expanded=$(if status_open.get() {
+                            "true"
+                        } else {
+                            "false"
+                        })
+                        (status_trigger)
                     >
-                        "Save status"
+                        (current_label)
                     </button>
-                </form>
+                    <div
+                        class="absolute z-10 mt-1 flex min-w-full flex-col rounded-md border border-[var(--border)] bg-[var(--surface)] p-1 shadow-lg"
+                        role="menu"
+                        aria-label="Module statuses"
+                        :hidden=$(!status_open.get())
+                    >
+                        for (value, label, attrs) in status_choices {
+                            <button
+                                class="block w-full rounded px-2 py-1 text-left text-body-sm text-[var(--text)] hover:bg-[var(--bg-subtle)]"
+                                type="button"
+                                role="menuitemradio"
+                                :aria-checked=$(status.get() == value)
+                                data-native-module-status-option=(value)
+                                (attrs)
+                            >
+                                (label)
+                            </button>
+                        }
+                    </div>
+                    <p class="text-caption text-[var(--error)]" role="status">
+                        $(status_error.get())
+                    </p>
+                </div>
             } else {
                 <p class="text-body-sm text-[var(--text)] m-0">(current)</p>
             }
@@ -531,27 +602,162 @@ fn update_attributes(
     attrs
 }
 
-fn status_attributes(
+fn name_trigger_attributes(
     cx: &Cx,
-    account: i64,
-    project_id: i64,
-    module_id: i64,
-    status: Signal<String>,
-    destination: String,
+    title: Signal<String>,
+    draft: Signal<String>,
+    editing: Signal<bool>,
 ) -> Attributes {
-    let handler = expr!(|event: Event| {
-        event.prevent_default();
-        let value = status.get();
-        let _run = async || {
-            update_module(account, project_id, module_id, "status".to_owned(), value).await;
-            raw!("cx.navigate(${destination}.toString());", ());
-        };
-        raw!("Promise.resolve().then(()=>${_run}());", ());
+    let handler = expr!(|_event: Event| {
+        draft.set(title.get());
+        editing.set(true);
+        raw!(
+            "requestAnimationFrame(()=>${_event}.inner.currentTarget.parentElement?.querySelector('[data-native-module-name-editor]')?.focus())",
+            ()
+        );
     });
     let mut attrs = Attributes::with_capacity(1);
     attrs.insert(
         cx,
-        "data-topcoat-on:submit",
+        "data-topcoat-on:click",
+        handler.into_evaluated_and_js().1,
+    );
+    attrs
+}
+
+fn name_input_attributes(
+    cx: &Cx,
+    account: i64,
+    project_id: i64,
+    module_id: i64,
+    title: Signal<String>,
+    draft: Signal<String>,
+    editing: Signal<bool>,
+    error: Signal<String>,
+    destination: String,
+) -> Attributes {
+    let failed_error = error.clone();
+    let input = expr!(|event: Event| {
+        draft.set(event.target.value);
+    });
+    let finish = expr!(|event: Event| {
+        let key = raw!("cx.hydrate(${event}.inner.key ?? '')", String::new());
+        if key == "Escape" {
+            event.prevent_default();
+            draft.set(title.get());
+            editing.set(false);
+            return;
+        }
+        if key != "" {
+            if key != "Enter" {
+                return;
+            }
+        }
+        if !editing.get() {
+            return;
+        }
+        if key == "Enter" {
+            event.prevent_default();
+        }
+        let before = title.get();
+        let value = draft.get().trim_ecmascript().to_owned();
+        editing.set(false);
+        if value.is_empty() {
+            draft.set(before);
+            return;
+        }
+        if value == before {
+            draft.set(before);
+            return;
+        }
+        error.set("".to_owned());
+        let _failed = || {
+            if !raw!("cx.hydrate(cx.abortSignal.aborted)", false) {
+                failed_error.set("Unable to save module name.".to_owned());
+            }
+        };
+        let _run = async || {
+            update_module(account, project_id, module_id, "name".to_owned(), value).await;
+            raw!(
+                "if (!cx.abortSignal.aborted) cx.navigate(${destination}.toString());",
+                ()
+            );
+        };
+        raw!(
+            "Promise.resolve().then(()=>${_run}()).catch(()=>${_failed}());",
+            ()
+        );
+    });
+    let mut attrs = Attributes::with_capacity(3);
+    attrs.insert(cx, "data-topcoat-on:input", input.into_evaluated_and_js().1);
+    let finish_js = finish.into_evaluated_and_js().1;
+    attrs.insert(cx, "data-topcoat-on:blur", finish_js.clone());
+    attrs.insert(cx, "data-topcoat-on:keydown", finish_js);
+    attrs
+}
+
+fn status_trigger_attributes(cx: &Cx, open: Signal<bool>) -> Attributes {
+    let handler = expr!(|_event: Event| open.set(!open.get()));
+    let mut attrs = Attributes::with_capacity(1);
+    attrs.insert(
+        cx,
+        "data-topcoat-on:click",
+        handler.into_evaluated_and_js().1,
+    );
+    attrs
+}
+
+fn status_choice_attributes(
+    cx: &Cx,
+    account: i64,
+    project_id: i64,
+    module_id: i64,
+    selected: &'static str,
+    status: Signal<String>,
+    open: Signal<bool>,
+    error: Signal<String>,
+    destination: String,
+) -> Attributes {
+    let failed_status = status.clone();
+    let failed_error = error.clone();
+    let handler = expr!(|event: Event| {
+        event.prevent_default();
+        let before = status.get();
+        open.set(false);
+        if before == selected {
+            return;
+        }
+        status.set(selected.to_owned());
+        error.set("".to_owned());
+        let _failed = || {
+            if !raw!("cx.hydrate(cx.abortSignal.aborted)", false) {
+                failed_status.set(before);
+                failed_error.set("Unable to save module status.".to_owned());
+            }
+        };
+        let _run = async || {
+            update_module(
+                account,
+                project_id,
+                module_id,
+                "status".to_owned(),
+                selected.to_owned(),
+            )
+            .await;
+            raw!(
+                "if (!cx.abortSignal.aborted) cx.navigate(${destination}.toString());",
+                ()
+            );
+        };
+        raw!(
+            "Promise.resolve().then(()=>${_run}()).catch(()=>${_failed}());",
+            ()
+        );
+    });
+    let mut attrs = Attributes::with_capacity(1);
+    attrs.insert(
+        cx,
+        "data-topcoat-on:click",
         handler.into_evaluated_and_js().1,
     );
     attrs
