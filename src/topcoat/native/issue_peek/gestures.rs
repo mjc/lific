@@ -7,13 +7,11 @@ pub(super) fn mount(cx: &Cx, close: Signal<String>) -> Attributes {
     let start = signal(cx, || 0.0);
     let time = signal(cx, || 0.0);
     let distance = signal(cx, || 0.0);
-    let height = signal(cx, || 0.0);
     let down_dragging = dragging.clone();
     let down_pointer = pointer.clone();
     let down_start = start.clone();
     let down_time = time.clone();
     let down_distance = distance.clone();
-    let down_height = height.clone();
     let move_dragging = dragging.clone();
     let move_pointer = pointer.clone();
     let move_start = start;
@@ -39,11 +37,8 @@ pub(super) fn mount(cx: &Cx, close: Signal<String>) -> Attributes {
                             down_dragging.set(true);
                             down_pointer.set(raw!("cx.hydrate(${_event}.inner.pointerId)", 0.0));
                             down_start.set(raw!("cx.hydrate(${_event}.inner.clientY)", 0.0));
-                            down_time.set(raw!("cx.hydrate(performance.now())", 0.0));
+                            down_time.set(raw!("cx.hydrate(${_event}.inner.timeStamp)", 0.0));
                             down_distance.set(0.0);
-                            let measured =
-                                raw!("cx.hydrate(sheet.getBoundingClientRect().height)", 0.0);
-                            down_height.set(if measured > 0.0 { measured } else { 480.0 });
                             raw!("clearTimeout(finish); sheet.style.transition='none';", ());
                         }
                     }
@@ -59,7 +54,7 @@ pub(super) fn mount(cx: &Cx, close: Signal<String>) -> Attributes {
                     move_distance.set(dy);
                     _event.prevent_default();
                     raw!(
-                        "sheet.style.transform='translateY('+${dy}.toString()+'px)';",
+                        "sheet.style.transition='none'; sheet.style.transform='translateY('+${dy}.toString()+'px)';",
                         ()
                     );
                 }
@@ -72,14 +67,16 @@ pub(super) fn mount(cx: &Cx, close: Signal<String>) -> Attributes {
                     dragging.set(false);
                     let cancelled =
                         raw!("cx.hydrate(${_event}.inner.type==='pointercancel')", false);
-                    let elapsed = raw!("cx.hydrate(performance.now())", 0.0) - time.get();
+                    let measured = raw!("cx.hydrate(sheet.getBoundingClientRect().height)", 0.0);
+                    let height = if measured > 0.0 { measured } else { 480.0 };
+                    let elapsed = raw!("cx.hydrate(${_event}.inner.timeStamp)", 0.0) - time.get();
                     let elapsed = if elapsed > 1.0 { elapsed } else { 1.0 };
                     let fast = if distance.get() > 24.0 {
                         distance.get() / elapsed > 0.45
                     } else {
                         false
                     };
-                    let threshold = height.get().clone() * 0.28;
+                    let threshold = height.clone() * 0.28;
                     let enough = if distance.get() > threshold {
                         true
                     } else {
@@ -90,7 +87,7 @@ pub(super) fn mount(cx: &Cx, close: Signal<String>) -> Attributes {
                         let _closed = || {
                             close.set("".to_owned());
                         };
-                        let _slide = height.get() + 40.0;
+                        let _slide = height + 40.0;
                         raw!(
                             "sheet.style.transition='transform 170ms cubic-bezier(.2,.8,.3,1)'; sheet.style.transform='translateY('+${_slide}.toString()+'px)'; finish=setTimeout(()=>{sheet.style.visibility='hidden';${_closed}();},170);",
                             ()

@@ -236,7 +236,7 @@ fn sheet_content<'a>(
             if !label_chips.is_empty() { <div class="flex flex-wrap gap-1.5 mb-4">for chip in label_chips { (chip) }</div> }
             (relations)
             <div class="border-t border-[var(--border)] -mx-4 mb-4"></div>
-            if let Some(description) = description { <div class="native-markdown">(description)</div> } else {<p class="text-body-sm text-[var(--text-faint)] italic">"No description"</p>}
+            if let Some(description) = description { <div class="tc-markdown text-[14px] leading-[1.7]">(description)</div> } else {<p class="text-body-sm text-[var(--text-faint)] italic">"No description"</p>}
             <p class="text-caption text-[var(--text-faint)] mt-4">"Updated "(super::dates::absolute_signal(cx, updated))</p>
         </div>
         <div class="shrink-0 border-t border-[var(--border)] px-4 py-3 flex items-center justify-between gap-2">
