@@ -1055,9 +1055,15 @@ fn metadata_view<'a>(
                     if metadata.labels.is_empty() {
                         <span class="native-issue-detail__empty-value">"None"</span>
                     } else {
-                        for label in metadata.labels {
-                            <span>(label)</span>
-                        }
+                        <div class="flex flex-wrap gap-1.5">
+                            for (label, color) in metadata.labels {
+                                (super::super::label_chip::render(
+                                    cx,
+                                    label,
+                                    color.as_deref(),
+                                ))
+                            }
+                        </div>
                     }
                 </section>
                 <div class="native-issue-detail__divider" aria-hidden="true"></div>
@@ -1519,7 +1525,9 @@ fn editor_fields<'a>(
                         <span data-native-issue-status="">$(status.get())</span>
                     </span>
                 } else {
-                    <span data-native-issue-status="">$(status.get())</span>
+                    <span class="capitalize" data-native-issue-status="">
+                        $(status.get())
+                    </span>
                 }
                 if can_edit && !document {
                     for (value, label) in [
@@ -1619,7 +1627,9 @@ fn editor_fields<'a>(
                         </span>
                     </span>
                 } else {
-                    <span data-native-issue-priority="">$(compact_priority_label)</span>
+                    <span class="capitalize" data-native-issue-priority="">
+                        $(compact_priority_label)
+                    </span>
                 }
                 if can_edit && !document {
                     for (value, label) in [

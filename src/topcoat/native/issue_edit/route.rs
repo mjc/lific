@@ -17,7 +17,7 @@ use super::{actions, controls, delete_menu};
 pub(crate) struct DocumentMetadata {
     pub(crate) module_id: Option<i64>,
     pub(crate) module: String,
-    pub(crate) labels: Vec<String>,
+    pub(crate) labels: Vec<(String, Option<String>)>,
     pub(crate) waits: Vec<crate::db::models::IssueWait>,
     pub(crate) created_at: String,
     pub(crate) updated_at: String,
@@ -39,10 +39,25 @@ pub(crate) fn metadata(
             }
         }
     };
+    let labels = {
+        let conn = context::db(cx).read()?;
+        let project_labels = queries::list_labels(&conn, issue.project_id)?;
+        issue
+            .labels
+            .iter()
+            .map(|name| {
+                let color = project_labels
+                    .iter()
+                    .find(|label| label.name == *name)
+                    .map(|label| label.color.clone());
+                (name.clone(), color)
+            })
+            .collect()
+    };
     Ok(DocumentMetadata {
         module_id: issue.module_id,
         module,
-        labels: issue.labels.clone(),
+        labels,
         waits: issue.waits.clone(),
         created_at: issue.created_at.clone(),
         updated_at: issue.updated_at.clone(),

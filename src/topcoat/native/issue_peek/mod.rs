@@ -265,22 +265,8 @@ fn sheet_content<'a>(
                 .labels
                 .iter()
                 .find(|label| label.name == *name)
-                .map(|label| super::project_overview::label_color(&label.color));
-            let style = color.map_or_else(
-                || "border-color:var(--border)".to_owned(),
-                |color| format!("color:{color};border-color:{color}40;background:{color}10"),
-            );
-            let name = name.clone();
-            view! {
-                cx =>
-                <span
-                    class="text-caption font-medium px-2 py-0.5 rounded-full border"
-                    style=(style)
-                >
-                    (name)
-                </span>
-            }
-            .boxed()
+                .map(|label| label.color.as_str());
+            super::label_chip::render(cx, name.clone(), color)
         })
         .collect::<Vec<_>>();
     let relations = relation_chips(cx, issue);
