@@ -1,5 +1,11 @@
 use super::*;
-use crate::{auth::AuthState, db::queries};
+use crate::{
+    auth::AuthState,
+    db::{
+        models::{CreateLabel, UpdateIssue},
+        queries,
+    },
+};
 use topcoat::{
     context::CxTestBuilder,
     runtime::signal,
@@ -243,6 +249,84 @@ async fn native_issue_peek_keyboard_focus_stays_inside_and_returns_to_trigger() 
         "signals":signals
     }));
     assert_eq!(result[close_id], serde_json::json!(""));
+}
+
+#[tokio::test]
+async fn native_issue_peek_label_chips_keep_case_and_color_fallbacks() {
+    let fixture = super::super::home_fixture::fixture();
+    {
+        let conn = fixture.db.write().unwrap();
+        let issue_id = queries::resolve_identifier(&conn, "ACC-1").unwrap();
+        let issue = queries::get_issue(&conn, issue_id).unwrap();
+        for (name, color) in [("MiXeD API", "#aBc123"), ("Detached label", "#2563EB")] {
+            queries::create_label(
+                &conn,
+                &CreateLabel {
+                    project_id: issue.project_id,
+                    name: name.into(),
+                    color: color.into(),
+                },
+            )
+            .unwrap();
+        }
+        queries::update_issue(
+            &conn,
+            issue_id,
+            &UpdateIssue {
+                labels: Some(vec!["MiXeD API".into(), "Detached label".into()]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let detached_id: i64 = conn
+            .query_row(
+                "SELECT id FROM labels WHERE project_id = ?1 AND name = 'Detached label'",
+                [issue.project_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let other_project: i64 = conn
+            .query_row(
+                "SELECT id FROM projects WHERE id != ?1 LIMIT 1",
+                [issue.project_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        conn.execute(
+            "UPDATE labels SET project_id = ?1 WHERE id = ?2",
+            rusqlite::params![other_project, detached_id],
+        )
+        .unwrap();
+    }
+
+    let html = render_touch(&fixture).await;
+    let document = scraper::Html::parse_document(&html);
+    let spans = document
+        .select(&scraper::Selector::parse("span").unwrap())
+        .collect::<Vec<_>>();
+    let mixed_case = spans
+        .iter()
+        .find(|span| span.text().collect::<String>() == "MiXeD API")
+        .expect("actual rendered issue peek chip retains its source name");
+    assert!(
+        mixed_case
+            .value()
+            .attr("class")
+            .unwrap_or_default()
+            .contains("rounded-full"),
+        "{html}"
+    );
+    let style = mixed_case.value().attr("style").unwrap_or_default();
+    assert!(style.contains("color:#aBc123"), "{style}");
+    assert!(style.contains("border-color:#aBc12340"), "{style}");
+    assert!(style.contains("background:#aBc12310"), "{style}");
+
+    let detached = spans
+        .iter()
+        .find(|span| span.text().collect::<String>() == "Detached label")
+        .expect("actual rendered issue peek chip for label outside the project catalog");
+    let style = detached.value().attr("style").unwrap_or_default();
+    assert_eq!(style, "border-color:var(--border)");
 }
 
 #[tokio::test]
