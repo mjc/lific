@@ -148,30 +148,15 @@ pub(super) async fn link_issues(
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
     Json(input): Json<LinkRequest>,
 ) -> Result<Json<serde_json::Value>, LificError> {
-    let (source, target) = with_read(&db, |conn| {
-        let source_id = crate::db::queries::resolve_identifier(conn, &input.source)?;
-        let target_id = crate::db::queries::resolve_identifier(conn, &input.target)?;
-        Ok((
-            crate::db::queries::get_issue(conn, source_id)?,
-            crate::db::queries::get_issue(conn, target_id)?,
-        ))
-    })?;
-    // Cross-project relation: the caller must be a Maintainer on BOTH sides
-    // (LIF-197 scope item 3), even when source and target share a project.
-    authz::require_role(&db, &identity, source.project_id, Role::Maintainer)?;
-    authz::require_role(&db, &identity, target.project_id, Role::Maintainer)?;
-
-    with_write(&db, |conn| {
-        crate::db::queries::link_issues(conn, source.id, target.id, &input.relation_type)
-    })?;
-    realtime.send(RealtimeEvent::IssueLinked {
-        project_id: source.project_id,
-        issue_id: source.id,
-    });
-    realtime.send(RealtimeEvent::IssueLinked {
-        project_id: target.project_id,
-        issue_id: target.id,
-    });
+    crate::services::dependency_graph::link(
+        &db,
+        &realtime,
+        &identity,
+        &input.source,
+        &input.target,
+        &input.relation_type,
+        None,
+    )?;
     Ok(Json(serde_json::json!({"linked": true})))
 }
 
@@ -181,28 +166,14 @@ pub(super) async fn unlink_issues(
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
     Json(input): Json<UnlinkRequest>,
 ) -> Result<Json<serde_json::Value>, LificError> {
-    let (source, target) = with_read(&db, |conn| {
-        let source_id = crate::db::queries::resolve_identifier(conn, &input.source)?;
-        let target_id = crate::db::queries::resolve_identifier(conn, &input.target)?;
-        Ok((
-            crate::db::queries::get_issue(conn, source_id)?,
-            crate::db::queries::get_issue(conn, target_id)?,
-        ))
-    })?;
-    authz::require_role(&db, &identity, source.project_id, Role::Maintainer)?;
-    authz::require_role(&db, &identity, target.project_id, Role::Maintainer)?;
-
-    with_write(&db, |conn| {
-        crate::db::queries::unlink_issues(conn, source.id, target.id)
-    })?;
-    realtime.send(RealtimeEvent::IssueUnlinked {
-        project_id: source.project_id,
-        issue_id: source.id,
-    });
-    realtime.send(RealtimeEvent::IssueUnlinked {
-        project_id: target.project_id,
-        issue_id: target.id,
-    });
+    crate::services::dependency_graph::unlink(
+        &db,
+        &realtime,
+        &identity,
+        &input.source,
+        &input.target,
+        None,
+    )?;
     Ok(Json(serde_json::json!({"unlinked": true})))
 }
 
@@ -220,33 +191,14 @@ pub(super) async fn reverse_relation(
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
     Json(input): Json<ReverseRequest>,
 ) -> Result<Json<serde_json::Value>, LificError> {
-    let (source, target) = with_read(&db, |conn| {
-        let source_id = crate::db::queries::resolve_identifier(conn, &input.source)?;
-        let target_id = crate::db::queries::resolve_identifier(conn, &input.target)?;
-        Ok((
-            crate::db::queries::get_issue(conn, source_id)?,
-            crate::db::queries::get_issue(conn, target_id)?,
-        ))
-    })?;
-    authz::require_role(&db, &identity, source.project_id, Role::Maintainer)?;
-    authz::require_role(&db, &identity, target.project_id, Role::Maintainer)?;
-
-    with_write(&db, |conn| {
-        crate::db::queries::reverse_relation(conn, source.id, target.id)
-    })?;
-    for (project_id, issue_id) in [
-        (source.project_id, source.id),
-        (target.project_id, target.id),
-    ] {
-        realtime.send(RealtimeEvent::IssueUnlinked {
-            project_id,
-            issue_id,
-        });
-        realtime.send(RealtimeEvent::IssueLinked {
-            project_id,
-            issue_id,
-        });
-    }
+    crate::services::dependency_graph::reverse(
+        &db,
+        &realtime,
+        &identity,
+        &input.source,
+        &input.target,
+        None,
+    )?;
     Ok(Json(serde_json::json!({"reversed": true})))
 }
 
