@@ -369,7 +369,14 @@ async fn native_module_save_handlers_keep_the_mounted_destination() {
             };
             serde_json::json!({"field":field,"source":form.value().attr("data-topcoat-on:submit").unwrap()})
         }).collect::<Vec<_>>();
-        assert_eq!(handlers.len(), 4);
+        assert_eq!(
+            handlers
+                .iter()
+                .map(|handler| handler["field"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["emoji", "description"],
+            "name and status use their separately tested inline handlers",
+        );
         let mut child = std::process::Command::new("node")
             .arg("src/topcoat/native/module_mutations.test.cjs")
             .current_dir(env!("CARGO_MANIFEST_DIR"))
