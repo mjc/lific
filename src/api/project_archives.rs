@@ -29,9 +29,7 @@ use crate::services::project_archive_export::require_human_session;
 #[cfg(test)]
 use crate::services::project_archive_import::authorize_import;
 
-/// Transport ceiling for the upload route, sitting above the real limit plus
-/// multipart framing so the envelope never rejects a legal archive.
-pub(super) const ARCHIVE_UPLOAD_BODY_LIMIT: usize = 128 * 1024 * 1024 + 1024 * 1024;
+pub(super) use crate::services::project_archive_import::ARCHIVE_UPLOAD_BODY_LIMIT;
 
 #[cfg(test)]
 tokio::task_local! {
