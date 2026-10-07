@@ -587,7 +587,7 @@ mod action_button_tests {
             .single()
             .await
             .unwrap()
-            .render(&cx);
+            .render(cx);
         let document = scraper::Html::parse_document(&html);
         let button = scraper::Selector::parse("[aria-label='Remove relation']").unwrap();
         let button = document.select(&button).next().unwrap();
