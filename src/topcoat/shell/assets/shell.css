@@ -214,14 +214,11 @@
   .tc-shell[data-layout="private"] .tc-mobile-trigger::before { content: "☰"; font-size: 1.125rem; color: var(--tc-muted); }
 }
 
-.tc-shell[data-layout="private"] .tc-shell__header > [data-palette-open]::before { content: ""; width: .875rem; height: .875rem; background: currentColor; mask: var(--tc-icon-search) center / contain no-repeat; }
-.tc-shell[data-layout="private"] .tc-shell__sidebar-toggle::before { content: ""; display: block; margin: auto; width: .9375rem; height: .9375rem; background: currentColor; mask: var(--tc-icon-panel-left-close) center / contain no-repeat; }
 .tc-shell[data-layout="private"] .tc-shell__navigation a[href$="/settings"] { position: absolute; left: .5rem; bottom: 1rem; }
 .tc-shell[data-layout="private"] .tc-shell__navigation a[href$="/settings/instance"] { position: absolute; left: 5.5rem; bottom: 1rem; font-size: .6875rem; }
 .tc-shell[data-layout="private"] .tc-shell__desktop > [data-shortcut-open] { position: absolute; right: .5rem; bottom: 1rem; }
 .tc-shell[data-layout="private"] .tc-shell__project { display: none; }
 @media (max-width: 47.99rem) {
-  .tc-shell[data-layout="private"] .tc-mobile-trigger::before { content: ""; width: 1.25rem; height: 1.25rem; background: currentColor; mask: var(--tc-icon-menu) center / contain no-repeat; }
 }
 
 .tc-shell__brand-mobile { display: none; }

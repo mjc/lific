@@ -5,10 +5,9 @@ use std::{
     sync::LazyLock,
 };
 
-use futures_util::FutureExt;
 use topcoat::{
     context::Cx,
-    view::{Attributes, BoxView, ViewExt, view},
+    view::{BoxView, ViewExt, ViewHandle, view},
 };
 
 use super::{preloads::image_url, transport::mounted_url};
@@ -17,69 +16,34 @@ use crate::db::models::{Priority, Status};
 mod ui;
 pub(crate) use ui::UiIcon;
 
+#[cfg(test)]
 type IconNodes = Vec<(String, BTreeMap<String, String>)>;
 
 pub(crate) fn stylesheet() -> &'static str {
-    static CSS: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    CSS.get_or_init(|| {
-        let mut css = include_str!("assets/icons.css").to_owned();
-        let context = Cx::default();
-        let cx = &context;
-        for (name, nodes) in ICONS.iter() {
-            let nodes = icon_nodes(cx, nodes);
-            let svg = view! { cx =>
-                <svg xmlns="http://www.w3.org/2000/svg" id="icon" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    for (tag, attributes) in nodes { <(tag) (attributes)/> }
-                </svg>
-            }
-            .single()
-            .now_or_never()
-            .expect("frozen icon geometry resolves synchronously")
-            .expect("frozen icon geometry renders successfully")
-            .render(cx);
-            let controls = match name.as_str() {
-                "ChevronRight" => ",.ns-project-toggle::before,.native-sidebar-group-toggle::before,.native-sidebar-mobile-project::after",
-                "Ellipsis" => ",.ns-overflow::before,.native-sidebar-phone-actions::before",
-                _ => "",
-            };
-            css.push_str(&format!(
-                "\nsvg.native-icon[data-icon=\"{name}\"]{controls} {{ mask-image: url(\"data:image/svg+xml,{}\"); }}",
-                urlencoding::encode(&svg)
-            ));
-        }
-        css
-    })
+    include_str!("assets/icons.css")
 }
 
 // These are checked-in package data, never markup supplied by a project.
 // See assets/icons.LICENSE.txt for the original versions and provenance.
-static ICONS: LazyLock<BTreeMap<String, IconNodes>> = LazyLock::new(|| {
+#[cfg(test)]
+static SOURCE_ICONS: LazyLock<BTreeMap<String, IconNodes>> = LazyLock::new(|| {
     serde_json::from_str(include_str!("assets/project-icons.json"))
         .expect("the frozen original Lucide icon data is valid")
+});
+static ICON_BODIES: LazyLock<BTreeMap<String, String>> = LazyLock::new(|| {
+    serde_json::from_str(include_str!("assets/project-icons.inline.json"))
+        .expect("the SVGO-optimized inline Lucide icon data is valid")
 });
 static EMOJI: LazyLock<HashSet<String>> = LazyLock::new(|| {
     serde_json::from_str(include_str!("assets/emoji.json"))
         .expect("the frozen original emoji allowlist is valid")
 });
 
-fn icon_nodes<'a>(cx: &Cx, nodes: &'a IconNodes) -> Vec<(&'a str, Attributes)> {
-    nodes
-        .iter()
-        .map(|(tag, values)| {
-            let mut attributes = Attributes::with_capacity(values.len());
-            for (key, value) in values {
-                attributes.insert(cx, key.as_str(), value.as_str());
-            }
-            (tag.as_str(), attributes)
-        })
-        .collect()
-}
-
 pub(crate) fn project_icon<'a>(cx: &'a Cx, value: Option<&str>, size: u32) -> BoxView<'a> {
     render_project_icon(cx, value, size, image_url)
 }
 
-/// Render a semantic UI icon using geometry embedded in the shared stylesheet.
+/// Render a semantic UI icon using its full inline SVG geometry.
 pub(crate) fn ui_icon(cx: &Cx, icon: UiIcon, size: u32) -> BoxView<'_> {
     lucide_icon(cx, icon.glyph(), size)
 }
@@ -114,17 +78,20 @@ fn render_project_icon<'a>(
     }
     let name = value
         .strip_prefix("lucide:")
-        .filter(|name| ICONS.contains_key(*name))
+        .filter(|name| ICON_BODIES.contains_key(*name))
         .unwrap_or("Folder");
     lucide_icon(cx, name, size)
 }
 
 fn lucide_icon<'a>(cx: &'a Cx, name: &str, size: u32) -> BoxView<'a> {
     let name = name.to_owned();
+    let body = ICON_BODIES
+        .get(&name)
+        .unwrap_or_else(|| panic!("missing approved inline icon geometry: {name}"));
+    // Only the checked-in SVGO output reaches this raw-markup boundary.
+    let body = ViewHandle::unescaped_unchecked(body);
     view! { cx =>
-        <svg class="native-icon" data-icon=(name) width=(size) height=(size) viewBox="0 0 24 24" aria-hidden="true">
-            <rect width="24" height="24" fill="currentColor" stroke="none"></rect>
-        </svg>
+        <svg class="native-icon" data-icon=(name) width=(size) height=(size) viewBox="0 0 24 24" aria-hidden="true">(body)</svg>
     }.boxed()
 }
 
@@ -181,28 +148,22 @@ mod tests {
     }
 
     #[test]
-    fn complete_icon_geometry_is_embedded_in_the_shared_stylesheet_without_svg_requests() {
+    fn icon_stylesheet_contains_no_embedded_image_catalog_or_external_icon_route() {
         let css = stylesheet();
-        assert!(
-            css.contains("data:image/svg+xml,"),
-            "inline image data must replace external icon requests"
-        );
-        for name in [
-            "Circle",
-            "CircleDot",
-            "Fan",
-            "Pill",
-            "Database",
-            "Network",
-            "Sigma",
-        ] {
-            assert!(
-                css.contains(&format!("svg.native-icon[data-icon=\"{name}\"]")),
-                "stylesheet glyph {name}"
-            );
-        }
+        assert!(!css.contains("data:image/svg+xml,"));
+        assert!(!css.contains("mask-image"));
         assert!(!css.contains("__native_icons/"));
         assert!(!css.contains(".mask.svg"));
+    }
+
+    #[test]
+    fn optimized_inline_map_uses_self_closing_shapes_and_reduces_catalog_bytes() {
+        let source_bytes = include_str!("assets/project-icons.json").len();
+        let optimized_bytes = include_str!("assets/project-icons.inline.json").len();
+        assert!(optimized_bytes < source_bytes * 95 / 100);
+        let bodies = include_str!("assets/project-icons.inline.json");
+        assert!(bodies.contains("<path ") && bodies.contains("/>"));
+        assert!(!bodies.contains("</path>") && !bodies.contains("</circle>"));
     }
 
     #[tokio::test]
@@ -225,36 +186,23 @@ mod tests {
                 "{icon:?}: {html}"
             );
             assert!(html.contains("width=\"19\"") && html.contains("height=\"19\""));
-            assert!(!html.contains("<path") && !html.contains("<circle"));
+            assert!(html.contains("<path") || html.contains("<circle"));
         }
     }
 
     #[tokio::test]
-    async fn semantic_aliases_share_one_stylesheet_image() {
-        let css = stylesheet();
+    async fn semantic_aliases_render_their_shared_inline_geometry() {
         let cx = Cx::default();
         for icon in UiIcon::VARIANTS {
             let glyph = icon.glyph();
-            assert!(ICONS.contains_key(glyph), "approved geometry for {icon:?}");
-            assert_eq!(
-                css.matches(&format!("svg.native-icon[data-icon=\"{glyph}\"]"))
-                    .count(),
-                1
+            assert!(
+                SOURCE_ICONS.contains_key(glyph),
+                "approved geometry for {icon:?}"
             );
             let html = ui_icon(&cx, *icon, 16).single().await.unwrap().render(&cx);
             assert!(html.contains(&format!("data-icon=\"{glyph}\"")));
-            assert!(!html.contains("<use") && !html.contains("href="));
-        }
-        assert!(std::ptr::eq(css, stylesheet()), "render stylesheet once");
-        for controls in [
-            ",.ns-project-toggle::before,.native-sidebar-group-toggle::before,.native-sidebar-mobile-project::after",
-            ",.ns-overflow::before,.native-sidebar-phone-actions::before",
-        ] {
-            assert_eq!(
-                css.matches(controls).count(),
-                1,
-                "controls share the glyph's image"
-            );
+            assert!(html.contains("<path") || html.contains("<circle") || html.contains("<rect"));
+            assert!(!html.contains("<use") && !html.contains("href=") && !html.contains("mask"));
         }
     }
 
@@ -288,25 +236,34 @@ mod tests {
         }
         assert!(html.contains("data-icon=\"Circle\""), "{html}");
         assert!(!html.contains("<use") && !html.contains("href="));
-        assert!(!html.contains("<circle "));
+        assert!(html.contains("<circle "));
         assert!(!html.contains("lucide:Circle"));
     }
 
     #[tokio::test]
-    async fn every_approved_icon_uses_a_compact_named_mask() {
+    async fn every_approved_icon_renders_its_complete_frozen_geometry_inline() {
         let cx = Cx::default();
-        for name in ICONS.keys() {
+        for name in SOURCE_ICONS.keys() {
             let html = render(&cx, Some(&format!("lucide:{name}")), 15).await;
             assert!(html.starts_with("<svg class=\"native-icon\""));
             assert!(html.contains(&format!("data-icon=\"{name}\"")));
-            assert!(html.contains(
-                "<rect width=\"24\" height=\"24\" fill=\"currentColor\" stroke=\"none\"></rect>"
-            ));
-            assert!(
-                !html.contains("href=") && !html.contains("data:image") && !html.contains("style=")
-            );
-            assert!(!html.contains("<path") && !html.contains("<circle"));
-            assert!(html.len() < 250, "compact instance for {name}");
+            assert!(!html.contains("href=") && !html.contains("data:image"));
+            let document = scraper::Html::parse_fragment(&html);
+            let selector = scraper::Selector::parse("svg > *").unwrap();
+            let actual = document
+                .select(&selector)
+                .map(|element| {
+                    (
+                        element.value().name().to_owned(),
+                        element
+                            .value()
+                            .attrs()
+                            .map(|(key, value)| (key.to_owned(), value.to_owned()))
+                            .collect::<BTreeMap<_, _>>(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(actual, SOURCE_ICONS[name], "optimized geometry for {name}");
         }
     }
 

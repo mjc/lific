@@ -87,7 +87,7 @@ test('real native Overview matches unchanged master identity, sections, drafts a
         await captureOriginalFonts(original.page,path.join(output,`${name}-fonts.json`));
         evidence.breadcrumbSeparator={};
         for(const [kind,item]of sides){
-          const separator=kind==='topcoat'?item.controls.topbar.locator('.native-overview__breadcrumb > :is(svg,.native-icon-mask)'):item.controls.topbar.locator('svg').first();
+          const separator=kind==='topcoat'?item.controls.topbar.locator('.native-overview__breadcrumb > svg'):item.controls.topbar.locator('svg').first();
           assert.equal(await separator.count(),1,`${kind} has one breadcrumb separator`);
           evidence.breadcrumbSeparator[kind]=await separator.evaluate(element=>getComputedStyle(element).color);
         }
