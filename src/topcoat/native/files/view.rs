@@ -547,11 +547,14 @@ fn files_page<'a>(
             >(label)</button>
         }.boxed()
     }).collect::<Vec<_>>();
+    let current_uploader = uploader.get();
+    let current_sort = sort.get();
     let uploader_options = uploaders
         .iter()
         .map(|name| {
             let name = name.clone();
-            view! { cx => <option value=(name.clone())>(name.clone())</option> }.boxed()
+            let selected = current_uploader == name;
+            view! { cx => <option value=(name.clone()) :selected=$(selected)>(name.clone())</option> }.boxed()
         })
         .collect::<Vec<_>>();
     let file_rows = rows
@@ -618,8 +621,6 @@ fn files_page<'a>(
     );
     let more = page.has_more;
     let next_offset = offset.get() + model::PAGE_SIZE;
-    let current_sort = sort.get();
-    let current_uploader = uploader.get();
     let expanded_class = if orphans_open { "block" } else { "hidden" };
     let orphan_count = orphans.map_or(0, |value| value.items.len());
     let orphan_bytes = orphans.map_or(0, |value| value.total_bytes);
@@ -631,7 +632,8 @@ fn files_page<'a>(
         .map(|(value, label)| {
             let value = (*value).to_owned();
             let label = (*label).to_owned();
-            view! { cx => <option value=(value)>(label)</option> }.boxed()
+            let selected = current_sort == value;
+            view! { cx => <option value=(value) :selected=$(selected)>(label)</option> }.boxed()
         })
         .collect::<Vec<_>>();
     view! {
