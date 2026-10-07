@@ -19,9 +19,12 @@ async function run(first) {
   const context = {
     TextEncoder, TextDecoder, queueMicrotask, Element,
     Event: class {constructor(type) {this.type = type;}},
-    document: {documentElement: {getAttribute: () => '/app'}},
+    document: {querySelector: () => ({dataset: {topcoatUsizeBits: '64'}}), documentElement: {getAttribute: () => '/app'}},
     window: {dispatchEvent() {}},
     fetch(url, options) {
+      if (url.endsWith('/profile_session')) {
+        return Promise.resolve({ok: true, json: async () => input.responses.authority});
+      }
       assert.match(url, /\/__native_settings\/(?:connect|bot_action)$/,
         'tool actions use native procedures');
       const action = url.endsWith('/connect') ? 'connect' : 'bot';
@@ -80,8 +83,8 @@ async function run(first) {
     (baseline[id] === 0 && final[id] === 2) ||
     (baseline[id]?.v === '0' && final[id]?.v === '2')),
     'both completed mutations refresh the connection list');
-  assert.ok(Object.keys(final).every(id => baseline[id] !== false || final[id] === false),
-    'both pending actions settle their busy state');
+  assert.ok(Object.keys(during).some(id => baseline[id] === false && during[id] === true && final[id] === false),
+    'connection busy settles while its setup dialog remains open');
 }
 
 (async () => {
