@@ -66,7 +66,7 @@ fn theme_button<'a>(cx: &'a Cx, theme: Signal<String>, mobile: bool) -> BoxView<
                     );
                 }
                 raw!(
-                    "document.documentElement.setAttribute('data-theme',${preference}.toString());",
+                    "const value=${preference}.toString()==='system'?null:${preference}.toString();let storage=null;try{storage=localStorage;}catch{}window.dispatchEvent(new StorageEvent('storage',{key:'lific_theme',newValue:value,storageArea:storage}));",
                     (),
                 );
             })
@@ -151,26 +151,10 @@ pub(super) fn content<'a>(
             data-native-signup=(signup_mode.then_some(""))
             @mount=$(|_event: Event| {
                 host.set(raw!("cx.hydrate(window.location.host)", String::new()));
-                let preference = raw!(
-                    "cx.hydrate((() => {try {return localStorage.getItem('lific_theme')??'';} catch {return '';}})())",
-                    String::new(),
-                );
-                theme.set(
-                    if preference == "light" {
-                        "light".to_owned()
-                    } else if preference == "dark" {
-                        "dark".to_owned()
-                    } else {
-                        "system".to_owned()
-                    },
-                );
-                let _preference = theme.get();
-                raw!(
-                    "document.documentElement.setAttribute('data-theme',${_preference}.toString());",
-                    (),
-                );
             })
         >
+            <span hidden="hidden" (super::preferences::mount(cx, &theme))></span>
+            <span hidden="hidden" (super::motion::mount(cx))></span>
             <aside
                 class="hidden lg:flex w-[230px] shrink-0 flex-col bg-[var(--chrome)] select-none"
             >

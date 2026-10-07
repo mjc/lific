@@ -14,7 +14,7 @@ pub(crate) fn runtime_source() -> &'static str {
     static SOURCE: OnceLock<String> = OnceLock::new();
     SOURCE.get_or_init(|| {
         let handlers = [
-            (super::native::home_shell::handler_url(), "mount as native0,homeRefresh as nativeHomeRefresh,mobileDispatch as nativeMobileDispatch,accountFocus as nativeAccountFocus,sessionStorage as nativeSessionStorage,motion as nativeMotion,navigationAuthority as nativeNavigationAuthority"),
+            (super::native::home_shell::handler_url(), "mount as native0,homeRefresh as nativeHomeRefresh,mobileDispatch as nativeMobileDispatch,accountFocus as nativeAccountFocus,sessionStorage as nativeSessionStorage,motion as nativeMotion,preferences as nativePreferences,navigationAuthority as nativeNavigationAuthority"),
             (super::native::project_sidebar::handler_url(), "mount as native1,recentsRefresh as nativeRecentsRefresh"),
         ];
         let mut source = String::new();
@@ -31,6 +31,7 @@ pub(crate) fn runtime_source() -> &'static str {
             (format!("{}#account-focus", super::native::home_shell::handler_url()), "nativeAccountFocus"),
             (format!("{}#session-storage", super::native::home_shell::handler_url()), "nativeSessionStorage"),
             (format!("{}#motion", super::native::home_shell::handler_url()), "nativeMotion"),
+            (format!("{}#preferences", super::native::home_shell::handler_url()), "nativePreferences"),
             (format!("{}#navigation-authority", super::native::home_shell::handler_url()), "nativeNavigationAuthority"),
             (format!("{}#recents-refresh", super::native::project_sidebar::handler_url()), "nativeRecentsRefresh"),
         ] {

@@ -19,13 +19,64 @@ pub(crate) const STYLESHEET: &str = include_str!("assets/home-shell.css");
 
 fn account_display(user: &AuthUser) -> (String, String) {
     let name = super::avatar::display_name(Some(&user.display_name), Some(&user.username), "");
-    let initials = name
-        .split([' ', '_', '-'])
+    (
+        name.to_owned(),
+        display_initials(&user.display_name, &user.username),
+    )
+}
+
+pub(crate) fn display_initials(display_name: &str, username: &str) -> String {
+    let name = super::avatar::display_name(Some(display_name), Some(username), "");
+    name.split([' ', '_', '-'])
         .filter_map(|part| part.chars().next())
         .take(2)
         .flat_map(char::to_uppercase)
-        .collect();
-    (name.to_owned(), initials)
+        .collect()
+}
+
+pub(crate) fn account_link<'a>(
+    cx: &'a Cx,
+    display_name: String,
+    initials: String,
+    mobile: bool,
+) -> BoxView<'a> {
+    view! {
+        cx =>
+        <a
+            class=(if mobile {
+                "native-home-mobile-account-link"
+            } else {
+                "native-home-account-link"
+            })
+            href=(super::transport::mounted_url(cx, "/settings"))
+            title="Account settings"
+            data-native-account-link=(if mobile { "mobile" } else { "desktop" })
+        >
+            <span
+                class=(if mobile {
+                    "native-home-mobile-avatar"
+                } else {
+                    "native-home-avatar"
+                })
+            >
+                (initials)
+            </span>
+            <span class=(if mobile { "" } else { "native-home-account-copy" })>
+                if mobile {
+                    (display_name)
+                } else {
+                    <span class="native-home-account">(display_name)</span>
+                }
+                <small>
+                    if !mobile {
+                        (super::icons::ui_icon(cx, UiIcon::Settings, 9))
+                    }
+                    "Settings"
+                </small>
+            </span>
+        </a>
+    }
+    .boxed()
 }
 
 #[derive(Clone)]
@@ -98,6 +149,7 @@ pub(crate) struct LiveChrome {
     pub(crate) path: Signal<String>,
     pub(crate) label: Signal<String>,
     pub(crate) navigation: MobileNavigation,
+    pub(crate) profile: Option<super::account_profile::Handles>,
 }
 impl LiveChrome {
     pub(crate) fn new(cx: &Cx, path: Signal<String>, route: &ParsedRoute<'_>) -> Self {
@@ -114,6 +166,7 @@ impl LiveChrome {
             path,
             label: signal(route_cx, || page_label(route)),
             navigation: MobileNavigation::new(cx),
+            profile: None,
         }
     }
 }
@@ -318,6 +371,7 @@ fn render_shell<'a>(
         .to_owned();
     let chrome = live_chrome
         .unwrap_or_else(|| LiveChrome::new(cx, signal(cx, || initial_path.clone()), route));
+    let profile = chrome.profile.clone();
     let path = chrome.path;
     let page_label = chrome.label;
     let navigation = chrome.navigation;
@@ -369,6 +423,10 @@ fn render_shell<'a>(
         mobile_catalog.push('|');
     }
     let (display_name, initials) = account_display(user);
+    let desktop_account = profile.clone().map_or_else(
+        || account_link(cx, display_name.clone(), initials.clone(), false),
+        |handles| super::account_profile::link(cx, handles, false),
+    );
     let content = match region {
         PageRegion::Wrapped { content, topbar } => page_region(cx, content, topbar, initial_label),
         PageRegion::Workspace(region) => region,
@@ -388,6 +446,7 @@ fn render_shell<'a>(
             ></span>
             <span hidden="hidden" (sidebar.mount(cx))></span>
             <span hidden="hidden" (super::motion::mount(cx))></span>
+            <span hidden="hidden" (super::preferences::mount(cx, &theme))></span>
             (sidebar.route(cx, path.clone()))
             <a class="tc-shell__skip" href="#main-content" :inert=$(mobile_open.get())>
                 "Skip to content"
@@ -473,22 +532,7 @@ fn render_shell<'a>(
                     (sidebar.desktop(cx, path.clone()))
                 </nav>
                 <footer class="native-home-footer">
-                    <a
-                        class="native-home-account-link"
-                        href=(super::transport::mounted_url(cx, "/settings"))
-                        title="Account settings"
-                    >
-                        <span class="native-home-avatar">(initials.clone())</span>
-                        <span class="native-home-account-copy">
-                            <span class="native-home-account">
-                                (display_name.clone())
-                            </span>
-                            <small>
-                                (super::icons::ui_icon(cx, UiIcon::Settings, 9))
-                                "Settings"
-                            </small>
-                        </span>
-                    </a>
+                    (desktop_account)
                     (theme_button(cx, theme.clone(), theme_menu.clone()))
                 </footer>
             </aside>
@@ -520,9 +564,9 @@ fn render_shell<'a>(
             native_home_phone(
                 initialized: $(phone_initialized.get()),
                 sidebar: sidebar.handles(),
-                path: path.clone(),
-                navigation: navigation.handles(),
-                theme_controls: (theme.clone(), theme_menu.clone())
+                navigation: (path.clone(), navigation.handles()),
+                theme_controls: (theme.clone(), theme_menu.clone()),
+                profile: profile.clone()
             )
             (sidebar.menu(cx))
             <div
@@ -558,7 +602,7 @@ fn render_shell<'a>(
                                 );
                             }
                             raw!(
-                                "document.documentElement.setAttribute('data-theme', ${preference}.toString())",
+                                "const value=${preference}.toString()==='system'?null:${preference}.toString();let storage=null;try{storage=localStorage;}catch{}window.dispatchEvent(new StorageEvent('storage',{key:'lific_theme',newValue:value,storageArea:storage}));",
                                 (),
                             );
                         })
@@ -641,14 +685,15 @@ async fn native_home_phone(
     cx: &Cx,
     initialized: bool,
     sidebar: super::project_sidebar::SidebarHandles,
-    path: Signal<String>,
-    navigation: MobileNavigationSignals,
+    navigation: (Signal<String>, MobileNavigationSignals),
     theme_controls: (Signal<String>, Signal<bool>),
+    profile: Option<super::account_profile::Handles>,
 ) -> topcoat::Result<impl View> {
     if !initialized {
         return Ok(view! { cx => }.boxed());
     }
     let account = sidebar.0;
+    let (path, navigation) = navigation;
     let (theme, theme_menu) = theme_controls;
     let caller = super::session::read(cx, super::context::caller(cx))?;
     let user = super::session::read(cx, crate::api::require_user(&caller.identity))?;
@@ -659,6 +704,10 @@ async fn native_home_phone(
         .into());
     }
     let (display_name, initials) = account_display(&user);
+    let account_link = profile.map_or_else(
+        || account_link(cx, display_name, initials, true),
+        |handles| super::account_profile::link(cx, handles, true),
+    );
     let sidebar = super::project_sidebar::Sidebar::from_handles(sidebar);
     let sidebar_menu_open = sidebar.menu_open();
     let navigation = MobileNavigation::from_handles(navigation);
@@ -755,16 +804,7 @@ async fn native_home_phone(
                     (sidebar.phone(cx, path.clone(), navigation.handles()))
                 </nav>
                 <footer class="native-home-mobile-footer">
-                    <a
-                        href=(super::transport::mounted_url(cx, "/settings"))
-                        class="native-home-mobile-account-link"
-                    >
-                        <span class="native-home-mobile-avatar">(initials)</span>
-                        <span>
-                            (display_name)
-                            <small>"Settings"</small>
-                        </span>
-                    </a>
+                    (account_link)
                     (theme_button(cx, theme.clone(), theme_menu.clone()))
                 </footer>
             </div>
@@ -1101,7 +1141,6 @@ pub(crate) fn handler_source() -> &'static str {
     SOURCE.get_or_init(|| {
         let handler = expr!(|_mount: Event, chrome: ChromeHandlerSignals<'_>, palette: PaletteHandlerSignals<'_>, status: (&SignalSurrogate<bool>, &SignalSurrogate<String>, &SignalSurrogate<String>,), request: (&StringSurrogate, &StringSurrogate, I64Surrogate, BoolSurrogate)| {
         let collapsed = chrome.0;
-        let theme = chrome.1;
         let theme_menu = chrome.2;
         let mobile_open = chrome.3;
         let mobile_pane = chrome.4;
@@ -1221,47 +1260,11 @@ pub(crate) fn handler_source() -> &'static str {
                 raw!("${_start_query}();", ());
             }
         };
-        let _refresh_theme = || {
-            let stored = raw!(
-                r#"cx.hydrate((() => {try {return localStorage.getItem('lific_theme') || '';} catch {return '';}})())"#,
-                String::new()
-            );
-            let preference = if stored == "light" {
-                "light"
-            } else {
-                if stored == "dark" { "dark" } else { "system" }
-            };
-            theme.set(preference.to_owned());
-            raw!(
-                "document.documentElement.setAttribute('data-theme', ${preference}.toString())",
-                ()
-            );
-        };
-        // Main stores sm/lg and applies rem typography through the root element.
-        let _refresh_font_scale = || {
-            let stored = raw!(
-                r#"cx.hydrate((() => {try {return localStorage.getItem('lific_font_scale') || '';} catch {return '';}})())"#,
-                String::new()
-            );
-            let _scale = if stored == "sm" {
-                "sm"
-            } else {
-                if stored == "lg" { "lg" } else { "md" }
-            };
-            raw!(
-                "document.documentElement.setAttribute('data-font-scale', ${_scale}.toString())",
-                ()
-            );
-        };
-        raw!("${_refresh_theme}(); ${_refresh_font_scale}();", ());
         let folded = raw!(
             r#"cx.hydrate((() => {try {return localStorage.getItem('lific:sidebar:collapsed') || '';} catch {return '';}})())"#,
             String::new()
         );
         collapsed.set(folded == "1");
-        let _storage = |_event: Event| {
-            raw!("${_refresh_theme}(); ${_refresh_font_scale}();", ());
-        };
         href.set(raw!("cx.hydrate(window.location.href)", String::new()));
         let previous_owner = raw!(
             r#"cx.hydrate((() => {const value=history.state?.lificNativeHomeNav?.owner;return typeof value==='string'?value:'';})())"#,
@@ -1708,10 +1711,6 @@ pub(crate) fn handler_source() -> &'static str {
             }
         };
         raw!(
-            "window.addEventListener('storage', ${_storage}, {signal:cx.abortSignal});",
-            ()
-        );
-        raw!(
             "window.addEventListener('keydown', ${_keyboard}, {signal:cx.abortSignal});",
             ()
         );
@@ -1754,6 +1753,7 @@ pub(crate) fn handler_source() -> &'static str {
         source.push_str(&super::handler_asset::source_named("mobileDispatch", mobile_dispatch_factory()));
         source.push_str(&super::handler_asset::source_named("sessionStorage", super::session::handler_factory()));
         source.push_str(&super::handler_asset::source_named("motion", super::motion::handler_factory()));
+        source.push_str(&super::handler_asset::source_named("preferences", super::preferences::handler_factory()));
         source.push_str(&super::handler_asset::source_named("navigationAuthority", super::navigation::authority_handler_factory()));
         source
     })

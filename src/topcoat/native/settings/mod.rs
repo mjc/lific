@@ -9,7 +9,11 @@ mod tools;
 mod view;
 
 #[cfg(test)]
+mod appearance_production;
+#[cfg(test)]
 mod production;
+#[cfg(test)]
+mod profile_production;
 
 use super::super::shell::ParsedRoute;
 use super::{context, home_shell, session};
@@ -27,6 +31,7 @@ pub(super) fn region<'a>(
     route: &ParsedRoute<'_>,
     account: i64,
     caller: &context::Caller,
+    profile: super::account_profile::Handles,
 ) -> topcoat::Result<BoxView<'a>> {
     let user = session::read(cx, crate::api::require_user(&caller.identity))?;
     if user.id != account {
@@ -37,18 +42,7 @@ pub(super) fn region<'a>(
             )),
         );
     }
-    let profile = session::read(
-        cx,
-        crate::db::queries::users::get_user_by_id(&*context::db(cx).read()?, user.id),
-    )?;
-    let content = view::content(
-        cx,
-        account,
-        profile.username,
-        profile.display_name,
-        profile.email,
-        profile.is_admin,
-    );
+    let content = view::content(cx, profile, user.is_admin);
     Ok(home_shell::page_region(
         cx,
         content,

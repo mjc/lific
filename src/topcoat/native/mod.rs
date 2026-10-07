@@ -1,3 +1,4 @@
+pub(crate) mod account_profile;
 pub(crate) mod activity_text;
 #[cfg(test)]
 mod admission_contract;
@@ -95,6 +96,7 @@ pub(crate) mod project_sidebar;
 
 mod motion;
 pub(crate) mod navigation;
+mod preferences;
 
 #[cfg(test)]
 mod common_owner_production;
