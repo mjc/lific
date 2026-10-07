@@ -32,7 +32,12 @@ fn account(fixture: &home_fixture::Fixture, admin: bool) -> i64 {
     user.id
 }
 
-async fn refusal(fixture: &home_fixture::Fixture, expected_account: i64, origin: &str) {
+async fn refusal(
+    fixture: &home_fixture::Fixture,
+    expected_account: i64,
+    origin: &str,
+    expected_fingerprint: Option<&str>,
+) {
     let (body, polls) = watched_body();
     let mut request = Request::builder()
         .method("POST")
@@ -43,6 +48,12 @@ async fn refusal(fixture: &home_fixture::Fixture, expected_account: i64, origin:
         .header("origin", origin)
         .header("x-forwarded-prefix", "/app")
         .header("cookie", format!("lific_token={}", fixture.token))
+        .header(
+            "x-lific-import-session",
+            expected_fingerprint.map(str::to_owned).unwrap_or_else(|| {
+                super::state::session_fingerprint(Some(&fixture.token))
+            }),
+        )
         .header(
             "content-type",
             "multipart/form-data; boundary=archive-boundary",
@@ -68,21 +79,35 @@ async fn refusal(fixture: &home_fixture::Fixture, expected_account: i64, origin:
 async fn native_project_import_upload_rejects_another_account_before_body() {
     let fixture = home_fixture::fixture();
     let owner = account(&fixture, true);
-    refusal(&fixture, owner + 1, "http://localhost").await;
+    refusal(&fixture, owner + 1, "http://localhost", None).await;
 }
 
 #[tokio::test]
 async fn native_project_import_upload_rejects_non_admin_before_body() {
     let fixture = home_fixture::fixture();
     let owner = account(&fixture, false);
-    refusal(&fixture, owner, "http://localhost").await;
+    refusal(&fixture, owner, "http://localhost", None).await;
 }
 
 #[tokio::test]
 async fn native_project_import_upload_rejects_cross_origin_before_body() {
     let fixture = home_fixture::fixture();
     let owner = account(&fixture, true);
-    refusal(&fixture, owner, "https://another.example").await;
+    refusal(&fixture, owner, "https://another.example", None).await;
+}
+
+#[tokio::test]
+async fn native_project_import_upload_rejects_rotated_session_before_body() {
+    let mut fixture = home_fixture::fixture();
+    let owner = account(&fixture, true);
+    let fingerprint = super::state::session_fingerprint(Some(&fixture.token));
+    let fresh_token = {
+        let conn = fixture.db.write().unwrap();
+        crate::db::queries::users::delete_session(&conn, &fixture.token).unwrap();
+        crate::db::queries::users::create_session(&conn, owner, None).unwrap().token
+    };
+    fixture.token = fresh_token;
+    refusal(&fixture, owner, "http://localhost", Some(&fingerprint)).await;
 }
 
 #[tokio::test]
@@ -91,14 +116,14 @@ async fn native_project_import_upload_creates_a_private_project_through_shared_s
     {
         let conn = source.db.write().unwrap();
         conn.execute(
-            "UPDATE projects SET identifier = 'ARCIMP' WHERE identifier = 'ACC'",
+            "UPDATE projects SET identifier = 'ARCIM' WHERE identifier = 'ACC'",
             [],
         )
         .unwrap();
     }
     let staging = tempfile::tempdir().unwrap();
     let path = staging.path().join("project.tar.gz");
-    crate::project_archive::export(&source.db, &source.attachment_store, "ARCIMP", &path).unwrap();
+    crate::project_archive::export(&source.db, &source.attachment_store, "ARCIM", &path).unwrap();
     let archive = std::fs::read(path).unwrap();
     let mut multipart = b"--archive-boundary\r\nContent-Disposition: form-data; name=\"archive\"; filename=\"project.tar.gz\"\r\nContent-Type: application/gzip\r\n\r\n".to_vec();
     multipart.extend_from_slice(&archive);
@@ -114,6 +139,7 @@ async fn native_project_import_upload_creates_a_private_project_through_shared_s
         .header("origin", "http://localhost")
         .header("x-forwarded-prefix", "/app")
         .header("cookie", format!("lific_token={}", fixture.token))
+        .header("x-lific-import-session", super::state::session_fingerprint(Some(&fixture.token)))
         .header(
             "content-type",
             "multipart/form-data; boundary=archive-boundary",
@@ -133,10 +159,10 @@ async fn native_project_import_upload_creates_a_private_project_through_shared_s
         .await
         .unwrap();
     let report: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert!(report.to_string().contains("ARCIMP"));
+    assert!(report.to_string().contains("ARCIM"));
 
     let conn = fixture.db.read().unwrap();
-    let project = crate::db::queries::resolve_project_identifier(&conn, "ARCIMP").unwrap();
+    let project = crate::db::queries::resolve_project_identifier(&conn, "ARCIM").unwrap();
     assert!(
         !conn
             .query_row(
