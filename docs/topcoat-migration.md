@@ -20,6 +20,13 @@ steps, title and description edits, done toggles, issue links, and deletion.
 Both reuse the workspace/sidebar and shared authorized services. This is a
 partial port of those feature families, not a completed parity claim.
 
+Issue creation and Modules have native private routes. Issue creation supports
+title, description, status, priority, module assignment, labels, and inline label
+creation. Modules supports lifecycle tabs, unbounded issue counts, progress,
+creation, detail, scalar edits, and deletion. Both use shared Rust services and
+the workspace/sidebar. Viewers receive read-only content. Cached navigation
+checks the destination's rendered project permissions against current records.
+
 The intermediate JavaScript frontend is deleted, including controllers,
 frontend API clients, vendor libraries used by those controllers, generated
 controller fixtures, and dormant Rust screen scaffolds. The only production
@@ -27,8 +34,8 @@ JavaScript assets are Topcoat's framework runtime and Rust-generated bindings.
 
 ## Unfinished features
 
-Settings, archive import, issue creation, filtered issue lists and boards,
-files, modules, dependency graphs, and public readers have no intermediate
+Settings, archive import, filtered issue lists and boards,
+files, dependency graphs, and public readers have no intermediate
 fallback. Their canonical routes return 404 until native ports are implemented.
 Existing backend REST/MCP interfaces remain available.
 
@@ -36,6 +43,11 @@ Pages still needs folder management, metadata editing, autosave, comments,
 attachments, and realtime recovery. Plans still needs step reordering, activity,
 the full metadata/editor workflow, and realtime recovery. Keep the family
 tickets open until their remaining main assertions and visual parity are met.
+
+Issue creation still needs the attachment composer and Main's picker and input
+interactions. Modules still needs persisted tabs, the shared icon picker and
+Markdown editor, delete confirmation, realtime updates, and remaining mobile,
+keyboard, error, and visual parity. These family tickets remain open.
 
 Each feature must still match main's behavior, text, visual layout, permissions,
 keyboard/touch interactions, mounted URLs, conflicts, and realtime recovery.
@@ -57,3 +69,11 @@ authenticated production router. They cover list pagination, bounded page
 previews, search candidates, initial hydration, mounted URLs, hidden records,
 revoked membership, mutation permissions, conflicts, and audit attribution.
 No browser is run for this batch.
+
+Issue creation and Modules tests cover fresh permissions, account changes,
+module ownership, complete scalar payloads, Web audit attribution, post-commit
+events, tombstones, and counts beyond 500 issues. Production-router tests cover
+read-only and editable initial hydration, hidden resources, revoked membership,
+query defaults, mounted navigation, and permission changes during cached
+navigation. Node executes the emitted module-save handlers with the packaged
+runtime to check mounted procedure and navigation URLs without a browser.
