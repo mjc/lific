@@ -55,6 +55,41 @@ async fn native_files_initial_page_keeps_project_data_and_mounted_resource_route
     assert!(!response.to_string().contains("notes.txt"));
 }
 
+#[tokio::test]
+async fn native_files_keeps_the_selected_sort_option_after_a_hydrated_change() {
+    let fixture = super::super::home_fixture::fixture();
+    seed(&fixture);
+
+    let (_, initial) = document(&fixture, "/app", "/ACC/files", true, None).await;
+    let mut signals = super::super::home_fixture::page_signals(&initial);
+    let sort_signal = signals
+        .iter_mut()
+        .find(|(_, value)| value.as_str() == Some("created_at"))
+        .map(|(id, value)| {
+            *value = serde_json::Value::String("filename".to_owned());
+            id.clone()
+        })
+        .expect("Files page exposes its current sort signal");
+
+    let (status, html) = document(&fixture, "/app", "/ACC/files", true, Some(signals)).await;
+    assert_eq!(status, StatusCode::OK);
+    let document = scraper::Html::parse_document(&html);
+    let select = scraper::Selector::parse("select[aria-label='Sort files']").unwrap();
+    let selected = scraper::Selector::parse("option[selected]").unwrap();
+    let sort_select = document
+        .select(&select)
+        .next()
+        .expect("sort selector renders");
+    assert_eq!(
+        sort_select
+            .select(&selected)
+            .next()
+            .and_then(|option| option.value().attr("value")),
+        Some("filename"),
+        "sort signal {sort_signal} must remain reflected in the native select after the server rerender"
+    );
+}
+
 fn seed(fixture: &super::super::home_fixture::Fixture) -> (i64, i64, i64) {
     let conn = fixture.db.write().unwrap();
     let user = queries::users::validate_session(&conn, &fixture.token).unwrap();
