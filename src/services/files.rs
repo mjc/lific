@@ -207,6 +207,7 @@ pub(crate) fn where_used(
     })
 }
 
+#[cfg(test)]
 pub(crate) fn authorize_read(
     db: &DbPool,
     identity: &Option<ResolvedIdentity>,

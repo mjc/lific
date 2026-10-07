@@ -71,6 +71,7 @@ pub(crate) fn load_conn(
     })
 }
 
+#[cfg(test)]
 pub(crate) fn load(
     db: &DbPool,
     identity: &Option<ResolvedIdentity>,
