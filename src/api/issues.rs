@@ -116,11 +116,11 @@ pub(super) async fn project_relations(
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
     Path(id): Path<i64>,
 ) -> Result<Json<Vec<ProjectRelation>>, LificError> {
-    authz::require_role(&db, &identity, id, Role::Viewer)?;
-    with_read(&db, |conn| {
-        crate::db::queries::list_project_relations(conn, id)
-    })
-    .map(Json)
+    let conn = db.read()?;
+    let tx = conn.unchecked_transaction()?;
+    let relations = crate::services::dependency_graph::project_relations_conn(&tx, &identity, id)?;
+    tx.commit()?;
+    Ok(Json(relations))
 }
 
 #[derive(serde::Deserialize)]
