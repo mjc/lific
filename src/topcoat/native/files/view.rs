@@ -303,7 +303,8 @@ pub(super) fn content<'a>(
                 })
             )
         </div>
-    }.boxed()
+    }
+    .boxed()
 }
 
 #[shard("/__native_files/body")]
@@ -832,7 +833,8 @@ fn files_page<'a>(
                 <option value=(name.clone()) :selected=$(selected)>
                     (name.clone())
                 </option>
-            }.boxed()
+            }
+            .boxed()
         })
         .collect::<Vec<_>>();
     let file_rows = rows
@@ -1231,23 +1233,33 @@ fn file_row<'a>(
         "data-topcoat-on:click",
         delete_handler.into_evaluated_and_js().1,
     );
-    let duplicates = detail.map(|data| data.duplicates.iter().map(|duplicate| {
-            let duplicate_name = duplicate.filename.clone();
-            let duplicate_chips = entity_chips(cx, project, &duplicate.entities);
-            view! {
-                cx =>
-                <div class="flex items-center gap-2">
-                    <span class="text-caption text-[var(--text-muted)] truncate">
-                        (duplicate_name)
-                    </span>
-                    <div class="flex flex-wrap items-center gap-1">
-                        for chip in duplicate_chips {
-                            (chip)
-                        }
-                    </div>
-                </div>
-            }.boxed()
-        }).collect::<Vec<_>>()).unwrap_or_default();
+    let duplicates = detail
+        .map(|data| {
+            data.duplicates
+                .iter()
+                .map(|duplicate| {
+                    let duplicate_name = duplicate.filename.clone();
+                    let duplicate_chips = entity_chips(cx, project, &duplicate.entities);
+                    view! {
+                        cx =>
+                        <div class="flex items-center gap-2">
+                            <span
+                                class="text-caption text-[var(--text-muted)] truncate"
+                            >
+                                (duplicate_name)
+                            </span>
+                            <div class="flex flex-wrap items-center gap-1">
+                                for chip in duplicate_chips {
+                                    (chip)
+                                }
+                            </div>
+                        </div>
+                    }
+                    .boxed()
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     let has_duplicates = !duplicates.is_empty();
     let is_confirming = confirming_id == Some(id);
     let delete_confirmation_message = model::delete_confirm_message(entities.len());
@@ -1838,5 +1850,6 @@ fn live_refresh(
                 }?;
             }
         }
-    }.boxed()
+    }
+    .boxed()
 }
