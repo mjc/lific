@@ -52,11 +52,11 @@ regex = "1"
 strum = { version = "=0.28.0", default-features = false, features = ["derive"] }
 # HTTP
 axum = { version = "0.8", features = ["json", "multipart", "ws"] }
-topcoat = { version = "=0.9.0", default-features = false, features = ["asset", "discover", "router", "runtime", "tower", "view"] }
+topcoat = { version = "=0.10.0", git = "https://github.com/mjc/topcoat", rev = "9c909ed4ea16b7058ae23c5e1938c83039f3e985", default-features = false, features = ["asset", "discover", "router", "runtime", "tower", "view"] }
 # Shared framework types used by the packaged native socket bridge.
-topcoat-core = "=0.9.0"
-topcoat-router = { version = "=0.9.0", features = ["websocket"] }
-topcoat-view = "=0.9.0"
+topcoat-core = { version = "=0.10.0", git = "https://github.com/mjc/topcoat", rev = "9c909ed4ea16b7058ae23c5e1938c83039f3e985" }
+topcoat-router = { version = "=0.10.0", git = "https://github.com/mjc/topcoat", rev = "9c909ed4ea16b7058ae23c5e1938c83039f3e985", features = ["websocket"] }
+topcoat-view = { version = "=0.10.0", git = "https://github.com/mjc/topcoat", rev = "9c909ed4ea16b7058ae23c5e1938c83039f3e985" }
 tokio = { version = "1", features = ["full"] }
 futures-util = "0.3"
 tower-http = { version = "0.6", features = ["cors", "compression-gzip", "compression-br"] }

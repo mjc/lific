@@ -34,6 +34,38 @@ export function integerType(kind: IntegerKind, bits: number): IntegerType {
 	});
 }
 
+let serverUsize: IntegerType | undefined;
+
+/**
+ * Supplies the server's `usize` width when no runtime script tag is present.
+ * Pages normally provide this width through the script tag.
+ */
+export function setServerUsizeBits(bits: number): void {
+	serverUsize = integerType("usize", bits);
+}
+
+/**
+ * Returns the server's `usize` type for values created in the browser,
+ * such as string lengths, that have no serialized width to read.
+ */
+export function serverUsizeType(): IntegerType {
+	if (serverUsize === undefined) {
+		const bits =
+			typeof document === "undefined"
+				? undefined
+				: document.querySelector<HTMLScriptElement>(
+						"script[data-topcoat-usize-bits]",
+					)?.dataset.topcoatUsizeBits;
+		if (bits === undefined) {
+			throw new Error(
+				"The server's usize width is unknown; load the runtime with topcoat::runtime::script()",
+			);
+		}
+		setServerUsizeBits(Number(bits));
+	}
+	return serverUsize as IntegerType;
+}
+
 /** Exact, checked arithmetic shared by all Rust integer types. */
 export class Integer implements AttributeValueViewParts, NodeViewParts {
 	constructor(

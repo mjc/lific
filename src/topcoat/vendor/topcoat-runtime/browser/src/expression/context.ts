@@ -1,5 +1,5 @@
 import type { SignalId, SignalRegistry } from "../signal-registry";
-import { Event, Option, Result, WriteSignal } from "../surrogate";
+import { Option, Record, Result, Tuple, WriteSignal } from "../surrogate";
 import { hydrate } from "./hydrate";
 import type { DehydratedSurrogate } from "./serialized";
 
@@ -10,11 +10,6 @@ import type { DehydratedSurrogate } from "./serialized";
  */
 export class Context {
 	constructor(private readonly registry: SignalRegistry) {}
-
-	/** Wraps a native DOM event with the same adapter used by framework listeners. */
-	event(event: globalThis.Event): Event {
-		return new Event(event);
-	}
 
 	hydrate(s: unknown) {
 		return hydrate(s as DehydratedSurrogate, this);
@@ -38,5 +33,13 @@ export class Context {
 
 	err<T = never, E = unknown>(v: E): Result<T, E> {
 		return Result.from_err(v);
+	}
+
+	record(fields: { [field: string]: unknown }): Record {
+		return new Record(Object.entries(fields));
+	}
+
+	tuple(items: readonly unknown[]): Tuple {
+		return new Tuple(items);
 	}
 }

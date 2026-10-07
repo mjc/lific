@@ -2,20 +2,19 @@ mod rerun;
 #[cfg(not(target_family = "wasm"))]
 #[path = "../../../runtime/socket.rs"]
 mod socket;
-#[cfg(not(target_family = "wasm"))]
-pub use socket::{SocketLifetime, SocketPolicy, SocketRetirement};
 
-use crate::{ConnectedRender, ConnectionEpoch, SignalValues};
 pub use rerun::*;
-use topcoat_core::context::Cx;
+#[cfg(not(target_family = "wasm"))]
+pub use socket::{SocketLifetime, SocketPolicy, SocketRetirement, SocketRunPolicy};
+use crate::connection::{ConnectedRender, ConnectionEpoch};
+use topcoat_core::context::{Cx, try_app_context};
 use topcoat_router::{Body, Layer, LayerFuture, Next, Path};
 
 /// The WebSocket subprotocol for runtime connections.
 ///
-/// Request this subprotocol at a page's or shard's URL to open a connection
-/// through [`RuntimeLayer`]. The browser can then request renders and
-/// receive the content as frames. WebSocket connections require a native
-/// server.
+/// Request this subprotocol at a page's URL to open a connection through
+/// [`RuntimeLayer`]. The browser can then request renders and receive the
+/// content as frames. WebSocket connections require a native server.
 pub const RUNTIME_PROTOCOL: &str = "topcoat-runtime";
 
 /// A [`Layer`] that handles runtime requests at each page's URL.
@@ -28,9 +27,12 @@ pub const RUNTIME_PROTOCOL: &str = "topcoat-runtime";
 ///   [`RUNTIME_HEADER`], `Content-Type`, or `Content-Length` headers. To read the original method,
 ///   use [`original_method`](topcoat_router::request::original_method).
 /// - Open a WebSocket with the [`RUNTIME_PROTOCOL`] subprotocol. Each render request on this
-///   connection runs the page as a `GET`, using headers from the handshake and the signal values
-///   sent by the browser. A render request naming a shard identity instead runs the shard endpoint
-///   at that URL with the arguments and signal values it carries.
+///   connection describes an HTTP request: a method, a path, a body, and a few runtime headers,
+///   such as [`RUNTIME_HEADER`] for a page rerun. The layer dispatches it with the handshake's
+///   other headers as a connected render. Renders run side by side, and each message sent back
+///   names the render it belongs to. A connection may have at most
+///   [`max_runs_per_connection`](crate::RouterBuilderRuntimeExt::max_runs_per_connection) renders
+///   at once.
 ///
 /// WebSocket connections are supported on native servers. HTTP page reruns
 /// are also available on WebAssembly.
@@ -53,7 +55,9 @@ impl Layer for RuntimeLayer {
     fn handle<'a>(&'a self, cx: &'a Cx, body: Body, next: Next<'a>) -> LayerFuture<'a> {
         #[cfg(not(target_family = "wasm"))]
         if socket::requested(cx) {
-            return Box::pin(socket::accept(cx, body));
+            let max_runs = try_app_context::<MaxRunsPerConnection>(cx)
+                .map_or(socket::DEFAULT_MAX_RUNS_PER_CONNECTION, |limit| limit.0);
+            return Box::pin(socket::accept(cx, body, Some(max_runs)));
         }
         if rerun::requested(cx) {
             return Box::pin(rerun::dispatch(cx, body));
@@ -61,3 +65,10 @@ impl Layer for RuntimeLayer {
         next.run(cx, body)
     }
 }
+
+/// The limit set with
+/// [`RouterBuilderRuntimeExt::max_runs_per_connection`](crate::RouterBuilderRuntimeExt::max_runs_per_connection).
+#[derive(Debug, Clone, Copy)]
+// Read only by the WebSocket handler, which native servers compile.
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
+pub(crate) struct MaxRunsPerConnection(pub(crate) usize);

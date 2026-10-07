@@ -4,6 +4,8 @@ import { Panic } from "../../src/surrogate/panic";
 import { FixtureContext } from "./fixture";
 import { observe } from "./observe";
 
+export { setServerUsizeBits } from "../../src/surrogate/integer";
+
 /** Executes production-generated source in an independent runtime context. */
 export function execute(source: string, invoke: boolean): string {
 	const cx = new FixtureContext(new SignalRegistry());

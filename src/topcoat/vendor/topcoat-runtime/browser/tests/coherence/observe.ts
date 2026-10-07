@@ -2,10 +2,12 @@ import { Bool } from "../../src/surrogate/bool";
 import { F64 } from "../../src/surrogate/f64";
 import { Integer } from "../../src/surrogate/integer";
 import { Option } from "../../src/surrogate/option";
+import { Record } from "../../src/surrogate/record";
 import { Ref } from "../../src/surrogate/ref";
 import { Result } from "../../src/surrogate/result";
 import { Slice } from "../../src/surrogate/sequence";
 import { Str } from "../../src/surrogate/string";
+import { Tuple } from "../../src/surrogate/tuple";
 
 export type Value =
 	| { type: "Unit" | "None" }
@@ -13,7 +15,8 @@ export type Value =
 	| { type: "F64" | "String"; value: string }
 	| { type: "Integer"; value: { kind: string; bits: number; digits: string } }
 	| { type: "Some" | "Ok" | "Err"; value: Value }
-	| { type: "Tuple" | "Sequence"; value: Value[] };
+	| { type: "Tuple" | "Sequence"; value: Value[] }
+	| { type: "Record"; value: { [field: string]: Value } };
 
 /**
  * Reads surrogate storage independently of production dehydration and display.
@@ -94,8 +97,18 @@ export function observe(value: unknown): Value {
 			value: observe(Reflect.get(value, "value")),
 		};
 	}
-	if (Array.isArray(value)) {
-		return { type: "Tuple", value: value.map(observe) };
+	if (value instanceof Tuple) {
+		const items: unknown = Reflect.get(value, "items");
+		if (!Array.isArray(items)) throw new Error("Invalid Tuple storage");
+		return { type: "Tuple", value: items.map(observe) };
+	}
+	if (value instanceof Record) {
+		return {
+			type: "Record",
+			value: Object.fromEntries(
+				Object.entries(value).map(([name, field]) => [name, observe(field)]),
+			),
+		};
 	}
 	throw new Error(
 		`Unsupported coherence value: ${Object.prototype.toString.call(value)}`,

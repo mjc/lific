@@ -1,4 +1,5 @@
-import { expect, it } from "vitest";
+// @vitest-environment happy-dom
+import { expect, it, vi } from "vitest";
 import { Context } from "../expression/context";
 import { dehydrate } from "../expression/dehydrate";
 import type { IntegerKind } from "../expression/serialized";
@@ -111,6 +112,25 @@ it("rejects malformed payloads and mismatched types", () => {
 	expect(() => left.add(right)).toThrow("Integer types do not match");
 	const narrow = new Integer(1n, integerType("usize", 32));
 	expect(() => narrow.eq(right)).toThrow("Integer types do not match");
+});
+
+it("reads the server's usize width from the runtime script tag", async () => {
+	vi.resetModules();
+	const script = document.createElement("script");
+	script.dataset.topcoatUsizeBits = "32";
+	document.head.append(script);
+	try {
+		const { serverUsizeType } = await import("./integer");
+		expect(serverUsizeType()).toMatchObject({ kind: "usize", bits: 32 });
+	} finally {
+		script.remove();
+	}
+});
+
+it("reports an unknown server usize width", async () => {
+	vi.resetModules();
+	const { serverUsizeType } = await import("./integer");
+	expect(() => serverUsizeType()).toThrow();
 });
 
 it("updates integer signals without losing precision", () => {

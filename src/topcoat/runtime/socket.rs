@@ -1,6 +1,7 @@
-//! Renders a page or shard over a WebSocket opened at its URL.
+//! Renders pages and shards over the runtime's shared WebSocket.
 
 use std::{
+    collections::HashMap,
     future::Future,
     pin::Pin,
     sync::{Arc, Mutex},
@@ -24,12 +25,14 @@ use topcoat_router::{
         websocket::{Message, WebSocket, WebSocketUpgrade},
     },
     header,
-    request::{FromRequest, IDENTITY_HEADER, Request, extensions, headers, method, uri},
+    request::{FromRequest, IDENTITY_HEADER, Request, extensions, headers, method},
     response::Response,
     router,
 };
 
-use super::{ConnectedRender, ConnectionEpoch, RUNTIME_PROTOCOL, SignalValues};
+use super::{ConnectedRender, ConnectionEpoch, RUNTIME_HEADER, RUNTIME_PROTOCOL};
+
+pub(super) const DEFAULT_MAX_RUNS_PER_CONNECTION: usize = 64;
 
 /// The action requested when an application's socket lifetime completes.
 #[derive(Debug, PartialEq, Eq)]
@@ -43,14 +46,11 @@ pub enum SocketRetirement {
 type RetirementFuture = Pin<Box<dyn Future<Output = SocketRetirement> + Send + 'static>>;
 
 /// A one-shot application lifetime registered on the upgrade request context.
-///
-/// The mutex lets the context share a `Send` future without requiring `Sync`.
 pub struct SocketLifetime {
     retirement: Mutex<Option<RetirementFuture>>,
 }
 
 impl SocketLifetime {
-    /// Retains the future for the physical connection's lifetime.
     #[must_use]
     pub fn new(retirement: impl Future<Output = SocketRetirement> + Send + 'static) -> Self {
         Self {
@@ -66,19 +66,17 @@ impl SocketLifetime {
     }
 }
 
-/// Protocol liveness and outbound deadlines for a runtime connection.
-///
-/// Register in the router's application context to override the defaults.
+/// Liveness, send deadlines, and concurrent render limit for a runtime socket.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SocketPolicy {
     ping_interval: Duration,
     progress_timeout: Duration,
     send_timeout: Duration,
+    max_runs: usize,
 }
 
 impl SocketPolicy {
-    /// Creates a policy with nonzero deadlines and room to answer a ping.
-    /// Returns `None` when a deadline is zero or pings cannot precede timeout.
+    /// Returns `None` for zero deadlines, invalid ping ordering, or a zero run cap.
     #[must_use]
     pub fn new(
         ping_interval: Duration,
@@ -96,7 +94,18 @@ impl SocketPolicy {
             ping_interval,
             progress_timeout,
             send_timeout,
+            max_runs: DEFAULT_MAX_RUNS_PER_CONNECTION,
         })
+    }
+
+    /// Sets the maximum concurrent renders accepted on a physical socket.
+    #[must_use]
+    pub fn with_max_runs_per_connection(mut self, max_runs: usize) -> Option<Self> {
+        if max_runs == 0 {
+            return None;
+        }
+        self.max_runs = max_runs;
+        Some(self)
     }
 }
 
@@ -106,17 +115,34 @@ impl Default for SocketPolicy {
             ping_interval: Duration::from_secs(30),
             progress_timeout: Duration::from_secs(120),
             send_timeout: Duration::from_secs(5),
+            max_runs: DEFAULT_MAX_RUNS_PER_CONNECTION,
         }
     }
 }
 
-/// Checks for a `GET` that requests the runtime WebSocket subprotocol.
-pub(super) fn requested(cx: &Cx) -> bool {
+/// App-provided, route-agnostic authorization for each path requested on a socket.
+///
+/// Install this in the upgrade request context when requests on the socket need
+/// to remain within a scope selected by the application's admission layer.
+#[derive(Clone)]
+pub struct SocketRunPolicy(Arc<dyn Fn(&Method, &Uri) -> bool + Send + Sync>);
+
+impl SocketRunPolicy {
+    #[must_use]
+    pub fn new(authorize: impl Fn(&Method, &Uri) -> bool + Send + Sync + 'static) -> Self {
+        Self(Arc::new(authorize))
+    }
+
+    fn authorizes(&self, method: &Method, uri: &Uri) -> bool {
+        (self.0)(method, uri)
+    }
+}
+
+pub(crate) fn requested(cx: &Cx) -> bool {
     *method(cx) == Method::GET && requests_runtime_protocol(headers(cx))
 }
 
-/// Checks whether the headers request the runtime subprotocol.
-fn requests_runtime_protocol(headers: &HeaderMap) -> bool {
+pub(crate) fn requests_runtime_protocol(headers: &HeaderMap) -> bool {
     headers
         .get_all(header::SEC_WEBSOCKET_PROTOCOL)
         .iter()
@@ -125,77 +151,83 @@ fn requests_runtime_protocol(headers: &HeaderMap) -> bool {
         .any(|protocol| protocol.trim() == RUNTIME_PROTOCOL)
 }
 
-/// Opens the WebSocket and starts handling render requests.
-pub(super) async fn accept(cx: &Cx, body: Body) -> Result<Response> {
+/// Opens the socket, optionally applying the standalone framework run limit.
+pub(super) async fn accept(
+    cx: &Cx,
+    body: Body,
+    max_runs: Option<usize>,
+) -> Result<Response> {
     let upgrade = WebSocketUpgrade::from_request(cx, body).await?;
-    let target = Arc::new(ConnectionTarget::from_handshake(cx));
-    let policy = try_app_context::<SocketPolicy>(cx)
-        .copied()
-        .unwrap_or_default();
     let retirement = try_request_context::<SocketLifetime>(cx)
         .and_then(SocketLifetime::take)
         .unwrap_or_else(|| Box::pin(std::future::pending()));
-    let connection_context = cx.clone();
+    let target = Arc::new(ConnectionTarget::from_handshake(cx));
+    let mut policy = try_app_context::<SocketPolicy>(cx)
+        .copied()
+        .unwrap_or_default();
+    if let Some(max_runs) = max_runs {
+        if max_runs == 0 {
+            policy.max_runs = 0;
+        } else {
+            policy = policy
+                .with_max_runs_per_connection(max_runs)
+                .expect("a positive run limit is valid");
+        }
+    }
+    let run_policy = try_request_context::<SocketRunPolicy>(cx).cloned();
     upgrade
         .protocols([RUNTIME_PROTOCOL])
-        .on_upgrade(move |socket| async move {
-            run(target, socket, policy, retirement).await;
-            drop(connection_context);
-        })
+        .on_upgrade(move |socket| run(target, socket, policy, run_policy, retirement))
 }
 
-/// The browser's request for a new render.
-///
-/// A request naming a shard identity renders the shard endpoint at the
-/// connection's URL. The whole message is then the endpoint's request body,
-/// so it also carries the shard's arguments and signal values. Other
-/// requests render the page.
 #[derive(Debug, Deserialize)]
-struct RenderRequest {
-    /// The run id chosen by the browser. Sent back before any output so
-    /// the browser can identify which render it belongs to.
-    #[serde(default)]
+#[serde(untagged)]
+enum ClientMessage {
+    Stop { stop: u64 },
+    Run(RunRequest),
+}
+
+#[derive(Debug, Deserialize)]
+struct RunRequest {
     run: u64,
-    /// The identity of the shard invocation to render.
+    method: String,
+    path: String,
     #[serde(default)]
-    shard: Option<String>,
-    /// The signal values to use for a page render.
+    headers: HashMap<String, String>,
     #[serde(default)]
-    signals: SignalValues,
+    body: String,
 }
 
-/// A render request and the message text it was parsed from.
-struct Render {
-    request: RenderRequest,
-    /// Sent as the request body of a shard render.
-    text: String,
-}
-
-/// A connection message for identifying runs, redirects, and errors.
-#[derive(Serialize)]
-#[serde(tag = "t", rename_all = "snake_case")]
-enum ConnectionMessage<'a> {
-    /// Identifies all following output until the next run announcement.
-    Run { id: u64 },
-    /// Tells the browser to navigate after a render returned a redirect.
-    Redirect { location: &'a str },
-    /// Reports a failed render or an invalid request from the browser.
-    Error { status: u16 },
-}
-
-impl ConnectionMessage<'_> {
-    fn to_message(&self) -> Message {
-        Message::text(serde_json::to_string(self).expect("a connection message serializes"))
+fn envelope_text(run: Option<u64>, frame: &str) -> String {
+    let frame = frame.trim_end();
+    match run {
+        Some(run) => format!("{{\"run\":{run},\"frame\":{frame}}}"),
+        None => format!("{{\"frame\":{frame}}}"),
     }
 }
 
-/// The router, URL, and request details used for every render on a connection.
+fn envelope_raw(run: Option<u64>, frame: &str) -> Message {
+    Message::text(envelope_text(run, frame))
+}
+
+fn frame_message(run: Option<u64>, frame: impl Serialize) -> Message {
+    let frame = serde_json::to_string(&frame).expect("runtime frame serializes");
+    envelope_raw(run, &frame)
+}
+
+fn error_message(run: Option<u64>, status: u16) -> Message {
+    frame_message(run, serde_json::json!({"t":"error", "status":status}))
+}
+
+fn allowed_header(name: &HeaderName) -> bool {
+    *name == header::CONTENT_TYPE || *name == IDENTITY_HEADER || *name == RUNTIME_HEADER
+}
+
 struct ConnectionTarget {
     epoch: ConnectionEpoch,
     router: Router,
-    uri: Uri,
-    /// Headers from the handshake, with WebSocket headers and
-    /// `Accept-Encoding` removed.
+    // Render tasks may outlive a canceled socket owner until their abort is observed.
+    _connection_context: Cx,
     headers: HeaderMap,
     remote: Option<RemoteAddr>,
 }
@@ -217,83 +249,74 @@ impl ConnectionTarget {
         Self {
             epoch: ConnectionEpoch(format!("{:032x}", rand::random::<u128>())),
             router: router(cx),
-            uri: uri(cx).clone(),
+            _connection_context: cx.clone(),
             headers,
             remote: extensions(cx).get::<RemoteAddr>().copied(),
         }
     }
 
-    /// Builds a request for the connection's URL.
-    fn request(&self, method: Method, headers: HeaderMap, body: Body) -> Request {
-        let mut request = Request::new(body);
+    fn request(&self, run: RunRequest) -> Option<Request> {
+        let method = Method::from_bytes(run.method.as_bytes()).ok()?;
+        let uri = Uri::try_from(run.path).ok()?;
+        if uri.scheme().is_some() || !uri.path().starts_with('/') {
+            return None;
+        }
+        let mut request_headers = self.headers.clone();
+        for (name, value) in run.headers {
+            let name = HeaderName::try_from(name).ok()?;
+            if !allowed_header(&name) {
+                return None;
+            }
+            request_headers.insert(name, HeaderValue::try_from(value).ok()?);
+        }
+        let mut request = Request::new(Body::from(run.body));
         *request.method_mut() = method;
-        *request.uri_mut() = self.uri.clone();
-        *request.headers_mut() = headers;
+        *request.uri_mut() = uri;
+        *request.headers_mut() = request_headers;
         if let Some(remote) = self.remote {
             request.extensions_mut().insert(remote);
         }
-        request
+        Some(request)
     }
 
-    /// Renders the page or shard and sends its output to `out`.
-    /// Stops when rendering finishes or the receiver closes.
-    async fn render(&self, render: Render, out: mpsc::Sender<Message>) {
-        let Render { request, text } = render;
-        let run = ConnectionMessage::Run { id: request.run }.to_message();
-        if out.send(run).await.is_err() {
+    async fn render(
+        &self,
+        run: RunRequest,
+        run_policy: Option<SocketRunPolicy>,
+        out: mpsc::Sender<Message>,
+    ) {
+        let id = run.run;
+        let Some(request) = self.request(run) else {
+            let _ = out.send(error_message(Some(id), 400)).await;
+            return;
+        };
+        if let Some(policy) = run_policy.as_ref()
+            && !policy.authorizes(request.method(), request.uri())
+        {
+            let _ = out.send(error_message(Some(id), 403)).await;
             return;
         }
-
-        let response = match request.shard {
-            // A shard endpoint reads its arguments and signal values from
-            // the body and its identity from a header, like an HTTP
-            // re-render of the shard.
-            Some(identity) => {
-                let Ok(identity) = HeaderValue::try_from(identity) else {
-                    let _ = out
-                        .send(ConnectionMessage::Error { status: 400 }.to_message())
-                        .await;
-                    return;
-                };
-                let mut headers = self.headers.clone();
-                headers.insert(
-                    header::CONTENT_TYPE,
-                    HeaderValue::from_static("application/json"),
-                );
-                headers.insert(HeaderName::from_static(IDENTITY_HEADER), identity);
-                self.router
-                    .handle_with(
-                        self.request(Method::POST, headers, Body::from(text)),
-                        (
-                            ConnectedRender,
-                            self.epoch.clone(),
-                            ViewResponseDelivery::Frames,
-                        ),
-                    )
-                    .await
-            }
-            None => {
-                self.router
-                    .handle_with(
-                        self.request(Method::GET, self.headers.clone(), Body::empty()),
-                        (
-                            ConnectedRender,
-                            self.epoch.clone(),
-                            request.signals,
-                            ViewResponseDelivery::Frames,
-                        ),
-                    )
-                    .await
-            }
-        };
-
+        let response = self
+            .router
+            .handle_with(
+                request,
+                (
+                    ConnectedRender,
+                    self.epoch.clone(),
+                    ViewResponseDelivery::Frames,
+                ),
+            )
+            .await;
         let status = response.status();
         if status.is_redirection()
             && let Some(location) = response.headers().get(header::LOCATION)
             && let Ok(location) = location.to_str()
         {
             let _ = out
-                .send(ConnectionMessage::Redirect { location }.to_message())
+                .send(frame_message(
+                    Some(id),
+                    serde_json::json!({"t":"redirect", "location":location}),
+                ))
                 .await;
             return;
         }
@@ -302,25 +325,14 @@ impl ConnectionTarget {
             .get(header::CONTENT_TYPE)
             .is_some_and(|value| value == "application/x-ndjson");
         if !status.is_success() || !has_frames {
-            let _ = out
-                .send(
-                    ConnectionMessage::Error {
-                        status: status.as_u16(),
-                    }
-                    .to_message(),
-                )
-                .await;
+            let _ = out.send(error_message(Some(id), status.as_u16())).await;
             return;
         }
-
         let mut frames = response.into_body().into_data_stream();
         while let Some(frame) = frames.next().await {
-            let message = match frame {
-                Ok(bytes) => match String::from_utf8(bytes.to_vec()) {
-                    Ok(text) => Message::text(text),
-                    Err(_) => ConnectionMessage::Error { status: 500 }.to_message(),
-                },
-                Err(_) => ConnectionMessage::Error { status: 500 }.to_message(),
+            let message = match frame.as_deref().map(std::str::from_utf8) {
+                Ok(Ok(text)) => envelope_raw(Some(id), text),
+                _ => error_message(Some(id), 500),
             };
             if out.send(message).await.is_err() {
                 return;
@@ -329,23 +341,52 @@ impl ConnectionTarget {
     }
 }
 
-/// Handles render requests until the browser disconnects.
-///
-/// Each request cancels the previous render and waits for it to stop before
-/// starting another. Aborting alone is not enough because a task running
-/// on another worker can still send output until it yields. Waiting keeps
-/// that output ahead of the next run announcement in the queue.
+#[derive(Default)]
+struct RunTasks(HashMap<u64, tokio::task::JoinHandle<()>>);
+
+impl RunTasks {
+    async fn stop(&mut self, id: u64) {
+        if let Some(task) = self.0.get_mut(&id) {
+            task.abort();
+            let _ = task.await;
+        }
+        self.0.remove(&id);
+    }
+
+    fn reap(&mut self) {
+        self.0.retain(|_, task| !task.is_finished());
+    }
+
+    async fn stop_all(&mut self) {
+        let tasks = self.0.drain().map(|(_, task)| task).collect::<Vec<_>>();
+        for task in &tasks {
+            task.abort();
+        }
+        for task in tasks {
+            let _ = task.await;
+        }
+    }
+}
+
+impl Drop for RunTasks {
+    fn drop(&mut self) {
+        for task in self.0.values() {
+            task.abort();
+        }
+    }
+}
+
 async fn run(
     target: Arc<ConnectionTarget>,
     socket: WebSocket,
     policy: SocketPolicy,
+    run_policy: Option<SocketRunPolicy>,
     mut retirement: RetirementFuture,
 ) {
     let (mut sink, mut stream) = socket.split();
     let (out, mut queue) = mpsc::channel::<Message>(16);
     let (progress, deadline) = watch::channel(Instant::now() + policy.progress_timeout);
-    let mut current = RenderTask::default();
-
+    let mut runs = RunTasks::default();
     let action = {
         let forward = async {
             let mut ping =
@@ -355,10 +396,7 @@ async fn run(
                 let message = tokio::select! {
                     biased;
                     _ = ping.tick() => Message::Ping(Vec::new().into()),
-                    message = queue.recv() => match message {
-                        Some(message) => message,
-                        None => break,
-                    },
+                    message = queue.recv() => match message { Some(message) => message, None => break },
                 };
                 if !matches!(
                     time::timeout(policy.send_timeout, sink.send(message)).await,
@@ -368,7 +406,6 @@ async fn run(
                 }
             }
         };
-
         let receive = async {
             while let Some(Ok(message)) = stream.next().await {
                 if matches!(message, Message::Close(_)) {
@@ -378,31 +415,38 @@ async fn run(
                 let Message::Text(text) = message else {
                     continue;
                 };
-                let Ok(request) = serde_json::from_str::<RenderRequest>(text.as_str()) else {
-                    let error = ConnectionMessage::Error { status: 400 }.to_message();
-                    if out.send(error).await.is_err() {
-                        break;
+                match serde_json::from_str::<ClientMessage>(text.as_str()) {
+                    Ok(ClientMessage::Stop { stop }) => runs.stop(stop).await,
+                    Ok(ClientMessage::Run(request)) => {
+                        runs.reap();
+                        let id = request.run;
+                        if runs.0.contains_key(&id) {
+                            runs.stop(id).await;
+                        } else if runs.0.len() >= policy.max_runs {
+                            if out.send(error_message(Some(id), 429)).await.is_err() {
+                                break;
+                            }
+                            continue;
+                        }
+                        let target = Arc::clone(&target);
+                        let policy = run_policy.clone();
+                        let out = out.clone();
+                        runs.0.insert(
+                            id,
+                            tokio::spawn(async move {
+                                target.render(request, policy, out).await;
+                            }),
+                        );
                     }
-                    continue;
-                };
-                // Wait until the old render can no longer send frames.
-                current.stop().await;
-                let render = Render {
-                    request,
-                    text: text.as_str().to_owned(),
-                };
-                let target = Arc::clone(&target);
-                let out = out.clone();
-                current.0 = Some(tokio::spawn(async move {
-                    target.render(render, out).await;
-                }));
+                    Err(_) => {
+                        if out.send(error_message(None, 400)).await.is_err() {
+                            break;
+                        }
+                    }
+                }
             }
         };
-
-        // Independent of both pumps: a full output queue cannot postpone
-        // progress expiry while the receiver waits to enqueue an error.
         let liveness = progress_lifetime(deadline);
-
         tokio::select! {
             biased;
             action = &mut retirement => Some(action),
@@ -411,16 +455,17 @@ async fn run(
             () = receive => None,
         }
     };
-
-    // Either pump ending retires the whole socket, including the live body.
-    current.stop().await;
+    runs.stop_all().await;
     if let Some(action) = action {
         if let SocketRetirement::Redirect(location) = action {
-            let message = ConnectionMessage::Redirect {
-                location: &location,
-            }
-            .to_message();
-            let _ = time::timeout(policy.send_timeout, sink.send(message)).await;
+            let _ = time::timeout(
+                policy.send_timeout,
+                sink.send(frame_message(
+                    None,
+                    serde_json::json!({"t":"redirect", "location":location}),
+                )),
+            )
+            .await;
         }
         let _ = time::timeout(policy.send_timeout, sink.close()).await;
     }
@@ -431,31 +476,8 @@ async fn progress_lifetime(mut deadline: watch::Receiver<Instant>) {
         let until = *deadline.borrow_and_update();
         tokio::select! {
             biased;
-            // Progress may have arrived while this future was not polled.
-            // Consume that newer deadline before considering the cached timer.
             changed = deadline.changed() => if changed.is_err() { break; },
             () = time::sleep_until(until) => break,
-        }
-    }
-}
-
-/// Aborts the connected render even if the socket owner itself is cancelled.
-#[derive(Default)]
-struct RenderTask(Option<tokio::task::JoinHandle<()>>);
-
-impl RenderTask {
-    async fn stop(&mut self) {
-        if let Some(task) = self.0.take() {
-            task.abort();
-            let _ = task.await;
-        }
-    }
-}
-
-impl Drop for RenderTask {
-    fn drop(&mut self) {
-        if let Some(task) = &self.0 {
-            task.abort();
         }
     }
 }
@@ -482,7 +504,6 @@ mod tests {
     async fn socket_lifetime_context_accepts_send_future_without_sync() {
         fn assert_send_sync<T: Send + Sync>(_: &T) {}
 
-        // Cell is Send but not Sync, and remains owned across suspension.
         let state = std::cell::Cell::new(false);
         let lifetime = SocketLifetime::new(async move {
             state.set(true);
@@ -501,8 +522,6 @@ mod tests {
         let mut lifetime = Box::pin(progress_lifetime(deadline));
         assert!(futures_util::poll!(lifetime.as_mut()).is_pending());
 
-        // The receive pump extends progress while the watchdog is not polled.
-        // On its next poll both the old timer and the watch update are ready.
         progress.send_replace(Instant::now() + Duration::from_secs(5));
         time::sleep_until(old_deadline + Duration::from_millis(100)).await;
         assert!(
@@ -532,5 +551,139 @@ mod tests {
             "topcoat-runtime-v2"
         )));
         assert!(!requests_runtime_protocol(&HeaderMap::new()));
+    }
+
+    #[test]
+    fn frames_are_enveloped_for_the_run_and_runless_retirement_redirects() {
+        let value: serde_json::Value =
+            serde_json::from_str(&envelope_text(Some(7), r#"{"t":"snapshot","html":"ok"}"#))
+                .unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({"run":7,"frame":{"t":"snapshot","html":"ok"}})
+        );
+        let value: serde_json::Value = serde_json::from_str(&envelope_text(
+            None,
+            r#"{"t":"redirect","location":"/login"}"#,
+        ))
+        .unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({"frame":{"t":"redirect","location":"/login"}})
+        );
+    }
+
+    #[test]
+    fn browser_run_and_stop_messages_match_the_framework_protocol() {
+        let run: ClientMessage = serde_json::from_str(
+            r#"{"run":4,"method":"POST","path":"/feed?q=1","headers":{"x-topcoat-runtime":"true"},"body":"{}"}"#,
+        )
+        .unwrap();
+        assert!(matches!(run, ClientMessage::Run(RunRequest { run: 4, .. })));
+
+        let stop: ClientMessage = serde_json::from_str(r#"{"stop":4}"#).unwrap();
+        assert!(matches!(stop, ClientMessage::Stop { stop: 4 }));
+    }
+
+    #[test]
+    fn run_header_allowlist_preserves_handshake_authority() {
+        for allowed in ["content-type", "x-topcoat-runtime", IDENTITY_HEADER] {
+            assert!(
+                allowed_header(&HeaderName::from_bytes(allowed.as_bytes()).unwrap()),
+                "{allowed}"
+            );
+        }
+        for forbidden in ["cookie", "host", "origin", "authorization"] {
+            assert!(
+                !allowed_header(&HeaderName::from_bytes(forbidden.as_bytes()).unwrap()),
+                "{forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn default_and_explicit_concurrency_limits_are_nonzero() {
+        assert_eq!(SocketPolicy::default().max_runs, 64);
+        assert_eq!(
+            SocketPolicy::new(
+                Duration::from_secs(1),
+                Duration::from_secs(2),
+                Duration::from_secs(1)
+            )
+            .unwrap()
+            .with_max_runs_per_connection(3)
+            .unwrap()
+            .max_runs,
+            3
+        );
+        assert!(
+            SocketPolicy::default()
+                .with_max_runs_per_connection(0)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn app_run_policy_checks_each_local_path() {
+        let policy = SocketRunPolicy::new(|method, uri| {
+            *method == Method::POST && uri.path().starts_with("/public/ACC/")
+        });
+        let public: Uri = "/public/ACC/issues".parse().unwrap();
+        let private: Uri = "/ACC/issues".parse().unwrap();
+        assert!(policy.authorizes(&Method::POST, &public));
+        assert!(!policy.authorizes(&Method::GET, &public));
+        assert!(!policy.authorizes(&Method::POST, &private));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn canceled_stop_remains_tracked_until_render_resources_drop() {
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            mpsc,
+        };
+
+        struct DropProbe(Arc<AtomicBool>);
+
+        impl Drop for DropProbe {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let dropped = Arc::new(AtomicBool::new(false));
+        let probe = DropProbe(Arc::clone(&dropped));
+        let task = tokio::spawn(async move {
+            let _probe = probe;
+            let _ = started_tx.send(());
+            let _ = release_rx.recv();
+        });
+        started_rx.await.unwrap();
+
+        let mut runs = RunTasks::default();
+        runs.0.insert(7, task);
+        {
+            let stop = runs.stop(7);
+            tokio::pin!(stop);
+            futures_util::future::poll_fn(|cx| {
+                assert!(stop.as_mut().poll(cx).is_pending());
+                std::task::Poll::Ready(())
+            })
+            .await;
+        }
+
+        let stop_all = runs.stop_all();
+        tokio::pin!(stop_all);
+        futures_util::future::poll_fn(|cx| {
+            assert!(stop_all.as_mut().poll(cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        assert!(!dropped.load(Ordering::Acquire));
+
+        release_tx.send(()).unwrap();
+        stop_all.await;
+        assert!(dropped.load(Ordering::Acquire));
     }
 }

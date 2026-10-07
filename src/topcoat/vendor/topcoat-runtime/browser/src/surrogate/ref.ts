@@ -1,3 +1,6 @@
+import { Record } from "./record";
+import { Tuple } from "./tuple";
+
 export class Ref<T> {
 	constructor(
 		private readonly read: () => T,
@@ -14,6 +17,21 @@ export class Ref<T> {
 					return reference[property].bind(reference);
 				}
 				const pointee = reference.read();
+				// Field access on a borrowed tuple borrows the element.
+				if (pointee instanceof Tuple && typeof property === "string") {
+					const index = Number(property);
+					if (String(index) === property && pointee.isIndex(index)) {
+						return Ref.shared(() => (reference.read() as Tuple)[index]);
+					}
+				}
+				// Field access on a borrowed record borrows the field.
+				if (
+					pointee instanceof Record &&
+					typeof property === "string" &&
+					Object.hasOwn(pointee, property)
+				) {
+					return Ref.shared(() => (reference.read() as Record)[property]);
+				}
 				if (property === "clone" && pointee instanceof Ref) {
 					return () => pointee;
 				}
