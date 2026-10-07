@@ -69,6 +69,7 @@ pub(crate) mod session;
 mod session_idle;
 #[cfg(test)]
 mod session_redirect_production;
+pub(crate) mod settings;
 pub(crate) mod signup;
 pub(crate) mod socket_admission;
 #[cfg(test)]

@@ -1,0 +1,291 @@
+//! Account settings commands resolve cookie authority again for every write.
+
+use std::sync::Arc;
+
+use axum::{
+    Extension,
+    extract::{ConnectInfo, Json, State},
+    http::header,
+};
+use topcoat::{
+    context::{Cx, app_context},
+    router::{
+        request::{headers, remote_addr},
+        response::response_headers,
+    },
+    runtime::procedure,
+};
+
+use super::super::{context, transport};
+use crate::{config::Config, error::LificError};
+
+pub(super) fn same_account(cx: &Cx, expected: i64) -> Result<context::Caller, LificError> {
+    let caller = context::caller(cx)?;
+    if crate::api::require_user(&caller.identity)?.id != expected {
+        return Err(LificError::Forbidden(
+            "Your account changed. Reload this page.".into(),
+        ));
+    }
+    Ok(caller)
+}
+
+#[procedure("/__native_settings/save_profile")]
+pub(super) async fn save_profile(
+    cx: &Cx,
+    account: i64,
+    display_name: String,
+    email: String,
+) -> topcoat::Result<(bool, String)> {
+    let caller = match same_account(cx, account) {
+        Ok(caller) => caller,
+        Err(error) => return Ok((false, error.to_string())),
+    };
+    let result = caller
+        .scope(async {
+            let user = crate::api::require_user(&caller.identity)?;
+            crate::db::queries::users::update_profile(
+                &*context::db(cx).write()?,
+                user.id,
+                Some(display_name.trim()),
+                Some(email.trim()),
+            )?;
+            Ok::<_, LificError>(())
+        })
+        .await;
+    match result {
+        Ok(_) => Ok((true, "saved".into())),
+        Err(error) => Ok((false, error.to_string())),
+    }
+}
+
+#[procedure("/__native_settings/bot_action")]
+pub(super) async fn bot_action(
+    cx: &Cx,
+    account: i64,
+    id: i64,
+    remove: bool,
+) -> topcoat::Result<(bool, String)> {
+    let caller = match same_account(cx, account) {
+        Ok(caller) => caller,
+        Err(error) => return Ok((false, error.to_string())),
+    };
+    let result = caller
+        .scope(async {
+            context::db(cx).transaction(|tx| {
+                let fresh = crate::auth::fresh_caller(tx, account)?;
+                if remove {
+                    crate::db::queries::users::delete_bot(tx, id, fresh.id, fresh.is_admin)
+                } else {
+                    crate::db::queries::users::disconnect_bot(tx, id, fresh.id, fresh.is_admin)
+                }
+            })
+        })
+        .await;
+    Ok(match result {
+        Ok(()) => (true, "saved".into()),
+        Err(error) => (false, error.to_string()),
+    })
+}
+
+#[procedure("/__native_settings/connect")]
+pub(super) async fn connect(
+    cx: &Cx,
+    account: i64,
+    tool: String,
+    display_name: String,
+    reauth_password: Option<String>,
+) -> topcoat::Result<(bool, String)> {
+    let caller = match same_account(cx, account) {
+        Ok(caller) => caller,
+        Err(error) => return Ok((false, error.to_string())),
+    };
+    let Some(session_token) = caller.session_token.as_deref() else {
+        return Ok((false, "Sign in with your account to connect a tool.".into()));
+    };
+    let tool = tool.trim().to_owned();
+    let display_name = display_name.trim();
+    let cfg = app_context::<Config>(cx);
+    let auth_cfg =
+        crate::config::AuthConfig::from_server(&cfg.auth, cfg.server.public_url.as_deref());
+    let settings = crate::db::queries::settings::get(&*context::db(cx).read()?)?;
+    let session_token = session_token.to_owned();
+    let mut token = session_token.to_owned();
+    let recent = context::db(cx).read().and_then(|conn| {
+        crate::auth::revalidate_recent_session(&conn, &token, account).map(|_| ())
+    });
+    if recent.is_err() {
+        if !settings.web_auto_login && auth_cfg.required && reauth_password.is_none() {
+            return Ok((false, "reauthentication required".into()));
+        }
+        let Some(peer) = remote_addr(cx) else {
+            return Ok((false, "Unable to refresh your session. Try again.".into()));
+        };
+        let mut request_headers = headers(cx).clone();
+        request_headers.extend(caller.session_headers()?);
+        let refreshed = caller
+            .scope(crate::services::sessions::refresh_session(
+                context::db(cx),
+                &auth_cfg,
+                &caller.identity,
+                peer,
+                app_context::<Arc<[crate::ratelimit::IpNetwork]>>(cx),
+                Some(app_context::<Arc<crate::ratelimit::RateLimiter>>(cx)),
+                &request_headers,
+                reauth_password,
+            ))
+            .await;
+        let refreshed = match refreshed {
+            Ok(refreshed) => refreshed,
+            Err(error) => return Ok((false, error.to_string())),
+        };
+        let cookie = crate::services::sessions::session_cookie(
+            &refreshed.session.token,
+            &refreshed.session.expires_at,
+            auth_cfg.secure_cookies,
+        );
+        response_headers(cx).append(
+            header::SET_COOKIE,
+            cookie.parse().expect("valid session cookie"),
+        );
+        token = refreshed.session.token;
+    }
+    let mut request_headers = headers(cx).clone();
+    let bearer = format!("Bearer {token}");
+    let bearer = match bearer.parse() {
+        Ok(value) => value,
+        Err(_) => return Ok((false, "Unable to connect this tool. Try again.".into())),
+    };
+    request_headers.insert(header::AUTHORIZATION, bearer);
+    let identity = caller.identity.clone();
+    let result = caller
+        .scope(crate::api::auth::create_bot(
+            State(context::db(cx).clone()),
+            Extension(identity),
+            request_headers,
+            Json(crate::api::auth::CreateBotRequest {
+                tool,
+                display_name: if display_name.is_empty() {
+                    None
+                } else {
+                    Some(display_name.to_owned())
+                },
+            }),
+        ))
+        .await;
+    Ok(match result {
+        Ok(axum::Json(body)) => body["key"].as_str().map_or_else(
+            || (false, "Unable to connect this tool. Try again.".into()),
+            |key| (true, key.to_owned()),
+        ),
+        Err(error) => (false, error.to_string()),
+    })
+}
+
+#[procedure("/__native_settings/password")]
+pub(super) async fn change_password(
+    cx: &Cx,
+    account: i64,
+    current: String,
+    next: String,
+) -> topcoat::Result<(bool, String)> {
+    let caller = match same_account(cx, account) {
+        Ok(caller) => caller,
+        Err(error) => return Ok((false, error.to_string())),
+    };
+    let Some(peer) = remote_addr(cx) else {
+        return Ok((false, "Unable to update your password. Try again.".into()));
+    };
+    let cfg = app_context::<Config>(cx);
+    let auth_cfg =
+        crate::config::AuthConfig::from_server(&cfg.auth, cfg.server.public_url.as_deref());
+    let result = caller
+        .scope(crate::api::auth::change_password(
+            State(context::db(cx).clone()),
+            Extension(auth_cfg),
+            Extension(caller.identity.clone()),
+            Extension(app_context::<crate::realtime::RealtimeHub>(cx).clone()),
+            ConnectInfo(peer),
+            Extension(app_context::<Arc<[crate::ratelimit::IpNetwork]>>(cx).clone()),
+            Some(Extension(
+                app_context::<Arc<crate::ratelimit::RateLimiter>>(cx).clone(),
+            )),
+            headers(cx).clone(),
+            Json(crate::api::auth::ChangePasswordRequest {
+                current_password: current,
+                new_password: next,
+            }),
+        ))
+        .await;
+    let (ok, message) =
+        super::super::auth_actions::finish(cx, result, "Couldn't update your password. Try again.");
+    Ok((ok, message))
+}
+
+#[procedure("/__native_settings/sign_out_all")]
+pub(super) async fn sign_out_all(cx: &Cx, account: i64) -> topcoat::Result<(bool, String)> {
+    let caller = match same_account(cx, account) {
+        Ok(caller) => caller,
+        Err(error) => return Ok((false, error.to_string())),
+    };
+    let cfg = app_context::<Config>(cx);
+    let auth_cfg =
+        crate::config::AuthConfig::from_server(&cfg.auth, cfg.server.public_url.as_deref());
+    let result = caller
+        .scope(crate::api::auth::revoke_all_sessions(
+            State(context::db(cx).clone()),
+            Extension(auth_cfg),
+            Extension(caller.identity.clone()),
+            Extension(app_context::<crate::realtime::RealtimeHub>(cx).clone()),
+        ))
+        .await;
+    let (ok, message) =
+        super::super::auth_actions::finish(cx, result, "Couldn't sign out everywhere. Try again.");
+    Ok((
+        ok,
+        if ok {
+            transport::mounted_url(cx, "/login")
+        } else {
+            message
+        },
+    ))
+}
+
+#[procedure("/__native_settings/sign_out")]
+pub(super) async fn sign_out(cx: &Cx, account: i64) -> topcoat::Result<(bool, String)> {
+    let caller = match same_account(cx, account) {
+        Ok(caller) => caller,
+        Err(error) => return Ok((false, error.to_string())),
+    };
+    let Some(token) = caller.session_token else {
+        return Ok((
+            false,
+            "Sign out is only available to a signed-in browser session.".into(),
+        ));
+    };
+    let cfg = app_context::<Config>(cx);
+    let auth_cfg =
+        crate::config::AuthConfig::from_server(&cfg.auth, cfg.server.public_url.as_deref());
+    let mut request_headers = headers(cx).clone();
+    let bearer = format!("Bearer {token}");
+    let bearer = match bearer.parse() {
+        Ok(value) => value,
+        Err(_) => return Ok((false, "Unable to sign out. Try again.".into())),
+    };
+    request_headers.insert(header::AUTHORIZATION, bearer);
+    let result = crate::api::auth::auth_logout(
+        State(context::db(cx).clone()),
+        Extension(auth_cfg),
+        request_headers,
+    )
+    .await;
+    let (ok, message) =
+        super::super::auth_actions::finish(cx, result, "Couldn't sign out. Try again.");
+    Ok((
+        ok,
+        if ok {
+            transport::mounted_url(cx, "/login")
+        } else {
+            message
+        },
+    ))
+}
