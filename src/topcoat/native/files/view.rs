@@ -30,7 +30,6 @@ const SORT_OPTIONS: [(&str, &str); 3] = [
 type History = (
     Signal<String>,
     Signal<String>,
-    Signal<usize>,
     Signal<bool>,
     Signal<i64>,
     Signal<i64>,
@@ -45,7 +44,18 @@ type Controls = (
     Signal<usize>,
     Signal<Option<i64>>,
     Signal<bool>,
-    (Signal<String>, Signal<bool>, Signal<String>, Signal<String>),
+    (
+        Signal<String>,
+        Signal<bool>,
+        Signal<String>,
+        Signal<String>,
+        Signal<bool>,
+        Signal<bool>,
+        Signal<bool>,
+        Signal<usize>,
+        Signal<f64>,
+        Signal<String>,
+    ),
 );
 type FilesInput = (
     Option<String>,
@@ -58,8 +68,7 @@ type FilesInput = (
     Option<i64>,
     bool,
     String,
-    bool,
-    String,
+    (bool, String, usize),
 );
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -173,6 +182,12 @@ pub(super) fn content<'a>(
     let orphan_revision = signal(&owner, || 0_usize);
     let confirming = signal(&owner, || None::<i64>);
     let deleting = signal(&owner, || false);
+    let loading_more = signal(&owner, || false);
+    let refreshing = signal(&owner, || false);
+    let refresh_pending = signal(&owner, || false);
+    let request_generation = signal(&owner, || 0_usize);
+    let request_timeout = signal(&owner, || 0_f64);
+    let load_error = signal(&owner, String::new);
     let delete_error = signal(&owner, String::new);
     let orphan_open = signal(&owner, || false);
     let history_rows = signal(&owner, String::new);
@@ -186,6 +201,14 @@ pub(super) fn content<'a>(
     });
     let clock = signal(&owner, || chrono::Utc::now().timestamp_millis() as f64);
     let clock_attrs = dates::clock_mount(cx, clock);
+    let request = RequestState {
+        loading_more: loading_more.clone(),
+        refreshing: refreshing.clone(),
+        pending: refresh_pending.clone(),
+        generation: request_generation.clone(),
+        timeout: request_timeout.clone(),
+        error: load_error.clone(),
+    };
     let live = live_refresh(
         cx,
         account,
@@ -193,13 +216,19 @@ pub(super) fn content<'a>(
         revision.clone(),
         offset.clone(),
         deleting.clone(),
+        request.clone(),
     );
-    let mount = mount_refresh(cx, revision.clone(), offset.clone(), deleting.clone());
+    let mount = mount_refresh(
+        cx,
+        revision.clone(),
+        offset.clone(),
+        deleting.clone(),
+        request,
+    );
     let target_for_body = target;
     let history = (
         history_rows,
         history_key,
-        signal(&owner, || 0_usize),
         has_more,
         total_count.clone(),
         total_bytes.clone(),
@@ -219,6 +248,12 @@ pub(super) fn content<'a>(
             deleting.clone(),
             links_cache.clone(),
             delete_error,
+            loading_more,
+            refreshing,
+            refresh_pending,
+            request_generation.clone(),
+            request_timeout,
+            load_error,
         ),
     );
     view! {
@@ -252,8 +287,11 @@ pub(super) fn content<'a>(
                         confirming.get(),
                         orphan_open.get(),
                         collation.get(),
-                        deleting.get(),
-                        links_cache.get(),
+                        (
+                            deleting.get(),
+                            links_cache.get(),
+                            request_generation.get(),
+                        ),
                     )
                 })
             )
@@ -281,17 +319,17 @@ async fn files_body(
         selected_sort,
         page_offset,
         expanded_id,
-        revision_value,
+        _revision_value,
         _orphan_revision_value,
         confirming_id,
         orphans_open,
         collation_wire,
-        _deleting_value,
-        links_cache_wire,
+        (_deleting_value, links_cache_wire, request_generation_value),
     ) = input;
     if !["created_at", "size", "filename"].contains(&selected_sort.as_str()) {
         return Err(topcoat::router::error::bad_request("invalid Files sort").into());
     }
+    let request = RequestState::from_controls(&controls);
     let key = format!(
         "{}|{}|{}",
         mime_filter.as_deref().unwrap_or(""),
@@ -300,8 +338,7 @@ async fn files_body(
     );
     let previous_key = history.1.get_untracked();
     let previous_rows = parse_rows(&history.0.get_untracked());
-    let previous_revision = history.2.get_untracked();
-    let append = previous_key == key && page_offset > 0 && previous_revision == revision_value;
+    let append = previous_key == key && page_offset > 0;
     let query = crate::db::models::ProjectAttachmentQuery {
         mime_class: mime_filter,
         uploader: (!uploader_filter.is_empty()).then_some(uploader_filter),
@@ -310,15 +347,31 @@ async fn files_body(
         offset: Some(page_offset),
         ..Default::default()
     };
-    let page = match crate::services::files::list_project_files(
+    let (page, page_error) = match crate::services::files::list_project_files(
         context::db(cx),
         &caller.identity,
         project_id,
         &query,
     ) {
-        Ok(page) => page,
+        Ok(page) => (page, None),
+        Err(error) if append => (
+            ProjectAttachmentPage {
+                items: Vec::new(),
+                has_more: history.2.get_untracked(),
+                total_count: history.3.get_untracked(),
+                total_bytes: history.4.get_untracked(),
+            },
+            Some(error.to_string()),
+        ),
         Err(error) => {
-            return Ok(error_state(cx, &identifier, &error.to_string(), controls.5));
+            return Ok(error_state(
+                cx,
+                &identifier,
+                &error.to_string(),
+                (controls.5.clone(), controls.3.clone(), controls.9.1),
+                request,
+                request_generation_value,
+            ));
         }
     };
     let mut rows = if append { previous_rows } else { Vec::new() };
@@ -380,7 +433,14 @@ async fn files_body(
     ) {
         Ok(authority) => authority,
         Err(error) => {
-            return Ok(error_state(cx, &identifier, &error.to_string(), controls.5));
+            return Ok(error_state(
+                cx,
+                &identifier,
+                &error.to_string(),
+                (controls.5.clone(), controls.3.clone(), controls.9.1),
+                request,
+                request_generation_value,
+            ));
         }
     };
     let now = signal(cx, || chrono::Utc::now().timestamp_millis() as f64);
@@ -394,6 +454,7 @@ async fn files_body(
         authority.can_edit_content,
         &rows,
         &page,
+        page_error.as_deref(),
         orphans.as_ref(),
         &uploaders,
         expanded_id,
@@ -401,18 +462,24 @@ async fn files_body(
         confirming_id,
         orphans_open,
         controls.9.1.clone(),
+        controls.9.4.clone(),
+        controls.9.5.clone(),
         now,
         controls.0.clone(),
         controls.1.clone(),
         controls.2.clone(),
         controls.3.clone(),
         controls.4.clone(),
-        controls.5,
+        controls.5.clone(),
         controls.6.clone(),
         controls.7.clone(),
         controls.8.clone(),
         controls.9.0.clone(),
         controls.9.3.clone(),
+        controls.9.9.clone(),
+        controls.9.7.clone(),
+        controls.9.8.clone(),
+        controls.9.6.clone(),
     );
     let rows_wire = serde_json::to_string(
         &rows
@@ -443,21 +510,74 @@ async fn files_body(
     )
     .unwrap_or_else(|_| "[]".to_owned());
     let cache_wire = serde_json::to_string(&cache).unwrap_or_else(|_| "{}".to_owned());
+    let page_failed = page_error.is_some();
+    let page_error_value = format!(
+        "Couldn't load more files: {}",
+        page_error.unwrap_or_default()
+    );
     let page_has_more = page.has_more;
     let page_total_count = page.total_count;
     let page_total_bytes = page.total_bytes;
     let links_cache = controls.9.2;
+    let completed_loading_more = controls.9.4.clone();
+    let completed_refreshing = controls.9.5.clone();
+    let completed_pending = controls.9.6.clone();
+    let completed_deleting = controls.9.1.clone();
+    let completed_generation = controls.9.7.clone();
+    let completed_timeout = controls.9.8.clone();
+    let request_generation = request_generation_value;
+    let followup_loading = controls.9.4.clone();
+    let followup_refreshing = controls.9.5.clone();
+    let followup_generation = controls.9.7.clone();
+    let followup_timeout = controls.9.8.clone();
+    let expiry_timeout = controls.9.8.clone();
+    let followup_error = controls.9.9.clone();
+    let followup_offset = controls.3.clone();
+    let followup_revision = controls.5.clone();
+    let completed_load_error = controls.9.9;
     let persist = view! {
         cx =>
         <span hidden="hidden" data-native-files-complete=""
             @mount=$(|_event: Event| {
-                history.0.set(rows_wire.clone());
-                history.1.set(key.clone());
-                history.2.set(revision_value);
-                if history.3.get() != page_has_more { history.3.set(page_has_more); }
-                if history.4.get() != page_total_count { history.4.set(page_total_count); }
-                if history.5.get() != page_total_bytes { history.5.set(page_total_bytes); }
-                if links_cache.get() != cache_wire { links_cache.set(cache_wire.clone()); }
+                if completed_generation.get() == request_generation {
+                    let timeout_id = completed_timeout.get();
+                    raw!("clearTimeout(Number(${timeout_id}.toString()));", ());
+                    if timeout_id != 0.0 { completed_timeout.set(0.0); }
+                    if completed_loading_more.get() { completed_loading_more.set(false); }
+                    if completed_refreshing.get() { completed_refreshing.set(false); }
+                    history.0.set(rows_wire.clone());
+                    history.1.set(key.clone());
+                    if history.2.get() != page_has_more { history.2.set(page_has_more); }
+                    if history.3.get() != page_total_count { history.3.set(page_total_count); }
+                    if history.4.get() != page_total_bytes { history.4.set(page_total_bytes); }
+                    if links_cache.get() != cache_wire { links_cache.set(cache_wire.clone()); }
+                    if page_failed {
+                        completed_load_error.set(page_error_value.clone());
+                    } else if !completed_load_error.get().is_empty() {
+                        completed_load_error.set("".to_owned());
+                    }
+                    if completed_pending.get() {
+                        completed_pending.set(false);
+                        if !completed_deleting.get() {
+                            followup_refreshing.set(true);
+                            followup_loading.set(false);
+                            followup_offset.set(0_i64);
+                            followup_generation.increment();
+                            followup_error.set("".to_owned());
+                            followup_revision.increment();
+                            let generation = followup_generation.get();
+                            let _timeout = || {
+                                if followup_generation.get() == generation {
+                                    followup_refreshing.set(false);
+                                    followup_error.set("Couldn't refresh files. Try again.".to_owned());
+                                    expiry_timeout.set(0.0);
+                                }
+                            };
+                            let timer = raw!("cx.hydrate(setTimeout(()=>${_timeout}(),10000))", 0.0);
+                            followup_timeout.set(timer);
+                        }
+                    }
+                }
             })
         ></span>
         (body)
@@ -495,6 +615,98 @@ fn parse_rows(value: &str) -> Vec<ProjectAttachment> {
         .collect()
 }
 
+#[derive(Clone)]
+struct RequestState {
+    loading_more: Signal<bool>,
+    refreshing: Signal<bool>,
+    pending: Signal<bool>,
+    generation: Signal<usize>,
+    timeout: Signal<f64>,
+    error: Signal<String>,
+}
+
+impl RequestState {
+    fn from_controls(controls: &Controls) -> Self {
+        Self {
+            loading_more: controls.9.4.clone(),
+            refreshing: controls.9.5.clone(),
+            pending: controls.9.6.clone(),
+            generation: controls.9.7.clone(),
+            timeout: controls.9.8.clone(),
+            error: controls.9.9.clone(),
+        }
+    }
+}
+
+type QueryControls = (
+    Signal<Option<String>>,
+    Signal<String>,
+    Signal<String>,
+    Signal<i64>,
+    Signal<Option<i64>>,
+);
+
+fn query_change(
+    cx: &Cx,
+    query: QueryControls,
+    state: &RequestState,
+    field: &str,
+    value: Option<String>,
+    enabled: bool,
+) -> Attributes {
+    let (mime, uploader, sort, offset, confirming) = query;
+    let RequestState {
+        loading_more,
+        refreshing,
+        pending,
+        generation,
+        timeout,
+        error,
+    } = state.clone();
+    let expiry_timeout = timeout.clone();
+    let field = field.to_owned();
+    let event_name = if field == "mime" { "click" } else { "change" };
+    let handler = expr!(|event: Event| {
+        if enabled {
+            let _timeout_id = timeout.get();
+            raw!("clearTimeout(Number(${_timeout_id}.toString()));", ());
+            loading_more.set(false);
+            refreshing.set(true);
+            pending.set(false);
+            error.set("".to_owned());
+            generation.increment();
+            offset.set(0_i64);
+            confirming.set(None);
+            if field == "mime" {
+                mime.set(value.clone());
+            } else {
+                if field == "uploader" {
+                    uploader.set(event.target.value);
+                } else {
+                    sort.set(event.target.value);
+                }
+            }
+            let expected_generation = generation.get();
+            let _timeout = || {
+                if generation.get() == expected_generation {
+                    refreshing.set(false);
+                    error.set("Couldn't refresh files. Try again.".to_owned());
+                    expiry_timeout.set(0.0);
+                }
+            };
+            let timer = raw!("cx.hydrate(setTimeout(()=>${_timeout}(),10000))", 0.0);
+            timeout.set(timer);
+        }
+    });
+    let mut attrs = Attributes::with_capacity(1);
+    attrs.insert(
+        cx,
+        format!("data-topcoat-on:{event_name}"),
+        handler.into_evaluated_and_js().1,
+    );
+    attrs
+}
+
 #[allow(clippy::too_many_arguments)]
 fn files_page<'a>(
     cx: &'a Cx,
@@ -506,6 +718,7 @@ fn files_page<'a>(
     can_edit: bool,
     rows: &[ProjectAttachment],
     page: &ProjectAttachmentPage,
+    _page_error: Option<&str>,
     orphans: Option<&crate::db::models::PendingOrphanList>,
     uploaders: &[String],
     expanded_id: Option<i64>,
@@ -513,6 +726,8 @@ fn files_page<'a>(
     confirming_id: Option<i64>,
     orphans_open: bool,
     deleting: Signal<bool>,
+    loading_more: Signal<bool>,
+    refreshing: Signal<bool>,
     now: Signal<f64>,
     mime: Signal<Option<String>>,
     uploader: Signal<String>,
@@ -525,11 +740,29 @@ fn files_page<'a>(
     orphan_open: Signal<bool>,
     collation: Signal<String>,
     delete_error: Signal<String>,
+    load_error: Signal<String>,
+    request_generation: Signal<usize>,
+    request_timeout: Signal<f64>,
+    refresh_pending: Signal<bool>,
 ) -> BoxView<'a> {
+    let append_expiry_timeout = request_timeout.clone();
+    let retry_expiry_timeout = request_timeout.clone();
+    let request = RequestState {
+        loading_more: loading_more.clone(),
+        refreshing: refreshing.clone(),
+        pending: refresh_pending,
+        generation: request_generation.clone(),
+        timeout: request_timeout.clone(),
+        error: load_error.clone(),
+    };
+    let query = (
+        mime.clone(),
+        uploader.clone(),
+        sort.clone(),
+        offset.clone(),
+        confirming.clone(),
+    );
     let chips = MIME_FILTERS.iter().map(|(value, label)| {
-        let selected = mime.clone();
-        let chip_offset = offset.clone();
-        let chip_confirming = confirming.clone();
         let value = value.to_string();
         let active = mime.get().as_deref().unwrap_or("") == value;
         let class = if active {
@@ -537,16 +770,22 @@ fn files_page<'a>(
         } else {
             "text-caption px-2.5 py-1 rounded-full border border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--bg-subtle)]"
         };
+        let attrs = query_change(
+            cx,
+            query.clone(),
+            &request,
+            "mime",
+            (!value.is_empty()).then_some(value),
+            !active,
+        );
         view! { cx =>
             <button type="button" class=(class) :aria-pressed=$(if active { "true" } else { "false" })
-                @click=$(move |_event: Event| {
-                    selected.set(if value.is_empty() { None } else { Some(value.clone()) });
-                    chip_offset.set(0_i64);
-                    chip_confirming.set(None);
-                })
+                (attrs)
             >(label)</button>
         }.boxed()
     }).collect::<Vec<_>>();
+    let uploader_change = query_change(cx, query.clone(), &request, "uploader", None, true);
+    let sort_change = query_change(cx, query, &request, "sort", None, true);
     let current_uploader = uploader.get();
     let current_sort = sort.get();
     let uploader_options = uploaders
@@ -620,7 +859,7 @@ fn files_page<'a>(
         if total_count == 1 { "" } else { "s" }
     );
     let more = page.has_more;
-    let next_offset = offset.get() + model::PAGE_SIZE;
+    let next_offset = rows.len() as i64;
     let expanded_class = if orphans_open { "block" } else { "hidden" };
     let orphan_count = orphans.map_or(0, |value| value.items.len());
     let orphan_bytes = orphans.map_or(0, |value| value.total_bytes);
@@ -646,21 +885,13 @@ fn files_page<'a>(
                         <div class="flex-1"></div>
                         <select class="h-7 px-2 rounded-md text-caption bg-[var(--bg)] border border-[var(--border)] text-[var(--text-muted)]"
                             aria-label="Filter by uploader" value=(current_uploader)
-                            @change=$(|event: Event| {
-                                uploader.set(event.target.value);
-                                offset.set(0_i64);
-                                confirming.set(None);
-                            })>
+                            (uploader_change)>
                             <option value="">"All uploaders"</option>
                             for option in uploader_options { (option) }
                         </select>
                         <select class="h-7 px-2 rounded-md text-caption bg-[var(--bg)] border border-[var(--border)] text-[var(--text-muted)]"
                             aria-label="Sort files" value=(current_sort)
-                            @change=$(|event: Event| {
-                                sort.set(event.target.value);
-                                offset.set(0_i64);
-                                confirming.set(None);
-                            })>
+                            (sort_change)>
                             for option in sort_options { (option) }
                         </select>
                     </div>
@@ -682,9 +913,53 @@ fn files_page<'a>(
                     if more {
                         <div class="flex justify-center py-4">
                             <button class="text-body-sm text-[var(--text-muted)] border border-[var(--border)] px-3 py-1.5 rounded-md hover:bg-[var(--bg-subtle)] transition-colors"
-                                type="button" @click=$(move |_event: Event| offset.set(next_offset))>"Load more"</button>
+                                type="button" :disabled=$(if loading_more.get() { true } else { refreshing.get() })
+                                @click=$(move |_event: Event| {
+                                    if !loading_more.get() {
+                                      if !refreshing.get() {
+                                        loading_more.set(true);
+                                        load_error.set("".to_owned());
+                                        offset.set(next_offset);
+                                        request_generation.increment();
+                                        let generation = request_generation.get();
+                                        let _timeout = || {
+                                            if request_generation.get() == generation {
+                                                loading_more.set(false);
+                                                load_error.set("Couldn't load more files. Try again.".to_owned());
+                                                append_expiry_timeout.set(0.0);
+                                            }
+                                        };
+                                        let timer = raw!("cx.hydrate(setTimeout(()=>${_timeout}(),10000))", 0.0);
+                                        request_timeout.set(timer);
+                                      }
+                                    }
+                                })>$(if loading_more.get() { "Loading…" } else { "Load more" })</button>
                         </div>
                     }
+                    <div class="flex items-center justify-center gap-2 py-3 text-caption text-[var(--error)]" role="status" :hidden=$(load_error.get().is_empty())>
+                            <span>$(load_error.get())</span>
+                            <button type="button" class="underline" @click=$(move |_event: Event| {
+                                if !loading_more.get() {
+                                  if !refreshing.get() {
+                                    let _timeout_id = request_timeout.get();
+                                    raw!("clearTimeout(Number(${_timeout_id}.toString()));", ());
+                                    loading_more.set(true);
+                                    load_error.set("".to_owned());
+                                    request_generation.increment();
+                                    let generation = request_generation.get();
+                                    let _timeout = || {
+                                        if request_generation.get() == generation {
+                                            loading_more.set(false);
+                                            load_error.set("Couldn't load more files. Try again.".to_owned());
+                                            retry_expiry_timeout.set(0.0);
+                                        }
+                                    };
+                                    let timer = raw!("cx.hydrate(setTimeout(()=>${_timeout}(),10000))", 0.0);
+                                    request_timeout.set(timer);
+                                  }
+                                }
+                            })>"Try again"</button>
+                    </div>
                     <section class="mt-10 border-t border-[var(--border)] pt-4">
                         <button class="w-full flex items-center gap-2 text-left" type="button"
                             :aria-expanded=$(if orphans_open { "true" } else { "false" })
@@ -1007,14 +1282,88 @@ fn error_state<'a>(
     cx: &'a Cx,
     project: &str,
     message: &str,
-    revision: Signal<usize>,
+    query: (Signal<usize>, Signal<i64>, Signal<bool>),
+    state: RequestState,
+    expected_generation: usize,
 ) -> BoxView<'a> {
+    let (revision, offset, deleting) = query;
+    let RequestState {
+        loading_more,
+        refreshing,
+        pending: refresh_pending,
+        generation: request_generation,
+        timeout: request_timeout,
+        error: load_error,
+    } = state;
+    let completed_expiry_timeout = request_timeout.clone();
+    let retry_expiry_timeout = request_timeout.clone();
     let label = format!("Couldn't load files for {project}: {message}");
+    let completed_revision = revision.clone();
+    let completed_deleting = deleting;
+    let completed_loading_more = loading_more.clone();
+    let completed_refreshing = refreshing.clone();
+    let completed_pending = refresh_pending;
+    let completed_offset = offset;
+    let completed_generation = request_generation.clone();
+    let completed_timeout = request_timeout.clone();
+    let completed_error = load_error.clone();
     view! { cx =>
         <div class="flex flex-col items-center py-14 gap-3 text-center" data-native-files-error="">
+            <span hidden="hidden" data-native-files-complete=""
+                @mount=$(|_event: Event| {
+                    if completed_generation.get() == expected_generation {
+                        let timeout_id = completed_timeout.get();
+                        raw!("clearTimeout(Number(${timeout_id}.toString()));", ());
+                        if timeout_id != 0.0 { completed_timeout.set(0.0); }
+                        if completed_loading_more.get() { completed_loading_more.set(false); }
+                        if completed_refreshing.get() { completed_refreshing.set(false); }
+                        completed_error.set("Couldn't load files. Try again.".to_owned());
+                        if completed_pending.get() {
+                            completed_pending.set(false);
+                            if !completed_deleting.get() {
+                                completed_refreshing.set(true);
+                                completed_offset.set(0_i64);
+                                completed_generation.increment();
+                                completed_revision.increment();
+                                let generation = completed_generation.get();
+                                let _timeout = || {
+                                    if completed_generation.get() == generation {
+                                        completed_refreshing.set(false);
+                                        completed_error.set("Couldn't refresh files. Try again.".to_owned());
+                                        completed_expiry_timeout.set(0.0);
+                                    }
+                                };
+                                let timer = raw!("cx.hydrate(setTimeout(()=>${_timeout}(),10000))", 0.0);
+                                completed_timeout.set(timer);
+                            }
+                        }
+                    }
+                })
+            ></span>
             <p class="text-body-sm text-[var(--text-muted)]">(label)</p>
             <button type="button" class="text-body-sm font-medium text-[var(--btn-success-text)] bg-[var(--btn-success)] px-3 py-1.5 rounded-md hover:bg-[var(--btn-success-hover)]"
-                @click=$(move |_event: Event| revision.increment())>"Try again"</button>
+                @click=$(move |_event: Event| {
+                    if !loading_more.get() {
+                        if !refreshing.get() {
+                            let _timeout_id = request_timeout.get();
+                            raw!("clearTimeout(Number(${_timeout_id}.toString()));", ());
+                            refreshing.set(true);
+                            load_error.set("".to_owned());
+                            request_generation.increment();
+                            revision.increment();
+                            let generation = request_generation.get();
+                            let _timeout = || {
+                                if request_generation.get() == generation {
+                                    refreshing.set(false);
+                                    load_error.set("Couldn't refresh files. Try again.".to_owned());
+                                    retry_expiry_timeout.set(0.0);
+                                }
+                            };
+                            let timer = raw!("cx.hydrate(setTimeout(()=>${_timeout}(),10000))", 0.0);
+                            request_timeout.set(timer);
+                        }
+                    }
+                })>"Try again"</button>
         </div>
     }.boxed()
 }
@@ -1024,19 +1373,55 @@ fn mount_refresh(
     revision: Signal<usize>,
     offset: Signal<i64>,
     deleting: Signal<bool>,
-) -> topcoat::view::Attributes {
+    state: RequestState,
+) -> Attributes {
+    let RequestState {
+        loading_more,
+        refreshing,
+        pending: refresh_pending,
+        generation: request_generation,
+        timeout: request_timeout,
+        error: load_error,
+    } = state;
+    let expiry_timeout = request_timeout.clone();
+    let _cleanup_timeout = request_timeout.clone();
     let handler = topcoat::runtime::expr!(|_event: Event| {
         let _refresh = || {
             let visible = raw!("cx.hydrate(!document.hidden)", false);
             if visible {
                 if !deleting.get() {
-                    offset.set(0_i64);
-                    revision.increment();
+                    if loading_more.get() {
+                        if !refresh_pending.get() {
+                            refresh_pending.set(true);
+                        }
+                    } else {
+                        if refreshing.get() {
+                            if !refresh_pending.get() {
+                                refresh_pending.set(true);
+                            }
+                        } else {
+                            refreshing.set(true);
+                            offset.set(0_i64);
+                            revision.increment();
+                            request_generation.increment();
+                            let generation = request_generation.get();
+                            let _timeout = |_event: Event| {
+                                if request_generation.get() == generation {
+                                    refreshing.set(false);
+                                    load_error.set("Couldn't refresh files. Try again.".to_owned());
+                                    expiry_timeout.set(0.0);
+                                }
+                            };
+                            let timer =
+                                raw!("cx.hydrate(setTimeout(()=>${_timeout}(),10000))", 0.0);
+                            request_timeout.set(timer);
+                        }
+                    }
                 }
             }
         };
         raw!(
-            "window.addEventListener('focus',()=>${_refresh}(),{signal:cx.abortSignal});document.addEventListener('visibilitychange',()=>${_refresh}(),{signal:cx.abortSignal});",
+            "window.addEventListener('focus',()=>${_refresh}(),{signal:cx.abortSignal});document.addEventListener('visibilitychange',()=>${_refresh}(),{signal:cx.abortSignal});cx.abortSignal.addEventListener('abort',()=>clearTimeout(Number(${_cleanup_timeout}.get().toString())),{once:true});",
             ()
         );
     });
@@ -1056,7 +1441,17 @@ fn live_refresh(
     revision: Signal<usize>,
     offset: Signal<i64>,
     deleting: Signal<bool>,
+    state: RequestState,
 ) -> BoxView<'_> {
+    let RequestState {
+        loading_more,
+        refreshing,
+        pending: refresh_pending,
+        generation: request_generation,
+        timeout: request_timeout,
+        error: load_error,
+    } = state;
+    let expiry_timeout = request_timeout.clone();
     let context = cx.clone();
     let mut events = topcoat::context::app_context::<crate::realtime::RealtimeHub>(cx).subscribe();
     let connected = super::super::super::runtime::connected(cx);
@@ -1078,8 +1473,28 @@ fn live_refresh(
                 let _changed = emit! {
                     <span hidden="hidden" @mount=$(|_event: Event| {
                         if !deleting.get() {
-                            offset.set(0_i64);
-                            revision.increment();
+                            if loading_more.get() {
+                                if !refresh_pending.get() { refresh_pending.set(true); }
+                            } else {
+                                if refreshing.get() {
+                                    if !refresh_pending.get() { refresh_pending.set(true); }
+                                } else {
+                                    refreshing.set(true);
+                                    offset.set(0_i64);
+                                    revision.increment();
+                                    request_generation.increment();
+                                    let generation = request_generation.get();
+                                    let _timeout = || {
+                                        if request_generation.get() == generation {
+                                            refreshing.set(false);
+                                            load_error.set("Couldn't refresh files. Try again.".to_owned());
+                                            expiry_timeout.set(0.0);
+                                        }
+                                    };
+                                    let timer = raw!("cx.hydrate(setTimeout(()=>${_timeout}(),10000))", 0.0);
+                                    request_timeout.set(timer);
+                                }
+                            }
                         }
                     })></span>
                 }?;

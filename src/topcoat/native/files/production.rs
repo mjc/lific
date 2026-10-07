@@ -3,6 +3,7 @@
 use super::super::home_fixture::{document, procedure};
 use crate::db::{models::AttachmentEntity, queries};
 use axum::http::StatusCode;
+use std::{io::Write, process::Stdio};
 use topcoat::runtime::Surrogated;
 
 #[tokio::test]
@@ -90,6 +91,108 @@ async fn native_files_keeps_the_selected_sort_option_after_a_hydrated_change() {
     );
 }
 
+#[tokio::test]
+async fn native_files_load_more_marks_busy_and_blocks_overlapping_focus_refresh() {
+    let fixture = super::super::home_fixture::fixture();
+    seed_many(&fixture, 51);
+
+    let (status, html) = document(&fixture, "/app", "/ACC/files", true, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let parsed = scraper::Html::parse_document(&html);
+    let row_selector = scraper::Selector::parse("[data-native-files-row]").unwrap();
+    assert_eq!(parsed.select(&row_selector).count(), 50);
+
+    let button_selector = scraper::Selector::parse("button").unwrap();
+    let load_more = parsed
+        .select(&button_selector)
+        .find(|button| button.text().collect::<String>().trim() == "Load more")
+        .expect("a further page is available");
+    let click_handler = load_more
+        .value()
+        .attr("data-topcoat-on:click")
+        .expect("Load more has an emitted Topcoat click handler");
+    let retry_handler = parsed
+        .select(&button_selector)
+        .find(|button| button.text().collect::<String>().trim() == "Try again")
+        .and_then(|button| button.value().attr("data-topcoat-on:click"))
+        .expect("transport recovery exposes a local retry handler");
+    let page_selector = scraper::Selector::parse("[data-native-files]").unwrap();
+    let mount_handler = parsed
+        .select(&page_selector)
+        .next()
+        .and_then(|page| page.value().attr("data-topcoat-on:mount"))
+        .expect("Files page has an emitted focus/visibility handler");
+    let sort_selector = scraper::Selector::parse("select[aria-label='Sort files']").unwrap();
+    let sort_handler = parsed
+        .select(&sort_selector)
+        .next()
+        .and_then(|select| select.value().attr("data-topcoat-on:change"))
+        .expect("Files sorting has an emitted change handler");
+
+    let completion_selector = scraper::Selector::parse("[data-native-files-complete]").unwrap();
+    let initial_complete = parsed
+        .select(&completion_selector)
+        .next()
+        .and_then(|span| span.value().attr("data-topcoat-on:mount"))
+        .expect("initial Files response persists its first page on mount");
+    let mut input = serde_json::json!({
+        "phase": "start",
+        "click": click_handler,
+        "retry": retry_handler,
+        "mountHandler": mount_handler,
+        "sortHandler": sort_handler,
+        "initialComplete": initial_complete,
+        "signals": super::super::home_fixture::page_signals(&html),
+    });
+    let output = run_lifecycle(&input);
+    let result: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let signals = result["signals"].as_object().unwrap().clone();
+
+    let (status, appended) = document(&fixture, "/app", "/ACC/files", true, Some(signals)).await;
+    assert_eq!(status, StatusCode::OK);
+    let appended = scraper::Html::parse_document(&appended);
+    assert_eq!(
+        appended.select(&row_selector).count(),
+        51,
+        "the second response retains all fifty confirmed rows and appends the remaining row"
+    );
+    let complete = appended
+        .select(&completion_selector)
+        .next()
+        .and_then(|span| span.value().attr("data-topcoat-on:mount"))
+        .expect("the append response completes its request on mount");
+    input["phase"] = serde_json::json!("finish");
+    input["completion"] = serde_json::json!(complete);
+    run_lifecycle(&input);
+    input["phase"] = serde_json::json!("query");
+    run_lifecycle(&input);
+}
+
+fn run_lifecycle(input: &serde_json::Value) -> String {
+    let mut child = std::process::Command::new("node")
+        .arg("src/topcoat/native/files/lifecycle.test.cjs")
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.to_string().as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "Files Load more lifecycle:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap()
+}
+
 fn seed(fixture: &super::super::home_fixture::Fixture) -> (i64, i64, i64) {
     let conn = fixture.db.write().unwrap();
     let user = queries::users::validate_session(&conn, &fixture.token).unwrap();
@@ -118,4 +221,28 @@ fn seed(fixture: &super::super::home_fixture::Fixture) -> (i64, i64, i64) {
     queries::attachments::link_attachment(&conn, notes.id, AttachmentEntity::Issue, issue_id)
         .unwrap();
     (user.id, project_id, image.id)
+}
+
+fn seed_many(fixture: &super::super::home_fixture::Fixture, count: usize) {
+    let conn = fixture.db.write().unwrap();
+    let user = queries::users::validate_session(&conn, &fixture.token).unwrap();
+    let issue_id = queries::resolve_identifier(&conn, "ACC-1").unwrap();
+    for index in 0..count {
+        let attachment = queries::attachments::create_attachment(
+            &conn,
+            &format!("{index:064x}"),
+            &format!("file-{index:02}.txt"),
+            "text/plain",
+            31,
+            Some(user.id),
+        )
+        .unwrap();
+        queries::attachments::link_attachment(
+            &conn,
+            attachment.id,
+            AttachmentEntity::Issue,
+            issue_id,
+        )
+        .unwrap();
+    }
 }
