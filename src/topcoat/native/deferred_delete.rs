@@ -54,10 +54,10 @@ pub(crate) fn slots(cx: &Cx) -> [ToastSlot; TOAST_CAPACITY] {
 pub(crate) fn owner<'a>(
     cx: &'a Cx,
     account_id: i64,
-    path: Signal<String>,
+    project: &str,
     pending_issues: Signal<Vec<i64>>,
-    navigation_revision: Signal<usize>,
 ) -> BoxView<'a> {
+    let owner_key = format!("{account_id}:{project}");
     let slots = slots(cx);
     let pending_slot = signal(cx, || 4_usize);
     let next_id = signal(cx, || 0_usize);
@@ -80,8 +80,6 @@ pub(crate) fn owner<'a>(
     let started = slots.each_ref().map(|slot| slot.started.clone());
     let hovered = slots.each_ref().map(|slot| slot.hovered.clone());
     let focused = slots.each_ref().map(|slot| slot.focused.clone());
-    let _navigate_path = path;
-    let _navigate_navigation_revision = navigation_revision;
     let _remove_remove_index = remove_index;
     let _remove_pending_issues = pending_issues.clone();
     let _claim_pending_slot = pending_slot.clone();
@@ -126,13 +124,21 @@ pub(crate) fn owner<'a>(
     let _undo_undo = undo;
     let _undo_remaining = remaining.clone();
     let _pause_id = id.clone();
-    let _pause_remaining = remaining;
-    let _pause_started = started;
+    let _pause_remaining = remaining.clone();
+    let _pause_started = started.clone();
     let _pause_hovered = hovered.clone();
     let _pause_focused = focused.clone();
-    let _resume_id = id;
-    let _resume_hovered = hovered;
-    let _resume_focused = focused;
+    let _resume_id = id.clone();
+    let _resume_hovered = hovered.clone();
+    let _resume_focused = focused.clone();
+    let _elapsed_id = id.clone();
+    let _elapsed_remaining = remaining;
+    let _elapsed_started = started;
+    let _elapsed_hovered = hovered.clone();
+    let _elapsed_focused = focused.clone();
+    let _rearm_id = id;
+    let _rearm_hovered = hovered;
+    let _rearm_focused = focused;
     let _pagehide_pending_slot = pending_slot;
     let handler = expr!(|_mount: Event| {
         let _clear = |_index: UsizeSurrogate| {
@@ -141,11 +147,9 @@ pub(crate) fn owner<'a>(
                 ()
             );
         };
-        let _navigate = |destination: StringSurrogate| {
-            _navigate_navigation_revision.increment();
-            _navigate_path.set(destination.clone());
+        let _navigate = |_destination: StringSurrogate| {
             raw!(
-                "history.pushState(null, '', ${mount}.toString()+${destination}.toString());",
+                "void cx.navigate(${mount}.toString()+${_destination}.toString());",
                 ()
             );
         };
@@ -176,11 +180,14 @@ pub(crate) fn owner<'a>(
                     let _label = _claim_identifier.index(index).get();
                     let _restore = _claim_detail.index(index).get();
                     let _success = || {
-                        raw!("if (!cx.abortSignal.aborted) ${_remove}(${target});", ());
+                        raw!(
+                            "if (nativeOwnerToken.active) nativeOwnerToken.host.nativeRemove(${target});",
+                            ()
+                        );
                     };
                     let _failure = || {
                         raw!(
-                            "if (!cx.abortSignal.aborted) { ${_remove}(${target}); document.getElementById('native-deferred-delete-owner').nativeFailure(${_label}, ${_restore}); };",
+                            "if (nativeOwnerToken.active) { nativeOwnerToken.host.nativeRemove(${target}); nativeOwnerToken.host.nativeFailure(${_label}, ${_restore}); };",
                             ()
                         );
                     };
@@ -360,9 +367,47 @@ pub(crate) fn owner<'a>(
             let _index = _pagehide_pending_slot.get();
             raw!("${_claim}(${_index},cx.hydrate(true));", ());
         };
+        // Native page commits transfer the signals, but each new scope owns
+        // fresh timers. Account for running time before rearming on that scope.
+        let _elapsed = |index: UsizeSurrogate| {
+            if _elapsed_id.index(index).get() != 0 {
+                if !_elapsed_hovered.index(index).get() {
+                    if !_elapsed_focused.index(index).get() {
+                        let now = raw!("cx.hydrate(performance.now())", 0.0_f64);
+                        let next = _elapsed_remaining.index(index).get()
+                            - (now - _elapsed_started.index(index).get());
+                        _elapsed_remaining.index(index).set(if next > 0.0_f64 {
+                            next
+                        } else {
+                            0.0_f64
+                        });
+                        _elapsed_started.index(index).set(now);
+                    }
+                }
+            }
+        };
+        let _rearm = |index: UsizeSurrogate, mouse: BoolSurrogate, focus: BoolSurrogate| {
+            raw!("${_elapsed}(${index});", ());
+            _rearm_hovered.index(index).set(mouse.clone());
+            _rearm_focused.index(index).set(focus.clone());
+            if _rearm_id.index(index).get() != 0 {
+                if !mouse {
+                    if !focus {
+                        raw!("${_timer}(${index});", ());
+                    }
+                }
+            }
+        };
         raw!(
             r#"
             const owner = document.getElementById('native-deferred-delete-owner');
+            const transferred = document.nativeDeferredDeleteTransfer;
+            delete document.nativeDeferredDeleteTransfer;
+            const nativeOwnerToken = transferred?.active && transferred.key === owner.dataset.nativeDeleteOwner
+                ? transferred : {active:true,key:owner.dataset.nativeDeleteOwner,host:owner};
+            nativeOwnerToken.host = owner;
+            let transferring = false;
+            owner.nativeRemove = ${_remove};
             owner.nativeFailure = ${_failure_toast};
             window.addEventListener('lific:native-issue-delete-request', event => {
                 const v=event.detail;
@@ -370,6 +415,18 @@ pub(crate) fn owner<'a>(
                 if(accepted.toString()==='true')event.preventDefault();
             },{signal:cx.abortSignal});
             window.addEventListener('pagehide',${_pagehide},{signal:cx.abortSignal});
+            document.addEventListener('topcoat:before-page-replace',event=>{
+                const next = event.detail.nextDocument.getElementById('native-deferred-delete-owner');
+                transferring = next?.getAttribute('data-native-delete-owner') === owner.dataset.nativeDeleteOwner;
+                if(transferring) {
+                    document.nativeDeferredDeleteTransfer = nativeOwnerToken;
+                    for(const toast of owner.querySelectorAll('[data-native-toast-slot]')) {
+                        ${_elapsed}(cx.hydrate({t:'usize',bits:Number(${usize_bits}.toString()),v:toast.dataset.nativeToastSlot}));
+                    }
+                } else {
+                    ${_pagehide}();
+                }
+            },{signal:cx.abortSignal});
             for(const toast of owner.querySelectorAll('[data-native-toast-slot]')) {
                 const i=cx.hydrate({t:'usize',bits:Number(${usize_bits}.toString()),v:toast.dataset.nativeToastSlot});
                 toast.addEventListener('mouseenter',()=>${_pause}(i,cx.hydrate(true)),{signal:cx.abortSignal});
@@ -378,8 +435,17 @@ pub(crate) fn owner<'a>(
                 toast.addEventListener('focusout',e=>{if(!toast.contains(e.relatedTarget))${_resume}(i,cx.hydrate(false));},{signal:cx.abortSignal});
                 toast.querySelector('[data-native-toast-undo]').addEventListener('click',()=>${_undo}(i),{signal:cx.abortSignal});
                 toast.querySelector('[data-native-toast-close]').addEventListener('click',()=>${_close}(i, cx.hydrate({t:'usize',bits:Number(${usize_bits}.toString()),v:toast.dataset.nativeToastId})),{signal:cx.abortSignal});
+                clearTimeout(toast.nativeTimer);
+                ${_rearm}(i,cx.hydrate(toast.matches(':hover')),cx.hydrate(toast.contains(document.activeElement)));
             }
-            cx.abortSignal.addEventListener('abort',()=>{for(const toast of owner.querySelectorAll('[data-native-toast-slot]'))clearTimeout(toast.nativeTimer);delete owner.nativeFailure;},{once:true});
+            cx.abortSignal.addEventListener('abort',()=>{
+                for(const toast of owner.querySelectorAll('[data-native-toast-slot]'))clearTimeout(toast.nativeTimer);
+                if(!transferring) {
+                    nativeOwnerToken.active=false;
+                    delete owner.nativeRemove;
+                    delete owner.nativeFailure;
+                }
+            },{once:true});
         "#,
             ()
         );
@@ -395,23 +461,58 @@ pub(crate) fn owner<'a>(
         .enumerate()
         .map(|(index, slot)| (index, slot.id, slot.message, slot.kind, slot.undo))
         .collect::<Vec<_>>();
-    view! { cx => <div id="native-deferred-delete-owner" (attributes)>
-        #[key(index)]
-        for (index, id, message, kind, undo) in rows {
-            <div class="native-toast" data-native-toast-slot=(index.to_string())
-                :data-native-toast-kind=$(kind.get()) :data-native-toast-id=$(id.get()) :hidden=$(id.get() == 0)
-                :style=$({ let _order = id.get(); let style = raw!("cx.hydrate('order:'+${_order}.toString())", String::new()); style })
-                :role=$(if kind.get() == "error" {"alert"} else {"status"})
-                :aria-live=$(if kind.get() == "error" {"assertive"} else {"polite"}) aria-atomic="true">
-                native_toast_icon(kind: $(kind.get()))
-                <p>$(message.get())</p>
-                <button data-native-toast-undo="" type="button" :hidden=$(!undo.get())>"Undo"</button>
-                <button data-native-toast-close="" type="button" aria-label="Dismiss notification" title="Dismiss">
-                    (super::icons::ui_icon(cx, UiIcon::Close, 13))
-                </button>
-            </div>
-        }
-    </div> }
+    view! {
+        cx =>
+        <div
+            id="native-deferred-delete-owner"
+            data-native-delete-owner=(owner_key)
+            (attributes)
+        >
+            #[key(index)]
+            for (index, id, message, kind, undo) in rows {
+                <div
+                    class="native-toast"
+                    data-native-toast-slot=(index.to_string())
+                    :data-native-toast-kind=$(kind.get())
+                    :data-native-toast-id=$(id.get())
+                    :hidden=$(id.get() == 0)
+                    :style=$({
+                        let _order = id.get();
+                        let style = raw!(
+                            "cx.hydrate('order:'+${_order}.toString())",
+                            String::new(),
+                        );
+                        style
+                    })
+                    :role=$(if kind.get() == "error" { "alert" } else { "status" })
+                    :aria-live=$(if kind.get() == "error" {
+                        "assertive"
+                    } else {
+                        "polite"
+                    })
+                    aria-atomic="true"
+                >
+                    native_toast_icon(kind: $(kind.get()))
+                    <p>$(message.get())</p>
+                    <button
+                        data-native-toast-undo=""
+                        type="button"
+                        :hidden=$(!undo.get())
+                    >
+                        "Undo"
+                    </button>
+                    <button
+                        data-native-toast-close=""
+                        type="button"
+                        aria-label="Dismiss notification"
+                        title="Dismiss"
+                    >
+                        (super::icons::ui_icon(cx, UiIcon::Close, 13))
+                    </button>
+                </div>
+            }
+        </div>
+    }
     .boxed()
 }
 
@@ -423,4 +524,70 @@ async fn native_toast_icon(cx: &Cx, kind: String) -> topcoat::Result<impl topcoa
         _ => UiIcon::Info,
     };
     Ok(super::icons::ui_icon(cx, icon, 16))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{io::Write, process::Stdio, sync::Arc};
+    use topcoat::{context::CxTestBuilder, router::RemoteAddr};
+
+    async fn markup(mount: &str) -> String {
+        let (mut parts, ()) = axum::http::Request::builder()
+            .header("x-forwarded-prefix", mount)
+            .body(())
+            .unwrap()
+            .into_parts();
+        parts
+            .extensions
+            .insert(RemoteAddr("127.0.0.1:4000".parse().unwrap()));
+        let proxies: Arc<[crate::ratelimit::IpNetwork]> =
+            vec![crate::ratelimit::IpNetwork::parse("127.0.0.0/8").unwrap()].into();
+        let cx = CxTestBuilder::new()
+            .request_context(parts)
+            .app_context(proxies)
+            .build();
+        let cx = cx.keyed((7_i64, "ACC"));
+        let pending = signal(&cx, Vec::<i64>::new);
+        owner(&cx, 7, "ACC", pending)
+            .single()
+            .await
+            .unwrap()
+            .render(&cx)
+    }
+
+    #[tokio::test]
+    async fn native_delete_owner_transfers_undo_deadlines_and_inflight_results() {
+        for mount in ["", "/app", "/ACC"] {
+            let html = markup(mount).await;
+            let mut child = std::process::Command::new("node")
+                .arg(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/src/topcoat/native/deferred_delete.test.cjs"
+                ))
+                .current_dir(env!("CARGO_MANIFEST_DIR"))
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(
+                    serde_json::json!({"html":html,"mount":mount})
+                        .to_string()
+                        .as_bytes(),
+                )
+                .unwrap();
+            let output = child.wait_with_output().unwrap();
+            assert!(
+                output.status.success(),
+                "generated deferred owner at {mount}:\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
 }

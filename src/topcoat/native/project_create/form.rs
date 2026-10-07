@@ -196,7 +196,7 @@ fn command(cx: &Cx, state: &Form, confirmation: bool, keyboard: bool) -> Attribu
                         result.0 == "resume"
                     } {
                         let _destination = result.1;
-                        raw!("window.location.assign(${_destination}.toString());", ());
+                        raw!("cx.navigate(${_destination}.toString());", ());
                     } else {
                         if result.0 == "reauth" {
                             pending.set(true);
@@ -300,53 +300,114 @@ fn content<'a>(
         ];
         NAMES[rand::thread_rng().gen_range(0..NAMES.len())]
     };
-    view! { cx =>
+    view! {
+        cx =>
         <div class="native-project-create-page">
             if can_import {
-                <p class="native-project-create__import">"Moving a project from another Lific instance? "
-                    <a href=(super::super::transport::mounted_url(cx,"/projects/import"))>"Import a project archive"</a>
+                <p class="native-project-create__import">
+                    "Moving a project from another Lific instance? "
+                    <a
+                        href=(super::super::transport::mounted_url(
+                            cx,
+                            "/projects/import",
+                        ))
+                    >
+                        "Import a project archive"
+                    </a>
                 </p>
             }
-            <form id="native-project-create-form" class="native-project-create" (submit)>
+            <form
+                id="native-project-create-form"
+                class="native-project-create"
+                (submit)
+            >
                 <div class="native-project-create__field">
                     <label for="project-name">"Name"</label>
-                    <input id="project-name" type="text" autofocus="autofocus" placeholder=(placeholder) :value=$(name.get())
+                    <input
+                        id="project-name"
+                        type="text"
+                        autofocus="autofocus"
+                        placeholder=(placeholder)
+                        :value=$(name.get())
                         @input=$(|event: Event| {
-                            let value = event.target.value; name.set(value.clone());
+                            let value = event.target.value;
+                            name.set(value.clone());
                             if !touched.get() {
                                 if !value.is_empty() {
                                     let scalars = value.to_uppercase().unicode_scalars(0_usize);
-                                    input_index.set(0_usize); input_count.set(0_usize);
+                                    input_index.set(0_usize);
+                                    input_count.set(0_usize);
                                     identifier.set("".to_owned());
-                                    while if input_index.get() < scalars.len() { input_count.get() < 5_usize } else { false } {
+                                    while if input_index.get() < scalars.len() {
+                                        input_count.get() < 5_usize
+                                    } else {
+                                        false
+                                    } {
                                         let scalar = scalars.index(input_index.get()).to_owned();
-                                        if if scalar >= "A" { if scalar <= "Z" { true } else if scalar >= "0" { scalar <= "9" } else { false } } else if scalar >= "0" { scalar <= "9" } else { false } {
-                                            identifier.push_str(scalar); input_count.increment();
+                                        if if scalar >= "A" {
+                                            if scalar <= "Z" {
+                                                true
+                                            } else if scalar >= "0" {
+                                                scalar <= "9"
+                                            } else {
+                                                false
+                                            }
+                                        } else if scalar >= "0" {
+                                            scalar <= "9"
+                                        } else {
+                                            false
+                                        } {
+                                            identifier.push_str(scalar);
+                                            input_count.increment();
                                         }
                                         input_index.increment();
                                     };
                                 };
                             };
-                        })>
+                        })
+                    >
                 </div>
                 <div class="native-project-create__identity">
                     <div class="native-project-create__identifier">
                         <label for="project-id">"Identifier"</label>
-                        <input id="project-id" type="text" maxlength="5" spellcheck="false" autocapitalize="characters" placeholder="PRO"
-                            :value=$(identifier.get()) @input=$(|event: Event| {identifier.set(event.target.value); touched.set(true);})>
+                        <input
+                            id="project-id"
+                            type="text"
+                            maxlength="5"
+                            spellcheck="false"
+                            autocapitalize="characters"
+                            placeholder="PRO"
+                            :value=$(identifier.get())
+                            @input=$(|event: Event| {
+                                identifier.set(event.target.value);
+                                touched.set(true);
+                            })
+                        >
                         <p class="native-project-create__hint">"Issues become"</p>
-                        <span class="native-project-create__preview">$(if identifier.get().trim_ecmascript().is_empty() {"PRO".to_owned()} else {identifier.get().trim_ecmascript().to_uppercase()}) "-1"</span>
+                        <span class="native-project-create__preview">
+                            $(if identifier.get().trim_ecmascript().is_empty() {
+                                "PRO".to_owned()
+                            } else {
+                                identifier.get().trim_ecmascript().to_uppercase()
+                            })
+                            "-1"
+                        </span>
                     </div>
                     <div class="native-project-create__lead">
                         <label for="native-project-lead-trigger">"Lead"</label>
-                        (select::select(cx,"native-project-lead",leads,lead))
+                        (select::select(cx, "native-project-lead", leads, lead))
                     </div>
-                    <div><label for="native-project-icon-trigger">"Icon"</label>(super::picker_controls::picker(cx,emoji))</div>
+                    <div>
+                        <label for="native-project-icon-trigger">"Icon"</label>
+                        (super::picker_controls::picker(cx, emoji))
+                    </div>
                 </div>
                 if show_group {
-                    <div class="native-project-create__field native-project-create__group">
+                    <div
+                        class="native-project-create__field native-project-create__group"
+                    >
                         <label for="native-project-group-trigger">"Group"</label>
-                        (select::select(cx,"native-project-group",groups,group))
+                        (select::select(cx, "native-project-group", groups, group))
                     </div>
                 }
                 <div class="native-project-create__field">
@@ -354,28 +415,78 @@ fn content<'a>(
                         <label for="project-desc">"Description"</label>
                         <span class="native-project-create__optional">"optional"</span>
                     </div>
-                    <textarea id="project-desc" rows="3" placeholder="What is this project about?" :value=$(description.get()) @input=$(|event: Event| description.set(event.target.value))></textarea>
+                    <textarea
+                        id="project-desc"
+                        rows="3"
+                        placeholder="What is this project about?"
+                        :value=$(description.get())
+                        @input=$(|event: Event| description.set(event.target.value))
+                    ></textarea>
                 </div>
-
             </form>
-                <section class="native-project-create__reauth-wrap" :hidden=$(!pending.get()) aria-label="Verify your sign-in">
-                    <div class="native-project-create__reauth">
+            <section
+                class="native-project-create__reauth-wrap"
+                :hidden=$(!pending.get())
+                aria-label="Verify your sign-in"
+            >
+                <div class="native-project-create__reauth">
                     <div class="native-project-create__reauth-copy">
-                    (super::super::icons::ui_icon(cx, UiIcon::Restricted, 15))
-                    <p>"Verify it's you to create this project with the selected lead. Granting another person access requires a recent sign-in."</p>
+                        (super::super::icons::ui_icon(cx, UiIcon::Restricted, 15))
+                        <p>
+                            "Verify it's you to create this project with the selected lead. Granting another person access requires a recent sign-in."
+                        </p>
                     </div>
-                    <p role="status" :hidden=$(auto_note.get().is_empty())>$(auto_note.get())</p>
-                    <input id="native-project-confirm-password" type="password" autocomplete="current-password" placeholder="Current password"
-                        :value=$(password.get()) @input=$(|event: Event| password.set(event.target.value)) (confirm_keyboard)>
-                    <p role="alert" class="native-project-create__error" :hidden=$(confirmation_error.get().is_empty())>$(confirmation_error.get())</p>
+                    <p role="status" :hidden=$(auto_note.get().is_empty())>
+                        $(auto_note.get())
+                    </p>
+                    <input
+                        id="native-project-confirm-password"
+                        type="password"
+                        autocomplete="current-password"
+                        placeholder="Current password"
+                        :value=$(password.get())
+                        @input=$(|event: Event| password.set(event.target.value))
+                        (confirm_keyboard)
+                    >
+                    <p
+                        role="alert"
+                        class="native-project-create__error"
+                        :hidden=$(confirmation_error.get().is_empty())
+                    >
+                        $(confirmation_error.get())
+                    </p>
                     <div class="native-project-create__confirmation-actions">
-                        <button type="button" :disabled=$(if verifying.get() { true } else { password.get().is_empty() }) (confirm_button)>$(if verifying.get() {"Verifying..."} else {"Verify and create"})</button>
-                        <button type="button" :disabled=$(verifying.get()) @click=$(|_event: Event| {
-                            pending.set(false); password.set("".to_owned()); confirmation_error.set("".to_owned()); auto_note.set("".to_owned()); saving.set(false);
-                        })>"Cancel"</button>
+                        <button
+                            type="button"
+                            :disabled=$(if verifying.get() {
+                                true
+                            } else {
+                                password.get().is_empty()
+                            })
+                            (confirm_button)
+                        >
+                            $(if verifying.get() {
+                                "Verifying..."
+                            } else {
+                                "Verify and create"
+                            })
+                        </button>
+                        <button
+                            type="button"
+                            :disabled=$(verifying.get())
+                            @click=$(|_event: Event| {
+                                pending.set(false);
+                                password.set("".to_owned());
+                                confirmation_error.set("".to_owned());
+                                auto_note.set("".to_owned());
+                                saving.set(false);
+                            })
+                        >
+                            "Cancel"
+                        </button>
                     </div>
-                    </div>
-                </section>
+                </div>
+            </section>
         </div>
     }.boxed()
 }
@@ -387,19 +498,44 @@ fn topbar<'a>(cx: &'a Cx, state: &Form) -> BoxView<'a> {
     let pending = state.pending.clone();
     let error = state.error.clone();
     let settings = super::super::transport::mounted_url(cx, "/settings");
-    view! { cx =>
+    view! {
+        cx =>
         <div class="native-project-create__topbar">
             <div class="native-project-create__breadcrumb">
                 <a class="native-project-create__back" href=(settings.clone())>
-                    (super::super::icons::ui_icon(cx, UiIcon::Back, 14)) "Back"
+                    (super::super::icons::ui_icon(cx, UiIcon::Back, 14))
+                    "Back"
                 </a>
-                <span aria-hidden="true">"/"</span><span class="native-project-create__title">"New project"</span>
+                <span aria-hidden="true">"/"</span>
+                <span class="native-project-create__title">"New project"</span>
             </div>
             <div class="native-project-create__actions">
-                <span role="alert" class="native-project-create__error" :hidden=$(error.get().is_empty()) :title=$(error.get())>$(error.get())</span>
+                <span
+                    role="alert"
+                    class="native-project-create__error"
+                    :hidden=$(error.get().is_empty())
+                    :title=$(error.get())
+                >
+                    $(error.get())
+                </span>
                 <a href=(settings)>"Cancel"</a>
-                <button type="submit" form="native-project-create-form" :disabled=$(if saving.get() { true } else if pending.get() { true } else if name.get().trim_ecmascript().is_empty() { true } else { identifier.get().trim_ecmascript().is_empty() })>$(if saving.get() {"Creating..."} else {"Create project"})</button>
+                <button
+                    type="submit"
+                    form="native-project-create-form"
+                    :disabled=$(if saving.get() {
+                        true
+                    } else if pending.get() {
+                        true
+                    } else if name.get().trim_ecmascript().is_empty() {
+                        true
+                    } else {
+                        identifier.get().trim_ecmascript().is_empty()
+                    })
+                >
+                    $(if saving.get() { "Creating..." } else { "Create project" })
+                </button>
             </div>
         </div>
-    }.boxed()
+    }
+    .boxed()
 }

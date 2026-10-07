@@ -8,6 +8,7 @@ use topcoat::{
 use super::{
     home_model::HomeModel,
     icons::{priority_icon, status_icon},
+    navigation,
     transport::mounted_url,
 };
 
@@ -47,7 +48,8 @@ pub(crate) fn active_work<'a>(cx: &'a Cx, model: HomeModel<'_>) -> BoxView<'a> {
             )
         })
         .collect::<Vec<_>>();
-    view! { cx =>
+    view! {
+        cx =>
         <div class="tc-dashboard__main tc-home-active">
             <div class="tc-home-active__heading">
                 <h2>"My active issues"</h2>
@@ -55,25 +57,47 @@ pub(crate) fn active_work<'a>(cx: &'a Cx, model: HomeModel<'_>) -> BoxView<'a> {
             </div>
             if groups.is_empty() {
                 <div class="tc-home-active__empty">
-                    <span class="tc-home-active__mascot" aria-hidden="true"
-                        style=(format!("mask-image:url('{}')", mounted_url(cx, MASCOT_PATH)))></span>
+                    <span
+                        class="tc-home-active__mascot"
+                        aria-hidden="true"
+                        style=(format!(
+                            "mask-image:url('{}')",
+                            mounted_url(cx, MASCOT_PATH),
+                        ))
+                    ></span>
                     <p>"All quiet here"</p>
-                    <p>"Nothing active or todo assigned to you across your projects right now."</p>
+                    <p>
+                        "Nothing active or todo assigned to you across your projects right now."
+                    </p>
                 </div>
             } else {
                 for (project_identifier, name, emoji, total, rows) in groups {
                     <section class="tc-dashboard__card">
-                        <a class="tc-home-active__project" href=(mounted_url(cx, &format!("/{project_identifier}/overview")))>
+                        <a
+                            class="tc-home-active__project"
+                            (navigation::attrs(
+                                cx,
+                                &format!("/{project_identifier}/overview"),
+                            ))
+                        >
                             if let Some(emoji) = emoji {
                                 (super::icons::project_icon(cx, Some(&emoji), 15))
                             } else {
-                                <span class="tc-home-active__initials">(project_identifier.chars().take(2).collect::<String>())</span>
+                                <span class="tc-home-active__initials">
+                                    (project_identifier.chars().take(2).collect::<String>())
+                                </span>
                             }
                             <span class="tc-home-active__project-name">(name)</span>
                             <span class="tc-home-active__total">(total)</span>
                         </a>
                         for (identifier, title, status, priority) in rows {
-                            <a class="tc-dashboard__issue" href=(mounted_url(cx, &format!("/{project_identifier}/issues/{identifier}")))>
+                            <a
+                                class="tc-dashboard__issue"
+                                (navigation::attrs(
+                                    cx,
+                                    &format!("/{project_identifier}/issues/{identifier}"),
+                                ))
+                            >
                                 (status_icon(cx, status, 14))
                                 <span class="tc-dashboard__identifier">(identifier)</span>
                                 <span class="tc-dashboard__issue-title">(title)</span>
@@ -81,10 +105,27 @@ pub(crate) fn active_work<'a>(cx: &'a Cx, model: HomeModel<'_>) -> BoxView<'a> {
                             </a>
                         }
                         if total > 6 {
-                            <a class="tc-home-active__overflow" href=(mounted_url(cx, &format!("/{project_identifier}/issues")))>
+                            <a
+                                class="tc-home-active__overflow"
+                                (navigation::attrs(
+                                    cx,
+                                    &format!("/{project_identifier}/issues"),
+                                ))
+                            >
                                 (format!("View all {total} in {project_identifier}"))
-                                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                                    <path d="M7 7h10v10"></path><path d="M7 17 17 7"></path>
+                                <svg
+                                    width="11"
+                                    height="11"
+                                    viewBox="0 0 24 24"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    stroke-width="2"
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                    aria-hidden="true"
+                                >
+                                    <path d="M7 7h10v10"></path>
+                                    <path d="M7 17 17 7"></path>
                                 </svg>
                             </a>
                         }
@@ -92,7 +133,8 @@ pub(crate) fn active_work<'a>(cx: &'a Cx, model: HomeModel<'_>) -> BoxView<'a> {
                 }
             }
         </div>
-    }.boxed()
+    }
+    .boxed()
 }
 
 #[cfg(test)]
@@ -171,6 +213,7 @@ mod tests {
         assert!(html.contains("href=\"/ACC/ACC/issues/ACC-1\""));
         assert!(html.contains("href=\"/ACC/ACC/overview\""));
         assert!(html.contains("href=\"/ACC/ACC/issues\""));
+        assert_eq!(html.matches("data-topcoat-link=\"intent\"").count(), 8);
         assert!(html.contains("View all 7 in ACC"));
         assert!(!html.contains("Loading your dashboard"));
     }

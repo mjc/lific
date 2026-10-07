@@ -83,10 +83,34 @@ pub(super) fn region<'a>(
         revision.clone(),
         loading_more,
     );
-    Ok(view! {cx=><div class="native-project-activity h-full min-h-0 flex flex-col leading-[1.6] text-[var(--text)]" data-native-project-activity="" (mount)><span hidden="hidden" (clock)></span>
-        native_activity_body(target:target,history:history,controls:controls,input:$({let selected=filter.get();let opened=expanded.get();let requested=more.get();let version=revision.get();let zone=timezone.get();raw!("[${selected},${opened},${requested},${version},${zone}]",(selected,opened,requested,version,zone))}),now:now)
-        (live)
-    </div>}.boxed())
+    Ok(view! {
+        cx =>
+        <div
+            class="native-project-activity h-full min-h-0 flex flex-col leading-[1.6] text-[var(--text)]"
+            data-native-project-activity=""
+            (mount)
+        >
+            <span hidden="hidden" (clock)></span>
+            native_activity_body(
+                target: target,
+                history: history,
+                controls: controls,
+                input: $({
+                    let selected = filter.get();
+                    let opened = expanded.get();
+                    let requested = more.get();
+                    let version = revision.get();
+                    let zone = timezone.get();
+                    raw!(
+                        "[${selected},${opened},${requested},${version},${zone}]",
+                        (selected, opened, requested, version, zone),
+                    )
+                }),
+                now: now
+            )
+            (live)
+        </div>
+    }.boxed())
 }
 
 #[shard("/__native_project_activity/body")]
@@ -206,9 +230,22 @@ async fn native_activity_body(
         timezone,
     );
     let loading_more = controls.4;
-    let persist=view! {cx=><span hidden="hidden" data-native-project-activity-complete="" @mount=$(|_event:Event| {
-        ids.set(retained.clone());has_more.set(has_more_value);completed_more.set(raw!("cx.some(${more})",Some(more)));completed_revision.set(raw!("cx.some(${revision})",Some(revision)));loading_more.set(false);
-    })></span>(content)}.boxed();
+    let persist = view! {
+        cx =>
+        <span
+            hidden="hidden"
+            data-native-project-activity-complete=""
+            @mount=$(|_event: Event| {
+                ids.set(retained.clone());
+                has_more.set(has_more_value);
+                completed_more.set(raw!("cx.some(${more})", Some(more)));
+                completed_revision.set(raw!("cx.some(${revision})", Some(revision)));
+                loading_more.set(false);
+            })
+        ></span>
+        (content)
+    }
+    .boxed();
     Ok(home_shell::page_region(
         cx,
         persist,
@@ -230,6 +267,20 @@ fn merge_ids(retained: &[i64], page: &[i64], append: bool) -> Vec<i64> {
 fn failure<'a>(cx: &'a Cx, identifier: &str, message: &str) -> BoxView<'a> {
     let reload = super::transport::mounted_url(cx, &format!("/{identifier}/activity"));
     let overview = super::transport::mounted_url(cx, &format!("/{identifier}/overview"));
-    let actions=view!{cx=><a class="text-body-sm font-medium text-[var(--tc-btn-success-text)] bg-[var(--tc-btn-success)] px-3 py-1.5 rounded-md no-underline" href=(reload)>"Try again"</a><a class="text-body-sm text-[var(--text-muted)] border border-solid border-[var(--border)] px-3 py-1.5 rounded-md no-underline" href=(overview)>"Project overview"</a>}.boxed();
+    let actions=view!{
+        cx =>
+        <a
+            class="text-body-sm font-medium text-[var(--tc-btn-success-text)] bg-[var(--tc-btn-success)] px-3 py-1.5 rounded-md no-underline"
+            href=(reload)
+        >
+            "Try again"
+        </a>
+        <a
+            class="text-body-sm text-[var(--text-muted)] border border-solid border-[var(--border)] px-3 py-1.5 rounded-md no-underline"
+            href=(overview)
+        >
+            "Project overview"
+        </a>
+    }.boxed();
     super::error_state::surface(cx, "Couldn't load activity", message, actions)
 }

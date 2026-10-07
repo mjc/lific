@@ -6,10 +6,7 @@ use topcoat::{
     view::{BoxView, ViewExt, view},
 };
 
-use super::{
-    home_local::{self, RecentEntry, RecentType},
-    transport::mounted_url,
-};
+use super::home_local::{self, RecentEntry, RecentType};
 use crate::db::models::{Activity, Page, Project};
 
 pub(crate) const STYLESHEET: &str = include_str!("assets/home-sections.css");
@@ -53,12 +50,7 @@ pub(crate) fn right_rail_with_rate<'a>(
                 RecentType::Page => UiIcon::Page,
                 RecentType::Plan => UiIcon::Plans,
             };
-            Some((
-                mounted_url(cx, &destination),
-                recent.title,
-                recent.project,
-                icon,
-            ))
+            Some((destination, recent.title, recent.project, icon))
         })
         .collect::<Vec<_>>();
     let pinned_rows = pinned_pages
@@ -69,7 +61,7 @@ pub(crate) fn right_rail_with_rate<'a>(
                 .find(|project| Some(project.id) == page.project_id)
                 .filter(|project| !project.identifier.is_empty())?;
             Some((
-                mounted_url(cx, &format!("/{}/pages/{}", project.identifier, page.id)),
+                format!("/{}/pages/{}", project.identifier, page.id),
                 page.title.clone(),
                 project.identifier.clone(),
             ))
@@ -79,24 +71,24 @@ pub(crate) fn right_rail_with_rate<'a>(
         .iter()
         .map(|event| {
             let row = super::home_activity::activity_row(event, projects);
-            (
-                row.actor,
-                row.verb,
-                row.label,
-                row.destination
-                    .map(|destination| mounted_url(cx, &destination)),
-            )
+            (row.actor, row.verb, row.label, row.destination)
         })
         .collect::<Vec<_>>();
-    view! { cx =>
+    view! {
+        cx =>
         <aside class="tc-home-sections">
             if has_recents {
                 <section data-home-section="recents">
                     (heading(cx, UiIcon::History, "Recently viewed"))
                     <div class="tc-home-sections__rows">
                         for (destination, title, project, icon) in recent_rows {
-                            <a class="tc-home-sections__row" href=(destination)>
-                                <span class="tc-home-sections__icon">(super::icons::ui_icon(cx, icon, 13))</span>
+                            <a
+                                class="tc-home-sections__row"
+                                (super::navigation::attrs(cx, &destination))
+                            >
+                                <span class="tc-home-sections__icon">
+                                    (super::icons::ui_icon(cx, icon, 13))
+                                </span>
                                 <span class="tc-home-sections__title">(title)</span>
                                 <span class="tc-home-sections__project">(project)</span>
                             </a>
@@ -109,8 +101,13 @@ pub(crate) fn right_rail_with_rate<'a>(
                     (heading(cx, UiIcon::Pinned, "Pinned pages"))
                     <div class="tc-home-sections__rows">
                         for (destination, title, project) in pinned_rows {
-                            <a class="tc-home-sections__row" href=(destination)>
-                                <span class="tc-home-sections__icon">(super::icons::ui_icon(cx, UiIcon::Page, 13))</span>
+                            <a
+                                class="tc-home-sections__row"
+                                (super::navigation::attrs(cx, &destination))
+                            >
+                                <span class="tc-home-sections__icon">
+                                    (super::icons::ui_icon(cx, UiIcon::Page, 13))
+                                </span>
                                 <span class="tc-home-sections__title">(title)</span>
                                 <span class="tc-home-sections__project">(project)</span>
                             </a>
@@ -120,21 +117,39 @@ pub(crate) fn right_rail_with_rate<'a>(
             }
             if has_activity {
                 <section data-home-section="activity">
-                    <div class="tc-home-sections__heading" style="justify-content:space-between">
-                        <div style="display:flex;align-items:center;gap:.5rem;min-width:0">
-                            <span class="tc-home-sections__icon">(super::icons::ui_icon(cx, UiIcon::RecentActivity, 12))</span>
+                    <div
+                        class="tc-home-sections__heading"
+                        style="justify-content:space-between"
+                    >
+                        <div
+                            style="display:flex;align-items:center;gap:.5rem;min-width:0"
+                        >
+                            <span class="tc-home-sections__icon">
+                                (super::icons::ui_icon(cx, UiIcon::RecentActivity, 12))
+                            </span>
                             <h2>"Recent activity"</h2>
                         </div>
-                        <span style="font-size:.6875rem;color:var(--tc-faint);font-variant-numeric:tabular-nums;text-align:right">(activity_rate)</span>
+                        <span
+                            style="font-size:.6875rem;color:var(--tc-faint);font-variant-numeric:tabular-nums;text-align:right"
+                        >
+                            (activity_rate)
+                        </span>
                     </div>
                     <div class="tc-home-sections__rows">
                         for (actor, verb, label, destination) in activity_rows {
                             if let Some(destination) = destination {
-                                <a class="tc-home-sections__activity" href=(destination)>
+                                <a
+                                    class="tc-home-sections__activity"
+                                    (super::navigation::attrs(cx, &destination))
+                                >
                                     (activity_text(cx, actor, verb, label))
                                 </a>
                             } else {
-                                <button type="button" class="tc-home-sections__activity" disabled=(true)>
+                                <button
+                                    type="button"
+                                    class="tc-home-sections__activity"
+                                    disabled=(true)
+                                >
                                     (activity_text(cx, actor, verb, label))
                                 </button>
                             }
@@ -150,9 +165,12 @@ pub(crate) fn right_rail_with_rate<'a>(
 
 fn heading<'a>(cx: &'a Cx, icon: UiIcon, title: &str) -> BoxView<'a> {
     let title = title.to_owned();
-    view! { cx =>
+    view! {
+        cx =>
         <div class="tc-home-sections__heading">
-            <span class="tc-home-sections__icon">(super::icons::ui_icon(cx, icon, 12))</span>
+            <span class="tc-home-sections__icon">
+                (super::icons::ui_icon(cx, icon, 12))
+            </span>
             <h2>(title)</h2>
         </div>
     }
@@ -160,12 +178,15 @@ fn heading<'a>(cx: &'a Cx, icon: UiIcon, title: &str) -> BoxView<'a> {
 }
 
 fn activity_text(cx: &Cx, actor: String, verb: String, label: Option<String>) -> BoxView<'_> {
-    view! { cx =>
+    view! {
+        cx =>
         <span class="tc-home-sections__activity-text">
             <span class="tc-home-sections__actor">(actor)</span>
-            " " (verb)
+            " "
+            (verb)
             if let Some(label) = label {
-                " " <span class="tc-home-sections__label">(label)</span>
+                " "
+                <span class="tc-home-sections__label">(label)</span>
             }
         </span>
     }

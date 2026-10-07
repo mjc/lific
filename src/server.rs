@@ -71,20 +71,45 @@ mod topcoat_app {
             <html lang="en" data-topcoat-runtime-prefix=(trusted_mount(cx))>
                 <head>
                     <meta charset="utf-8">
-                    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+                    <meta
+                        name="viewport"
+                        content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+                    >
                     <title>(title)</title>
-                    <link rel="icon" type="image/png" href=(mounted_url(cx, "/favicon.png"))>
-                    <link rel="manifest" href=(mounted_url(cx, "/manifest.webmanifest"))>
-                    <link rel="apple-touch-icon" href=(mounted_url(cx, "/apple-touch-icon.png"))>
+                    <link
+                        rel="icon"
+                        type="image/png"
+                        href=(mounted_url(cx, "/favicon.png"))
+                    >
+                    <link
+                        rel="manifest"
+                        href=(mounted_url(cx, "/manifest.webmanifest"))
+                    >
+                    <link
+                        rel="apple-touch-icon"
+                        href=(mounted_url(cx, "/apple-touch-icon.png"))
+                    >
                     <meta name="apple-mobile-web-app-title" content="Lific">
-                    <meta name="theme-color" content="#fafcfb" media="(prefers-color-scheme: light)">
-                    <meta name="theme-color" content="#1c221f" media="(prefers-color-scheme: dark)">
-                    <link rel="stylesheet" href=(mounted_url(cx, super::topcoat_frontend::assets::app_stylesheet_url()))>
-                    <script type="module" src=(mounted_url(cx, super::topcoat_frontend::assets::runtime_url()))></script>
+                    <meta
+                        name="theme-color"
+                        content="#fafcfb"
+                        media="(prefers-color-scheme: light)"
+                    >
+                    <meta
+                        name="theme-color"
+                        content="#1c221f"
+                        media="(prefers-color-scheme: dark)"
+                    >
+                    <link
+                        rel="stylesheet"
+                        href=(mounted_url(
+                            cx,
+                            super::topcoat_frontend::assets::app_stylesheet_url(),
+                        ))
+                    >
+                    (super::topcoat_frontend::assets::runtime_script(cx))
                 </head>
-                <body data-lific-base-path=(trusted_mount(cx))>
-                    (slot)
-                </body>
+                <body data-lific-base-path=(trusted_mount(cx))>(slot)</body>
             </html>
         })
     }
@@ -137,17 +162,20 @@ mod topcoat_app {
     #[page("/__topcoat-runtime-test")]
     async fn runtime_test_page(cx: &topcoat::context::Cx) -> Result<impl View> {
         let mut increment = super::topcoat_frontend::controls::Button::new("Increment");
-        increment.attrs = attributes! { cx =>
+        increment.attrs = attributes! {
+            cx =>
             id="increment"
             @click="() => { const count = document.querySelector('#click-count'); count.textContent = String(Number(count.textContent) + 1); }"
         };
         let mut disabled = super::topcoat_frontend::controls::Button::new("Disabled");
         disabled.disabled = true;
-        disabled.attrs = attributes! { cx =>
+        disabled.attrs = attributes! {
+            cx =>
             id="disabled"
             @click="() => { const count = document.querySelector('#click-count'); count.textContent = String(Number(count.textContent) + 100); }"
         };
-        Ok(view! { cx =>
+        Ok(view! {
+            cx =>
             <section>
                 (super::topcoat_frontend::controls::button(cx, increment))
                 (super::topcoat_frontend::controls::button(cx, disabled))
@@ -282,16 +310,6 @@ mod topcoat_app {
     pub(super) async fn home_shell_handler(cx: &topcoat::context::Cx) -> Result<Response> {
         use super::topcoat_frontend::native::home_shell;
         generated_handler_response(cx, home_shell::handler_url(), home_shell::handler_source())
-    }
-
-    #[route(GET "/__native-workspace.js")]
-    pub(super) async fn workspace_handler(cx: &topcoat::context::Cx) -> Result<Response> {
-        use super::topcoat_frontend::native::workspace;
-        generated_handler_response(
-            cx,
-            workspace::navigation_handler_url(),
-            workspace::navigation_handler_source(),
-        )
     }
 
     #[route(GET "/__native-sidebar.js")]
@@ -2639,7 +2657,7 @@ mod public_surface_tests {
             let body = body_string(response).await;
             assert!(!body.contains("classified"));
             assert!(!body.contains("data-native-issue-list"));
-            assert!(!body.contains("data-native-pages"));
+            assert!(!body.contains("native-pages__"));
             assert!(!body.contains("data-native-plans"));
         }
         let response = with_session(&d.app, &d.session_token, "/PRIV/issues").await;

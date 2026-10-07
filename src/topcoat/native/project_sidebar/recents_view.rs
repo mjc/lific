@@ -20,7 +20,11 @@ pub(super) async fn driver(
 ) -> topcoat::Result<impl View> {
     let state = Signals::from_handles(account, handles);
     let mount = recents_state::refresh(cx, &state, catalog, path, "mount", false);
-    Ok(view! {cx=><span hidden="hidden" data-native-recents-driver="" (mount)></span>}.boxed())
+    Ok(view! {
+        cx =>
+        <span hidden="hidden" data-native-recents-driver="" (mount)></span>
+    }
+    .boxed())
 }
 
 pub(super) fn slot<'a>(
@@ -31,7 +35,7 @@ pub(super) fn slot<'a>(
     layout: Layout,
 ) -> BoxView<'a> {
     let Some(section) = super::recents_model::Section::for_path(&project.identifier, path) else {
-        return view! {cx => <span></span>}.boxed();
+        return view! { cx => <span></span> }.boxed();
     };
     let account = state.account;
     let project_id = project.id;
@@ -55,14 +59,60 @@ pub(super) fn slot<'a>(
     let toggle = recents_state::disclosure(cx, state);
     let path = path.to_owned();
     let root = format!("native-recents-{project_id}-{suffix}");
-    view!{cx=><section id=(root) class="sidebar-recents" data-topcoat-recents="" data-native-recents-project=(project_id.to_string()) :hidden=$(if visible.get(){if selected.get()==project_id{label.get()!=expected_label}else{true}}else{true})>
-        <button id=(toggle_id.clone()) type="button" class="recent-toggle" data-recents-toggle="" :aria-expanded=$(if open.get(){"true"}else{"false"}) aria-controls=(content.clone()) (toggle)>$(label.get())</button>
-        <div id=(content) data-recents-content="" :hidden=$(!open.get()) :aria-busy=$(if loading.get(){"true"}else{"false"})>
-            <span data-recents-status="" role="status" aria-live="polite">$(status.get())</span>
-            <p data-recents-error="" role="alert" :hidden=$(error.get().is_empty())>$(error.get())</p>
-            <div data-recents-list="">native_rows(account:account,wire:$(rows.get()),project_id:project_id,path:path,focus:focus,toggle_id:toggle_id)</div>
-        </div>
-    </section>}.boxed()
+    view! {
+        cx =>
+        <section
+            id=(root)
+            class="sidebar-recents"
+            data-topcoat-recents=""
+            data-native-recents-project=(project_id.to_string())
+            :hidden=$(if visible.get() {
+                if selected.get() == project_id {
+                    label.get() != expected_label
+                } else {
+                    true
+                }
+            } else {
+                true
+            })
+        >
+            <button
+                id=(toggle_id.clone())
+                type="button"
+                class="recent-toggle"
+                data-recents-toggle=""
+                :aria-expanded=$(if open.get() { "true" } else { "false" })
+                aria-controls=(content.clone())
+                (toggle)
+            >
+                $(label.get())
+            </button>
+            <div
+                id=(content)
+                data-recents-content=""
+                :hidden=$(!open.get())
+                :aria-busy=$(if loading.get() { "true" } else { "false" })
+            >
+                <span data-recents-status="" role="status" aria-live="polite">
+                    $(status.get())
+                </span>
+                <p data-recents-error="" role="alert" :hidden=$(error.get().is_empty())>
+                    $(error.get())
+                </p>
+                <div data-recents-list="">
+                    native_rows(
+                        account: account,
+                        wire: $(rows.get()),
+                        project_id: project_id,
+                        path: path,
+                        focus: focus,
+                        toggle_id: toggle_id
+                    )
+                </div>
+            </div>
+        </section>
+    }
+    .boxed()
 }
 
 use rows_shard::native_rows;
@@ -72,7 +122,7 @@ use rows_shard::native_rows;
 )]
 mod rows_shard {
     use super::*;
-    use crate::server::topcoat_frontend::native::transport;
+    use crate::server::topcoat_frontend::native::navigation;
 
     #[shard("/__native_sidebar/recents_rows")]
     pub(super) async fn native_rows(
@@ -84,7 +134,7 @@ mod rows_shard {
         focus: Signal<String>,
         toggle_id: String,
     ) -> topcoat::Result<impl View> {
-        let empty = || view! {cx=><span></span>}.boxed();
+        let empty = || view! { cx => <span></span> }.boxed();
         if wire.len() > 256 * 1024 {
             return Ok(empty());
         }
@@ -103,7 +153,7 @@ mod rows_shard {
         let mut links = Vec::new();
         for row in rows {
             let key = row.href.clone();
-            let href = transport::mounted_url(cx, &row.href);
+            let href = row.href.clone();
             let active = path == row.href;
             let title = row.accessible_name();
             let number = row
@@ -112,7 +162,31 @@ mod rows_shard {
                 .and_then(|identifier| identifier.rsplit('-').next())
                 .map(|sequence| format!("#{sequence}"));
             let identifier = row.identifier.unwrap_or_default();
-            links.push(view!{cx=><a class="sidebar-destination recent-link" href=(href) data-recents-href=(key) data-recents-identifier=(identifier) aria-label=(title.clone()) title=(title) aria-current=(active.then_some("page"))>if let Some(number)=number{<span class="recent-identifier" aria-hidden="true">(number)</span>}<span data-recents-label="" class="recent-label">(row.label.clone())</span><span class="focus-title" aria-hidden="true">(row.label)</span></a>}.boxed());
+            links.push(
+                view! {
+                    cx =>
+                    <a
+                        class="sidebar-destination recent-link"
+                        (navigation::attrs(cx, &href))
+                        data-recents-href=(key)
+                        data-recents-identifier=(identifier)
+                        aria-label=(title.clone())
+                        title=(title)
+                        aria-current=(active.then_some("page"))
+                    >
+                        if let Some(number) = number {
+                            <span class="recent-identifier" aria-hidden="true">
+                                (number)
+                            </span>
+                        }
+                        <span data-recents-label="" class="recent-label">
+                            (row.label.clone())
+                        </span>
+                        <span class="focus-title" aria-hidden="true">(row.label)</span>
+                    </a>
+                }
+                .boxed(),
+            );
         }
         let mounted = expr!(|_event: Event| {
             let _wire = focus.get();
@@ -136,6 +210,14 @@ mod rows_shard {
                 }
             }
         });
-        Ok(view!{cx=><div data-native-recents-rows="" @mount=(mounted)>for link in links{(link)}</div>}.boxed())
+        Ok(view! {
+            cx =>
+            <div data-native-recents-rows="" @mount=(mounted)>
+                for link in links {
+                    (link)
+                }
+            </div>
+        }
+        .boxed())
     }
 }

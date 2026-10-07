@@ -1,6 +1,6 @@
 //! Pinned overview hero, attention and activity presentation with shared native chrome.
 use super::super::icons::UiIcon;
-use super::super::{context, dates, icons, session, transport};
+use super::super::{context, dates, icons, session};
 use super::{
     controls::{self, Controls},
     model,
@@ -18,7 +18,28 @@ use topcoat::{
 pub(super) fn topbar<'a>(cx: &'a Cx, identifier: &str) -> BoxView<'a> {
     let identifier = identifier.to_owned();
     let (export_error, export_button) = super::export::toolbar_fragments(cx, &identifier);
-    view! { cx => <div class="native-overview__topbar"><div class="native-overview__breadcrumb"><a href=(transport::mounted_url(cx, &format!("/{identifier}/issues")))>(identifier.clone())</a>(icons::ui_icon(cx,UiIcon::BreadcrumbSeparator,12))<span>"Overview"</span></div><div class="native-overview__topbar-actions">(export_error)(export_button)</div></div> }.boxed()
+    view! {
+        cx =>
+        <div class="native-overview__topbar">
+            <div class="native-overview__breadcrumb">
+                <a
+                    (super::super::navigation::attrs(
+                        cx,
+                        &format!("/{identifier}/issues"),
+                    ))
+                >
+                    (identifier.clone())
+                </a>
+                (icons::ui_icon(cx, UiIcon::BreadcrumbSeparator, 12))
+                <span>"Overview"</span>
+            </div>
+            <div class="native-overview__topbar-actions">
+                (export_error)
+                (export_button)
+            </div>
+        </div>
+    }
+    .boxed()
 }
 
 pub(super) fn content<'a>(
@@ -122,38 +143,100 @@ pub(super) fn content<'a>(
     };
     let clock_mount = dates::clock_mount(cx, clock.clone());
     let recent = recent_activity(cx, &identifier, activities, clock);
-    let content = view! { cx => <div class="native-overview" (clock_mount) @mount=$(|_event: Event| rank_clock.set(raw!("cx.hydrate(Date.now())",0.0)))>
-        <div class="native-overview__column">
-            if let Some(notice) = notice { <div role="alert" class="native-overview__notice" data-native-project-notice="">(notice)</div> }
-            <section class="native-overview__hero">
-                <div class=(icon_class)>
-                    (hero_icon)
-                </div>
-                <div class="native-overview__identity">
-                    <div class="native-overview__name-row">(hero_name)(hero_identifier)
-                        <span class="native-overview__saved" role="status" :hidden=$(!saved.get())>(icons::ui_icon(cx,UiIcon::Saved,11))" Saved"</span>
-                        if read_only { <span class="native-overview__readonly" title="Only a project lead or admin can change project settings.">"Read-only"</span> }
+    let content = view! {
+        cx =>
+        <div
+            class="native-overview"
+            (clock_mount)
+            @mount=$(|_event: Event| rank_clock.set(raw!("cx.hydrate(Date.now())", 0.0)))
+        >
+            <div class="native-overview__column">
+                if let Some(notice) = notice {
+                    <div
+                        role="alert"
+                        class="native-overview__notice"
+                        data-native-project-notice=""
+                    >
+                        (notice)
                     </div>
-                    (description)
-                    <div class="native-overview__dates"><span>"Created "(created)</span>
-                        if let Some(active) = active { <span>"·"</span><span>"Active "(active)</span> }
+                }
+                <section class="native-overview__hero">
+                    <div class=(icon_class)>(hero_icon)</div>
+                    <div class="native-overview__identity">
+                        <div class="native-overview__name-row">
+                            (hero_name)
+                            (hero_identifier)
+                            <span
+                                class="native-overview__saved"
+                                role="status"
+                                :hidden=$(!saved.get())
+                            >
+                                (icons::ui_icon(cx, UiIcon::Saved, 11))
+                                " Saved"
+                            </span>
+                            if read_only {
+                                <span
+                                    class="native-overview__readonly"
+                                    title="Only a project lead or admin can change project settings."
+                                >
+                                    "Read-only"
+                                </span>
+                            }
+                        </div>
+                        (description)
+                        <div class="native-overview__dates">
+                            <span>
+                                "Created "
+                                (created)
+                            </span>
+                            if let Some(active) = active {
+                                <span>"·"</span>
+                                <span>
+                                    "Active "
+                                    (active)
+                                </span>
+                            }
+                        </div>
                     </div>
+                    if let Some(completion) = completion {
+                        (completion)
+                    }
+                </section>
+                <div
+                    role="alert"
+                    class="native-overview__error"
+                    :hidden=$(error.get().is_empty())
+                >
+                    $(error.get())
                 </div>
-                if let Some(completion) = completion { (completion) }
-            </section>
-            <div role="alert" class="native-overview__error" :hidden=$(error.get().is_empty())>$(error.get())</div>
-            native_overview_attention(identifier: identifier.clone(), browser_milliseconds: $(rank_clock.get()))
-            if let Some(group) = group { (group) }
-            (labels)
-            if let Some(publication) = publication { (publication) }
-            if let Some(archive) = archive { (archive) }
-            if let Some(members) = members { (members) }
-            if let Some(import) = import { (import) }
-            (recent)
-            if let Some(danger) = danger { (danger) }
-            <div class="native-overview__bottom-space" aria-hidden="true"></div>
+                native_overview_attention(
+                    identifier: identifier.clone(),
+                    browser_milliseconds: $(rank_clock.get())
+                )
+                if let Some(group) = group {
+                    (group)
+                }
+                (labels)
+                if let Some(publication) = publication {
+                    (publication)
+                }
+                if let Some(archive) = archive {
+                    (archive)
+                }
+                if let Some(members) = members {
+                    (members)
+                }
+                if let Some(import) = import {
+                    (import)
+                }
+                (recent)
+                if let Some(danger) = danger {
+                    (danger)
+                }
+                <div class="native-overview__bottom-space" aria-hidden="true"></div>
+            </div>
         </div>
-    </div> }.boxed();
+    }.boxed();
     Ok(content)
 }
 
@@ -165,11 +248,55 @@ fn completion<'a>(cx: &'a Cx, counts: &IssueStatusCounts) -> BoxView<'a> {
     let percent = (fraction * 100.0).round() as i64;
     let offset = circumference * (1.0 - fraction);
     let mounted = signal(cx, || false);
-    view! { cx => <div class="native-overview__completion"><div class="native-overview__ring" role="progressbar" aria-valuenow=(percent.to_string()) aria-valuemin="0" aria-valuemax="100" @mount=$(|_event: Event| { let _paint = || mounted.set(true); raw!("requestAnimationFrame(()=>${_paint}());",()); })>
-        <svg width="52" height="52" viewBox="0 0 52 52" aria-hidden="true"><circle cx="26" cy="26" r="23.5" fill="none" stroke="var(--tc-border)" stroke-width="5"></circle>
-        <circle class="native-overview__arc" cx="26" cy="26" r="23.5" fill="none" stroke="var(--tc-success)" stroke-width="5" stroke-linecap="round" stroke-dasharray=(circumference.to_string()) :stroke-dashoffset=$(if mounted.get() { offset } else { circumference })></circle></svg>
-        <div>(percent)<span>"%"</span></div>
-    </div><span>(format!("{done}/{total} done"))</span></div> }.boxed()
+    view! {
+        cx =>
+        <div class="native-overview__completion">
+            <div
+                class="native-overview__ring"
+                role="progressbar"
+                aria-valuenow=(percent.to_string())
+                aria-valuemin="0"
+                aria-valuemax="100"
+                @mount=$(|_event: Event| {
+                    let _paint = || mounted.set(true);
+                    raw!("requestAnimationFrame(()=>${_paint}());", ());
+                })
+            >
+                <svg width="52" height="52" viewBox="0 0 52 52" aria-hidden="true">
+                    <circle
+                        cx="26"
+                        cy="26"
+                        r="23.5"
+                        fill="none"
+                        stroke="var(--tc-border)"
+                        stroke-width="5"
+                    ></circle>
+                    <circle
+                        class="native-overview__arc"
+                        cx="26"
+                        cy="26"
+                        r="23.5"
+                        fill="none"
+                        stroke="var(--tc-success)"
+                        stroke-width="5"
+                        stroke-linecap="round"
+                        stroke-dasharray=(circumference.to_string())
+                        :stroke-dashoffset=$(if mounted.get() {
+                            offset
+                        } else {
+                            circumference
+                        })
+                    ></circle>
+                </svg>
+                <div>
+                    (percent)
+                    <span>"%"</span>
+                </div>
+            </div>
+            <span>(format!("{done}/{total} done"))</span>
+        </div>
+    }
+    .boxed()
 }
 
 #[shard("/__native_overview/attention")]
@@ -222,19 +349,63 @@ async fn native_overview_attention(
             )
         })
         .collect::<Vec<_>>();
-    Ok(
-        view! {cx => <section data-native-overview-attention=""><div class="native-overview__heading"><h2>"Needs attention"</h2>
-            if more>0 {<a href=(transport::mounted_url(cx,&format!("/{identifier}/issues")))>(format!("+{more} more open"))(icons::ui_icon(cx,UiIcon::Forward,11))</a>}
+    Ok(view! {
+        cx =>
+        <section data-native-overview-attention="">
+            <div class="native-overview__heading">
+                <h2>"Needs attention"</h2>
+                if more > 0 {
+                    <a
+                        (super::super::navigation::attrs(
+                            cx,
+                            &format!("/{identifier}/issues"),
+                        ))
+                    >
+                        (format!("+{more} more open"))
+                        (icons::ui_icon(cx, UiIcon::Forward, 11))
+                    </a>
+                }
             </div>
-            if rows.is_empty(){<div class="native-overview__empty"><span>(icons::ui_icon(cx,UiIcon::AllClear,16))</span><div><p>"Nothing needs attention"</p><p>"Everything open is fresh and on track."</p></div></div>}
-            else {<div class="native-overview__attention-card">for (issue,title,priority,status,age,idle,heat) in rows {
-                <a class="native-overview__attention-row" href=(transport::mounted_url(cx,&format!("/{identifier}/issues/{issue}")))>
-                    <span class="native-overview__heat" style=(format!("background:{heat}"))></span>(icons::priority_icon(cx,priority,15))<span class="native-overview__issue-id">(issue)</span><span class="native-overview__issue-title">(title)</span>
-                    <div class="native-overview__issue-cues"><span>(format!("open {age}"))</span>if let Some(idle)=idle{<span class="native-overview__idle">(format!("idle {idle}"))</span>}(icons::status_icon(cx,status,14))</div>
-                </a>
-            }</div>}
-        </section>},
-    )
+            if rows.is_empty() {
+                <div class="native-overview__empty">
+                    <span>(icons::ui_icon(cx, UiIcon::AllClear, 16))</span>
+                    <div>
+                        <p>"Nothing needs attention"</p>
+                        <p>"Everything open is fresh and on track."</p>
+                    </div>
+                </div>
+            } else {
+                <div class="native-overview__attention-card">
+                    for (issue, title, priority, status, age, idle, heat) in rows {
+                        <a
+                            class="native-overview__attention-row"
+                            (super::super::navigation::attrs(
+                                cx,
+                                &format!("/{identifier}/issues/{issue}"),
+                            ))
+                        >
+                            <span
+                                class="native-overview__heat"
+                                style=(format!("background:{heat}"))
+                            ></span>
+                            (icons::priority_icon(cx, priority, 15))
+                            <span class="native-overview__issue-id">(issue)</span>
+                            <span class="native-overview__issue-title">(title)</span>
+                            <div class="native-overview__issue-cues">
+                                <span>(format!("open {age}"))</span>
+                                if let Some(idle) = idle {
+                                    <span class="native-overview__idle">
+                                        (format!("idle {idle}"))
+                                    </span>
+                                }
+                                (icons::status_icon(cx, status, 14))
+                            </div>
+                        </a>
+                    }
+                </div>
+            }
+        </section>
+    })
 }
 
 fn recent_activity<'a>(
@@ -255,7 +426,44 @@ fn recent_activity<'a>(
             )
         })
         .collect::<Vec<_>>();
-    view! {cx => if !rows.is_empty(){<section data-native-overview-activity=""><div class="native-overview__heading"><h2>"Recent activity"</h2><a href=(transport::mounted_url(cx,&format!("/{identifier}/activity")))>(icons::ui_icon(cx,UiIcon::History,11))" Full log"</a></div>
-        <div class="native-overview__activity-rows">for (actor,text,time,id) in rows{<div class="native-overview__activity-row" data-activity-id=(id.to_string())><span></span><p><strong>(actor)</strong>" "(text)" "<span>"· "(time)</span></p></div>}</div>
-    </section>} }.boxed()
+    view! {
+        cx =>
+        if !rows.is_empty() {
+            <section data-native-overview-activity="">
+                <div class="native-overview__heading">
+                    <h2>"Recent activity"</h2>
+                    <a
+                        (super::super::navigation::attrs(
+                            cx,
+                            &format!("/{identifier}/activity"),
+                        ))
+                    >
+                        (icons::ui_icon(cx, UiIcon::History, 11))
+                        " Full log"
+                    </a>
+                </div>
+                <div class="native-overview__activity-rows">
+                    for (actor, text, time, id) in rows {
+                        <div
+                            class="native-overview__activity-row"
+                            data-activity-id=(id.to_string())
+                        >
+                            <span></span>
+                            <p>
+                                <strong>(actor)</strong>
+                                " "
+                                (text)
+                                " "
+                                <span>
+                                    "· "
+                                    (time)
+                                </span>
+                            </p>
+                        </div>
+                    }
+                </div>
+            </section>
+        }
+    }
+    .boxed()
 }

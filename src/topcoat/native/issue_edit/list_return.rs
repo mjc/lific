@@ -75,7 +75,8 @@ pub(crate) fn breadcrumb<'a>(cx: &'a Cx, project: &str, identifier: &str) -> Box
     });
     let mut attributes = Attributes::with_capacity(1);
     attributes.insert(cx, "data-topcoat-on:mount", handler(project, &update));
-    view! { cx =>
+    view! {
+        cx =>
         <a id=(id) :href=$(href.get()) :title=$(label.get()) (attributes)>
             <span data-label="">$(label.get())</span>
         </a>
