@@ -98,7 +98,17 @@ impl Sidebar {
             !frozen.get().is_empty()
         });
         let handles = self.signals.handles();
-        view! {cx => native_sidebar_route(account: account, path: $(path.get()), wire: $(model.get()), blocked: $(blocked), handles: handles)}.boxed()
+        view! {
+            cx =>
+            native_sidebar_route(
+                account: account,
+                path: $(path.get()),
+                wire: $(model.get()),
+                blocked: $(blocked),
+                handles: handles
+            )
+        }
+        .boxed()
     }
     pub(crate) fn desktop<'a>(&self, cx: &'a Cx, path: Signal<String>) -> BoxView<'a> {
         let account = self.signals.account;
@@ -109,7 +119,26 @@ impl Sidebar {
         let storage = recents_state::storage(cx, &self.recents);
         let reveal = (path.clone(), self.scrolled.clone());
         let recents = self.recents.handles();
-        view! {cx => <span hidden="hidden" (storage)></span> recents_view::driver(account:account,path:$(path.get()),handles:recents.clone(),catalog:catalog) native_sidebar_desktop(account:account, wire:$(model.get()), path:$(path.get()), revision:$(revision.get()), handles:handles,recents:recents,reveal:reveal)}.boxed()
+        view! {
+            cx =>
+            <span hidden="hidden" (storage)></span>
+            recents_view::driver(
+                account: account,
+                path: $(path.get()),
+                handles: recents.clone(),
+                catalog: catalog
+            )
+            native_sidebar_desktop(
+                account: account,
+                wire: $(model.get()),
+                path: $(path.get()),
+                revision: $(revision.get()),
+                handles: handles,
+                recents: recents,
+                reveal: reveal
+            )
+        }
+        .boxed()
     }
     pub(crate) fn phone<'a>(
         &self,
@@ -123,7 +152,20 @@ impl Sidebar {
         let revision = self.signals.revision.clone();
         let recents = self.recents.handles();
         let initialized = navigation.7.clone();
-        view! {cx => native_sidebar_phone(account:account, wire:$(model.get()), path:$(path.get()), revision:$(revision.get()), handles:handles, navigation:navigation,recents:recents, initialized:$(initialized.get()))}.boxed()
+        view! {
+            cx =>
+            native_sidebar_phone(
+                account: account,
+                wire: $(model.get()),
+                path: $(path.get()),
+                revision: $(revision.get()),
+                handles: handles,
+                navigation: navigation,
+                recents: recents,
+                initialized: $(initialized.get())
+            )
+        }
+        .boxed()
     }
     pub(crate) fn phone_panels<'a>(
         &self,
@@ -153,7 +195,21 @@ impl Sidebar {
                 )
             }
         });
-        view!{cx=>native_sidebar_phone_panels(account:account,wire:$(model.get()),path:$(path.get()),revision:$(revision.get()),handles:handles,navigation:navigation,recents:recents,selected:$(selected.get()),focus_source:$(focus_source))}.boxed()
+        view! {
+            cx =>
+            native_sidebar_phone_panels(
+                account: account,
+                wire: $(model.get()),
+                path: $(path.get()),
+                revision: $(revision.get()),
+                handles: handles,
+                navigation: navigation,
+                recents: recents,
+                selected: $(selected.get()),
+                focus_source: $(focus_source)
+            )
+        }
+        .boxed()
     }
     pub(crate) fn menu<'a>(&self, cx: &'a Cx) -> BoxView<'a> {
         let account = self.signals.account;
@@ -162,7 +218,18 @@ impl Sidebar {
         let kind = self.signals.menu_kind.clone();
         let id = self.signals.menu_id.clone();
         let revision = self.signals.revision.clone();
-        view! {cx => native_sidebar_menu(account:account, wire:$(model.get()), kind:$(kind.get()), id:$(id.get()), revision:$(revision.get()), handles:handles)}.boxed()
+        view! {
+            cx =>
+            native_sidebar_menu(
+                account: account,
+                wire: $(model.get()),
+                kind: $(kind.get()),
+                id: $(id.get()),
+                revision: $(revision.get()),
+                handles: handles
+            )
+        }
+        .boxed()
     }
 }
 fn projection(cx: &Cx, account: i64, wire: &str) -> topcoat::Result<model::State> {
@@ -195,7 +262,7 @@ async fn native_sidebar_route(
     } else {
         Attributes::with_capacity(0)
     };
-    Ok(view! {cx => <span hidden="hidden" (mount)></span>}.boxed())
+    Ok(view! { cx => <span hidden="hidden" (mount)></span> }.boxed())
 }
 
 use desktop_shard::native_sidebar_desktop;
@@ -285,7 +352,13 @@ mod desktop_shard {
             "desktop".to_owned(),
             model.edit.is_none(),
         );
-        Ok(view! {cx => <span hidden="hidden" @mount=(mounted)></span><span hidden="hidden" (restore)></span>(projects)}.boxed())
+        Ok(view! {
+            cx =>
+            <span hidden="hidden" @mount=(mounted)></span>
+            <span hidden="hidden" (restore)></span>
+            (projects)
+        }
+        .boxed())
     }
 }
 use phone_shard::native_sidebar_phone;
@@ -336,9 +409,14 @@ mod phone_shard {
                 &recents_state::Signals::from_handles(account, recents),
             )
         } else {
-            view! {cx=>}.boxed()
+            view! { cx => }.boxed()
         };
-        Ok(view! {cx => <span hidden="hidden" (restore)></span>(projects)}.boxed())
+        Ok(view! {
+            cx =>
+            <span hidden="hidden" (restore)></span>
+            (projects)
+        }
+        .boxed())
     }
 }
 use menu_shard::native_sidebar_menu;
@@ -362,7 +440,13 @@ mod menu_shard {
         let _ = revision;
         let (_, model) = session::read(cx, actions::decoded(cx, account, &wire))?;
         let signals = state::Signals::from_handles(account, handles);
-        Ok(view! {cx=>if !kind.is_empty(){(view::menu(cx,&model,&signals,&kind,id))}}.boxed())
+        Ok(view! {
+            cx =>
+            if !kind.is_empty() {
+                (view::menu(cx, &model, &signals, &kind, id))
+            }
+        }
+        .boxed())
     }
 }
 
@@ -488,7 +572,12 @@ mod phone_panels_shard {
             &navigation,
             &recents_state::Signals::from_handles(account, recents),
         );
-        Ok(view! {cx => <span hidden="hidden" @mount=(mounted)></span> (panels)}.boxed())
+        Ok(view! {
+            cx =>
+            <span hidden="hidden" @mount=(mounted)></span>
+            (panels)
+        }
+        .boxed())
     }
 }
 

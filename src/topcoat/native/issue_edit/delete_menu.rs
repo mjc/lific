@@ -32,8 +32,11 @@ pub(crate) fn toolbar<'a>(
     project: &str,
 ) -> BoxView<'a> {
     let project = project.to_owned();
-    view! { cx =>
-        if can_edit { delete_menu(request: request, project: project) }
+    view! {
+        cx =>
+        if can_edit {
+            delete_menu(request: request, project: project)
+        }
     }
     .boxed()
 }
@@ -83,35 +86,81 @@ async fn delete_menu(cx: &Cx, request: Request, project: String) -> topcoat::Res
         "data-topcoat-on:click",
         super::list_return::handler(&project, &click),
     );
-    Ok(view! { cx =>
-        <div id=(id) class="native-issue-detail__delete" @mount=$(|_mount: Event| {
-            // Restored old render signals do not reopen a fresh issue's menu.
-            menu_open.set(false); confirming.set(false); deleting.set(false);
-            let _dismiss = |outside: BoolSurrogate| {
-                if outside { menu_open.set(false); confirming.set(false); }
-            };
-            raw!(
-                "window.addEventListener('click', event => ${_dismiss}(cx.hydrate(!document.getElementById(${mount_id}.toString())?.contains(event.target))), {signal:cx.abortSignal})",
-                ()
-            );
-        })>
-            <button type="button" class="native-issue-detail__more" title="More actions" @click=$(|_event: Event| {
-                if confirming.get() { confirming.set(false); menu_open.set(false); }
-                else { menu_open.set(!menu_open.get()); }
-            })>(super::super::icons::ui_icon(cx, UiIcon::MoreActions, 14))</button>
-            <div class="native-issue-detail__delete-menu" :hidden=$(if menu_open.get() { confirming.get() } else { true })>
-                <button type="button" class="native-issue-detail__delete-option" @click=$(|_event: Event| confirming.set(true))>
-                    (super::super::icons::ui_icon(cx, UiIcon::Delete, 14))"Delete issue"
+    Ok(view! {
+        cx =>
+        <div
+            id=(id)
+            class="native-issue-detail__delete"
+            @mount=$(|_mount: Event| {
+                // Restored old render signals do not reopen a fresh issue's menu.
+                menu_open.set(false);
+                confirming.set(false);
+                deleting.set(false);
+                let _dismiss = |outside: BoolSurrogate| {
+                    if outside {
+                        menu_open.set(false);
+                        confirming.set(false);
+                    }
+                };
+                raw!(
+                    "window.addEventListener('click', event => ${_dismiss}(cx.hydrate(!document.getElementById(${mount_id}.toString())?.contains(event.target))), {signal:cx.abortSignal})",
+                    (),
+                );
+            })
+        >
+            <button
+                type="button"
+                class="native-issue-detail__more"
+                title="More actions"
+                @click=$(|_event: Event| {
+                    if confirming.get() {
+                        confirming.set(false);
+                        menu_open.set(false);
+                    } else {
+                        menu_open.set(!menu_open.get());
+                    }
+                })
+            >
+                (super::super::icons::ui_icon(cx, UiIcon::MoreActions, 14))
+            </button>
+            <div
+                class="native-issue-detail__delete-menu"
+                :hidden=$(if menu_open.get() { confirming.get() } else { true })
+            >
+                <button
+                    type="button"
+                    class="native-issue-detail__delete-option"
+                    @click=$(|_event: Event| confirming.set(true))
+                >
+                    (super::super::icons::ui_icon(cx, UiIcon::Delete, 14))
+                    "Delete issue"
                 </button>
             </div>
-            <div class="native-issue-detail__delete-confirm" :hidden=$(!confirming.get())>
+            <div
+                class="native-issue-detail__delete-confirm"
+                :hidden=$(!confirming.get())
+            >
                 <p class="native-issue-detail__delete-title">(label)</p>
                 <p class="native-issue-detail__delete-body">"This can't be undone."</p>
                 <div class="native-issue-detail__delete-buttons">
-                    <button type="button" class="native-issue-detail__delete-run" :disabled=$(deleting.get()) (delete_attributes)>$(if deleting.get() { "Deleting..." } else { "Delete" })</button>
-                    <button type="button" class="native-issue-detail__delete-cancel" @click=$(|_event: Event| {
-                        confirming.set(false); menu_open.set(false);
-                    })>"Cancel"</button>
+                    <button
+                        type="button"
+                        class="native-issue-detail__delete-run"
+                        :disabled=$(deleting.get())
+                        (delete_attributes)
+                    >
+                        $(if deleting.get() { "Deleting..." } else { "Delete" })
+                    </button>
+                    <button
+                        type="button"
+                        class="native-issue-detail__delete-cancel"
+                        @click=$(|_event: Event| {
+                            confirming.set(false);
+                            menu_open.set(false);
+                        })
+                    >
+                        "Cancel"
+                    </button>
                 </div>
             </div>
         </div>

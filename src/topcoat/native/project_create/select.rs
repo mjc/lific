@@ -193,46 +193,98 @@ pub(super) fn select<'a>(
     trigger_interaction.insert(cx, "data-topcoat-on:keydown", interaction.clone());
     let mut menu_interaction = Attributes::with_capacity(1);
     menu_interaction.insert(cx, "data-topcoat-on:keydown", interaction);
-    view! { cx =>
+    view! {
+        cx =>
         <div id=(id) class="native-project-select" @mount=(mounted)>
-            <button id=(format!("{id}-trigger")) type="button" class="native-project-select__trigger"
-                aria-haspopup="listbox" :aria-expanded=$(open.get()) aria-controls=(format!("{id}-menu"))
-                (trigger_interaction)>
+            <button
+                id=(format!("{id}-trigger"))
+                type="button"
+                class="native-project-select__trigger"
+                aria-haspopup="listbox"
+                :aria-expanded=$(open.get())
+                aria-controls=(format!("{id}-menu"))
+                (trigger_interaction)
+            >
                 <span class="native-project-select__selected">
-                    <span class="native-project-select__avatar" :hidden=$(marks.index(selected.get()).is_empty())>$(marks.index(selected.get()).to_owned())</span>
+                    <span
+                        class="native-project-select__avatar"
+                        :hidden=$(marks.index(selected.get()).is_empty())
+                    >
+                        $(marks.index(selected.get()).to_owned())
+                    </span>
                     <span>$(labels.index(selected.get()).to_owned())</span>
                 </span>
                 <span class="native-project-select__chevron" aria-hidden="true">
                     (super::super::icons::ui_icon(cx, UiIcon::Expand, 14))
                 </span>
             </button>
-            <div id=(format!("{id}-menu")) class="native-project-select__options" role="listbox" :hidden=$(!open.get())
-                @click=$(|event: Event| event.stop_propagation()) (menu_interaction)>
+            <div
+                id=(format!("{id}-menu"))
+                class="native-project-select__options"
+                role="listbox"
+                :hidden=$(!open.get())
+                @click=$(|event: Event| event.stop_propagation())
+                (menu_interaction)
+            >
                 for (index, row) in rows.into_iter().enumerate() {
-                    <button type="button" role="option" :aria-selected=$(selected.get() == index)
+                    <button
+                        type="button"
+                        role="option"
+                        :aria-selected=$(selected.get() == index)
                         @click=$(|_event: Event| {
-                            selected.set(index); value.set(values.index(index).clone()); open.set(false);
-                        })>
+                            selected.set(index);
+                            value.set(values.index(index).clone());
+                            open.set(false);
+                        })
+                    >
                         <div class="native-project-select__option-content">
-                        if row.value.is_some() && !row.username.is_empty() {
-                            <div class="native-project-select__option-member">
-                            <span class="native-project-select__avatar">(row.initials)</span> " "
-                            <div class="native-project-select__member">
-                                <div class="native-project-select__member-title"><span class="native-project-select__member-name">(row.label)</span> " " if row.admin {<span class="native-project-select__admin">"Admin"</span>}</div> " "
-                                <span class="native-project-select__meta">"Member since "
-                                    <time id=(format!("{id}-date-{index}")) datetime=(row.created_at) @mount=$(|_event: Event| {
-                                        raw!("const time=document.getElementById(${root}.toString()+'-date-'+${index}.toString()); time.textContent = new Date(time.getAttribute('datetime') + 'Z').toLocaleDateString('en-US',{month:'short',year:'numeric'});", ());
-                                    })></time>
+                            if row.value.is_some() && !row.username.is_empty() {
+                                <div class="native-project-select__option-member">
+                                    <span class="native-project-select__avatar">
+                                        (row.initials)
+                                    </span>
+                                    " "
+                                    <div class="native-project-select__member">
+                                        <div class="native-project-select__member-title">
+                                            <span class="native-project-select__member-name">
+                                                (row.label)
+                                            </span>
+                                            " "
+                                            if row.admin {
+                                                <span class="native-project-select__admin">"Admin"</span>
+                                            }
+                                        </div>
+                                        " "
+                                        <span class="native-project-select__meta">
+                                            "Member since "
+                                            <time
+                                                id=(format!("{id}-date-{index}"))
+                                                datetime=(row.created_at)
+                                                @mount=$(|_event: Event| {
+                                                    raw!(
+                                                        "const time=document.getElementById(${root}.toString()+'-date-'+${index}.toString()); time.textContent = new Date(time.getAttribute('datetime') + 'Z').toLocaleDateString('en-US',{month:'short',year:'numeric'});",
+                                                        (),
+                                                    );
+                                                })
+                                            ></time>
+                                        </span>
+                                    </div>
+                                </div>
+                            } else if row.value.is_none() && row.label == "No lead" {
+                                <span class="native-project-select__empty">
+                                    (row.label)
                                 </span>
-                            </div>
-                            </div>
-                        } else if row.value.is_none() && row.label == "No lead" {
-                            <span class="native-project-select__empty">(row.label)</span>
-                        } else {
-                            <span class="native-project-select__plain">(row.label)</span>
-                        }
+                            } else {
+                                <span class="native-project-select__plain">
+                                    (row.label)
+                                </span>
+                            }
                         </div>
-                        <span class="native-project-select__check" aria-hidden="true" :hidden=$(selected.get() != index)>
+                        <span
+                            class="native-project-select__check"
+                            aria-hidden="true"
+                            :hidden=$(selected.get() != index)
+                        >
                             (super::super::icons::ui_icon(cx, UiIcon::Selected, 14))
                         </span>
                     </button>

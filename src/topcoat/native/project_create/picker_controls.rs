@@ -55,45 +55,123 @@ pub(crate) fn picker_with_attributes(
             ()
         );
     });
-    view! { cx =>
-        <div class="native-project-picker" data-native-project-picker="" @mount=(mounted) (changed)>
-            <button id="native-project-icon-trigger" type="button" class="native-project-picker__trigger" aria-label="Choose icon" :aria-expanded=$(open.get())
+    view! {
+        cx =>
+        <div
+            class="native-project-picker"
+            data-native-project-picker=""
+            @mount=(mounted)
+            (changed)
+        >
+            <button
+                id="native-project-icon-trigger"
+                type="button"
+                class="native-project-picker__trigger"
+                aria-label="Choose icon"
+                :aria-expanded=$(open.get())
                 @click=$(|event: Event| {
                     event.stop_propagation();
-                    open.set(!open.get()); query.set("".to_owned()); scroll_top.set(0_usize);
-                    if open.get() {raw!("requestAnimationFrame(() => document.getElementById('native-project-icon-search')?.focus());", ());}
-                })>
+                    open.set(!open.get());
+                    query.set("".to_owned());
+                    scroll_top.set(0_usize);
+                    if open.get() {
+                        raw!(
+                            "requestAnimationFrame(() => document.getElementById('native-project-icon-search')?.focus());",
+                            (),
+                        );
+                    }
+                })
+            >
                 <span :hidden=$(!selected.get().is_empty())>"+"</span>
-                <span :hidden=$(selected.get().is_empty())>selected_icon(value: $(selected.get()))</span>
+                <span :hidden=$(selected.get().is_empty())>
+                    selected_icon(value: $(selected.get()))
+                </span>
             </button>
-            <section class="native-project-picker__panel" :hidden=$(!open.get()) aria-label="Icon picker"
-                @click=$(|event: Event| event.stop_propagation())>
+            <section
+                class="native-project-picker__panel"
+                :hidden=$(!open.get())
+                aria-label="Icon picker"
+                @click=$(|event: Event| event.stop_propagation())
+            >
                 <div class="native-project-picker__tabs">
                     for (value, label) in [("icons", "Icons"), ("emoji", "Emoji")] {
-                        <button type="button" :aria-pressed=$(tab.get() == value) @click=$(|_event: Event| {
-                            tab.set(value.to_owned()); scroll_top.set(0_usize);
-                            raw!("document.getElementById('native-project-icon-scroll').scrollTop=0;", ());
-                        })>(label)</button>
+                        <button
+                            type="button"
+                            :aria-pressed=$(tab.get() == value)
+                            @click=$(|_event: Event| {
+                                tab.set(value.to_owned());
+                                scroll_top.set(0_usize);
+                                raw!(
+                                    "document.getElementById('native-project-icon-scroll').scrollTop=0;",
+                                    (),
+                                );
+                            })
+                        >
+                            (label)
+                        </button>
                     }
                 </div>
                 <div class="native-project-picker__search">
-                    <input id="native-project-icon-search" aria-label="Search icons" type="text" :value=$(query.get())
-                        :placeholder=$(if tab.get() == "icons" {"Search 1,900+ icons..."} else {"Search emojis..."})
+                    <input
+                        id="native-project-icon-search"
+                        aria-label="Search icons"
+                        type="text"
+                        :value=$(query.get())
+                        :placeholder=$(if tab.get() == "icons" {
+                            "Search 1,900+ icons..."
+                        } else {
+                            "Search emojis..."
+                        })
                         @input=$(|event: Event| {
-                            query.set(event.target.value); scroll_top.set(0_usize);
-                            raw!("document.getElementById('native-project-icon-scroll').scrollTop=0;", ());
-                        })>
+                            query.set(event.target.value);
+                            scroll_top.set(0_usize);
+                            raw!(
+                                "document.getElementById('native-project-icon-scroll').scrollTop=0;",
+                                (),
+                            );
+                        })
+                    >
                 </div>
-                <div id="native-project-icon-scroll" class="native-project-picker__scroll"
-                    @scroll=$(|_event: Event| scroll_top.set(raw!("cx.hydrate({t:'usize',bits:Number(${_target_bits}.toString()),v:String(Math.floor(document.getElementById('native-project-icon-scroll').scrollTop))})", 0_usize)))>
-                    super::picker::choices(tab: $(tab.get()), query: $(query.get()), scroll_top: $(scroll_top.get()), state: (selected.clone(), open.clone(), query.clone()))
+                <div
+                    id="native-project-icon-scroll"
+                    class="native-project-picker__scroll"
+                    @scroll=$(|_event: Event| scroll_top.set(
+                            raw!(
+                                "cx.hydrate({t:'usize',bits:Number(${_target_bits}.toString()),v:String(Math.floor(document.getElementById('native-project-icon-scroll').scrollTop))})",
+                                0_usize,
+                            ),
+                        ))
+                >
+                    super::picker::choices(
+                        tab: $(tab.get()),
+                        query: $(query.get()),
+                        scroll_top: $(scroll_top.get()),
+                        state: (selected.clone(), open.clone(), query.clone())
+                    )
                 </div>
-                <div class="native-project-picker__clear" :hidden=$(selected.get().is_empty())>
-                <button type="button" class="native-project-picker__remove" @click=$(|_event: Event| {
-                    selected.set("".to_owned()); open.set(false); query.set("".to_owned());
-                    raw!("document.getElementById('native-project-icon-trigger')?.dispatchEvent(new Event('native-project-icon-change',{bubbles:true}));",());
-                    raw!("document.getElementById('native-project-icon-trigger')?.focus();", ());
-                })>"Remove icon"</button>
+                <div
+                    class="native-project-picker__clear"
+                    :hidden=$(selected.get().is_empty())
+                >
+                    <button
+                        type="button"
+                        class="native-project-picker__remove"
+                        @click=$(|_event: Event| {
+                            selected.set("".to_owned());
+                            open.set(false);
+                            query.set("".to_owned());
+                            raw!(
+                                "document.getElementById('native-project-icon-trigger')?.dispatchEvent(new Event('native-project-icon-change',{bubbles:true}));",
+                                (),
+                            );
+                            raw!(
+                                "document.getElementById('native-project-icon-trigger')?.focus();",
+                                (),
+                            );
+                        })
+                    >
+                        "Remove icon"
+                    </button>
                 </div>
             </section>
         </div>

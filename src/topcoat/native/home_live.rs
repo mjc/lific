@@ -27,19 +27,32 @@ pub(crate) fn body(
         .iter()
         .map(|project| project.id)
         .collect::<Vec<_>>();
-    let invalidations = live! { cx =>
+    let invalidations = live! {
+        cx =>
         let now = chrono::Utc::now().timestamp_millis();
-        let mut rate = home_activity_rate::State::restore(&activity_state.get_untracked(), user.id, user.is_admin, now);
+        let mut rate = home_activity_rate::State::restore(
+            &activity_state.get_untracked(),
+            user.id,
+            user.is_admin,
+            now,
+        );
         if connected {
-            if let Some(epoch) = super::super::runtime::connection_epoch(&context) { rate.admit_connection(epoch); }
-            if rate.baseline_due(now) { rate.seed(&context, &user, now); }
+            if let Some(epoch) = super::super::runtime::connection_epoch(&context) {
+                rate.admit_connection(epoch);
+            }
+            if rate.baseline_due(now) {
+                rate.seed(&context, &user, now);
+            }
         }
         let mut label = rate.presentation(now);
         let token = emit! { (rate.render(cx, &activity_state, now)) }?;
         if !connected {
             return Ok(token);
         }
-        let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + std::time::Duration::from_secs(1), std::time::Duration::from_secs(1));
+        let mut tick = tokio::time::interval_at(
+            tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+            std::time::Duration::from_secs(1),
+        );
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             let (message, ticking) = tokio::select! {
@@ -69,11 +82,14 @@ pub(crate) fn body(
             // Projection reads belong to the content shard's scheduled render.
             let user = super::session::read_for_refresh(
                 &context,
-                super::context::caller(&context)
-                    .and_then(|caller| crate::api::require_user(&caller.identity)),
+                super::context::caller(&context).and_then(
+                    |caller| crate::api::require_user(&caller.identity),
+                ),
             )?;
             if (user.id, user.is_admin) != (rate.account(), rate.admin()) {
-                return Err(topcoat::router::error::redirect(mounted_url(&context, "/")).into());
+                return Err(
+                    topcoat::router::error::redirect(mounted_url(&context, "/")).into(),
+                );
             }
             let now = chrono::Utc::now().timestamp_millis();
             if ticking {
@@ -91,28 +107,44 @@ pub(crate) fn body(
                 // even though its new event audience is no longer visible.
                 let removed_project = match &message.event {
                     RealtimeEvent::ProjectUpdated { project_id }
-                    | RealtimeEvent::ProjectDeleted { project_id } =>
-                        visible_projects.contains(project_id),
+                    | RealtimeEvent::ProjectDeleted { project_id } => visible_projects.contains(
+                        project_id,
+                    ),
                     _ => false,
                 };
-                let visible = visible_to(super::context::db(&context), &user, &message) != EventVisibility::Hidden;
+                let visible = visible_to(super::context::db(&context), &user, &message)
+                    != EventVisibility::Hidden;
                 if !removed_project && !visible {
                     continue;
                 }
                 immediate |= matches!(message.event, RealtimeEvent::ResyncRequired);
                 visible && home_activity_rate::counted_event(&message.event)
-            } else { false };
-            if immediate { rate.counter.reset(); rate.seed(&context, &user, now); }
-            else if count_event { rate.record(now); }
+            } else {
+                false
+            };
+            if immediate {
+                rate.counter.reset();
+                rate.seed(&context, &user, now);
+            } else if count_event {
+                rate.record(now);
+            }
             label = rate.presentation(now);
-            let callback = if immediate { "nativeHomeRun" } else { "nativeHomeRealtime" };
+            let callback = if immediate {
+                "nativeHomeRun"
+            } else {
+                "nativeHomeRealtime"
+            };
             let _updated = emit! {
                 (rate.render(cx, &activity_state, now))
-                <span hidden="hidden" data-native-home-invalidation=""
-                    (super::home_refresh::callback(cx, callback))></span>
+                <span
+                    hidden="hidden"
+                    data-native-home-invalidation=""
+                    (super::home_refresh::callback(cx, callback))
+                ></span>
             }?;
         }
-    }.boxed();
+    }
+    .boxed();
     let initial = home::content_view(
         cx,
         &snapshot,
@@ -121,10 +153,14 @@ pub(crate) fn body(
         connected,
         invalidations,
     );
-    view! { cx =>
+    view! {
+        cx =>
         (initial)
-        <span hidden="hidden" data-native-home-snapshot=""
-            (super::home_refresh::callback(cx, "nativeHomeFinished"))></span>
+        <span
+            hidden="hidden"
+            data-native-home-snapshot=""
+            (super::home_refresh::callback(cx, "nativeHomeFinished"))
+        ></span>
     }
     .boxed()
 }

@@ -12,11 +12,13 @@ const HOSTILE_PROJECT_NAME: &str = r#"Quoted "project" & <img src="/native-hosti
 #[route(GET "/__native_home_shell_predecessor")]
 async fn history_predecessor(cx: &Cx) -> topcoat::Result<Response> {
     let favicon = super::transport::mounted_url(cx, "/favicon.png");
-    let html = view! { cx =>
+    let html = view! {
+        cx =>
         <!DOCTYPE html>
         <html lang="en">
             <head>
-                <meta charset="utf-8"><title>"Native shell history predecessor"</title>
+                <meta charset="utf-8">
+                <title>"Native shell history predecessor"</title>
                 <link rel="icon" href=(favicon)>
             </head>
             <body><h1>"Native shell history predecessor"</h1></body>

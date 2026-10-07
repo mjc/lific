@@ -41,11 +41,21 @@ pub(super) fn region(cx: &Cx, account: i64, palette_open: Signal<bool>) -> BoxVi
     let refresh_revision = signal(cx, || 0_usize);
     let activity_state = signal(cx, String::new);
     let content_palette = palette_open;
-    let content = view! { cx =>
-        <section data-native-home="" class="tc-native-home"
-            (super::home_refresh::mount(cx, inputs.clone(), refresh_revision.clone()))>
+    let content = view! {
+        cx =>
+        <section
+            data-native-home=""
+            class="tc-native-home"
+            (super::home_refresh::mount(cx, inputs.clone(), refresh_revision.clone()))
+        >
             <span hidden="hidden" (super::bookmark::mount(cx))></span>
-            native_home_content(account: account, browser_inputs: $(inputs.get()), refresh_revision: $(refresh_revision.get()), palette_open: content_palette, activity_state: activity_state)
+            native_home_content(
+                account: account,
+                browser_inputs: $(inputs.get()),
+                refresh_revision: $(refresh_revision.get()),
+                palette_open: content_palette,
+                activity_state: activity_state
+            )
         </section>
     }
     .boxed();
@@ -144,24 +154,45 @@ pub(super) fn content_view<'a>(
         &recents,
         activity_rate,
     );
-    view! { cx =>
-        <div class="tc-native-home__page" data-native-home-connected=(if connected { "true" } else { "false" })>
+    view! {
+        cx =>
+        <div
+            class="tc-native-home__page"
+            data-native-home-connected=(if connected { "true" } else { "false" })
+        >
             <header class="tc-native-home__hero">
                 <div class="tc-native-home__greeting">
-                    <span class="tc-native-home__greeting-icon" aria-hidden="true">(super::icons::ui_icon(cx, icon, 20))</span>
-                    <div><h1 id="native-home-greeting">(text)</h1><p id="native-home-date">(date)</p></div>
+                    <span class="tc-native-home__greeting-icon" aria-hidden="true">
+                        (super::icons::ui_icon(cx, icon, 20))
+                    </span>
+                    <div>
+                        <h1 id="native-home-greeting">(text)</h1>
+                        <p id="native-home-date">(date)</p>
+                    </div>
                 </div>
                 <div class="tc-native-home__actions">
                     if let Some(url) = quick_issue_url {
-                        <a class="tc-native-home__new" href=(url)>(super::icons::ui_icon(cx, UiIcon::Add, 14)) "New issue"</a>
+                        <a class="tc-native-home__new" href=(url)>
+                            (super::icons::ui_icon(cx, UiIcon::Add, 14))
+                            "New issue"
+                        </a>
                     }
-                    <button type="button" id="native-home-quick-jump" @click=$(|_event| palette_open.set(true))>
-                        (super::icons::ui_icon(cx, UiIcon::KeyboardShortcut, 13)) "Jump to…"
+                    <button
+                        type="button"
+                        id="native-home-quick-jump"
+                        @click=$(|_event| palette_open.set(true))
+                    >
+                        (super::icons::ui_icon(cx, UiIcon::KeyboardShortcut, 13))
+                        "Jump to…"
                         <kbd>"⌘K"</kbd>
                     </button>
                 </div>
             </header>
-            <div class="tc-native-home__columns">(work)(rail)</div>
+            <div class="tc-native-home__columns">
+                (work)
+                (rail)
+            </div>
         </div>
-    }.boxed()
+    }
+    .boxed()
 }

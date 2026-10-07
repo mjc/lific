@@ -169,16 +169,38 @@ pub(super) fn name<'a>(cx: &'a Cx, controls: &Controls, can_manage: bool) -> Box
     let focus_input = input_id.clone();
     let blur = save(cx, &controls, "name", "blur");
     let keydown = save(cx, &controls, "name", "keydown");
-    view! { cx =>
+    view! {
+        cx =>
         if can_manage {
-            <button type="button" class="native-overview__name" :hidden=$(name_editing.get()) @click=$(|_event: Event| {
-                name_draft.set(name.get()); name_editing.set(true);
-                raw!("requestAnimationFrame(()=>document.getElementById(${focus_input}.toString())?.focus());", ());
-            })>$(name.get())(icons::ui_icon(cx,UiIcon::Edit,14))</button>
-            <input id=(input_id) aria-label="Project name" class="native-overview__name-input" :hidden=$(!name_editing.get()) :value=$(name_draft.get())
+            <button
+                type="button"
+                class="native-overview__name"
+                :hidden=$(name_editing.get())
+                @click=$(|_event: Event| {
+                    name_draft.set(name.get());
+                    name_editing.set(true);
+                    raw!(
+                        "requestAnimationFrame(()=>document.getElementById(${focus_input}.toString())?.focus());",
+                        (),
+                    );
+                })
+            >
+                $(name.get())
+                (icons::ui_icon(cx, UiIcon::Edit, 14))
+            </button>
+            <input
+                id=(input_id)
+                aria-label="Project name"
+                class="native-overview__name-input"
+                :hidden=$(!name_editing.get())
+                :value=$(name_draft.get())
                 @input=$(|event: Event| name_draft.set(event.target.value))
-                (blur) (keydown)>
-        } else { <h1 class="native-overview__name">$(name.get())</h1> }
+                (blur)
+                (keydown)
+            >
+        } else {
+            <h1 class="native-overview__name">$(name.get())</h1>
+        }
     }.boxed()
 }
 pub(super) fn description<'a>(cx: &'a Cx, controls: &Controls, can_manage: bool) -> BoxView<'a> {
@@ -190,20 +212,54 @@ pub(super) fn description<'a>(cx: &'a Cx, controls: &Controls, can_manage: bool)
     let focus_input = input_id.clone();
     let blur = save(cx, &controls, "description", "blur");
     let keydown = save(cx, &controls, "description", "keydown");
-    view! { cx =>
+    view! {
+        cx =>
         if can_manage {
-            <button type="button" class="native-overview__description-button" :hidden=$(description_editing.get()) @click=$(|_event: Event| {
-                description_draft.set(description.get()); description_editing.set(true);
-                raw!("requestAnimationFrame(()=>document.getElementById(${focus_input}.toString())?.focus());", ());
-            })>
-                <span :hidden=$(description.get().is_empty())>$(description.get())</span>
-                <span class="native-overview__description-empty" :hidden=$(!description.get().is_empty())>"Add a description…"</span>
-                " "(icons::ui_icon(cx,UiIcon::Edit,12))
+            <button
+                type="button"
+                class="native-overview__description-button"
+                :hidden=$(description_editing.get())
+                @click=$(|_event: Event| {
+                    description_draft.set(description.get());
+                    description_editing.set(true);
+                    raw!(
+                        "requestAnimationFrame(()=>document.getElementById(${focus_input}.toString())?.focus());",
+                        (),
+                    );
+                })
+            >
+                <span :hidden=$(description.get().is_empty())>
+                    $(description.get())
+                </span>
+                <span
+                    class="native-overview__description-empty"
+                    :hidden=$(!description.get().is_empty())
+                >
+                    "Add a description…"
+                </span>
+                " "
+                (icons::ui_icon(cx, UiIcon::Edit, 12))
             </button>
-            <textarea id=(input_id) rows="2" aria-label="Project description" placeholder="Describe this project…" class="native-overview__description-input" :hidden=$(!description_editing.get()) :value=$(description_draft.get())
+            <textarea
+                id=(input_id)
+                rows="2"
+                aria-label="Project description"
+                placeholder="Describe this project…"
+                class="native-overview__description-input"
+                :hidden=$(!description_editing.get())
+                :value=$(description_draft.get())
                 @input=$(|event: Event| description_draft.set(event.target.value))
-                (blur) (keydown)></textarea>
-        } else { <p class="native-overview__description" :hidden=$(description.get().is_empty())>$(description.get())</p> }
+                (blur)
+                (keydown)
+            ></textarea>
+        } else {
+            <p
+                class="native-overview__description"
+                :hidden=$(description.get().is_empty())
+            >
+                $(description.get())
+            </p>
+        }
     }.boxed()
 }
 
@@ -213,11 +269,35 @@ pub(super) fn copy_identifier<'a>(cx: &'a Cx, identifier: &str) -> BoxView<'a> {
     let completed_copied = copied.clone();
     let failed_copied = copied.clone();
     let clipboard_identifier = identifier.clone();
-    view! { cx => <button type="button" class="native-overview__identifier" aria-label=(identifier.clone()) @click=$(|_event: Event| {
-        let _completed = || { completed_copied.set(true); let _reset = || completed_copied.set(false); raw!("setTimeout(()=>{if(!cx.abortSignal.aborted) ${_reset}()},1500);", ()); };
-        let _failed = || failed_copied.set(false);
-        raw!("navigator.clipboard.writeText(${clipboard_identifier}.toString()).then(()=>${_completed}(),()=>${_failed}());", ());
-    })>(identifier)<span :hidden=$(copied.get())>(icons::ui_icon(cx,UiIcon::Copy,11))</span><span :hidden=$(!copied.get())>(icons::ui_icon(cx,UiIcon::Copied,11))</span></button> }.boxed()
+    view! {
+        cx =>
+        <button
+            type="button"
+            class="native-overview__identifier"
+            aria-label=(identifier.clone())
+            @click=$(|_event: Event| {
+                let _completed = || {
+                    completed_copied.set(true);
+                    let _reset = || completed_copied.set(false);
+                    raw!(
+                        "setTimeout(()=>{if(!cx.abortSignal.aborted) ${_reset}()},1500);",
+                        (),
+                    );
+                };
+                let _failed = || failed_copied.set(false);
+                raw!(
+                    "navigator.clipboard.writeText(${clipboard_identifier}.toString()).then(()=>${_completed}(),()=>${_failed}());",
+                    (),
+                );
+            })
+        >
+            (identifier)
+            <span :hidden=$(copied.get())>(icons::ui_icon(cx, UiIcon::Copy, 11))</span>
+            <span :hidden=$(!copied.get())>
+                (icons::ui_icon(cx, UiIcon::Copied, 11))
+            </span>
+        </button>
+    }.boxed()
 }
 
 pub(super) fn group<'a>(
@@ -248,20 +328,70 @@ pub(super) fn group<'a>(
     let failed_selected = selected.clone();
     let failed_stored = stored.clone();
     let assign_group = actions::assign_group;
-    view! { cx => <section class="native-overview__group"><div class="native-overview__group-row"><div><p>"Sidebar group"</p><p>"Where this project sits in your sidebar. Only you see it."</p></div>
-        <select aria-label="Sidebar group" :value=$(selected.get()) :disabled=$(busy.get()) @change=$(async |event: Event| {
-            let value = event.target.value;
-            selected.set(value.clone()); busy.set(true); error.set("".to_owned());
-            let _failed = || { failed_busy.set(false); failed_selected.set(failed_stored.get()); failed_error.set("Couldn't save changes. Try again.".to_owned()); };
-            let _save = async || {
-                let outcome = assign_group(account,project_id,value.clone()).await;
-                busy.set(false);
-                if outcome.is_ok() { stored.set(value); saved.set(true); saved_revision.increment(); let expected = saved_revision.get(); let _clear = || { if saved_revision.get() == expected { saved.set(false); } }; raw!("setTimeout(()=>{if(!cx.abortSignal.aborted) ${_clear}()},2000);", ()); }
-                else { selected.set(stored.get()); error.set(outcome.unwrap_err()); }
-            };
-            raw!("Promise.resolve().then(()=>${_save}()).catch(()=>${_failed}());", ());
-        })><option value="">"No group"</option>for (value, label) in rows { <option value=(value)>(label)</option> }</select></div>
-    </section> }.boxed()
+    view! {
+        cx =>
+        <section class="native-overview__group">
+            <div class="native-overview__group-row">
+                <div>
+                    <p>"Sidebar group"</p>
+                    <p>"Where this project sits in your sidebar. Only you see it."</p>
+                </div>
+                <select
+                    aria-label="Sidebar group"
+                    :value=$(selected.get())
+                    :disabled=$(busy.get())
+                    @change=$(async |event: Event| {
+                        let value = event.target.value;
+                        selected.set(value.clone());
+                        busy.set(true);
+                        error.set("".to_owned());
+                        let _failed = || {
+                            failed_busy.set(false);
+                            failed_selected.set(failed_stored.get());
+                            failed_error.set(
+                                "Couldn't save changes. Try again.".to_owned(),
+                            );
+                        };
+                        let _save = async || {
+                            let outcome = assign_group(
+                                account,
+                                project_id,
+                                value.clone(),
+                            ).await;
+                            busy.set(false);
+                            if outcome.is_ok() {
+                                stored.set(value);
+                                saved.set(true);
+                                saved_revision.increment();
+                                let expected = saved_revision.get();
+                                let _clear = || {
+                                    if saved_revision.get() == expected {
+                                        saved.set(false);
+                                    }
+                                };
+                                raw!(
+                                    "setTimeout(()=>{if(!cx.abortSignal.aborted) ${_clear}()},2000);",
+                                    (),
+                                );
+                            } else {
+                                selected.set(stored.get());
+                                error.set(outcome.unwrap_err());
+                            }
+                        };
+                        raw!(
+                            "Promise.resolve().then(()=>${_save}()).catch(()=>${_failed}());",
+                            (),
+                        );
+                    })
+                >
+                    <option value="">"No group"</option>
+                    for (value, label) in rows {
+                        <option value=(value)>(label)</option>
+                    }
+                </select>
+            </div>
+        </section>
+    }.boxed()
 }
 
 // Shared ProjectForm picker emits only a generic selection event. Rust saves,

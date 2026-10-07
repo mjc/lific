@@ -69,20 +69,47 @@ pub(super) fn live(cx: &Cx, account: i64, project: i64) -> BoxView<'_> {
     let context = cx.clone();
     let mut events = app_context::<crate::realtime::RealtimeHub>(cx).subscribe();
     let connected = super::super::super::runtime::connected(cx);
-    live!{cx=>
-        let token=emit!{<span hidden="hidden" data-native-project-activity-events=""></span>}?;
-        if !connected {return Ok(token);}
+    live!{
+        cx =>
+        let token = emit! {
+            <span hidden="hidden" data-native-project-activity-events=""></span>
+        }?;
+        if !connected {
+            return Ok(token);
+        }
         loop {
-            let relevant=match events.recv().await {
-                Ok(message)=>matches!(message.event,crate::realtime::RealtimeEvent::ResyncRequired)||message.event.project_id()==Some(project),
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_))=>true,
-                Err(tokio::sync::broadcast::error::RecvError::Closed)=>return Ok(token),
+            let relevant = match events.recv().await {
+                Ok(message) => matches!(
+                        message.event,
+                        crate::realtime::RealtimeEvent::ResyncRequired,
+                    )
+                    || message.event.project_id() == Some(project),
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => true,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return Ok(token),
             };
             if relevant {
-                let caller=super::super::session::read_for_refresh(&context,super::super::context::caller(&context))?;
-                let user=super::super::session::read_for_refresh(&context,crate::api::require_user(&caller.identity))?;
-                if user.id!=account {return Err(topcoat::router::error::forbidden().into());}
-                let _updated=emit!{<span hidden="hidden" @mount=$(|_event:Event| {raw!("${_event}.inner.target.closest('[data-native-project-activity]').nativeActivitySchedule();",());})></span>}?;
+                let caller = super::super::session::read_for_refresh(
+                    &context,
+                    super::super::context::caller(&context),
+                )?;
+                let user = super::super::session::read_for_refresh(
+                    &context,
+                    crate::api::require_user(&caller.identity),
+                )?;
+                if user.id != account {
+                    return Err(topcoat::router::error::forbidden().into());
+                }
+                let _updated = emit! {
+                    <span
+                        hidden="hidden"
+                        @mount=$(|_event: Event| {
+                            raw!(
+                                "${_event}.inner.target.closest('[data-native-project-activity]').nativeActivitySchedule();",
+                                (),
+                            );
+                        })
+                    ></span>
+                }?;
             }
         }
     }.boxed()

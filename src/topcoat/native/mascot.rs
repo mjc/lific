@@ -22,7 +22,15 @@ pub(crate) fn render(cx: &Cx, mascot: Mascot, scale: f64) -> BoxView<'_> {
     let style = format!(
         "width:{width}px;height:{height}px;mask:url({path}) center / contain no-repeat;-webkit-mask:url({path}) center / contain no-repeat"
     );
-    view! { cx => <div aria-hidden="true" class="shrink-0 opacity-50 bg-[var(--text-faint)]" style=(style)></div> }.boxed()
+    view! {
+        cx =>
+        <div
+            aria-hidden="true"
+            class="shrink-0 opacity-50 bg-[var(--text-faint)]"
+            style=(style)
+        ></div>
+    }
+    .boxed()
 }
 
 #[cfg(test)]

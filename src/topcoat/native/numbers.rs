@@ -7,9 +7,21 @@ use topcoat::{
 
 fn content(cx: &Cx, count: i64) -> BoxView<'_> {
     let text = signal(cx, || localized_count(count));
-    view! { cx => <span @mount=$(|_event: Event| {
-        text.set(raw!("cx.hydrate(Number(${count}.toString()).toLocaleString())",String::new()));
-    })>$(text.get())</span> }
+    view! {
+        cx =>
+        <span
+            @mount=$(|_event: Event| {
+                text.set(
+                    raw!(
+                        "cx.hydrate(Number(${count}.toString()).toLocaleString())",
+                        String::new(),
+                    ),
+                );
+            })
+        >
+            $(text.get())
+        </span>
+    }
     .boxed()
 }
 
@@ -31,7 +43,7 @@ fn localized_count(count: i64) -> String {
 
 pub(crate) fn count(cx: &Cx, value: i64) -> BoxView<'_> {
     let scoped = cx.keyed(value);
-    view! {scoped=>scoped_number(value:value)}.boxed()
+    view! { scoped => scoped_number(value: value) }.boxed()
 }
 #[component]
 async fn scoped_number(cx: &Cx, value: i64) -> topcoat::Result<impl View> {
