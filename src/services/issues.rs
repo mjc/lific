@@ -1,7 +1,10 @@
 use crate::authz;
 use crate::db::{
     DbPool,
-    models::{AttachmentActor, CommentActor, Issue, ListIssuesQuery, Role, UpdateIssue},
+    models::{
+        AttachmentActor, CommentActor, CreateIssue, CreateLabel, Issue, Label, ListIssuesQuery,
+        Module, Role, UpdateIssue,
+    },
 };
 use crate::error::LificError;
 use crate::realtime::{RealtimeEvent, RealtimeHub};
@@ -75,7 +78,7 @@ pub(crate) fn retain_visible_relations(
     retain_visible_relations_conn(&conn, identity, issues)
 }
 
-fn retain_visible_relations_conn(
+pub(crate) fn retain_visible_relations_conn(
     conn: &rusqlite::Connection,
     identity: &Option<ResolvedIdentity>,
     issues: &mut [Issue],
@@ -83,6 +86,68 @@ fn retain_visible_relations_conn(
     let visible = authz::visible_project_ids_conn(conn, identity)?;
     crate::db::queries::retain_visible_relations(conn, issues, visible.as_ref());
     Ok(())
+}
+
+/// Commit a maintainer's issue creation and publish its cursor after commit.
+/// The caller supplies transport identity while this boundary assigns the
+/// authenticated actor used to link attachment references in the description.
+pub(crate) fn commit_issue_create(
+    db: &DbPool,
+    realtime: &RealtimeHub,
+    identity: &Option<ResolvedIdentity>,
+    mut input: CreateIssue,
+) -> Result<Issue, LificError> {
+    authz::require_role(db, identity, input.project_id, Role::Maintainer)?;
+    let issue = db.transaction(|conn| {
+        // Recheck on the writer so a role change cannot slip between the
+        // permission read and the attachment-linking issue transaction.
+        let identity = crate::auth::refresh_identity(conn, identity.as_ref())?;
+        authz::require_role_conn(conn, &identity, input.project_id, Role::Maintainer)?;
+        let user = crate::api::require_user(&identity)?;
+        input.attachments = AttachmentActor::Authenticated(CommentActor::from(&user));
+        crate::db::queries::create_issue(conn, &input)
+    })?;
+    realtime.send_with_seq(
+        RealtimeEvent::IssueCreated {
+            project_id: issue.project_id,
+            issue_id: issue.id,
+        },
+        issue.seq,
+    );
+    Ok(issue)
+}
+
+/// Read issue-create options on the same snapshot as page permission inputs.
+pub(crate) fn issue_create_catalog_conn(
+    conn: &rusqlite::Connection,
+    identity: &Option<ResolvedIdentity>,
+    project_id: i64,
+) -> Result<(Vec<Module>, Vec<Label>), LificError> {
+    authz::require_role_conn(conn, identity, project_id, Role::Viewer)?;
+    Ok((
+        crate::db::queries::list_modules(conn, project_id)?,
+        crate::db::queries::list_labels(conn, project_id)?,
+    ))
+}
+
+/// Create a project label from the issue composer and publish the project
+/// update only after the write succeeds.
+pub(crate) fn commit_issue_label_create(
+    db: &DbPool,
+    realtime: &RealtimeHub,
+    identity: &Option<ResolvedIdentity>,
+    input: CreateLabel,
+) -> Result<Label, LificError> {
+    authz::require_structure_role(db, identity, input.project_id)?;
+    let label = db.transaction(|conn| {
+        let identity = crate::auth::refresh_identity(conn, identity.as_ref())?;
+        authz::require_structure_role_conn(conn, &identity, input.project_id)?;
+        crate::db::queries::create_label(conn, &input)
+    })?;
+    realtime.send(RealtimeEvent::ProjectUpdated {
+        project_id: input.project_id,
+    });
+    Ok(label)
 }
 
 /// Commit an authenticated issue edit through the shared domain transaction.

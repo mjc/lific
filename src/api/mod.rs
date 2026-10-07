@@ -229,14 +229,13 @@ fn router_impl(
         // Modules
         .route(
             "/api/modules",
-            get(resources::list_structure::<resources::Modules>)
-                .post(resources::create_structure::<resources::Modules>),
+            get(resources::list_modules).post(resources::create_module),
         )
         .route(
             "/api/modules/{id}",
             get(resources::get_module)
-                .put(resources::update_structure::<resources::Modules>)
-                .delete(resources::delete_structure::<resources::Modules>),
+                .put(resources::update_module)
+                .delete(resources::delete_module),
         )
         // Labels
         .route(
