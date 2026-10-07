@@ -3,7 +3,7 @@
 use super::super::icons::UiIcon;
 use topcoat::{
     context::Cx,
-    runtime::{Event, Signal, expr, procedure, shard, signal},
+    runtime::{Event, Expr, Signal, expr, procedure, shard, signal},
     view::{Attributes, BoxView, Unescaped, View, ViewExt, component, view},
 };
 
@@ -711,6 +711,25 @@ fn priority_decoration(cx: &Cx, selected: Signal<String>, size: u32) -> BoxView<
     .boxed()
 }
 
+fn priority_label(priority: Signal<String>) -> Expr<String> {
+    expr!({
+        let value = priority.get();
+        if value == "none" {
+            "No priority".to_owned()
+        } else if value == "urgent" {
+            "Urgent".to_owned()
+        } else if value == "high" {
+            "High".to_owned()
+        } else if value == "medium" {
+            "Medium".to_owned()
+        } else if value == "low" {
+            "Low".to_owned()
+        } else {
+            value.clone()
+        }
+    })
+}
+
 fn document_topbar<'a>(
     cx: &'a Cx,
     controls: &Controls,
@@ -1219,35 +1238,22 @@ fn relation_view<'a>(cx: &'a Cx, relations: RelationValues) -> BoxView<'a> {
     .boxed()
 }
 
-fn render_editor<'a>(
+fn editor_content<'a>(
     cx: &'a Cx,
     snapshot: &Snapshot,
     can_edit: bool,
     markdown: bool,
-    controls: &Controls,
     document: bool,
+    controls: &Controls,
 ) -> BoxView<'a> {
     let controls = controls.clone();
     let identifier = snapshot.identifier.clone();
     let preview_identifier = identifier.clone();
-    let relations_identifier = identifier.clone();
-    let relation_signals = (
-        controls.blocks.clone(),
-        controls.blocked_by.clone(),
-        controls.relates_to.clone(),
-        controls.duplicates.clone(),
-        controls.duplicated_by.clone(),
-    );
     let activity_identifier = identifier.clone();
-    let metadata_identifier = identifier.clone();
-    let dates_identifier = identifier.clone();
-    let display_identifier = snapshot.identifier.clone();
     let display_title = snapshot.title.clone();
     let initial_description = snapshot.description.clone();
     let title = controls.title.clone();
     let description = controls.description.clone();
-    let status = controls.status.clone();
-    let priority = controls.priority.clone();
     let seq = controls.seq.clone();
     let title_draft = controls.title_draft.clone();
     let description_draft = controls.description_draft.clone();
@@ -1257,10 +1263,6 @@ fn render_editor<'a>(
     let description_editing = controls.description_editing.clone();
     let busy = controls.busy.clone();
     let message = controls.message.clone();
-    let properties_open = controls.properties_open.clone();
-    let status_open = controls.status_open.clone();
-    let header_status_open = controls.header_status_open.clone();
-    let priority_open = controls.priority_open.clone();
     let title_input = format!("native-issue-title-input-{identifier}");
     let title_button = format!("native-issue-title-{identifier}");
     let body_input = format!("native-issue-body-input-{identifier}");
@@ -1271,11 +1273,189 @@ fn render_editor<'a>(
     let body_key = save_attributes(cx, &controls, Field::Description, "keydown", None);
     let body_save = save_attributes(cx, &controls, Field::Description, "click", None);
     let empty_edit = body_edit_attributes(cx, &controls);
-    let mounted = if document && can_edit {
-        document_mount(cx, &controls)
-    } else {
-        Attributes::with_capacity(0)
-    };
+    view! {
+        cx =>
+        <div class="native-issue-editor__content">
+            if can_edit {
+                <button
+                    id=(title_button.clone())
+                    class="native-issue-editor__title"
+                    :hidden=$(title_editing.get())
+                    @click=$(|_event: Event| {
+                        title_draft.set(title.get());
+                        title_revision.increment();
+                        title_editing.set(true);
+                        raw!(
+                            "requestAnimationFrame(() => document.getElementById(${title_input}.toString())?.focus())",
+                            (),
+                        );
+                    })
+                >
+                    $(title.get())
+                </button>
+                <input
+                    id=(title_input.clone())
+                    type="text"
+                    aria-label="Issue title"
+                    class="native-issue-editor__title native-issue-editor__title-input"
+                    :hidden=$(!title_editing.get())
+                    :value=$(title_draft.get())
+                    @input=$(|event: Event| {
+                        title_draft.set(event.target.value);
+                        title_revision.increment();
+                    })
+                    (title_blur)
+                    (title_key)
+                >
+                <div
+                    class="native-issue-editor__body-toolbar"
+                    :hidden=$(if document { !description_editing.get() } else { false })
+                >
+                    if !document {
+                        <button
+                            id=(body_button.clone())
+                            :hidden=$(description_editing.get())
+                            @click=$(|_event: Event| {
+                                description_draft.set(description.get());
+                                description_revision.increment();
+                                description_editing.set(true);
+                                raw!(
+                                    "requestAnimationFrame(() => document.getElementById(${body_focus}.toString())?.focus())",
+                                    (),
+                                );
+                            })
+                        >
+                            "Edit"
+                        </button>
+                    }
+                    <button
+                        data-native-issue-body-save=""
+                        :hidden=$(!description_editing.get())
+                        :disabled=$(busy.get())
+                        (body_save)
+                    >
+                        "Save"
+                    </button>
+                    <button
+                        data-native-issue-body-cancel=""
+                        :hidden=$(!description_editing.get())
+                        @click=$(|_event: Event| {
+                            description_editing.set(false);
+                            description_draft.set(description.get());
+                            description_revision.increment();
+                            raw!(
+                                "requestAnimationFrame(() => document.getElementById(${body_button}.toString())?.focus())",
+                                (),
+                            );
+                        })
+                    >
+                        "Cancel"
+                    </button>
+                </div>
+                <textarea
+                    id=(body_input.clone())
+                    aria-label="Issue description"
+                    placeholder="Add a description... (markdown supported)"
+                    :hidden=$(!description_editing.get())
+                    :value=$(description_draft.get())
+                    @input=$(|event: Event| {
+                        description_draft.set(event.target.value);
+                        description_revision.increment();
+                    })
+                    (body_key)
+                >
+                    (initial_description)
+                </textarea>
+            } else {
+                <h1 class="native-issue-editor__title">(display_title)</h1>
+            }
+            if markdown {
+                <div
+                    class="native-issue-editor__preview tc-markdown"
+                    :hidden=$(description_editing.get())
+                >
+                    native_issue_markdown_preview(
+                        identifier: preview_identifier,
+                        source: $(description.get())
+                    )
+                </div>
+            } else {
+                <pre
+                    class="native-issue-editor__preview"
+                    :hidden=$(description_editing.get())
+                >
+                    $(description.get())
+                </pre>
+            }
+            if document && can_edit {
+                <button
+                    type="button"
+                    class="native-issue-editor__empty native-issue-editor__empty-edit"
+                    :hidden=$(if description_editing.get() {
+                        true
+                    } else {
+                        !description.get().trim().is_empty()
+                    })
+                    :disabled=$(busy.get())
+                    (empty_edit)
+                >
+                    "Click to add a description..."
+                </button>
+            } else {
+                <p
+                    class="native-issue-editor__empty"
+                    :hidden=$(!description.get().trim().is_empty())
+                >
+                    "No description"
+                </p>
+            }
+            <p
+                data-native-issue-save-error=""
+                role="alert"
+                :hidden=$(message.get().is_empty())
+            >
+                $(message.get())
+            </p>
+            if document {
+                native_issue_activity(
+                    identifier: activity_identifier,
+                    revision: $(seq.get())
+                )
+            }
+        </div>
+    }.boxed()
+}
+
+fn editor_fields<'a>(
+    cx: &'a Cx,
+    snapshot: &Snapshot,
+    can_edit: bool,
+    document: bool,
+    controls: &Controls,
+) -> BoxView<'a> {
+    let controls = controls.clone();
+    let identifier = snapshot.identifier.clone();
+    let relations_identifier = identifier.clone();
+    let relation_signals = (
+        controls.blocks.clone(),
+        controls.blocked_by.clone(),
+        controls.relates_to.clone(),
+        controls.duplicates.clone(),
+        controls.duplicated_by.clone(),
+    );
+    let metadata_identifier = identifier.clone();
+    let dates_identifier = identifier.clone();
+    let status = controls.status.clone();
+    let priority = controls.priority.clone();
+    let seq = controls.seq.clone();
+    let status_open = controls.status_open.clone();
+    let header_status_open = controls.header_status_open.clone();
+    let priority_open = controls.priority_open.clone();
+    let properties_open = controls.properties_open.clone();
+    let busy = controls.busy.clone();
+    let editable_priority_label = priority_label(priority.clone());
+    let readonly_priority_label = priority_label(priority.clone());
+    let compact_priority_label = priority_label(priority.clone());
     let initial_relations = (
         snapshot.blocks.clone(),
         snapshot.blocked_by.clone(),
@@ -1283,6 +1463,234 @@ fn render_editor<'a>(
         snapshot.duplicates.clone(),
         snapshot.duplicated_by.clone(),
     );
+    view! {
+        cx =>
+        <aside class="native-issue-editor__fields" aria-label="Issue fields">
+            if document {
+                <button
+                    class="native-issue-detail__properties-close"
+                    type="button"
+                    aria-label="Close details"
+                    @click=$(|_event: Event| {
+                        properties_open.set(false);
+                        raw!(
+                            "requestAnimationFrame(() => document.getElementById('native-issue-details-open')?.focus())",
+                            (),
+                        );
+                    })
+                >
+                    (super::super::icons::ui_icon(cx, UiIcon::Close, 18))
+                </button>
+            }
+            <section>
+                <h2>"Status"</h2>
+                if document && can_edit {
+                    <div class="native-issue-detail__picker">
+                        <button
+                            class="native-issue-detail__field-value"
+                            type="button"
+                            aria-label="Change issue status"
+                            aria-haspopup="menu"
+                            :aria-expanded=$(if status_open.get() {
+                                "true"
+                            } else {
+                                "false"
+                            })
+                            @click=$(|_event: Event| {
+                                status_open.set(!status_open.get());
+                                priority_open.set(false);
+                                header_status_open.set(false);
+                            })
+                        >
+                            (status_decoration(cx, status.clone(), 14))
+                            <span data-native-issue-status="">$(status.get())</span>
+                        </button>
+                        <div
+                            class="native-issue-detail__menu"
+                            role="menu"
+                            :hidden=$(!status_open.get())
+                        >
+                            (status_options(cx, &controls))
+                        </div>
+                    </div>
+                } else if document {
+                    <span class="native-issue-detail__field-value">
+                        (status_decoration(cx, status.clone(), 14))
+                        <span data-native-issue-status="">$(status.get())</span>
+                    </span>
+                } else {
+                    <span data-native-issue-status="">$(status.get())</span>
+                }
+                if can_edit && !document {
+                    for (value, label) in [
+                        ("backlog", "Backlog"),
+                        ("todo", "Todo"),
+                        ("active", "Active"),
+                        ("done", "Done"),
+                        ("cancelled", "Cancelled"),
+                    ] {
+                        <button
+                            data-native-issue-status-option=(value)
+                            :disabled=$(busy.get())
+                            (save_attributes(
+                                cx,
+                                &controls,
+                                Field::Status,
+                                "click",
+                                Some(value.into()),
+                            ))
+                        >
+                            (label)
+                        </button>
+                    }
+                }
+            </section>
+            <section>
+                <h2>"Priority"</h2>
+                if document && can_edit {
+                    <div class="native-issue-detail__picker">
+                        <button
+                            class="native-issue-detail__field-value"
+                            type="button"
+                            aria-label="Change issue priority"
+                            aria-haspopup="menu"
+                            :aria-expanded=$(if priority_open.get() {
+                                "true"
+                            } else {
+                                "false"
+                            })
+                            @click=$(|_event: Event| {
+                                priority_open.set(!priority_open.get());
+                                status_open.set(false);
+                                header_status_open.set(false);
+                            })
+                        >
+                            (priority_decoration(cx, priority.clone(), 14))
+                            <span
+                                data-native-issue-priority=""
+                                :data-priority=$(priority.get())
+                            >
+                                $(editable_priority_label)
+                            </span>
+                        </button>
+                        <div
+                            class="native-issue-detail__menu"
+                            role="menu"
+                            :hidden=$(!priority_open.get())
+                        >
+                            for (value, label) in [
+                                ("urgent", "Urgent"),
+                                ("high", "High"),
+                                ("medium", "Medium"),
+                                ("low", "Low"),
+                                ("none", "No priority"),
+                            ] {
+                                <button
+                                    type="button"
+                                    role="menuitemradio"
+                                    data-native-issue-priority-option=(value)
+                                    :aria-checked=$(if priority.get() == value {
+                                        "true"
+                                    } else {
+                                        "false"
+                                    })
+                                    :disabled=$(busy.get())
+                                    (save_attributes(
+                                        cx,
+                                        &controls,
+                                        Field::Priority,
+                                        "click",
+                                        Some(value.into()),
+                                    ))
+                                >
+                                    (label)
+                                </button>
+                            }
+                        </div>
+                    </div>
+                } else if document {
+                    <span class="native-issue-detail__field-value">
+                        (priority_decoration(cx, priority.clone(), 14))
+                        <span
+                            data-native-issue-priority=""
+                            :data-priority=$(priority.get())
+                        >
+                            $(readonly_priority_label)
+                        </span>
+                    </span>
+                } else {
+                    <span data-native-issue-priority="">$(compact_priority_label)</span>
+                }
+                if can_edit && !document {
+                    for (value, label) in [
+                        ("urgent", "Urgent"),
+                        ("high", "High"),
+                        ("medium", "Medium"),
+                        ("low", "Low"),
+                        ("none", "None"),
+                    ] {
+                        <button
+                            data-native-issue-priority-option=(value)
+                            :disabled=$(busy.get())
+                            (save_attributes(
+                                cx,
+                                &controls,
+                                Field::Priority,
+                                "click",
+                                Some(value.into()),
+                            ))
+                        >
+                            (label)
+                        </button>
+                    }
+                }
+            </section>
+            if document {
+                native_issue_metadata(
+                    identifier: metadata_identifier,
+                    revision: $(seq.get()),
+                    dates: false
+                )
+            }
+            if document {
+                native_issue_relations(
+                    identifier: relations_identifier,
+                    relations: relation_signals
+                )
+            } else {
+                (relation_view(cx, initial_relations))
+            }
+            if document {
+                native_issue_metadata(
+                    identifier: dates_identifier,
+                    revision: $(seq.get()),
+                    dates: true
+                )
+            }
+        </aside>
+    }.boxed()
+}
+
+fn render_editor<'a>(
+    cx: &'a Cx,
+    snapshot: &Snapshot,
+    can_edit: bool,
+    markdown: bool,
+    controls: &Controls,
+    document: bool,
+) -> BoxView<'a> {
+    let identifier = snapshot.identifier.clone();
+    let properties_open = controls.properties_open.clone();
+    let seq = controls.seq.clone();
+    let busy = controls.busy.clone();
+    let mounted = if document && can_edit {
+        document_mount(cx, controls)
+    } else {
+        Attributes::with_capacity(0)
+    };
+    let content = editor_content(cx, snapshot, can_edit, markdown, document, controls);
+    let fields = editor_fields(cx, snapshot, can_edit, document, controls);
+    let display_identifier = snapshot.identifier.clone();
     view! {
         cx =>
         <section
@@ -1306,369 +1714,8 @@ fn render_editor<'a>(
                 <output data-native-issue-seq="">$(seq.get())</output>
                 <span role="status" :hidden=$(!busy.get())>"Saving…"</span>
             </div>
-            <div class="native-issue-editor__content">
-                if can_edit {
-                    <button
-                        id=(title_button.clone())
-                        class="native-issue-editor__title"
-                        :hidden=$(title_editing.get())
-                        @click=$(|_event: Event| {
-                            title_draft.set(title.get());
-                            title_revision.increment();
-                            title_editing.set(true);
-                            raw!(
-                                "requestAnimationFrame(() => document.getElementById(${title_input}.toString())?.focus())",
-                                (),
-                            );
-                        })
-                    >
-                        $(title.get())
-                    </button>
-                    <input
-                        id=(title_input.clone())
-                        type="text"
-                        aria-label="Issue title"
-                        class="native-issue-editor__title native-issue-editor__title-input"
-                        :hidden=$(!title_editing.get())
-                        :value=$(title_draft.get())
-                        @input=$(|event: Event| {
-                            title_draft.set(event.target.value);
-                            title_revision.increment();
-                        })
-                        (title_blur)
-                        (title_key)
-                    >
-                    <div
-                        class="native-issue-editor__body-toolbar"
-                        :hidden=$(if document {
-                            !description_editing.get()
-                        } else {
-                            false
-                        })
-                    >
-                        if !document {
-                            <button
-                                id=(body_button.clone())
-                                :hidden=$(description_editing.get())
-                                @click=$(|_event: Event| {
-                                    description_draft.set(description.get());
-                                    description_revision.increment();
-                                    description_editing.set(true);
-                                    raw!(
-                                        "requestAnimationFrame(() => document.getElementById(${body_focus}.toString())?.focus())",
-                                        (),
-                                    );
-                                })
-                            >
-                                "Edit"
-                            </button>
-                        }
-                        <button
-                            data-native-issue-body-save=""
-                            :hidden=$(!description_editing.get())
-                            :disabled=$(busy.get())
-                            (body_save)
-                        >
-                            "Save"
-                        </button>
-                        <button
-                            data-native-issue-body-cancel=""
-                            :hidden=$(!description_editing.get())
-                            @click=$(|_event: Event| {
-                                description_editing.set(false);
-                                description_draft.set(description.get());
-                                description_revision.increment();
-                                raw!(
-                                    "requestAnimationFrame(() => document.getElementById(${body_button}.toString())?.focus())",
-                                    (),
-                                );
-                            })
-                        >
-                            "Cancel"
-                        </button>
-                    </div>
-                    <textarea
-                        id=(body_input.clone())
-                        aria-label="Issue description"
-                        placeholder="Add a description... (markdown supported)"
-                        :hidden=$(!description_editing.get())
-                        :value=$(description_draft.get())
-                        @input=$(|event: Event| {
-                            description_draft.set(event.target.value);
-                            description_revision.increment();
-                        })
-                        (body_key)
-                    >
-                        (initial_description)
-                    </textarea>
-                } else {
-                    <h1 class="native-issue-editor__title">(display_title)</h1>
-                }
-                if markdown {
-                    <div
-                        class="native-issue-editor__preview tc-markdown"
-                        :hidden=$(description_editing.get())
-                    >
-                        native_issue_markdown_preview(
-                            identifier: preview_identifier,
-                            source: $(description.get())
-                        )
-                    </div>
-                } else {
-                    <pre
-                        class="native-issue-editor__preview"
-                        :hidden=$(description_editing.get())
-                    >
-                        $(description.get())
-                    </pre>
-                }
-                if document && can_edit {
-                    <button
-                        type="button"
-                        class="native-issue-editor__empty native-issue-editor__empty-edit"
-                        :hidden=$(if description_editing.get() {
-                            true
-                        } else {
-                            !description.get().trim().is_empty()
-                        })
-                        :disabled=$(busy.get())
-                        (empty_edit)
-                    >
-                        "Click to add a description..."
-                    </button>
-                } else {
-                    <p
-                        class="native-issue-editor__empty"
-                        :hidden=$(!description.get().trim().is_empty())
-                    >
-                        "No description"
-                    </p>
-                }
-                <p
-                    data-native-issue-save-error=""
-                    role="alert"
-                    :hidden=$(message.get().is_empty())
-                >
-                    $(message.get())
-                </p>
-                if document {
-                    native_issue_activity(
-                        identifier: activity_identifier,
-                        revision: $(seq.get())
-                    )
-                }
-            </div>
-            <aside class="native-issue-editor__fields" aria-label="Issue fields">
-                if document {
-                    <button
-                        class="native-issue-detail__properties-close"
-                        type="button"
-                        aria-label="Close details"
-                        @click=$(|_event: Event| {
-                            properties_open.set(false);
-                            raw!(
-                                "requestAnimationFrame(() => document.getElementById('native-issue-details-open')?.focus())",
-                                (),
-                            );
-                        })
-                    >
-                        (super::super::icons::ui_icon(cx, UiIcon::Close, 18))
-                    </button>
-                }
-                <section>
-                    <h2>"Status"</h2>
-                    if document && can_edit {
-                        <div class="native-issue-detail__picker">
-                            <button
-                                class="native-issue-detail__field-value"
-                                type="button"
-                                aria-label="Change issue status"
-                                aria-haspopup="menu"
-                                :aria-expanded=$(if status_open.get() {
-                                    "true"
-                                } else {
-                                    "false"
-                                })
-                                @click=$(|_event: Event| {
-                                    status_open.set(!status_open.get());
-                                    priority_open.set(false);
-                                    header_status_open.set(false);
-                                })
-                            >
-                                (status_decoration(cx, status.clone(), 14))
-                                <span data-native-issue-status="">$(status.get())</span>
-                            </button>
-                            <div
-                                class="native-issue-detail__menu"
-                                role="menu"
-                                :hidden=$(!status_open.get())
-                            >
-                                (status_options(cx, &controls))
-                            </div>
-                        </div>
-                    } else if document {
-                        <span class="native-issue-detail__field-value">
-                            (status_decoration(cx, status.clone(), 14))
-                            <span data-native-issue-status="">$(status.get())</span>
-                        </span>
-                    } else {
-                        <span data-native-issue-status="">$(status.get())</span>
-                    }
-                    if can_edit && !document {
-                        for (value, label) in [
-                            ("backlog", "Backlog"),
-                            ("todo", "Todo"),
-                            ("active", "Active"),
-                            ("done", "Done"),
-                            ("cancelled", "Cancelled"),
-                        ] {
-                            <button
-                                data-native-issue-status-option=(value)
-                                :disabled=$(busy.get())
-                                (save_attributes(
-                                    cx,
-                                    &controls,
-                                    Field::Status,
-                                    "click",
-                                    Some(value.into()),
-                                ))
-                            >
-                                (label)
-                            </button>
-                        }
-                    }
-                </section>
-                <section>
-                    <h2>"Priority"</h2>
-                    if document && can_edit {
-                        <div class="native-issue-detail__picker">
-                            <button
-                                class="native-issue-detail__field-value"
-                                type="button"
-                                aria-label="Change issue priority"
-                                aria-haspopup="menu"
-                                :aria-expanded=$(if priority_open.get() {
-                                    "true"
-                                } else {
-                                    "false"
-                                })
-                                @click=$(|_event: Event| {
-                                    priority_open.set(!priority_open.get());
-                                    status_open.set(false);
-                                    header_status_open.set(false);
-                                })
-                            >
-                                (priority_decoration(cx, priority.clone(), 14))
-                                <span
-                                    data-native-issue-priority=""
-                                    :data-priority=$(priority.get())
-                                >
-                                    $(if priority.get() == "none" {
-                                        "No priority".to_owned()
-                                    } else {
-                                        priority.get()
-                                    })
-                                </span>
-                            </button>
-                            <div
-                                class="native-issue-detail__menu"
-                                role="menu"
-                                :hidden=$(!priority_open.get())
-                            >
-                                for (value, label) in [
-                                    ("urgent", "Urgent"),
-                                    ("high", "High"),
-                                    ("medium", "Medium"),
-                                    ("low", "Low"),
-                                    ("none", "No priority"),
-                                ] {
-                                    <button
-                                        type="button"
-                                        role="menuitemradio"
-                                        data-native-issue-priority-option=(value)
-                                        :aria-checked=$(if priority.get() == value {
-                                            "true"
-                                        } else {
-                                            "false"
-                                        })
-                                        :disabled=$(busy.get())
-                                        (save_attributes(
-                                            cx,
-                                            &controls,
-                                            Field::Priority,
-                                            "click",
-                                            Some(value.into()),
-                                        ))
-                                    >
-                                        (label)
-                                    </button>
-                                }
-                            </div>
-                        </div>
-                    } else if document {
-                        <span class="native-issue-detail__field-value">
-                            (priority_decoration(cx, priority.clone(), 14))
-                            <span
-                                data-native-issue-priority=""
-                                :data-priority=$(priority.get())
-                            >
-                                $(if priority.get() == "none" {
-                                    "No priority".to_owned()
-                                } else {
-                                    priority.get()
-                                })
-                            </span>
-                        </span>
-                    } else {
-                        <span data-native-issue-priority="">$(priority.get())</span>
-                    }
-                    if can_edit && !document {
-                        for (value, label) in [
-                            ("urgent", "Urgent"),
-                            ("high", "High"),
-                            ("medium", "Medium"),
-                            ("low", "Low"),
-                            ("none", "None"),
-                        ] {
-                            <button
-                                data-native-issue-priority-option=(value)
-                                :disabled=$(busy.get())
-                                (save_attributes(
-                                    cx,
-                                    &controls,
-                                    Field::Priority,
-                                    "click",
-                                    Some(value.into()),
-                                ))
-                            >
-                                (label)
-                            </button>
-                        }
-                    }
-                </section>
-                if document {
-                    native_issue_metadata(
-                        identifier: metadata_identifier,
-                        revision: $(seq.get()),
-                        dates: false
-                    )
-                }
-                if document {
-                    native_issue_relations(
-                        identifier: relations_identifier,
-                        relations: relation_signals
-                    )
-                } else {
-                    (relation_view(cx, initial_relations))
-                }
-                if document {
-                    native_issue_metadata(
-                        identifier: dates_identifier,
-                        revision: $(seq.get()),
-                        dates: true
-                    )
-                }
-            </aside>
+            (content)
+            (fields)
             if document {
                 <button
                     class="native-issue-detail__properties-backdrop"
@@ -1685,5 +1732,6 @@ fn render_editor<'a>(
                 ></button>
             }
         </section>
-    }.boxed()
+    }
+    .boxed()
 }
