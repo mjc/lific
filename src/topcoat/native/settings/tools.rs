@@ -147,11 +147,14 @@ fn render_section<'a>(cx: &'a Cx, account: i64) -> BoxView<'a> {
     let dialog_open = state.dialog.open.clone();
     let mut action_mount = delegated_bot_actions(cx, account, &state);
     action_mount.insert(cx, "data-native-tools-actions", "");
-    let connections = view! { cx => native_settings_connections(
-        account: account,
-        revision: state.revision.clone(),
-        bot_busy: state.bot_busy.clone()
-    ) }
+    let connections = view! {
+        cx =>
+        native_settings_connections(
+            account: account,
+            revision: state.revision.clone(),
+            bot_busy: state.bot_busy.clone()
+        )
+    }
     .boxed();
     let dialog = tool_dialog::view(cx, account, &state.dialog);
     let bot_error = state.bot_error.clone();
@@ -159,29 +162,56 @@ fn render_section<'a>(cx: &'a Cx, account: i64) -> BoxView<'a> {
         cx =>
         <section class="mt-10" (action_mount)>
             <div :inert=$(dialog_open.get())>
-            <h2 class="mb-1 flex items-center gap-2 text-[1rem] font-semibold text-[var(--text)]">
-                (ui_icon(cx, UiIcon::Plug, 16)) "Connected tools"
-            </h2>
-            <p class="mb-5 text-body leading-relaxed text-[var(--text-muted)]">
-                "Link an AI coding tool to Lific over MCP. Each connection mints a bot identity that acts on your behalf; disconnect any time."
-            </p>
-            <div class="mb-4 grid gap-2 sm:grid-cols-2">for card in cards { (card) }</div>
-            (connections)
-            <p class="mt-3 text-caption text-[var(--error)]" role="alert">$(bot_error.get())</p>
-            <div class="mt-4 max-w-lg rounded-xl bg-[var(--surface)] p-4">
-                <h3 class="mb-3 text-body font-semibold text-[var(--text)]">"Add custom or named connection"</h3>
-                <label class="mb-3 block text-body-sm">"Connection ID"
-                    <input class=(super::INPUT) maxlength="48" placeholder="codex-laptop"
-                        data-native-tool-custom-id="" :value=$(custom_id.get())
-                        @input=$(|event: Event| custom_id.set(event.target.value.to_owned())) />
-                </label>
-                <label class="mb-3 block text-body-sm">"Display name"
-                    <input class=(super::INPUT) maxlength="80" placeholder="Codex on my laptop"
-                        data-native-tool-custom-name="" :value=$(custom_name.get())
-                        @input=$(|event: Event| custom_name.set(event.target.value.to_owned())) />
-                </label>
-                (custom)
-            </div>
+                <h2
+                    class="mb-1 flex items-center gap-2 text-[1rem] font-semibold text-[var(--text)]"
+                >
+                    (ui_icon(cx, UiIcon::Plug, 16))
+                    "Connected tools"
+                </h2>
+                <p class="mb-5 text-body leading-relaxed text-[var(--text-muted)]">
+                    "Link an AI coding tool to Lific over MCP. Each connection mints a bot identity that acts on your behalf; disconnect any time."
+                </p>
+                <div class="mb-4 grid gap-2 sm:grid-cols-2">
+                    for card in cards {
+                        (card)
+                    }
+                </div>
+                (connections)
+                <p class="mt-3 text-caption text-[var(--error)]" role="alert">
+                    $(bot_error.get())
+                </p>
+                <div class="mt-4 max-w-lg rounded-xl bg-[var(--surface)] p-4">
+                    <h3 class="mb-3 text-body font-semibold text-[var(--text)]">
+                        "Add custom or named connection"
+                    </h3>
+                    <label class="mb-3 block text-body-sm">
+                        "Connection ID"
+                        <input
+                            class=(super::INPUT)
+                            maxlength="48"
+                            placeholder="codex-laptop"
+                            data-native-tool-custom-id=""
+                            :value=$(custom_id.get())
+                            @input=$(|event: Event| custom_id.set(
+                                    event.target.value.to_owned(),
+                                ))
+                        />
+                    </label>
+                    <label class="mb-3 block text-body-sm">
+                        "Display name"
+                        <input
+                            class=(super::INPUT)
+                            maxlength="80"
+                            placeholder="Codex on my laptop"
+                            data-native-tool-custom-name=""
+                            :value=$(custom_name.get())
+                            @input=$(|event: Event| custom_name.set(
+                                    event.target.value.to_owned(),
+                                ))
+                        />
+                    </label>
+                    (custom)
+                </div>
             </div>
             (reconnect_trigger)
             (dialog)
@@ -206,11 +236,14 @@ async fn native_settings_connections(
         .into_iter()
         .map(|bot| connection_card(cx, bot, bot_busy.clone()))
         .collect::<Vec<_>>();
-    Ok(
-        view! { cx => <div class="grid gap-2.5 sm:grid-cols-2" data-settings-connections-list="">
-            for card in cards { (card) }
-        </div> },
-    )
+    Ok(view! {
+        cx =>
+        <div class="grid gap-2.5 sm:grid-cols-2" data-settings-connections-list="">
+            for card in cards {
+                (card)
+            }
+        </div>
+    })
 }
 
 fn connection_card<'a>(cx: &'a Cx, bot: Bot, bot_busy: Signal<i64>) -> BoxView<'a> {
@@ -226,23 +259,77 @@ fn connection_card<'a>(cx: &'a Cx, bot: Bot, bot_busy: Signal<i64>) -> BoxView<'
     let reconnect =
         serde_json::to_string(&(tool_id.clone(), name.clone(), template).into_surrogate())
             .expect("reconnect identity contains strings");
-    view! { cx =>
-        <div class="flex flex-wrap items-center gap-3.5 rounded-xl bg-[var(--surface)] p-3.5 shadow-[0_1px_2px_rgba(0,0,0,0.06)]" data-connection-id=(tool_id.clone())>
-            <div class="grid size-10 shrink-0 place-items-center rounded-lg bg-[var(--bg-subtle)] text-[var(--text)]">(ui_icon(cx, UiIcon::OpenExternal, 17))</div>
+    view! {
+        cx =>
+        <div
+            class="flex flex-wrap items-center gap-3.5 rounded-xl bg-[var(--surface)] p-3.5 shadow-[0_1px_2px_rgba(0,0,0,0.06)]"
+            data-connection-id=(tool_id.clone())
+        >
+            <div
+                class="grid size-10 shrink-0 place-items-center rounded-lg bg-[var(--bg-subtle)] text-[var(--text)]"
+            >
+                (ui_icon(cx, UiIcon::OpenExternal, 17))
+            </div>
             <div class="min-w-0 flex-1">
-                <div class="flex flex-wrap items-center gap-2"><span class="break-all text-body font-medium text-[var(--text)]">(name)</span>
-                    if bot.connected { <span class="rounded-full bg-[var(--success-bg)] px-1.5 py-0.5 text-micro font-semibold uppercase tracking-wide text-[var(--success)]">"● Connected"</span> }
-                    else { <span class="rounded-full px-1.5 py-0.5 text-micro font-semibold uppercase tracking-wide text-[var(--warn)]">"Disconnected"</span> }
+                <div class="flex flex-wrap items-center gap-2">
+                    <span class="break-all text-body font-medium text-[var(--text)]">
+                        (name)
+                    </span>
+                    if bot.connected {
+                        <span
+                            class="rounded-full bg-[var(--success-bg)] px-1.5 py-0.5 text-micro font-semibold uppercase tracking-wide text-[var(--success)]"
+                        >
+                            "● Connected"
+                        </span>
+                    } else {
+                        <span
+                            class="rounded-full px-1.5 py-0.5 text-micro font-semibold uppercase tracking-wide text-[var(--warn)]"
+                        >
+                            "Disconnected"
+                        </span>
+                    }
                 </div>
-                <p class="mt-0.5 truncate text-caption text-[var(--text-muted)]">(tool_id.clone())</p>
+                <p class="mt-0.5 truncate text-caption text-[var(--text-muted)]">
+                    (tool_id.clone())
+                </p>
             </div>
             <div class="flex shrink-0 items-center gap-1.5">
-                if bot.connected { <button type="button" class=(format!("{} text-[var(--text-muted)] hover:text-[var(--error)]", super::BUTTON))
-                    data-native-bot-action=(bot_action_wire(bot.id, false)) :disabled=$(bot_busy.get() == bot_id)>"Disconnect"</button> }
-                else { <button type="button" class=(format!("{} text-[var(--text-faint)] hover:text-[var(--error)]", super::BUTTON))
-                    data-native-bot-action=(bot_action_wire(bot.id, true)) :disabled=$(bot_busy.get() == bot_id)>"Remove"</button>
-                    <button type="button" class=(format!("{} bg-[var(--btn-success)] text-[var(--btn-success-text)] hover:bg-[var(--btn-success-hover)]", super::BUTTON))
-                        data-native-tool-reconnect=(reconnect) data-native-tool-reconnect-template=(template)>"Reconnect"</button> }
+                if bot.connected {
+                    <button
+                        type="button"
+                        class=(format!(
+                            "{} text-[var(--text-muted)] hover:text-[var(--error)]",
+                            super::BUTTON,
+                        ))
+                        data-native-bot-action=(bot_action_wire(bot.id, false))
+                        :disabled=$(bot_busy.get() == bot_id)
+                    >
+                        "Disconnect"
+                    </button>
+                } else {
+                    <button
+                        type="button"
+                        class=(format!(
+                            "{} text-[var(--text-faint)] hover:text-[var(--error)]",
+                            super::BUTTON,
+                        ))
+                        data-native-bot-action=(bot_action_wire(bot.id, true))
+                        :disabled=$(bot_busy.get() == bot_id)
+                    >
+                        "Remove"
+                    </button>
+                    <button
+                        type="button"
+                        class=(format!(
+                            "{} bg-[var(--btn-success)] text-[var(--btn-success-text)] hover:bg-[var(--btn-success-hover)]",
+                            super::BUTTON,
+                        ))
+                        data-native-tool-reconnect=(reconnect)
+                        data-native-tool-reconnect-template=(template)
+                    >
+                        "Reconnect"
+                    </button>
+                }
             </div>
         </div>
     }.boxed()
