@@ -9,7 +9,7 @@ use topcoat::{
 use super::super::super::runtime::whitespace::StrEcmaTrimExt;
 
 use super::super::{context, session};
-use super::actions::save_text;
+use super::actions::{confirm_name, save_text};
 
 #[derive(Clone)]
 struct NameState {
@@ -20,6 +20,11 @@ struct NameState {
     queued_name: Signal<Option<String>>,
     last_submission: Signal<String>,
     error: Signal<String>,
+    parked_name: Signal<Option<String>>,
+    needs_confirmation: Signal<bool>,
+    password: Signal<String>,
+    confirming: Signal<bool>,
+    confirmation_error: Signal<String>,
 }
 
 #[record]
@@ -75,6 +80,10 @@ fn save_name_attrs(cx: &Cx, account: i64, state: NameState) -> Attributes {
         queued_name,
         last_submission,
         error,
+        parked_name,
+        needs_confirmation,
+        confirming,
+        ..
     } = state;
     let failed_name = name.clone();
     let failed_saved_name = saved_name.clone();
@@ -89,7 +98,11 @@ fn save_name_attrs(cx: &Cx, account: i64, state: NameState) -> Attributes {
         let requested = name.get().trim_ecmascript().to_owned();
         name.set(requested.clone());
         let baseline = saved_name.get();
-        if saving.get() {
+        if confirming.get() {
+            queued_name.set(Some(requested));
+        } else if needs_confirmation.get() {
+            parked_name.set(Some(requested));
+        } else if saving.get() {
             queued_name.set(Some(requested));
         } else if requested != baseline {
             queued_name.set(Some(requested));
@@ -118,8 +131,16 @@ fn save_name_attrs(cx: &Cx, account: i64, state: NameState) -> Attributes {
                         saved.set(false);
                         error.set("".to_owned());
                         last_submission.set(submission.clone());
-                        let result =
-                            save_text(account, "name".to_owned(), submission.clone()).await;
+                        let request_submission = submission.clone();
+                        let _request = async || {
+                            save_text(account, "name".to_owned(), request_submission).await
+                        };
+                        let _transport_error =
+                            "Couldn't save the instance name. Try again.".to_owned();
+                        let result = raw!(
+                            "await ${_request}().catch(()=>cx.hydrate([false,${_transport_error}.toString()]))",
+                            (false, String::new())
+                        );
                         if !raw!("${_live}()", false) {
                             return;
                         }
@@ -131,7 +152,14 @@ fn save_name_attrs(cx: &Cx, account: i64, state: NameState) -> Attributes {
                             saved.set(true);
                         } else if result.1 == recent_auth_required {
                             error.set(result.1.clone());
+                            let pending = if queued_name.get().is_some() {
+                                queued_name.get().unwrap()
+                            } else {
+                                submission.clone()
+                            };
                             queued_name.set(None);
+                            parked_name.set(Some(pending));
+                            needs_confirmation.set(true);
                         } else {
                             if name.get().trim_ecmascript().to_owned() == submission {
                                 name.set(previous);
@@ -144,7 +172,7 @@ fn save_name_attrs(cx: &Cx, account: i64, state: NameState) -> Attributes {
                 saving.set(false);
             };
             raw!(
-                "Promise.resolve().then(()=>${_save}()).catch(()=>${_failed}());",
+                "Promise.resolve().then(()=>cx.withSessionChange(cx.abortSignal,()=>${_save}())).catch(()=>${_failed}());",
                 ()
             );
         }
@@ -154,6 +182,189 @@ fn save_name_attrs(cx: &Cx, account: i64, state: NameState) -> Attributes {
         cx,
         "data-topcoat-on:blur",
         handler.into_evaluated_and_js().1,
+    );
+    attrs
+}
+
+fn confirmation_attrs(cx: &Cx, account: i64, state: NameState) -> Attributes {
+    let NameState {
+        name,
+        saved_name,
+        saving,
+        saved,
+        queued_name,
+        parked_name,
+        needs_confirmation,
+        password,
+        confirming,
+        confirmation_error,
+        error,
+        last_submission,
+        ..
+    } = state;
+    let failed_confirming = confirming.clone();
+    let failed_error = confirmation_error.clone();
+    let failed_needs_confirmation = needs_confirmation.clone();
+    let failed_parked_name = parked_name.clone();
+    let failed_queued_name = queued_name.clone();
+    let failed_submission = last_submission.clone();
+    let failed_saving = saving.clone();
+    let recent_auth_required = crate::auth::RECENT_AUTH_REQUIRED_MESSAGE.to_owned();
+    let confirm = expr!(|_event: Event| {
+        if !needs_confirmation.get() {
+            return;
+        }
+        if confirming.get() {
+            return;
+        }
+        if password.get().is_empty() {
+            return;
+        }
+        let submission = if parked_name.get().is_some() {
+            parked_name.get().unwrap()
+        } else {
+            name.get().trim_ecmascript().to_owned()
+        };
+        let current_password = password.get();
+        last_submission.set(submission.clone());
+        parked_name.set(None);
+        confirming.set(true);
+        confirmation_error.set("".to_owned());
+        error.set("".to_owned());
+        saved.set(false);
+        let _live = || !raw!("cx.hydrate(cx.abortSignal.aborted)", false);
+        let _failed = || {
+            if raw!("${_live}()", true) {
+                failed_saving.set(false);
+                failed_confirming.set(false);
+                failed_error.set("Couldn't confirm your password. Try again.".to_owned());
+                failed_needs_confirmation.set(true);
+                let pending = if failed_queued_name.get().is_some() {
+                    failed_queued_name.get().unwrap()
+                } else {
+                    failed_submission.get()
+                };
+                failed_parked_name.set(Some(pending));
+                failed_queued_name.set(None);
+            }
+        };
+        let _confirm = async || {
+            let result = confirm_name(account, submission.clone(), current_password).await;
+            if !raw!("${_live}()", false) {
+                return;
+            }
+            if result.0 {
+                saved_name.set(result.1.clone());
+                if name.get().trim_ecmascript().to_owned() == submission {
+                    name.set(result.1.clone());
+                }
+                needs_confirmation.set(false);
+                confirmation_error.set("".to_owned());
+                password.set("".to_owned());
+                error.set("".to_owned());
+                saved.set(true);
+                while queued_name.get().is_some() {
+                    let queued = queued_name.get().unwrap();
+                    queued_name.set(None);
+                    let previous = saved_name.get();
+                    if queued != previous {
+                        saved.set(false);
+                        saving.set(true);
+                        last_submission.set(queued.clone());
+                        let result = save_text(account, "name".to_owned(), queued.clone()).await;
+                        if !raw!("${_live}()", false) {
+                            return;
+                        }
+                        if result.0 {
+                            saved_name.set(result.1.clone());
+                            parked_name.set(None);
+                            if name.get().trim_ecmascript().to_owned() == queued {
+                                name.set(result.1.clone());
+                            }
+                            saved.set(true);
+                        } else if result.1 == recent_auth_required {
+                            let pending = if queued_name.get().is_some() {
+                                queued_name.get().unwrap()
+                            } else {
+                                queued
+                            };
+                            queued_name.set(None);
+                            parked_name.set(Some(pending));
+                            needs_confirmation.set(true);
+                            error.set(result.1.clone());
+                            queued_name.set(None);
+                        } else {
+                            if name.get().trim_ecmascript().to_owned() == queued {
+                                name.set(previous);
+                            }
+                            error.set(result.1.clone());
+                            if queued_name.get().is_some() {
+                                parked_name.set(Some(queued_name.get().unwrap()));
+                            }
+                            queued_name.set(None);
+                        }
+                    }
+                    let _iteration_complete = false;
+                }
+                saving.set(false);
+            } else {
+                let pending = if queued_name.get().is_some() {
+                    queued_name.get().unwrap()
+                } else {
+                    submission.clone()
+                };
+                queued_name.set(None);
+                parked_name.set(Some(pending));
+                needs_confirmation.set(true);
+                confirmation_error.set(result.1);
+            }
+            confirming.set(false);
+        };
+        raw!(
+            "Promise.resolve().then(()=>cx.withSessionChange(cx.abortSignal,()=>${_confirm}())).catch(()=>${_failed}());",
+            ()
+        );
+    });
+    let mut attrs = Attributes::with_capacity(1);
+    attrs.insert(
+        cx,
+        "data-topcoat-on:click",
+        confirm.into_evaluated_and_js().1,
+    );
+    attrs
+}
+
+fn cancel_confirmation_attrs(cx: &Cx, state: NameState) -> Attributes {
+    let NameState {
+        name,
+        saved_name,
+        queued_name,
+        parked_name,
+        needs_confirmation,
+        password,
+        confirming,
+        confirmation_error,
+        error,
+        saved,
+        ..
+    } = state;
+    let cancel = expr!(|_event: Event| {
+        if !confirming.get() {
+            name.set(saved_name.get());
+            queued_name.set(None);
+            parked_name.set(None);
+            needs_confirmation.set(false);
+            password.set("".to_owned());
+            confirmation_error.set("".to_owned());
+            error.set("".to_owned());
+            saved.set(false);
+        }
+    });
+    let mut attrs = Attributes::with_capacity(1);
+    attrs.insert(
+        cx,
+        "data-topcoat-on:click",
+        cancel.into_evaluated_and_js().1,
     );
     attrs
 }
@@ -186,20 +397,29 @@ async fn native_instance_settings(cx: &Cx, account: i64) -> topcoat::Result<impl
     let queued_name = signal(&name_owner, || None::<String>);
     let last_submission = signal(&name_owner, String::new);
     let error = signal(&name_owner, String::new);
+    let parked_name = signal(&name_owner, || None::<String>);
+    let needs_confirmation = signal(&name_owner, || false);
+    let password = signal(&name_owner, String::new);
+    let confirming = signal(&name_owner, || false);
+    let confirmation_error = signal(&name_owner, String::new);
     let recent_auth_required = crate::auth::RECENT_AUTH_REQUIRED_MESSAGE.to_owned();
-    let save_name = save_name_attrs(
-        cx,
-        account,
-        NameState {
-            name: name.clone(),
-            saved_name,
-            saving: saving.clone(),
-            saved: saved.clone(),
-            queued_name,
-            last_submission,
-            error: error.clone(),
-        },
-    );
+    let name_state = NameState {
+        name: name.clone(),
+        saved_name,
+        saving: saving.clone(),
+        saved: saved.clone(),
+        queued_name,
+        last_submission,
+        error: error.clone(),
+        parked_name,
+        needs_confirmation: needs_confirmation.clone(),
+        password: password.clone(),
+        confirming: confirming.clone(),
+        confirmation_error: confirmation_error.clone(),
+    };
+    let save_name = save_name_attrs(cx, account, name_state.clone());
+    let confirm_attrs = confirmation_attrs(cx, account, name_state.clone());
+    let cancel_confirmation = cancel_confirmation_attrs(cx, name_state.clone());
     let host = topcoat::router::request::headers(cx)
         .get(axum::http::header::HOST)
         .and_then(|value| value.to_str().ok())
@@ -330,6 +550,72 @@ async fn native_instance_settings(cx: &Cx, account: i64) -> topcoat::Result<impl
                                     ""
                                 })
                             </p>
+                            <div
+                                class="mt-4 rounded-lg border border-[var(--border)] bg-[var(--bg-subtle)] p-4"
+                                data-native-instance-reauth=""
+                                :hidden=$(!needs_confirmation.get())
+                            >
+                                <p class="text-body-sm text-[var(--text)]">
+                                    "Your session needs confirmation before this name can be saved."
+                                </p>
+                                <p
+                                    class="mt-1 text-caption text-[var(--text-muted)]"
+                                    role="status"
+                                >
+                                    "Confirm your password, then the pending name will be saved."
+                                </p>
+                                <label class="mt-3 block">
+                                    <span class="sr-only">"Your current password"</span>
+                                    <input
+                                        class=(super::super::settings::INPUT)
+                                        data-native-instance-reauth-password=""
+                                        type="password"
+                                        placeholder="your current password"
+                                        autocomplete="current-password"
+                                        :value=$(password.get())
+                                        :disabled=$(confirming.get())
+                                        @input=$(|event: Event| {
+                                            password.set(event.target.value.to_owned());
+                                            confirmation_error.set("".to_owned());
+                                        })
+                                    />
+                                </label>
+                                <p
+                                    class="mt-2 text-caption text-[var(--error)]"
+                                    role="alert"
+                                    aria-live="polite"
+                                >
+                                    $(confirmation_error.get())
+                                </p>
+                                <div class="mt-3 flex items-center gap-2">
+                                    <button
+                                        class="rounded-md bg-[var(--btn-success)] px-3 py-1.5 text-body-sm font-medium text-[var(--btn-success-text)] hover:bg-[var(--btn-success-hover)] disabled:cursor-not-allowed disabled:opacity-50"
+                                        type="button"
+                                        :disabled=$(if confirming.get() {
+                                            true
+                                        } else if password.get().is_empty() {
+                                            true
+                                        } else {
+                                            false
+                                        })
+                                        (confirm_attrs)
+                                    >
+                                        $(if confirming.get() {
+                                            "Verifying…"
+                                        } else {
+                                            "Confirm and continue"
+                                        })
+                                    </button>
+                                    <button
+                                        class="rounded-md px-3 py-1.5 text-body-sm text-[var(--text-muted)] hover:bg-[var(--surface)] disabled:cursor-not-allowed disabled:opacity-50"
+                                        type="button"
+                                        :disabled=$(confirming.get())
+                                        (cancel_confirmation)
+                                    >
+                                        "Cancel"
+                                    </button>
+                                </div>
+                            </div>
                         </div>
                         <div>
                             <dt
