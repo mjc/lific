@@ -1,5 +1,5 @@
 use super::super::super::runtime::whitespace::StrEcmaTrimExt;
-use super::super::{context, session, transport};
+use super::super::{context, navigation, session, transport};
 use crate::{
     db::models::{Plan, PlanStepNode, Project, Role, UpdatePlan},
     error::LificError,
@@ -40,8 +40,13 @@ pub(super) fn content<'a>(
         .parse::<i64>()
         .map_err(|_| topcoat::router::error::not_found())?;
     let project_identifier = project.identifier.clone();
-    Ok(view! { cx =>
-        native_plan_detail_body(account: account, project: project_identifier, plan_id: id)
+    Ok(view! {
+        cx =>
+        native_plan_detail_body(
+            account: account,
+            project: project_identifier,
+            plan_id: id
+        )
     }
     .boxed())
 }
@@ -85,7 +90,10 @@ async fn native_plan_detail_body(
     }
     let owner = cx.keyed(format!("native-plan-owner-{account}-{plan_id}"));
     Ok(
-        view! { owner => plan_detail_owner(account: account, project: project, plan: plan) }
+        view! {
+            owner =>
+            plan_detail_owner(account: account, project: project, plan: plan)
+        }
             .boxed(),
     )
 }
@@ -105,10 +113,30 @@ async fn plan_detail_owner(
     let step_title_draft = signal(cx, String::new);
     let step_description_target = signal(cx, || 0_i64);
     let step_description_draft = signal(cx, String::new);
-    Ok(view! { cx =>
+    Ok(view! {
+        cx =>
         <div data-native-plan-owner=(plan.identifier.clone())>
-            <p class="text-body-sm text-[var(--error)] px-6 pt-3" role="alert" :hidden=$(message.get().is_empty())>$(message.get())</p>
-            native_plan_saved(account: account, project: project, plan_id: plan.id, revision_value: $(revision.get()), revision_owner: revision, title_draft: title_draft, step_title_target: step_title_target, step_title_draft: step_title_draft, step_description_target: step_description_target, step_description_draft: step_description_draft, busy: busy, message: message)
+            <p
+                class="text-body-sm text-[var(--error)] px-6 pt-3"
+                role="alert"
+                :hidden=$(message.get().is_empty())
+            >
+                $(message.get())
+            </p>
+            native_plan_saved(
+                account: account,
+                project: project,
+                plan_id: plan.id,
+                revision_value: $(revision.get()),
+                revision_owner: revision,
+                title_draft: title_draft,
+                step_title_target: step_title_target,
+                step_title_draft: step_title_draft,
+                step_description_target: step_description_target,
+                step_description_draft: step_description_draft,
+                busy: busy,
+                message: message
+            )
         </div>
     })
 }
@@ -230,7 +258,7 @@ fn render_detail<'a>(
         0.0
     };
     let progress_width = format!("width: {}%", progress * 100.0);
-    let back = transport::mounted_url(cx, &format!("/{project}/plans"));
+    let back = navigation::attrs(cx, &format!("/{project}/plans"));
     let identifier = plan.identifier.clone();
     let title = plan.title.clone();
     let status = plan.status.clone();
@@ -317,32 +345,108 @@ fn render_detail<'a>(
             }
         })
         .collect::<Vec<_>>();
-    view! { cx =>
-        <main data-native-plan-detail=(identifier.clone()) class="h-full overflow-y-auto">
-            <div class="max-w-[1080px] mx-auto px-6 py-6 grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_240px] gap-8">
+    view! {
+        cx =>
+        <main
+            data-native-plan-detail=(identifier.clone())
+            class="h-full overflow-y-auto"
+        >
+            <div
+                class="max-w-[1080px] mx-auto px-6 py-6 grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_240px] gap-8"
+            >
                 <section class="min-w-0">
-                    <a class="text-caption text-[var(--text-muted)] hover:text-[var(--text)] no-underline" href=(back)>"‹ Plans"</a>
-                    <div class="flex items-center gap-2 mt-3 mb-6"><span class="text-caption font-mono text-[var(--text-faint)]">(identifier)</span></div>
-                    if let Some(editor) = title_editor { (editor) } else { <h1 class="text-heading font-medium text-[var(--text)]">(title)</h1> }
-                    <div class="flex flex-col gap-0.5 mt-5">for step in steps {(step)}</div>
-                    if let Some(add) = add_root { (add) }
+                    <a
+                        class="text-caption text-[var(--text-muted)] hover:text-[var(--text)] no-underline"
+                        (back)
+                    >
+                        "‹ Plans"
+                    </a>
+                    <div class="flex items-center gap-2 mt-3 mb-6">
+                        <span class="text-caption font-mono text-[var(--text-faint)]">
+                            (identifier)
+                        </span>
+                    </div>
+                    if let Some(editor) = title_editor {
+                        (editor)
+                    } else {
+                        <h1 class="text-heading font-medium text-[var(--text)]">
+                            (title)
+                        </h1>
+                    }
+                    <div class="flex flex-col gap-0.5 mt-5">
+                        for step in steps {
+                            (step)
+                        }
+                    </div>
+                    if let Some(add) = add_root {
+                        (add)
+                    }
                 </section>
                 <aside class="text-body-sm text-[var(--text-muted)]">
                     <div class="issue-meta-field py-3 border-b border-[var(--border)]">
                         <p class="issue-meta-field-label">"Status"</p>
-                        <div class="relative flex flex-col gap-1">for status in statuses {if let Some(status) = status {(status)}}</div>
+                        <div class="relative flex flex-col gap-1">
+                            for status in statuses {
+                                if let Some(status) = status {
+                                    (status)
+                                }
+                            }
+                        </div>
                     </div>
                     <div class="issue-meta-field py-3 border-b border-[var(--border)]">
                         <p class="issue-meta-field-label">"Progress"</p>
-                        <div class="flex items-center gap-2"><div class="flex-1 h-1.5 rounded-full bg-[var(--bg-subtle)] overflow-hidden"><div class="h-full bg-[var(--accent)] rounded-full transition-all" style=(progress_width)></div></div><span class="text-caption text-[var(--text-muted)] tabular-nums">(progress_text)</span></div>
+                        <div class="flex items-center gap-2">
+                            <div
+                                class="flex-1 h-1.5 rounded-full bg-[var(--bg-subtle)] overflow-hidden"
+                            >
+                                <div
+                                    class="h-full bg-[var(--accent)] rounded-full transition-all"
+                                    style=(progress_width)
+                                ></div>
+                            </div>
+                            <span
+                                class="text-caption text-[var(--text-muted)] tabular-nums"
+                            >
+                                (progress_text)
+                            </span>
+                        </div>
                     </div>
                     <div class="issue-meta-field py-3 border-b border-[var(--border)]">
                         <p class="issue-meta-field-label">"Anchor issue"</p>
-                        if let Some(anchor) = anchor.as_deref() { if let Some(href) = anchor_href { <a class="font-mono text-[var(--accent)] hover:underline inline-flex items-center gap-1" href=(href)><span>(anchor.to_owned())</span><span aria-hidden="true">"↗"</span></a> } } else { <span>"None"</span> }
-                        if let Some(editor) = anchor_editor { (editor) }
+                        if let Some(anchor) = anchor.as_deref() {
+                            if let Some(href) = anchor_href {
+                                <a
+                                    class="font-mono text-[var(--accent)] hover:underline inline-flex items-center gap-1"
+                                    (href)
+                                >
+                                    <span>(anchor.to_owned())</span>
+                                    <span aria-hidden="true">"↗"</span>
+                                </a>
+                            }
+                        } else {
+                            <span>"None"</span>
+                        }
+                        if let Some(editor) = anchor_editor {
+                            (editor)
+                        }
                     </div>
-                    <div class="issue-meta-dates py-3"><div class="issue-meta-field mb-3"><p class="issue-meta-field-label">"Created"</p><p class="m-0">(super::super::dates::absolute_time_view(cx, &dates.0))</p></div><div class="issue-meta-field"><p class="issue-meta-field-label">"Updated"</p><p class="m-0">(super::super::dates::absolute_time_view(cx, &dates.1))</p></div></div>
-                    if let Some(button) = delete { <div class="border-t border-[var(--border)] pt-3">(button)</div> }
+                    <div class="issue-meta-dates py-3">
+                        <div class="issue-meta-field mb-3">
+                            <p class="issue-meta-field-label">"Created"</p>
+                            <p class="m-0">
+                                (super::super::dates::absolute_time_view(cx, &dates.0))
+                            </p>
+                        </div>
+                        <div class="issue-meta-field">
+                            <p class="issue-meta-field-label">"Updated"</p>
+                            <p class="m-0">
+                                (super::super::dates::absolute_time_view(cx, &dates.1))
+                            </p>
+                        </div>
+                    </div>
+                    if let Some(button) = delete {
+                        <div class="border-t border-[var(--border)] pt-3">(button)</div>
+                    }
                 </aside>
             </div>
         </main>
@@ -362,7 +466,25 @@ fn step_node<'a>(
 ) -> BoxView<'a> {
     let row_cx = cx.keyed(step.id);
     let project = project.to_owned();
-    view! { row_cx => plan_step_component(account: account, project: project, plan_id: plan_id, step: step, can_edit: can_edit, depth: depth, revision: editor.revision, title_draft: editor.title_draft, step_title_target: editor.step_title_target, step_title_draft: editor.step_title_draft, step_description_target: editor.step_description_target, step_description_draft: editor.step_description_draft, busy: editor.busy, message: editor.message) }.boxed()
+    view! {
+        row_cx =>
+        plan_step_component(
+            account: account,
+            project: project,
+            plan_id: plan_id,
+            step: step,
+            can_edit: can_edit,
+            depth: depth,
+            revision: editor.revision,
+            title_draft: editor.title_draft,
+            step_title_target: editor.step_title_target,
+            step_title_draft: editor.step_title_draft,
+            step_description_target: editor.step_description_target,
+            step_description_draft: editor.step_description_draft,
+            busy: editor.busy,
+            message: editor.message
+        )
+    }.boxed()
 }
 
 #[component]
@@ -522,11 +644,11 @@ async fn plan_step_component(
     ))
 }
 
-fn issue_href(cx: &Cx, fallback_project: &str, identifier: &str) -> String {
+fn issue_href(cx: &Cx, fallback_project: &str, identifier: &str) -> Attributes {
     let project = identifier
         .rsplit_once('-')
         .map_or(fallback_project, |(prefix, _)| prefix);
-    transport::mounted_url(cx, &format!("/{project}/issues/{identifier}"))
+    navigation::attrs(cx, &format!("/{project}/issues/{identifier}"))
 }
 
 struct OkBox;
@@ -540,7 +662,7 @@ impl OkBox {
         description: Option<String>,
         issue_identifier: Option<String>,
         issue_status: String,
-        issue_href: Option<String>,
+        issue_href: Option<Attributes>,
         done: bool,
         children: Vec<BoxView<'a>>,
         title_editor: Option<BoxView<'a>>,
@@ -555,20 +677,72 @@ impl OkBox {
         } else {
             "text-left text-body text-[var(--text)]"
         };
-        view! { cx =>
-                <article id=(format!("native-plan-step-{step_id}")) class="group flex flex-col py-1 rounded-md hover:bg-[var(--bg-subtle)]" data-plan-step=(step_id.to_string())>
-                <div class="flex items-start gap-2" style=(format!("padding-left: min({}rem, 25%)", padding as f64 * 1.5))>
-                    if let Some(toggle) = toggle { (toggle) } else { <span class="mt-0.5 size-4 shrink-0 rounded border flex items-center justify-center" aria-label=(if done { "Done" } else { "Not done" })>{if done { "✓" } else { "○" }}</span> }
+        view! {
+            cx =>
+            <article
+                id=(format!("native-plan-step-{step_id}"))
+                class="group flex flex-col py-1 rounded-md hover:bg-[var(--bg-subtle)]"
+                data-plan-step=(step_id.to_string())
+            >
+                <div
+                    class="flex items-start gap-2"
+                    style=(format!("padding-left: min({}rem, 25%)", padding as f64 * 1.5))
+                >
+                    if let Some(toggle) = toggle {
+                        (toggle)
+                    } else {
+                        <span
+                            class="mt-0.5 size-4 shrink-0 rounded border flex items-center justify-center"
+                            aria-label=(if done { "Done" } else { "Not done" })
+                        >
+                            {
+                                if done {
+                                    "✓"
+                                } else {
+                                    "○"
+                                }
+                            }
+                        </span>
+                    }
                     <div class="flex-1 min-w-0">
-                        if let Some(editor) = title_editor { <div><span class=(title_class)>(title.clone())</span>(editor)</div> } else { <span class=(title_class)>(title.clone())</span> }
-                        if let Some(identifier) = issue_identifier { if let Some(href) = issue_href { <a class="inline-flex items-center gap-1 mt-1 text-micro font-mono text-[var(--accent)] hover:underline no-underline" href=(href)>(format!("{}: {}", identifier, issue_status))<span aria-hidden="true">"↗"</span></a> } }
-                        if let Some(body) = description { <div class="prose-step mt-1 text-body-sm">(Unescaped::new_unchecked(body))</div> }
-                        if let Some(editor) = description_editor { (editor) }
-                        if let Some(editor) = link_editor { (editor) }
-                        if let Some(remove) = remove { (remove) }
+                        if let Some(editor) = title_editor {
+                            <div>
+                                <span class=(title_class)>(title.clone())</span>
+                                (editor)
+                            </div>
+                        } else {
+                            <span class=(title_class)>(title.clone())</span>
+                        }
+                        if let Some(identifier) = issue_identifier {
+                            if let Some(href) = issue_href {
+                                <a
+                                    class="inline-flex items-center gap-1 mt-1 text-micro font-mono text-[var(--accent)] hover:underline no-underline"
+                                    (href)
+                                >
+                                    (format!("{}: {}", identifier, issue_status))
+                                    <span aria-hidden="true">"↗"</span>
+                                </a>
+                            }
+                        }
+                        if let Some(body) = description {
+                            <div class="prose-step mt-1 text-body-sm">
+                                (Unescaped::new_unchecked(body))
+                            </div>
+                        }
+                        if let Some(editor) = description_editor {
+                            (editor)
+                        }
+                        if let Some(editor) = link_editor {
+                            (editor)
+                        }
+                        if let Some(remove) = remove {
+                            (remove)
+                        }
                     </div>
                 </div>
-                for child in children {(child)}
+                for child in children {
+                    (child)
+                }
             </article>
         }.boxed()
     }
@@ -621,7 +795,23 @@ fn title_form<'a>(
         "data-topcoat-on:submit",
         handler.into_evaluated_and_js().1,
     );
-    view! { cx => <form class="flex items-center gap-2 my-2" (submit)><input class="flex-1 bg-transparent outline-none text-heading text-[var(--text)] border-b border-[var(--accent)]" :value=$(draft.get()) @input=$(move |event: Event| draft.set(event.target.value))/><button type="submit" class="text-caption text-[var(--accent)] hover:underline" :disabled=$(busy.get())>"Save title"</button></form> }.boxed()
+    view! {
+        cx =>
+        <form class="flex items-center gap-2 my-2" (submit)>
+            <input
+                class="flex-1 bg-transparent outline-none text-heading text-[var(--text)] border-b border-[var(--accent)]"
+                :value=$(draft.get())
+                @input=$(move |event: Event| draft.set(event.target.value))
+            />
+            <button
+                type="submit"
+                class="text-caption text-[var(--accent)] hover:underline"
+                :disabled=$(busy.get())
+            >
+                "Save title"
+            </button>
+        </form>
+    }.boxed()
 }
 
 fn description_form<'a>(
@@ -698,7 +888,35 @@ fn description_form<'a>(
     );
     let mut edit_attrs = Attributes::with_capacity(1);
     edit_attrs.insert(cx, "data-topcoat-on:click", edit.into_evaluated_and_js().1);
-    view! { cx => <div class="mt-1"><button type="button" class="text-caption text-[var(--text-faint)] hover:text-[var(--text)]" (edit_attrs)>"Edit details"</button><form class="mt-2" (submit) :hidden=$(target.get()!=step_id)><textarea class="w-full bg-transparent outline-none text-body-sm leading-relaxed text-[var(--text)] border border-[var(--border)] rounded-md p-2 resize-y min-h-[80px]" :value=$(draft.get()) @input=$(move |event: Event| draft.set(event.target.value)) placeholder="Describe this step… (markdown supported)"/><div class="flex items-center gap-2 mt-1"><button class="text-caption font-medium text-[var(--accent-text)] bg-[var(--accent)] px-2 py-1 rounded-md" type="submit" :disabled=$(busy.get())>"Save"</button></div></form></div> }.boxed()
+    view! {
+        cx =>
+        <div class="mt-1">
+            <button
+                type="button"
+                class="text-caption text-[var(--text-faint)] hover:text-[var(--text)]"
+                (edit_attrs)
+            >
+                "Edit details"
+            </button>
+            <form class="mt-2" (submit) :hidden=$(target.get() != step_id)>
+                <textarea
+                    class="w-full bg-transparent outline-none text-body-sm leading-relaxed text-[var(--text)] border border-[var(--border)] rounded-md p-2 resize-y min-h-[80px]"
+                    :value=$(draft.get())
+                    @input=$(move |event: Event| draft.set(event.target.value))
+                    placeholder="Describe this step… (markdown supported)"
+                />
+                <div class="flex items-center gap-2 mt-1">
+                    <button
+                        class="text-caption font-medium text-[var(--accent-text)] bg-[var(--accent)] px-2 py-1 rounded-md"
+                        type="submit"
+                        :disabled=$(busy.get())
+                    >
+                        "Save"
+                    </button>
+                </div>
+            </form>
+        </div>
+    }.boxed()
 }
 
 fn step_title_form<'a>(
@@ -777,7 +995,36 @@ fn step_title_form<'a>(
     );
     let mut edit_attrs = Attributes::with_capacity(1);
     edit_attrs.insert(cx, "data-topcoat-on:click", edit.into_evaluated_and_js().1);
-    view! { cx => <div class="my-1"><button type="button" class="text-caption text-[var(--text-faint)] hover:text-[var(--text)]" (edit_attrs)>"Edit title"</button><form class="flex items-center gap-2 my-2" (submit) :hidden=$(target.get()!=step_id)><input class="flex-1 bg-transparent outline-none text-body text-[var(--text)] border-b border-[var(--accent)]" :value=$(draft.get()) @input=$(move |event: Event| draft.set(event.target.value))/><button type="submit" class="text-caption text-[var(--accent)] hover:underline" :disabled=$(busy.get())>"Save"</button></form></div> }.boxed()
+    view! {
+        cx =>
+        <div class="my-1">
+            <button
+                type="button"
+                class="text-caption text-[var(--text-faint)] hover:text-[var(--text)]"
+                (edit_attrs)
+            >
+                "Edit title"
+            </button>
+            <form
+                class="flex items-center gap-2 my-2"
+                (submit)
+                :hidden=$(target.get() != step_id)
+            >
+                <input
+                    class="flex-1 bg-transparent outline-none text-body text-[var(--text)] border-b border-[var(--accent)]"
+                    :value=$(draft.get())
+                    @input=$(move |event: Event| draft.set(event.target.value))
+                />
+                <button
+                    type="submit"
+                    class="text-caption text-[var(--accent)] hover:underline"
+                    :disabled=$(busy.get())
+                >
+                    "Save"
+                </button>
+            </form>
+        </div>
+    }.boxed()
 }
 
 fn add_step_form<'a>(
@@ -842,7 +1089,24 @@ fn add_step_form<'a>(
         "data-topcoat-on:submit",
         handler.into_evaluated_and_js().1,
     );
-    view! { cx => <form class="mt-3 flex items-center gap-2" (submit)><input class="flex-1 bg-transparent outline-none text-body text-[var(--text)] border-b border-[var(--border)]" placeholder=(placeholder) :value=$(draft.get()) @input=$(move |event: Event| draft.set(event.target.value))/><button class="text-body-sm text-[var(--accent)] hover:underline" type="submit" :disabled=$(busy.get())>"Add"</button></form> }.boxed()
+    view! {
+        cx =>
+        <form class="mt-3 flex items-center gap-2" (submit)>
+            <input
+                class="flex-1 bg-transparent outline-none text-body text-[var(--text)] border-b border-[var(--border)]"
+                placeholder=(placeholder)
+                :value=$(draft.get())
+                @input=$(move |event: Event| draft.set(event.target.value))
+            />
+            <button
+                class="text-body-sm text-[var(--accent)] hover:underline"
+                type="submit"
+                :disabled=$(busy.get())
+            >
+                "Add"
+            </button>
+        </form>
+    }.boxed()
 }
 
 fn link_form<'a>(
@@ -897,7 +1161,31 @@ fn link_form<'a>(
         "data-topcoat-on:submit",
         handler.into_evaluated_and_js().1,
     );
-    view! { cx => <details class="mt-2"><summary class="text-caption text-[var(--text-faint)] hover:text-[var(--text)]">(summary)</summary><form class="mt-2 flex items-center gap-2" (submit)><input class="w-32 bg-transparent outline-none font-mono text-caption text-[var(--text)] border-b border-[var(--border)]" placeholder="LIF-42" :value=$(draft.get()) @input=$(move |event: Event| draft.set(event.target.value))/><button class="text-caption text-[var(--accent)] hover:underline" type="submit" :disabled=$(busy.get())>"Link"</button></form></details> }.boxed()
+    view! {
+        cx =>
+        <details class="mt-2">
+            <summary
+                class="text-caption text-[var(--text-faint)] hover:text-[var(--text)]"
+            >
+                (summary)
+            </summary>
+            <form class="mt-2 flex items-center gap-2" (submit)>
+                <input
+                    class="w-32 bg-transparent outline-none font-mono text-caption text-[var(--text)] border-b border-[var(--border)]"
+                    placeholder="LIF-42"
+                    :value=$(draft.get())
+                    @input=$(move |event: Event| draft.set(event.target.value))
+                />
+                <button
+                    class="text-caption text-[var(--accent)] hover:underline"
+                    type="submit"
+                    :disabled=$(busy.get())
+                >
+                    "Link"
+                </button>
+            </form>
+        </details>
+    }.boxed()
 }
 
 fn action_button<'a>(
@@ -963,7 +1251,7 @@ fn action_button<'a>(
                     mutate_plan(account, project, plan_id, target_id, request_action, value).await;
                     busy.set(false);
                     if delete_action {
-                        raw!("window.location.assign(${destination}.toString());", ());
+                        raw!("cx.navigate(${destination}.toString());", ());
                     } else {
                         revision.set(revision.get() + 1_i64);
                     }
@@ -981,7 +1269,19 @@ fn action_button<'a>(
         "data-topcoat-on:click",
         handler.into_evaluated_and_js().1,
     );
-    view! { cx => <button type="button" aria-label=(aria) class=(format!("w-full text-left px-2 py-1 rounded-md text-body-sm capitalize {class}")) (attributes)>(label)</button> }.boxed()
+    view! {
+        cx =>
+        <button
+            type="button"
+            aria-label=(aria)
+            class=(format!(
+                "w-full text-left px-2 py-1 rounded-md text-body-sm capitalize {class}",
+            ))
+            (attributes)
+        >
+            (label)
+        </button>
+    }.boxed()
 }
 
 #[procedure("/__native_plans/mutate")]

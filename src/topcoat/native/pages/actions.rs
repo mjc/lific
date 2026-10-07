@@ -7,17 +7,19 @@ use crate::{
 };
 use topcoat::{
     context::{Cx, app_context},
-    runtime::procedure,
+    runtime::{procedure, record},
 };
 
-pub(super) type Outcome = (
-    Result<String, String>,
-    Option<i64>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<i64>,
-);
+#[record]
+#[derive(Clone)]
+pub(super) struct Outcome {
+    pub status: Result<String, String>,
+    pub page_id: Option<i64>,
+    pub identifier: Option<String>,
+    pub title: Option<String>,
+    pub content: Option<String>,
+    pub seq: Option<i64>,
+}
 
 #[procedure("/__native_pages/create")]
 pub(super) async fn create(
@@ -91,7 +93,7 @@ pub(super) async fn save(
         Err(LificError::UpdateConflict { current, .. }) => match serde_json::from_value(*current) {
             Ok(page) => {
                 let mut result = page_outcome(page);
-                result.0 = Err("conflict".into());
+                result.status = Err("conflict".into());
                 result
             }
             Err(error) => failed(&format!("Couldn't read conflicting page: {error}")),
@@ -121,24 +123,36 @@ pub(super) async fn delete(cx: &Cx, account: i64, page_id: i64) -> topcoat::Resu
             )
         })
         .await;
-    Ok(result.map_or_else(classify, |_| {
-        (Ok("deleted".into()), Some(page_id), None, None, None, None)
+    Ok(result.map_or_else(classify, |_| Outcome {
+        status: Ok("deleted".into()),
+        page_id: Some(page_id),
+        identifier: None,
+        title: None,
+        content: None,
+        seq: None,
     }))
 }
 
 fn page_outcome(page: Page) -> Outcome {
-    (
-        Ok("saved".into()),
-        Some(page.id),
-        Some(page.identifier),
-        Some(page.title),
-        Some(page.content),
-        Some(page.seq),
-    )
+    Outcome {
+        status: Ok("saved".into()),
+        page_id: Some(page.id),
+        identifier: Some(page.identifier),
+        title: Some(page.title),
+        content: Some(page.content),
+        seq: Some(page.seq),
+    }
 }
 
 fn failed(message: &str) -> Outcome {
-    (Err(message.into()), None, None, None, None, None)
+    Outcome {
+        status: Err(message.into()),
+        page_id: None,
+        identifier: None,
+        title: None,
+        content: None,
+        seq: None,
+    }
 }
 
 fn classify(error: LificError) -> Outcome {

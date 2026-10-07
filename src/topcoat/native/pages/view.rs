@@ -2,7 +2,7 @@
 use super::super::super::runtime::whitespace::{
     StrEcmaTrimExt, is_ecmascript_whitespace, trim_ecmascript,
 };
-use super::super::{context, mascot, session, transport};
+use super::super::{context, mascot, navigation, session, transport};
 use super::actions::{create as create_page, delete as delete_page, save as save_page};
 use crate::{db::models::Page as PageModel, error::LificError};
 use topcoat::{
@@ -30,12 +30,15 @@ pub(super) fn list<'a>(
     };
     let project = project.to_owned();
     let list_cx = cx.keyed((account, project_id));
-    Ok(view! { list_cx => pages_list(
-        account: account,
-        project: project,
-        project_id: project_id,
-        can_edit: can_edit,
-    ) }
+    Ok(view! {
+        list_cx =>
+        pages_list(
+            account: account,
+            project: project,
+            project_id: project_id,
+            can_edit: can_edit
+        )
+    }
     .boxed())
 }
 
@@ -90,33 +93,136 @@ async fn pages_list(
         ("drafts", "Drafts"), ("archived", "Archived"),
     ].into_iter().map(|(id, name)| {
         let selected = tab.clone();
-        view! { cx => <button type="button" class="px-2.5 py-1.5 text-body-sm rounded-md border-0 bg-transparent text-[var(--text-muted)] hover:text-[var(--text)] aria-[current=page]:text-[var(--text)]" :aria-current=$(if selected.get()==id {"page"}else{"false"}) @click=$(|_event:Event|selected.set(id.to_owned()))>(name)</button> }.boxed()
+        view! {
+            cx =>
+            <button
+                type="button"
+                class="px-2.5 py-1.5 text-body-sm rounded-md border-0 bg-transparent text-[var(--text-muted)] hover:text-[var(--text)] aria-[current=page]:text-[var(--text)]"
+                :aria-current=$(if selected.get() == id { "page" } else { "false" })
+                @click=$(|_event: Event| selected.set(id.to_owned()))
+            >
+                (name)
+            </button>
+        }.boxed()
     }).collect::<Vec<_>>();
-    Ok(view! { cx =>
-        <div class="native-pages h-full min-h-0 overflow-y-auto leading-[1.6] text-[var(--text)]">
+    Ok(view! {
+        cx =>
+        <div
+            class="native-pages h-full min-h-0 overflow-y-auto leading-[1.6] text-[var(--text)]"
+        >
             <main class="native-pages__content max-w-[1100px] mx-auto px-6 py-6">
-                <header class="flex items-center gap-4 mb-4"><h1 class="text-heading font-semibold m-0">"Pages"</h1><span class="ml-auto"></span>
+                <header class="flex items-center gap-4 mb-4">
+                    <h1 class="text-heading font-semibold m-0">"Pages"</h1>
+                    <span class="ml-auto"></span>
                     if can_edit {
-                        <input id="native-pages-create-title" aria-label="New page title" maxlength="200" placeholder="New page title…" class="text-body-sm px-2.5 py-1.5 rounded-md border border-solid border-[var(--border)] bg-[var(--bg)] text-[var(--text)]" :value=$(title.get()) @input=$(|event:Event|{title.set(event.target.value.to_owned());error.set("".to_owned());}) />
-                        <button type="button" class="text-body-sm text-[var(--accent)] border-0 bg-transparent" (focus_create)>"Create a page"</button>
-                        <button type="button" class="text-body-sm font-medium px-3 py-1.5 rounded-md border-0 bg-[var(--accent)] text-[var(--accent-text)] disabled:opacity-50" :disabled=$(if busy.get(){true}else{title.get().trim().is_empty()}) (create)>$(if busy.get(){"Creating…"}else{"New page"})</button>
+                        <input
+                            id="native-pages-create-title"
+                            aria-label="New page title"
+                            maxlength="200"
+                            placeholder="New page title…"
+                            class="text-body-sm px-2.5 py-1.5 rounded-md border border-solid border-[var(--border)] bg-[var(--bg)] text-[var(--text)]"
+                            :value=$(title.get())
+                            @input=$(|event: Event| {
+                                title.set(event.target.value.to_owned());
+                                error.set("".to_owned());
+                            })
+                        />
+                        <button
+                            type="button"
+                            class="text-body-sm text-[var(--accent)] border-0 bg-transparent"
+                            (focus_create)
+                        >
+                            "Create a page"
+                        </button>
+                        <button
+                            type="button"
+                            class="text-body-sm font-medium px-3 py-1.5 rounded-md border-0 bg-[var(--accent)] text-[var(--accent-text)] disabled:opacity-50"
+                            :disabled=$(if busy.get() {
+                                true
+                            } else {
+                                title.get().trim().is_empty()
+                            })
+                            (create)
+                        >
+                            $(if busy.get() { "Creating…" } else { "New page" })
+                        </button>
                     }
                 </header>
                 <div class="flex flex-wrap items-center gap-2 mb-4">
-                    <div class="inline-flex gap-1 p-0.5 rounded-lg bg-[var(--bg-subtle)]" role="tablist" aria-label="Page views">for button in status_tabs {(button)}</div>
-                    <input aria-label="Search pages" placeholder="Search pages…" class="ml-auto w-56 text-body-sm px-2.5 py-1.5 rounded-md border border-solid border-[var(--border)] bg-[var(--bg)] text-[var(--text)]" :value=$(query.get()) @input=$(|event:Event|query.set(event.target.value.to_owned())) />
-                    <select aria-label="Filter by status" class="text-body-sm px-2 py-1.5 rounded-md border border-solid border-[var(--border)] bg-[var(--bg)] text-[var(--text)]" :value=$(status.get()) @change=$(|event:Event|status.set(event.target.value.to_owned()))>
-                        <option value="__active">"Active"</option><option value="">"All"</option><option value="draft">"Draft"</option><option value="active">"Active"</option><option value="complete">"Complete"</option><option value="archived">"Archived"</option>
+                    <div
+                        class="inline-flex gap-1 p-0.5 rounded-lg bg-[var(--bg-subtle)]"
+                        role="tablist"
+                        aria-label="Page views"
+                    >
+                        for button in status_tabs {
+                            (button)
+                        }
+                    </div>
+                    <input
+                        aria-label="Search pages"
+                        placeholder="Search pages…"
+                        class="ml-auto w-56 text-body-sm px-2.5 py-1.5 rounded-md border border-solid border-[var(--border)] bg-[var(--bg)] text-[var(--text)]"
+                        :value=$(query.get())
+                        @input=$(|event: Event| query.set(event.target.value.to_owned()))
+                    />
+                    <select
+                        aria-label="Filter by status"
+                        class="text-body-sm px-2 py-1.5 rounded-md border border-solid border-[var(--border)] bg-[var(--bg)] text-[var(--text)]"
+                        :value=$(status.get())
+                        @change=$(|event: Event| status.set(
+                                event.target.value.to_owned(),
+                            ))
+                    >
+                        <option value="__active">"Active"</option>
+                        <option value="">"All"</option>
+                        <option value="draft">"Draft"</option>
+                        <option value="active">"Active"</option>
+                        <option value="complete">"Complete"</option>
+                        <option value="archived">"Archived"</option>
                     </select>
-                    <select aria-label="Filter by label" class="text-body-sm px-2 py-1.5 rounded-md border border-solid border-[var(--border)] bg-[var(--bg)] text-[var(--text)]" :value=$(label.get()) @change=$(|event:Event|label.set(event.target.value.to_owned()))>
-                        <option value="">"Label"</option>for option in label_options {(option)}
+                    <select
+                        aria-label="Filter by label"
+                        class="text-body-sm px-2 py-1.5 rounded-md border border-solid border-[var(--border)] bg-[var(--bg)] text-[var(--text)]"
+                        :value=$(label.get())
+                        @change=$(|event: Event| label.set(event.target.value.to_owned()))
+                    >
+                        <option value="">"Label"</option>
+                        for option in label_options {
+                            (option)
+                        }
                     </select>
-                    <select aria-label="Filter by folder" class="text-body-sm px-2 py-1.5 rounded-md border border-solid border-[var(--border)] bg-[var(--bg)] text-[var(--text)]" :value=$(folder.get()) @change=$(|event:Event|folder.set(event.target.value.to_owned()))>
-                        <option value="0">"All folders"</option>for option in folder_options {(option)}
+                    <select
+                        aria-label="Filter by folder"
+                        class="text-body-sm px-2 py-1.5 rounded-md border border-solid border-[var(--border)] bg-[var(--bg)] text-[var(--text)]"
+                        :value=$(folder.get())
+                        @change=$(|event: Event| folder.set(
+                                event.target.value.to_owned(),
+                            ))
+                    >
+                        <option value="0">"All folders"</option>
+                        for option in folder_options {
+                            (option)
+                        }
                     </select>
                 </div>
-                <div role="alert" class="text-body-sm text-[var(--error)] mb-3" :hidden=$(error.get().is_empty())>$(error.get())</div>
-                native_pages_rows(account:account,project_id:project_id,project:project.clone(),query:$(query.get()),status:$(status.get()),label:$(label.get()),tab:$(tab.get()),folder:$(folder.get()),revision:$(revision.get()))
+                <div
+                    role="alert"
+                    class="text-body-sm text-[var(--error)] mb-3"
+                    :hidden=$(error.get().is_empty())
+                >
+                    $(error.get())
+                </div>
+                native_pages_rows(
+                    account: account,
+                    project_id: project_id,
+                    project: project.clone(),
+                    query: $(query.get()),
+                    status: $(status.get()),
+                    label: $(label.get()),
+                    tab: $(tab.get()),
+                    folder: $(folder.get()),
+                    revision: $(revision.get())
+                )
             </main>
         </div>
     })
@@ -159,16 +265,16 @@ fn create_attributes(
                 let _create = async || {
                     let outcome = create_page(account, project_id, value).await;
                     busy.set(false);
-                    if outcome.0.is_ok() {
-                        let _id = outcome.1.unwrap();
+                    if outcome.status.is_ok() {
+                        let _id = outcome.page_id.unwrap();
                         title.set("".to_owned());
                         revision.increment();
                         raw!(
-                            "window.location.assign(${destination}.toString()+${_id}.toString())",
+                            "void cx.navigate(${destination}.toString()+${_id}.toString())",
                             ()
                         );
                     } else {
-                        let message = outcome.0.unwrap_err();
+                        let message = outcome.status.unwrap_err();
                         error.set(if message == "reauth" {
                             "Please sign in again.".to_owned()
                         } else if message == "forbidden" {
@@ -276,41 +382,122 @@ mod row_shards {
         let pages = hits
             .into_iter()
             .map(|(_, page)| {
-                let href = transport::mounted_url(cx, &format!("/{project}/pages/{}", page.id));
+                let href = navigation::attrs(cx, &format!("/{project}/pages/{}", page.id));
                 let preview = content_preview(&page.preview);
                 (page, href, preview)
             })
             .collect::<Vec<_>>();
-        Ok(view! { cx =>
+        Ok(view! {
+            cx =>
             if pages.is_empty() {
                 if is_true_empty {
-                  if query_empty {
-                   if tab == "browse" {
-                    <div class="native-pages__empty rounded-lg border border-solid border-[var(--border)] px-5 py-8 text-center">
-                        (mascot::render(cx, mascot::Mascot::Reading, 0.25))
-                        <h2 class="text-heading font-semibold text-[var(--text)] mt-4 mb-2">"A blank page"</h2>
-                        <p class="text-body-sm text-[var(--text-muted)] max-w-[460px] mx-auto">"Pages are your project's docs: specs, notes, decisions. Start the first one and give the ideas a home."</p>
-                    </div>
-                   } else {
-                    <div class="native-pages__empty rounded-lg border border-solid border-[var(--border)] px-5 py-8 text-center"><p class="text-body font-medium text-[var(--text)] m-0">if query_empty{if tab=="drafts"{"No drafts"}else if tab=="archived"{"No archived pages"}else{"No pages yet"}}else{"No matching pages"}</p></div>
-                   }
-                  } else {
-                    <div class="native-pages__empty rounded-lg border border-solid border-[var(--border)] px-5 py-8 text-center"><p class="text-body font-medium text-[var(--text)] m-0">if query_empty{"No pages yet"}else{"No matching pages"}</p></div>
-                  }
+                    if query_empty {
+                        if tab == "browse" {
+                            <div
+                                class="native-pages__empty rounded-lg border border-solid border-[var(--border)] px-5 py-8 text-center"
+                            >
+                                (mascot::render(cx, mascot::Mascot::Reading, 0.25))
+                                <h2
+                                    class="text-heading font-semibold text-[var(--text)] mt-4 mb-2"
+                                >
+                                    "A blank page"
+                                </h2>
+                                <p
+                                    class="text-body-sm text-[var(--text-muted)] max-w-[460px] mx-auto"
+                                >
+                                    "Pages are your project's docs: specs, notes, decisions. Start the first one and give the ideas a home."
+                                </p>
+                            </div>
+                        } else {
+                            <div
+                                class="native-pages__empty rounded-lg border border-solid border-[var(--border)] px-5 py-8 text-center"
+                            >
+                                <p class="text-body font-medium text-[var(--text)] m-0">
+                                    if query_empty {
+                                        if tab == "drafts" {
+                                            "No drafts"
+                                        } else if tab == "archived" {
+                                            "No archived pages"
+                                        } else {
+                                            "No pages yet"
+                                        }
+                                    } else {
+                                        "No matching pages"
+                                    }
+                                </p>
+                            </div>
+                        }
+                    } else {
+                        <div
+                            class="native-pages__empty rounded-lg border border-solid border-[var(--border)] px-5 py-8 text-center"
+                        >
+                            <p class="text-body font-medium text-[var(--text)] m-0">
+                                if query_empty {
+                                    "No pages yet"
+                                } else {
+                                    "No matching pages"
+                                }
+                            </p>
+                        </div>
+                    }
                 } else {
-                    <div class="native-pages__empty rounded-lg border border-solid border-[var(--border)] px-5 py-8 text-center"><p class="text-body font-medium text-[var(--text)] m-0">"No matching pages"</p></div>
+                    <div
+                        class="native-pages__empty rounded-lg border border-solid border-[var(--border)] px-5 py-8 text-center"
+                    >
+                        <p class="text-body font-medium text-[var(--text)] m-0">
+                            "No matching pages"
+                        </p>
+                    </div>
                 }
             } else {
                 <ul class="native-pages__rows list-none p-0 m-0" aria-label="Pages">
-                    for (page,href,preview) in pages {
-                        <li data-native-page-row=(page.id.to_string()) class="border-b border-solid border-[var(--border)] last:border-b-0">
-                            <a class="native-pages__row flex flex-col gap-1 px-3 py-3 rounded-md no-underline hover:bg-[var(--bg-subtle)]" href=(href)>
-                                <span class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5"><span class="font-mono text-caption text-[var(--text-muted)]">(page.identifier)</span><span class="text-body font-medium text-[var(--text)]">(page.title)</span>
-                                    <span class="text-micro text-[var(--text-faint)]">(status_label(&page.status))</span>
-                                    if page.pinned {<span class="text-micro text-[var(--accent)]">"Pinned"</span>}
+                    for (page, href, preview) in pages {
+                        <li
+                            data-native-page-row=(page.id.to_string())
+                            class="border-b border-solid border-[var(--border)] last:border-b-0"
+                        >
+                            <a
+                                class="native-pages__row flex flex-col gap-1 px-3 py-3 rounded-md no-underline hover:bg-[var(--bg-subtle)]"
+                                (href)
+                            >
+                                <span
+                                    class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5"
+                                >
+                                    <span
+                                        class="font-mono text-caption text-[var(--text-muted)]"
+                                    >
+                                        (page.identifier)
+                                    </span>
+                                    <span class="text-body font-medium text-[var(--text)]">
+                                        (page.title)
+                                    </span>
+                                    <span class="text-micro text-[var(--text-faint)]">
+                                        (status_label(&page.status))
+                                    </span>
+                                    if page.pinned {
+                                        <span class="text-micro text-[var(--accent)]">
+                                            "Pinned"
+                                        </span>
+                                    }
                                 </span>
-                                if !preview.is_empty() {<span class="text-body-sm text-[var(--text-muted)] line-clamp-2">(preview)</span>}
-                                if !page.labels.is_empty() {<span class="flex gap-1.5 mt-0.5">for item in page.labels {<span class="text-micro px-1.5 py-0.5 rounded bg-[var(--bg-subtle)] text-[var(--text-muted)]">(item)</span>}</span>}
+                                if !preview.is_empty() {
+                                    <span
+                                        class="text-body-sm text-[var(--text-muted)] line-clamp-2"
+                                    >
+                                        (preview)
+                                    </span>
+                                }
+                                if !page.labels.is_empty() {
+                                    <span class="flex gap-1.5 mt-0.5">
+                                        for item in page.labels {
+                                            <span
+                                                class="text-micro px-1.5 py-0.5 rounded bg-[var(--bg-subtle)] text-[var(--text-muted)]"
+                                            >
+                                                (item)
+                                            </span>
+                                        }
+                                    </span>
+                                }
                             </a>
                         </li>
                     }
@@ -486,10 +673,19 @@ pub(super) fn detail<'a>(
         Err(LificError::Forbidden(_)) => false,
         Err(error) => return session::read(cx, Err(error)),
     };
-    let list_path = transport::mounted_url(cx, &format!("/{project}/pages"));
+    let list_path = format!("/{project}/pages");
     let project = project.to_owned();
     let page_cx = cx.keyed((account, page.id));
-    Ok(view! { page_cx => page_detail(account:account,project:project,page:page,can_edit:can_edit,list_path:list_path) }.boxed())
+    Ok(view! {
+        page_cx =>
+        page_detail(
+            account: account,
+            project: project,
+            page: page,
+            can_edit: can_edit,
+            list_path: list_path
+        )
+    }.boxed())
 }
 
 #[shard("/__native_pages/markdown")]
@@ -516,7 +712,16 @@ async fn native_page_markdown(
     let rendered =
         super::super::markdown::render(cx, &source, super::super::markdown::Scope::Private, &[]);
     Ok(
-        view! { cx => if source.trim().is_empty() { <p class="text-body-sm italic text-[var(--text-muted)]">"Empty page"</p> } else { <article class="markdown-body prose max-w-none">(Unescaped::new_unchecked(rendered))</article> } },
+        view! {
+            cx =>
+            if source.trim().is_empty() {
+                <p class="text-body-sm italic text-[var(--text-muted)]">"Empty page"</p>
+            } else {
+                <article class="markdown-body prose max-w-none">
+                    (Unescaped::new_unchecked(rendered))
+                </article>
+            }
+        },
     )
 }
 
@@ -529,6 +734,7 @@ async fn page_detail(
     can_edit: bool,
     list_path: String,
 ) -> topcoat::Result<impl View> {
+    let list_attrs = navigation::attrs(cx, &list_path);
     let title = signal(cx, || page.title.clone());
     let body = signal(cx, || page.content.clone());
     let title_draft = signal(cx, || page.title.clone());
@@ -564,28 +770,198 @@ async fn page_detail(
     );
     let created_at = super::super::dates::absolute_time_view(cx, &page.created_at);
     let updated_at = super::super::dates::absolute_time_view(cx, &page.updated_at);
-    Ok(view! { cx =>
-        <div class="native-pages h-full min-h-0 overflow-y-auto leading-[1.6] text-[var(--text)]"><main class="native-pages__detail max-w-[860px] mx-auto px-6 py-6">
-            <a class="text-body-sm text-[var(--text-muted)] no-underline hover:text-[var(--text)]" href=(list_path)>"‹ Pages"</a>
-            <div class="mt-5 mb-6"><div class="font-mono text-caption text-[var(--text-muted)]">(page.identifier)</div>
-                if can_edit {
-                    <h1 class="text-title font-semibold mt-1 mb-0" :hidden=$(title_editing.get())><button type="button" class="p-0 border-0 bg-transparent text-left text-[var(--text)] font-semibold" @click=$(|_event:Event|{title_draft.set(title.get());title_editing.set(true);})>$(title.get())</button></h1>
-                    <input aria-label="Page title" class="text-title font-semibold w-full mt-1 px-0 py-1 border-0 border-b border-solid border-[var(--border)] bg-transparent text-[var(--text)]" :hidden=$(if title_editing.get(){false}else{true}) :value=$(title_draft.get()) :disabled=$(busy.get()) @input=$(|event:Event|{title_draft.set(event.target.value.to_owned());title_editing.set(true);}) />
-                } else {<h1 class="text-title font-semibold mt-1 mb-0">$(title.get())</h1>}
-            </div>
-            if can_edit {
-                <button type="button" class="text-body-sm text-[var(--accent)] border-0 bg-transparent px-0 py-1" :hidden=$(body_editing.get()) @click=$(|_event:Event|{if !title_editing.get(){title_draft.set(title.get());title_editing.set(true);}body_draft.set(body.get());body_editing.set(true);message.set("".to_owned());})>"Edit page"</button>
-                native_page_markdown(account:account,page_id:page.id,source:$(body.get()))
-                <textarea aria-label="Page content in Markdown" class="native-pages__editor w-full min-h-[240px] resize-y p-3 rounded-md border border-solid border-[var(--border)] bg-[var(--bg)] text-[var(--text)] font-mono text-body-sm" placeholder="Start writing... (markdown supported)" :hidden=$(if body_editing.get(){false}else{true}) :value=$(body_draft.get()) :disabled=$(busy.get()) @input=$(|event:Event|{body_draft.set(event.target.value.to_owned());body_editing.set(true);})></textarea>
-                <div class="flex items-center gap-3 mt-2" :hidden=$(if body_editing.get(){false}else{if title_editing.get(){false}else{true}})><button type="button" class="px-3 py-1.5 rounded-md bg-[var(--accent)] text-[var(--accent-text)] border-0 text-body-sm" :disabled=$(if busy.get(){true}else{if title_editing.get(){false}else{if body_editing.get(){false}else{true}}}) (save)>$(if busy.get(){"Saving…"}else{"Save changes"})</button>
-                    <button type="button" class="px-2.5 py-1.5 rounded-md border border-solid border-[var(--border)] bg-transparent text-body-sm text-[var(--text)]" :disabled=$(busy.get()) @click=$(|_event:Event|{title_draft.set(title.get());body_draft.set(body.get());title_editing.set(false);body_editing.set(false);message.set("".to_owned());})>"Cancel"</button>
-                    <span class="text-body-sm text-[var(--text-muted)]" role="status">$(message.get())</span>
-                    <button type="button" class="ml-auto px-3 py-1.5 rounded-md border border-solid border-[var(--error)] text-[var(--error)] bg-transparent text-body-sm" :hidden=$(confirming_delete.get()) :disabled=$(busy.get()) @click=$(|_event:Event|confirming_delete.set(true))>"Delete page"</button>
-                    <span class="ml-auto flex items-center gap-2 text-body-sm text-[var(--error)]" :hidden=$(if confirming_delete.get(){false}else{true})>"Delete this page?"<button type="button" class="px-2.5 py-1 rounded-md border-0 bg-[var(--error)] text-white" :disabled=$(busy.get()) (delete)>"Confirm delete"</button><button type="button" class="px-2.5 py-1 rounded-md border border-solid border-[var(--border)] bg-transparent text-[var(--text)]" :disabled=$(busy.get()) @click=$(|_event:Event|confirming_delete.set(false))>"Cancel"</button></span>
+    Ok(view! {
+        cx =>
+        <div
+            class="native-pages h-full min-h-0 overflow-y-auto leading-[1.6] text-[var(--text)]"
+        >
+            <main class="native-pages__detail max-w-[860px] mx-auto px-6 py-6">
+                <a
+                    class="text-body-sm text-[var(--text-muted)] no-underline hover:text-[var(--text)]"
+                    (list_attrs)
+                >
+                    "‹ Pages"
+                </a>
+                <div class="mt-5 mb-6">
+                    <div class="font-mono text-caption text-[var(--text-muted)]">
+                        (page.identifier)
+                    </div>
+                    if can_edit {
+                        <h1
+                            class="text-title font-semibold mt-1 mb-0"
+                            :hidden=$(title_editing.get())
+                        >
+                            <button
+                                type="button"
+                                class="p-0 border-0 bg-transparent text-left text-[var(--text)] font-semibold"
+                                @click=$(|_event: Event| {
+                                    title_draft.set(title.get());
+                                    title_editing.set(true);
+                                })
+                            >
+                                $(title.get())
+                            </button>
+                        </h1>
+                        <input
+                            aria-label="Page title"
+                            class="text-title font-semibold w-full mt-1 px-0 py-1 border-0 border-b border-solid border-[var(--border)] bg-transparent text-[var(--text)]"
+                            :hidden=$(if title_editing.get() { false } else { true })
+                            :value=$(title_draft.get())
+                            :disabled=$(busy.get())
+                            @input=$(|event: Event| {
+                                title_draft.set(event.target.value.to_owned());
+                                title_editing.set(true);
+                            })
+                        />
+                    } else {
+                        <h1 class="text-title font-semibold mt-1 mb-0">
+                            $(title.get())
+                        </h1>
+                    }
                 </div>
-            } else { native_page_markdown(account:account,page_id:page.id,source:$(body.get())) }
-            <div class="mt-10 pt-6 border-t border-solid border-[var(--border)] flex gap-8"><div><span class="block text-micro font-semibold uppercase tracking-widest text-[var(--text-faint)] mb-0.5">"Created"</span><span class="text-body-sm text-[var(--text-muted)]">(created_at)</span></div><div><span class="block text-micro font-semibold uppercase tracking-widest text-[var(--text-faint)] mb-0.5">"Updated"</span><span class="text-body-sm text-[var(--text-muted)]">(updated_at)</span></div></div>
-        </main></div>
+                if can_edit {
+                    <button
+                        type="button"
+                        class="text-body-sm text-[var(--accent)] border-0 bg-transparent px-0 py-1"
+                        :hidden=$(body_editing.get())
+                        @click=$(|_event: Event| {
+                            if !title_editing.get() {
+                                title_draft.set(title.get());
+                                title_editing.set(true);
+                            }
+                            body_draft.set(body.get());
+                            body_editing.set(true);
+                            message.set("".to_owned());
+                        })
+                    >
+                        "Edit page"
+                    </button>
+                    native_page_markdown(
+                        account: account,
+                        page_id: page.id,
+                        source: $(body.get())
+                    )
+                    <textarea
+                        aria-label="Page content in Markdown"
+                        class="native-pages__editor w-full min-h-[240px] resize-y p-3 rounded-md border border-solid border-[var(--border)] bg-[var(--bg)] text-[var(--text)] font-mono text-body-sm"
+                        placeholder="Start writing... (markdown supported)"
+                        :hidden=$(if body_editing.get() { false } else { true })
+                        :value=$(body_draft.get())
+                        :disabled=$(busy.get())
+                        @input=$(|event: Event| {
+                            body_draft.set(event.target.value.to_owned());
+                            body_editing.set(true);
+                        })
+                    ></textarea>
+                    <div
+                        class="flex items-center gap-3 mt-2"
+                        :hidden=$(if body_editing.get() {
+                            false
+                        } else {
+                            if title_editing.get() { false } else { true }
+                        })
+                    >
+                        <button
+                            type="button"
+                            class="px-3 py-1.5 rounded-md bg-[var(--accent)] text-[var(--accent-text)] border-0 text-body-sm"
+                            :disabled=$(if busy.get() {
+                                true
+                            } else {
+                                if title_editing.get() {
+                                    false
+                                } else {
+                                    if body_editing.get() { false } else { true }
+                                }
+                            })
+                            (save)
+                        >
+                            $(if busy.get() { "Saving…" } else { "Save changes" })
+                        </button>
+                        <button
+                            type="button"
+                            class="px-2.5 py-1.5 rounded-md border border-solid border-[var(--border)] bg-transparent text-body-sm text-[var(--text)]"
+                            :disabled=$(busy.get())
+                            @click=$(|_event: Event| {
+                                title_draft.set(title.get());
+                                body_draft.set(body.get());
+                                title_editing.set(false);
+                                body_editing.set(false);
+                                message.set("".to_owned());
+                            })
+                        >
+                            "Cancel"
+                        </button>
+                        <span
+                            class="text-body-sm text-[var(--text-muted)]"
+                            role="status"
+                        >
+                            $(message.get())
+                        </span>
+                        <button
+                            type="button"
+                            class="ml-auto px-3 py-1.5 rounded-md border border-solid border-[var(--error)] text-[var(--error)] bg-transparent text-body-sm"
+                            :hidden=$(confirming_delete.get())
+                            :disabled=$(busy.get())
+                            @click=$(|_event: Event| confirming_delete.set(true))
+                        >
+                            "Delete page"
+                        </button>
+                        <span
+                            class="ml-auto flex items-center gap-2 text-body-sm text-[var(--error)]"
+                            :hidden=$(if confirming_delete.get() { false } else { true })
+                        >
+                            "Delete this page?"
+                            <button
+                                type="button"
+                                class="px-2.5 py-1 rounded-md border-0 bg-[var(--error)] text-white"
+                                :disabled=$(busy.get())
+                                (delete)
+                            >
+                                "Confirm delete"
+                            </button>
+                            <button
+                                type="button"
+                                class="px-2.5 py-1 rounded-md border border-solid border-[var(--border)] bg-transparent text-[var(--text)]"
+                                :disabled=$(busy.get())
+                                @click=$(|_event: Event| confirming_delete.set(false))
+                            >
+                                "Cancel"
+                            </button>
+                        </span>
+                    </div>
+                } else {
+                    native_page_markdown(
+                        account: account,
+                        page_id: page.id,
+                        source: $(body.get())
+                    )
+                }
+                <div
+                    class="mt-10 pt-6 border-t border-solid border-[var(--border)] flex gap-8"
+                >
+                    <div>
+                        <span
+                            class="block text-micro font-semibold uppercase tracking-widest text-[var(--text-faint)] mb-0.5"
+                        >
+                            "Created"
+                        </span>
+                        <span class="text-body-sm text-[var(--text-muted)]">
+                            (created_at)
+                        </span>
+                    </div>
+                    <div>
+                        <span
+                            class="block text-micro font-semibold uppercase tracking-widest text-[var(--text-faint)] mb-0.5"
+                        >
+                            "Updated"
+                        </span>
+                        <span class="text-body-sm text-[var(--text-muted)]">
+                            (updated_at)
+                        </span>
+                    </div>
+                </div>
+            </main>
+        </div>
     })
 }
 
@@ -625,14 +1001,14 @@ fn save_attributes(
                     let outcome =
                         save_page(account, page_id, next_title, next_body, sent_seq).await;
                     busy.set(false);
-                    if outcome.0.is_ok() {
-                        let saved_title = outcome.3.clone().unwrap();
-                        let saved_body = outcome.4.clone().unwrap();
+                    if outcome.status.is_ok() {
+                        let saved_title = outcome.title.clone().unwrap();
+                        let saved_body = outcome.content.clone().unwrap();
                         let title_unchanged = title_draft.get() == sent_title;
                         let body_unchanged = body_draft.get() == sent_body;
                         title.set(saved_title.clone());
                         body.set(saved_body.clone());
-                        seq.set(outcome.5.unwrap());
+                        seq.set(outcome.seq.unwrap());
                         if title_unchanged {
                             title_draft.set(saved_title);
                             title_editing.set(false);
@@ -643,7 +1019,7 @@ fn save_attributes(
                         }
                         message.set("Saved".to_owned());
                     } else {
-                        let reason = outcome.0.unwrap_err();
+                        let reason = outcome.status.unwrap_err();
                         if reason == "conflict" {
                             message.set("This page changed elsewhere. Reload before saving again; your draft is still here.".to_owned());
                         } else if reason == "reauth" {
@@ -694,10 +1070,10 @@ fn delete_attributes(
             let _delete = async || {
                 let outcome = delete_page(account, page_id).await;
                 busy.set(false);
-                if outcome.0.is_ok() {
-                    raw!("window.location.assign(${destination}.toString())", ());
+                if outcome.status.is_ok() {
+                    raw!("void cx.navigate(${destination}.toString())", ());
                 } else {
-                    let reason = outcome.0.unwrap_err();
+                    let reason = outcome.status.unwrap_err();
                     message.set(if reason == "reauth" {
                         "Please sign in again.".to_owned()
                     } else if reason == "forbidden" {
