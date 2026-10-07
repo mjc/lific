@@ -30,6 +30,21 @@ const MODULE_STATUS_LABELS: [&str; 6] = [
 ];
 const ISSUE_STATUS_ORDER: [&str; 5] = ["backlog", "todo", "active", "done", "cancelled"];
 
+#[derive(Clone)]
+struct ModuleMutation {
+    account: i64,
+    project_id: i64,
+    module_id: i64,
+    destination: String,
+}
+
+#[derive(Clone)]
+struct StatusControls {
+    value: Signal<String>,
+    open: Signal<bool>,
+    error: Signal<String>,
+}
+
 pub(super) fn content<'a>(
     cx: &'a Cx,
     account: i64,
@@ -52,6 +67,17 @@ pub(super) fn content<'a>(
     let status = signal(&owner, || module.status.clone());
     let status_open = signal(&owner, || false);
     let status_error = signal(&owner, String::new);
+    let status_controls = StatusControls {
+        value: status,
+        open: status_open,
+        error: status_error,
+    };
+    let mutation = ModuleMutation {
+        account,
+        project_id: project.id,
+        module_id: module.id,
+        destination: route.clone(),
+    };
     let props_open = signal(&owner, || false);
     let description_initial = module.description.clone();
     let issues = sorted_issues(data.issues);
@@ -118,14 +144,11 @@ pub(super) fn content<'a>(
         name_trigger_attributes(cx, title.clone(), title_draft.clone(), name_editing.clone());
     let name_input = name_input_attributes(
         cx,
-        account,
-        project.id,
-        module.id,
-        title.clone(),
+        mutation.clone(),
+        title,
         title_draft.clone(),
         name_editing.clone(),
         name_error.clone(),
-        route.clone(),
     );
     let save_description = update_attributes(
         cx,
@@ -143,9 +166,9 @@ pub(super) fn content<'a>(
         module.id,
         "emoji",
         icon.clone(),
-        route.clone(),
+        route,
     );
-    let status_trigger = status_trigger_attributes(cx, status_open.clone());
+    let status_trigger = status_trigger_attributes(cx, status_controls.open.clone());
     let status_choices = MODULE_STATUSES
         .into_iter()
         .zip(MODULE_STATUS_LABELS)
@@ -153,17 +176,7 @@ pub(super) fn content<'a>(
             (
                 value,
                 label,
-                status_choice_attributes(
-                    cx,
-                    account,
-                    project.id,
-                    module.id,
-                    value,
-                    status.clone(),
-                    status_open.clone(),
-                    status_error.clone(),
-                    route.clone(),
-                ),
+                status_choice_attributes(cx, mutation.clone(), value, status_controls.clone()),
             )
         })
         .collect::<Vec<_>>();
@@ -199,9 +212,7 @@ pub(super) fn content<'a>(
         cx,
         &module,
         can_edit,
-        status,
-        status_open,
-        status_error,
+        status_controls,
         status_trigger,
         status_choices,
     );
@@ -442,18 +453,23 @@ fn status_sidebar<'a>(
     cx: &'a Cx,
     module: &Module,
     can_edit: bool,
-    status: Signal<String>,
-    status_open: Signal<bool>,
-    status_error: Signal<String>,
+    controls: StatusControls,
     status_trigger: Attributes,
     status_choices: Vec<(&'static str, &'static str, Attributes)>,
 ) -> BoxView<'a> {
+    let StatusControls {
+        value: status,
+        open: status_open,
+        error: status_error,
+    } = controls;
     let current = module.status.clone();
     let current_label = MODULE_STATUSES
         .iter()
         .position(|value| *value == current)
-        .map(|index| MODULE_STATUS_LABELS[index].to_owned())
-        .unwrap_or_else(|| current.clone());
+        .map_or_else(
+            || current.clone(),
+            |index| MODULE_STATUS_LABELS[index].to_owned(),
+        );
     view! {
         cx =>
         <div class="mb-5">
@@ -627,15 +643,18 @@ fn name_trigger_attributes(
 
 fn name_input_attributes(
     cx: &Cx,
-    account: i64,
-    project_id: i64,
-    module_id: i64,
+    mutation: ModuleMutation,
     title: Signal<String>,
     draft: Signal<String>,
     editing: Signal<bool>,
     error: Signal<String>,
-    destination: String,
 ) -> Attributes {
+    let ModuleMutation {
+        account,
+        project_id,
+        module_id,
+        destination,
+    } = mutation;
     let failed_error = error.clone();
     let input = expr!(|event: Event| {
         draft.set(event.target.value);
@@ -709,15 +728,21 @@ fn status_trigger_attributes(cx: &Cx, open: Signal<bool>) -> Attributes {
 
 fn status_choice_attributes(
     cx: &Cx,
-    account: i64,
-    project_id: i64,
-    module_id: i64,
+    mutation: ModuleMutation,
     selected: &'static str,
-    status: Signal<String>,
-    open: Signal<bool>,
-    error: Signal<String>,
-    destination: String,
+    controls: StatusControls,
 ) -> Attributes {
+    let ModuleMutation {
+        account,
+        project_id,
+        module_id,
+        destination,
+    } = mutation;
+    let StatusControls {
+        value: status,
+        open,
+        error,
+    } = controls;
     let failed_status = status.clone();
     let failed_error = error.clone();
     let handler = expr!(|event: Event| {
