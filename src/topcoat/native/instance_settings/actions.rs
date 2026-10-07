@@ -47,7 +47,13 @@ pub(super) async fn save_text(
         ))
         .await;
     Ok(match result {
-        Ok(_) => (true, "saved".into()),
+        Ok(settings) => (
+            true,
+            settings.0["instance_name"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned(),
+        ),
         Err(LificError::BadRequest(message) | LificError::Forbidden(message)) => (false, message),
         Err(error) => {
             tracing::error!(error=%error, "native instance setting update failed");

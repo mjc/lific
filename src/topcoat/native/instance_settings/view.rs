@@ -2,11 +2,25 @@
 
 use topcoat::{
     context::Cx,
-    runtime::{record, shard},
-    view::{BoxView, View, ViewExt, view},
+    runtime::{Event, Signal, expr, record, shard, signal},
+    view::{Attributes, BoxView, View, ViewExt, view},
 };
 
+use super::super::super::runtime::whitespace::StrEcmaTrimExt;
+
 use super::super::{context, session};
+use super::actions::save_text;
+
+#[derive(Clone)]
+struct NameState {
+    name: Signal<String>,
+    saved_name: Signal<String>,
+    saving: Signal<bool>,
+    saved: Signal<bool>,
+    queued_name: Signal<Option<String>>,
+    last_submission: Signal<String>,
+    error: Signal<String>,
+}
 
 #[record]
 #[derive(Clone)]
@@ -52,6 +66,98 @@ pub(super) fn content(cx: &Cx, account: i64, is_admin: bool) -> BoxView<'_> {
     view! { cx => native_instance_settings(account: account) }.boxed()
 }
 
+fn save_name_attrs(cx: &Cx, account: i64, state: NameState) -> Attributes {
+    let NameState {
+        name,
+        saved_name,
+        saving,
+        saved,
+        queued_name,
+        last_submission,
+        error,
+    } = state;
+    let failed_name = name.clone();
+    let failed_saved_name = saved_name.clone();
+    let failed_saving = saving.clone();
+    let failed_error = error.clone();
+    let failed_submission = last_submission.clone();
+    let recent_auth_required = crate::auth::RECENT_AUTH_REQUIRED_MESSAGE.to_owned();
+    let handler = expr!(|_event: Event| {
+        if raw!("cx.hydrate(cx.abortSignal.aborted)", false) {
+            return;
+        }
+        let requested = name.get().trim_ecmascript().to_owned();
+        name.set(requested.clone());
+        let baseline = saved_name.get();
+        if saving.get() {
+            queued_name.set(Some(requested));
+        } else if requested != baseline {
+            queued_name.set(Some(requested));
+            saving.set(true);
+            saved.set(false);
+            error.set("".to_owned());
+            let _live = || !raw!("cx.hydrate(cx.abortSignal.aborted)", false);
+            let _failed = || {
+                if raw!("${_live}()", true) {
+                    failed_saving.set(false);
+                    if failed_name.get().trim_ecmascript().to_owned() == failed_submission.get() {
+                        failed_name.set(failed_saved_name.get());
+                    }
+                    failed_error.set("Couldn't save the instance name. Try again.".to_owned());
+                }
+            };
+            let _save = async || {
+                while queued_name.get().is_some() {
+                    if !raw!("${_live}()", false) {
+                        return;
+                    }
+                    let submission = queued_name.get().unwrap();
+                    queued_name.set(None);
+                    let previous = saved_name.get();
+                    if submission != previous {
+                        saved.set(false);
+                        error.set("".to_owned());
+                        last_submission.set(submission.clone());
+                        let result =
+                            save_text(account, "name".to_owned(), submission.clone()).await;
+                        if !raw!("${_live}()", false) {
+                            return;
+                        }
+                        if result.0 {
+                            saved_name.set(result.1.clone());
+                            if name.get().trim_ecmascript().to_owned() == submission {
+                                name.set(result.1.clone());
+                            }
+                            saved.set(true);
+                        } else if result.1 == recent_auth_required {
+                            error.set(result.1.clone());
+                            queued_name.set(None);
+                        } else {
+                            if name.get().trim_ecmascript().to_owned() == submission {
+                                name.set(previous);
+                            }
+                            error.set(result.1.clone());
+                        }
+                    }
+                    let _iteration_complete = false;
+                }
+                saving.set(false);
+            };
+            raw!(
+                "Promise.resolve().then(()=>${_save}()).catch(()=>${_failed}());",
+                ()
+            );
+        }
+    });
+    let mut attrs = Attributes::with_capacity(1);
+    attrs.insert(
+        cx,
+        "data-topcoat-on:blur",
+        handler.into_evaluated_and_js().1,
+    );
+    attrs
+}
+
 #[shard("/__native_instance_settings/page")]
 async fn native_instance_settings(cx: &Cx, account: i64) -> topcoat::Result<impl View> {
     let caller = session::read(cx, context::caller(cx))?;
@@ -71,9 +177,34 @@ async fn native_instance_settings(cx: &Cx, account: i64) -> topcoat::Result<impl
         cx,
         crate::services::project_form::list_leads(db, &caller.identity),
     )?;
-    let instance_name = settings
-        .instance_name
-        .unwrap_or_else(|| "Use the host name".into());
+    let name_owner = cx.keyed((account, "instance-name"));
+    let initial_name = settings.instance_name.unwrap_or_default();
+    let name = signal(&name_owner, || initial_name.clone());
+    let saved_name = signal(&name_owner, || initial_name);
+    let saving = signal(&name_owner, || false);
+    let saved = signal(&name_owner, || false);
+    let queued_name = signal(&name_owner, || None::<String>);
+    let last_submission = signal(&name_owner, String::new);
+    let error = signal(&name_owner, String::new);
+    let recent_auth_required = crate::auth::RECENT_AUTH_REQUIRED_MESSAGE.to_owned();
+    let save_name = save_name_attrs(
+        cx,
+        account,
+        NameState {
+            name: name.clone(),
+            saved_name,
+            saving: saving.clone(),
+            saved: saved.clone(),
+            queued_name,
+            last_submission,
+            error: error.clone(),
+        },
+    );
+    let host = topcoat::router::request::headers(cx)
+        .get(axum::http::header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
     let signup_status = if settings.allow_signup {
         "Open"
     } else {
@@ -152,15 +283,53 @@ async fn native_instance_settings(cx: &Cx, account: i64) -> topcoat::Result<impl
                         "Settings"
                     </h2>
                     <dl class="grid max-w-[640px] gap-4 sm:grid-cols-2">
-                        <div>
-                            <dt
-                                class="text-micro font-semibold uppercase tracking-widest text-[var(--text-faint)]"
+                        <div class="sm:col-span-2">
+                            <label class="block">
+                                <span
+                                    class="mb-1.5 block text-micro font-semibold uppercase tracking-widest text-[var(--text-faint)]"
+                                >
+                                    "Instance name"
+                                </span>
+                                <input
+                                    class=(super::super::settings::INPUT)
+                                    data-native-instance-name=""
+                                    maxlength="60"
+                                    placeholder=(host)
+                                    :value=$(name.get())
+                                    @input=$(|event: Event| {
+                                        name.set(event.target.value.to_owned());
+                                        saved.set(false);
+                                        error.set("".to_owned());
+                                    })
+                                    (save_name)
+                                />
+                            </label>
+                            <p class="mt-1.5 text-caption text-[var(--text-muted)]">
+                                "Shown on the sign-in screen. Leave blank to use the host."
+                            </p>
+                            <p
+                                class="mt-2 text-caption text-[var(--error)]"
+                                role="alert"
                             >
-                                "Instance name"
-                            </dt>
-                            <dd class="mt-1 text-body text-[var(--text)]">
-                                (instance_name)
-                            </dd>
+                                $(error.get())
+                            </p>
+                            <p
+                                class="mt-2 text-caption text-[var(--text-muted)]"
+                                role="status"
+                                aria-live="polite"
+                            >
+                                $(if saving.get() {
+                                    "Saving…"
+                                } else if saved.get() {
+                                    "Saved"
+                                } else if error.get().is_empty() {
+                                    "Changes save automatically."
+                                } else if error.get() == recent_auth_required {
+                                    "That change needs a recent sign-in."
+                                } else {
+                                    ""
+                                })
+                            </p>
                         </div>
                         <div>
                             <dt
