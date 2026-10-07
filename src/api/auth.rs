@@ -480,18 +480,18 @@ pub(super) async fn instance_settings_get(
     Ok(Json(settings_json(&s)))
 }
 
-#[derive(serde::Deserialize)]
-pub(super) struct InstanceSettingsPatchReq {
-    allow_signup: Option<bool>,
-    instance_name: Option<String>,
-    signup_email_domains: Option<Vec<String>>,
-    session_lifetime_days: Option<i64>,
-    login_message: Option<String>,
-    web_auto_login: Option<bool>,
+#[derive(serde::Deserialize, Default)]
+pub(crate) struct InstanceSettingsPatchReq {
+    pub(crate) allow_signup: Option<bool>,
+    pub(crate) instance_name: Option<String>,
+    pub(crate) signup_email_domains: Option<Vec<String>>,
+    pub(crate) session_lifetime_days: Option<i64>,
+    pub(crate) login_message: Option<String>,
+    pub(crate) web_auto_login: Option<bool>,
     /// LIF-197: the operator toggle for LIF-194's project-scoped
     /// authorization. Off by default; flipping it takes effect on the very
     /// next request (see `src/authz.rs`'s runtime-read doc comment).
-    authz_enforced: Option<bool>,
+    pub(crate) authz_enforced: Option<bool>,
 }
 
 /// PATCH /api/instance/settings: partial update, admin only, and only from a
@@ -506,7 +506,7 @@ pub(super) struct InstanceSettingsPatchReq {
 /// time a field is added, and a single miss reopens the hole. There are a
 /// handful of these writes a week, made by a human at a keyboard, so the cost
 /// of gating all of them is nil and the rule is one sentence.
-pub(super) async fn instance_settings_patch(
+pub(crate) async fn instance_settings_patch(
     State(db): State<DbPool>,
     Extension(realtime): Extension<RealtimeHub>,
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
