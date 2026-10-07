@@ -25,7 +25,7 @@ pub(super) const PRESETS: [(&str, &str); 6] = [
     ("design", "#7C3AED"),
 ];
 pub(super) const DEFAULT_COLOR: &str = "#6B7280";
-pub(super) fn safe_color(value: &str) -> &str {
+pub(crate) fn safe_color(value: &str) -> &str {
     if value.len() == 7
         && value.starts_with('#')
         && value.as_bytes()[1..].iter().all(u8::is_ascii_hexdigit)

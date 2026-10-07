@@ -56,6 +56,24 @@ pub(crate) fn absolute<'a>(cx: &'a Cx, timestamp: &str) -> BoxView<'a> {
     }.boxed()
 }
 
+/// Format confirmed timestamps that can change while their owner stays open.
+pub(crate) fn absolute_signal(cx: &Cx, timestamp: Signal<String>) -> BoxView<'_> {
+    let fallback = timestamp.get();
+    let datetime = timestamp.clone();
+    view! {
+        cx =>
+        <time :datetime=$(datetime.get())>
+            $({
+                let _value = timestamp.get();
+                raw!(
+                    "cx.hydrate(new Date(${_value}.toString()+'Z').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'}))",
+                    fallback.clone(),
+                )
+            })
+        </time>
+    }.boxed()
+}
+
 pub(crate) fn relative<'a>(
     cx: &'a Cx,
     timestamp: &str,
