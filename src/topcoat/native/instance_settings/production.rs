@@ -1,4 +1,5 @@
 use axum::http::StatusCode;
+use topcoat::runtime::Surrogated;
 
 use super::super::home_fixture;
 
@@ -140,4 +141,123 @@ async fn native_instance_settings_roster_excludes_bots_but_keeps_inactive_humans
     assert!(html.contains("Deactivated"));
     assert!(!html.contains("Automation bot") && !html.contains("@native-bot"));
     assert!(html.contains("6 people on this instance"));
+}
+
+#[tokio::test]
+async fn native_instance_settings_admin_name_blur_saves_trimmed_value() {
+    let fixture = home_fixture::fixture();
+    let account = {
+        let conn = fixture.db.write().unwrap();
+        let user = crate::db::queries::users::validate_session(&conn, &fixture.token).unwrap();
+        conn.execute("UPDATE users SET is_admin=1 WHERE id=?1", [user.id])
+            .unwrap();
+        crate::db::queries::settings::update(
+            &conn,
+            crate::db::queries::settings::InstanceSettingsPatch {
+                instance_name: Some("Old name".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        user.id
+    };
+    let (status, html) =
+        home_fixture::document(&fixture, "", "/settings/instance", true, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let document = scraper::Html::parse_document(&html);
+    let input = document
+        .select(&scraper::Selector::parse("input[data-native-instance-name]").unwrap())
+        .next()
+        .expect("admin can edit the instance name");
+    let input_handler = input.value().attr("data-topcoat-on:input").unwrap();
+    let blur_handler = input.value().attr("data-topcoat-on:blur").unwrap();
+    assert_eq!(input.value().attr("value"), Some("Old name"));
+    assert_eq!(input.value().attr("maxlength"), Some("60"));
+    assert!(
+        !input
+            .value()
+            .attr("placeholder")
+            .unwrap_or_default()
+            .is_empty(),
+        "the host name is the blank-value fallback and placeholder"
+    );
+    let field = input.parent().and_then(scraper::ElementRef::wrap).unwrap();
+    assert!(
+        field
+            .text()
+            .collect::<String>()
+            .contains("Shown on the sign-in screen")
+    );
+    assert!(
+        field
+            .select(&scraper::Selector::parse("button").unwrap())
+            .next()
+            .is_none(),
+        "the name autosaves on blur without a Save button"
+    );
+    let signals = home_fixture::page_signals(&html);
+
+    // Replies are from the real authenticated procedure; the JS fixture only
+    // transports them to the handlers emitted in this document.
+    let (save_status, save_reply) = home_fixture::procedure(
+        &fixture,
+        "/__native_instance_settings/save_text",
+        serde_json::to_value((account, "name".to_owned(), "New name".to_owned()).into_surrogate())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(save_status, StatusCode::OK);
+    let (clear_status, clear_reply) = home_fixture::procedure(
+        &fixture,
+        "/__native_instance_settings/save_text",
+        serde_json::to_value((account, "name".to_owned(), String::new()).into_surrogate()).unwrap(),
+    )
+    .await;
+    assert_eq!(clear_status, StatusCode::OK);
+    {
+        let conn = fixture.db.write().unwrap();
+        conn.execute(
+            "UPDATE sessions SET created_at=datetime('now','-16 minutes') WHERE user_id=?1",
+            [account],
+        )
+        .unwrap();
+    }
+    let (error_status, error_reply) = home_fixture::procedure(
+        &fixture,
+        "/__native_instance_settings/save_text",
+        serde_json::to_value(
+            (account, "name".to_owned(), "Draft survives".to_owned()).into_surrogate(),
+        )
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(error_status, StatusCode::OK);
+
+    let result = home_fixture::evaluate_handler(
+        "src/topcoat/native/instance_settings/name_handler.test.cjs",
+        &serde_json::json!({
+            "signals": signals,
+            "input_handler": input_handler,
+            "blur_handler": blur_handler,
+            "name_signal_value": "Old name",
+            "account": account,
+            "save_reply": save_reply,
+            "clear_reply": clear_reply,
+            "error_reply": error_reply,
+            "expected_save_args": serde_json::to_value((account, "name".to_owned(), "New name".to_owned()).into_surrogate()).unwrap(),
+            "expected_clear_args": serde_json::to_value((account, "name".to_owned(), String::new()).into_surrogate()).unwrap(),
+        }),
+    );
+    assert_eq!(result["trimmed_save"], true);
+    assert_eq!(result["unchanged_noop"], true);
+    assert_eq!(result["blank_clears"], true);
+    assert_eq!(result["disposed_no_request"], true);
+    assert_eq!(result["draft_kept_on_error"], true);
+    assert_eq!(
+        crate::db::queries::settings::get(&fixture.db.read().unwrap())
+            .unwrap()
+            .instance_name,
+        None,
+        "blank instance name restores the host-name fallback",
+    );
 }
