@@ -1,3 +1,7 @@
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Topcoat procedures receive scalar wire fields and an injected context"
+)]
 mod actions;
 mod form;
 mod model;

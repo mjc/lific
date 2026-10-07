@@ -67,9 +67,9 @@ pub(crate) fn region<'a>(
     let (project, authority, page) = data;
     let content = match page {
         ModulePage::List(data) => {
-            list::content(cx, account, &project, &authority, data, route.query)?
+            list::content(cx, account, &project, &authority, data, route.query)
         }
-        ModulePage::Detail(data) => detail::content(cx, account, &project, &authority, data)?,
+        ModulePage::Detail(data) => detail::content(cx, account, &project, &authority, data),
     };
     let overview = navigation::attrs(cx, &format!("/{identifier}/overview"));
     let modules = navigation::attrs(cx, &format!("/{identifier}/modules"));

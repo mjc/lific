@@ -35,7 +35,7 @@ pub(super) fn content<'a>(
     project: &Project,
     authority: &project_authority::Snapshot,
     data: ModuleDetail,
-) -> topcoat::Result<BoxView<'a>> {
+) -> BoxView<'a> {
     let owner = cx.keyed(format!("native-module-detail-{account}-{}", data.module.id));
     let module = data.module;
     let can_edit = authority.can_edit_structure;
@@ -135,14 +135,7 @@ pub(super) fn content<'a>(
         icon.clone(),
         route.clone(),
     );
-    let status_attrs = status_attributes(
-        cx,
-        account,
-        project.id,
-        module.id,
-        status.clone(),
-        route.clone(),
-    );
+    let status_attrs = status_attributes(cx, account, project.id, module.id, status.clone(), route);
     let delete_attrs = delete_attributes(
         cx,
         account,
@@ -171,8 +164,8 @@ pub(super) fn content<'a>(
     let module_id = module.id;
     let issue_count = issues.len();
     let empty = issues.is_empty();
-    let aside_status = status_sidebar(cx, &module, can_edit, status.clone(), status_attrs);
-    Ok(view! {
+    let aside_status = status_sidebar(cx, &module, can_edit, status, status_attrs);
+    view! {
         owner =>
         <main
             data-native-module-detail=(module_id.to_string())
@@ -394,7 +387,7 @@ pub(super) fn content<'a>(
                 </aside>
             </div>
         </main>
-    }.boxed())
+    }.boxed()
 }
 
 fn status_sidebar<'a>(
