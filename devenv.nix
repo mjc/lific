@@ -431,6 +431,7 @@ in
         set -e
         node --test src/topcoat/assets/controls.test.mjs
         node --test src/topcoat/native/transport.test.cjs
+        node --test src/topcoat/native/session_change_transport.test.cjs
         cargo test --locked native_activity_rate_
       '';
     };
