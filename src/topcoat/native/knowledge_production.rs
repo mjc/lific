@@ -166,31 +166,38 @@ async fn native_knowledge_private_routes_reject_hidden_records_and_revoked_membe
 
 #[tokio::test]
 async fn native_knowledge_destination_admits_lists_details_and_preserves_query() {
-    use topcoat::runtime::Surrogated;
     let fixture = home_fixture::fixture();
     let (page, plan) = seed(&fixture, "ACC");
-    let account = queries::users::validate_session(&fixture.db.read().unwrap(), &fixture.token)
-        .unwrap()
-        .id;
     let (origin, server) = home_fixture::serve(&fixture).await;
-    for path in [
-        "/ACC/pages?search=design".to_owned(),
-        format!("/ACC/pages/{page}"),
-        "/ACC/plans?status=active".to_owned(),
-        format!("/ACC/plans/{plan}"),
+    let (status, initial) = document(&fixture, "/ACC/pages?search=design", true).await;
+    assert_eq!(status, StatusCode::OK);
+    let signals = home_fixture::page_signals(&initial);
+    for (path, expected) in [
+        ("/ACC/pages?search=design".to_owned(), "ACC design notes"),
+        (format!("/ACC/pages/{page}"), "Native markdown body"),
+        ("/ACC/plans?status=active".to_owned(), "ACC delivery plan"),
+        (format!("/ACC/plans/{plan}"), "ACC delivery plan"),
     ] {
         let response = reqwest::Client::new()
-            .post(format!("{origin}/__native_workspace/destination"))
+            .post(format!("{origin}{path}"))
             .header("origin", &origin)
             .header("cookie", format!("lific_token={}", fixture.token))
-            .json(&(path.clone(), String::new(), account).into_surrogate())
+            .header("x-topcoat-runtime", "true")
+            .header("accept", "application/x-ndjson")
+            .json(&serde_json::json!({ "signals": signals }))
             .send()
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        let body: serde_json::Value = response.json().await.unwrap();
-        assert_eq!(body[0]["v"], path);
-        assert!(body[2].as_str().unwrap().starts_with("ACC"));
+        let body = response.text().await.unwrap();
+        let snapshot = body
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .find(|frame| frame["t"] == "snapshot")
+            .expect("Topcoat emits the destination page snapshot");
+        let html = snapshot["html"].as_str().unwrap();
+        assert!(html.contains(expected), "destination page {path}");
+        assert!(!html.contains("ACC delivery plan") || path.contains("plans"));
     }
     server.abort();
 }
@@ -237,7 +244,8 @@ async fn native_knowledge_page_writes_enforce_account_role_conflicts_and_web_act
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let outcome: serde_json::Value = response.json().await.unwrap();
-        assert_eq!(outcome[0]["err"], "forbidden");
+        assert_eq!(outcome["t"], "Record");
+        assert_eq!(outcome["v"]["status"]["err"], "forbidden");
         assert_eq!(
             queries::get_page(&fixture.db.read().unwrap(), page_id)
                 .unwrap()
@@ -255,15 +263,17 @@ async fn native_knowledge_page_writes_enforce_account_role_conflicts_and_web_act
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let outcome: serde_json::Value = response.json().await.unwrap();
-    assert_eq!(outcome[0]["ok"], "saved");
+    assert_eq!(outcome["t"], "Record");
+    assert_eq!(outcome["v"]["status"]["ok"], "saved");
     let response = save(account, "Stale edit", original.seq)
         .send()
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let outcome: serde_json::Value = response.json().await.unwrap();
-    assert_eq!(outcome[0]["err"], "conflict");
-    assert_eq!(outcome[3]["v"], "Saved natively");
+    assert_eq!(outcome["t"], "Record");
+    assert_eq!(outcome["v"]["status"]["err"], "conflict");
+    assert_eq!(outcome["v"]["title"]["v"], "Saved natively");
     {
         let conn = fixture.db.read().unwrap();
         let saved = queries::get_page(&conn, page_id).unwrap();
@@ -401,4 +411,79 @@ async fn native_knowledge_plan_mutations_authorize_both_projects_and_render_cros
         "anchor uses its own project"
     );
     server.abort();
+}
+
+#[tokio::test]
+async fn native_knowledge_runtime_navigation_uses_destination_route_with_preserved_signals() {
+    let fixture = home_fixture::fixture();
+    seed(&fixture, "ACC");
+    for prefix in ["", "/app", "/ACC"] {
+        let (_, mut html) = mounted_document(&fixture, "/ACC/pages", true, prefix).await;
+        for (destination, expected, current_selector, retired_selector) in [
+            (
+                "/ACC/plans",
+                "ACC delivery plan",
+                "[data-native-plans]",
+                ".native-pages",
+            ),
+            (
+                "/ACC/pages",
+                "ACC design notes",
+                ".native-pages",
+                "[data-native-plans]",
+            ),
+        ] {
+            let signals = home_fixture::page_signals(&html);
+            assert!(
+                !signals.is_empty(),
+                "the real page declares hydrated signals"
+            );
+            let app = if prefix.is_empty() {
+                fixture.app.clone()
+            } else {
+                Router::new().nest(prefix, fixture.app.clone())
+            };
+            let mut request = Request::builder()
+                .method("POST")
+                .uri(format!("{prefix}{destination}"))
+                .header("host", "127.0.0.1:3000")
+                .header("origin", "http://127.0.0.1:3000")
+                .header("cookie", format!("lific_token={}", fixture.token))
+                .header("content-type", "application/json")
+                .header("x-topcoat-runtime", "true")
+                .header("accept", "application/x-ndjson")
+                .header("x-forwarded-prefix", prefix)
+                .body(Body::from(
+                    serde_json::json!({"signals": signals}).to_string(),
+                ))
+                .unwrap();
+            request.extensions_mut().insert(axum::extract::ConnectInfo(
+                "127.0.0.1:3000".parse::<std::net::SocketAddr>().unwrap(),
+            ));
+            let response = app.oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let frames = String::from_utf8(bytes.to_vec()).unwrap();
+            let snapshot: serde_json::Value = frames
+                .lines()
+                .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+                .find(|frame| frame["t"] == "snapshot")
+                .expect("real runtime page snapshot");
+            html = snapshot["html"].as_str().unwrap().to_owned();
+            let document = scraper::Html::parse_document(&html);
+            let current_selector = scraper::Selector::parse(current_selector).unwrap();
+            let retired_selector = scraper::Selector::parse(retired_selector).unwrap();
+            let content = document.select(&current_selector).next().unwrap();
+            assert!(
+                content.text().collect::<String>().contains(expected),
+                "runtime navigation must render {destination} at {prefix}"
+            );
+            assert!(
+                document.select(&retired_selector).next().is_none(),
+                "the previous route must not replace the destination's content"
+            );
+        }
+    }
 }

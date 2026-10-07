@@ -99,10 +99,11 @@ test('assembled native page, procedure, shard and socket preserve the mounted se
           locale: 'en-US', storedValue: prefix === '/ACC' ? null : stored,
         });
         await page.locator('#native-probe-issue[data-connected="true"]').waitFor();
-        const initialFrame = frames.filter(({path}) => path === `${prefix}/__native_probe/issue`).at(-1).frame;
+        const initialFrame = frames.filter(({frame}) => frame.path === '/__native_probe/issue').at(-1).frame;
         const initialRun = initialFrame.run;
-        assert.equal(initialFrame.args[0].t, 'usize');
-        assert.equal(initialFrame.args[0].v, '0');
+        const initialInput = JSON.parse(initialFrame.body);
+        assert.equal(initialInput.args[0].t, 'usize');
+        assert.equal(initialInput.args[0].v, '0');
         let before = BigInt(await page.locator('#native-probe-sequence').textContent());
         let callsBefore = Number(await page.locator('#native-probe-calls').textContent());
         let previousRun = initialRun;
@@ -122,16 +123,17 @@ test('assembled native page, procedure, shard and socket preserve the mounted se
           const calls = Number(await page.locator('#native-probe-calls').textContent());
           assert.ok(sequence > before);
           assert.equal(calls, callsBefore + 1, 'Each real save commits once through the shared Rust service.');
-          const refreshedRun = frames.filter(({path, frame}) =>
-            path === `${prefix}/__native_probe/issue` && frame.run > previousRun).at(-1);
+          const refreshedRun = frames.filter(({frame}) =>
+            frame.path === '/__native_probe/issue' && frame.run > previousRun).at(-1);
           assert.ok(refreshedRun, 'The connected shard sends a new real WebSocket render run after each save.');
-          assert.deepEqual(refreshedRun.frame.args, [{...initialFrame.args[0], v: String(saveNumber)}]);
-          assert.equal(refreshedRun.frame.shard, initialFrame.shard, 'Refresh retains the same shard invocation.');
+          assert.deepEqual(JSON.parse(refreshedRun.frame.body).args, [{...initialInput.args[0], v: String(saveNumber)}]);
+          assert.equal(refreshedRun.frame.headers['x-topcoat-identity'], initialFrame.headers['x-topcoat-identity'],
+            'Refresh retains the same shard invocation.');
           before = sequence; callsBefore = calls; previousRun = refreshedRun.frame.run;
         }
         const nativeRequests = requests.filter(request => request.path.includes('__native_probe'));
         assert.ok(nativeRequests.some(request => request.method === 'POST' && request.path === `${prefix}/__native_probe/save`));
-        assert.ok(sockets.includes(`${prefix}/__native_probe/issue`));
+        assert.deepEqual(sockets, [`${prefix}/ACC/__native_probe`], 'Connected targets share the mounted document socket.');
         assert.deepEqual(requests.filter(request => request.method === 'POST').map(request => request.path),
           [`${prefix}/__native_probe/save`, `${prefix}/__native_probe/save`],
           'Browser input initialization needs no procedure or page-render request.');

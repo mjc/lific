@@ -166,7 +166,10 @@ async fn native_probe_issue(cx: &Cx, revision: usize) -> topcoat::Result<impl Vi
         .calls
         .load(Ordering::SeqCst);
     Ok(view! {
-        <section id="native-probe-issue" data-connected=(if connected { "true" } else { "false" })>
+        <section
+            id="native-probe-issue"
+            data-connected=(if connected { "true" } else { "false" })
+        >
             <h1 id="native-probe-title">(issue.title)</h1>
             <output id="native-probe-sequence">(issue.seq)</output>
             <output id="native-probe-calls">(calls)</output>
@@ -184,29 +187,47 @@ async fn native_probe_page(cx: &Cx) -> topcoat::Result<impl View> {
     let browser_ready = signal(cx, || false);
     let browser_inputs = signal(cx, String::new);
     let mount = transport::trusted_mount(cx).unwrap_or("");
-    let runtime = transport::mounted_url(cx, "/__topcoat-runtime.js");
 
     Ok(view! {
         <!DOCTYPE html>
         <html data-topcoat-runtime-prefix=(mount)>
-            <head><script type="module" src=(runtime)></script></head>
+            <head>(super::super::assets::runtime_script(cx))</head>
             <body>
                 <label for="native-probe-draft">"Title"</label>
-                <input id="native-probe-draft" :value=$(draft.get())
-                    @input=$(|event: Event| draft.set(event.target.value))>
-                <button id="native-probe-save" @click=$(async |_event| {
-                    saved.set(false);
-                    let outcome = native_probe_save(draft.get(), expected.get()).await;
-                    if outcome.0.is_ok() {
-                        expected.set(outcome.1.unwrap());
-                    }
-                    saved.set(outcome.0.is_ok());
-                    revision.increment();
-                })>"Save through native procedure"</button>
+                <input
+                    id="native-probe-draft"
+                    :value=$(draft.get())
+                    @input=$(|event: Event| draft.set(event.target.value))
+                >
+                <button
+                    id="native-probe-save"
+                    @click=$(async |_event| {
+                        saved.set(false);
+                        let outcome = native_probe_save(draft.get(), expected.get()).await;
+                        if outcome.0.is_ok() {
+                            expected.set(outcome.1.unwrap());
+                        }
+                        saved.set(outcome.0.is_ok());
+                        revision.increment();
+                    })
+                >
+                    "Save through native procedure"
+                </button>
                 <output id="native-probe-saved">$(saved.get())</output>
-                <section (super::browser_inputs::mount(cx, browser_ready.clone(), browser_inputs.clone(), "lific_recents".into()))>
-                    <output id="native-probe-browser-ready">$(browser_ready.get())</output>
-                    <output id="native-probe-browser-inputs">$(browser_inputs.get())</output>
+                <section
+                    (super::browser_inputs::mount(
+                        cx,
+                        browser_ready.clone(),
+                        browser_inputs.clone(),
+                        "lific_recents".into(),
+                    ))
+                >
+                    <output id="native-probe-browser-ready">
+                        $(browser_ready.get())
+                    </output>
+                    <output id="native-probe-browser-inputs">
+                        $(browser_inputs.get())
+                    </output>
                 </section>
                 native_probe_issue(revision: $(revision.get()))
             </body>

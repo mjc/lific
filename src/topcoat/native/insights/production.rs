@@ -145,26 +145,37 @@ async fn native_insights_real_browser_week_selection_hover_and_pinned_main_geome
 
 #[tokio::test]
 async fn native_insights_navigation_admission_reuses_the_shared_document_owner() {
-    use topcoat::runtime::Surrogated;
     let fixture = home_fixture::fixture();
-    let account =
-        crate::db::queries::users::validate_session(&fixture.db.read().unwrap(), &fixture.token)
-            .unwrap()
-            .id;
-    let (origin, server) = home_fixture::serve(&fixture).await;
-    let response = reqwest::Client::new()
-        .post(format!("{origin}/__native_workspace/destination"))
-        .header("origin", &origin)
+    let (_, _, initial) = document(&fixture, "/ACC/insights", Some(&fixture.token), "").await;
+    let signals = home_fixture::page_signals(&initial);
+    let mut request = Request::builder()
+        .method("POST")
+        .uri("/ACC/insights")
+        .header("origin", "http://127.0.0.1:3000")
+        .header("host", "127.0.0.1:3000")
         .header("cookie", format!("lific_token={}", fixture.token))
-        .json(&("/ACC/insights".to_owned(), String::new(), account).into_surrogate())
-        .send()
+        .header("content-type", "application/json")
+        .header("x-topcoat-runtime", "true")
+        .header("accept", "application/x-ndjson")
+        .body(Body::from(
+            serde_json::json!({ "signals": signals }).to_string(),
+        ))
+        .unwrap();
+    request.extensions_mut().insert(axum::extract::ConnectInfo(
+        "127.0.0.1:3000".parse::<std::net::SocketAddr>().unwrap(),
+    ));
+    let response = fixture.app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let body: serde_json::Value = response.json().await.unwrap();
-    assert_eq!(body[0]["v"], "/ACC/insights");
-    assert_eq!(body[2], "ACC  Insights");
-    server.abort();
+    let frames = String::from_utf8(body.to_vec()).unwrap();
+    let snapshot = frames
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find(|frame| frame["t"] == "snapshot")
+        .expect("actual Topcoat destination snapshot");
+    assert!(snapshot["html"].as_str().unwrap().contains("ACC  Insights"));
 }
 
 // Test-only control of genuine SQLite failures and membership, not a product API.

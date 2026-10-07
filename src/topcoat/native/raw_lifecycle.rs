@@ -508,9 +508,18 @@ fn policy(ping_ms: u64, progress_ms: u64, send_ms: u64) -> SocketPolicy {
 async fn request_render(socket: &mut Socket, run: u64) {
     socket
         .send(Message::Text(
-            serde_json::json!({"run": run, "signals": {}})
-                .to_string()
-                .into(),
+            serde_json::json!({
+                "run": run,
+                "method": "POST",
+                "path": "/",
+                "headers": {
+                    "content-type": "application/json",
+                    "x-topcoat-runtime": "true"
+                },
+                "body": "{\"signals\":{}}"
+            })
+            .to_string()
+            .into(),
         ))
         .await
         .unwrap();
@@ -536,11 +545,23 @@ async fn frame(socket: &mut Socket) -> serde_json::Value {
     .expect("native render frame timed out")
 }
 
+async fn stop_render(socket: &mut Socket, run: u64) {
+    socket
+        .send(Message::Text(
+            serde_json::json!({"stop": run}).to_string().into(),
+        ))
+        .await
+        .unwrap();
+}
+
 async fn snapshot(socket: &mut Socket, run: u64, title: &str) {
-    let announced = frame(socket).await;
-    assert_eq!(announced["t"], "run");
-    assert_eq!(announced["id"], run);
-    let snapshot = frame(socket).await;
+    let response = loop {
+        let response = frame(socket).await;
+        if response["run"] == run {
+            break response;
+        }
+    };
+    let snapshot = &response["frame"];
     assert_eq!(snapshot["t"], "snapshot");
     let html = snapshot["html"].as_str().unwrap();
     assert!(
@@ -675,9 +696,8 @@ async fn native_raw_stopped_reader_bounds_send_and_aborts_its_live_render() {
     trace.at(4);
     request_render(&mut socket, 1).await;
     trace.at(5);
-    let announced = frame(&mut socket).await;
-    assert_eq!(announced["t"], "run");
-    assert_eq!(announced["id"], 1);
+    // Topcoat 0.10 sends the first large snapshot directly; reading it here
+    // would drain the TCP buffer and invalidate the blocked-writer assertion.
     trace.at(6);
     fixture
         .counts(
@@ -744,12 +764,23 @@ async fn native_raw_peer_close_aborts_connected_render_and_releases_receiver_and
 }
 
 #[tokio::test]
-async fn native_raw_latest_render_cancels_previous_body_before_next_run_announcement() {
+async fn native_raw_stop_cancels_previous_body_before_next_run() {
     // Replacement ordering uses the production policy. Short idle deadlines
     // belong to the dedicated timeout tests, not this resource ownership proof.
     let fixture = Fixture::new(SocketPolicy::default());
     let mut socket = fixture.open().await;
     for run in 1..=4u64 {
+        if run > 1 {
+            stop_render(&mut socket, run - 1).await;
+            fixture
+                .counts(
+                    1,
+                    0,
+                    DEADLINE,
+                    "Stop cancels the previous body before rerender",
+                )
+                .await;
+        }
         let title = format!("Raw current render {run}");
         fixture.rename(&title);
         request_render(&mut socket, run).await;
@@ -766,6 +797,39 @@ async fn native_raw_latest_render_cancels_previous_body_before_next_run_announce
     drop(socket);
     fixture
         .counts(0, 0, DEADLINE, "disconnect releases the final render")
+        .await;
+}
+
+#[tokio::test]
+async fn native_raw_shared_runs_stop_independently_on_one_physical_socket() {
+    let fixture = Fixture::new(SocketPolicy::default());
+    let mut socket = fixture.open().await;
+    fixture.rename("Raw shared runs");
+    request_render(&mut socket, 41).await;
+    snapshot(&mut socket, 41, "Raw shared runs").await;
+    request_render(&mut socket, 42).await;
+    snapshot(&mut socket, 42, "Raw shared runs").await;
+    fixture
+        .counts(
+            1,
+            2,
+            DEADLINE,
+            "both runs share one socket and own separate receivers",
+        )
+        .await;
+
+    stop_render(&mut socket, 41).await;
+    fixture
+        .counts(1, 1, DEADLINE, "stopping one run leaves its sibling active")
+        .await;
+    stop_render(&mut socket, 42).await;
+    fixture
+        .counts(
+            1,
+            0,
+            DEADLINE,
+            "stopping the second run releases its receiver",
+        )
         .await;
 }
 
@@ -788,7 +852,9 @@ async fn retire_to_home(mut socket: Socket, prefix: &str, deadline: Duration) {
         loop {
             match socket.next().await {
                 Some(Ok(Message::Text(text))) => {
-                    let frame: serde_json::Value = serde_json::from_str(&text).unwrap();
+                    let envelope: serde_json::Value = serde_json::from_str(&text).unwrap();
+                    assert!(envelope.get("run").is_none());
+                    let frame = &envelope["frame"];
                     assert!(!redirected, "raw retirement sends one navigation frame");
                     assert_eq!(frame["t"], "redirect", "no render was requested");
                     assert_eq!(frame["location"], format!("{prefix}/"));

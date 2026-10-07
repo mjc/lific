@@ -79,7 +79,10 @@ async function privateHome(browser, proxy, prefix, token) {
     const send = WebSocket.prototype.send;
     let contentSocket, lastRender;
     WebSocket.prototype.send = function (value) {
-      if (new URL(this.url).pathname.endsWith('/__native_home/content')) {
+      let request;
+      try {request = JSON.parse(value);}
+      catch {}
+      if (request?.path === '/__native_home/content') {
         contentSocket = this;
         lastRender = value;
       }
@@ -105,7 +108,10 @@ async function privateHome(browser, proxy, prefix, token) {
     sockets.push(record);
     socket.on('close', () => {record.closed = true; close();});
     socket.on('framereceived', ({payload}) => {
-      try {frames.push({url: socket.url(), value: JSON.parse(payload.toString())});}
+      try {
+        const envelope = JSON.parse(payload.toString());
+        frames.push({url: socket.url(), value: {...envelope.frame, run: envelope.run}});
+      }
       catch {errors.push('A native framework socket delivered a non-JSON frame.');}
     });
   });
@@ -117,8 +123,8 @@ async function privateHome(browser, proxy, prefix, token) {
   assert.equal(await page.locator('.native-home-account').textContent(), 'viewer');
   assert.equal(await page.getByText('Private hidden initial work', {exact: true}).count(), 0);
   assert.deepEqual(sockets.map(socket => new URL(socket.url).pathname).sort(),
-    [`${prefix}/__native_home/content`, `${prefix}/__native_home/palette`].sort(),
-    'Socket-owned session listeners preserve the two existing sibling framework connections.');
+    [`${prefix}/`],
+    'The page and palette runs share one document socket and one authority listener.');
   const scripts = await page.locator('script[src]').evaluateAll(elements => elements.map(element => new URL(element.src).pathname));
   assert.deepEqual(scripts, [`${prefix}/__topcoat-runtime.js`], 'Private Home ships only the framework runtime.');
   return {context, page, errors, privateRequests, frames, sockets, inputs, transportSockets};
@@ -168,7 +174,7 @@ async function retiredToLogin(state, proxy, prefix, index) {
   assert.equal(await state.page.getByText(initialTitle, {exact: true}).count(), 0);
   noInputAfter(state, boundary);
   await closed(oldSockets, state, 'revoked document navigation');
-  await receivers(0, 'Document retirement drops both physical sockets\' revocation receivers.');
+  await receivers(0, 'Document retirement drops the physical socket revocation receiver.');
   nativeOnly(state);
 }
 
@@ -194,7 +200,7 @@ test(`native idle session production ${scenario}`, async t => {
             assert.equal(homeDocuments(proxy, prefix), before);
             assert.equal(await state.page.locator('.native-home-account').textContent(), 'viewer');
             assert.equal(await state.page.getByText(initialTitle, {exact: true}).count(), 1);
-            assert.ok(state.sockets.every(socket => !socket.closed), 'Unrelated signals preserve both live connections.');
+            assert.ok(state.sockets.every(socket => !socket.closed), 'Unrelated signals preserve the shared live connection.');
             assert.equal(state.frames.some(frame => frame.value.t === 'redirect'), false);
             noInputAfter(state, boundary);
             // Matching canary proves the same listener remains usable.
@@ -216,18 +222,18 @@ test(`native idle session production ${scenario}`, async t => {
             assert.equal(homeDocuments(proxy, prefix), before + 1);
             noInputAfter(state, boundary);
             await closed(oldSockets, state, 'replacement cookie navigation');
-            await receivers(2, 'The replacement document owns one current-account revocation receiver per physical socket.');
+            await receivers(1, 'The replacement document owns one current-account revocation receiver.');
             nativeOnly(state);
           } else {
-            await receivers(2, 'Each of the two physical sockets owns one revocation receiver.', 2);
+            await receivers(1, 'The shared document socket owns one revocation receiver.', 1);
             const initialSockets = [...state.sockets];
             for (let round = 1; round <= 3; round++) {
               const title = `Visible idle rerender ${index}-${round}`;
               await control('rename', {title});
               await state.page.evaluate(() => window.__replayNativeIdleContent());
               await state.page.getByText(title, {exact: true}).waitFor();
-              await receivers(2, 'Replacing the connected render preserves both physical sockets\' authority receivers.', 2);
-              assert.equal(state.sockets.length, 2, 'Same-scope replacement creates no extra connection.');
+              await receivers(1, 'Replacing the connected render preserves the shared socket authority receiver.', 1);
+              assert.equal(state.sockets.length, 1, 'Same-scope replacement creates no extra physical connection.');
               assert.ok(initialSockets.every(socket => !socket.closed));
             }
             await state.page.reload();
@@ -238,17 +244,17 @@ test(`native idle session production ${scenario}`, async t => {
             await state.page.waitForFunction(() =>
               document.querySelector('.tc-native-home__page')?.getAttribute('data-native-home-connected') === 'true' &&
               document.querySelector('.native-home-palette-results')?.getAttribute('data-native-home-connected') === 'true');
-            await receivers(2, 'A replacement document releases its predecessor and owns one authority receiver per physical socket.', 2);
+            await receivers(1, 'A replacement document releases its predecessor and owns one authority receiver.', 1);
             const currentSockets = state.sockets.filter(socket => !socket.closed);
             assert.deepEqual(currentSockets.map(socket => new URL(socket.url).pathname).sort(),
-              [`${prefix}/__native_home/content`, `${prefix}/__native_home/palette`].sort());
+              [`${prefix}/`]);
             nativeOnly(state);
             await state.context.close();
             // Destroying the context also destroys its DevTools observer; the
             // production hub remains available to prove both socket permits and
             // authority receivers were released. Reload above keeps its observer
             // alive and still requires every predecessor socket close event.
-            await receivers(0, 'Disconnect drops both physical sockets\' authority receivers without a broadcast.', 0);
+            await receivers(0, 'Disconnect drops the shared socket authority receiver without a broadcast.', 0);
             state = null;
           }
         } finally {

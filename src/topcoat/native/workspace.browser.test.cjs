@@ -194,16 +194,18 @@ test('normal native issue → Issues → actual row keeps workspace owner', asyn
         await page.locator('#native-issue-body-input-ACC-1').waitFor({state:'visible'});
         assert.equal(await page.locator('#native-issue-body-input-ACC-1').inputValue(), restored.description, 'Fresh owner starts from persisted source.');
         assert.equal(requests.filter(request => request.type === 'document').length, documents, 'Supported navigation keeps the original document.');
-        // Home is outside the issue/list region. A failed classification must
-        // preserve the ordinary link's canonical document navigation.
+        // Home leaves the issue/list route. If its page POST cannot be used,
+        // Topcoat falls back to the ordinary document navigation.
         const home = page.locator('.native-home-home-link');
         assert.equal(await home.getAttribute('href'), `${prefix}/`);
         const homeUrl = `${proxy.origin}${prefix}/`;
-        const destinationUrl = `${proxy.origin}${prefix}/__native_workspace/destination`;
-        let abortedClassifications = 0;
-        await page.route(destinationUrl, async route => {
-          assert.equal(route.request().method(), 'POST');
-          abortedClassifications++;
+        let abortedPagePosts = 0;
+        await page.route(homeUrl, async route => {
+          const request = route.request();
+          assert.equal(request.method(), 'POST');
+          assert.equal(await request.headerValue('x-topcoat-runtime'), 'true');
+          assert.ok(JSON.parse(request.postData()).signals);
+          abortedPagePosts++;
           await route.abort('failed');
         });
         const fallback = page.waitForResponse(response => response.request().resourceType() === 'document' &&
@@ -214,7 +216,7 @@ test('normal native issue → Issues → actual row keeps workspace owner', asyn
         assert.ok((await fallbackResponse.text()).includes('data-native-home'), 'Fallback renders actual production Home.');
         await page.waitForURL(homeUrl, {waitUntil:'domcontentloaded'});
         await page.locator('[data-native-home]').waitFor();
-        assert.equal(abortedClassifications, 1, 'Only the genuine workspace destination request was aborted.');
+        assert.equal(abortedPagePosts, 1, 'Only the genuine Topcoat Home page request was aborted.');
         assert.equal(requests.filter(request => request.type === 'document').length, documents + 1,
           'Unsupported fallback performs exactly one ordinary document navigation.');
         assert.equal(await page.evaluate(() => Object.prototype.hasOwnProperty.call(window, 'workspaceParent')), false,

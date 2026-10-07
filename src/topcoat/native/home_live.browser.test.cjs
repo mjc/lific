@@ -35,7 +35,11 @@ async function resources(sockets, receivers) {
   return result;
 }
 function contentSockets(sockets) {
-  return sockets.filter(socket => new URL(socket.url).pathname.endsWith('/__native_home/content'));
+  return sockets.filter(socket => new URL(socket.url).pathname.endsWith('/'));
+}
+
+function runUrl(socketUrl, prefix, path) {
+  return new URL(`${prefix}${path || '/'}`, socketUrl).href;
 }
 async function waitClosed(socket) {
   let timer;
@@ -53,7 +57,7 @@ test(`native Home live production ${scenario}`, async t => {
     for (const [index, prefix] of ['', '/app', '/ACC'].entries()) {
       await t.test(prefix || 'root', async () => {
         const proxy = await mountedProxy(upstream, prefix,
-          scenario.startsWith('busy_') ? {incomingPath: '/__native_home/content'} : {});
+          scenario.startsWith('busy_') ? {incomingPath: '/'} : {});
         const context = await browser.newContext();
         const errors = [], requests = [], sockets = [], frames = [], sentFrames = [], inputs = [];
         try {
@@ -67,16 +71,23 @@ test(`native Home live production ${scenario}`, async t => {
           page.on('console', message => {if (message.type() === 'error') errors.push(message.text());});
           page.on('pageerror', error => errors.push(error.message));
           context.on('request', request => requests.push(request));
+          const runPaths = new Map();
           page.on('websocket', socket => {
             let close;
             const record = {url: socket.url(), closed: false, closing: new Promise(resolve => {close = resolve;})};
             sockets.push(record);
             socket.on('close', () => {record.closed = true; close();});
             socket.on('framesent', ({payload}) => {
-              sentFrames.push({url: socket.url(), frame: JSON.parse(payload.toString())});
+              const frame = JSON.parse(payload.toString());
+              if (frame.path) runPaths.set(frame.run, frame.path);
+              sentFrames.push({url: runUrl(socket.url(), prefix, frame.path || runPaths.get(frame.stop) || '/'), frame});
             });
             socket.on('framereceived', ({payload}) => {
-              try {frames.push({url: socket.url(), frame: JSON.parse(payload.toString())});}
+              try {
+                const envelope = JSON.parse(payload.toString());
+                const path = runPaths.get(envelope.run);
+                frames.push({url: runUrl(socket.url(), prefix, path), frame: {...envelope.frame, run: envelope.run, path}});
+              }
               catch {errors.push('A native Home socket delivered a non-JSON frame.');}
             });
           });
@@ -91,18 +102,26 @@ test(`native Home live production ${scenario}`, async t => {
             // fabricated render request, or production application state exists.
             const send = WebSocket.prototype.send;
             let contentSocket;
+            const contentRuns = new Set();
             window.__homeLiveAppliedFrames = [];
             WebSocket.prototype.send = function (value) {
-              if (new URL(this.url).pathname.endsWith('/__native_home/content') && contentSocket !== this) {
+              let request;
+              try {request = JSON.parse(value);}
+              catch {}
+              if (request?.path === '/__native_home/content') {
                 contentSocket = this;
+                contentRuns.add(request.run);
                 // Registered after the framework receive handler. Its hydration
                 // queues mount effects before this observation microtask.
-                this.addEventListener('message', event => {
-                  const frame = JSON.parse(event.data);
-                  if (frame.t === 'snapshot' || frame.t === 'swap') {
-                    queueMicrotask(() => {window.__homeLiveAppliedFrames.push(frame);});
-                  }
-                });
+                if (!this.__homeLiveObserver) {
+                  this.__homeLiveObserver = true;
+                  this.addEventListener('message', event => {
+                    const envelope = JSON.parse(event.data), frame = envelope.frame;
+                    if (contentRuns.has(envelope.run) && (frame.t === 'snapshot' || frame.t === 'swap')) {
+                      queueMicrotask(() => {window.__homeLiveAppliedFrames.push({...frame, run: envelope.run});});
+                    }
+                  });
+                }
               }
               return send.call(this, value);
             };
@@ -117,15 +136,14 @@ test(`native Home live production ${scenario}`, async t => {
           await page.waitForFunction(() =>
             document.querySelector('.tc-native-home__page')?.getAttribute('data-native-home-connected') === 'true' &&
             document.querySelector('.native-home-palette-results')?.getAttribute('data-native-home-connected') === 'true');
-          await resources(2, 2);
-          assert.deepEqual(sockets.map(socket => new URL(socket.url).pathname).sort(),
-            [`${prefix}/__native_home/content`, `${prefix}/__native_home/palette`].sort());
+          await resources(1, 1);
+          assert.deepEqual(sockets.map(socket => new URL(socket.url).pathname), [`${prefix}/`]);
           assert.deepEqual(await page.locator('script[src]').evaluateAll(elements => elements.map(element => new URL(element.src).pathname)),
             [`${prefix}/__topcoat-runtime.js`]);
           const document = await page.evaluate(() => window.__homeLiveDocument);
           const documentRequests = requests.filter(request => request.isNavigationRequest()).length;
           const inputCount = inputs.length;
-          const palette = sockets.find(socket => new URL(socket.url).pathname.endsWith('/__native_home/palette'));
+          const palette = sockets[0];
           // Rate-only swaps are independent of content invalidation and projection.
           const contentFrames = () => frames.filter(({url, frame}) => new URL(url).pathname.endsWith('/__native_home/content') && /data-native-home-(?:invalidation|snapshot)/.test(JSON.stringify(frame))).length;
 
@@ -169,7 +187,7 @@ test(`native Home live production ${scenario}`, async t => {
             assert.equal(requests.filter(request => request.isNavigationRequest()).length, documentRequests);
             assert.ok(requests.every(request => !new URL(request.url()).pathname.split('/').includes('api')));
             assert.deepEqual(errors, []);
-            const connected = await resources(2, 2);
+            const connected = await resources(1, 1);
             assert.equal(connected.eventReceivers, 2, 'Activity rate shares the existing Home publication receiver.');
             return;
           }
@@ -187,7 +205,7 @@ test(`native Home live production ${scenario}`, async t => {
             assert.equal(await page.evaluate(() => window.__homeLiveDocument), document);
             assert.equal(requests.filter(request => request.isNavigationRequest()).length, documentRequests);
             assert.ok(requests.every(request => !new URL(request.url()).pathname.split('/').includes('api')));
-            await resources(2, 2);
+            await resources(1, 1);
             return;
           }
 
@@ -271,7 +289,7 @@ test(`native Home live production ${scenario}`, async t => {
             assert.equal(requests.filter(request => request.isNavigationRequest()).length, documentRequests);
             assert.ok(requests.every(request => !new URL(request.url()).pathname.split('/').includes('api')));
             assert.deepEqual(errors, []);
-            await resources(2, 2);
+            await resources(1, 1);
             await page.evaluate(() => window.__stopHomeRefreshObservation());
             return;
           }
@@ -308,7 +326,7 @@ test(`native Home live production ${scenario}`, async t => {
               document.querySelector('.tc-native-home__page')?.getAttribute('data-native-home-connected') === 'true' &&
               document.querySelector('.native-home-palette-results')?.getAttribute('data-native-home-connected') === 'true'),
               'The actual replacement content and palette connect while the browser clock is paused.');
-            await resources(2, 2);
+            await resources(1, 1);
             assert.deepEqual(await page.evaluate(() => ({
               distinct: window.__retiredHomeOwner !== document.querySelector('[data-native-home]'),
               oldConnected: window.__retiredHomeOwner.isConnected,
@@ -392,7 +410,7 @@ test(`native Home live production ${scenario}`, async t => {
             assert.ok(requests.every(request => !new URL(request.url()).pathname.split('/').includes('api')));
             assert.ok(requests.every(request => request.method() !== 'POST' || !new URL(request.url()).pathname.endsWith('/__native_home/content')));
             assert.deepEqual(errors, []);
-            await resources(2, 2);
+            await resources(1, 1);
             return;
           }
 
@@ -458,7 +476,7 @@ test(`native Home live production ${scenario}`, async t => {
               assert.equal(requests.filter(request => request.isNavigationRequest()).length, documentRequests);
               assert.ok(requests.every(request => !new URL(request.url()).pathname.split('/').includes('api')));
               assert.ok(requests.every(request => request.method() !== 'POST' || !new URL(request.url()).pathname.endsWith('/__native_home/content')));
-              await resources(2, 2);
+              await resources(1, 1);
               return;
             } finally {
               if (readerFault) await control('reader_fault', {enabled: false});
@@ -494,7 +512,7 @@ test(`native Home live production ${scenario}`, async t => {
               'Exactly the deliberately induced server failure is reported; every unrelated error fails.');
             assert.match(errors[0], /^\[topcoat\] Error: Connected render failed: 500(?:\n {4}at [^\n]+)+$/,
               'The sole error is the actual framework failure with its browser stack.');
-            await resources(2, 2);
+            await resources(1, 1);
             return;
           }
 
@@ -520,10 +538,10 @@ test(`native Home live production ${scenario}`, async t => {
             assert.equal(await page.evaluate(() => window.__homeLiveDocument), document);
             assert.equal(requests.filter(request => request.isNavigationRequest()).length, documentRequests);
             assert.equal(inputs.length, inputCount);
-            assert.ok(sockets.every(socket => !socket.closed), 'Membership projection refresh preserves both existing connections.');
+            assert.ok(sockets.every(socket => !socket.closed), 'Membership projection refresh preserves the shared document connection.');
             assert.ok(requests.every(request => !new URL(request.url()).pathname.split('/').includes('api')));
             assert.deepEqual(errors, []);
-            const connected = await resources(2, 2);
+            const connected = await resources(1, 1);
             assert.equal(connected.eventReceivers, 2);
             return;
           }
@@ -553,9 +571,9 @@ test(`native Home live production ${scenario}`, async t => {
             await page.waitForFunction(() =>
               document.querySelector('.tc-native-home__page')?.getAttribute('data-native-home-connected') === 'true' &&
               document.querySelector('.native-home-palette-results')?.getAttribute('data-native-home-connected') === 'true');
-            const connected = await resources(2, 2);
-            assert.equal(connected.viewerSockets, 0, 'The expired account releases both old socket permits.');
-            assert.equal(connected.replacementSockets, 2, 'The fresh document owns only current account B sockets.');
+            const connected = await resources(1, 1);
+            assert.equal(connected.viewerSockets, 0, 'The expired account releases its old document socket permit.');
+            assert.equal(connected.replacementSockets, 1, 'The fresh document owns one socket for current account B.');
             assert.equal(connected.eventReceivers, 2);
             assert.ok(requests.every(request => !new URL(request.url()).pathname.split('/').includes('api')));
             assert.deepEqual(errors, []);
@@ -568,18 +586,20 @@ test(`native Home live production ${scenario}`, async t => {
             await waitClosed(old);
             const missed = `Visible edit while content disconnected ${index}`;
             const edit = await control('edit', {title: missed, hidden: false});
-            assert.equal(contentSockets(sockets).length, 1,
-              'The missed edit commits before the framework opens its replacement content connection.');
+            assert.equal(sockets.filter(socket => !socket.closed).length, 1,
+              'Reconnect restores one physical document connection for both connected units.');
             await work.getByText(missed, {exact: true}).waitFor();
-            assert.equal(contentSockets(sockets).length, 2, 'The framework establishes one replacement content socket.');
-            assert.ok(!palette.closed, 'Content recovery keeps the sibling palette connection alive.');
+            assert.equal(contentSockets(sockets).length, 2, 'The framework replaces the shared document socket once.');
+            assert.ok(palette.closed, 'Closing the document socket stops both content and palette runs.');
+            assert.ok(sentFrames.some(({frame}) => frame.path === '/__native_home/palette'),
+              'The reopened document socket starts the palette render again.');
             assert.equal(await work.getByText(initialTitle, {exact: true}).count(), 0);
             await assertActivity(work, edit.titleRows);
             const baseline = (await control('count')).activityDayCount;
             await work.locator('[data-native-home-activity-rate]').filter({hasText: `${baseline} updates/day`}).waitFor({state: 'visible'});
             assert.equal(await work.locator('[data-native-home-activity-rate]').textContent(), `${baseline} updates/day`,
               'A new physical connection reads a fresh authorized baseline including the missed audit event.');
-            await resources(2, 2);
+            await resources(1, 1);
           }
 
           const title = `Visible live canary ${scenario}-${index}`;
@@ -597,10 +617,9 @@ test(`native Home live production ${scenario}`, async t => {
             'Connected content never falls back to an HTTP shard POST.');
           assert.deepEqual(errors, [], 'Every browser and framework error remains visible to this test.');
           const active = sockets.filter(socket => !socket.closed);
-          assert.deepEqual(active.map(socket => new URL(socket.url).pathname).sort(),
-            [`${prefix}/__native_home/content`, `${prefix}/__native_home/palette`].sort());
-          const connected = await resources(2, 2);
-          assert.equal(connected.eventReceivers, 2, 'One content-owned live subscription joins the fixture observer.');
+          assert.deepEqual(active.map(socket => new URL(socket.url).pathname), [`${prefix}/`]);
+          const connected = await resources(1, 1);
+          assert.equal(connected.eventReceivers, 2, 'The shared document connection owns the content subscription beside the fixture observer.');
         } finally {
           try {
             await context.close();

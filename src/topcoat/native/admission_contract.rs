@@ -37,6 +37,20 @@ type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
 const DEADLINE: Duration = Duration::from_secs(5);
 
+async fn next_runtime_frame(socket: &mut Socket) -> serde_json::Value {
+    tokio::time::timeout(DEADLINE, async {
+        loop {
+            match socket.next().await.expect("socket remains open").unwrap() {
+                Message::Text(text) => break serde_json::from_str(&text).unwrap(),
+                Message::Ping(_) | Message::Pong(_) => {}
+                other => panic!("socket ended without a runtime frame: {other:?}"),
+            }
+        }
+    })
+    .await
+    .expect("bounded runtime frame")
+}
+
 #[derive(Clone, Copy, Debug)]
 enum Transport {
     Native,
@@ -438,6 +452,146 @@ async fn native_published_admission_ignores_credentials_and_uses_only_the_global
 }
 
 #[tokio::test]
+async fn native_published_shared_socket_cannot_render_private_paths() {
+    for required in [true, false] {
+        let fixture = Fixture::with_auth(required).await;
+        fixture.publish();
+        for prefix in ["", "/app", "/ACC"] {
+            for token in [
+                None,
+                Some(fixture.other_token.as_str()),
+                Some("invalid-cookie-value"),
+            ] {
+                let (mut socket, _) = tokio::time::timeout(
+                    DEADLINE,
+                    tokio_tungstenite::connect_async(fixture.public_request(
+                        prefix,
+                        "/public/PUB/issues",
+                        token,
+                    )),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+                socket
+                    .send(Message::Text(
+                        serde_json::json!({"run": 1, "method": "GET", "path": "/?scope=private"})
+                            .to_string()
+                            .into(),
+                    ))
+                    .await
+                    .unwrap();
+                let outcome = next_runtime_frame(&mut socket).await;
+                assert_eq!(
+                    outcome,
+                    serde_json::json!({"run": 1, "frame": {"t": "error", "status": 403}}),
+                    "a published socket retains its public scope: auth={required}, mount={prefix}"
+                );
+                socket
+                    .send(Message::Text(
+                        serde_json::json!({
+                            "run": 2, "method": "GET", "path": "/public/PUB/issues?scope=public"
+                        })
+                        .to_string()
+                        .into(),
+                    ))
+                    .await
+                    .unwrap();
+                let recovery = next_runtime_frame(&mut socket).await;
+                assert_eq!(recovery["run"], 2);
+                assert_eq!(
+                    recovery["frame"],
+                    serde_json::json!({"t": "error", "status": 404}),
+                    "the published route keeps its current HTTP outcome after a refused private run"
+                );
+                assert_eq!(fixture.hub.revocation_receiver_count(), 0);
+                assert_eq!(fixture.hub.socket_count(fixture.operator_id), 0);
+                assert_eq!(fixture.hub.socket_count(fixture.viewer_id), 0);
+                close(socket).await;
+                fixture.wait_for_total(0).await;
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn native_session_procedure_preserves_nested_optional_tuple_values() {
+    let fixture = Fixture::new().await;
+    let client = reqwest::Client::builder()
+        .timeout(DEADLINE)
+        .build()
+        .unwrap();
+    for prefix in ["", "/app", "/ACC"] {
+        let response = client
+            .post(format!("{}{prefix}/__native_home/session", fixture.origin))
+            .header(header::COOKIE, format!("lific_token={}", fixture.token))
+            .header(header::ORIGIN, &fixture.origin)
+            .json(&serde_json::json!([]))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let outcome: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(
+            outcome,
+            serde_json::json!({
+                "t": "Option", "v": [{"t": "i64", "bits": 64, "v": fixture.viewer_id.to_string()}, false]
+            }),
+            "Topcoat's native optional tuple represents one complete current account"
+        );
+    }
+}
+
+#[tokio::test]
+async fn native_private_shared_socket_keeps_authority_while_rendering_public_paths() {
+    for prefix in ["", "/app", "/ACC"] {
+        let fixture = Fixture::new().await;
+        fixture.publish();
+        let (mut socket, _) = tokio::time::timeout(
+            DEADLINE,
+            tokio_tungstenite::connect_async(fixture.request_at(
+                Transport::Native,
+                &fixture.token,
+                prefix,
+            )),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        fixture.wait_for_revocations(1).await;
+        socket
+            .send(Message::Text(
+                serde_json::json!({
+                    "run": 1, "method": "GET", "path": "/public/PUB/issues"
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        let outcome = next_runtime_frame(&mut socket).await;
+        assert_eq!(outcome["run"], 1);
+        assert_eq!(
+            outcome["frame"],
+            serde_json::json!({"t": "error", "status": 404}),
+            "private admission preserves the public route's current HTTP outcome"
+        );
+        assert_eq!(fixture.hub.socket_count(fixture.viewer_id), 1);
+        assert_eq!(fixture.hub.revocation_receiver_count(), 1);
+        queries::users::delete_session(&fixture.db.write().unwrap(), &fixture.token).unwrap();
+        fixture.hub.revoke_user(fixture.viewer_id);
+        assert_eq!(
+            next_runtime_frame(&mut socket).await,
+            serde_json::json!({"frame": {"t": "redirect", "location": format!("{prefix}/")}}),
+            "a public render cannot detach the original private authority lifetime"
+        );
+        drop(socket);
+        fixture.wait_for_total(0).await;
+        fixture.wait_for_revocations(0).await;
+    }
+}
+
+#[tokio::test]
 async fn native_published_admission_refuses_missing_private_unpublished_and_unsupported_before_101()
 {
     let fixture = Fixture::new().await;
@@ -625,44 +779,24 @@ async fn native_published_admission_valid_private_shard_identity_cannot_select_a
         .unwrap();
         socket
             .send(Message::Text(
-                serde_json::json!({"run": 1, "shard": identity, "args": [], "signals": {}})
-                    .to_string()
-                    .into(),
+                serde_json::json!({
+                    "run": 1,
+                    "method": "POST",
+                    "path": "/__native_home/content",
+                    "headers": {"x-topcoat-identity": identity, "content-type": "application/json"},
+                    "body": serde_json::json!({"args": [], "signals": {}}).to_string(),
+                })
+                .to_string()
+                .into(),
             ))
             .await
             .unwrap();
-        tokio::time::timeout(DEADLINE, async {
-            let mut announced = false;
-            loop {
-                match socket.next().await.expect("socket remains open for the real render outcome").unwrap() {
-                    Message::Text(text) => {
-                        let frame: serde_json::Value = serde_json::from_str(&text).unwrap();
-                        match frame["t"].as_str() {
-                            Some("run") => { assert_eq!(frame["id"], 1); announced = true; }
-                            Some("error") => {
-                                assert!(announced, "request passed the real render protocol parser");
-                                assert!(frame["status"] == 405 || frame["status"] == 404, "URL-bound routing rejects the forged invocation, not a malformed body/header: {frame}");
-                                break;
-                            }
-                            Some("snapshot") => {
-                                assert!(announced, "real routing produced a framed render");
-                                let rendered = frame["html"].as_str().unwrap();
-                                assert!(rendered.contains("data-topcoat-public="), "a successful render stays on the public screen");
-                                assert!(rendered.contains("data-public-project=\"PUB\""));
-                                for forbidden in ["data-native-home", "__native_home/", "native-issue-editor", private.title.as_str(), private.description.as_str(), "Membership Test"] {
-                                    assert!(!rendered.contains(forbidden), "public render leaked private markup/data: {forbidden}");
-                                }
-                                break;
-                            }
-                            Some("swap") => panic!("forged invocation produced a private live swap: {frame}"),
-                            other => panic!("unexpected forged invocation outcome: {other:?}, {frame}"),
-                        }
-                    }
-                    Message::Ping(_) | Message::Pong(_) => {}
-                    other => panic!("forged invocation ended without a routing outcome: {other:?}"),
-                }
-            }
-        }).await.expect("bounded forged shard routing outcome");
+        let outcome = next_runtime_frame(&mut socket).await;
+        assert_eq!(
+            outcome,
+            serde_json::json!({"run": 1, "frame": {"t": "error", "status": 403}}),
+            "a valid private shard identity cannot escape published socket admission"
+        );
         close(socket).await;
         let conn = fixture.db.read().unwrap();
         let current = queries::get_issue(&conn, private.id).unwrap();
@@ -720,38 +854,50 @@ async fn native_page_rerenders_keep_exactly_one_socket_permit() {
         .fill(Transport::Rest, MAX_SOCKETS_PER_USER - 1)
         .await;
     for run in 1..=5u64 {
+        if run > 1 {
+            socket
+                .send(Message::Text(
+                    serde_json::json!({"stop": run - 1}).to_string().into(),
+                ))
+                .await
+                .unwrap();
+        }
         socket
             .send(Message::Text(
-                serde_json::json!({"run": run, "signals": {}})
-                    .to_string()
-                    .into(),
+                serde_json::json!({
+                    "run": run, "method": "POST", "path": "/",
+                    "headers": {"x-topcoat-runtime": "true", "content-type": "application/json"},
+                    "body": serde_json::json!({"signals": {}}).to_string(),
+                })
+                .to_string()
+                .into(),
             ))
             .await
             .unwrap();
         tokio::time::timeout(DEADLINE, async {
-            let mut announced = false;
             loop {
-                let message = socket.next().await.expect("native socket remains open across renders").unwrap();
-                match message {
-                    Message::Text(text) => {
-                        let frame: serde_json::Value = serde_json::from_str(&text).unwrap();
-                        match frame["t"].as_str() {
-                            Some("run") => {assert_eq!(frame["id"], run); announced = true;}
-                            Some("snapshot") => {
-                                assert!(announced, "snapshot follows its actual run announcement");
-                                assert!(frame["html"].as_str().unwrap().contains("data-native-home"),
-                                    "the real native Home rendered; this is not an echo or fake endpoint");
-                                break;
-                            }
-                            Some("error" | "redirect") => panic!("admitted live Home render failed: {frame}"),
-                            _ => {}
-                        }
+                let envelope = next_runtime_frame(&mut socket).await;
+                if envelope["run"] != run {
+                    continue;
+                }
+                let frame = &envelope["frame"];
+                match frame["t"].as_str() {
+                    Some("snapshot") => {
+                        assert!(
+                            frame["html"].as_str().unwrap().contains("data-native-home"),
+                            "the real native Home rendered; this is not an echo or fake endpoint"
+                        );
+                        break;
                     }
-                    Message::Ping(_) | Message::Pong(_) => {}
-                    other => panic!("native socket closed during a real rerender: {other:?}"),
+                    Some("error" | "redirect") => {
+                        panic!("admitted live Home render failed: {frame}")
+                    }
+                    _ => {}
                 }
             }
-        }).await.expect("native render did not produce a real Home snapshot");
+        })
+        .await
+        .expect("native render did not produce a real Home snapshot");
         fixture.refused(Transport::Rest).await;
     }
     close(socket).await;
