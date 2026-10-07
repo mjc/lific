@@ -467,13 +467,17 @@ pub(super) async fn download_attachment(
     headers: axum::http::HeaderMap,
     Path(id): Path<i64>,
 ) -> Result<Response, LificError> {
-    let attachment = with_read(&db, |conn| q::get_attachment(conn, id))?;
+    crate::services::files::download_response(&db, &store, &identity, id, &headers)
+}
 
-    // Authorize: the caller must be able to view SOME project this attachment
-    // is linked into (Viewer), or be the uploader / an admin for a still-
-    // unlinked attachment.
-    authorize_read(&db, &identity, &attachment)?;
-
+/// Shared byte-response policy used by REST and native mounted downloads.
+/// Authorization and metadata lookup happen in `services::files` against a
+/// fresh identity before this helper reads the content-addressed blob.
+pub(crate) fn attachment_bytes_response(
+    attachment: &Attachment,
+    store: &AttachmentStore,
+    headers: &axum::http::HeaderMap,
+) -> Result<Response, LificError> {
     let bytes = store.read(&attachment.sha256)?;
     let total = bytes.len() as u64;
     let inline_safe = storage::is_inline_safe_mime(&attachment.mime);
@@ -766,31 +770,7 @@ pub(super) async fn delete_attachment(
     Extension(store): Extension<AttachmentStore>,
     Path(id): Path<i64>,
 ) -> Result<axum::Json<serde_json::Value>, LificError> {
-    let user = require_user(&identity)?;
-    let attachment = with_read(&db, |conn| q::get_attachment(conn, id))?;
-
-    authorize_delete(&db, &identity, &user, &attachment)?;
-
-    let events = store
-        .try_with_lock(|store| {
-            let events = with_write(&db, |conn| {
-                let events = linked_attachment_events(conn, id)?;
-                q::delete_attachment(conn, id)?;
-                Ok(events)
-            })?;
-
-            // GC the sidecar only when no remaining row references the same bytes.
-            let remaining = with_read(&db, |conn| q::count_rows_for_sha(conn, &attachment.sha256))?;
-            if remaining == 0 {
-                store.delete_unlocked(&attachment.sha256)?;
-            }
-            Ok(events)
-        })?
-        .ok_or_else(AttachmentStore::busy_error)?;
-    for event in events {
-        realtime.send(event);
-    }
-
+    crate::services::files::delete(&db, &realtime, &store, &identity, id)?;
     Ok(axum::Json(serde_json::json!({ "deleted": true })))
 }
 
