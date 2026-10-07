@@ -5,6 +5,7 @@ pub(crate) mod files;
 pub(crate) mod home;
 pub(crate) mod insights;
 pub(crate) mod issues;
+pub(crate) mod project_authority;
 pub(crate) mod project_form;
 pub(crate) mod projects;
 pub(crate) mod sessions;
