@@ -14,7 +14,7 @@ pub(crate) fn runtime_source() -> &'static str {
     static SOURCE: OnceLock<String> = OnceLock::new();
     SOURCE.get_or_init(|| {
         let handlers = [
-            (super::native::home_shell::handler_url(), "mount as native0,homeRefresh as nativeHomeRefresh,mobileDispatch as nativeMobileDispatch,accountFocus as nativeAccountFocus,sessionStorage as nativeSessionStorage,motion as nativeMotion,preferences as nativePreferences,navigationAuthority as nativeNavigationAuthority"),
+            (super::native::home_shell::handler_url(), "mount as native0,homeRefresh as nativeHomeRefresh,mobileDispatch as nativeMobileDispatch,accountFocus as nativeAccountFocus,sessionStorage as nativeSessionStorage,motion as nativeMotion,preferences as nativePreferences,navigationAuthority as nativeNavigationAuthority,archiveImport as nativeArchiveImport"),
             (super::native::project_sidebar::handler_url(), "mount as native1,recentsRefresh as nativeRecentsRefresh"),
         ];
         let mut source = String::new();
@@ -33,6 +33,7 @@ pub(crate) fn runtime_source() -> &'static str {
             (format!("{}#motion", super::native::home_shell::handler_url()), "nativeMotion"),
             (format!("{}#preferences", super::native::home_shell::handler_url()), "nativePreferences"),
             (format!("{}#navigation-authority", super::native::home_shell::handler_url()), "nativeNavigationAuthority"),
+            (format!("{}#project-archive-import", super::native::home_shell::handler_url()), "nativeArchiveImport"),
             (format!("{}#recents-refresh", super::native::project_sidebar::handler_url()), "nativeRecentsRefresh"),
         ] {
             let key = serde_json::to_string(&key).expect("static handler URL");

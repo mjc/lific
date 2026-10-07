@@ -7,6 +7,7 @@ use axum::{
     body::{Body, Bytes},
     http::{Request, StatusCode},
 };
+use topcoat::runtime::{Surrogate, Surrogated};
 use tower::ServiceExt;
 
 use super::super::{admission_contract, home_fixture};
@@ -50,9 +51,10 @@ async fn refusal(
         .header("cookie", format!("lific_token={}", fixture.token))
         .header(
             "x-lific-import-session",
-            expected_fingerprint.map(str::to_owned).unwrap_or_else(|| {
-                super::state::session_fingerprint(Some(&fixture.token))
-            }),
+            expected_fingerprint.map_or_else(
+                || super::state::session_fingerprint(Some(&fixture.token)),
+                str::to_owned,
+            ),
         )
         .header(
             "content-type",
@@ -104,7 +106,9 @@ async fn native_project_import_upload_rejects_rotated_session_before_body() {
     let fresh_token = {
         let conn = fixture.db.write().unwrap();
         crate::db::queries::users::delete_session(&conn, &fixture.token).unwrap();
-        crate::db::queries::users::create_session(&conn, owner, None).unwrap().token
+        crate::db::queries::users::create_session(&conn, owner, None)
+            .unwrap()
+            .token
     };
     fixture.token = fresh_token;
     refusal(&fixture, owner, "http://localhost", Some(&fingerprint)).await;
@@ -139,7 +143,10 @@ async fn native_project_import_upload_creates_a_private_project_through_shared_s
         .header("origin", "http://localhost")
         .header("x-forwarded-prefix", "/app")
         .header("cookie", format!("lific_token={}", fixture.token))
-        .header("x-lific-import-session", super::state::session_fingerprint(Some(&fixture.token)))
+        .header(
+            "x-lific-import-session",
+            super::state::session_fingerprint(Some(&fixture.token)),
+        )
         .header(
             "content-type",
             "multipart/form-data; boundary=archive-boundary",
@@ -158,8 +165,19 @@ async fn native_project_import_upload_creates_a_private_project_through_shared_s
     let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
         .await
         .unwrap();
-    let report: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert!(report.to_string().contains("ARCIM"));
+    let report: <super::model::ImportResult as Surrogated>::Surrogate =
+        serde_json::from_slice(&bytes).unwrap();
+    let report = report.into_real();
+    assert_eq!(report.project.identifier, "ARCIM");
+    assert!(!report.project.is_public);
+    assert_eq!(report.report.project, "ARCIM");
+    assert!(
+        report
+            .report
+            .rows
+            .iter()
+            .any(|row| row.table == "projects" && row.count == 1)
+    );
 
     let conn = fixture.db.read().unwrap();
     let project = crate::db::queries::resolve_project_identifier(&conn, "ARCIM").unwrap();

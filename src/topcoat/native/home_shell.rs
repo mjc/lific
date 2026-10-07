@@ -1755,6 +1755,7 @@ pub(crate) fn handler_source() -> &'static str {
         source.push_str(&super::handler_asset::source_named("motion", super::motion::handler_factory()));
         source.push_str(&super::handler_asset::source_named("preferences", super::preferences::handler_factory()));
         source.push_str(&super::handler_asset::source_named("navigationAuthority", super::navigation::authority_handler_factory()));
+        source.push_str(&super::handler_asset::source_named("archiveImport", super::project_import::transport::handler_factory()));
         source
     })
 }
