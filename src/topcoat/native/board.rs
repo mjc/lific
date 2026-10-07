@@ -66,27 +66,32 @@ pub(crate) fn content<'a>(
                                 <p class="native-board__empty">"All quiet"</p>
                             }
                             for (issue, href) in cards {
-                                <a
-                                    class="native-board__card"
-                                    data-native-board-card=(issue.id.to_string())
-                                    (navigation::attrs(cx, &href))
-                                >
-                                    <div class="native-board__card-top">
-                                        <span class="native-board__identifier">
-                                            (issue.identifier)
-                                        </span>
-                                        (icons::priority_icon(cx, issue.priority, 14))
-                                    </div>
-                                    <h3
-                                        class=(if matches!(status, Status::Done | Status::Cancelled) {
-                                            "native-board__title native-board__title--closed"
-                                        } else {
-                                            "native-board__title"
-                                        })
+                                <div class="relative group">
+                                    <a
+                                        class="native-board__card"
+                                        data-native-board-card=(issue.id.to_string())
+                                        (navigation::attrs(cx, &href))
                                     >
-                                        (issue.title)
-                                    </h3>
-                                </a>
+                                        <div class="native-board__card-top">
+                                            <span class="native-board__identifier">
+                                                (issue.identifier.clone())
+                                            </span>
+                                            (icons::priority_icon(cx, issue.priority, 14))
+                                        </div>
+                                        <h3
+                                            class=(if matches!(status, Status::Done | Status::Cancelled) {
+                                                "native-board__title native-board__title--closed"
+                                            } else {
+                                                "native-board__title"
+                                            })
+                                        >
+                                            (issue.title)
+                                        </h3>
+                                    </a>
+                                    <span class="absolute right-8 top-2">
+                                        (super::issue_peek::button(cx, &issue.identifier))
+                                    </span>
+                                </div>
                             }
                         </div>
                     </section>

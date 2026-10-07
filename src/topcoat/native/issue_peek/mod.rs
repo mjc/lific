@@ -1,10 +1,13 @@
 //! Shared issue hover and touch previews backed by authorized Rust services.
 mod controls;
 mod data;
+mod entry;
 mod gestures;
 mod preview;
 #[cfg(test)]
 mod tests;
+
+pub(crate) use entry::{button, shared_owner};
 
 use super::{context, icons, markdown, navigation, session};
 use topcoat::{
@@ -23,7 +26,17 @@ pub(crate) fn surface<'a>(
     let caller = session::read(cx, data::checked_caller(cx, account))?;
     let data = data::load(cx, &caller, identifier);
     let identifier = identifier.to_owned();
-    Ok(view! { cx => owner(account: account, identifier: identifier, touch: touch, close: close, data: data) }.boxed())
+    Ok(view! {
+        cx =>
+        owner(
+            account: account,
+            identifier: identifier,
+            touch: touch,
+            close: close,
+            data: data
+        )
+    }
+    .boxed())
 }
 
 #[component]
@@ -38,17 +51,46 @@ async fn owner(
     if !touch {
         return Ok(preview::hover(cx, &identifier, data));
     }
-    let comments = data.as_ref().ok().filter(|data| data.comments > 0).map(|data| {
-        let count = format!("{}{}", data.comments, if data.comments_partial { "+" } else { "" });
-        let title = if data.comments_partial { format!("{} or more comments", data.comments) }
-            else { format!("{} comment{}", data.comments, if data.comments == 1 { "" } else { "s" }) };
-        view! {cx => <span class="inline-flex items-center gap-1 text-caption text-[var(--text-faint)]" title=(title) data-native-peek-comments="">(icons::ui_icon(cx, icons::UiIcon::Comment, 12))(count)</span>}.boxed()
-    });
+    let comments = data
+        .as_ref()
+        .ok()
+        .filter(|data| data.comments > 0)
+        .map(|data| {
+            let count = format!(
+                "{}{}",
+                data.comments,
+                if data.comments_partial { "+" } else { "" }
+            );
+            let title = if data.comments_partial {
+                format!("{} or more comments", data.comments)
+            } else {
+                format!(
+                    "{} comment{}",
+                    data.comments,
+                    if data.comments == 1 { "" } else { "s" }
+                )
+            };
+            view! {
+                cx =>
+                <span
+                    class="inline-flex items-center gap-1 text-caption text-[var(--text-faint)]"
+                    title=(title)
+                    data-native-peek-comments=""
+                >
+                    (icons::ui_icon(cx, icons::UiIcon::Comment, 12))
+                    (count)
+                </span>
+            }
+            .boxed()
+        });
     let content = match data {
         Ok(data) => sheet_content(cx, account, &data, close.clone()),
-        Err(error) => view! { cx =>
+        Err(error) => view! {
+            cx =>
             <div class="flex flex-col items-center gap-2 py-16 text-center">
-                <p class="text-body-sm text-[var(--text-muted)]">"Couldn't load this issue."</p>
+                <p class="text-body-sm text-[var(--text-muted)]">
+                    "Couldn't load this issue."
+                </p>
                 <p class="text-caption text-[var(--text-faint)]">(error.to_string())</p>
             </div>
         }
@@ -58,21 +100,53 @@ async fn owner(
     let button_close = close.clone();
     let dismiss = controls::dismiss(cx, close.clone());
     let drag = gestures::mount(cx, close);
-    Ok(view! { cx =>
-        <div class="fixed inset-0 z-[90] bg-black/30 backdrop-blur-[1px]" data-native-peek-scrim="" @click=$(|_event: Event| { scrim_close.set("".to_owned()); })></div>
-        <section role="dialog" aria-modal="true" aria-label=(format!("{identifier} preview"))
+    Ok(view! {
+        cx =>
+        <div
+            class="fixed inset-0 z-[90] bg-black/30 backdrop-blur-[1px]"
+            data-native-peek-scrim=""
+            @click=$(|_event: Event| {
+                scrim_close.set("".to_owned());
+            })
+        ></div>
+        <section
+            role="dialog"
+            aria-modal="true"
+            tabindex="-1"
+            aria-label=(format!("{identifier} preview"))
             data-native-issue-peek=(identifier.clone())
             class="fixed z-[95] flex flex-col bg-[var(--surface)] shadow-2xl inset-x-0 bottom-0 h-[85dvh] rounded-t-xl border-t border-[var(--border)] pb-[env(safe-area-inset-bottom)] md:inset-y-0 md:right-0 md:left-auto md:bottom-auto md:h-full md:w-[480px] md:max-w-[92vw] md:rounded-none md:border-t-0 md:border-l"
-            (dismiss)>
+            (dismiss)
+        >
             <div class="shrink-0 touch-none" data-native-peek-grab="" (drag)>
-                <div class="md:hidden flex justify-center pt-2 pb-1 shrink-0"><div class="h-1 w-9 rounded-full bg-[var(--border)]"></div></div>
-                <div class="flex items-center gap-2 px-4 pt-2 pb-2 md:pt-4 border-b border-[var(--border)]">
-                    <button class="group inline-flex items-center gap-1 text-caption font-mono font-semibold px-1.5 py-0.5 rounded border border-[var(--border)] text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--accent)] transition-colors" aria-label=(format!("Copy {identifier}")) (controls::clipboard(cx, &identifier))>
-                        (identifier.clone()) (icons::ui_icon(cx, icons::UiIcon::Copy, 11))
+                <div class="md:hidden flex justify-center pt-2 pb-1 shrink-0">
+                    <div class="h-1 w-9 rounded-full bg-[var(--border)]"></div>
+                </div>
+                <div
+                    class="flex items-center gap-2 px-4 pt-2 pb-2 md:pt-4 border-b border-[var(--border)]"
+                >
+                    <button
+                        class="group inline-flex items-center gap-1 text-caption font-mono font-semibold px-1.5 py-0.5 rounded border border-[var(--border)] text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--accent)] transition-colors"
+                        aria-label=(format!("Copy {identifier}"))
+                        (controls::clipboard(cx, &identifier))
+                    >
+                        (identifier.clone())
+                        (icons::ui_icon(cx, icons::UiIcon::Copy, 11))
                     </button>
-                    if let Some(comments) = comments { (comments) }
+                    if let Some(comments) = comments {
+                        (comments)
+                    }
                     <div class="flex-1"></div>
-                    <button type="button" class="size-7 flex items-center justify-center rounded-md text-[var(--text-faint)] hover:text-[var(--text)] hover:bg-[var(--bg-subtle)] transition-colors" aria-label="Close preview" @click=$(|_event: Event| { button_close.set("".to_owned()); })>(icons::ui_icon(cx, icons::UiIcon::Close, 16))</button>
+                    <button
+                        type="button"
+                        class="size-7 flex items-center justify-center rounded-md text-[var(--text-faint)] hover:text-[var(--text)] hover:bg-[var(--bg-subtle)] transition-colors"
+                        aria-label="Close preview"
+                        @click=$(|_event: Event| {
+                            button_close.set("".to_owned());
+                        })
+                    >
+                        (icons::ui_icon(cx, icons::UiIcon::Close, 16))
+                    </button>
                 </div>
             </div>
             (content)
@@ -87,7 +161,8 @@ fn sheet_content<'a>(
     close: Signal<String>,
 ) -> BoxView<'a> {
     let issue = &data.issue;
-    let state = controls::State::new(cx, issue);
+    let state_cx = cx.keyed((account, issue.id));
+    let state = controls::State::new(&state_cx, issue);
     let editing = state.editing.clone();
     let start_edit = editing.clone();
     let title = state.title.clone();
@@ -182,12 +257,32 @@ fn sheet_content<'a>(
         Some(emoji) => icons::project_icon(cx, Some(emoji), 13),
         None => icons::ui_icon(cx, icons::UiIcon::Modules, 13),
     };
-    let label_chips = issue.labels.iter().map(|name| {
-        let color = data.labels.iter().find(|label|label.name==*name).map(|label|super::project_overview::label_color(&label.color));
-        let style = color.map_or_else(|| "border-color:var(--border)".to_owned(), |color|format!("color:{color};border-color:{color}40;background:{color}10"));
-        let name = name.clone();
-        view! { cx => <span class="text-caption font-medium px-2 py-0.5 rounded-full border" style=(style)>(name)</span> }.boxed()
-    }).collect::<Vec<_>>();
+    let label_chips = issue
+        .labels
+        .iter()
+        .map(|name| {
+            let color = data
+                .labels
+                .iter()
+                .find(|label| label.name == *name)
+                .map(|label| super::project_overview::label_color(&label.color));
+            let style = color.map_or_else(
+                || "border-color:var(--border)".to_owned(),
+                |color| format!("color:{color};border-color:{color}40;background:{color}10"),
+            );
+            let name = name.clone();
+            view! {
+                cx =>
+                <span
+                    class="text-caption font-medium px-2 py-0.5 rounded-full border"
+                    style=(style)
+                >
+                    (name)
+                </span>
+            }
+            .boxed()
+        })
+        .collect::<Vec<_>>();
     let relations = relation_chips(cx, issue);
     let rendered_description =
         markdown::render(cx, &issue.description, markdown::Scope::Private, &[]);
@@ -216,32 +311,141 @@ fn sheet_content<'a>(
     let status_caption = caption(issue.status.as_str()).to_owned();
     let priority_icon = icons::priority_icon(cx, issue.priority, 13);
     let priority_caption = caption(issue.priority.as_str()).to_owned();
-    view! { cx =>
+    view! {
+        cx =>
         <div class="flex-1 overflow-y-auto px-4 py-4">
-
             if editable {
-                <button type="button" class="block w-full text-left text-title font-semibold py-1 mb-4" :hidden=$(editing.get()) :disabled=$(title_busy.get()) @click=$(|_event: Event| {start_draft.set(start_title.get());start_edit.set(true);raw!("requestAnimationFrame(()=>${_event}.inner.target.parentElement.querySelector('[data-native-peek-title]').focus());",());})>$(title.get())</button>
-                <input data-native-peek-title="" aria-label="Issue title" class="w-full text-title font-semibold py-1 mb-4 bg-transparent text-[var(--text)]" :hidden=$(!editing.get()) :value=$(input_title.get()) @input=$(|_event: Event| {change_title.set(raw!("cx.hydrate(${_event}.inner.target.value)",String::new()));}) (title_blur) (title_key)>
-            } else { <h2 class="text-title font-semibold py-1 mb-4">(readonly_title)</h2><p class="text-caption text-[var(--text-faint)] mb-3">"Read-only access"</p> }
+                <button
+                    type="button"
+                    class="block w-full text-left text-title font-semibold py-1 mb-4"
+                    :hidden=$(editing.get())
+                    :disabled=$(title_busy.get())
+                    @click=$(|_event: Event| {
+                        start_draft.set(start_title.get());
+                        start_edit.set(true);
+                        raw!(
+                            "requestAnimationFrame(()=>${_event}.inner.target.parentElement.querySelector('[data-native-peek-title]').focus());",
+                            (),
+                        );
+                    })
+                >
+                    $(title.get())
+                </button>
+                <input
+                    data-native-peek-title=""
+                    aria-label="Issue title"
+                    class="w-full text-title font-semibold py-1 mb-4 bg-transparent text-[var(--text)]"
+                    :hidden=$(!editing.get())
+                    :value=$(input_title.get())
+                    @input=$(|_event: Event| {
+                        change_title.set(
+                            raw!(
+                                "cx.hydrate(${_event}.inner.target.value)",
+                                String::new(),
+                            ),
+                        );
+                    })
+                    (title_blur)
+                    (title_key)
+                >
+            } else {
+                <h2 class="text-title font-semibold py-1 mb-4">(readonly_title)</h2>
+                <p class="text-caption text-[var(--text-faint)] mb-3">
+                    "Read-only access"
+                </p>
+            }
             <div class="flex flex-wrap items-center gap-2 mb-4">
-                if editable { (status_options) (priority_options) if has_modules { (module_options) } }
-                else {
-                    <span class="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] px-2 py-1 text-body-sm text-[var(--text)] cursor-default">(status_icon)(status_caption)</span>
-                    <span class="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] px-2 py-1 text-body-sm text-[var(--text)] cursor-default">(priority_icon)(priority_caption)</span>
-                    <span class="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] px-2 py-1 text-body-sm text-[var(--text)] cursor-default">(module_icon)(module_name)</span>
+                if editable {
+                    (status_options)
+                    (priority_options)
+                    if has_modules {
+                        (module_options)
+                    }
+                } else {
+                    <span
+                        class="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] px-2 py-1 text-body-sm text-[var(--text)] cursor-default"
+                    >
+                        (status_icon)
+                        (status_caption)
+                    </span>
+                    <span
+                        class="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] px-2 py-1 text-body-sm text-[var(--text)] cursor-default"
+                    >
+                        (priority_icon)
+                        (priority_caption)
+                    </span>
+                    <span
+                        class="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] px-2 py-1 text-body-sm text-[var(--text)] cursor-default"
+                    >
+                        (module_icon)
+                        (module_name)
+                    </span>
                 }
             </div>
-            <p role="alert" class="text-caption text-[var(--error)]" :hidden=$(error.get().is_empty())>$(error.get())</p>
-            <div role="status" class="text-caption" :hidden=$(undo_field.get().is_empty())>"Issue updated. "<button type="button" class="text-[var(--accent)] hover:underline" :disabled=$(busy.get()) (undo)>"Undo"</button></div>
-            if !label_chips.is_empty() { <div class="flex flex-wrap gap-1.5 mb-4">for chip in label_chips { (chip) }</div> }
+            <p
+                role="alert"
+                class="text-caption text-[var(--error)]"
+                :hidden=$(error.get().is_empty())
+            >
+                $(error.get())
+            </p>
+            <div
+                role="status"
+                class="text-caption"
+                :hidden=$(undo_field.get().is_empty())
+            >
+                "Issue updated. "
+                <button
+                    type="button"
+                    class="text-[var(--accent)] hover:underline"
+                    :disabled=$(busy.get())
+                    (undo)
+                >
+                    "Undo"
+                </button>
+            </div>
+            if !label_chips.is_empty() {
+                <div class="flex flex-wrap gap-1.5 mb-4">
+                    for chip in label_chips {
+                        (chip)
+                    }
+                </div>
+            }
             (relations)
             <div class="border-t border-[var(--border)] -mx-4 mb-4"></div>
-            if let Some(description) = description { <div class="tc-markdown text-[14px] leading-[1.7]">(description)</div> } else {<p class="text-body-sm text-[var(--text-faint)] italic">"No description"</p>}
-            <p class="text-caption text-[var(--text-faint)] mt-4">"Updated "(super::dates::absolute_signal(cx, updated))</p>
+            if let Some(description) = description {
+                <div class="tc-markdown text-[14px] leading-[1.7]">(description)</div>
+            } else {
+                <p class="text-body-sm text-[var(--text-faint)] italic">
+                    "No description"
+                </p>
+            }
+            <p class="text-caption text-[var(--text-faint)] mt-4">
+                "Updated "
+                (super::dates::absolute_signal(cx, updated))
+            </p>
         </div>
-        <div class="shrink-0 border-t border-[var(--border)] px-4 py-3 flex items-center justify-between gap-2">
-            <button type="button" class="inline-flex flex-row-reverse items-center gap-1 text-body-sm text-[var(--text-muted)] hover:text-[var(--text)] transition-colors" (copied)>"Copy identifier"(icons::ui_icon(cx,icons::UiIcon::Copy,13))</button>
-            <a class="inline-flex items-center gap-1.5 text-body-sm font-medium text-[var(--accent)] hover:underline transition-colors" (href) @click=$(|_event: Event| {open_close.set("".to_owned());})>"Open full view"(icons::ui_icon(cx,icons::UiIcon::RecentActivity,14))</a>
+        <div
+            class="shrink-0 border-t border-[var(--border)] px-4 py-3 flex items-center justify-between gap-2"
+        >
+            <button
+                type="button"
+                class="inline-flex flex-row-reverse items-center gap-1 text-body-sm text-[var(--text-muted)] hover:text-[var(--text)] transition-colors"
+                (copied)
+            >
+                "Copy identifier"
+                (icons::ui_icon(cx, icons::UiIcon::Copy, 13))
+            </button>
+            <a
+                class="inline-flex items-center gap-1.5 text-body-sm font-medium text-[var(--accent)] hover:underline transition-colors"
+                (href)
+                @click=$(|_event: Event| {
+                    open_close.set("".to_owned());
+                })
+            >
+                "Open full view"
+                (icons::ui_icon(cx, icons::UiIcon::RecentActivity, 14))
+            </a>
         </div>
     }.boxed()
 }
@@ -261,10 +465,38 @@ fn options<'a>(
     };
     let attrs = controls::edit(cx, state, account, identifier, field, "change", false);
     let busy = state.busy.clone();
-    let options=values.iter().map(|(value,label)| {let value=value.to_string(); let option_value=value.clone(); let selected=selected.clone(); let label=label.to_string();view!{cx=><option value=(value) :selected=$(selected.get()==option_value)>(label)</option>}.boxed()}).collect::<Vec<_>>();
+    let options = values
+        .iter()
+        .map(|(value, label)| {
+            let value = value.to_string();
+            let option_value = value.clone();
+            let selected = selected.clone();
+            let label = label.to_string();
+            view! {
+                cx =>
+                <option value=(value) :selected=$(selected.get() == option_value)>
+                    (label)
+                </option>
+            }
+            .boxed()
+        })
+        .collect::<Vec<_>>();
     let label = field.to_owned();
     let marker = label.clone();
-    view!{cx=><select aria-label=(label) data-native-peek-save=(marker) class="rounded-md border border-[var(--border)] px-2 py-1 text-body-sm bg-[var(--surface)] text-[var(--text)]" :disabled=$(busy.get()) (attrs)>for option in options {(option)}</select>}.boxed()
+    view!{
+        cx =>
+        <select
+            aria-label=(label)
+            data-native-peek-save=(marker)
+            class="rounded-md border border-[var(--border)] px-2 py-1 text-body-sm bg-[var(--surface)] text-[var(--text)]"
+            :disabled=$(busy.get())
+            (attrs)
+        >
+            for option in options {
+                (option)
+            }
+        </select>
+    }.boxed()
 }
 fn relation_chips<'a>(cx: &'a Cx, issue: &crate::db::models::Issue) -> BoxView<'a> {
     let mut chips = Vec::new();
@@ -291,10 +523,18 @@ fn relation_chips<'a>(cx: &'a Cx, issue: &crate::db::models::Issue) -> BoxView<'
         for value in values {
             let title = format!("{label} {value}");
             let text = format!("{prefix}{value}");
-            chips.push(view! {cx=><span class=(class) title=(title)>(text)</span>}.boxed());
+            chips.push(view! { cx => <span class=(class) title=(title)>(text)</span> }.boxed());
         }
     }
-    view!{cx=><div class="flex flex-wrap items-center gap-1.5 mb-4 text-caption">for chip in chips {(chip)}</div>}.boxed()
+    view! {
+        cx =>
+        <div class="flex flex-wrap items-center gap-1.5 mb-4 text-caption">
+            for chip in chips {
+                (chip)
+            }
+        </div>
+    }
+    .boxed()
 }
 
 fn caption(value: &str) -> &str {

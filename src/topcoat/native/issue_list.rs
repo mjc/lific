@@ -41,18 +41,24 @@ pub(crate) fn content<'a>(
                 } else {
                     <ul class="native-issue-list__rows" aria-label="Issues">
                         for (issue, href) in rows {
-                            <li data-native-issue-row=(issue.id.to_string())>
+                            <li
+                                data-native-issue-row=(issue.id.to_string())
+                                class="group flex items-center"
+                            >
                                 <a
-                                    class="native-issue-list__row"
+                                    class="native-issue-list__row flex-1 min-w-0"
                                     (navigation::attrs(cx, &href))
                                 >
                                     (icons::status_icon(cx, issue.status, 16))
                                     <span class="native-issue-list__identifier">
-                                        (issue.identifier)
+                                        (issue.identifier.clone())
                                     </span>
                                     <span class="native-issue-list__title">(issue.title)</span>
                                     (icons::priority_icon(cx, issue.priority, 21))
                                 </a>
+                                <span class="mr-3">
+                                    (super::issue_peek::button(cx, &issue.identifier))
+                                </span>
                             </li>
                         }
                     </ul>
