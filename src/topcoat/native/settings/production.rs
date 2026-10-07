@@ -6,6 +6,66 @@ use tower::ServiceExt;
 use super::super::home_fixture;
 
 #[tokio::test]
+async fn native_account_settings_unchanged_profile_cannot_be_saved() {
+    let fixture = home_fixture::fixture();
+    let (status, html) = home_fixture::document(&fixture, "", "/settings", true, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let document = scraper::Html::parse_document(&html);
+    let save = document
+        .select(&scraper::Selector::parse("button").unwrap())
+        .find(|button| button.text().collect::<String>().trim() == "Save changes")
+        .expect("Settings renders profile saving");
+    assert!(
+        save.value().attr("disabled").is_some(),
+        "Main disables Save until the profile has changed"
+    );
+}
+
+#[tokio::test]
+async fn native_account_settings_profile_writes_only_changed_fields_and_returns_canonical_values() {
+    for change_email in [false, true] {
+        let fixture = home_fixture::fixture();
+        let profile = {
+            let conn = fixture.db.read().unwrap();
+            let account = crate::db::queries::users::validate_session(&conn, &fixture.token)
+                .unwrap()
+                .id;
+            crate::db::queries::users::get_user_by_id(&conn, account).unwrap()
+        };
+        let (name, email, expected_name, expected_email) = if change_email {
+            (
+                None::<String>,
+                Some("  UPDATED@Example.test  ".to_owned()),
+                profile.display_name.clone(),
+                "updated@example.test".to_owned(),
+            )
+        } else {
+            (
+                Some("  Updated Viewer  ".to_owned()),
+                None::<String>,
+                "Updated Viewer".to_owned(),
+                profile.email.clone(),
+            )
+        };
+        let (status, body) = home_fixture::procedure(
+            &fixture,
+            "/__native_settings/save_profile",
+            serde_json::to_value((profile.id, name, email).into_surrogate()).unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "partial profile change: {body}");
+        let current =
+            crate::db::queries::users::get_user_by_id(&fixture.db.read().unwrap(), profile.id)
+                .unwrap();
+        assert_eq!(current.display_name, expected_name);
+        assert_eq!(current.email, expected_email);
+        let result = body.to_string();
+        assert!(result.contains(&expected_name), "canonical name: {body}");
+        assert!(result.contains(&expected_email), "canonical email: {body}");
+    }
+}
+
+#[tokio::test]
 async fn native_account_settings_overlapping_tool_actions_keep_the_one_time_key() {
     let fixture = home_fixture::fixture();
     let bot_id = 9_007_199_254_740_993_i64;
@@ -83,6 +143,7 @@ async fn native_account_settings_client_controls_do_not_refresh_their_async_owne
                         "/__native_settings/tools"
                             | "/__native_settings/profile"
                             | "/__native_settings/security"
+                            | "/__native_workspace/common_page"
                     )
                 {
                     refreshing_controls.push((owner.clone(), marker[4].to_owned()));
@@ -318,29 +379,63 @@ async fn native_account_settings_connect_rejects_control_characters_like_the_aut
 #[tokio::test]
 async fn native_account_settings_runtime_replay_drops_drafts_after_account_replacement() {
     let fixture = home_fixture::fixture();
-    let (first_profile, second_token, second_profile) = {
+    let (second_token, second_profile) = {
         let conn = fixture.db.write().unwrap();
-        let first = crate::db::queries::users::validate_session(&conn, &fixture.token).unwrap();
-        let first_profile = crate::db::queries::users::get_user_by_id(&conn, first.id).unwrap();
         let second_profile =
             crate::db::queries::users::get_user_by_username(&conn, "admin").unwrap();
         let second_token =
             crate::db::queries::users::create_session(&conn, second_profile.id, None)
                 .unwrap()
                 .token;
-        (first_profile, second_token, second_profile)
+        (second_token, second_profile)
     };
     let (status, first_html) = home_fixture::document(&fixture, "", "/settings", true, None).await;
     assert_eq!(status, StatusCode::OK);
     let mut signals = home_fixture::page_signals(&first_html);
-    let profile_signal = signals
-        .iter_mut()
-        .find(|(_, value)| value.as_str() == Some(first_profile.display_name.as_str()))
-        .map(|(id, value)| {
-            *value = serde_json::Value::String("viewer-only unsaved draft".into());
-            id.clone()
+    let document = scraper::Html::parse_document(&first_html);
+    let profile_section = document
+        .select(&scraper::Selector::parse("section[data-native-profile]").unwrap())
+        .next()
+        .expect("Settings renders its profile owner");
+    let fields = profile_section
+        .select(&scraper::Selector::parse("input[data-native-profile-field]").unwrap())
+        .map(|field| {
+            (
+                field
+                    .value()
+                    .attr("data-native-profile-field")
+                    .unwrap()
+                    .to_owned(),
+                field
+                    .value()
+                    .attr("data-topcoat-on:input")
+                    .unwrap()
+                    .to_owned(),
+            )
         })
-        .expect("initial Settings page exposes a profile name signal");
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let save = profile_section
+        .select(&scraper::Selector::parse("button[data-native-profile-save]").unwrap())
+        .next()
+        .expect("profile save handler remains rendered");
+    let edited_name = "viewer-only unsaved draft";
+    let changed = home_fixture::evaluate_handler(
+        "src/topcoat/native/settings/profile_handler.test.cjs",
+        &serde_json::json!({
+            "mode": "edit_only",
+            "signals": signals.clone(),
+            "fields": fields.into_iter().map(|(key, handler)|
+                (key, serde_json::json!({"handler": handler}))).collect::<serde_json::Map<_, _>>(),
+            "save_handler": save.value().attr("data-topcoat-on:click").unwrap(),
+            "edited_name": edited_name,
+        }),
+    );
+    let changed_signals = changed["changed_signals"].as_object().unwrap();
+    assert!(
+        !changed_signals.is_empty(),
+        "the actual rendered input handler updates a draft"
+    );
+    signals.extend(changed_signals.clone());
     let request = Request::builder()
         .method("POST")
         .uri("/settings")
@@ -374,7 +469,7 @@ async fn native_account_settings_runtime_replay_drops_drafts_after_account_repla
     assert!(html.contains(&format!("@{}", second_profile.username)));
     assert!(html.contains(&format!("value=\"{}\"", second_profile.display_name)));
     assert!(
-        !html.contains("viewer-only unsaved draft"),
-        "signal {profile_signal} from the previous account must not survive the replacement"
+        !html.contains(edited_name),
+        "signals {changed_signals:?} from the previous account must not survive replacement"
     );
 }

@@ -194,11 +194,12 @@ pub(crate) fn common_screen<'a>(
 #[shard("/__native_workspace/common_page")]
 async fn native_common_page(
     cx: &Cx,
-    account: i64,
+    profile: super::account_profile::Handles,
     path: String,
     entry: String,
     palette_open: Signal<bool>,
 ) -> topcoat::Result<impl View> {
+    let account = profile.0;
     let caller = session::read(cx, context::caller(cx))?;
     let current = session::read(cx, crate::api::require_user(&caller.identity))?;
     if current.id != account {
@@ -223,7 +224,9 @@ async fn native_common_page(
         Some(NativeRoute::Modules) => super::modules::region(cx, &route, account, &caller),
         Some(NativeRoute::Files) => super::files::region(cx, &route, account, &caller),
         Some(NativeRoute::Graph) => super::dependency_graph::region(cx, &route, account, &caller),
-        Some(NativeRoute::Settings) => super::settings::region(cx, &route, account, &caller),
+        Some(NativeRoute::Settings) => {
+            super::settings::region(cx, &route, account, &caller, profile)
+        }
         _ => Err(topcoat::router::error::not_found().into()),
     }
 }
@@ -271,26 +274,28 @@ async fn workspace_owner(
 ) -> topcoat::Result<impl View> {
     let (initial_path, initial_entry) = initial;
     let common = project.is_empty();
+    let profile = super::account_profile::load(cx, user.id)?;
     let route_cx = cx.keyed((user.id, initial_path.clone()));
     let path = signal(&route_cx, || initial_path.clone());
     let entry = signal(&route_cx, || initial_entry);
     let palette_open = signal(cx, || false);
-    let chrome = home_shell::LiveChrome::new_scoped(
+    let mut chrome = home_shell::LiveChrome::new_scoped(
         cx,
         &route_cx,
         path.clone(),
         &ParsedRoute::parse(&initial_path),
     );
+    chrome.profile = Some(profile.clone());
     let page = if common {
         let page_path = path;
         let page_palette = palette_open.clone();
         view! {
             cx =>
             native_common_page(
-                account: user.id,
                 path: $(page_path.get()),
                 entry: $(entry.get()),
-                palette_open: page_palette
+                palette_open: page_palette,
+                profile: profile
             )
         }
         .boxed()

@@ -13,10 +13,10 @@ use topcoat::{
         request::{headers, remote_addr},
         response::response_headers,
     },
-    runtime::procedure,
+    runtime::{procedure, record},
 };
 
-use super::super::{context, transport};
+use super::super::{account_profile, context, transport};
 use crate::{config::Config, error::LificError};
 
 pub(super) fn same_account(cx: &Cx, expected: i64) -> Result<context::Caller, LificError> {
@@ -29,33 +29,63 @@ pub(super) fn same_account(cx: &Cx, expected: i64) -> Result<context::Caller, Li
     Ok(caller)
 }
 
+#[record]
+#[derive(Clone)]
+pub(super) struct SaveOutcome {
+    pub session: Option<String>,
+    pub profile: Result<account_profile::Profile, String>,
+}
+
+// The browser may compare session ownership without receiving the cookie token.
+fn session_fingerprint(caller: &context::Caller) -> Option<String> {
+    caller.session_token.as_ref().map(|token| {
+        let mut bytes = b"lific-native-profile-session\0".to_vec();
+        bytes.extend_from_slice(token.as_bytes());
+        crate::auth::sha256_hex(&bytes)
+    })
+}
+
+#[procedure("/__native_settings/profile_session")]
+pub(super) async fn profile_session(
+    cx: &Cx,
+    account: i64,
+) -> topcoat::Result<Result<Option<String>, String>> {
+    Ok(same_account(cx, account)
+        .map(|caller| session_fingerprint(&caller))
+        .map_err(|error| error.to_string()))
+}
+
 #[procedure("/__native_settings/save_profile")]
 pub(super) async fn save_profile(
     cx: &Cx,
     account: i64,
-    display_name: String,
-    email: String,
-) -> topcoat::Result<(bool, String)> {
+    display_name: Option<String>,
+    email: Option<String>,
+) -> topcoat::Result<SaveOutcome> {
     let caller = match same_account(cx, account) {
         Ok(caller) => caller,
-        Err(error) => return Ok((false, error.to_string())),
+        Err(error) => {
+            return Ok(SaveOutcome {
+                session: None,
+                profile: Err(error.to_string()),
+            });
+        }
     };
-    let result = caller
+    let session = session_fingerprint(&caller);
+    let profile = caller
         .scope(async {
             let user = crate::api::require_user(&caller.identity)?;
             crate::db::queries::users::update_profile(
                 &*context::db(cx).write()?,
                 user.id,
-                Some(display_name.trim()),
-                Some(email.trim()),
-            )?;
-            Ok::<_, LificError>(())
+                display_name.as_deref().map(str::trim),
+                email.as_deref().map(str::trim),
+            )
+            .map(account_profile::Profile::from)
         })
-        .await;
-    match result {
-        Ok(_) => Ok((true, "saved".into())),
-        Err(error) => Ok((false, error.to_string())),
-    }
+        .await
+        .map_err(|error| error.to_string());
+    Ok(SaveOutcome { session, profile })
 }
 
 #[procedure("/__native_settings/bot_action")]
