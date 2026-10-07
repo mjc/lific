@@ -156,6 +156,102 @@ async fn native_instance_settings_confirmation_rejects_wrong_password_without_ro
 }
 
 #[tokio::test]
+async fn native_instance_settings_refreshes_passwordless_auth_required_mode_before_name_save() {
+    let fixture = home_fixture::fixture_with_auth(false);
+    let account = {
+        let conn = fixture.db.write().unwrap();
+        let user = crate::db::queries::users::validate_session(&conn, &fixture.token).unwrap();
+        conn.execute("UPDATE users SET is_admin = 1 WHERE id = ?1", [user.id])
+            .unwrap();
+        conn.execute(
+            "UPDATE sessions SET created_at = datetime('now', '-16 minutes') WHERE user_id = ?1",
+            [user.id],
+        )
+        .unwrap();
+        user.id
+    };
+
+    let (status, result) = home_fixture::procedure(
+        &fixture,
+        "/__native_instance_settings/save_text",
+        serde_json::to_value(
+            (account, "name".to_owned(), "Passwordless config".to_owned()).into_surrogate(),
+        )
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert_eq!(
+        result[0], true,
+        "effective passwordless auth should refresh: {result}"
+    );
+    assert_eq!(result[1], "Passwordless config");
+    assert_eq!(
+        crate::db::queries::settings::get(&fixture.db.read().unwrap())
+            .unwrap()
+            .instance_name
+            .as_deref(),
+        Some("Passwordless config"),
+    );
+    assert!(
+        crate::db::queries::users::validate_session(&fixture.db.read().unwrap(), &fixture.token)
+            .is_err(),
+        "passwordless refresh rotates the presented stale token"
+    );
+}
+
+#[tokio::test]
+async fn native_instance_settings_password_confirmation_rotates_and_replays_canonical_name() {
+    let fixture = home_fixture::fixture();
+    let account = {
+        let conn = fixture.db.write().unwrap();
+        let user = crate::db::queries::users::validate_session(&conn, &fixture.token).unwrap();
+        conn.execute("UPDATE users SET is_admin = 1 WHERE id = ?1", [user.id])
+            .unwrap();
+        conn.execute(
+            "UPDATE sessions SET created_at = datetime('now', '-16 minutes') WHERE user_id = ?1",
+            [user.id],
+        )
+        .unwrap();
+        user.id
+    };
+
+    let (status, result) = home_fixture::procedure(
+        &fixture,
+        "/__native_instance_settings/confirm_name",
+        serde_json::to_value(
+            (
+                account,
+                "\u{0085}Canonical confirmation\u{0085}".to_owned(),
+                "testpassword1".to_owned(),
+            )
+                .into_surrogate(),
+        )
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert_eq!(
+        result[0], true,
+        "correct password should confirm and replay: {result}"
+    );
+    assert_eq!(result[1], "Canonical confirmation");
+    assert!(
+        crate::db::queries::users::validate_session(&fixture.db.read().unwrap(), &fixture.token)
+            .is_err(),
+        "confirmation replaces the stale session"
+    );
+    assert_eq!(
+        crate::db::queries::settings::get(&fixture.db.read().unwrap())
+            .unwrap()
+            .instance_name
+            .as_deref(),
+        Some("Canonical confirmation"),
+        "confirmation replays the exact parked name through the canonical mutation"
+    );
+}
+
+#[tokio::test]
 async fn native_instance_settings_non_admin_sees_gate_without_admin_data() {
     let fixture = home_fixture::fixture();
     {
