@@ -426,11 +426,7 @@ pub(super) async fn list_project_attachments(
     Path(project_id): Path<i64>,
     Query(query): Query<ProjectAttachmentQuery>,
 ) -> Result<axum::Json<ProjectAttachmentPage>, LificError> {
-    authz::require_role(&db, &identity, project_id, Role::Viewer)?;
-    with_read(&db, |conn| {
-        q::list_project_attachments(conn, project_id, &query)
-    })
-    .map(axum::Json)
+    crate::services::files::list_project_files(&db, &identity, project_id, &query).map(axum::Json)
 }
 
 /// `GET /api/projects/{id}/attachments/orphans` — uploads by this project's
@@ -443,16 +439,7 @@ pub(super) async fn list_project_orphans(
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
     Path(project_id): Path<i64>,
 ) -> Result<axum::Json<PendingOrphanList>, LificError> {
-    authz::require_role(&db, &identity, project_id, Role::Viewer)?;
-    let items = with_read(&db, |conn| {
-        q::list_project_orphans(conn, project_id, storage::ORPHAN_GRACE_SECONDS)
-    })?;
-    let total_bytes = items.iter().map(|orphan| orphan.size_bytes).sum();
-    Ok(axum::Json(PendingOrphanList {
-        items,
-        grace_seconds: storage::ORPHAN_GRACE_SECONDS,
-        total_bytes,
-    }))
+    crate::services::files::list_project_orphans(&db, &identity, project_id).map(axum::Json)
 }
 
 /// `GET /api/attachments/{id}` — stream the bytes with the correct
