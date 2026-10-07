@@ -66,10 +66,15 @@ pub(crate) fn authority_handler_factory() -> Js {
                         "cx.hydrate(${_event}.detail.nextDocument.querySelector('.native-home-shell')?.dataset.accountAdmin === 'true')",
                         false
                     );
+                    let incoming_authority = raw!(
+                        "cx.hydrate(${_event}.detail.nextDocument.querySelector('[data-native-project-authority]')?.dataset.nativeProjectAuthority || '')",
+                        String::new()
+                    );
                     let verdict = native_navigation_authorized(
                         destination.clone(),
                         incoming_account,
                         incoming_admin,
+                        incoming_authority,
                     )
                     .await;
                     let cancelled = raw!(

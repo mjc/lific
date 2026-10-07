@@ -22,11 +22,38 @@ pub(crate) enum NativeRoute {
     Activity,
     Pages,
     Plans,
+    IssueCreate,
+    Modules,
 }
 
 #[cfg(test)]
 mod route_tests {
     use super::*;
+
+    #[test]
+    fn native_issue_create_and_module_routes_admit_private_pages_with_queries() {
+        for path in [
+            "/ACC/issues/new",
+            "/ACC/issues/new?status=active",
+            "/ACC/modules",
+            "/ACC/modules?tab=all",
+            "/ACC/modules/42",
+        ] {
+            let route = ParsedRoute::parse(path);
+            assert!(
+                native_route(&route, !route.query.is_empty()).is_some(),
+                "{path}"
+            );
+        }
+        for path in [
+            "/public/ACC/issues/new",
+            "/public/ACC/modules",
+            "/public/ACC/modules/42",
+        ] {
+            let route = ParsedRoute::parse(path);
+            assert!(native_route(&route, false).is_none(), "{path}");
+        }
+    }
 
     #[test]
     fn native_knowledge_routes_admit_lists_details_and_queries() {
@@ -58,6 +85,10 @@ pub(crate) fn native_route(route: &ParsedRoute<'_>, has_query: bool) -> Option<N
         (Layout::Private, Some(_), Page::Activity) => Some(NativeRoute::Activity),
         (Layout::Private, Some(_), Page::Pages | Page::Record(_)) => Some(NativeRoute::Pages),
         (Layout::Private, Some(_), Page::Plans | Page::PlanDetail(_)) => Some(NativeRoute::Plans),
+        (Layout::Private, Some(_), Page::IssueNew) => Some(NativeRoute::IssueCreate),
+        (Layout::Private, Some(_), Page::Modules | Page::ModuleDetail(_)) => {
+            Some(NativeRoute::Modules)
+        }
         (Layout::Private, Some(_), Page::IssueDetail(_)) => Some(NativeRoute::Workspace),
         (Layout::Private, Some(_), Page::Issues | Page::Board) if !has_query => {
             Some(NativeRoute::Workspace)
@@ -77,7 +108,12 @@ pub(crate) fn common_screen<'a>(
             (snapshot.user, snapshot.projects, String::new())
         }
         Some(
-            NativeRoute::Insights | NativeRoute::Activity | NativeRoute::Pages | NativeRoute::Plans,
+            NativeRoute::Insights
+            | NativeRoute::Activity
+            | NativeRoute::Pages
+            | NativeRoute::Plans
+            | NativeRoute::IssueCreate
+            | NativeRoute::Modules,
         ) => {
             let caller = session::read(cx, context::caller(cx))?;
             let user = session::read(cx, crate::api::require_user(&caller.identity))?;
@@ -152,6 +188,8 @@ async fn native_common_page(
         }
         Some(NativeRoute::Pages) => super::pages::region(cx, &route, account, &caller),
         Some(NativeRoute::Plans) => super::plans::region(cx, &route, account, &caller),
+        Some(NativeRoute::IssueCreate) => super::issue_create::region(cx, &route, account, &caller),
+        Some(NativeRoute::Modules) => super::modules::region(cx, &route, account, &caller),
         _ => Err(topcoat::router::error::not_found().into()),
     }
 }
@@ -261,6 +299,7 @@ pub(crate) async fn native_navigation_authorized(
     mounted_path: String,
     expected_account: i64,
     expected_admin: bool,
+    expected_authority: String,
 ) -> topcoat::Result<String> {
     let prefix = transport::trusted_mount(cx).unwrap_or_default();
     let Some(path) = strip_mount(&mounted_path, prefix) else {
@@ -296,6 +335,15 @@ pub(crate) async fn native_navigation_authorized(
             {
                 return Ok("denied".into());
             }
+            if matches!(page, Page::IssueNew | Page::Modules | Page::ModuleDetail(_)) {
+                let expected =
+                    serde_json::from_str::<super::project_authority::Snapshot>(&expected_authority);
+                let fresh = super::project_authority::load(db, &caller.identity, project_id);
+                match (expected, fresh) {
+                    (Ok(expected), Ok(fresh)) if expected == fresh => {}
+                    _ => return Ok("authority-changed".into()),
+                }
+            }
             let resource_matches = match page {
                 Page::Record(identifier) => identifier
                     .parse::<i64>()
@@ -311,6 +359,11 @@ pub(crate) async fn native_navigation_authorized(
                     crate::services::issues::resolve_issue(db, &caller.identity, identifier)
                         .is_ok_and(|issue| issue.project_id == project_id)
                 }
+                Page::ModuleDetail(identifier) => identifier
+                    .parse::<i64>()
+                    .ok()
+                    .and_then(|id| crate::services::modules::get(db, &caller.identity, id).ok())
+                    .is_some_and(|module| module.project_id == project_id),
                 Page::Overview
                 | Page::Issues
                 | Page::Board
@@ -318,6 +371,7 @@ pub(crate) async fn native_navigation_authorized(
                 | Page::Plans
                 | Page::Activity
                 | Page::Insights => true,
+                Page::IssueNew | Page::Modules => true,
                 _ => false,
             };
             Ok(if resource_matches { "allow" } else { "denied" }.into())

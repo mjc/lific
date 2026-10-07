@@ -154,6 +154,12 @@ mod topcoat_app {
             }
             Some(NativeRoute::Pages) => super::topcoat_frontend::native::pages::screen(cx, &route),
             Some(NativeRoute::Plans) => super::topcoat_frontend::native::plans::screen(cx, &route),
+            Some(NativeRoute::IssueCreate) => {
+                super::topcoat_frontend::native::issue_create::screen(cx, &route)
+            }
+            Some(NativeRoute::Modules) => {
+                super::topcoat_frontend::native::modules::screen(cx, &route)
+            }
             None => Err(topcoat::router::error::not_found().into()),
         }
     }
@@ -438,11 +444,9 @@ mod topcoat_app_tests {
         for path in [
             "/settings",
             "/projects/import",
-            "/LIF/issues/new",
             "/LIF/issues?status=started",
             "/LIF/board?assignee=me",
             "/LIF/files",
-            "/LIF/modules",
             "/LIF/graph",
             "/public/LIF/issues",
         ] {

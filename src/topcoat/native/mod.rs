@@ -38,6 +38,7 @@ mod home_shell_production;
 pub(crate) mod home_view;
 pub(crate) mod icons;
 pub(crate) mod insights;
+pub(crate) mod issue_create;
 pub(crate) mod issue_edit;
 #[cfg(test)]
 mod limit_contract;
@@ -46,6 +47,7 @@ pub(crate) mod markdown;
 #[cfg(test)]
 mod markdown_edit;
 pub(crate) mod mascot;
+pub(crate) mod modules;
 pub(crate) mod numbers;
 pub(crate) mod pages;
 pub(crate) mod palette_reference;
@@ -78,6 +80,7 @@ pub(crate) mod workspace;
 #[cfg(test)]
 mod workspace_delete_production;
 
+pub(crate) mod project_authority;
 pub(crate) mod project_overview;
 
 pub(crate) mod project_create;
@@ -93,6 +96,9 @@ mod common_owner_production;
 
 #[cfg(test)]
 mod knowledge_production;
+
+#[cfg(test)]
+mod creation_modules_production;
 
 #[cfg(test)]
 mod navigation_authority_tests;

@@ -19,12 +19,15 @@ function fixture() {
   vm.runInNewContext(runtime.replace(bootstrap, 'globalThis.fixture={Context:fe,Registry:ve};'), context);
   const cx = Object.assign(new context.fixture.Context(new context.fixture.Registry()), {abortSignal:controller.signal});
   vm.runInNewContext(`cx=>(${factory})`, context)(cx)({});
-  const before = ({account='9007199254740993', admin=true, shell=true}={}) => {
+  const before = ({account='9007199254740993', admin=true, shell=true, authority=''}={}) => {
     const signal = new AbortController(), waits = [];
     const event = new Event('topcoat:before-navigation-commit', {cancelable:true});
     event.detail = {url:new URL(`http://localhost${mount}/ACC/issues?view=active#selected`),
       mode:'push', signal:signal.signal, waitUntil: promise => waits.push(Promise.resolve(promise)),
       nextDocument:{querySelector: selector => {
+        if(selector === '[data-native-project-authority]') {
+          return authority ? {dataset:{nativeProjectAuthority:authority}} : null;
+        }
         assert.equal(selector, '.native-home-shell');
         return shell ? {dataset:{accountId:account, accountAdmin:String(admin)}} : null;
       }}};
@@ -51,12 +54,24 @@ test('commit waits for the mounted request with the incoming exact i64/admin bas
   assert.equal(f.calls.length,1);
   assert.equal(f.calls[0].url,`${mount}/__native_workspace/authorize_navigation`);
   assert.deepEqual(JSON.parse(f.calls[0].options.body),[
-    `${mount}/ACC/issues?view=active`,{t:'i64',bits:64,v:'9007199254740993'},true,
+    `${mount}/ACC/issues?view=active`,{t:'i64',bits:64,v:'9007199254740993'},true,'',
   ]);
   await f.answer('allow');
   await navigation.barrier;
   assert.equal(finished,true);
   assert.deepEqual(f.loads,[]);
+});
+
+test('commit sends the exact permission snapshot rendered by the destination',async()=>{
+  for(const authority of ['{"project_id":17,"role":"viewer"}', 'invalid-json']) {
+    const f=fixture(), navigation=f.before({authority});
+    assert.equal(navigation.waits.length,1);
+    await flush();
+    assert.equal(JSON.parse(f.calls[0].options.body)[3],authority);
+    await f.answer('authority-changed');
+    await assert.rejects(navigation.barrier);
+    assert.deepEqual(f.loads,[`http://localhost${mount}/ACC/issues?view=active#selected`]);
+  }
 });
 
 test('denial and identity replacement reject cached commits and load the full intended URL',async()=>{
