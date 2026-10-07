@@ -43,6 +43,7 @@ pub(crate) mod icons;
 pub(crate) mod insights;
 pub(crate) mod issue_create;
 pub(crate) mod issue_edit;
+pub(crate) mod issue_peek;
 #[cfg(test)]
 mod limit_contract;
 pub(crate) mod login;

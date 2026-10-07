@@ -29,6 +29,7 @@ use topcoat::{
     view::{BoxView, View, ViewExt, view},
 };
 
+pub(crate) use labels_model::safe_color as label_color;
 pub(crate) use management_store::ManagementStore;
 
 pub(crate) const STYLESHEET: &str = include_str!("overview.css");
