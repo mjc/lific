@@ -1,16 +1,26 @@
 # Mounted Topcoat transport
 
-Topcoat 0.9.0 emits logical procedure URLs in serialized `Procedure` values
-and logical shard URLs in HTML comment markers. Its `BaseUrl` application
-context does not reach those constructors. The procedure macro constructs a
-static `ProcedureSurrogate`; shard markers write their static endpoint URL.
-There is no request-aware URL attribute visitor in the pinned view renderer.
+The target runtime is Topcoat 0.10.0. Its browser package now handles tuple
+surrogates and a shared document WebSocket with per-target Run IDs, Stop
+messages, and `{run, frame}` envelopes. Lific retains only generic transport
+patches that are not supplied upstream. No session, authorization, or product
+policy is added to the browser runtime.
 
-The vendored framework runtime therefore has one transport helper and three
-changed call sites: procedure requests, shard requests, and shard socket URLs.
-It also includes the tuple, mount lifecycle, comment decoding, connected-render,
-and document navigation patches described below. The rest of the upstream runtime is preserved. Page request URLs already
-use the current mounted browser location.
+Topcoat keeps procedure and shard endpoint paths logical. HTTP requests resolve
+the validated document mount at send time. A page rerun starts from the browser
+URL, so its shared-socket Run path removes one mount prefix at a path boundary.
+Shard Run paths are already logical and remain unchanged. This preserves
+`/ACC/ACC/...` when the project identifier equals the mount and avoids
+double-prefixing serialized procedures.
+The one shared socket handshakes at the mounted document path; its Run paths
+are routed after the proxy has stripped the mount.
+
+The local runtime patch also preserves the connected-render contract while the
+shared socket is loading, handshaking, or reconnecting: connected units join or
+wait for the shared connection rather than falling back to HTTP. The open
+callback reads current inputs. Run-scoped redirects, runless connection-retirement
+redirects, and redirected render HTTP responses share one document navigation
+claim.
 
 ## Rust document boundary
 
@@ -47,53 +57,31 @@ check also rejects the browser's opaque redirect response without decoding it.
 Callers retain their existing failure recovery and navigation revision checks.
 The server's HTTP redirect status and document navigation remain unchanged.
 
-The packaged Procedure request adds `redirect:"manual"` inside its existing
-keepalive substitution. The reconstruction oracle reverses that entire method
-to the pinned upstream implementation; the vendor distribution stays unchanged.
+The packaged Procedure request adds `redirect:"manual"` and exposes an opt-in
+keepalive call plus a typed adapter. Ordinary calls preserve their existing
+Fetch options. The reconstruction oracle reverses the method to the pinned
+upstream implementation.
 The native redirect browser regression observes real 303 responses, zero login
 GET requests, and recovery using the replacement cookie for both authentication
 modes and all three mounts. This proves the RPC redirect contract; it does not
 identify the suppressed callback in the earlier intermittent suite failure.
 Upstream submission is tracked by LIF-246.
 
-## Rust tuple compatibility
+## Upstream 0.10 transport and compatibility
 
-The pinned Rust tuple surrogate implementation serializes tuples as untagged
-JSON arrays. The pinned browser hydration function instead expects every
-object to have a surrogate tag, so real tuple procedure responses fail with
-`Unknown surrogate type: undefined`.
+Topcoat 0.10 handles tuple surrogate hydration/dehydration and one shared
+WebSocket connection per document. Run IDs identify each target, Stop messages
+cancel superseded work, and replies are `{run, frame}` envelopes. Those
+protocol features remain upstream. The application patch does not restore the
+old tuple adapter or old per-target socket transport.
 
-`topcoatHydrateTuple` recursively hydrates each array element and adds a
-non-enumerable `dehydrate()` method to the resulting array. Index access stays
-normal tuple index access. One array guard in the existing hydration function
-selects this helper. One array guard in the existing dehydration function
-recursively serializes arrays, including tuple literals constructed in runtime
-expressions. Nested Result, Option, integer, collection, and Procedure values
-continue to use their existing framework conversion. Stored procedure URLs
-remain logical. Tagged Vec, Array, and Slice surrogates retain their existing
-implementations.
-
-Together these patches prepend 27 helper/comment lines and change thirteen
-sites in the pinned asset. To reconstruct upstream, remove those first 27
-lines and reverse the following substitutions:
-
-| Patched expression | Upstream expression | Occurrences |
-| --- | --- | --- |
-| `function pe(t){let e=new DOMParser().parseFromString(t.replaceAll("<","&lt;"),"text/html")` | `function pe(t){let e=new DOMParser().parseFromString(t,"text/html")` | 1 |
-| `fetch(topcoatMountedEndpoint(this.path)` | `fetch(this.path` | 2 |
-| `url(){return topcoatMountedEndpoint(this.path)}` | `url(){return this.path}` | 1 |
-| `function V(t,e){if(Array.isArray(t))return topcoatHydrateTuple(t,e);if(t!==null)` | `function V(t,e){if(t!==null)` | 1 |
-| `function f(t){if(t==null)return null;if(Array.isArray(t))return t.map(f);` | `function f(t){if(t==null)return null;` | 1 |
-| ``let r=e.name.substring(ke.length),i=Object.assign(Object.create(n.runtime.context),{abortSignal:n.abortSignal});if(r==="mount"){topcoatMount(t,()=>T(e.value,`event @${r}`)(i),n);return}let o=T(e.value,`event @${r}`)(i);`` | ``let r=e.name.substring(ke.length),o=T(e.value,`event @${r}`)(n.runtime.context);`` | 1 |
-| `refresh(){if(this.isDisposed)return Promise.resolve();if(this.connection!==null)return this.connection.requestRun(),Promise.resolve();if(this.requiresConnection){for(let n of this.ancestors())if(n.connection!==null\|\|n.requiresConnection)return n.refresh();return this.connectIfRequired(),Promise.resolve()}` | `refresh(){if(this.connection?.isOpen)return this.connection.requestRun(),Promise.resolve();if(this.requiresConnection){for(let n of this.ancestors())if(n.connection?.isOpen)return n.refresh()}` | 1 |
-| `case"redirect":t.runtime.redirect(e.location);break;` | `case"redirect":location.assign(e.location);break;` | 1 |
-| `constructor(e,n,r){this.lifetime=e;this.reportError=n;this.redirect=r;e.addEventListener` | `constructor(e,n){this.lifetime=e;this.reportError=n;e.addEventListener` | 1 |
-| `if(s.redirected){this.redirect(s.url);return}` | `if(s.redirected){location.assign(s.url);return}` | 1 |
-| `new H(this.lifetime.abortSignal,r=>n.reportError(r),r=>n.redirect(r))` | `new H(this.lifetime.abortSignal,r=>n.reportError(r))` | 1 |
-| `var ne=class{navigating=!1;redirect(e){if(this.navigating)return;this.navigating=!0;location.assign(e)}registry=new te;` | `var ne=class{registry=new te;` | 1 |
-
-The reconstructed bytes match the upstream SHA-256 recorded in
-`../assets/runtime.LICENSE.txt`.
+The asset patch keeps a small reversible prefix helper and patches mount-time
+HTTP requests, page Run paths, generic procedure keepalive/manual redirects,
+connection wait behavior, scoped browser mount events, native Event access,
+vector signal writes, Unicode string helpers, render-error notifications, and
+redirect arbitration. The test oracle strips the helper prefix, reverses each
+substitution, and compares bytes with the exact package asset. The version,
+commit, source digest, and patched digest live in `../assets/runtime.LICENSE.txt`.
 
 ## Comment decoding
 
@@ -138,23 +126,19 @@ Callbacks pass the owning abort signal to browser operations that support
 cancellation. Asynchronous work without cancellation support still needs its
 own cleanup.
 
-## Connected render selection
+## Shared connected render selection
 
-The pinned render unit selects a WebSocket only after it opens. Signal changes
-while document loading delays the connection, during its handshake, or during
-reconnect therefore fall back to HTTP, even for content requiring a connection.
-An initialization mount callback can trigger that fallback before the socket
-starts.
+Topcoat 0.10 shares one connection and distinguishes target Runs by ID. Lific
+keeps the no-HTTP-fallback behavior for connected units while the document is
+loading or the socket is handshaking/reconnecting. A connected refresh sends a
+fresh Run when the socket is open; otherwise it joins the shared connection and
+returns. The open handler reads the latest render inputs. HTTP-only shards
+continue to use mounted POST requests.
 
-The render unit's `refresh()` now selects an existing connection regardless of
-its socket state. A connection-required child delegates to an ancestor with
-either an existing connection or a connection marker. Otherwise it schedules
-its own required connection and waits without an HTTP render. The existing
-socket open handler reads the current render inputs on every initial connection
-and reconnect; intermediate updates need no separate queue or saved arguments.
-Disposed units stop immediately, and the existing lifetime abort signal cancels
-load listeners, socket ownership, and reconnect timers. Shards without a
-connection requirement continue to use their existing HTTP transport.
+The connection handshake uses the mounted document URL. A page Run path is
+logical for the internal router, so the browser removes exactly one validated
+mount prefix. Shard paths are already logical and are sent unchanged. This
+keeps project identifiers that repeat the mount prefix intact.
 
 ## Document navigation
 
@@ -165,6 +149,42 @@ so a second connection cannot initiate another navigation while the first is
 pending. The claim remains terminal for that Runtime; a new document creates a
 new Runtime. Error reporting and transport lifetimes retain their existing paths.
 This coordination contains no application session, destination or route policy.
+
+## Native links and page ownership
+
+Rust renders internal anchors with Topcoat's `link_attrs` helper. Ordinary
+links prefetch on intent; one-shot resume and notice URLs use `Never` so a
+hover cannot consume their token. Programmatic successful actions call the
+same navigation controller through `cx.navigate`. Authentication retirement
+still requires a fresh document and cookie admission.
+
+The framework fetches destination HTML with the current signals and hydrates
+its initial server render. Route-owned signal keys include the account and
+logical destination; the shared sidebar and same-project deferred-delete
+owner keep their stable keys. A committed page closes the old physical socket
+before joining destination render targets, so the new handshake admits its
+own credentials and public/private scope. Queued frames from the retired
+socket cannot affect the replacement.
+
+Two generic lifecycle events let mounted owners participate without adding an
+application router. `topcoat:before-navigation-commit` carries the URL, history
+mode, destination document, abort signal and `waitUntil` function. Navigation
+awaits registered work before writing history. Rejection, cancellation or a
+superseding navigation leaves the current document in place.
+The native shell registers a fresh authorization request against the incoming
+account and admin baseline before a cached destination can commit. It checks
+current project membership and detail-resource ownership; denied access or an
+identity change loads the full destination URL through normal document admission.
+Aborted navigation ignores late authorization results.
+`topcoat:before-page-replace` supplies the destination document synchronously
+before the old scope aborts. Deferred deletion uses that boundary to transfer
+timers and pending outcomes within the same project, or claim pending deletes
+once when leaving it. Rust signals retain domain state; the browser owns DOM
+listeners, timer handles and host lifetime tokens.
+
+Pages write outcomes use Topcoat records with named fields. The session
+procedure returns the existing domain shape, `Option<(i64, bool)>`, through
+upstream tuple support instead of flattening absence into a separate flag.
 
 ## Private raw socket admission
 
@@ -192,18 +212,18 @@ keeps its own current authorization checks.
 
 The generic socket driver and matching connected-render helpers live in
 `../runtime`. Both checkout and packaged applications compile those sources with
-registry signal, shard, procedure, router and view types. The standalone vendor
+pinned framework signal, shard, procedure, router and view types. The standalone vendor
 runtime tests compile those same files. The packaged source includes its MIT
 license and upstream provenance. Admission runs before this socket layer; HTTP
-reruns continue through the registry runtime layer.
+reruns continue through the pinned Git framework runtime layer.
 
-The driver retains the incoming `Cx` through the upgrade callback and raw socket
-future. Admission installs an `Arc<SocketPermit>` and, for private sockets, one
+The driver retains the incoming `Cx` in the connection target shared by its
+render tasks. Admission installs an `Arc<SocketPermit>` and, for private sockets, one
 request-owned authority lifetime. That lifetime captures its parent context
 before being installed on a child, avoiding a reference cycle. Revocation and
 the existing 60-second database revalidation run independently of renders and
 socket input. Home's content-event subscription belongs to its render; authority
-belongs to each physical page/palette connection.
+belongs to the shared physical document connection.
 
 Retirement cancels the pumps and aborts/awaits the active render before a bounded
 framework Redirect/close. The framework document runtime claims navigation once
@@ -219,51 +239,29 @@ cookie behavior.
 
 ## Tests and integration scope
 
-`transport.browser.test.cjs` loads the actual vendored runtime in headless
-Chromium against an HTTP/WebSocket protocol fixture. It covers root, `/app`,
-and a mount matching the project identifier; nested and returned procedures;
-logical dehydration; framed shard updates; actual socket URLs and protocol;
-absolute URLs; same-origin cookies; and an unchanged global `fetch` function.
-The tuple case covers indexing and explicit dehydration, nested tuple values
-inside tagged collections, exact large integer values, returned procedures,
-and passing hydrated or constructed tuples back to a procedure.
-The connected-render case holds document loading and socket handshakes for both
-own and ancestor connections. It proves that mount and later signal updates
-wait without HTTP fallback, that initial open and reconnect send the freshest
-inputs, and that HTTP-only shards continue to POST their current arguments.
-The navigation unit test evaluates the actual asset with only document startup
-replaced by test exports. Its real frame handler and HTTP request controller
-prove one navigation across sibling sockets, mixed HTTP/socket redirects and
-sibling HTTP controllers, then a fresh claim for a new document Runtime.
-The reconstruction test reverses all declared substitutions and checks the
-exact pinned upstream SHA-256. Lifecycle browser tests cover later signal
-declarations, one refresh with a persistent sentinel, reused DOM elements,
-scope cancellation, error isolation and early synthetic event dispatch. They
-also prove that mount contexts expose their real owning abort signal, that
-ordinary event contexts expose the same lifetime without mutating the shared
-runtime context, and that global subscriptions stop across retained-element scope
-replacements. Awaited ordinary callbacks observe scope disposal before completing work.
+`transport.browser.test.cjs` loads the packaged runtime against HTTP and shared
+WebSocket fixtures. It covers root, `/app`, and `/ACC` mounts; mounted procedure
+requests and logical dehydration; shared document socket URLs; page and shard
+Run paths; Run/Stop envelopes; stale-run suppression; cookies; and unchanged
+global `fetch`. Separate browser-free Node VM tests cover the exact reconstruction
+checksum, path-boundary mount conversion (including `/ACC/ACC`), procedure
+keepalive opt-in, pending-connection no-fallback behavior, Unicode width and
+trimming, redirect arbitration for run-scoped and runless frames, page socket
+ownership, owner barriers and cancellation, and programmatic navigation.
+
+Lifecycle browser tests cover one mount initialization per owning scope, real
+abort-signal exposure, ordinary event lifetime, retained-element replacement,
+cleanup, and error isolation. Render-failure tests cover scoped bubbling events,
+mounted render paths, disposed owners, and continued error logging.
 
 Rust unit tests exercise trusted proxy context, prefix validation and missing
-configuration, and logical URL mounting. These framework-focused tests do not
-establish domain authorization, actual native endpoint registration, or
-streaming middleware behavior. Those require the executable integration tests
-owned by the server integration work.
-
-The assembled native fixture uses the production server factory, real session
-cookies and database. It checks initial authorized HTML, successive native
-saves, typed conflicts and revoked sessions, framed HTTP shards, mounted socket
-reruns, cross-origin refusal, and zero browser REST requests. Its read boundary
-maps credential denial, permission denial and missing records to framework HTTP
-errors; raw `LificError` conversion would otherwise produce a generic 500.
-Production native handlers need the same classification. The fixture does not
-establish product UI parity, socket recovery, or complete authentication
-acceptance.
-The assembled probe also uses the Rust-authored input adapter at root, `/app`
-and `/ACC`. A fixed browser clock and timezone prove primitive values, denied
-storage remains nonfatal, and hostile stored text stays text. This fixture does
-not establish production Home initialization or recents behavior.
-
+configuration, and logical URL mounting. Framework-focused tests do not establish
+domain authorization, actual endpoint registration, or streaming middleware
+behavior; those are covered by the executable server integration tests. The
+assembled native fixture uses the production server factory, real session cookies
+and database, and checks authorized HTML, native saves, conflicts, revoked
+sessions, framed shards, mounted shared-socket reruns, cross-origin refusal, and
+zero browser REST requests.
 
 ## Native event adapter
 
@@ -298,10 +296,9 @@ while retaining the old rendered body. It applies the same completion path as
 a successful snapshot. The framework notification owns no application retry
 policy or Home state.
 
-The packaged runtime has twenty reversible substitutions in total. Three add
-the scoped notification and HTTP reporter delegation; the reconstruction test
-reverses them before the earlier transport and surrogate substitutions and
-checks the exact original package hash. The source and packaged tests cover
+The packaged runtime adds reversible generic render-error reporting and HTTP
+request delegation. The reconstruction test reverses those substitutions and
+all remaining transport adaptations to the exact upstream package hash. The source and packaged tests cover
 owner paths, retained logging, disposal, stale connected errors, and actual
 scheduled HTTP failures.
 
@@ -315,7 +312,6 @@ WhiteSpace and LineTerminator set. Existing Rust `trim` behavior remains
 Unicode White_Space. The package regression executes eighteen actual Rust
 expression sources and compares their authoritative surrogate wires.
 
-The additional exact reverse substitution removes
-`trim_ecmascript(){return new v(this.v.trim())}` immediately before Str trim.
-It is declared in transport.browser.test.cjs and included in the license
-provenance; the pinned upstream digest remains the same.
+The additional reverse substitution removes the ECMAScript trim method from the
+owned String implementation. Its exact expression is declared in the reconstruction
+oracle and the pinned upstream digest remains unchanged.

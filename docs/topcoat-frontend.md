@@ -32,7 +32,7 @@ Home omits collapsed project destination trees, the unopened phone dialog, and
 closed palette result handlers. The phone dialog initializes on first use and
 retains its shared sidebar state through closing and browser history. Initial
 HTML contains one project catalog; stale projection checks use its revision.
-Shared browser handlers are generated from Rust and served in three versioned,
+Shared browser handlers are generated from Rust and served in two versioned,
 immutable assets. The runtime imports them before hydration, so connected
 controls already have their listeners. The shared invocation bridge registers
 only immutable functions; signal handles and request data stay in each owning
@@ -67,9 +67,27 @@ artifact plus documented fixes. Framework transport is distinct from an
 application controller.
 
 Standalone runtime tests cover a smaller signal-comment encoding. The
-application still uses the published framework's signal renderer; adopting
+application still uses the pinned framework's signal renderer; adopting
 that encoding requires an upstream change and browser hydration checks.
+
+Topcoat 0.10 supplies native client navigation and intent prefetching through
+`native/navigation.rs`. Rust-rendered internal links share its mounted URL
+helper. Entry-token links disable prefetching. Pages outcomes use named records,
+and session checks return nested optional tuples directly. See
+`../src/topcoat/native/TRANSPORT.md` for page ownership, cancellation, and socket boundaries.
+
+Run `devenv tasks run lific:topcoat:fmt` to format Rust and Topcoat macros with
+the matching pinned CLI. `lific:topcoat:fmt-check` checks the same sources without
+changing them.
 
 Use the repository's devenv workflow for compilation and focused native tests.
 Do not run headless browsers. Original main assertions and their current native adapter gaps are
 recorded under `src/topcoat/tests/main/`.
+
+## Framework distribution
+
+The framework is pinned to the rebased fork, including its macro lowering fixes.
+Source and binary builds retain that revision. Registry publication is disabled:
+Cargo normalizes Git dependencies to registry versions when publishing, which
+would discard those fixes. Restore publication and registry package verification
+after the required fixes have a compatible published version.
