@@ -210,7 +210,7 @@ async fn workspace_owner(
         &ParsedRoute::parse(&initial_path),
     );
     let page = if common {
-        let page_path = path.clone();
+        let page_path = path;
         let page_palette = palette_open.clone();
         view! {
             cx =>
@@ -225,7 +225,7 @@ async fn workspace_owner(
     } else {
         let state_cx = cx.keyed((user.id, project.as_str()));
         let pending_issues = signal(&state_cx, Vec::<i64>::new);
-        let page_path = path.clone();
+        let page_path = path;
         view! {
             cx =>
             (super::deferred_delete::owner(

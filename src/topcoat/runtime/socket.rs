@@ -120,12 +120,14 @@ impl Default for SocketPolicy {
     }
 }
 
+type RunAuthorization = dyn Fn(&Method, &Uri) -> bool + Send + Sync;
+
 /// App-provided, route-agnostic authorization for each path requested on a socket.
 ///
 /// Install this in the upgrade request context when requests on the socket need
 /// to remain within a scope selected by the application's admission layer.
 #[derive(Clone)]
-pub struct SocketRunPolicy(Arc<dyn Fn(&Method, &Uri) -> bool + Send + Sync>);
+pub struct SocketRunPolicy(Arc<RunAuthorization>);
 
 impl SocketRunPolicy {
     #[must_use]
