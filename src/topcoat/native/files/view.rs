@@ -265,11 +265,22 @@ pub(super) fn content<'a>(
         >
             (live)
             <span hidden="hidden" (clock_attrs)></span>
-            <div class="flex items-center gap-3 px-8 py-3 border-b border-[var(--border)]">
-                <span class="text-body-sm font-mono font-medium text-[var(--text-muted)]">(identifier.clone())</span>
+            <div
+                class="flex items-center gap-3 px-8 py-3 border-b border-[var(--border)]"
+            >
+                <span
+                    class="text-body-sm font-mono font-medium text-[var(--text-muted)]"
+                >
+                    (identifier.clone())
+                </span>
                 <span class="text-body-sm font-medium text-[var(--text)]">"Files"</span>
-                <span class="text-micro text-[var(--text-faint)] tabular-nums">$(total_count.get())</span>
-                <span class="text-caption text-[var(--text-faint)] tabular-nums">(format_bytes(total_bytes.get())) " total"</span>
+                <span class="text-micro text-[var(--text-faint)] tabular-nums">
+                    $(total_count.get())
+                </span>
+                <span class="text-caption text-[var(--text-faint)] tabular-nums">
+                    (format_bytes(total_bytes.get()))
+                    " total"
+                </span>
             </div>
             files_body(
                 target: target_for_body,
@@ -287,11 +298,7 @@ pub(super) fn content<'a>(
                         confirming.get(),
                         orphan_open.get(),
                         collation.get(),
-                        (
-                            deleting.get(),
-                            links_cache.get(),
-                            request_generation.get(),
-                        ),
+                        (deleting.get(), links_cache.get(), request_generation.get()),
                     )
                 })
             )
@@ -537,20 +544,36 @@ async fn files_body(
     let completed_load_error = controls.9.9;
     let persist = view! {
         cx =>
-        <span hidden="hidden" data-native-files-complete=""
+        <span
+            hidden="hidden"
+            data-native-files-complete=""
             @mount=$(|_event: Event| {
                 if completed_generation.get() == request_generation {
                     let timeout_id = completed_timeout.get();
                     raw!("clearTimeout(Number(${timeout_id}.toString()));", ());
-                    if timeout_id != 0.0 { completed_timeout.set(0.0); }
-                    if completed_loading_more.get() { completed_loading_more.set(false); }
-                    if completed_refreshing.get() { completed_refreshing.set(false); }
+                    if timeout_id != 0.0 {
+                        completed_timeout.set(0.0);
+                    }
+                    if completed_loading_more.get() {
+                        completed_loading_more.set(false);
+                    }
+                    if completed_refreshing.get() {
+                        completed_refreshing.set(false);
+                    }
                     history.0.set(rows_wire.clone());
                     history.1.set(key.clone());
-                    if history.2.get() != page_has_more { history.2.set(page_has_more); }
-                    if history.3.get() != page_total_count { history.3.set(page_total_count); }
-                    if history.4.get() != page_total_bytes { history.4.set(page_total_bytes); }
-                    if links_cache.get() != cache_wire { links_cache.set(cache_wire.clone()); }
+                    if history.2.get() != page_has_more {
+                        history.2.set(page_has_more);
+                    }
+                    if history.3.get() != page_total_count {
+                        history.3.set(page_total_count);
+                    }
+                    if history.4.get() != page_total_bytes {
+                        history.4.set(page_total_bytes);
+                    }
+                    if links_cache.get() != cache_wire {
+                        links_cache.set(cache_wire.clone());
+                    }
                     if page_failed {
                         completed_load_error.set(page_error_value.clone());
                     } else if !completed_load_error.get().is_empty() {
@@ -569,11 +592,16 @@ async fn files_body(
                             let _timeout = || {
                                 if followup_generation.get() == generation {
                                     followup_refreshing.set(false);
-                                    followup_error.set("Couldn't refresh files. Try again.".to_owned());
+                                    followup_error.set(
+                                        "Couldn't refresh files. Try again.".to_owned(),
+                                    );
                                     expiry_timeout.set(0.0);
                                 }
                             };
-                            let timer = raw!("cx.hydrate(setTimeout(()=>${_timeout}(),10000))", 0.0);
+                            let timer = raw!(
+                                "cx.hydrate(setTimeout(()=>${_timeout}(),10000))",
+                                0.0,
+                            );
                             followup_timeout.set(timer);
                         }
                     }
@@ -778,10 +806,16 @@ fn files_page<'a>(
             (!value.is_empty()).then_some(value),
             !active,
         );
-        view! { cx =>
-            <button type="button" class=(class) :aria-pressed=$(if active { "true" } else { "false" })
+        view! {
+            cx =>
+            <button
+                type="button"
+                class=(class)
+                :aria-pressed=$(if active { "true" } else { "false" })
                 (attrs)
-            >(label)</button>
+            >
+                (label)
+            </button>
         }.boxed()
     }).collect::<Vec<_>>();
     let uploader_change = query_change(cx, query.clone(), &request, "uploader", None, true);
@@ -793,7 +827,12 @@ fn files_page<'a>(
         .map(|name| {
             let name = name.clone();
             let selected = current_uploader == name;
-            view! { cx => <option value=(name.clone()) :selected=$(selected)>(name.clone())</option> }.boxed()
+            view! {
+                cx =>
+                <option value=(name.clone()) :selected=$(selected)>
+                    (name.clone())
+                </option>
+            }.boxed()
         })
         .collect::<Vec<_>>();
     let file_rows = rows
@@ -881,114 +920,227 @@ fn files_page<'a>(
             <div class="flex-1 overflow-y-auto">
                 <div class="px-8 py-6 max-w-[1100px] mx-auto">
                     <div class="flex flex-wrap items-center gap-2 mb-5">
-                        for chip in chips { (chip) }
+                        for chip in chips {
+                            (chip)
+                        }
                         <div class="flex-1"></div>
-                        <select class="h-7 px-2 rounded-md text-caption bg-[var(--bg)] border border-[var(--border)] text-[var(--text-muted)]"
-                            aria-label="Filter by uploader" value=(current_uploader)
-                            (uploader_change)>
+                        <select
+                            class="h-7 px-2 rounded-md text-caption bg-[var(--bg)] border border-[var(--border)] text-[var(--text-muted)]"
+                            aria-label="Filter by uploader"
+                            value=(current_uploader)
+                            (uploader_change)
+                        >
                             <option value="">"All uploaders"</option>
-                            for option in uploader_options { (option) }
+                            for option in uploader_options {
+                                (option)
+                            }
                         </select>
-                        <select class="h-7 px-2 rounded-md text-caption bg-[var(--bg)] border border-[var(--border)] text-[var(--text-muted)]"
-                            aria-label="Sort files" value=(current_sort)
-                            (sort_change)>
-                            for option in sort_options { (option) }
+                        <select
+                            class="h-7 px-2 rounded-md text-caption bg-[var(--bg)] border border-[var(--border)] text-[var(--text-muted)]"
+                            aria-label="Sort files"
+                            value=(current_sort)
+                            (sort_change)
+                        >
+                            for option in sort_options {
+                                (option)
+                            }
                         </select>
                     </div>
                     <div class="flex items-baseline gap-2 mb-3">
-                        <span class="text-body-sm text-[var(--text)] font-medium tabular-nums">(count_label)</span>
-                        <span class="text-caption text-[var(--text-faint)] tabular-nums">(total_bytes)</span>
+                        <span
+                            class="text-body-sm text-[var(--text)] font-medium tabular-nums"
+                        >
+                            (count_label)
+                        </span>
+                        <span
+                            class="text-caption text-[var(--text-faint)] tabular-nums"
+                        >
+                            (total_bytes)
+                        </span>
                     </div>
                     if !delete_error_text.is_empty() {
-                        <p class="text-caption text-[var(--error)] mb-3" role="status">(delete_error_text)</p>
+                        <p class="text-caption text-[var(--error)] mb-3" role="status">
+                            (delete_error_text)
+                        </p>
                     }
-                    <div class="flex flex-col divide-y divide-[var(--border)]">for row in file_rows { (row) }</div>
+                    <div class="flex flex-col divide-y divide-[var(--border)]">
+                        for row in file_rows {
+                            (row)
+                        }
+                    </div>
                     if no_rows {
                         <div class="flex flex-col items-center py-20 gap-3 text-center">
                             (icons::ui_icon(cx, icons::UiIcon::Files, 32))
-                            <p class="text-body-lg text-[var(--text-muted)]">"No files here yet"</p>
-                            <p class="text-body-sm text-[var(--text-faint)] max-w-[420px]">"Files appear once they are attached to an issue, page, or comment in this project."</p>
+                            <p class="text-body-lg text-[var(--text-muted)]">
+                                "No files here yet"
+                            </p>
+                            <p
+                                class="text-body-sm text-[var(--text-faint)] max-w-[420px]"
+                            >
+                                "Files appear once they are attached to an issue, page, or comment in this project."
+                            </p>
                         </div>
                     }
                     if more {
                         <div class="flex justify-center py-4">
-                            <button class="text-body-sm text-[var(--text-muted)] border border-[var(--border)] px-3 py-1.5 rounded-md hover:bg-[var(--bg-subtle)] transition-colors"
-                                type="button" :disabled=$(if loading_more.get() { true } else { refreshing.get() })
+                            <button
+                                class="text-body-sm text-[var(--text-muted)] border border-[var(--border)] px-3 py-1.5 rounded-md hover:bg-[var(--bg-subtle)] transition-colors"
+                                type="button"
+                                :disabled=$(if loading_more.get() {
+                                    true
+                                } else {
+                                    refreshing.get()
+                                })
                                 @click=$(move |_event: Event| {
                                     if !loading_more.get() {
-                                      if !refreshing.get() {
+                                        if !refreshing.get() {
+                                            loading_more.set(true);
+                                            load_error.set("".to_owned());
+                                            offset.set(next_offset);
+                                            request_generation.increment();
+                                            let generation = request_generation.get();
+                                            let _timeout = || {
+                                                if request_generation.get() == generation {
+                                                    loading_more.set(false);
+                                                    load_error.set(
+                                                        "Couldn't load more files. Try again.".to_owned(),
+                                                    );
+                                                    append_expiry_timeout.set(0.0);
+                                                }
+                                            };
+                                            let timer = raw!(
+                                                "cx.hydrate(setTimeout(()=>${_timeout}(),10000))",
+                                                0.0,
+                                            );
+                                            request_timeout.set(timer);
+                                        }
+                                    }
+                                })
+                            >
+                                $(if loading_more.get() {
+                                    "Loading…"
+                                } else {
+                                    "Load more"
+                                })
+                            </button>
+                        </div>
+                    }
+                    <div
+                        class="flex items-center justify-center gap-2 py-3 text-caption text-[var(--error)]"
+                        role="status"
+                        :hidden=$(load_error.get().is_empty())
+                    >
+                        <span>$(load_error.get())</span>
+                        <button
+                            type="button"
+                            class="underline"
+                            @click=$(move |_event: Event| {
+                                if !loading_more.get() {
+                                    if !refreshing.get() {
+                                        let _timeout_id = request_timeout.get();
+                                        raw!("clearTimeout(Number(${_timeout_id}.toString()));", ());
                                         loading_more.set(true);
                                         load_error.set("".to_owned());
-                                        offset.set(next_offset);
                                         request_generation.increment();
                                         let generation = request_generation.get();
                                         let _timeout = || {
                                             if request_generation.get() == generation {
                                                 loading_more.set(false);
-                                                load_error.set("Couldn't load more files. Try again.".to_owned());
-                                                append_expiry_timeout.set(0.0);
+                                                load_error.set(
+                                                    "Couldn't load more files. Try again.".to_owned(),
+                                                );
+                                                retry_expiry_timeout.set(0.0);
                                             }
                                         };
-                                        let timer = raw!("cx.hydrate(setTimeout(()=>${_timeout}(),10000))", 0.0);
+                                        let timer = raw!(
+                                            "cx.hydrate(setTimeout(()=>${_timeout}(),10000))",
+                                            0.0,
+                                        );
                                         request_timeout.set(timer);
-                                      }
                                     }
-                                })>$(if loading_more.get() { "Loading…" } else { "Load more" })</button>
-                        </div>
-                    }
-                    <div class="flex items-center justify-center gap-2 py-3 text-caption text-[var(--error)]" role="status" :hidden=$(load_error.get().is_empty())>
-                            <span>$(load_error.get())</span>
-                            <button type="button" class="underline" @click=$(move |_event: Event| {
-                                if !loading_more.get() {
-                                  if !refreshing.get() {
-                                    let _timeout_id = request_timeout.get();
-                                    raw!("clearTimeout(Number(${_timeout_id}.toString()));", ());
-                                    loading_more.set(true);
-                                    load_error.set("".to_owned());
-                                    request_generation.increment();
-                                    let generation = request_generation.get();
-                                    let _timeout = || {
-                                        if request_generation.get() == generation {
-                                            loading_more.set(false);
-                                            load_error.set("Couldn't load more files. Try again.".to_owned());
-                                            retry_expiry_timeout.set(0.0);
-                                        }
-                                    };
-                                    let timer = raw!("cx.hydrate(setTimeout(()=>${_timeout}(),10000))", 0.0);
-                                    request_timeout.set(timer);
-                                  }
                                 }
-                            })>"Try again"</button>
+                            })
+                        >
+                            "Try again"
+                        </button>
                     </div>
                     <section class="mt-10 border-t border-[var(--border)] pt-4">
-                        <button class="w-full flex items-center gap-2 text-left" type="button"
+                        <button
+                            class="w-full flex items-center gap-2 text-left"
+                            type="button"
                             :aria-expanded=$(if orphans_open { "true" } else { "false" })
-                            @click=$(move |_event: Event| orphan_open.set(!orphans_open))>
-                            (icons::ui_icon(cx, if orphans_open { icons::UiIcon::Expand } else { icons::UiIcon::Next }, 14))
+                            @click=$(move |_event: Event| orphan_open.set(!orphans_open))
+                        >
+                            (icons::ui_icon(
+                                cx,
+                                if orphans_open {
+                                    icons::UiIcon::Expand
+                                } else {
+                                    icons::UiIcon::Next
+                                },
+                                14,
+                            ))
                             (icons::ui_icon(cx, icons::UiIcon::Warning, 14))
-                            <span class="text-body-sm font-medium text-[var(--text)]">"Pending cleanup"</span>
-                            <span class="text-caption text-[var(--text-faint)] tabular-nums">(orphan_count.to_string())</span>
-                            if orphan_count > 0 { <span class="text-caption text-[var(--text-faint)] tabular-nums">"· "(format_bytes(orphan_bytes))</span> }
+                            <span class="text-body-sm font-medium text-[var(--text)]">
+                                "Pending cleanup"
+                            </span>
+                            <span
+                                class="text-caption text-[var(--text-faint)] tabular-nums"
+                            >
+                                (orphan_count.to_string())
+                            </span>
+                            if orphan_count > 0 {
+                                <span
+                                    class="text-caption text-[var(--text-faint)] tabular-nums"
+                                >
+                                    "· "
+                                    (format_bytes(orphan_bytes))
+                                </span>
+                            }
                         </button>
                         <div class=(expanded_class)>
-                            <p class="text-caption text-[var(--text-muted)] mt-2 mb-3 max-w-[560px]">"Uploads by this project's members that were never attached to anything. The server deletes them automatically once their grace window runs out."</p>
+                            <p
+                                class="text-caption text-[var(--text-muted)] mt-2 mb-3 max-w-[560px]"
+                            >
+                                "Uploads by this project's members that were never attached to anything. The server deletes them automatically once their grace window runs out."
+                            </p>
                             if orphan_error {
-                                <div class="flex items-center gap-2 text-caption text-[var(--error)]">
+                                <div
+                                    class="flex items-center gap-2 text-caption text-[var(--error)]"
+                                >
                                     <span>"Pending cleanup could not be loaded."</span>
-                                    <button type="button" class="underline" @click=$(move |_event: Event| orphan_revision.increment())>"Retry"</button>
+                                    <button
+                                        type="button"
+                                        class="underline"
+                                        @click=$(move |_event: Event| orphan_revision.increment())
+                                    >
+                                        "Retry"
+                                    </button>
                                 </div>
                             }
-                            if orphan_count == 0 && !orphan_error { <p class="text-caption text-[var(--text-faint)]">"Nothing waiting to be swept."</p> }
-                            <div class="flex flex-col divide-y divide-[var(--border)]">for row in orphan_rows { (row) }</div>
+                            if orphan_count == 0 && !orphan_error {
+                                <p class="text-caption text-[var(--text-faint)]">
+                                    "Nothing waiting to be swept."
+                                </p>
+                            }
+                            <div class="flex flex-col divide-y divide-[var(--border)]">
+                                for row in orphan_rows {
+                                    (row)
+                                }
+                            </div>
                         </div>
                     </section>
-                    <span hidden="hidden" data-native-files-collation=""
+                    <span
+                        hidden="hidden"
+                        data-native-files-collation=""
                         @mount=$(|_event: Event| {
                             let resolved = raw!(
                                 "cx.hydrate((() => { const r = new Intl.Collator(undefined,{usage:'sort'}).resolvedOptions(); return JSON.stringify({locale:r.locale,usage:r.usage,sensitivity:r.sensitivity,ignorePunctuation:r.ignorePunctuation,collation:r.collation,numeric:r.numeric,caseFirst:r.caseFirst}); })())",
                                 String::new(),
                             );
-                            if cache_signal.get() != resolved { cache_signal.set(resolved); }
+                            if cache_signal.get() != resolved {
+                                cache_signal.set(resolved);
+                            }
                         })
                     ></span>
                 </div>
@@ -1082,62 +1234,144 @@ fn file_row<'a>(
     let duplicates = detail.map(|data| data.duplicates.iter().map(|duplicate| {
             let duplicate_name = duplicate.filename.clone();
             let duplicate_chips = entity_chips(cx, project, &duplicate.entities);
-            view! { cx =>
-            <div class="flex items-center gap-2"><span class="text-caption text-[var(--text-muted)] truncate">(duplicate_name)</span><div class="flex flex-wrap items-center gap-1">for chip in duplicate_chips { (chip) }</div></div>
+            view! {
+                cx =>
+                <div class="flex items-center gap-2">
+                    <span class="text-caption text-[var(--text-muted)] truncate">
+                        (duplicate_name)
+                    </span>
+                    <div class="flex flex-wrap items-center gap-1">
+                        for chip in duplicate_chips {
+                            (chip)
+                        }
+                    </div>
+                </div>
             }.boxed()
         }).collect::<Vec<_>>()).unwrap_or_default();
     let has_duplicates = !duplicates.is_empty();
     let is_confirming = confirming_id == Some(id);
     let delete_confirmation_message = model::delete_confirm_message(entities.len());
-    view! { cx =>
+    view! {
+        cx =>
         <div class="mt-2 ml-8 flex flex-col gap-2">
             if expanded_value {
-            <div class="flex flex-col gap-1">
-                <span class="text-micro uppercase tracking-widest text-[var(--text-faint)] font-semibold">"Used by"</span>
-                <div class="flex flex-wrap items-center gap-1">for chip in expanded_entity_chips { (chip) }</div>
-            </div>
+                <div class="flex flex-col gap-1">
+                    <span
+                        class="text-micro uppercase tracking-widest text-[var(--text-faint)] font-semibold"
+                    >
+                        "Used by"
+                    </span>
+                    <div class="flex flex-wrap items-center gap-1">
+                        for chip in expanded_entity_chips {
+                            (chip)
+                        }
+                    </div>
+                </div>
                 if has_duplicates {
-                    <div class="flex flex-col gap-1"><span class="text-micro uppercase tracking-widest text-[var(--text-faint)] font-semibold">"Identical file also attached to"</span>for duplicate in duplicates { (duplicate) }</div>
+                    <div class="flex flex-col gap-1">
+                        <span
+                            class="text-micro uppercase tracking-widest text-[var(--text-faint)] font-semibold"
+                        >
+                            "Identical file also attached to"
+                        </span>
+                        for duplicate in duplicates {
+                            (duplicate)
+                        }
+                    </div>
                 }
                 <span class="text-micro text-[var(--text-faint)]">(row_mime)</span>
             }
             if is_confirming {
-            <div class="flex flex-wrap items-center gap-2 mt-2 ml-8 pl-3 border-l-2 border-[var(--error)]">
-                <span class="text-caption text-[var(--text-muted)]">(delete_confirmation_message)</span>
-                <button type="button" class="text-caption font-medium px-2 py-1 rounded-md text-[var(--error-text)] bg-[var(--error)] hover:opacity-90"
-                    :disabled=$(deleting_value)
-                    (delete_handler_attrs)>
-                    $(if deleting_value { "Deleting…" } else { "Delete" })
-                </button>
-                <button type="button" class="text-caption text-[var(--text-muted)] px-2 py-1 rounded-md hover:bg-[var(--bg-subtle)]"
-                    @click=$(move |_event: Event| confirming_signal.set(None))>"Cancel"</button>
-            </div>
-            }
-        <div class="py-2" data-native-files-row=(id.to_string())>
-            <div class="flex items-center gap-3">
-                <button type="button" class="size-5 flex items-center justify-center rounded text-[var(--text-faint)] hover:text-[var(--text)] hover:bg-[var(--bg-subtle)] transition-colors shrink-0"
-                    title=(label) :aria-expanded=$(if expanded_value { "true" } else { "false" })
-                    @click=$(move |_event: Event| {
-                        expanded.set(if expanded_value { None } else { Some(id) });
-                    })>
-                    (icons::ui_icon(cx, if expanded_value { icons::UiIcon::Expand } else { icons::UiIcon::Next }, 14))
-                </button>
-                (mime_icon)
-                <a class="min-w-0 flex-1 text-left text-body-sm text-[var(--text)] truncate hover:text-[var(--accent)] transition-colors"
-                    href=(destination) download=(filename.clone()) title=(format!("Download {filename}"))>(filename.clone())</a>
-                <div class="hidden sm:block shrink-0"><div class="flex flex-wrap items-center gap-1">for chip in row_entity_chips { (chip) }</div></div>
-                <span class="text-caption text-[var(--text-faint)] tabular-nums w-16 text-right shrink-0">(size)</span>
-                <span class="hidden md:block text-caption text-[var(--text-muted)] w-24 truncate shrink-0">(uploader)</span>
-                <span class="text-caption text-[var(--text-faint)] w-16 text-right shrink-0">(time)</span>
-                if can_delete {
-                    <button type="button" class="size-6 flex items-center justify-center rounded shrink-0 text-[var(--text-faint)] hover:text-[var(--error)] hover:bg-[var(--bg-subtle)]"
-                        title=(format!("Delete {filename}")) :disabled=$(deleting_value)
-                        @click=$(move |_event: Event| confirming.set(if is_confirming { None } else { Some(id) }))>
-                        (icons::ui_icon(cx, icons::UiIcon::Delete, 14))
+                <div
+                    class="flex flex-wrap items-center gap-2 mt-2 ml-8 pl-3 border-l-2 border-[var(--error)]"
+                >
+                    <span class="text-caption text-[var(--text-muted)]">
+                        (delete_confirmation_message)
+                    </span>
+                    <button
+                        type="button"
+                        class="text-caption font-medium px-2 py-1 rounded-md text-[var(--error-text)] bg-[var(--error)] hover:opacity-90"
+                        :disabled=$(deleting_value)
+                        (delete_handler_attrs)
+                    >
+                        $(if deleting_value { "Deleting…" } else { "Delete" })
                     </button>
-                }
+                    <button
+                        type="button"
+                        class="text-caption text-[var(--text-muted)] px-2 py-1 rounded-md hover:bg-[var(--bg-subtle)]"
+                        @click=$(move |_event: Event| confirming_signal.set(None))
+                    >
+                        "Cancel"
+                    </button>
+                </div>
+            }
+            <div class="py-2" data-native-files-row=(id.to_string())>
+                <div class="flex items-center gap-3">
+                    <button
+                        type="button"
+                        class="size-5 flex items-center justify-center rounded text-[var(--text-faint)] hover:text-[var(--text)] hover:bg-[var(--bg-subtle)] transition-colors shrink-0"
+                        title=(label)
+                        :aria-expanded=$(if expanded_value { "true" } else { "false" })
+                        @click=$(move |_event: Event| {
+                            expanded.set(if expanded_value { None } else { Some(id) });
+                        })
+                    >
+                        (icons::ui_icon(
+                            cx,
+                            if expanded_value {
+                                icons::UiIcon::Expand
+                            } else {
+                                icons::UiIcon::Next
+                            },
+                            14,
+                        ))
+                    </button>
+                    (mime_icon)
+                    <a
+                        class="min-w-0 flex-1 text-left text-body-sm text-[var(--text)] truncate hover:text-[var(--accent)] transition-colors"
+                        href=(destination)
+                        download=(filename.clone())
+                        title=(format!("Download {filename}"))
+                    >
+                        (filename.clone())
+                    </a>
+                    <div class="hidden sm:block shrink-0">
+                        <div class="flex flex-wrap items-center gap-1">
+                            for chip in row_entity_chips {
+                                (chip)
+                            }
+                        </div>
+                    </div>
+                    <span
+                        class="text-caption text-[var(--text-faint)] tabular-nums w-16 text-right shrink-0"
+                    >
+                        (size)
+                    </span>
+                    <span
+                        class="hidden md:block text-caption text-[var(--text-muted)] w-24 truncate shrink-0"
+                    >
+                        (uploader)
+                    </span>
+                    <span
+                        class="text-caption text-[var(--text-faint)] w-16 text-right shrink-0"
+                    >
+                        (time)
+                    </span>
+                    if can_delete {
+                        <button
+                            type="button"
+                            class="size-6 flex items-center justify-center rounded shrink-0 text-[var(--text-faint)] hover:text-[var(--error)] hover:bg-[var(--bg-subtle)]"
+                            title=(format!("Delete {filename}"))
+                            :disabled=$(deleting_value)
+                            @click=$(move |_event: Event| confirming.set(
+                                    if is_confirming { None } else { Some(id) },
+                                ))
+                        >
+                            (icons::ui_icon(cx, icons::UiIcon::Delete, 14))
+                        </button>
+                    }
+                </div>
             </div>
-        </div>
         </div>
     }.boxed()
 }
@@ -1154,9 +1388,26 @@ fn entity_chips<'a>(
         match path {
             Some(path) => {
                 let attributes = super::super::navigation::attrs(cx, &path);
-                view! { cx => <a class="text-micro font-mono px-1.5 py-0.5 rounded bg-[var(--bg-subtle)] text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors" (attributes) title=(title)>(label)</a> }.boxed()
+                view! {
+                    cx =>
+                    <a
+                        class="text-micro font-mono px-1.5 py-0.5 rounded bg-[var(--bg-subtle)] text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors"
+                        (attributes)
+                        title=(title)
+                    >
+                        (label)
+                    </a>
+                }.boxed()
             }
-            None => view! { cx => <span class="text-micro font-mono px-1.5 py-0.5 rounded bg-[var(--bg-subtle)] text-[var(--text-muted)]" title=(title)>(label)</span> }.boxed(),
+            None => view! {
+                cx =>
+                <span
+                    class="text-micro font-mono px-1.5 py-0.5 rounded bg-[var(--bg-subtle)] text-[var(--text-muted)]"
+                    title=(title)
+                >
+                    (label)
+                </span>
+            }.boxed(),
         }
     }).collect()
 }
@@ -1226,29 +1477,64 @@ fn orphan_row<'a>(
         "data-topcoat-on:click",
         delete_handler.into_evaluated_and_js().1,
     );
-    let row = view! { cx =>
+    let row = view! {
+        cx =>
         <div class="flex items-center gap-3 py-2">
             (icons::ui_icon(cx, icons::UiIcon::Warning, 14))
-            <span class="min-w-0 flex-1 text-body-sm text-[var(--text-muted)] truncate">(filename.clone())</span>
-            <span class="text-caption text-[var(--text-faint)] tabular-nums w-16 text-right shrink-0">(format_bytes(size_bytes))</span>
-            <span class="hidden md:block text-caption text-[var(--text-muted)] w-24 truncate shrink-0">(uploader)</span>
-            <span class="text-caption w-40 text-right shrink-0 text-[var(--text-muted)]">(countdown)</span>
+            <span class="min-w-0 flex-1 text-body-sm text-[var(--text-muted)] truncate">
+                (filename.clone())
+            </span>
+            <span
+                class="text-caption text-[var(--text-faint)] tabular-nums w-16 text-right shrink-0"
+            >
+                (format_bytes(size_bytes))
+            </span>
+            <span
+                class="hidden md:block text-caption text-[var(--text-muted)] w-24 truncate shrink-0"
+            >
+                (uploader)
+            </span>
+            <span
+                class="text-caption w-40 text-right shrink-0 text-[var(--text-muted)]"
+            >
+                (countdown)
+            </span>
             if can_delete {
-                <button type="button" class="size-6 flex items-center justify-center rounded shrink-0 text-[var(--text-faint)] hover:text-[var(--error)]"
-                    title=(format!("Delete {filename} now")) :disabled=$(busy)
-                    @click=$(move |_event: Event| delete.set(if confirm { None } else { Some(id) }))>
+                <button
+                    type="button"
+                    class="size-6 flex items-center justify-center rounded shrink-0 text-[var(--text-faint)] hover:text-[var(--error)]"
+                    title=(format!("Delete {filename} now"))
+                    :disabled=$(busy)
+                    @click=$(move |_event: Event| delete.set(
+                            if confirm { None } else { Some(id) },
+                        ))
+                >
                     (icons::ui_icon(cx, icons::UiIcon::Delete, 14))
                 </button>
             }
         </div>
         if confirm {
-            <div class="flex flex-wrap items-center gap-2 py-2 pl-3 border-l-2 border-[var(--error)]">
-                <span class="text-caption text-[var(--text-muted)]">(model::delete_confirm_message(0))</span>
-                <button type="button" class="text-caption font-medium px-2 py-1 rounded-md text-[var(--error-text)] bg-[var(--error)]"
+            <div
+                class="flex flex-wrap items-center gap-2 py-2 pl-3 border-l-2 border-[var(--error)]"
+            >
+                <span class="text-caption text-[var(--text-muted)]">
+                    (model::delete_confirm_message(0))
+                </span>
+                <button
+                    type="button"
+                    class="text-caption font-medium px-2 py-1 rounded-md text-[var(--error-text)] bg-[var(--error)]"
                     :disabled=$(busy)
-                    (delete_handler_attrs)>$(if busy { "Deleting…" } else { "Delete" })</button>
-                <button type="button" class="text-caption text-[var(--text-muted)] px-2 py-1 rounded-md"
-                    @click=$(move |_event: Event| confirming.set(None))>"Cancel"</button>
+                    (delete_handler_attrs)
+                >
+                    $(if busy { "Deleting…" } else { "Delete" })
+                </button>
+                <button
+                    type="button"
+                    class="text-caption text-[var(--text-muted)] px-2 py-1 rounded-md"
+                    @click=$(move |_event: Event| confirming.set(None))
+                >
+                    "Cancel"
+                </button>
             </div>
         }
     };
@@ -1307,16 +1593,28 @@ fn error_state<'a>(
     let completed_generation = request_generation.clone();
     let completed_timeout = request_timeout.clone();
     let completed_error = load_error.clone();
-    view! { cx =>
-        <div class="flex flex-col items-center py-14 gap-3 text-center" data-native-files-error="">
-            <span hidden="hidden" data-native-files-complete=""
+    view! {
+        cx =>
+        <div
+            class="flex flex-col items-center py-14 gap-3 text-center"
+            data-native-files-error=""
+        >
+            <span
+                hidden="hidden"
+                data-native-files-complete=""
                 @mount=$(|_event: Event| {
                     if completed_generation.get() == expected_generation {
                         let timeout_id = completed_timeout.get();
                         raw!("clearTimeout(Number(${timeout_id}.toString()));", ());
-                        if timeout_id != 0.0 { completed_timeout.set(0.0); }
-                        if completed_loading_more.get() { completed_loading_more.set(false); }
-                        if completed_refreshing.get() { completed_refreshing.set(false); }
+                        if timeout_id != 0.0 {
+                            completed_timeout.set(0.0);
+                        }
+                        if completed_loading_more.get() {
+                            completed_loading_more.set(false);
+                        }
+                        if completed_refreshing.get() {
+                            completed_refreshing.set(false);
+                        }
                         completed_error.set("Couldn't load files. Try again.".to_owned());
                         if completed_pending.get() {
                             completed_pending.set(false);
@@ -1329,11 +1627,16 @@ fn error_state<'a>(
                                 let _timeout = || {
                                     if completed_generation.get() == generation {
                                         completed_refreshing.set(false);
-                                        completed_error.set("Couldn't refresh files. Try again.".to_owned());
+                                        completed_error.set(
+                                            "Couldn't refresh files. Try again.".to_owned(),
+                                        );
                                         completed_expiry_timeout.set(0.0);
                                     }
                                 };
-                                let timer = raw!("cx.hydrate(setTimeout(()=>${_timeout}(),10000))", 0.0);
+                                let timer = raw!(
+                                    "cx.hydrate(setTimeout(()=>${_timeout}(),10000))",
+                                    0.0,
+                                );
                                 completed_timeout.set(timer);
                             }
                         }
@@ -1341,7 +1644,9 @@ fn error_state<'a>(
                 })
             ></span>
             <p class="text-body-sm text-[var(--text-muted)]">(label)</p>
-            <button type="button" class="text-body-sm font-medium text-[var(--btn-success-text)] bg-[var(--btn-success)] px-3 py-1.5 rounded-md hover:bg-[var(--btn-success-hover)]"
+            <button
+                type="button"
+                class="text-body-sm font-medium text-[var(--btn-success-text)] bg-[var(--btn-success)] px-3 py-1.5 rounded-md hover:bg-[var(--btn-success-hover)]"
                 @click=$(move |_event: Event| {
                     if !loading_more.get() {
                         if !refreshing.get() {
@@ -1355,15 +1660,23 @@ fn error_state<'a>(
                             let _timeout = || {
                                 if request_generation.get() == generation {
                                     refreshing.set(false);
-                                    load_error.set("Couldn't refresh files. Try again.".to_owned());
+                                    load_error.set(
+                                        "Couldn't refresh files. Try again.".to_owned(),
+                                    );
                                     retry_expiry_timeout.set(0.0);
                                 }
                             };
-                            let timer = raw!("cx.hydrate(setTimeout(()=>${_timeout}(),10000))", 0.0);
+                            let timer = raw!(
+                                "cx.hydrate(setTimeout(()=>${_timeout}(),10000))",
+                                0.0,
+                            );
                             request_timeout.set(timer);
                         }
                     }
-                })>"Try again"</button>
+                })
+            >
+                "Try again"
+            </button>
         </div>
     }.boxed()
 }
@@ -1458,45 +1771,70 @@ fn live_refresh(
     live! {
         cx =>
         let token = emit! { <span hidden="hidden" data-native-files-live=""></span> }?;
-        if !connected { return Ok(token); }
+        if !connected {
+            return Ok(token);
+        }
         loop {
             let relevant = match events.recv().await {
-                Ok(message) => matches!(message.event, crate::realtime::RealtimeEvent::ResyncRequired)
+                Ok(message) => matches!(
+                        message.event,
+                        crate::realtime::RealtimeEvent::ResyncRequired,
+                    )
                     || message.event.project_id() == Some(project),
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => true,
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return Ok(token),
             };
             if relevant {
-                let caller = super::super::session::read_for_refresh(&context, super::super::context::caller(&context))?;
-                let user = super::super::session::read_for_refresh(&context, crate::api::require_user(&caller.identity))?;
-                if user.id != account { return Err(topcoat::router::error::forbidden().into()); }
+                let caller = super::super::session::read_for_refresh(
+                    &context,
+                    super::super::context::caller(&context),
+                )?;
+                let user = super::super::session::read_for_refresh(
+                    &context,
+                    crate::api::require_user(&caller.identity),
+                )?;
+                if user.id != account {
+                    return Err(topcoat::router::error::forbidden().into());
+                }
                 let _changed = emit! {
-                    <span hidden="hidden" @mount=$(|_event: Event| {
-                        if !deleting.get() {
-                            if loading_more.get() {
-                                if !refresh_pending.get() { refresh_pending.set(true); }
-                            } else {
-                                if refreshing.get() {
-                                    if !refresh_pending.get() { refresh_pending.set(true); }
+                    <span
+                        hidden="hidden"
+                        @mount=$(|_event: Event| {
+                            if !deleting.get() {
+                                if loading_more.get() {
+                                    if !refresh_pending.get() {
+                                        refresh_pending.set(true);
+                                    }
                                 } else {
-                                    refreshing.set(true);
-                                    offset.set(0_i64);
-                                    revision.increment();
-                                    request_generation.increment();
-                                    let generation = request_generation.get();
-                                    let _timeout = || {
-                                        if request_generation.get() == generation {
-                                            refreshing.set(false);
-                                            load_error.set("Couldn't refresh files. Try again.".to_owned());
-                                            expiry_timeout.set(0.0);
+                                    if refreshing.get() {
+                                        if !refresh_pending.get() {
+                                            refresh_pending.set(true);
                                         }
-                                    };
-                                    let timer = raw!("cx.hydrate(setTimeout(()=>${_timeout}(),10000))", 0.0);
-                                    request_timeout.set(timer);
+                                    } else {
+                                        refreshing.set(true);
+                                        offset.set(0_i64);
+                                        revision.increment();
+                                        request_generation.increment();
+                                        let generation = request_generation.get();
+                                        let _timeout = || {
+                                            if request_generation.get() == generation {
+                                                refreshing.set(false);
+                                                load_error.set(
+                                                    "Couldn't refresh files. Try again.".to_owned(),
+                                                );
+                                                expiry_timeout.set(0.0);
+                                            }
+                                        };
+                                        let timer = raw!(
+                                            "cx.hydrate(setTimeout(()=>${_timeout}(),10000))",
+                                            0.0,
+                                        );
+                                        request_timeout.set(timer);
+                                    }
                                 }
                             }
-                        }
-                    })></span>
+                        })
+                    ></span>
                 }?;
             }
         }
