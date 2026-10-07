@@ -24,6 +24,8 @@ pub(crate) enum NativeRoute {
     Plans,
     IssueCreate,
     Modules,
+    Files,
+    Graph,
 }
 
 #[cfg(test)]
@@ -31,10 +33,16 @@ mod route_tests {
     use super::*;
 
     #[test]
-    fn files_and_graph_routes_remain_excluded_until_native_views_are_ready() {
-        for path in ["/ACC/files", "/ACC/graph"] {
+    fn files_and_graph_routes_admit_private_pages_and_exclude_public_pages() {
+        for path in [
+            "/ACC/files",
+            "/ACC/files?mime=image",
+            "/ACC/graph",
+            "/ACC/graph?source=production-contract",
+        ] {
+            let route = ParsedRoute::parse(path);
             assert!(
-                native_route(&ParsedRoute::parse(path), false).is_none(),
+                native_route(&route, !route.query.is_empty()).is_some(),
                 "{path}"
             );
         }
@@ -99,6 +107,8 @@ pub(crate) fn native_route(route: &ParsedRoute<'_>, has_query: bool) -> Option<N
         (Layout::Private, Some(_), Page::Overview) => Some(NativeRoute::ProjectOverview),
         (Layout::Private, Some(_), Page::Insights) => Some(NativeRoute::Insights),
         (Layout::Private, Some(_), Page::Activity) => Some(NativeRoute::Activity),
+        (Layout::Private, Some(_), Page::Files) => Some(NativeRoute::Files),
+        (Layout::Private, Some(_), Page::Graph) => Some(NativeRoute::Graph),
         (Layout::Private, Some(_), Page::Pages | Page::Record(_)) => Some(NativeRoute::Pages),
         (Layout::Private, Some(_), Page::Plans | Page::PlanDetail(_)) => Some(NativeRoute::Plans),
         (Layout::Private, Some(_), Page::IssueNew) => Some(NativeRoute::IssueCreate),
@@ -129,7 +139,9 @@ pub(crate) fn common_screen<'a>(
             | NativeRoute::Pages
             | NativeRoute::Plans
             | NativeRoute::IssueCreate
-            | NativeRoute::Modules,
+            | NativeRoute::Modules
+            | NativeRoute::Files
+            | NativeRoute::Graph,
         ) => {
             let caller = session::read(cx, context::caller(cx))?;
             let user = session::read(cx, crate::api::require_user(&caller.identity))?;
@@ -206,6 +218,8 @@ async fn native_common_page(
         Some(NativeRoute::Plans) => super::plans::region(cx, &route, account, &caller),
         Some(NativeRoute::IssueCreate) => super::issue_create::region(cx, &route, account, &caller),
         Some(NativeRoute::Modules) => super::modules::region(cx, &route, account, &caller),
+        Some(NativeRoute::Files) => super::files::region(cx, &route, account, &caller),
+        Some(NativeRoute::Graph) => super::dependency_graph::region(cx, &route, account, &caller),
         _ => Err(topcoat::router::error::not_found().into()),
     }
 }
@@ -351,7 +365,10 @@ pub(crate) async fn native_navigation_authorized(
             {
                 return Ok("denied".into());
             }
-            if matches!(page, Page::IssueNew | Page::Modules | Page::ModuleDetail(_)) {
+            if matches!(
+                page,
+                Page::IssueNew | Page::Modules | Page::ModuleDetail(_) | Page::Files | Page::Graph
+            ) {
                 let expected =
                     serde_json::from_str::<super::project_authority::Snapshot>(&expected_authority);
                 let fresh = super::project_authority::load(db, &caller.identity, project_id);
@@ -386,7 +403,9 @@ pub(crate) async fn native_navigation_authorized(
                 | Page::Pages
                 | Page::Plans
                 | Page::Activity
-                | Page::Insights => true,
+                | Page::Insights
+                | Page::Files
+                | Page::Graph => true,
                 Page::IssueNew | Page::Modules => true,
                 _ => false,
             };

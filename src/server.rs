@@ -160,6 +160,10 @@ mod topcoat_app {
             Some(NativeRoute::Modules) => {
                 super::topcoat_frontend::native::modules::screen(cx, &route)
             }
+            Some(NativeRoute::Files) => super::topcoat_frontend::native::files::screen(cx, &route),
+            Some(NativeRoute::Graph) => {
+                super::topcoat_frontend::native::dependency_graph::screen(cx, &route)
+            }
             None => Err(topcoat::router::error::not_found().into()),
         }
     }
@@ -446,8 +450,6 @@ mod topcoat_app_tests {
             "/projects/import",
             "/LIF/issues?status=started",
             "/LIF/board?assignee=me",
-            "/LIF/files",
-            "/LIF/graph",
             "/public/LIF/issues",
         ] {
             let response = router
