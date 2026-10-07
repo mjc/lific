@@ -129,28 +129,26 @@ test(`native Home original shell: ${scenario}`, async t => {
             await page.waitForFunction(selector=>{
               const icon=document.querySelector(selector);
               return icon && icon.getBBox().width>0 && icon.getBBox().height>0
-                && getComputedStyle(icon).maskImage.includes('data:image/svg+xml,');
+                && getComputedStyle(icon).stroke !== 'none';
             },mode==='desktop'?'#native-home-collapse svg.native-icon[data-icon]':'#native-home-mobile-open svg.native-icon[data-icon]');
             if (mode === 'desktop') {
               await page.waitForFunction(() => ['.ns-project-toggle', '.ns-overflow'].every(selector => {
                 const control = document.querySelector(`.native-home-sidebar ${selector}`);
-                if (!control) return false;
-                const style = getComputedStyle(control, '::before');
-                return parseFloat(style.width) > 0 && parseFloat(style.height) > 0 && style.maskSize === 'contain'
-                  && style.backgroundColor === style.color
-                  && style.maskImage.includes('data:image/svg+xml,');
+                const icon = control?.querySelector(':scope > svg.native-icon[data-icon]');
+                return icon && icon.getBBox().width > 0 && icon.getBBox().height > 0;
               }));
               for (const [selector, name, size] of [['.ns-project-toggle', 'ChevronRight', 13], ['.ns-overflow', 'Ellipsis', 15]]) {
                 const control = page.locator(`.native-home-sidebar ${selector}`).first();
-                const paint = await control.evaluate(inspectSvg, '::before');
+                const icon = control.locator(':scope > svg.native-icon');
+                const paint = await icon.evaluate(inspectSvg);
                 assert.equal(paint.width, size);
                 assert.equal(paint.height, size);
                 assert.equal(paint.viewBox, '0 0 24 24');
                 const shape = name === 'ChevronRight'
                   ? [{tag: 'path', attributes: {d: 'm9 18 6-6-6-6'}}]
                   : [12, 19, 5].map(cx => ({tag: 'circle', attributes: {cx: `${cx}`, cy: '12', r: '1'}}));
-                assert.deepEqual(paint.shape, shape, `${name} pseudo-element paints its original geometry.`);
-                assert.equal(await control.locator(':scope > :is(svg,.native-icon-mask)').count(), 0);
+                assert.deepEqual(paint.shape, shape, `${name} renders its original inline geometry.`);
+                assert.equal(await control.locator(':scope > svg.native-icon').count(), 1);
               }
             }
             assert.deepEqual(proxy.requests.filter(request => request.path.includes('/__native_icons/')), [],
@@ -189,9 +187,10 @@ test(`native Home original shell: ${scenario}`, async t => {
               await page.keyboard.press('Enter');
               assert.equal(await project.getByRole('button', {name: 'Collapse Visible project', exact: true}).getAttribute('aria-expanded'), 'true');
               await page.waitForFunction(() => {
-                const icon = document.querySelector('.ns-project-toggle[aria-expanded=true]');
+                const control = document.querySelector('.ns-project-toggle[aria-expanded=true]');
+                const icon = control?.querySelector(':scope > svg.native-icon');
                 if (!icon) return false;
-                const rotation = new DOMMatrix(getComputedStyle(icon, '::before').transform);
+                const rotation = new DOMMatrix(getComputedStyle(icon).transform);
                 return Math.abs(rotation.a) < .01 && rotation.b > .99;
               }, undefined, {timeout: 5000});
               const links = page.locator(`#${controlled}`).getByRole('link');

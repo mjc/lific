@@ -3,6 +3,9 @@ Frozen master project icon data
 Authority: master 9683d38af8e1e6f9b076439fe90d9519109b2218, web/src/lib/projectIcons.ts.
 project-icons.json preserves the Lucide 1.7.0 icon nodes frozen in
 src/topcoat/shell/assets/project-icons.js, including original exported aliases.
+project-icons.inline.json is regenerated from that approved geometry by
+scripts/optimize-native-icons.mjs with SVGO 4; shape nodes and attributes are
+preserved. The app embeds only the generated inline map.
 emoji.json preserves that same frozen unicode-emoji-json 0.8.0 approved key set.
 The key set was checked against the original installed data-by-emoji.json.
 Only lookup keys/nodes are retained; package code is not included.

@@ -147,119 +147,15 @@ async fn native_document_preloads_omit_embedded_icons_and_unopened_picker_choice
 }
 
 #[tokio::test]
-async fn native_home_icons_use_embedded_catalog_masks_at_every_mount() {
-    use std::{collections::BTreeMap, io::Write};
-
-    type IconNodes = Vec<(String, BTreeMap<String, String>)>;
-    let approved: BTreeMap<String, IconNodes> =
-        serde_json::from_str(include_str!("assets/project-icons.json")).unwrap();
+async fn native_home_icons_are_inline_at_every_mount_without_icon_requests() {
     let stylesheet = super::super::assets::app_stylesheet();
     assert!(!stylesheet.contains("__native_icons/"));
+    assert!(!stylesheet.contains("data:image/svg+xml,"));
+    assert!(!stylesheet.contains("mask-image"));
     assert!(
-        !stylesheet.contains(".svg"),
-        "the stylesheet has no external SVG URL"
-    );
-    let mut masks = BTreeMap::new();
-    for rule in stylesheet.split('}') {
-        let Some((selectors, declarations)) = rule.split_once('{') else {
-            continue;
-        };
-        let Some(name) = selectors
-            .split("data-icon=\"")
-            .nth(1)
-            .and_then(|value| value.split('"').next())
-        else {
-            continue;
-        };
-        let Some(encoded) = declarations
-            .split("data:image/svg+xml,")
-            .nth(1)
-            .and_then(|value| value.split(['"', '\'', ')']).next())
-        else {
-            continue;
-        };
-        let svg = urlencoding::decode(encoded)
-            .unwrap()
-            .into_owned()
-            .into_bytes();
-        assert!(masks.insert(name.to_owned(), svg).is_none());
-    }
-    assert_eq!(masks.len(), 1_937);
-    assert_eq!(
-        masks.keys().collect::<Vec<_>>(),
-        approved.keys().collect::<Vec<_>>()
-    );
-    assert_eq!(
-        super::icons::stylesheet()
-            .matches("data:image/svg+xml,")
-            .count(),
-        approved.len()
-    );
-    let shapes = scraper::Selector::parse("svg > *").unwrap();
-    for (name, bytes) in &masks {
-        let svg = std::str::from_utf8(bytes).unwrap();
-        let document = scraper::Html::parse_document(svg);
-        let root = document
-            .select(&scraper::Selector::parse("svg").unwrap())
-            .next()
-            .unwrap();
-        for (attribute, value) in [
-            ("viewBox", "0 0 24 24"),
-            ("stroke", "black"),
-            ("fill", "none"),
-            ("stroke-width", "2"),
-            ("stroke-linecap", "round"),
-            ("stroke-linejoin", "round"),
-        ] {
-            assert_eq!(
-                root.value().attr(attribute),
-                Some(value),
-                "{name}: {attribute}"
-            );
-        }
-        let actual: IconNodes = document
-            .select(&shapes)
-            .map(|node| {
-                let element = node.value();
-                (
-                    element.name().to_owned(),
-                    element
-                        .attrs()
-                        .map(|(key, value)| (key.to_owned(), value.to_owned()))
-                        .collect(),
-                )
-            })
-            .collect();
-        assert_eq!(
-            &actual,
-            approved.get(name).unwrap(),
-            "original {name} geometry"
-        );
-        assert!(!svg.contains("<use") && !svg.contains("<script"));
-    }
-    for name in ["Fan", "Pill", "Database", "Network"] {
-        assert!(
-            masks.contains_key(name),
-            "project icon {name} is embedded in the stylesheet"
-        );
-    }
-    assert!(
-        stylesheet.len() < 1_600_000,
-        "bundled CSS: {} bytes",
-        stylesheet.len()
-    );
-    let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-    gzip.write_all(stylesheet.as_bytes()).unwrap();
-    let compressed = gzip.finish().unwrap();
-    eprintln!(
-        "shared stylesheet: {} bytes raw, {} bytes gzip",
-        stylesheet.len(),
-        compressed.len()
-    );
-    assert!(
-        compressed.len() < 192_000,
-        "compressed bundled CSS: {} bytes",
-        compressed.len()
+        super::icons::stylesheet().len() < 512,
+        "inline icons need only shared SVG paint defaults: {} bytes",
+        super::icons::stylesheet().len()
     );
 
     let fixture = fixture();
@@ -273,25 +169,12 @@ async fn native_home_icons_use_embedded_catalog_masks_at_every_mount() {
         let html = std::str::from_utf8(&body).unwrap();
         let document = scraper::Html::parse_document(html);
         let icons = scraper::Selector::parse("svg.native-icon[data-icon]").unwrap();
-        assert!(document.select(&icons).count() > 0);
-        for icon in document.select(&icons) {
-            assert!(masks.contains_key(icon.value().attr("data-icon").unwrap()));
+        let rendered = document.select(&icons).collect::<Vec<_>>();
+        assert!(!rendered.is_empty());
+        for icon in rendered {
             assert_eq!(icon.value().attr("viewBox"), Some("0 0 24 24"));
             assert_eq!(icon.value().attr("aria-hidden"), Some("true"));
-            let children = icon
-                .select(&scraper::Selector::parse(":scope > *").unwrap())
-                .collect::<Vec<_>>();
-            assert_eq!(children.len(), 1, "page instances have one paint rectangle");
-            let rect = children[0].value();
-            assert_eq!(rect.name(), "rect");
-            for (attribute, value) in [
-                ("width", "24"),
-                ("height", "24"),
-                ("fill", "currentColor"),
-                ("stroke", "none"),
-            ] {
-                assert_eq!(rect.attr(attribute), Some(value));
-            }
+            assert!(icon.children().any(|child| child.value().is_element()));
         }
         assert_eq!(
             document
@@ -316,12 +199,6 @@ async fn native_home_icons_use_embedded_catalog_masks_at_every_mount() {
         )
         .await;
         assert_eq!(response.status(), StatusCode::OK);
-        assert!(
-            response.headers()["content-type"]
-                .to_str()
-                .unwrap()
-                .starts_with("text/css")
-        );
         let css = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();

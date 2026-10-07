@@ -64,7 +64,7 @@ test(`production native Home ${scenario}`, async t => {
             assert.ok(await icons.count() > 0);
             await page.waitForFunction(name => {
               const icon = document.querySelector(`svg.native-icon[data-icon="${name}"]`);
-              return icon && getComputedStyle(icon).maskImage.startsWith('url("data:image/svg+xml,');
+              return icon && icon.children.length > 0 && getComputedStyle(icon).stroke !== 'none';
             }, name);
             const paint = await icons.first().evaluate(inspectSvg);
             assert.ok(paint.width > 0 && paint.height > 0);

@@ -123,9 +123,9 @@ static EMOJIS: LazyLock<Vec<EmojiOption>> = LazyLock::new(|| {
         .expect("pinned emoji picker metadata is valid")
 });
 static ICON_NAMES: LazyLock<Vec<String>> = LazyLock::new(|| {
-    let data: BTreeMap<String, serde_json::Value> =
-        serde_json::from_str(include_str!("../assets/project-icons.json"))
-            .expect("pinned Lucide picker metadata is valid");
+    let data: BTreeMap<String, String> =
+        serde_json::from_str(include_str!("../assets/project-icons.inline.json"))
+            .expect("SVGO-optimized project icon names and bodies are valid");
     data.into_keys().collect()
 });
 
