@@ -89,13 +89,11 @@ async fn native_plan_detail_body(
         );
     }
     let owner = cx.keyed(format!("native-plan-owner-{account}-{plan_id}"));
-    Ok(
-        view! {
-            owner =>
-            plan_detail_owner(account: account, project: project, plan: plan)
-        }
-            .boxed(),
-    )
+    Ok(view! {
+        owner =>
+        plan_detail_owner(account: account, project: project, plan: plan)
+    }
+    .boxed())
 }
 
 #[component]
@@ -484,7 +482,8 @@ fn step_node<'a>(
             busy: editor.busy,
             message: editor.message
         )
-    }.boxed()
+    }
+    .boxed()
 }
 
 #[component]
@@ -1281,7 +1280,8 @@ fn action_button<'a>(
         >
             (label)
         </button>
-    }.boxed()
+    }
+    .boxed()
 }
 
 #[procedure("/__native_plans/mutate")]
