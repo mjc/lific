@@ -5,7 +5,7 @@ use topcoat::{
     view::{BoxView, ViewExt, view},
 };
 
-use super::{context, icons, session, transport::mounted_url};
+use super::{context, icons, navigation, session};
 use crate::{
     db::{models::ListIssuesQuery, queries},
     services,
@@ -24,15 +24,16 @@ pub(crate) fn content<'a>(
     let rows = issues
         .into_iter()
         .map(|issue| {
-            let href = mounted_url(
-                cx,
-                &format!("/{}/issues/{}", project.identifier, issue.identifier),
-            );
+            let href = format!("/{}/issues/{}", project.identifier, issue.identifier);
             (issue, href)
         })
         .collect::<Vec<_>>();
-    let content = view! { cx =>
-        <div data-native-issue-list=(project.identifier.clone()) class="native-issue-list">
+    let content = view! {
+        cx =>
+        <div
+            data-native-issue-list=(project.identifier.clone())
+            class="native-issue-list"
+        >
             <div class="native-issue-list__content">
                 <h1>"Issues"</h1>
                 if rows.is_empty() {
@@ -41,9 +42,14 @@ pub(crate) fn content<'a>(
                     <ul class="native-issue-list__rows" aria-label="Issues">
                         for (issue, href) in rows {
                             <li data-native-issue-row=(issue.id.to_string())>
-                                <a class="native-issue-list__row" href=(href)>
+                                <a
+                                    class="native-issue-list__row"
+                                    (navigation::attrs(cx, &href))
+                                >
                                     (icons::status_icon(cx, issue.status, 16))
-                                    <span class="native-issue-list__identifier">(issue.identifier)</span>
+                                    <span class="native-issue-list__identifier">
+                                        (issue.identifier)
+                                    </span>
                                     <span class="native-issue-list__title">(issue.title)</span>
                                     (icons::priority_icon(cx, issue.priority, 21))
                                 </a>
@@ -53,7 +59,8 @@ pub(crate) fn content<'a>(
                 }
             </div>
         </div>
-    }.boxed();
+    }
+    .boxed();
     Ok(super::home_shell::page_region(
         cx,
         content,

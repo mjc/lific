@@ -3,6 +3,10 @@
 use std::sync::OnceLock;
 
 use sha2::{Digest, Sha256};
+use topcoat::{
+    context::Cx,
+    view::{BoxView, ViewExt, view},
+};
 
 pub(crate) const RUNTIME: &str = include_str!("assets/runtime.js");
 
@@ -10,9 +14,8 @@ pub(crate) fn runtime_source() -> &'static str {
     static SOURCE: OnceLock<String> = OnceLock::new();
     SOURCE.get_or_init(|| {
         let handlers = [
-            (super::native::home_shell::handler_url(), "mount as native0,homeRefresh as nativeHomeRefresh,mobileDispatch as nativeMobileDispatch,accountFocus as nativeAccountFocus,sessionStorage as nativeSessionStorage,motion as nativeMotion"),
-            (super::native::workspace::navigation_handler_url(), "mount as native1"),
-            (super::native::project_sidebar::handler_url(), "mount as native2,recentsRefresh as nativeRecentsRefresh"),
+            (super::native::home_shell::handler_url(), "mount as native0,homeRefresh as nativeHomeRefresh,mobileDispatch as nativeMobileDispatch,accountFocus as nativeAccountFocus,sessionStorage as nativeSessionStorage,motion as nativeMotion,navigationAuthority as nativeNavigationAuthority"),
+            (super::native::project_sidebar::handler_url(), "mount as native1,recentsRefresh as nativeRecentsRefresh"),
         ];
         let mut source = String::new();
         let mut bindings = Vec::new();
@@ -28,6 +31,7 @@ pub(crate) fn runtime_source() -> &'static str {
             (format!("{}#account-focus", super::native::home_shell::handler_url()), "nativeAccountFocus"),
             (format!("{}#session-storage", super::native::home_shell::handler_url()), "nativeSessionStorage"),
             (format!("{}#motion", super::native::home_shell::handler_url()), "nativeMotion"),
+            (format!("{}#navigation-authority", super::native::home_shell::handler_url()), "nativeNavigationAuthority"),
             (format!("{}#recents-refresh", super::native::project_sidebar::handler_url()), "nativeRecentsRefresh"),
         ] {
             let key = serde_json::to_string(&key).expect("static handler URL");
@@ -99,4 +103,12 @@ pub(crate) fn app_stylesheet_url() -> &'static str {
 pub(crate) fn runtime_url() -> &'static str {
     static URL: OnceLock<String> = OnceLock::new();
     URL.get_or_init(|| fingerprinted_url("/__topcoat-runtime.js", runtime_source()))
+}
+
+pub(crate) fn runtime_script(cx: &Cx) -> BoxView<'_> {
+    let src = super::native::transport::mounted_url(cx, runtime_url());
+    view! { cx =>
+        <script type="module" src=(src) data-topcoat-usize-bits=(usize::BITS)></script>
+    }
+    .boxed()
 }

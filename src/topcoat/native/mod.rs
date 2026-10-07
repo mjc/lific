@@ -86,9 +86,13 @@ pub(crate) mod project_activity;
 pub(crate) mod project_sidebar;
 
 mod motion;
+pub(crate) mod navigation;
 
 #[cfg(test)]
 mod common_owner_production;
 
 #[cfg(test)]
 mod knowledge_production;
+
+#[cfg(test)]
+mod navigation_authority_tests;

@@ -86,7 +86,6 @@ async fn deploy() -> Fixture {
         probe::router_builder()
             .route(topcoat_app::runtime_script)
             .route(topcoat_app::home_shell_handler)
-            .route(topcoat_app::workspace_handler)
             .route(topcoat_app::sidebar_handler)
             .runtime()
             .layer(super::super::runtime::SocketLayer)

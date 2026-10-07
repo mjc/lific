@@ -254,7 +254,7 @@ pub(super) fn attempt(
                         result.0 == "resume"
                     } {
                         let _destination = result.1;
-                        raw!("window.location.assign(${_destination}.toString());", ());
+                        raw!("cx.navigate(${_destination}.toString());", ());
                     } else if result.0 == "reauth" {
                         open.set(true);
                         pending_kind.set(kind.clone());
@@ -362,7 +362,7 @@ pub(super) fn prompt<'a>(
                         result.0 == "resume"
                     } {
                         let _destination = result.1;
-                        raw!("window.location.assign(${_destination}.toString());", ());
+                        raw!("cx.navigate(${_destination}.toString());", ());
                     } else {
                         error.set(result.1);
                     }
@@ -380,5 +380,75 @@ pub(super) fn prompt<'a>(
     confirmation_keys.insert(cx, "data-topcoat-on:keydown", confirm.clone());
     let mut confirmation_click = Attributes::with_capacity(1);
     confirmation_click.insert(cx, "data-topcoat-on:click", confirm);
-    view!{cx=><div class="native-overview__grant" :hidden=$(!open.get())><p>if lead{"Verify it's you to make that person the project lead. It grants them lead access to this project, and you have been signed in for a while."}else{if kind.get()=="member_add"{"Verify it's you to add this person as "$(role.get())"."}else{"Verify it's you to make "<span class="native-overview__grant-target">$(label.get())</span>" a "$(role.get())"."}" It grants them access to this project, and you have been signed in for a while."}</p><p role="status" :hidden=$(note.get().is_empty())>"Signing you in automatically did not work ("$(note.get())")."</p><p role="alert" :hidden=$(error.get().is_empty())>$(error.get())</p><div><label><span class="sr-only">"Your current password"</span><input type="password" autocomplete="current-password" placeholder="your current password" :disabled=$(busy.get()) :value=$(password.get()) @input=$(|event:Event|password.set(event.target.value)) (confirmation_keys) /></label><button type="button" class="native-overview__success" :disabled=$(if busy.get(){true}else{password.get().is_empty()}) (confirmation_click)>$(if busy.get(){"Verifying…"}else{"Confirm and continue"})</button><button type="button" :disabled=$(busy.get()) @click=$(|_event:Event|{open.set(false);locked.set(false);password.set("".to_owned());error.set("".to_owned());note.set("".to_owned());revision.increment();})>"Cancel"</button></div></div>}.boxed()
+    view!{
+        cx =>
+        <div class="native-overview__grant" :hidden=$(!open.get())>
+            <p>
+                if lead {
+                    "Verify it's you to make that person the project lead. It grants them lead access to this project, and you have been signed in for a while."
+                } else {
+                    if kind.get() == "member_add" {
+                        "Verify it's you to add this person as "
+                        $(role.get())
+                        "."
+                    } else {
+                        "Verify it's you to make "
+                        <span class="native-overview__grant-target">
+                            $(label.get())
+                        </span>
+                        " a "
+                        $(role.get())
+                        "."
+                    }
+                    " It grants them access to this project, and you have been signed in for a while."
+                }
+            </p>
+            <p role="status" :hidden=$(note.get().is_empty())>
+                "Signing you in automatically did not work ("
+                $(note.get())
+                ")."
+            </p>
+            <p role="alert" :hidden=$(error.get().is_empty())>$(error.get())</p>
+            <div>
+                <label>
+                    <span class="sr-only">"Your current password"</span>
+                    <input
+                        type="password"
+                        autocomplete="current-password"
+                        placeholder="your current password"
+                        :disabled=$(busy.get())
+                        :value=$(password.get())
+                        @input=$(|event: Event| password.set(event.target.value))
+                        (confirmation_keys)
+                    />
+                </label>
+                <button
+                    type="button"
+                    class="native-overview__success"
+                    :disabled=$(if busy.get() {
+                        true
+                    } else {
+                        password.get().is_empty()
+                    })
+                    (confirmation_click)
+                >
+                    $(if busy.get() { "Verifying…" } else { "Confirm and continue" })
+                </button>
+                <button
+                    type="button"
+                    :disabled=$(busy.get())
+                    @click=$(|_event: Event| {
+                        open.set(false);
+                        locked.set(false);
+                        password.set("".to_owned());
+                        error.set("".to_owned());
+                        note.set("".to_owned());
+                        revision.increment();
+                    })
+                >
+                    "Cancel"
+                </button>
+            </div>
+        </div>
+    }.boxed()
 }

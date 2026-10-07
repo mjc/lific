@@ -67,34 +67,219 @@ pub(super) fn panel<'a>(
     let prompt =
         management_controls::prompt(cx, &pending, account, project, lead_revision.clone(), true);
     let shard_lead_error = lead_error.clone();
-    let lead_shard=view!{cx=>native_overview_danger_lead(account:account,project:project,revision:$(lead_revision.get()),owner_revision:lead_revision.clone(),owner_error:shard_lead_error,grant_state:(locked,busy,pending_open,pending.kind_for_rows(),pending.user_for_rows(),pending.role_for_rows(),pending.previous_for_rows(),pending.label_for_rows(),pending.automatic_note.clone(),pending.error.clone()))}.boxed();
+    let lead_shard = view! {
+        cx =>
+        native_overview_danger_lead(
+            account: account,
+            project: project,
+            revision: $(lead_revision.get()),
+            owner_revision: lead_revision.clone(),
+            owner_error: shard_lead_error,
+            grant_state: (
+                locked,
+                busy,
+                pending_open,
+                pending.kind_for_rows(),
+                pending.user_for_rows(),
+                pending.role_for_rows(),
+                pending.previous_for_rows(),
+                pending.label_for_rows(),
+                pending.automatic_note.clone(),
+                pending.error.clone(),
+            )
+        )
+    }
+    .boxed();
     let failed_renaming = renaming.clone();
     let failed_rename_error = rename_error.clone();
     let failed_deleting = deleting.clone();
     let failed_delete_error = delete_error.clone();
-    view!{cx=><section class="native-overview__danger"><button type="button" class="native-overview__danger-toggle" :aria-expanded=$(expanded.get()) @click=$(|_event:Event|expanded.set(!expanded.get()))>(icons::ui_icon(cx,UiIcon::Warning,15))<span>"Danger zone"</span><span class="native-overview__danger-chevron" :data-open=$(expanded.get())>(icons::ui_icon(cx,UiIcon::Expand,15))</span></button>
-        <div class="native-overview__danger-body" :hidden=$(!expanded.get())>
-            (lead_shard)(prompt)<p role="alert" :hidden=$(lead_error.get().is_empty())>$(lead_error.get())</p>
-            <div class="native-overview__danger-divider"></div>
-            <div><h3>"Change identifier"</h3><p>"Re-keys every issue, page, and plan. Existing references to "<code>(format!("{identifier}-NNN"))</code>" written inside other issues/pages will no longer resolve. This cannot be undone automatically."</p>
-                <div class="native-overview__danger-actions"><input class="native-overview__rekey-input" aria-label="New project identifier" placeholder=(identifier.clone()) :value=$(rename.get()) @input=$(|event:Event|rename.set(event.target.value)) /><button type="button" class="native-overview__destructive" :disabled=$(if renaming.get(){true}else if rename.get().trim().is_empty(){true}else{rename.get().trim().to_uppercase()==identifier}) @click=$(|_event:Event|{
-                    if !renaming.get(){renaming.set(true);rename_error.set("".to_owned());let value=rename.get();
-                        let _failed=||{failed_renaming.set(false);failed_rename_error.set("Rename did not complete. Try again.".to_owned());};
-                        let _rename=async ||{let result=save_field(account,project,"identifier".to_owned(),value).await;renaming.set(false);if result.0.is_ok(){let _changed=result.4;raw!("window.location.assign(${prefix}.toString()+${_changed}.toString()+'/overview');",());}else{rename_error.set(result.0.unwrap_err());}};
-                        raw!("Promise.resolve().then(()=>${_rename}()).catch(()=>${_failed}());",());
-                    }
-                })>$(if renaming.get(){"Renaming…"}else{"Rename"})</button></div><p role="alert" :hidden=$(rename_error.get().is_empty())>$(rename_error.get())</p>
+    view!{
+        cx =>
+        <section class="native-overview__danger">
+            <button
+                type="button"
+                class="native-overview__danger-toggle"
+                :aria-expanded=$(expanded.get())
+                @click=$(|_event: Event| expanded.set(!expanded.get()))
+            >
+                (icons::ui_icon(cx, UiIcon::Warning, 15))
+                <span>"Danger zone"</span>
+                <span
+                    class="native-overview__danger-chevron"
+                    :data-open=$(expanded.get())
+                >
+                    (icons::ui_icon(cx, UiIcon::Expand, 15))
+                </span>
+            </button>
+            <div class="native-overview__danger-body" :hidden=$(!expanded.get())>
+                (lead_shard)
+                (prompt)
+                <p role="alert" :hidden=$(lead_error.get().is_empty())>
+                    $(lead_error.get())
+                </p>
+                <div class="native-overview__danger-divider"></div>
+                <div>
+                    <h3>"Change identifier"</h3>
+                    <p>
+                        "Re-keys every issue, page, and plan. Existing references to "
+                        <code>(format!("{identifier}-NNN"))</code>
+                        " written inside other issues/pages will no longer resolve. This cannot be undone automatically."
+                    </p>
+                    <div class="native-overview__danger-actions">
+                        <input
+                            class="native-overview__rekey-input"
+                            aria-label="New project identifier"
+                            placeholder=(identifier.clone())
+                            :value=$(rename.get())
+                            @input=$(|event: Event| rename.set(event.target.value))
+                        />
+                        <button
+                            type="button"
+                            class="native-overview__destructive"
+                            :disabled=$(if renaming.get() {
+                                true
+                            } else if rename.get().trim().is_empty() {
+                                true
+                            } else {
+                                rename.get().trim().to_uppercase() == identifier
+                            })
+                            @click=$(|_event: Event| {
+                                if !renaming.get() {
+                                    renaming.set(true);
+                                    rename_error.set("".to_owned());
+                                    let value = rename.get();
+                                    let _failed = || {
+                                        failed_renaming.set(false);
+                                        failed_rename_error.set(
+                                            "Rename did not complete. Try again.".to_owned(),
+                                        );
+                                    };
+                                    let _rename = async || {
+                                        let result = save_field(
+                                            account,
+                                            project,
+                                            "identifier".to_owned(),
+                                            value,
+                                        ).await;
+                                        renaming.set(false);
+                                        if result.0.is_ok() {
+                                            let _changed = result.4;
+                                            raw!(
+                                                "cx.navigate(${prefix}.toString()+${_changed}.toString()+'/overview');",
+                                                (),
+                                            );
+                                        } else {
+                                            rename_error.set(result.0.unwrap_err());
+                                        }
+                                    };
+                                    raw!(
+                                        "Promise.resolve().then(()=>${_rename}()).catch(()=>${_failed}());",
+                                        (),
+                                    );
+                                }
+                            })
+                        >
+                            $(if renaming.get() { "Renaming…" } else { "Rename" })
+                        </button>
+                    </div>
+                    <p role="alert" :hidden=$(rename_error.get().is_empty())>
+                        $(rename_error.get())
+                    </p>
+                </div>
+                <div class="native-overview__danger-divider"></div>
+                <div>
+                    <h3>"Delete project"</h3>
+                    <button
+                        type="button"
+                        class="native-overview__delete-open"
+                        :hidden=$(delete_open.get())
+                        @click=$(|_event: Event| delete_open.set(true))
+                    >
+                        "Delete this project"
+                    </button>
+                    <div :hidden=$(!delete_open.get())>
+                        <p>
+                            "Permanently deletes the project and all "
+                            <strong>(total)</strong>
+                            (if total == 1 { " issue" } else { " issues" })
+                            ", modules, labels, folders, pages, and plans. Type "
+                            <strong class="native-overview__identifier-text">
+                                (identifier.clone())
+                            </strong>
+                            " to confirm."
+                        </p>
+                        <div
+                            class="native-overview__danger-actions native-overview__danger-actions--delete"
+                        >
+                            <input
+                                aria-label="Confirm project identifier"
+                                class="native-overview__delete-input"
+                                placeholder=(identifier.clone())
+                                :value=$(confirmation.get())
+                                @input=$(|event: Event| confirmation.set(event.target.value))
+                            />
+                            <button
+                                type="button"
+                                class="native-overview__destructive"
+                                :disabled=$(if deleting.get() {
+                                    true
+                                } else {
+                                    confirmation.get() != identifier
+                                })
+                                @click=$(|_event: Event| {
+                                    if !deleting.get() {
+                                        deleting.set(true);
+                                        delete_error.set("".to_owned());
+                                        let value = confirmation.get();
+                                        let _failed = || {
+                                            failed_deleting.set(false);
+                                            failed_delete_error.set(
+                                                "Delete did not complete. Try again.".to_owned(),
+                                            );
+                                        };
+                                        let _delete = async || {
+                                            let result = delete_project(account, project, value).await;
+                                            deleting.set(false);
+                                            if result.is_ok() {
+                                                let _destination = result.unwrap();
+                                                raw!("cx.navigate(${_destination}.toString());", ());
+                                            } else {
+                                                delete_error.set(result.unwrap_err());
+                                            }
+                                        };
+                                        raw!(
+                                            "Promise.resolve().then(()=>${_delete}()).catch(()=>${_failed}());",
+                                            (),
+                                        );
+                                    }
+                                })
+                            >
+                                $(if deleting.get() {
+                                    "Deleting…"
+                                } else {
+                                    "Delete permanently"
+                                })
+                            </button>
+                            <button
+                                type="button"
+                                @click=$(|_event: Event| {
+                                    delete_open.set(false);
+                                    confirmation.set("".to_owned());
+                                    delete_error.set("".to_owned());
+                                })
+                            >
+                                "Cancel"
+                            </button>
+                        </div>
+                        <p role="alert" :hidden=$(delete_error.get().is_empty())>
+                            $(delete_error.get())
+                        </p>
+                    </div>
+                </div>
             </div>
-            <div class="native-overview__danger-divider"></div>
-            <div><h3>"Delete project"</h3><button type="button" class="native-overview__delete-open" :hidden=$(delete_open.get()) @click=$(|_event:Event|delete_open.set(true))>"Delete this project"</button>
-                <div :hidden=$(!delete_open.get())><p>"Permanently deletes the project and all "<strong>(total)</strong>(if total==1{" issue"}else{" issues"})", modules, labels, folders, pages, and plans. Type "<strong class="native-overview__identifier-text">(identifier.clone())</strong>" to confirm."</p><div class="native-overview__danger-actions native-overview__danger-actions--delete"><input aria-label="Confirm project identifier" class="native-overview__delete-input" placeholder=(identifier.clone()) :value=$(confirmation.get()) @input=$(|event:Event|confirmation.set(event.target.value)) /><button type="button" class="native-overview__destructive" :disabled=$(if deleting.get(){true}else{confirmation.get()!=identifier}) @click=$(|_event:Event|{if !deleting.get(){deleting.set(true);delete_error.set("".to_owned());let value=confirmation.get();
-                    let _failed=||{failed_deleting.set(false);failed_delete_error.set("Delete did not complete. Try again.".to_owned());};
-                    let _delete=async ||{let result=delete_project(account,project,value).await;deleting.set(false);if result.is_ok(){let _destination=result.unwrap();raw!("window.location.assign(${_destination}.toString());",());}else{delete_error.set(result.unwrap_err());}};
-                    raw!("Promise.resolve().then(()=>${_delete}()).catch(()=>${_failed}());",());
-                }})>$(if deleting.get(){"Deleting…"}else{"Delete permanently"})</button><button type="button" @click=$(|_event:Event|{delete_open.set(false);confirmation.set("".to_owned());delete_error.set("".to_owned());})>"Cancel"</button></div><p role="alert" :hidden=$(delete_error.get().is_empty())>$(delete_error.get())</p></div>
-            </div>
-        </div>
-    </section>}.boxed()
+        </section>
+    }.boxed()
 }
 use shards::native_overview_danger_lead;
 
@@ -201,11 +386,36 @@ mod shards {
             "native-overview-selection",
         );
         let index_width = usize::BITS;
-        Ok(
-            view! {cx=><div class="native-overview__danger-lead"><div><h3>"Project lead"</h3><p>"Who owns this project."</p></div><select aria-label="Project lead" :disabled=$(locked.get()) @change=$(|_event:Event|{
-                let index=raw!("cx.hydrate({t:'usize',bits:Number(${index_width}.toString()),v:String(${_event}.target.selectedIndex)})",0_usize);
-                chosen.set(values.index(index).clone());raw!("${_event}.target.dispatchEvent(new Event('native-overview-selection',{bubbles:true}));",());
-            }) (change)>for (index,(value,label)) in options.into_iter().enumerate(){<option value=(index.to_string()) selected=(value==initial)>(label)</option>}</select></div>},
-        )
+        Ok(view! {
+            cx =>
+            <div class="native-overview__danger-lead">
+                <div>
+                    <h3>"Project lead"</h3>
+                    <p>"Who owns this project."</p>
+                </div>
+                <select
+                    aria-label="Project lead"
+                    :disabled=$(locked.get())
+                    @change=$(|_event: Event| {
+                        let index = raw!(
+                            "cx.hydrate({t:'usize',bits:Number(${index_width}.toString()),v:String(${_event}.target.selectedIndex)})",
+                            0_usize,
+                        );
+                        chosen.set(values.index(index).clone());
+                        raw!(
+                            "${_event}.target.dispatchEvent(new Event('native-overview-selection',{bubbles:true}));",
+                            (),
+                        );
+                    })
+                    (change)
+                >
+                    for (index, (value, label)) in options.into_iter().enumerate() {
+                        <option value=(index.to_string()) selected=(value == initial)>
+                            (label)
+                        </option>
+                    }
+                </select>
+            </div>
+        })
     }
 }

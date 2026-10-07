@@ -238,23 +238,130 @@ pub(super) fn panel<'a>(
         "keydown",
     );
     let identifier = identifier.to_owned();
-    view!{cx=><section class="native-overview__labels" @mount=$(|_event:Event|collation.set(raw!("cx.hydrate(JSON.stringify(new Intl.Collator().resolvedOptions()))",String::new())))>
-        <div class="native-overview__heading"><h2>(icons::ui_icon(cx,UiIcon::Labels,14))" Labels "<span :hidden=$(count.get()==0_usize)>$(count.get())</span></h2>
-            <div class="native-overview__label-toolbar" :hidden=$(count.get()<=1_usize)><input aria-label="Filter labels" placeholder="Filter…" :hidden=$(count.get()<=8_usize) :value=$(filter.get()) @input=$(|event:Event|filter.set(event.target.value.to_owned())) />
-            <span>"Sort"</span>for (value,label) in [("name","A–Z"),("usage","Most used"),("newest","Newest")] {<button type="button" :aria-pressed=$(sort.get()==value) @click=$(|_event:Event|sort.set(value.to_owned()))>(label)</button>}
+    view! {
+        cx =>
+        <section
+            class="native-overview__labels"
+            @mount=$(|_event: Event| collation.set(
+                    raw!(
+                        "cx.hydrate(JSON.stringify(new Intl.Collator().resolvedOptions()))",
+                        String::new(),
+                    ),
+                ))
+        >
+            <div class="native-overview__heading">
+                <h2>
+                    (icons::ui_icon(cx, UiIcon::Labels, 14))
+                    " Labels "
+                    <span :hidden=$(count.get() == 0_usize)>$(count.get())</span>
+                </h2>
+                <div
+                    class="native-overview__label-toolbar"
+                    :hidden=$(count.get() <= 1_usize)
+                >
+                    <input
+                        aria-label="Filter labels"
+                        placeholder="Filter…"
+                        :hidden=$(count.get() <= 8_usize)
+                        :value=$(filter.get())
+                        @input=$(|event: Event| filter.set(event.target.value.to_owned()))
+                    />
+                    <span>"Sort"</span>
+                    for (value, label) in [
+                        ("name", "A–Z"),
+                        ("usage", "Most used"),
+                        ("newest", "Newest"),
+                    ] {
+                        <button
+                            type="button"
+                            :aria-pressed=$(sort.get() == value)
+                            @click=$(|_event: Event| sort.set(value.to_owned()))
+                        >
+                            (label)
+                        </button>
+                    }
+                </div>
             </div>
-        </div>
-        <div class="native-overview__label-card">
-            if can_edit{<div class="native-overview__label-create">
-                native_overview_label_create_color(account:account,project:project,name:$(name.get()),color:color.clone(),touched:touched.clone(),chosen:$(color.get()),locked:$(touched.get()))
-                <input maxlength="40" aria-label="New label name" placeholder="New label name…" :value=$(name.get()) @input=$(|event:Event|name.set(event.target.value.to_owned())) (enter) />
-                native_overview_label_preview(account:account,project:project,name:$(name.get()),color:$(color.get()),touched:$(touched.get()),revision:$(revision.get()),duplicate:duplicate.clone())
-                <button type="button" class="native-overview__success" :disabled=$(if creating.get(){true}else if name.get().trim().is_empty(){true}else{duplicate.get()}) (click)>(icons::ui_icon(cx,UiIcon::Add,14))$(if creating.get(){"Adding…"}else{"Add"})</button>
-            </div>}
-            <div role="alert" class="native-overview__label-error" :hidden=$(error.get().is_empty())>$(error.get())</div>
-            native_overview_label_rows(account:account,project:project,identifier:identifier,can_edit:can_edit,revision:$(revision.get()),filter:$(filter.get()),sort:$(sort.get()),collation:$(collation.get()),owner_state:(count,revision,error,editing,draft,confirming,merge,busy,creating))
-        </div>
-    </section>}.boxed()
+            <div class="native-overview__label-card">
+                if can_edit {
+                    <div class="native-overview__label-create">
+                        native_overview_label_create_color(
+                            account: account,
+                            project: project,
+                            name: $(name.get()),
+                            color: color.clone(),
+                            touched: touched.clone(),
+                            chosen: $(color.get()),
+                            locked: $(touched.get())
+                        )
+                        <input
+                            maxlength="40"
+                            aria-label="New label name"
+                            placeholder="New label name…"
+                            :value=$(name.get())
+                            @input=$(|event: Event| name.set(
+                                    event.target.value.to_owned(),
+                                ))
+                            (enter)
+                        />
+                        native_overview_label_preview(
+                            account: account,
+                            project: project,
+                            name: $(name.get()),
+                            color: $(color.get()),
+                            touched: $(touched.get()),
+                            revision: $(revision.get()),
+                            duplicate: duplicate.clone()
+                        )
+                        <button
+                            type="button"
+                            class="native-overview__success"
+                            :disabled=$(if creating.get() {
+                                true
+                            } else if name.get().trim().is_empty() {
+                                true
+                            } else {
+                                duplicate.get()
+                            })
+                            (click)
+                        >
+                            (icons::ui_icon(cx, UiIcon::Add, 14))
+                            $(if creating.get() { "Adding…" } else { "Add" })
+                        </button>
+                    </div>
+                }
+                <div
+                    role="alert"
+                    class="native-overview__label-error"
+                    :hidden=$(error.get().is_empty())
+                >
+                    $(error.get())
+                </div>
+                native_overview_label_rows(
+                    account: account,
+                    project: project,
+                    identifier: identifier,
+                    can_edit: can_edit,
+                    revision: $(revision.get()),
+                    filter: $(filter.get()),
+                    sort: $(sort.get()),
+                    collation: $(collation.get()),
+                    owner_state: (
+                        count,
+                        revision,
+                        error,
+                        editing,
+                        draft,
+                        confirming,
+                        merge,
+                        busy,
+                        creating,
+                    )
+                )
+            </div>
+        </section>
+    }
+    .boxed()
 }
 fn read(
     cx: &Cx,
@@ -323,9 +430,30 @@ mod shards {
             model::color_for_name(if name.is_empty() { "label" } else { &name }).to_owned()
         };
         let is_duplicate = model::name_taken(&labels, &name, None);
-        Ok(
-            view! {cx=><span class="native-overview__label-preview" @mount=$(|_event:Event|duplicate.set(is_duplicate))>if !name.is_empty(){<span class="native-overview__label-chip" style=(format!("color:{color};border-color:{color}40;background:{color}10"))><span style=(format!("background:{color}"))></span>(name.clone())</span>if is_duplicate{<span class="native-overview__duplicate" role="status">(format!("“{name}” already exists."))</span>}}</span>},
-        )
+        Ok(view! {
+            cx =>
+            <span
+                class="native-overview__label-preview"
+                @mount=$(|_event: Event| duplicate.set(is_duplicate))
+            >
+                if !name.is_empty() {
+                    <span
+                        class="native-overview__label-chip"
+                        style=(format!(
+                            "color:{color};border-color:{color}40;background:{color}10",
+                        ))
+                    >
+                        <span style=(format!("background:{color}"))></span>
+                        (name.clone())
+                    </span>
+                    if is_duplicate {
+                        <span class="native-overview__duplicate" role="status">
+                            (format!("“{name}” already exists."))
+                        </span>
+                    }
+                }
+            </span>
+        })
     }
     #[shard("/__native_overview/label_create_color")]
     pub(super) async fn native_overview_label_create_color(
@@ -440,11 +568,69 @@ mod shards {
                 )
             })
             .collect::<Vec<_>>();
-        Ok(view! {cx=>
-            if collation.is_empty(){for _ in 0..3 {<div class="native-overview__label-skeleton" aria-hidden="true"><span></span><span></span><span></span></div>}}
-            else if labels.is_empty(){if can_edit{<div class="native-overview__label-empty"><p>"No labels yet. Start from a common set, or create your own above."</p><div>for (name,color) in model::PRESETS {<button type="button" class="native-overview__preset" style=(format!("color:{color};border-color:{color}55;background:{color}12")) (mutation(cx,&state,"create",-1,signal(cx,||name.into()),signal(cx,||color.into()),signal(cx,||true),"click"))>(icons::ui_icon(cx,UiIcon::Add,11))(name)</button>}<button type="button" class="native-overview__label-add-all" (all)>"Add all"</button></div></div>}else{<div class="native-overview__empty">"No labels yet."</div>}}
-            else if rows.is_empty(){<div class="native-overview__empty">(format!("No labels match “{}”.",filter.trim_matches(model::js_whitespace)))</div>}
-            else{for rendered in rows{(rendered)}}
+        Ok(view! {
+            cx =>
+            if collation.is_empty() {
+                for _ in 0..3 {
+                    <div class="native-overview__label-skeleton" aria-hidden="true">
+                        <span></span>
+                        <span></span>
+                        <span></span>
+                    </div>
+                }
+            } else if labels.is_empty() {
+                if can_edit {
+                    <div class="native-overview__label-empty">
+                        <p>
+                            "No labels yet. Start from a common set, or create your own above."
+                        </p>
+                        <div>
+                            for (name, color) in model::PRESETS {
+                                <button
+                                    type="button"
+                                    class="native-overview__preset"
+                                    style=(format!(
+                                        "color:{color};border-color:{color}55;background:{color}12",
+                                    ))
+                                    (mutation(
+                                        cx,
+                                        &state,
+                                        "create",
+                                        -1,
+                                        signal(cx, || name.into()),
+                                        signal(cx, || color.into()),
+                                        signal(cx, || true),
+                                        "click",
+                                    ))
+                                >
+                                    (icons::ui_icon(cx, UiIcon::Add, 11))
+                                    (name)
+                                </button>
+                            }
+                            <button
+                                type="button"
+                                class="native-overview__label-add-all"
+                                (all)
+                            >
+                                "Add all"
+                            </button>
+                        </div>
+                    </div>
+                } else {
+                    <div class="native-overview__empty">"No labels yet."</div>
+                }
+            } else if rows.is_empty() {
+                <div class="native-overview__empty">
+                    (format!(
+                        "No labels match “{}”.",
+                        filter.trim_matches(model::js_whitespace),
+                    ))
+                </div>
+            } else {
+                for rendered in rows {
+                    (rendered)
+                }
+            }
         })
     }
 }
@@ -528,24 +714,165 @@ fn row<'a>(
         .filter(|other| other.id != id)
         .map(|other| (other.id.to_string(), other.name.clone()))
         .collect::<Vec<_>>();
-    view!{cx=><div class="native-overview__label-row">
-        <div class="native-overview__label-display" :hidden=$(confirming.get()==id)>
-            if can_edit{(picker)}else{<span class="native-overview__label-dot" style=(format!("background:{color_safe}"))></span>}
-            if can_edit{<button type="button" class="native-overview__label-name" :hidden=$(editing.get()==id) @click=$(|_event:Event|{draft.set(initial.clone());editing.set(id);confirming.set(0_i64);raw!("requestAnimationFrame(()=>document.getElementById(${_input}.toString())?.select());",());})>(name.clone())</button>
-            <input id=(format!("native-label-edit-{id}")) maxlength="40" aria-label="Rename label" :hidden=$(editing.get()!=id) :value=$(draft.get()) @input=$(|event:Event|draft.set(event.target.value.to_owned())) (rename_enter) (rename_blur) />}
-            else{<span class="native-overview__label-name">(name.clone())</span>}
-            <button type="button" class="native-overview__label-usage" title=(usage.text()) @click=$(async |_event:Event|{
-                let _stored=raw!("cx.hydrate((()=>{try{return localStorage.getItem(${key}.toString())||''}catch{return ''}})())",String::new());
-                let _failed=||error.set("Couldn't open the label filter. Try again.".to_owned());
-                let _stamp=async ||{let _value=stamp_filter(account,project,_stored,name.clone()).await;raw!("if(!cx.abortSignal.aborted){try{localStorage.setItem(${key}.toString(),${_value}.toString())}catch{}window.location.assign(${destination}.toString())}",());};
-                raw!("Promise.resolve().then(()=>${_stamp}()).catch(()=>${_failed}());",());
-            })>(if usage.total()>0 {usage.text()}else{"unused".into()})</button>
-            if can_edit{<button type="button" aria-label=(format!("Delete {name}")) class="native-overview__label-trash" @click=$(|_event:Event|{confirming.set(id);editing.set(0_i64);merge.set("".to_owned());})>(icons::ui_icon(cx,UiIcon::Delete,13))</button>}
+    view!{
+        cx =>
+        <div class="native-overview__label-row">
+            <div
+                class="native-overview__label-display"
+                :hidden=$(confirming.get() == id)
+            >
+                if can_edit {
+                    (picker)
+                } else {
+                    <span
+                        class="native-overview__label-dot"
+                        style=(format!("background:{color_safe}"))
+                    ></span>
+                }
+                if can_edit {
+                    <button
+                        type="button"
+                        class="native-overview__label-name"
+                        :hidden=$(editing.get() == id)
+                        @click=$(|_event: Event| {
+                            draft.set(initial.clone());
+                            editing.set(id);
+                            confirming.set(0_i64);
+                            raw!(
+                                "requestAnimationFrame(()=>document.getElementById(${_input}.toString())?.select());",
+                                (),
+                            );
+                        })
+                    >
+                        (name.clone())
+                    </button>
+                    <input
+                        id=(format!("native-label-edit-{id}"))
+                        maxlength="40"
+                        aria-label="Rename label"
+                        :hidden=$(editing.get() != id)
+                        :value=$(draft.get())
+                        @input=$(|event: Event| draft.set(event.target.value.to_owned()))
+                        (rename_enter)
+                        (rename_blur)
+                    />
+                } else {
+                    <span class="native-overview__label-name">(name.clone())</span>
+                }
+                <button
+                    type="button"
+                    class="native-overview__label-usage"
+                    title=(usage.text())
+                    @click=$(async |_event: Event| {
+                        let _stored = raw!(
+                            "cx.hydrate((()=>{try{return localStorage.getItem(${key}.toString())||''}catch{return ''}})())",
+                            String::new(),
+                        );
+                        let _failed = || error.set(
+                                "Couldn't open the label filter. Try again.".to_owned(),
+                            );
+                        let _stamp = async || {
+                            let _value = stamp_filter(
+                                account,
+                                project,
+                                _stored,
+                                name.clone(),
+                            ).await;
+                            raw!(
+                                "if(!cx.abortSignal.aborted){try{localStorage.setItem(${key}.toString(),${_value}.toString())}catch{}cx.navigate(${destination}.toString())}",
+                                (),
+                            );
+                        };
+                        raw!(
+                            "Promise.resolve().then(()=>${_stamp}()).catch(()=>${_failed}());",
+                            (),
+                        );
+                    })
+                >
+                    (if usage.total() > 0 { usage.text() } else { "unused".into() })
+                </button>
+                if can_edit {
+                    <button
+                        type="button"
+                        aria-label=(format!("Delete {name}"))
+                        class="native-overview__label-trash"
+                        @click=$(|_event: Event| {
+                            confirming.set(id);
+                            editing.set(0_i64);
+                            merge.set("".to_owned());
+                        })
+                    >
+                        (icons::ui_icon(cx, UiIcon::Delete, 13))
+                    </button>
+                }
+            </div>
+            if can_edit {
+                <div
+                    class="native-overview__label-confirm"
+                    :hidden=$(confirming.get() != id)
+                >
+                    <span
+                        class="native-overview__label-dot"
+                        style=(format!("background:{color_safe}"))
+                    ></span>
+                    <div>
+                        <p>
+                            "Delete "
+                            <strong>(name.clone())</strong>
+                            "? "if
+                            (usage.total() > 0)
+                            {
+                                <span>(format!("Detaches from {}.", usage.text()))</span>
+                            }
+                        </p>
+                        if !others.is_empty() {
+                            <div class="native-overview__label-merge">
+                                <span>"or merge into"</span>
+                                <select
+                                    aria-label="Merge into label"
+                                    :value=$(merge.get())
+                                    @change=$(|event: Event| merge.set(
+                                            event.target.value.to_owned(),
+                                        ))
+                                >
+                                    <option value="">"Choose label…"</option>
+                                    for (value, name) in others {
+                                        <option value=(value)>(name)</option>
+                                    }
+                                </select>
+                                <button
+                                    type="button"
+                                    class="native-overview__accent"
+                                    :disabled=$(if merge.get().is_empty() {
+                                        true
+                                    } else {
+                                        busy.get() == id
+                                    })
+                                    (merger)
+                                >
+                                    "Merge"
+                                </button>
+                            </div>
+                        }
+                    </div>
+                    <button
+                        type="button"
+                        class="native-overview__destructive"
+                        :disabled=$(busy.get() == id)
+                        (remove)
+                    >
+                        "Delete"
+                    </button>
+                    <button
+                        type="button"
+                        @click=$(|_event: Event| confirming.set(0_i64))
+                    >
+                        "Cancel"
+                    </button>
+                </div>
+            }
         </div>
-        if can_edit{<div class="native-overview__label-confirm" :hidden=$(confirming.get()!=id)><span class="native-overview__label-dot" style=(format!("background:{color_safe}"))></span><div><p>"Delete "<strong>(name.clone())</strong>"? "if (usage.total()>0){<span>(format!("Detaches from {}.",usage.text()))</span>}</p>
-            if !others.is_empty(){<div class="native-overview__label-merge"><span>"or merge into"</span><select aria-label="Merge into label" :value=$(merge.get()) @change=$(|event:Event|merge.set(event.target.value.to_owned()))><option value="">"Choose label…"</option>for (value,name) in others{<option value=(value)>(name)</option>}</select><button type="button" class="native-overview__accent" :disabled=$(if merge.get().is_empty(){true}else{busy.get()==id}) (merger)>"Merge"</button></div>}
-        </div><button type="button" class="native-overview__destructive" :disabled=$(busy.get()==id) (remove)>"Delete"</button><button type="button" @click=$(|_event:Event|confirming.set(0_i64))>"Cancel"</button></div>}
-    </div>}.boxed()
+    }.boxed()
 }
 fn color_picker<'a>(
     cx: &'a Cx,
@@ -668,10 +995,98 @@ fn color_picker<'a>(
     click.insert(cx, "data-topcoat-on:click", set.clone());
     let mut keydown = Attributes::with_capacity(1);
     keydown.insert(cx, "data-topcoat-on:keydown", set);
-    view!{cx=><div id=(root) class="native-overview__color" @mount=$(|_event:Event|{let _outside=|_event:Event|{if !raw!("cx.hydrate(document.getElementById(${mount_root}.toString())?.contains(${_event}.target)??false)",false){open.set(false);}};raw!("window.addEventListener('click',${_outside},{signal:cx.abortSignal});",());})>
-        <button type="button" class="native-overview__color-trigger" :style=$({let _chosen=shown.get();raw!("cx.hydrate('background:'+${_chosen}.toString())",String::new())}) aria-label=(format!("Color: {color_name}. Click to change.")) title=(format!("{color_name} · {display}")) :aria-expanded=$(open.get()) @click=$(|event:Event|{event.stop_propagation();open.set(!open.get());bad.set(false);})></button>
-        <div class="native-overview__color-panel" :hidden=$(!open.get()) @keydown=$(|event:Event|event.stop_propagation()) @click=$(|event:Event|event.stop_propagation())><div class="native-overview__color-palette">for (name,value) in palette{<button type="button" style=(format!("background:{value}")) aria-label=(name) title=(name) :aria-pressed=$(shown.get()==value) (palette_choice(cx,&picker_state,id,&value,(color.clone(),shown.clone(),touched.clone(),open.clone())))><span :hidden=$(shown.get()!=value)>(icons::ui_icon(cx,UiIcon::Selected,12))</span></button>}</div><div class="native-overview__color-hex"><span>"#"</span><input aria-label="Custom label hex color" maxlength="7" spellcheck="false" placeholder="hex" :value=$(hex.get()) :aria-invalid=$(bad.get()) @input=$(|event:Event|{hex.set(event.target.value.to_owned());bad.set(false);}) (keydown) /><button type="button" (click)>"Set"</button></div></div>
-    </div>}.boxed()
+    view!{
+        cx =>
+        <div
+            id=(root)
+            class="native-overview__color"
+            @mount=$(|_event: Event| {
+                let _outside = |_event: Event| {
+                    if !raw!(
+                        "cx.hydrate(document.getElementById(${mount_root}.toString())?.contains(${_event}.target)??false)",
+                        false,
+                    ) {
+                        open.set(false);
+                    }
+                };
+                raw!(
+                    "window.addEventListener('click',${_outside},{signal:cx.abortSignal});",
+                    (),
+                );
+            })
+        >
+            <button
+                type="button"
+                class="native-overview__color-trigger"
+                :style=$({
+                    let _chosen = shown.get();
+                    raw!(
+                        "cx.hydrate('background:'+${_chosen}.toString())",
+                        String::new(),
+                    )
+                })
+                aria-label=(format!("Color: {color_name}. Click to change."))
+                title=(format!("{color_name} · {display}"))
+                :aria-expanded=$(open.get())
+                @click=$(|event: Event| {
+                    event.stop_propagation();
+                    open.set(!open.get());
+                    bad.set(false);
+                })
+            ></button>
+            <div
+                class="native-overview__color-panel"
+                :hidden=$(!open.get())
+                @keydown=$(|event: Event| event.stop_propagation())
+                @click=$(|event: Event| event.stop_propagation())
+            >
+                <div class="native-overview__color-palette">
+                    for (name, value) in palette {
+                        <button
+                            type="button"
+                            style=(format!("background:{value}"))
+                            aria-label=(name)
+                            title=(name)
+                            :aria-pressed=$(shown.get() == value)
+                            (palette_choice(
+                                cx,
+                                &picker_state,
+                                id,
+                                &value,
+                                (
+                                    color.clone(),
+                                    shown.clone(),
+                                    touched.clone(),
+                                    open.clone(),
+                                ),
+                            ))
+                        >
+                            <span :hidden=$(shown.get() != value)>
+                                (icons::ui_icon(cx, UiIcon::Selected, 12))
+                            </span>
+                        </button>
+                    }
+                </div>
+                <div class="native-overview__color-hex">
+                    <span>"#"</span>
+                    <input
+                        aria-label="Custom label hex color"
+                        maxlength="7"
+                        spellcheck="false"
+                        placeholder="hex"
+                        :value=$(hex.get())
+                        :aria-invalid=$(bad.get())
+                        @input=$(|event: Event| {
+                            hex.set(event.target.value.to_owned());
+                            bad.set(false);
+                        })
+                        (keydown)
+                    />
+                    <button type="button" (click)>"Set"</button>
+                </div>
+            </div>
+        </div>
+    }.boxed()
 }
 
 fn palette_choice(
