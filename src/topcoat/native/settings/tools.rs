@@ -131,7 +131,7 @@ fn render_section<'a>(cx: &'a Cx, account: i64, revision: Signal<usize>) -> BoxV
     let owner = cx.keyed((account, "tools"));
     let state = ToolsState {
         revision: revision.clone(),
-        dialog: ToolDialogState::new(&owner, revision.clone()),
+        dialog: ToolDialogState::new(&owner, revision),
         custom_tool: signal(&owner, String::new),
         custom_name: signal(&owner, String::new),
         bot_busy: signal(&owner, || 0_i64),
@@ -304,12 +304,11 @@ fn template_connection_card<'a>(
     let bot_id = bot.as_ref().map(|bot| bot.id).unwrap_or_default();
     let name = bot
         .as_ref()
-        .map(|bot| bot.display_name.clone())
-        .unwrap_or_else(|| template.name.to_owned());
-    let detail = bot
-        .as_ref()
-        .map(|bot| connection_id(bot).to_owned())
-        .unwrap_or_else(|| template.description.to_owned());
+        .map_or_else(|| template.name.to_owned(), |bot| bot.display_name.clone());
+    let detail = bot.as_ref().map_or_else(
+        || template.description.to_owned(),
+        |bot| connection_id(bot).to_owned(),
+    );
     let reconnect = bot.as_ref().map(|bot| {
         let id = connection_id(bot).to_owned();
         let template_id = TOOL_TEMPLATES
