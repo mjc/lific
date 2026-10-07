@@ -1444,7 +1444,7 @@ fn editor_fields<'a>(
         controls.duplicated_by.clone(),
     );
     let metadata_identifier = identifier.clone();
-    let dates_identifier = identifier.clone();
+    let dates_identifier = identifier;
     let status = controls.status.clone();
     let priority = controls.priority.clone();
     let seq = controls.seq.clone();

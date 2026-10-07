@@ -25,7 +25,11 @@ async fn native_settings_security(
 }
 
 #[derive(Clone)]
-struct PasswordFeedback {
+struct PasswordState {
+    current: Signal<String>,
+    next: Signal<String>,
+    busy: Signal<bool>,
+    error: Signal<String>,
     visible: Signal<bool>,
     generation: Signal<usize>,
 }
@@ -33,15 +37,17 @@ struct PasswordFeedback {
 fn password_attrs(
     cx: &Cx,
     account: i64,
-    current: Signal<String>,
-    next: Signal<String>,
-    busy: Signal<bool>,
-    error: Signal<String>,
-    feedback: PasswordFeedback,
+    state: PasswordState,
     tools_revision: Signal<usize>,
 ) -> Attributes {
-    let success = feedback.visible;
-    let generation = feedback.generation;
+    let PasswordState {
+        current,
+        next,
+        busy,
+        error,
+        visible: success,
+        generation,
+    } = state;
     let destination = super::super::transport::mounted_url(cx, "/");
     let unavailable: Result<Option<String>, String> =
         Err("Unable to verify the current session.".to_owned());
@@ -186,24 +192,19 @@ fn render_section(cx: &Cx, account: i64, tools_revision: Signal<usize>) -> BoxVi
     let next = signal(&state_cx, String::new);
     let busy = signal(&state_cx, || false);
     let error = signal(&state_cx, String::new);
-    let feedback = PasswordFeedback {
+    let state = PasswordState {
+        current: current.clone(),
+        next: next.clone(),
+        busy: busy.clone(),
+        error: error.clone(),
         visible: signal(&state_cx, || false),
         generation: signal(&state_cx, || 0_usize),
     };
-    let success = feedback.visible.clone();
+    let success = state.visible.clone();
     let signout_error = signal(&state_cx, String::new);
     let signout_busy = signal(&state_cx, || false);
     let confirm_all = signal(&state_cx, || false);
-    let password = password_attrs(
-        cx,
-        account,
-        current.clone(),
-        next.clone(),
-        busy.clone(),
-        error.clone(),
-        feedback,
-        tools_revision,
-    );
+    let password = password_attrs(cx, account, state, tools_revision);
     let signout_everywhere = signout_attrs(
         cx,
         account,
