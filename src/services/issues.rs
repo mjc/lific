@@ -58,13 +58,24 @@ pub(crate) fn resolve_issue(
     identity: &Option<ResolvedIdentity>,
     identifier: &str,
 ) -> Result<Issue, LificError> {
-    let mut issue = {
-        let conn = db.read()?;
-        let id = crate::db::queries::resolve_identifier(&conn, identifier)?;
-        crate::db::queries::get_issue(&conn, id)?
-    };
-    authz::require_role(db, identity, issue.project_id, Role::Viewer)?;
-    retain_visible_relations(db, identity, std::slice::from_mut(&mut issue))?;
+    let conn = db.read()?;
+    let tx = conn.unchecked_transaction()?;
+    let issue = resolve_issue_conn(&tx, identity, identifier)?;
+    tx.commit()?;
+    Ok(issue)
+}
+
+/// Resolve an issue and its visible relations on the caller's read snapshot.
+pub(crate) fn resolve_issue_conn(
+    conn: &rusqlite::Connection,
+    identity: &Option<ResolvedIdentity>,
+    identifier: &str,
+) -> Result<Issue, LificError> {
+    let identity = crate::auth::refresh_identity(conn, identity.as_ref())?;
+    let id = crate::db::queries::resolve_identifier(conn, identifier)?;
+    let mut issue = crate::db::queries::get_issue(conn, id)?;
+    authz::require_role_conn(conn, &identity, issue.project_id, Role::Viewer)?;
+    retain_visible_relations_conn(conn, &identity, std::slice::from_mut(&mut issue))?;
     Ok(issue)
 }
 
@@ -1150,6 +1161,61 @@ mod delete_tests {
         );
         let deletes: i64 = conn.query_row("SELECT count(*) FROM audit_log WHERE entity_type = 'issue' AND entity_id = ?1 AND action = 'delete'", [before.id], |row| row.get(0)).unwrap();
         assert_eq!(deletes, 0);
+        assert!(events.try_recv().is_err());
+    }
+}
+
+#[cfg(test)]
+mod stale_identity_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn issue_writer_rechecks_stale_admin_and_publishes_nothing_after_demotion() {
+        let (db, admin, _, _, _, _, project) = crate::api::test_helpers::setup_membership_test();
+        let identity = Some(crate::auth::fresh_identity(
+            &admin,
+            crate::actor::Transport::Web,
+        ));
+        let issue = {
+            let conn = db.write().unwrap();
+            let issue = crate::db::queries::create_issue(
+                &conn,
+                &CreateIssue {
+                    project_id: project,
+                    title: "Keep the confirmed title".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            conn.execute("UPDATE users SET is_admin = 0 WHERE id = ?1", [admin.id])
+                .unwrap();
+            crate::db::queries::members::upsert_member(&conn, project, admin.id, Role::Viewer)
+                .unwrap();
+            issue
+        };
+        let hub = RealtimeHub::new();
+        let mut events = hub.subscribe();
+        let result = commit_issue_update(
+            &db,
+            &hub,
+            &identity,
+            issue.id,
+            UpdateIssue {
+                title: Some("Stale privilege must not write".into()),
+                expected_seq: Some(issue.seq),
+                ..Default::default()
+            },
+        );
+        assert!(
+            matches!(result, Err(LificError::Forbidden(_))),
+            "stale administrator unexpectedly wrote: {result:?}"
+        );
+        assert_eq!(
+            crate::db::queries::get_issue(&db.read().unwrap(), issue.id)
+                .unwrap()
+                .title,
+            issue.title
+        );
         assert!(events.try_recv().is_err());
     }
 }
