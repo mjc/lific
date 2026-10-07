@@ -446,6 +446,7 @@ async fn files_body(
     let page_has_more = page.has_more;
     let page_total_count = page.total_count;
     let page_total_bytes = page.total_bytes;
+    let links_cache = controls.9.2;
     let persist = view! {
         cx =>
         <span hidden="hidden" data-native-files-complete=""
@@ -456,7 +457,7 @@ async fn files_body(
                 if history.3.get() != page_has_more { history.3.set(page_has_more); }
                 if history.4.get() != page_total_count { history.4.set(page_total_count); }
                 if history.5.get() != page_total_bytes { history.5.set(page_total_bytes); }
-                if controls.9.2.get() != cache_wire { controls.9.2.set(cache_wire.clone()); }
+                if links_cache.get() != cache_wire { links_cache.set(cache_wire.clone()); }
             })
         ></span>
         (body)
