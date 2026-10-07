@@ -41,6 +41,68 @@ async fn native_instance_settings_admin_route_loads_authorized_settings_and_rost
 }
 
 #[tokio::test]
+async fn native_instance_settings_exposes_password_confirmation_for_recent_auth_refusal() {
+    let fixture = home_fixture::fixture();
+    let account = {
+        let conn = fixture.db.write().unwrap();
+        let user = crate::db::queries::users::validate_session(&conn, &fixture.token).unwrap();
+        conn.execute("UPDATE users SET is_admin = 1 WHERE id = ?1", [user.id])
+            .unwrap();
+        conn.execute(
+            "UPDATE sessions SET created_at = datetime('now', '-16 minutes') WHERE user_id = ?1",
+            [user.id],
+        )
+        .unwrap();
+        user.id
+    };
+
+    let (status, html) =
+        home_fixture::document(&fixture, "", "/settings/instance", true, None).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (refusal_status, refusal) = home_fixture::procedure(
+        &fixture,
+        "/__native_instance_settings/save_text",
+        serde_json::to_value(
+            (
+                account,
+                "name".to_owned(),
+                "Pending instance name".to_owned(),
+            )
+                .into_surrogate(),
+        )
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(refusal_status, StatusCode::OK);
+    assert_eq!(refusal[0], false);
+    assert_eq!(refusal[1], crate::auth::RECENT_AUTH_REQUIRED_MESSAGE);
+
+    let document = scraper::Html::parse_document(&html);
+    let confirmation = document
+        .select(&scraper::Selector::parse("[data-native-instance-reauth]").unwrap())
+        .next()
+        .expect("the native instance reauthentication controls are rendered");
+    assert!(
+        confirmation
+            .select(&scraper::Selector::parse(
+                "input[data-native-instance-reauth-password][type='password'][autocomplete='current-password']",
+            ).unwrap())
+            .next()
+            .is_some(),
+        "a recent-auth refusal must expose the password confirmation control"
+    );
+    for button in ["Confirm and continue", "Cancel"] {
+        assert!(
+            confirmation
+                .select(&scraper::Selector::parse("button").unwrap())
+                .any(|element| element.text().collect::<String>().contains(button)),
+            "recent-auth confirmation must provide {button}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn native_instance_settings_non_admin_sees_gate_without_admin_data() {
     let fixture = home_fixture::fixture();
     {
