@@ -423,7 +423,9 @@ async fn navigation_mobile_header_uses_destination_label_with_preserved_signals(
         let app = if mount.is_empty() {
             fixture.app.clone()
         } else {
-            Router::new().nest(mount, fixture.app.clone())
+            // Match the production proxy: strip one prefix before dispatch.
+            // Axum nesting maps the inner root to `/app`, not `/app/`.
+            super::admission_contract::mounted(fixture.app.clone())
         };
         let mut previous: Option<String> = None;
         for path in [
