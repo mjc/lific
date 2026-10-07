@@ -10,6 +10,7 @@ pub(crate) mod avatar;
 pub(crate) mod board;
 pub(crate) mod bookmark;
 pub(crate) mod browser_inputs;
+pub(crate) mod collation;
 pub(crate) mod context;
 pub(crate) mod dates;
 pub(crate) mod deferred_delete;
