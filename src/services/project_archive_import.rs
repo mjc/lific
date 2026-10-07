@@ -17,6 +17,10 @@ use crate::project_archive::{self, Limits};
 use crate::realtime::{RealtimeEvent, RealtimeHub};
 use crate::storage::AttachmentStore;
 
+/// Compressed WEB limit plus multipart framing, shared by both HTTP adapters.
+pub(crate) const ARCHIVE_UPLOAD_BODY_LIMIT: usize =
+    Limits::WEB.max_compressed as usize + 1024 * 1024;
+
 /// The only accepted multipart field. Anything else, including a second copy
 /// of this one, is refused rather than partially honored.
 const ARCHIVE_FIELD: &str = "archive";
