@@ -18,6 +18,10 @@ and the clock that pauses while the document is hidden). Activity tooltips
 combine the shared localized date signal with a transport label. Text matching
 and trimming reuse
 `runtime/whitespace.rs` so native views preserve Main's whitespace rules.
+Pages and Plans share `native/mascot.rs` for the original empty-state artwork.
+Their private list/detail routes use the existing workspace owner and sidebar;
+reads and mutations call shared Rust services also used by REST. Page list rows
+contain bounded previews rather than full document bodies.
 
 All intermediate JavaScript application controllers and their fallback screens
 are removed. Unfinished features remain unavailable until they are implemented
@@ -35,13 +39,11 @@ only immutable functions; signal handles and request data stay in each owning
 mount scope. Home refresh, recents, mobile navigation, and account checks reuse
 those assets. Sidebar rows carry compact scalar event arguments, preserving
 exact 64-bit IDs and JSON encoding for arbitrary editor text.
-All 1,937 approved Lucide glyphs are embedded once as percent-encoded SVG
-images in the shared, fingerprinted stylesheet. SVG elements select their
-mask with a short `data-icon` name and paint in the inherited current color.
-Existing SVG selectors, sizes and transforms remain valid. Sidebar decorative
-controls share the same image declarations through CSS pseudo-elements.
-Icons make no separate HTTP requests, including project icons and picker choices.
-The catalog increases the cached stylesheet size; it is not repeated in page HTML.
+Lucide icons render their geometry inline. Shared styles supply SVG paint
+defaults, and each instance contains only its selected glyph. Sizes, colors,
+transforms and selectors remain valid. Sidebar controls use the same semantic
+helpers. Glyphs make no separate HTTP requests, and the stylesheet contains no
+embedded icon catalog.
 
 Initial document responses send one mounted HTTP `Link` image preload header
 for the selected logo. Embedded glyphs need no hints. Unopened picker choices,
@@ -50,9 +52,14 @@ redirects, API responses and WebSocket upgrades add no image hints.
 Use `icons::ui_icon(cx, icons::UiIcon::Search, 16)` for application controls.
 Semantic names map to approved Lucide glyphs in `native/icons/ui.rs`.
 Add a `UiIcon` variant with its glyph mapping; aliases such as `ShowPassword`
-and `Preview` share one CSS image declaration. Use `icons::project_icon` for
+and `Preview` resolve to the same geometry. Use `icons::project_icon` for
 stored project values, emoji and the logo. Picker grids use
 `icons::picker_choice_icon` so unopened logo choices do not add preload hints.
+
+Run `node scripts/optimize-native-icons.mjs` to regenerate the inline catalog.
+It invokes `nix run nixpkgs#svgo` with the checked-in configuration and six-digit
+precision. Geometry tests compare all 1,937 generated glyphs with the original
+approved nodes and attributes. Production embeds only the generated catalog.
 
 The pinned framework source and distribution are retained for reproducible
 runtime patches. Its tests compare the served runtime against the upstream
@@ -63,6 +70,6 @@ Standalone runtime tests cover a smaller signal-comment encoding. The
 application still uses the published framework's signal renderer; adopting
 that encoding requires an upstream change and browser hydration checks.
 
-Use the repository's devenv profiles for compilation and headless browser
-checks. Original main assertions and their current native adapter gaps are
+Use the repository's devenv workflow for compilation and focused native tests.
+Do not run headless browsers. Original main assertions and their current native adapter gaps are
 recorded under `src/topcoat/tests/main/`.
