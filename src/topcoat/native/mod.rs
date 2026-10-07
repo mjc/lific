@@ -93,6 +93,7 @@ pub(crate) mod project_authority;
 pub(crate) mod project_overview;
 
 pub(crate) mod project_create;
+pub(crate) mod project_import;
 
 pub(crate) mod project_activity;
 pub(crate) mod project_sidebar;
