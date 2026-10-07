@@ -419,7 +419,7 @@ async fn native_instance_settings(cx: &Cx, account: i64) -> topcoat::Result<impl
     };
     let save_name = save_name_attrs(cx, account, name_state.clone());
     let confirm_attrs = confirmation_attrs(cx, account, name_state.clone());
-    let cancel_confirmation = cancel_confirmation_attrs(cx, name_state.clone());
+    let cancel_confirmation = cancel_confirmation_attrs(cx, name_state);
     let host = topcoat::router::request::headers(cx)
         .get(axum::http::header::HOST)
         .and_then(|value| value.to_str().ok())
