@@ -171,17 +171,16 @@ async fn native_instance_settings_admin_name_blur_saves_trimmed_value() {
         .expect("admin can edit the instance name");
     let input_handler = input.value().attr("data-topcoat-on:input").unwrap();
     let blur_handler = input.value().attr("data-topcoat-on:blur").unwrap();
+    let value_binding = input.value().attr("data-topcoat-bind:value").unwrap();
     assert_eq!(input.value().attr("value"), Some("Old name"));
     assert_eq!(input.value().attr("maxlength"), Some("60"));
-    assert!(
-        !input
-            .value()
-            .attr("placeholder")
-            .unwrap_or_default()
-            .is_empty(),
-        "the host name is the blank-value fallback and placeholder"
-    );
-    let field = input.parent().and_then(scraper::ElementRef::wrap).unwrap();
+    assert_eq!(input.value().attr("placeholder"), Some("localhost"));
+    let field = input
+        .parent()
+        .and_then(scraper::ElementRef::wrap)
+        .and_then(|label| label.parent())
+        .and_then(scraper::ElementRef::wrap)
+        .unwrap();
     assert!(
         field
             .text()
@@ -207,6 +206,16 @@ async fn native_instance_settings_admin_name_blur_saves_trimmed_value() {
     )
     .await;
     assert_eq!(save_status, StatusCode::OK);
+    let (queued_status, queued_reply) = home_fixture::procedure(
+        &fixture,
+        "/__native_instance_settings/save_text",
+        serde_json::to_value(
+            (account, "name".to_owned(), "Latest name".to_owned()).into_surrogate(),
+        )
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(queued_status, StatusCode::OK);
     let (clear_status, clear_reply) = home_fixture::procedure(
         &fixture,
         "/__native_instance_settings/save_text",
@@ -232,6 +241,26 @@ async fn native_instance_settings_admin_name_blur_saves_trimmed_value() {
     )
     .await;
     assert_eq!(error_status, StatusCode::OK);
+    {
+        let conn = fixture.db.write().unwrap();
+        conn.execute(
+            "UPDATE sessions SET created_at=datetime('now') WHERE user_id=?1",
+            [account],
+        )
+        .unwrap();
+        conn.execute("UPDATE users SET is_admin=0 WHERE id=?1", [account])
+            .unwrap();
+    }
+    let (ordinary_status, ordinary_reply) = home_fixture::procedure(
+        &fixture,
+        "/__native_instance_settings/save_text",
+        serde_json::to_value(
+            (account, "name".to_owned(), "Draft resets".to_owned()).into_surrogate(),
+        )
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(ordinary_status, StatusCode::OK);
 
     let result = home_fixture::evaluate_handler(
         "src/topcoat/native/instance_settings/name_handler.test.cjs",
@@ -239,25 +268,71 @@ async fn native_instance_settings_admin_name_blur_saves_trimmed_value() {
             "signals": signals,
             "input_handler": input_handler,
             "blur_handler": blur_handler,
+            "value_binding": value_binding,
             "name_signal_value": "Old name",
             "account": account,
             "save_reply": save_reply,
             "clear_reply": clear_reply,
+            "queued_reply": queued_reply,
             "error_reply": error_reply,
+            "ordinary_reply": ordinary_reply,
             "expected_save_args": serde_json::to_value((account, "name".to_owned(), "New name".to_owned()).into_surrogate()).unwrap(),
             "expected_clear_args": serde_json::to_value((account, "name".to_owned(), String::new()).into_surrogate()).unwrap(),
+            "expected_queued_args": serde_json::to_value((account, "name".to_owned(), "Latest name".to_owned()).into_surrogate()).unwrap(),
         }),
     );
     assert_eq!(result["trimmed_save"], true);
     assert_eq!(result["unchanged_noop"], true);
     assert_eq!(result["blank_clears"], true);
+    assert_eq!(result["queued_latest"], true);
     assert_eq!(result["disposed_no_request"], true);
+    assert_eq!(result["disposed_pending_unchanged"], true);
     assert_eq!(result["draft_kept_on_error"], true);
+    assert_eq!(result["ordinary_failure_restores"], true);
     assert_eq!(
         crate::db::queries::settings::get(&fixture.db.read().unwrap())
             .unwrap()
             .instance_name,
         None,
         "blank instance name restores the host-name fallback",
+    );
+}
+
+#[tokio::test]
+async fn native_instance_settings_name_procedure_returns_the_canonical_saved_name() {
+    let fixture = home_fixture::fixture();
+    let account = {
+        let conn = fixture.db.write().unwrap();
+        let user = crate::db::queries::users::validate_session(&conn, &fixture.token).unwrap();
+        conn.execute("UPDATE users SET is_admin=1 WHERE id=?1", [user.id])
+            .unwrap();
+        user.id
+    };
+    let (status, body) = home_fixture::procedure(
+        &fixture,
+        "/__native_instance_settings/save_text",
+        serde_json::to_value(
+            (
+                account,
+                "name".to_owned(),
+                "\u{0085}Stored name\u{0085}".to_owned(),
+            )
+                .into_surrogate(),
+        )
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body[0], true, "canonical name save should succeed: {body}");
+    assert_eq!(
+        body[1], "Stored name",
+        "reply must use the stored canonical value"
+    );
+    assert_eq!(
+        crate::db::queries::settings::get(&fixture.db.read().unwrap())
+            .unwrap()
+            .instance_name
+            .as_deref(),
+        Some("Stored name"),
     );
 }
