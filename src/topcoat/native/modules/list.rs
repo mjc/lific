@@ -88,7 +88,7 @@ pub(super) fn content<'a>(
     authority: &project_authority::Snapshot,
     data: ModuleList,
     query: &str,
-) -> topcoat::Result<BoxView<'a>> {
+) -> BoxView<'a> {
     let tab = Tab::parse(query, &data.modules);
     let selected = tab.as_str();
     let project_name = project.identifier.clone();
@@ -233,7 +233,7 @@ pub(super) fn content<'a>(
     };
     let no_modules = data.modules.is_empty();
     let aria_authority = authority.encoded();
-    Ok(view! {
+    view! {
         owner =>
         <main
             data-native-modules=(project_name.clone())
@@ -362,7 +362,7 @@ pub(super) fn content<'a>(
                 }
             </div>
         </main>
-    }.boxed())
+    }.boxed()
 }
 
 fn status_group<'a>(
