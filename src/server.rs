@@ -167,6 +167,9 @@ mod topcoat_app {
             Some(NativeRoute::Settings) => {
                 super::topcoat_frontend::native::settings::screen(cx, &route)
             }
+            Some(NativeRoute::InstanceSettings) => {
+                super::topcoat_frontend::native::instance_settings::screen(cx, &route)
+            }
             None => Err(topcoat::router::error::not_found().into()),
         }
     }
@@ -449,7 +452,6 @@ mod topcoat_app_tests {
     async fn unfinished_feature_routes_have_no_intermediate_fallback() {
         let router = topcoat::router::tower::TowerService::new(topcoat_app::router());
         for path in [
-            "/settings/instance",
             "/projects/import",
             "/LIF/issues?status=started",
             "/LIF/board?assignee=me",

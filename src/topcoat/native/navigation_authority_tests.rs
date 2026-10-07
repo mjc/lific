@@ -151,6 +151,43 @@ fn account_and_project(fixture: &home_fixture::Fixture) -> (i64, i64) {
     )
 }
 
+#[tokio::test]
+async fn navigation_authority_admits_instance_settings_only_for_current_admin() {
+    let fixture = home_fixture::fixture();
+    let (account, _) = account_and_project(&fixture);
+    for mount in ["", "/app", "/ACC"] {
+        let path = "/settings/instance";
+        assert_eq!(
+            verdict(&fixture, mount, &fixture.token, path, account, false).await,
+            "denied"
+        );
+        fixture
+            .db
+            .write()
+            .unwrap()
+            .execute("UPDATE users SET is_admin = 1 WHERE id = ?1", [account])
+            .unwrap();
+        assert_eq!(
+            verdict(&fixture, mount, &fixture.token, path, account, true).await,
+            "allow"
+        );
+        fixture
+            .db
+            .write()
+            .unwrap()
+            .execute("UPDATE users SET is_admin = 0 WHERE id = ?1", [account])
+            .unwrap();
+        assert_eq!(
+            verdict(&fixture, mount, &fixture.token, path, account, true).await,
+            "identity-changed"
+        );
+        assert_eq!(
+            verdict(&fixture, mount, &fixture.token, path, account, false).await,
+            "denied"
+        );
+    }
+}
+
 fn project_authority(fixture: &home_fixture::Fixture, project: i64) -> String {
     let user =
         queries::users::validate_session(&fixture.db.read().unwrap(), &fixture.token).unwrap();

@@ -5,18 +5,19 @@ use super::{
 };
 use topcoat::{
     context::Cx,
-    runtime::{Event, Signal, expr, signal},
+    runtime::{Event, Signal, expr, record, signal},
     view::{Attributes, BoxView, ViewExt, view},
 };
 
+#[record]
 #[derive(Clone)]
 pub(super) struct ToolDialogState {
     pub(super) open: Signal<bool>,
     pub tool: Signal<String>,
     pub name: Signal<String>,
+    pub(super) busy: Signal<bool>,
     password: Signal<String>,
     needs_password: Signal<bool>,
-    busy: Signal<bool>,
     key: Signal<String>,
     revealed: Signal<bool>,
     copied: Signal<bool>,
@@ -48,96 +49,44 @@ impl ToolDialogState {
     }
 }
 
-pub(super) fn template_card<'a>(
-    cx: &'a Cx,
-    account: i64,
-    template: ToolTemplate,
-    state: &ToolDialogState,
-) -> BoxView<'a> {
-    let attrs = connect_attrs(
-        cx,
-        account,
-        Some((template.id.to_owned(), template.name.to_owned())),
-        None,
-        state,
-    );
-    view! {
-        cx =>
-        <div
-            class="flex min-w-0 items-center gap-3 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3"
-            data-settings-tool-template=(template.id)
-        >
-            <div
-                class="grid size-9 shrink-0 place-items-center rounded-md bg-[var(--bg-subtle)] text-[var(--text-muted)]"
-            >
-                (super::super::icons::ui_icon(
-                    cx,
-                    super::super::icons::UiIcon::OpenExternal,
-                    17,
-                ))
-            </div>
-            <div class="min-w-0 flex-1">
-                <div class="text-body-sm font-medium text-[var(--text)]">
-                    (template.name)
-                </div>
-                <p class="truncate text-caption text-[var(--text-muted)]">
-                    (template.description)
-                </p>
-            </div>
-            <button
-                type="button"
-                class=(format!(
-                    "{} border border-[var(--border)] text-[var(--text)] hover:bg-[var(--bg-subtle)]",
-                    super::BUTTON,
-                ))
-                data-native-tool-connect=(template.id)
-                (attrs)
-            >
-                "Connect"
-            </button>
-        </div>
-    }.boxed()
-}
-
 pub(super) fn custom_trigger<'a>(
     cx: &'a Cx,
     account: i64,
     state: &ToolDialogState,
     custom_tool: Signal<String>,
     custom_name: Signal<String>,
-    reconnect_trigger: bool,
 ) -> BoxView<'a> {
-    let mut attrs = connect_attrs(cx, account, None, Some((custom_tool, custom_name)), state);
-    attrs.insert(
+    let mut attrs = connect_attrs(
         cx,
-        if reconnect_trigger {
-            "data-native-tool-reconnect-trigger"
-        } else {
-            "data-native-tool-custom-connect"
-        },
-        "",
+        account,
+        None,
+        Some((custom_tool, custom_name)),
+        None,
+        state,
     );
-    let class = if reconnect_trigger {
-        "hidden"
-    } else {
-        "mt-3 bg-[var(--btn-success)] text-[var(--btn-success-text)] hover:bg-[var(--btn-success-hover)]"
-    };
+    attrs.insert(cx, "data-native-tool-custom-connect", "");
     view! {
         cx =>
-        <button type="button" class=(format!("{} {class}", super::BUTTON)) (attrs)>
-            if !reconnect_trigger {
-                "Connect custom tool"
-            }
+        <button
+            type="button"
+            class=(format!(
+                "{} mt-3 bg-[var(--btn-success)] text-[var(--btn-success-text)] hover:bg-[var(--btn-success-hover)]",
+                super::BUTTON,
+            ))
+            (attrs)
+        >
+            "Connect custom tool"
         </button>
     }
     .boxed()
 }
 
-fn connect_attrs(
+pub(super) fn connect_attrs(
     cx: &Cx,
     account: i64,
     fixed_identity: Option<(String, String)>,
     custom_identity: Option<(Signal<String>, Signal<String>)>,
+    template_override: Option<String>,
     state: &ToolDialogState,
 ) -> Attributes {
     let is_template = fixed_identity.is_some();
@@ -155,6 +104,8 @@ fn connect_attrs(
     let tool = state.tool.clone();
     let name = state.name.clone();
     let setup_template = state.setup_template.clone();
+    let has_fixed_template = template_override.is_some();
+    let fixed_template = template_override.unwrap_or_default();
     let password = state.password.clone();
     let needs_password = state.needs_password.clone();
     let busy = state.busy.clone();
@@ -173,7 +124,7 @@ fn connect_attrs(
             } else {
                 let _submitted = draft_tool.get();
                 raw!(
-                    "cx.hydrate(${_submitted}.trim().toLowerCase())",
+                    "cx.hydrate(${_submitted}.toString().trim().toLowerCase())",
                     String::new()
                 )
             };
@@ -181,7 +132,7 @@ fn connect_attrs(
                 fixed_name.clone()
             } else {
                 let _submitted = draft_name.get();
-                raw!("cx.hydrate(${_submitted}.trim())", String::new())
+                raw!("cx.hydrate(${_submitted}.toString().trim())", String::new())
             };
             if raw!(
                 "cx.hydrate(!/^[a-z0-9][a-z0-9_-]{0,47}$/.test(${requested_tool}.toString()))",
@@ -204,7 +155,9 @@ fn connect_attrs(
             };
             tool.set(requested_tool.clone());
             name.set(requested_name.clone());
-            if is_template {
+            if has_fixed_template {
+                setup_template.set(fixed_template.clone());
+            } else if is_template {
                 setup_template.set(requested_tool.clone());
             }
             open.set(true);

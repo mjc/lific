@@ -15,11 +15,14 @@ const settle = async () => {for (let i = 0; i < 30; i++) await Promise.resolve()
 async function run(first) {
   const pending = new Map();
   const controller = new AbortController();
+  const cardController = new AbortController();
+  let launchHandler;
+  const launchButton = {click() {launchHandler();}};
   class Element {}
   const context = {
     TextEncoder, TextDecoder, queueMicrotask, Element,
     Event: class {constructor(type) {this.type = type;}},
-    document: {querySelector: () => ({dataset: {topcoatUsizeBits: '64'}}), documentElement: {getAttribute: () => '/app'}},
+    document: {querySelector: selector => selector === '[data-native-tool-launch]' ? launchButton : ({dataset: {topcoatUsizeBits: '64'}}), documentElement: {getAttribute: () => '/app'}},
     window: {dispatchEvent() {}},
     fetch(url, options) {
       if (url.endsWith('/profile_session')) {
@@ -41,7 +44,12 @@ async function run(first) {
     event: event => new context.fixture.Event(event),
   });
   for (const [id, value] of Object.entries(input.signals)) registry.insert(id, cx.hydrate(value));
-  const handler = source => vm.runInNewContext(`cx => (${source})`, context)(cx);
+  const handler = (source, owner = cx) => vm.runInNewContext(`cx => (${source})`, context)(owner);
+  const cardCx = Object.assign(new context.fixture.Context(registry), {
+    abortSignal: cardController.signal,
+    event: cx.event,
+  });
+  launchHandler = () => handler(input.launch_handler)(cx.event({type: 'click', target: launchButton, currentTarget: launchButton}));
   const snapshot = () => Object.fromEntries(Object.keys(input.signals)
     .map(id => [id, cx.signal(id).dehydrate().v]));
   const baseline = snapshot();
@@ -52,7 +60,7 @@ async function run(first) {
   botHandler(click(Object.assign(new Element(), {closest: () => null})));
   await settle();
   assert.equal(pending.size, 0, 'ordinary Tools clicks do not dispatch bot mutations');
-  handler(input.connect_handler)(click({closest: () => null}));
+  handler(input.connect_handler, cardCx)(click({closest: () => null}));
   const button = Object.assign(new Element(), {
     dataset: {nativeBotAction: input.wire},
     getAttribute: name => name === 'data-native-bot-action' ? input.wire : null,
@@ -73,6 +81,7 @@ async function run(first) {
   const finish = async action => {
     pending.get(action).resolve({ok: true, json: async () => input.responses[action]});
     await settle();
+    if (action === 'bot') cardController.abort();
   };
   await finish(first);
   await finish(first === 'connect' ? 'bot' : 'connect');

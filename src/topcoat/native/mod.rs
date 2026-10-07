@@ -42,6 +42,7 @@ mod home_shell_production;
 pub(crate) mod home_view;
 pub(crate) mod icons;
 pub(crate) mod insights;
+pub(crate) mod instance_settings;
 pub(crate) mod issue_create;
 pub(crate) mod issue_edit;
 pub(crate) mod issue_peek;
@@ -71,6 +72,7 @@ mod session_idle;
 #[cfg(test)]
 mod session_redirect_production;
 pub(crate) mod settings;
+pub(crate) mod settings_tabs;
 pub(crate) mod signup;
 pub(crate) mod socket_admission;
 #[cfg(test)]
