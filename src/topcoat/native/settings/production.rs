@@ -99,8 +99,8 @@ async fn native_account_settings_overlapping_tool_actions_keep_the_one_time_key(
         "the refreshing list delegates remote actions to its stable parent"
     );
     let connect = parent
-        .select(&scraper::Selector::parse("button").unwrap())
-        .find(|button| button.text().collect::<String>().trim() == "Connect agent")
+        .select(&scraper::Selector::parse("button[data-native-tool-connect='opencode']").unwrap())
+        .next()
         .expect("new connections can be created");
     let key = "lific_test_one_time_key";
     let result = home_fixture::evaluate_handler(
@@ -111,8 +111,9 @@ async fn native_account_settings_overlapping_tool_actions_keep_the_one_time_key(
             "wire": bot.value().attr("data-native-bot-action").unwrap(),
             "signals": home_fixture::page_signals(&html),
             "responses": {
-                "connect": (true, key.to_owned()).into_surrogate(),
+                "connect": Result::<String, super::actions::ConnectFailure>::Ok(key.to_owned()).into_surrogate(),
                 "bot": (true, "saved".to_owned()).into_surrogate(),
+                "authority": Result::<Option<String>, String>::Ok(Some("current-session".to_owned())).into_surrogate(),
             },
             "key": key,
             "bot_id": bot_id.to_string(),
@@ -351,6 +352,166 @@ async fn native_account_settings_sign_out_revokes_only_the_current_session() {
 }
 
 #[tokio::test]
+async fn native_account_settings_initial_connect_keeps_stale_session_until_confirmation() {
+    let fixture = home_fixture::fixture_with_auth(false);
+    let account = {
+        let conn = fixture.db.write().unwrap();
+        let account = crate::db::queries::users::validate_session(&conn, &fixture.token)
+            .unwrap()
+            .id;
+        conn.execute(
+            "UPDATE sessions SET created_at = datetime('now', '-16 minutes')",
+            [],
+        )
+        .unwrap();
+        account
+    };
+    let (status, body) = home_fixture::procedure(
+        &fixture,
+        "/__native_settings/connect",
+        serde_json::to_value((account, "codex".to_owned(), "Codex".to_owned()).into_surrogate())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["err"]["v"]["requires_confirmation"], true, "{body}");
+    assert_eq!(body["err"]["v"]["automatic_confirmation"], false, "{body}");
+    let conn = fixture.db.read().unwrap();
+    assert!(
+        crate::db::queries::users::validate_session(&conn, &fixture.token).is_ok(),
+        "opening a tool must not rotate the cookie before the native transport is suspended: {body}"
+    );
+    assert!(
+        crate::db::queries::users::list_bots(&conn, account)
+            .unwrap()
+            .is_empty(),
+        "an expired confirmation must not mint a credential"
+    );
+}
+
+#[tokio::test]
+async fn native_account_settings_confirmation_rotates_only_its_session_and_mints_once() {
+    let fixture = home_fixture::fixture();
+    let (account, other_token) = {
+        let conn = fixture.db.write().unwrap();
+        let account = crate::db::queries::users::validate_session(&conn, &fixture.token)
+            .unwrap()
+            .id;
+        conn.execute(
+            "UPDATE sessions SET created_at = datetime('now', '-16 minutes')",
+            [],
+        )
+        .unwrap();
+        let other = crate::db::queries::users::create_session(&conn, account, None).unwrap();
+        (account, other.token)
+    };
+    let mut request = Request::builder()
+        .method("POST")
+        .uri("/__native_settings/confirm_connect")
+        .header("host", "localhost")
+        .header("origin", "http://localhost")
+        .header("content-type", "application/json")
+        .header("cookie", format!("lific_token={}", fixture.token))
+        .body(Body::from(
+            serde_json::to_vec(
+                &(
+                    account,
+                    "codex".to_owned(),
+                    "Codex".to_owned(),
+                    Some("testpassword1".to_owned()),
+                )
+                    .into_surrogate(),
+            )
+            .unwrap(),
+        ))
+        .unwrap();
+    request.extensions_mut().insert(axum::extract::ConnectInfo(
+        "127.0.0.1:3000".parse::<std::net::SocketAddr>().unwrap(),
+    ));
+    let response = fixture.app.clone().oneshot(request).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "confirmation is a native procedure"
+    );
+    let cookie = response
+        .headers()
+        .get("set-cookie")
+        .expect("confirmation replaces the session")
+        .to_str()
+        .unwrap();
+    assert!(cookie.contains("HttpOnly"));
+    let replacement = cookie
+        .split(';')
+        .next()
+        .unwrap()
+        .strip_prefix("lific_token=")
+        .unwrap()
+        .to_owned();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(body["t"], "Result");
+    assert!(
+        body["ok"]
+            .as_str()
+            .is_some_and(|key| key.starts_with("lific_")),
+        "{body}"
+    );
+    assert!(
+        !body.to_string().contains(&replacement),
+        "HttpOnly authority stays out of the procedure body"
+    );
+    let conn = fixture.db.read().unwrap();
+    assert!(crate::db::queries::users::validate_session(&conn, &fixture.token).is_err());
+    assert!(crate::db::queries::users::validate_session(&conn, &replacement).is_ok());
+    assert!(crate::db::queries::users::validate_session(&conn, &other_token).is_ok());
+    assert_eq!(
+        crate::db::queries::users::list_bots(&conn, account)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn native_account_settings_failed_confirmation_keeps_credentials_unchanged() {
+    for password in [None, Some("incorrect".to_owned())] {
+        let fixture = home_fixture::fixture();
+        let account = crate::db::queries::users::validate_session(
+            &fixture.db.read().unwrap(),
+            &fixture.token,
+        )
+        .unwrap()
+        .id;
+        let (status, body) = home_fixture::procedure(
+            &fixture,
+            "/__native_settings/confirm_connect",
+            serde_json::to_value(
+                (account, "codex".to_owned(), "Codex".to_owned(), password).into_surrogate(),
+            )
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "confirmation errors retain the dialog: {body}"
+        );
+        assert_eq!(body["err"]["v"]["requires_confirmation"], true, "{body}");
+        assert_eq!(body["err"]["v"]["automatic_confirmation"], false, "{body}");
+        let conn = fixture.db.read().unwrap();
+        assert!(crate::db::queries::users::validate_session(&conn, &fixture.token).is_ok());
+        assert!(
+            crate::db::queries::users::list_bots(&conn, account)
+                .unwrap()
+                .is_empty()
+        );
+    }
+}
+
+#[tokio::test]
 async fn native_account_settings_connect_rejects_control_characters_like_the_auth_api() {
     let fixture = home_fixture::fixture();
     let account =
@@ -362,12 +523,23 @@ async fn native_account_settings_connect_rejects_control_characters_like_the_aut
             account,
             "codex".to_owned(),
             "Codex\nInjected name".to_owned(),
-            None::<String>,
         )
             .into_surrogate(),
     )
     .unwrap();
-    let _ = home_fixture::procedure(&fixture, "/__native_settings/connect", arguments).await;
+    let (status, body) =
+        home_fixture::procedure(&fixture, "/__native_settings/connect", arguments).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "validation is returned to the native dialog: {body}"
+    );
+    assert!(
+        body["err"]["v"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("without control characters")),
+        "{body}"
+    );
 
     let bots = crate::db::queries::users::list_bots(&fixture.db.read().unwrap(), account).unwrap();
     assert!(

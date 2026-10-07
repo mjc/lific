@@ -5,6 +5,8 @@ mod appearance;
 mod profile;
 mod security;
 mod templates;
+mod tool_dialog;
+mod tool_setup;
 mod tools;
 mod view;
 
@@ -16,6 +18,8 @@ mod production;
 mod profile_production;
 #[cfg(test)]
 mod security_production;
+#[cfg(test)]
+mod tool_dialog_production;
 
 use super::super::shell::ParsedRoute;
 use super::{context, home_shell, session};
