@@ -1254,7 +1254,7 @@ pub(crate) fn handler_source() -> &'static str {
             palette_waiting.set(false);
         };
         let _palette_input = |_event: Event| {
-            let id = raw!("cx.hydrate(${_event}.target.id || '')", String::new());
+            let id = _event.target.id;
             if id == "native-home-palette-query" {
                 palette_query.set(_event.target.value);
                 raw!("${_start_query}();", ());
@@ -1442,7 +1442,7 @@ pub(crate) fn handler_source() -> &'static str {
         };
         raw!("${_present}(cx.hydrate(false));", ());
         let _history = |_event: Event| {
-            let event_type = raw!("cx.hydrate(${_event}.type)", String::new());
+            let event_type = _event.event_type;
             let _pop = event_type == "popstate";
             raw!("${_present}(${_pop});", ());
         };
@@ -1465,7 +1465,7 @@ pub(crate) fn handler_source() -> &'static str {
         raw!("${_resize}(null);", ());
         let _palette_opener = |_event: Event| {
             let opener = raw!(
-                "cx.hydrate(${_event}.target.closest('#native-home-palette-open,#native-home-quick-jump,#native-home-palette-close')?.id || '')",
+                "cx.hydrate(${_event}.inner.target.closest('#native-home-palette-open,#native-home-quick-jump,#native-home-palette-close')?.id || '')",
                 String::new()
             );
             if opener == "native-home-palette-close" {
@@ -1479,19 +1479,22 @@ pub(crate) fn handler_source() -> &'static str {
         };
         let _keyboard = |_event: Event| {
             if sidebar_menu.get().is_empty() {
-                let key = raw!("cx.hydrate(${_event}.key)", String::new());
+                let key = _event.key.clone();
                 if key == "Escape" {
                     if theme_menu.get() {
                         theme_menu.set(false);
                     } else {
                         if mobile_open.get() {
-                            raw!("${_event}.preventDefault(); history.back();", ());
+                            _event.prevent_default();
+                            raw!("history.back();", ());
                         } else {
                             if palette_open.get() {
                                 raw!("${_close_palette}();", ());
                                 let _opener = palette_return_focus.get();
+                                _event.prevent_default();
+                                _event.stop_propagation();
                                 raw!(
-                                    "${_event}.preventDefault(); ${_event}.stopPropagation(); queueMicrotask(() => document.getElementById(${_opener}.toString())?.focus());",
+                                    "queueMicrotask(() => document.getElementById(${_opener}.toString())?.focus());",
                                     ()
                                 );
                             }
@@ -1499,7 +1502,7 @@ pub(crate) fn handler_source() -> &'static str {
                     }
                 } else {
                     if palette_open.get() {
-                        let id = raw!("cx.hydrate(${_event}.target.id || '')", String::new());
+                        let id = _event.target.id.clone();
                         if id == "native-home-palette-query" {
                             // A visible current server projection is ready before
                             // its asynchronous mount callback updates our signals.
@@ -1528,7 +1531,7 @@ pub(crate) fn handler_source() -> &'static str {
                                 palette_waiting.set(false);
                             }
                             if key == "ArrowDown" {
-                                raw!("${_event}.preventDefault();", ());
+                                _event.prevent_default();
                                 palette_cursor_moved.set(true);
                                 if palette_count.get() > 0usize {
                                     if palette_selected.get() + 1usize < palette_count.get() {
@@ -1537,19 +1540,19 @@ pub(crate) fn handler_source() -> &'static str {
                                 }
                             } else {
                                 if key == "ArrowUp" {
-                                    raw!("${_event}.preventDefault();", ());
+                                    _event.prevent_default();
                                     palette_cursor_moved.set(true);
                                     if palette_selected.get() > 0usize {
                                         palette_selected.decrement();
                                     }
                                 } else {
                                     if key == "Enter" {
-                                        raw!("${_event}.preventDefault();", ());
+                                        _event.prevent_default();
                                         let new_tab =
-                                            if raw!("cx.hydrate(${_event}.metaKey)", false) {
+                                            if _event.meta_key {
                                                 true
                                             } else {
-                                                raw!("cx.hydrate(${_event}.ctrlKey)", false)
+                                                _event.ctrl_key
                                             };
                                         if palette_waiting.get() {
                                             palette_pending_enter.set(true);
@@ -1611,13 +1614,14 @@ pub(crate) fn handler_source() -> &'static str {
                                         "[data-native-mobile-project]:not([hidden])"
                                     }
                                 };
+                                let _backwards = _event.shift_key;
                                 raw!(
                                     r#"(() => {
                                 const pane=document.querySelector(${_pane}.toString());
                                 const items=Array.from(pane.querySelectorAll('button:not(:disabled),a[href],input:not(:disabled),[tabindex="0"]')).filter(element=>element.getClientRects().length && !element.closest('[inert]'));
                                 const first=items[0],last=items.at(-1),active=document.activeElement;
-                                if (${_event}.shiftKey ? active===first || !pane.contains(active) : active===last || !pane.contains(active)) {
-                                    ${_event}.preventDefault(); (${_event}.shiftKey ? last : first)?.focus();
+                                if (${_backwards}.dehydrate() ? active===first || !pane.contains(active) : active===last || !pane.contains(active)) {
+                                    ${_event}.prevent_default(); (${_backwards}.dehydrate() ? last : first)?.focus();
                                 }
                             })();"#,
                                     ()
@@ -1642,7 +1646,7 @@ pub(crate) fn handler_source() -> &'static str {
                             }
                         };
                         let inside = raw!(
-                            "cx.hydrate(document.querySelector(${_pane}.toString())?.contains(${_event}.target) || false)",
+                            "cx.hydrate(document.querySelector(${_pane}.toString())?.contains(${_event}.inner.target) || false)",
                             false
                         );
                         if !inside {
@@ -1657,7 +1661,7 @@ pub(crate) fn handler_source() -> &'static str {
         };
         let _before_navigation_commit = |_event: Event| {
             let traversal = raw!(
-                "cx.hydrate(${_event}.detail.mode === 'traverse')",
+                "cx.hydrate(${_event}.inner.detail.mode === 'traverse')",
                 false
             );
             if !traversal {
@@ -1674,7 +1678,7 @@ pub(crate) fn handler_source() -> &'static str {
                     let _steps = if _drawer_pane == "root" { -1_i32 } else { -2_i32 };
                     raw!(
                         r#"(() => {
-                            const event=${_event}, signal=event.detail.signal, root=document.querySelector('.native-home-shell');
+                            const event=${_event}.inner, signal=event.detail.signal, root=document.querySelector('.native-home-shell');
                             if(!root) { event.detail.waitUntil(Promise.reject(new Error('navigation owner ended'))); return; }
                             let work=root.__topcoatDrawerUnwind;
                             if(!work) {
@@ -1703,7 +1707,7 @@ pub(crate) fn handler_source() -> &'static str {
                     );
                 } else {
                     raw!(
-                        "${_event}.detail.waitUntil(Promise.reject(new Error('drawer history entry is no longer owned')));",
+                        "${_event}.inner.detail.waitUntil(Promise.reject(new Error('drawer history entry is no longer owned')));",
                         ()
                     );
                 }
@@ -1711,15 +1715,15 @@ pub(crate) fn handler_source() -> &'static str {
             }
         };
         raw!(
-            "window.addEventListener('keydown', ${_keyboard}, {signal:cx.abortSignal});",
+            "window.addEventListener('keydown', event => ${_keyboard}(cx.event(event)), {signal:cx.abortSignal});",
             ()
         );
         raw!(
-            "window.addEventListener('click', ${_palette_opener}, {capture:true,signal:cx.abortSignal});",
+            "window.addEventListener('click', event => ${_palette_opener}(cx.event(event)), {capture:true,signal:cx.abortSignal});",
             ()
         );
         raw!(
-            "window.addEventListener('input', ${_palette_input}, {signal:cx.abortSignal});",
+            "window.addEventListener('input', event => ${_palette_input}(cx.event(event)), {signal:cx.abortSignal});",
             ()
         );
         raw!(
@@ -1727,23 +1731,23 @@ pub(crate) fn handler_source() -> &'static str {
             ()
         );
         raw!(
-            "window.addEventListener('focusin', ${_focus}, {signal:cx.abortSignal});",
+            "window.addEventListener('focusin', event => ${_focus}(cx.event(event)), {signal:cx.abortSignal});",
             ()
         );
         raw!(
-            "window.addEventListener('popstate', ${_history}, {signal:cx.abortSignal});",
+            "window.addEventListener('popstate', event => ${_history}(cx.event(event)), {signal:cx.abortSignal});",
             ()
         );
         raw!(
-            "document.addEventListener('topcoat:before-navigation-commit', ${_before_navigation_commit}, {signal:cx.abortSignal});",
+            "document.addEventListener('topcoat:before-navigation-commit', event => ${_before_navigation_commit}(cx.event(event)), {signal:cx.abortSignal});",
             ()
         );
         raw!(
-            "window.addEventListener('hashchange', ${_history}, {signal:cx.abortSignal});",
+            "window.addEventListener('hashchange', event => ${_history}(cx.event(event)), {signal:cx.abortSignal});",
             ()
         );
         raw!(
-            "window.matchMedia('(min-width: 768px)').addEventListener('change', ${_resize}, {signal:cx.abortSignal});",
+            "window.matchMedia('(min-width: 768px)').addEventListener('change', event => ${_resize}(cx.event(event)), {signal:cx.abortSignal});",
             ()
         );
     });
