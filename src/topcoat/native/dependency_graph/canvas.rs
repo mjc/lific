@@ -33,6 +33,7 @@ pub(super) fn content<'a>(
     let menu_kind = signal(cx, String::new);
     let menu_source = signal(cx, String::new);
     let menu_target = signal(cx, String::new);
+    let zoom = signal(cx, || 1.0_f64);
     let project = project.to_owned();
     view! {
         cx =>
@@ -50,7 +51,8 @@ pub(super) fn content<'a>(
             error: error,
             menu_kind: menu_kind,
             menu_source: menu_source,
-            menu_target: menu_target
+            menu_target: menu_target,
+            zoom: zoom
         )
     }
     .boxed()
@@ -73,6 +75,7 @@ async fn graph_content(
     menu_kind: Signal<String>,
     menu_source: Signal<String>,
     menu_target: Signal<String>,
+    zoom: Signal<f64>,
 ) -> topcoat::Result<impl View> {
     let editable = authority.can_edit_content;
     let linked_selected = canvas.clone();
@@ -221,6 +224,27 @@ async fn graph_content(
         .collect::<Vec<_>>();
     let connect_target = menu_target.clone();
     let menu_open = menu_kind.clone();
+    let zoom_in_state = zoom.clone();
+    let zoom_out_state = zoom.clone();
+    let _graph_width = graph_width + 8.0;
+    let _graph_height = graph_height + 8.0;
+    let _zoom_style = zoom.clone();
+    let transform_initial = format!(
+        "width:{_graph_width}px;height:{_graph_height}px;transform-origin:0 0;transform:scale({})",
+        _zoom_style.get_untracked()
+    );
+    let zoom_in = view! { cx =>
+        <button type="button" aria-label="Zoom in" class="size-9 rounded-md hover:bg-[var(--bg-subtle)]" data-native-graph-zoom="in" @click=$(|_event: Event| {
+            let next = zoom_in_state.get() * 1.2;
+            zoom_in_state.set(if next > 2.0 { 2.0 } else { next });
+        })>"+"</button>
+    }.boxed();
+    let zoom_out = view! { cx =>
+        <button type="button" aria-label="Zoom out" class="size-9 rounded-md hover:bg-[var(--bg-subtle)]" data-native-graph-zoom="out" @click=$(|_event: Event| {
+            let next = zoom_out_state.get() / 1.2;
+            zoom_out_state.set(if next < 0.1 { 0.1 } else { next });
+        })>"−"</button>
+    }.boxed();
     let menu_header = if menu_kind.get() == "edge" {
         "Manage relation"
     } else {
@@ -340,19 +364,21 @@ async fn graph_content(
             } else {
                 <section class="native-dependency-graph__viewport relative min-h-0 flex-1 overflow-hidden" data-native-graph-viewport="" data-canvas=(canvas_name)>
                     <div class="absolute left-3 top-3 z-10 flex gap-1 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-1">
-                        <button type="button" aria-label="Zoom out" class="size-9 rounded-md hover:bg-[var(--bg-subtle)]" data-native-graph-zoom="out">"−"</button>
+                        (zoom_out)
                         <button type="button" aria-label="Fit graph to view" class="size-9 rounded-md hover:bg-[var(--bg-subtle)]" data-native-graph-fit="">"⌗"</button>
-                        <button type="button" aria-label="Zoom in" class="size-9 rounded-md hover:bg-[var(--bg-subtle)]" data-native-graph-zoom="in">"+"</button>
+                        (zoom_in)
                     </div>
                     <div class="absolute inset-0 overflow-auto" style="background-image: radial-gradient(var(--border) 1px, transparent 1px); background-size: 24px 24px;">
                         <div class="relative mx-auto" data-native-graph-surface="" style=(format!("width:{}px;height:{}px;min-width:100%;min-height:100%", graph_width + 8.0, graph_height + 8.0))>
-                            <svg class="pointer-events-none absolute inset-0 overflow-visible" width=(graph_width + 8.0) height=(graph_height + 8.0) viewBox=(format!("0 0 {} {}", graph_width + 8.0, graph_height + 8.0)) aria-hidden="true">
-                                <defs>
-                                    <marker id="native-graph-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="var(--text-faint)"></path></marker>
-                                </defs>
-                                for item in edges { (item) }
-                            </svg>
-                            for item in nodes { (item) }
+                            <div class="absolute left-0 top-0" data-native-graph-transform="" :style=$(raw!("cx.hydrate('width:'+${_graph_width}.toString()+'px;height:'+${_graph_height}.toString()+'px;transform-origin:0 0;transform:scale('+${_zoom_style}.get().toString()+')')", transform_initial.clone()))>
+                                <svg class="pointer-events-none absolute inset-0 overflow-visible" width=(graph_width + 8.0) height=(graph_height + 8.0) viewBox=(format!("0 0 {} {}", graph_width + 8.0, graph_height + 8.0)) aria-hidden="true">
+                                    <defs>
+                                        <marker id="native-graph-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="var(--text-faint)"></path></marker>
+                                    </defs>
+                                    for item in edges { (item) }
+                                </svg>
+                                for item in nodes { (item) }
+                            </div>
                         </div>
                     </div>
                 </section>
