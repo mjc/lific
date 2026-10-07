@@ -14,6 +14,8 @@ mod appearance_production;
 mod production;
 #[cfg(test)]
 mod profile_production;
+#[cfg(test)]
+mod security_production;
 
 use super::super::shell::ParsedRoute;
 use super::{context, home_shell, session};
