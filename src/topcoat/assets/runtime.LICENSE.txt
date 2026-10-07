@@ -22,54 +22,12 @@ SOFTWARE.
 
 ## Vendored file provenance
 
-- Package: `topcoat-runtime` 0.9.0, pinned by the `topcoat = "=0.9.0"`
-  dependency and `Cargo.lock`.
-- Source file: `browser/dist/index.js` from the unpacked `topcoat-runtime`
-  0.9.0 crate.
-- Upstream source: <https://github.com/tokio-rs/topcoat/tree/v0.9.0/crates/topcoat-runtime/browser/dist/index.js>
-- Crate SHA-256: `c4c4dc39a1c6ef6f0f604ecba3949baf401a30b5b44e7b3f830c3509e6b560dd`
-- Unmodified upstream file SHA-256: `980dd1be1962006b98b8c1646b0e6a4f86a78ec721e2739f59ddf4c4c1c5c8b4`
-- Lific transport patch: prepend `topcoatMountedEndpoint`, then apply it at
-  the two `fetch(this.path)` calls and the shard's `url()` method.
-- Lific tuple compatibility patch: prepend `topcoatHydrateTuple`, then add
-  array guards to the framework hydration (`V`) and dehydration (`f`) functions.
-  This supports the untagged arrays emitted by Rust tuple serialization.
-- Lific lifecycle patch: prepend the generic scoped mount helper, then defer
-  `@mount` factories and callbacks through it at the event-handler setup site.
-  Mount factories receive a private context exposing the real owning scope's
-  abort signal, so browser subscriptions can share its lifetime.
-- Lific connected-render patch: select requested connections in `P.refresh()`
-  while loading, handshaking, or reconnecting; route connection-required children
-  to an ancestor with an existing or requested connection. Opening the socket
-  reads fresh inputs through the existing upstream handler.
-- Lific comment decoding patch: treat literal `<` in marker payloads as text
-  before decoding HTML entities, preserving string values during hydration.
-- Lific navigation patch: let the document Runtime claim its first redirect
-  before navigation starts. Sibling socket frames and redirected HTTP responses
-  share this terminal claim; each new document has a fresh Runtime.
-- Lific procedure keepalive patch: add generic `call_keepalive` and typed-call
-  `with_keepalive` adapter methods sharing the existing POST/Future pipeline.
-  Both call paths reject HTTP redirects without following them; only keepalive
-  calls set `keepalive: true`.
-- Lific generic vector signal patch: add immutable typed push/remove writes to
-  WriteSignal and cloning Vec helpers. Index validation preserves usize width
-  and bounds; no application policy is included.
-- Lific native-event patch: expose Context.event using the existing Event
-  surrogate for DOM event primitives; wire hydration remains unchanged.
-- Lific generic render-error patch: current live units log and emit a bubbling
-  path-scoped DOM notification; disposed units retain logging without notifying.
-- All remaining upstream framework code is unchanged. Removing the 27
-  prepended helper/comment lines and reversing these twenty-two substitutions
-  reproduces the unmodified upstream bytes. See `../native/TRANSPORT.md`.
-- Patched file SHA-256: `80c08d7fbc45bc682c8b82d9a0786f05243ed282ab472123dc7ba33e3f984b75`
-
-Generic Unicode string operations add to_uppercase and unicode_scalars. Scalar
-strings use the existing owned String and Vec values; target usize width is
-validated. Reversing their one declared Str-method substitution preserves the
-original pinned upstream SHA-256.
-
-Generic ECMAScript whitespace adds trim_ecmascript on Str. It returns the
-existing owned String surrogate using String.prototype.trim. The matching
-Rust extension enumerates ECMAScript WhiteSpace and LineTerminator; ordinary
-Rust trim retains its existing Unicode White_Space behavior. The one additional
-declared method substitution reverses to the exact pinned upstream bytes.
+- Package: `topcoat-runtime` 0.10.0, pinned by Cargo metadata.
+- Source file: `crates/topcoat-runtime/browser/dist/index.js`.
+- Rebased fork source: <https://github.com/mjc/topcoat/blob/9c909ed4ea16b7058ae23c5e1938c83039f3e985/crates/topcoat-runtime/browser/dist/index.js>.
+- The unmodified fork asset SHA-256 is `deb99dd257cc94b3142561f99c47891a7d36cf3f79ea21dec7acaa12d68bc965`; it matches the rebased upstream/main asset at `8cdc2bfd61c01491853a55e74046162ebcfc8331`.
+- Framework crates use this exact Git revision; this is not a crates.io archive.
+- Lific patched asset SHA-256: `2c92d3af33e29a08e773e8a023d792bab7210e94d583da4e43f500910e95e2f1`.
+- Lific prepends the mounted-endpoint and scoped-mount helpers, then applies twenty-nine reversible substitutions. They cover mounted HTTP paths and logical page Run paths, no-HTTP-fallback connected refresh, comment decoding, scoped `@mount` and ordinary event contexts, native Event access, vector signal writes, Unicode uppercase/scalar operations, ECMAScript trimming, procedure keepalive/manual redirects, document-wide redirect arbitration including runless socket redirects, scoped render-error events, fresh page socket ownership, programmatic native navigation, and cancellable page-owner commit/transfer events.
+- Topcoat 0.10 upstream already implements tuple surrogate support and the shared document WebSocket Run/Stop protocol. The local asset keeps those implementations unchanged.
+- `transport.test.cjs` reconstructs the fork asset by removing the exact helper prefix and reversing each declared substitution.
