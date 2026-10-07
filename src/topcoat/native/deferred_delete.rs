@@ -532,6 +532,13 @@ mod tests {
     use std::{io::Write, process::Stdio, sync::Arc};
     use topcoat::{context::CxTestBuilder, router::RemoteAddr};
 
+    #[topcoat::view::component]
+    async fn owner_fixture(cx: &Cx) -> topcoat::Result<impl topcoat::view::View> {
+        let owner_cx = cx.keyed((7_i64, "ACC"));
+        let pending = signal(&owner_cx, Vec::<i64>::new);
+        Ok(view! { cx => (owner(&owner_cx, 7, "ACC", pending)) })
+    }
+
     async fn markup(mount: &str) -> String {
         let (mut parts, ()) = axum::http::Request::builder()
             .header("x-forwarded-prefix", mount)
@@ -547,9 +554,7 @@ mod tests {
             .request_context(parts)
             .app_context(proxies)
             .build();
-        let cx = cx.keyed((7_i64, "ACC"));
-        let pending = signal(&cx, Vec::<i64>::new);
-        owner(&cx, 7, "ACC", pending)
+        view! { cx => owner_fixture() }
             .single()
             .await
             .unwrap()
