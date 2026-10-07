@@ -3,6 +3,7 @@
 mod actions;
 mod canvas;
 pub(crate) mod model;
+mod viewport;
 
 use super::super::shell::{Page, ParsedRoute};
 use super::{context, home_shell, navigation, project_authority, session};
@@ -58,9 +59,19 @@ pub(crate) fn region<'a>(
     let topbar = view! {
         cx =>
         <div class="flex items-center gap-1.5 px-6 py-2 w-full text-body-sm">
-            <a class="font-mono font-medium text-[var(--text-muted)] hover:text-[var(--text)] no-underline" (overview)>(identifier.clone())</a>
+            <a
+                class="font-mono font-medium text-[var(--text-muted)] hover:text-[var(--text)] no-underline"
+                (overview)
+            >
+                (identifier.clone())
+            </a>
             <span class="text-[var(--text-faint)]">"›"</span>
-            <a class="text-[var(--text-muted)] hover:text-[var(--text)] no-underline" (graph)>"Dependency graph"</a>
+            <a
+                class="text-[var(--text-muted)] hover:text-[var(--text)] no-underline"
+                (graph)
+            >
+                "Dependency graph"
+            </a>
         </div>
     }.boxed();
     Ok(home_shell::page_region(
