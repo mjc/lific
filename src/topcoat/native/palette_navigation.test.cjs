@@ -9,11 +9,14 @@ const {mount,source} = input;
 const runtime = fs.readFileSync('src/topcoat/assets/runtime.js','utf8');
 const decode = text => text.replace(/&(?:quot|apos|amp|lt|gt|#39);/g,value=>({'&quot;':'"','&apos;':"'",'&amp;':'&','&lt;':'<','&gt;':'>' ,'&#39;':"'"})[value]);
 const attrs = tag => Object.fromEntries([...tag.matchAll(/([\w:-]+)="([^"]*)"/g)].map(([,key,value])=>[key,decode(value)]));
+// Rust-generated expressions can contain a literal > inside quoted attributes.
+const tags = html => [...html.matchAll(/<([a-z]+)\b(?:[^"'>]|"[^"]*"|'[^']*')*>/g)];
 
 function fixture(markup) {
   const document=new EventTarget(), window=new EventTarget(), scope=new AbortController();setMaxListeners(0,scope.signal);
-  const nav=attrs(markup.html.match(/<nav[^>]*class="native-home-palette-results"[^>]*>/)[0]);
-  const rows=[...markup.html.matchAll(/<a\s[^>]*>/g)].map(match=>attrs(match[0])).filter(row=>'data-palette-index' in row);
+  const elements=tags(markup.html);
+  const nav=elements.filter(match=>match[1]==='nav').map(match=>attrs(match[0])).find(row=>row.class==='native-home-palette-results');
+  const rows=elements.filter(match=>match[1]==='a').map(match=>attrs(match[0])).filter(row=>'data-palette-index' in row);
   const root={}, navigations=[], tabs=[], media=new EventTarget();media.matches=false;
   const location={href:`http://localhost${mount}/`,assign:()=>{throw new Error('Unexpected hard navigation');}};
   const node=row=>({getAttribute:name=>row[name],scrollIntoView:()=>{}});
@@ -25,7 +28,7 @@ function fixture(markup) {
     const index=selector.match(/data-palette-index="(\d+)"/);
     return index?node(rows.find(row=>row['data-palette-index']===index[1])):null;
   };
-  window.matchMedia=()=>media;window.open=(...args)=>tabs.push(args);
+  window.location=location;window.matchMedia=()=>media;window.open=(...args)=>tabs.push(args);
   const context={TextEncoder,TextDecoder,AbortController,Event,document,window,location,queueMicrotask,
     history:{state:null},crypto:require('node:crypto').webcrypto,localStorage:{getItem:()=>null},setTimeout,clearTimeout};
   const bootstrap='var et=new ye;et.start(document);et.page.listenForDevRefresh();';
