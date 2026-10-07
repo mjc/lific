@@ -1,5 +1,5 @@
 use super::super::super::runtime::whitespace::StrEcmaTrimExt;
-use super::super::{context, mascot, session, transport};
+use super::super::{context, mascot, navigation, session, transport};
 use crate::{
     db::models::{CreatePlan, Plan, Project, Role},
     error::LificError,
@@ -54,19 +54,92 @@ pub(super) fn content<'a>(
             busy: busy.clone(),
         },
     );
-    Ok(view! { owner =>
+    Ok(view! {
+        owner =>
         <main data-native-plans=(project_for_main) class="h-full overflow-y-auto">
             <div class="max-w-[860px] mx-auto px-6 py-6">
-                <div class="flex items-center justify-between mb-4"><h1 class="text-heading font-semibold text-[var(--text)] m-0">"Plans"</h1>if can_edit {<button type="button" class="text-body-sm font-medium text-[var(--tc-btn-success-text)] bg-[var(--tc-btn-success)] px-2.5 py-1 rounded-md hover:opacity-90" :hidden=$(if creating.get(){true}else{if active.get()=="active"{false}else{if active.get()=="all"{false}else{true}}}) @click=$(|_event: Event| { draft.set("".to_owned()); message.set("".to_owned()); creating.set(true); })>"＋ Plan"</button>}</div>
+                <div class="flex items-center justify-between mb-4">
+                    <h1 class="text-heading font-semibold text-[var(--text)] m-0">
+                        "Plans"
+                    </h1>
+                    if can_edit {
+                        <button
+                            type="button"
+                            class="text-body-sm font-medium text-[var(--tc-btn-success-text)] bg-[var(--tc-btn-success)] px-2.5 py-1 rounded-md hover:opacity-90"
+                            :hidden=$(if creating.get() {
+                                true
+                            } else {
+                                if active.get() == "active" {
+                                    false
+                                } else {
+                                    if active.get() == "all" { false } else { true }
+                                }
+                            })
+                            @click=$(|_event: Event| {
+                                draft.set("".to_owned());
+                                message.set("".to_owned());
+                                creating.set(true);
+                            })
+                        >
+                            "＋ Plan"
+                        </button>
+                    }
+                </div>
                 if can_edit {
-                <form class="mb-5 flex items-center gap-3 p-3 rounded-xl border-l-2 border-l-[var(--tc-btn-success)] bg-[var(--surface)]" :hidden=$(if creating.get(){if active.get()=="active"{false}else{if active.get()=="all"{false}else{true}}}else{true}) (create)>
-                    <input class="flex-1 bg-transparent outline-none text-body text-[var(--text)]" placeholder="Plan title…" :value=$(draft.get()) @input=$(|event: Event| draft.set(event.target.value)) />
-                    <button class="text-body-sm font-medium text-[var(--tc-btn-success)] hover:underline disabled:opacity-50" type="submit" :disabled=$(busy.get())>$(if busy.get(){"Creating…"}else{"Create"})</button>
-                    <button type="button" class="text-body-sm text-[var(--text-muted)]" :disabled=$(busy.get()) @click=$(|_event: Event| { creating.set(false); message.set("".to_owned()); })>"Cancel"</button>
-                </form>
+                    <form
+                        class="mb-5 flex items-center gap-3 p-3 rounded-xl border-l-2 border-l-[var(--tc-btn-success)] bg-[var(--surface)]"
+                        :hidden=$(if creating.get() {
+                            if active.get() == "active" {
+                                false
+                            } else {
+                                if active.get() == "all" { false } else { true }
+                            }
+                        } else {
+                            true
+                        })
+                        (create)
+                    >
+                        <input
+                            class="flex-1 bg-transparent outline-none text-body text-[var(--text)]"
+                            placeholder="Plan title…"
+                            :value=$(draft.get())
+                            @input=$(|event: Event| draft.set(event.target.value))
+                        />
+                        <button
+                            class="text-body-sm font-medium text-[var(--tc-btn-success)] hover:underline disabled:opacity-50"
+                            type="submit"
+                            :disabled=$(busy.get())
+                        >
+                            $(if busy.get() { "Creating…" } else { "Create" })
+                        </button>
+                        <button
+                            type="button"
+                            class="text-body-sm text-[var(--text-muted)]"
+                            :disabled=$(busy.get())
+                            @click=$(|_event: Event| {
+                                creating.set(false);
+                                message.set("".to_owned());
+                            })
+                        >
+                            "Cancel"
+                        </button>
+                    </form>
                 }
-                <p role="alert" class="text-body-sm text-[var(--error)] mb-3" :hidden=$(message.get().is_empty())>$(message.get())</p>
-                native_plan_list_body(account: account, project: project_for_body, selected_tab: $(active.get()), active: active, creating_state: creating, draft: draft)
+                <p
+                    role="alert"
+                    class="text-body-sm text-[var(--error)] mb-3"
+                    :hidden=$(message.get().is_empty())
+                >
+                    $(message.get())
+                </p>
+                native_plan_list_body(
+                    account: account,
+                    project: project_for_body,
+                    selected_tab: $(active.get()),
+                    active: active,
+                    creating_state: creating,
+                    draft: draft
+                )
             </div>
         </main>
     }.boxed())
@@ -111,7 +184,7 @@ fn create_attributes(
                     creating.set(false);
                     draft.set("".to_owned());
                     raw!(
-                        "window.location.assign(${destination}.toString()+${_id}.toString());",
+                        "cx.navigate(${destination}.toString()+${_id}.toString());",
                         ()
                     );
                 };
@@ -217,12 +290,21 @@ mod row_shards {
                     .collect::<Vec<_>>();
                 if !group.is_empty() {
                     let project_for_group = project.clone();
-                    groups.push(view! { cx =>
-                    <section class="mb-6" data-plan-status=(status)>
-                        <h2 class="text-micro font-semibold uppercase tracking-wide text-[var(--text-faint)] mb-2">(format!("{} · {}", status_label(status), group.len()))</h2>
-                        <div class="flex flex-col gap-2">for plan in group {(plan_card(cx, &project_for_group, plan))}</div>
-                    </section>
-                }.boxed());
+                    groups.push(view! {
+                        cx =>
+                        <section class="mb-6" data-plan-status=(status)>
+                            <h2
+                                class="text-micro font-semibold uppercase tracking-wide text-[var(--text-faint)] mb-2"
+                            >
+                                (format!("{} · {}", status_label(status), group.len()))
+                            </h2>
+                            <div class="flex flex-col gap-2">
+                                for plan in group {
+                                    (plan_card(cx, &project_for_group, plan))
+                                }
+                            </div>
+                        </section>
+                    }.boxed());
                 }
             }
             groups
@@ -243,21 +325,61 @@ mod row_shards {
         };
         let empty_action = if can_edit && show_empty_intro {
             let creating = creating_state;
-            Some(view! { cx => <button type="button" class="mt-1 text-body-sm font-medium text-[var(--tc-btn-success-text)] bg-[var(--tc-btn-success)] px-3 py-1.5 rounded-md hover:opacity-90" @click=$(move |_event: Event| { draft.set("".to_owned()); creating.set(true); })>"＋ Create a plan"</button> }.boxed())
+            Some(view! {
+                cx =>
+                <button
+                    type="button"
+                    class="mt-1 text-body-sm font-medium text-[var(--tc-btn-success-text)] bg-[var(--tc-btn-success)] px-3 py-1.5 rounded-md hover:opacity-90"
+                    @click=$(move |_event: Event| {
+                        draft.set("".to_owned());
+                        creating.set(true);
+                    })
+                >
+                    "＋ Create a plan"
+                </button>
+            }.boxed())
         } else {
             None
         };
-        Ok(view! { cx =>
-            <nav class="flex gap-1 p-1 rounded-lg bg-[var(--bg)] w-fit mb-6" aria-label="Plan status" role="tablist">for tab in tabs {(tab)}</nav>
+        Ok(view! {
+            cx =>
+            <nav
+                class="flex gap-1 p-1 rounded-lg bg-[var(--bg)] w-fit mb-6"
+                aria-label="Plan status"
+                role="tablist"
+            >
+                for tab in tabs {
+                    (tab)
+                }
+            </nav>
             if show_empty_intro {
-                <section class="flex flex-col items-center py-16 gap-4 px-6 max-w-[480px] mx-auto text-center">
+                <section
+                    class="flex flex-col items-center py-16 gap-4 px-6 max-w-[480px] mx-auto text-center"
+                >
                     (mascot::render(cx, mascot::Mascot::Writing, 0.25))
-                    <div class="flex flex-col items-center gap-1.5"><h1 class="text-heading font-medium text-[var(--text)]">"The drawing board's empty"</h1><p class="text-body-sm text-[var(--text-muted)] leading-relaxed">"A plan breaks a goal into a tree of steps that survives across sessions. Steps can mirror issues, so closing an issue checks off its step."</p></div>
-                    if let Some(button) = empty_action { (button) }
+                    <div class="flex flex-col items-center gap-1.5">
+                        <h1 class="text-heading font-medium text-[var(--text)]">
+                            "The drawing board's empty"
+                        </h1>
+                        <p
+                            class="text-body-sm text-[var(--text-muted)] leading-relaxed"
+                        >
+                            "A plan breaks a goal into a tree of steps that survives across sessions. Steps can mirror issues, so closing an issue checks off its step."
+                        </p>
+                    </div>
+                    if let Some(button) = empty_action {
+                        (button)
+                    }
                 </section>
             } else if selected_tab != "all" && selected_is_empty {
-                <p class="py-16 text-center text-heading text-[var(--text-muted)]">(empty_label(&selected_tab))</p>
-            } else { for row in rows {(row)} }
+                <p class="py-16 text-center text-heading text-[var(--text-muted)]">
+                    (empty_label(&selected_tab))
+                </p>
+            } else {
+                for row in rows {
+                    (row)
+                }
+            }
         })
     }
 }
@@ -271,7 +393,27 @@ fn tab_button<'a>(
 ) -> BoxView<'a> {
     let label = format!("{} {count}", status_label(status));
     let id = status.to_owned();
-    view! { cx => <button type="button" role="tab" class="px-2.5 py-1 rounded-md border-0 bg-transparent text-body-sm text-[var(--text-muted)] hover:text-[var(--text)] aria-selected:bg-[var(--surface)] aria-selected:text-[var(--text)]" :aria-selected=$(active.get() == id) @click=$(move |_event: Event| {active.set(id.clone());if id=="done"{creating.set(false);}else{if id=="archived"{creating.set(false);}}})>(label)</button> }.boxed()
+    view! {
+        cx =>
+        <button
+            type="button"
+            role="tab"
+            class="px-2.5 py-1 rounded-md border-0 bg-transparent text-body-sm text-[var(--text-muted)] hover:text-[var(--text)] aria-selected:bg-[var(--surface)] aria-selected:text-[var(--text)]"
+            :aria-selected=$(active.get() == id)
+            @click=$(move |_event: Event| {
+                active.set(id.clone());
+                if id == "done" {
+                    creating.set(false);
+                } else {
+                    if id == "archived" {
+                        creating.set(false);
+                    }
+                }
+            })
+        >
+            (label)
+        </button>
+    }.boxed()
 }
 
 fn plan_card<'a>(cx: &'a Cx, project: &str, plan: Plan) -> BoxView<'a> {
@@ -282,7 +424,7 @@ fn plan_card<'a>(cx: &'a Cx, project: &str, plan: Plan) -> BoxView<'a> {
     };
     let circumference = std::f64::consts::TAU * 18.0;
     let dash_offset = circumference * (1.0 - fraction);
-    let href = transport::mounted_url(cx, &format!("/{project}/plans/{}", plan.id));
+    let href = navigation::attrs(cx, &format!("/{project}/plans/{}", plan.id));
     let title = plan.title.clone();
     let identifier = format!(
         "{}{}",
@@ -295,14 +437,63 @@ fn plan_card<'a>(cx: &'a Cx, project: &str, plan: Plan) -> BoxView<'a> {
     let has_steps = plan.step_count > 0;
     let percent = format!("{}", (fraction * 100.0).round() as i64);
     let label = format!("{percent}% complete");
-    view! { cx =>
-        <a class="group flex items-center gap-3.5 p-3 rounded-xl bg-[var(--surface)] shadow-[0_1px_2px_rgba(0,0,0,0.06)] hover:shadow-[0_6px_16px_rgba(0,0,0,0.10)] transition motion-safe:hover:-translate-y-0.5 text-left no-underline" href=(href)>
-            <div class="size-10 shrink-0 relative flex items-center justify-center" role="img" aria-label=(label)>
-                <svg class="absolute inset-0 size-10 -rotate-90" viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="18" fill="none" stroke="var(--bg-subtle)" stroke-width="4"/><circle cx="20" cy="20" r="18" fill="none" stroke="var(--success)" stroke-width="4" stroke-linecap="round" stroke-dasharray=(format!("{circumference}")) stroke-dashoffset=(format!("{dash_offset}"))/></svg>
-                if has_steps { <span class="text-micro font-semibold tabular-nums text-[var(--text)] leading-none">(percent)</span> } else { <span class="text-[var(--text-faint)]" aria-hidden="true">"☷"</span> }
+    view! {
+        cx =>
+        <a
+            class="group flex items-center gap-3.5 p-3 rounded-xl bg-[var(--surface)] shadow-[0_1px_2px_rgba(0,0,0,0.06)] hover:shadow-[0_6px_16px_rgba(0,0,0,0.10)] transition motion-safe:hover:-translate-y-0.5 text-left no-underline"
+            (href)
+        >
+            <div
+                class="size-10 shrink-0 relative flex items-center justify-center"
+                role="img"
+                aria-label=(label)
+            >
+                <svg
+                    class="absolute inset-0 size-10 -rotate-90"
+                    viewBox="0 0 40 40"
+                    aria-hidden="true"
+                >
+                    <circle
+                        cx="20"
+                        cy="20"
+                        r="18"
+                        fill="none"
+                        stroke="var(--bg-subtle)"
+                        stroke-width="4"
+                    />
+                    <circle
+                        cx="20"
+                        cy="20"
+                        r="18"
+                        fill="none"
+                        stroke="var(--success)"
+                        stroke-width="4"
+                        stroke-linecap="round"
+                        stroke-dasharray=(format!("{circumference}"))
+                        stroke-dashoffset=(format!("{dash_offset}"))
+                    />
+                </svg>
+                if has_steps {
+                    <span
+                        class="text-micro font-semibold tabular-nums text-[var(--text)] leading-none"
+                    >
+                        (percent)
+                    </span>
+                } else {
+                    <span class="text-[var(--text-faint)]" aria-hidden="true">
+                        "☷"
+                    </span>
+                }
             </div>
-            <div class="flex-1 min-w-0"><div class="text-body text-[var(--text)] truncate">(title)</div><div class="text-caption text-[var(--text-faint)] font-mono">(identifier)</div></div>
-            <div class="text-caption text-[var(--text-muted)] tabular-nums shrink-0">(progress)</div>
+            <div class="flex-1 min-w-0">
+                <div class="text-body text-[var(--text)] truncate">(title)</div>
+                <div class="text-caption text-[var(--text-faint)] font-mono">
+                    (identifier)
+                </div>
+            </div>
+            <div class="text-caption text-[var(--text-muted)] tabular-nums shrink-0">
+                (progress)
+            </div>
         </a>
     }.boxed()
 }

@@ -164,13 +164,8 @@ pub(crate) fn socket_lifetime(
 }
 
 #[procedure("/__native_home/session")]
-pub(super) async fn native_home_session(cx: &Cx) -> topcoat::Result<(Option<i64>, bool)> {
-    // Pinned Topcoat cannot serialize a tuple nested inside Option by reference.
-    // Absence is explicit; the flag carries no authority when the ID is absent.
-    Ok(match current_account(cx)? {
-        Some((id, is_admin)) => (Some(id), is_admin),
-        None => (None, false),
-    })
+pub(super) async fn native_home_session(cx: &Cx) -> topcoat::Result<Option<(i64, bool)>> {
+    Ok(current_account(cx)?)
 }
 
 /// Compare fresh HTTP authority with the account that rendered the whole Home.
@@ -262,14 +257,14 @@ pub(crate) fn account_handler_factory() -> Js {
                                     if request_revision.get() == sent_revision {
                                         // A newer focus needs fresh cookies, regardless of this result.
                                         if !request_pending.get() {
-                                            let reload = if current.0.is_none() {
+                                            let reload = if current.is_none() {
                                                 true
                                             } else {
-                                                let current_id = current.0.unwrap();
-                                                if current_id != account_id {
+                                                let account = current.unwrap();
+                                                if account.0 != account_id {
                                                     true
                                                 } else {
-                                                    current.1 != is_admin
+                                                    account.1 != is_admin
                                                 }
                                             };
                                             if reload {

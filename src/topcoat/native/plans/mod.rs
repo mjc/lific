@@ -3,7 +3,7 @@ mod detail;
 mod list;
 
 use super::super::shell::{Page, ParsedRoute};
-use super::{context, home_shell, session, transport};
+use super::{context, home_shell, navigation, session};
 use crate::error::LificError;
 use topcoat::{
     context::Cx,
@@ -46,13 +46,24 @@ pub(super) fn region<'a>(
         Page::PlanDetail(id) => detail::content(cx, &project, user.id, id)?,
         _ => return Err(topcoat::router::error::not_found().into()),
     };
-    let overview = transport::mounted_url(cx, &format!("/{identifier}/overview"));
-    let plans = transport::mounted_url(cx, &format!("/{identifier}/plans"));
-    let topbar = view! { cx =>
+    let overview = navigation::attrs(cx, &format!("/{identifier}/overview"));
+    let plans = navigation::attrs(cx, &format!("/{identifier}/plans"));
+    let topbar = view! {
+        cx =>
         <div class="flex items-center gap-1.5 px-6 py-2 w-full text-body-sm">
-            <a class="font-mono font-medium text-[var(--text-muted)] hover:text-[var(--text)] no-underline" href=(overview)>(identifier.clone())</a>
+            <a
+                class="font-mono font-medium text-[var(--text-muted)] hover:text-[var(--text)] no-underline"
+                (overview)
+            >
+                (identifier.clone())
+            </a>
             <span class="text-[var(--text-faint)]">"›"</span>
-            <a class="text-[var(--text-muted)] hover:text-[var(--text)] no-underline" href=(plans)>"Plans"</a>
+            <a
+                class="text-[var(--text-muted)] hover:text-[var(--text)] no-underline"
+                (plans)
+            >
+                "Plans"
+            </a>
         </div>
     }.boxed();
     Ok(home_shell::page_region(
