@@ -227,6 +227,12 @@ async fn rendered_zoom_in_handler_updates_the_graph_transform() {
         .next()
         .unwrap();
     let signals = home_fixture::page_signals(&html);
+    let actions = ["in", "out"]
+        .into_iter()
+        .chain(std::iter::repeat_n("in", 10))
+        .chain(std::iter::repeat_n("out", 20))
+        .chain(["in", "out"])
+        .collect::<Vec<_>>();
     let mut child = std::process::Command::new("node")
         .arg("src/topcoat/native/dependency_graph/zoom_handler.test.cjs")
         .current_dir(env!("CARGO_MANIFEST_DIR"))
@@ -245,12 +251,7 @@ async fn rendered_zoom_in_handler_updates_the_graph_transform() {
                     zoom_in.value().attr("data-topcoat-on:click"),
                     zoom_out.value().attr("data-topcoat-on:click")
                 ],
-                "actions": ["in", "out"]
-                    .into_iter()
-                    .chain(std::iter::repeat_n("in", 10))
-                    .chain(std::iter::repeat_n("out", 20))
-                    .chain(["in", "out"])
-                    .collect::<Vec<_>>(),
+                "actions": actions,
                 "style_binding":transform.value().attr("data-topcoat-bind:style"),
                 "signals":signals
             })
