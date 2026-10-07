@@ -172,20 +172,21 @@ pub(crate) fn commit_issue_update(
     id: i64,
     mut input: UpdateIssue,
 ) -> Result<Issue, LificError> {
-    let user = crate::api::require_user(identity)?;
-    input.attachments = AttachmentActor::Authenticated(CommentActor::from(&user));
     let issue = db.transaction(|conn| {
+        let identity = crate::auth::refresh_identity(conn, identity.as_ref())?;
+        let user = crate::api::require_user(&identity)?;
+        input.attachments = AttachmentActor::Authenticated(CommentActor::from(&user));
         // Same recheck as the create path, against the issue's project as it
         // stands inside this transaction rather than as it read a moment ago.
         // An update cannot move an issue between projects, so reading it here
         // and writing below are the same project by construction.
         let project_id = crate::db::queries::get_issue(conn, id)?.project_id;
-        authz::require_role_conn(conn, identity, project_id, Role::Maintainer)?;
+        authz::require_role_conn(conn, &identity, project_id, Role::Maintainer)?;
         // LIF-262: `update_issue` re-scans the stored description and
         // reconciles links in the same savepoint as the edit.
         match crate::db::queries::update_issue(conn, id, &input) {
             Ok(mut issue) => {
-                retain_visible_relations_conn(conn, identity, std::slice::from_mut(&mut issue))?;
+                retain_visible_relations_conn(conn, &identity, std::slice::from_mut(&mut issue))?;
                 Ok(issue)
             }
             Err(LificError::UpdateConflict { message, current }) => {
@@ -194,7 +195,7 @@ pub(crate) fn commit_issue_update(
                 let mut issue: Issue = serde_json::from_value(*current).map_err(|error| {
                     LificError::Internal(format!("failed to read conflicting issue: {error}"))
                 })?;
-                retain_visible_relations_conn(conn, identity, std::slice::from_mut(&mut issue))?;
+                retain_visible_relations_conn(conn, &identity, std::slice::from_mut(&mut issue))?;
                 let current = serde_json::to_value(issue).map_err(|error| {
                     LificError::Internal(format!("failed to project conflicting issue: {error}"))
                 })?;
