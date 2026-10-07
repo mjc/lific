@@ -103,6 +103,12 @@ pub(crate) enum UiIcon {
     Plug,
     #[strum(serialize = "Plus")]
     Add,
+    #[strum(serialize = "Minus")]
+    ZoomOut,
+    #[strum(serialize = "Plus")]
+    ZoomIn,
+    #[strum(serialize = "Maximize")]
+    FitView,
     Search,
     Settings,
     #[strum(serialize = "Sun")]

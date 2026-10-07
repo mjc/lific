@@ -15,12 +15,21 @@ assert.equal(runtime.split(bootstrap).length - 1, 1, 'packaged bootstrap');
 const eventClass = runtime.match(/event\(\w+\)\{return new (\w+)\(\w+\)\}/)?.[1];
 assert.ok(eventClass, 'packaged Event surrogate');
 
+const viewport = {
+  clientWidth: input.viewport.width,
+  clientHeight: input.viewport.height,
+};
+const target = {
+  closest: selector => selector === '[data-native-graph-viewport]' ? viewport : null,
+};
+
 const calls = [];
+let motion = 'full';
 const context = {
   TextEncoder,
   TextDecoder,
   queueMicrotask,
-  document: {documentElement: {getAttribute: () => '/app'}},
+  document: {documentElement: {getAttribute: name => name === 'data-motion' ? motion : '/app'}},
   fetch: async (url, options) => {
     calls.push({url, options});
     throw new Error('zoom controls must not make a request');
@@ -46,7 +55,7 @@ async function run() {
     assert.equal(typeof source, 'string',
       `rendered zoom ${action} button exposes an executable handler`);
     const handler = vm.runInNewContext(`cx => (${source})`, context)(cx);
-    handler(cx.event({type: 'click', preventDefault() {}, stopPropagation() {}}));
+    handler(cx.event({type: 'click', target, preventDefault() {}, stopPropagation() {}}));
     for (let i = 0; i < 20; i++) await Promise.resolve();
     const values = {};
     for (const id of Object.keys(input.signals)) {
@@ -60,9 +69,17 @@ async function run() {
     assert.ok(style && typeof style.dehydrate === 'function',
       'transform binding returns a hydrated String surrogate');
     styles.push(style.dehydrate());
+    assert.ok(styles.at(-1).includes('transition:translate 0ms,scale 150ms'),
+      'zoom transitions scale without animating pan');
   }
+  motion = 'reduced';
+  const reducedHandler = vm.runInNewContext(`cx => (${input.handlers[0]})`, context)(cx);
+  reducedHandler(cx.event({type: 'click', target, preventDefault() {}, stopPropagation() {}}));
+  const reducedStyle = styleBinding(cx).dehydrate();
+  assert.ok(reducedStyle.includes('transition:translate 0ms,scale 0ms'),
+    'reduced motion disables the scale transition');
   assert.equal(calls.length, 0, 'zoom is local and makes no network request');
-  process.stdout.write(JSON.stringify({snapshots, styles}));
+  process.stdout.write(JSON.stringify({snapshots, styles, reduced_style: reducedStyle}));
 }
 
 run().catch(error => { console.error(error); process.exitCode = 1; });

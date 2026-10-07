@@ -220,6 +220,46 @@ async fn rendered_zoom_in_handler_updates_the_graph_transform() {
         .select(&scraper::Selector::parse("[data-native-graph-zoom='out']").unwrap())
         .next()
         .unwrap();
+    let zoom_controls = document
+        .select(&scraper::Selector::parse("[data-native-graph-zoom-controls]").unwrap())
+        .next()
+        .expect("joined zoom controls");
+    assert!(
+        zoom_controls
+            .value()
+            .attr("class")
+            .unwrap_or_default()
+            .contains("rounded-lg"),
+        "zoom buttons share a compact joined surface"
+    );
+    let controls = document
+        .select(&scraper::Selector::parse("[data-native-graph-controls]").unwrap())
+        .next()
+        .expect("bottom-right control group");
+    let controls_class = controls.value().attr("class").unwrap_or_default();
+    assert!(controls_class.contains("right-3") && controls_class.contains("bottom-3"));
+    assert!(
+        zoom_controls
+            .select(&scraper::Selector::parse("[data-icon='Minus']").unwrap())
+            .next()
+            .is_some()
+    );
+    assert!(
+        zoom_controls
+            .select(&scraper::Selector::parse("[data-icon='Plus']").unwrap())
+            .next()
+            .is_some()
+    );
+    let fit = document
+        .select(&scraper::Selector::parse("[data-native-graph-fit]").unwrap())
+        .next()
+        .unwrap();
+    assert!(
+        fit.select(&scraper::Selector::parse("[data-icon='Maximize']").unwrap())
+            .next()
+            .is_some(),
+        "Fit uses its own maximize icon"
+    );
     let transform = document
         .select(&scraper::Selector::parse("[data-native-graph-transform]").unwrap())
         .next()
@@ -239,17 +279,34 @@ async fn rendered_zoom_in_handler_updates_the_graph_transform() {
                 zoom_out.value().attr("data-topcoat-on:click")
             ],
             "actions": actions,
+            "viewport":{"width":800,"height":600},
             "style_binding":transform.value().attr("data-topcoat-bind:style"),
             "signals":signals
         }),
     );
     let styles = result["styles"].as_array().unwrap();
-    assert!(styles[0].as_str().unwrap().contains("scale(1.2)"));
-    assert!(styles[1].as_str().unwrap().contains("scale(1)"));
-    assert!(styles[11].as_str().unwrap().contains("scale(2)"));
-    assert!(styles[31].as_str().unwrap().contains("scale(0.1)"));
-    assert!(styles[32].as_str().unwrap().contains("scale(0.12)"));
-    assert!(styles[33].as_str().unwrap().contains("scale(0.1)"));
+    assert!(styles[0].as_str().unwrap().contains("scale:1.2"));
+    assert!(
+        styles[0]
+            .as_str()
+            .unwrap()
+            .contains("translate:-80px -60px"),
+        "zoom anchors to the viewport center: {}",
+        styles[0].as_str().unwrap()
+    );
+    assert!(
+        styles[0]
+            .as_str()
+            .unwrap()
+            .contains("translate 0ms,scale 150ms"),
+        "zoom transitions scale without animating pan"
+    );
+    assert!(styles[1].as_str().unwrap().contains("scale:1"));
+    assert!(styles[1].as_str().unwrap().contains("translate:0px 0px"));
+    assert!(styles[11].as_str().unwrap().contains("scale:2"));
+    assert!(styles[31].as_str().unwrap().contains("scale:0.1"));
+    assert!(styles[32].as_str().unwrap().contains("scale:0.12"));
+    assert!(styles[33].as_str().unwrap().contains("scale:0.1"));
     let first_signals = result["snapshots"][0].as_object().unwrap().clone();
     let (status, updated_html) =
         home_fixture::document(&fixture, "/app", "/ACC/graph", true, Some(first_signals)).await;
@@ -264,7 +321,7 @@ async fn rendered_zoom_in_handler_updates_the_graph_transform() {
             .value()
             .attr("style")
             .unwrap_or_default()
-            .contains("scale(1.2)"),
+            .contains("scale:1.2"),
         "zoom-in signal is reflected in rendered graph transform: {updated_html}"
     );
     let second_signals = result["snapshots"][1].as_object().unwrap().clone();
@@ -281,7 +338,7 @@ async fn rendered_zoom_in_handler_updates_the_graph_transform() {
             .value()
             .attr("style")
             .unwrap_or_default()
-            .contains("scale(1)"),
+            .contains("scale:1"),
         "reciprocal zoom-out restores scale 1: {updated_html}"
     );
 }
@@ -333,13 +390,27 @@ async fn rendered_graph_fit_control_resets_view_and_viewport_supports_pan() {
         .clamp(0.1, 2.0);
     let fit_x = (800.0 - dimension("width:") * fit_scale) / 2.0;
     let fit_y = (600.0 - dimension("height:") * fit_scale) / 2.0;
+    let initial_style = result["initial_style"].as_str().unwrap();
     assert!(
-        fit_style.contains(&format!("scale({fit_scale})")),
+        initial_style.contains(&format!("scale:{fit_scale}")),
+        "mount autofits graph bounds: {initial_style}"
+    );
+    assert!(initial_style.contains(&format!("translate:{fit_x}px {fit_y}px")));
+    assert!(
+        initial_style.contains("translate 0ms,scale 0ms"),
+        "initial autofit does not animate"
+    );
+    assert!(
+        fit_style.contains(&format!("scale:{fit_scale}")),
         "fit uses XYFlow's 0.15 padding: {fit_style}"
     );
     assert!(
-        fit_style.contains(&format!("translate({fit_x}px,{fit_y}px)")),
+        fit_style.contains(&format!("translate:{fit_x}px {fit_y}px")),
         "fit centers graph bounds: {fit_style}"
+    );
+    assert!(
+        fit_style.contains("translate 0ms,scale 200ms"),
+        "fit transitions scale only: {fit_style}"
     );
     assert_eq!(
         result["guarded_style"].as_str().unwrap(),
@@ -348,7 +419,7 @@ async fn rendered_graph_fit_control_resets_view_and_viewport_supports_pan() {
     );
     let pan_style = result["pan_style"].as_str().unwrap();
     assert!(
-        pan_style.contains(&format!("translate({}px,{}px)", fit_x + 20.0, fit_y + 15.0)),
+        pan_style.contains(&format!("translate:{}px {}px", fit_x + 20.0, fit_y + 15.0)),
         "pointer drag pans from fitted position: {pan_style}"
     );
     assert_eq!(
@@ -374,8 +445,8 @@ async fn rendered_graph_fit_control_resets_view_and_viewport_supports_pan() {
         "unmount restores the pan cursor"
     );
     assert_eq!(
-        result["remount_idle_style"], result["active_drag_style"],
-        "a new viewport ignores stale pointer movement"
+        result["remount_idle_style"], result["initial_style"],
+        "a new viewport refits and ignores stale pointer movement"
     );
     assert_ne!(
         result["remount_drag_style"], result["remount_idle_style"],

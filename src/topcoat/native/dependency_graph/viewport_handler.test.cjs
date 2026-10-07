@@ -30,6 +30,7 @@ const listen = (collection, key, listener, options = {}) => {
 };
 const surface = {
   style: {},
+  closest(selector) { return selector === '[data-native-graph-viewport]' ? viewport : null; },
   addEventListener(type, listener, options) { listen(listeners, `surface:${type}`, listener, options); },
   setPointerCapture(id) {
     assert.equal(typeof id, 'number', 'pointer capture receives a primitive numeric ID');
@@ -70,9 +71,10 @@ const style = () => styleBinding(cx).dehydrate();
 const snapshot = () => Object.fromEntries(Object.keys(input.signals)
   .map(id => [id, cx.signal(id).dehydrate().v]));
 
+runHandler(input.pan_mount, {type: 'mount', target: surface});
+const initialStyle = style();
 runHandler(input.fit_handler, {type: 'click', target: fitTarget, preventDefault() {}, stopPropagation() {}});
 const fitStyle = style();
-runHandler(input.pan_mount, {type: 'mount', target: surface});
 const down = (pointerId, {button = 0, isPrimary = true, interactive = false, pointerType = 'mouse'} = {}) => {
   listeners.get('surface:pointerdown')({
     type: 'pointerdown', button, isPrimary, pointerId, pointerType, clientX: 10, clientY: 20,
@@ -112,7 +114,7 @@ cx.abortSignal = abortController.signal;
 runHandler(input.pan_mount, {type: 'mount', target: surface});
 windowListeners.get('pointermove')({type: 'pointermove', pointerId: 8, clientX: 60, clientY: 70});
 const remountIdleStyle = style();
-assert.equal(remountIdleStyle, abortStyle, 'a remounted viewport ignores moves until a fresh pointerdown');
+assert.equal(remountIdleStyle, initialStyle, 'a remounted viewport refits and ignores stale pointer movement');
 down(9, {pointerType: 'touch'});
 windowListeners.get('pointermove')({type: 'pointermove', pointerId: 9, clientX: 20, clientY: 30});
 const remountDragStyle = style();
@@ -121,6 +123,7 @@ abortController.abort();
 assert.deepEqual(releasedCaptures, [8], 'disposing after capture was lost does not attempt a second release');
 assert.equal(snapshot()[activeId], false, 'disposing after capture loss still clears the active drag');
 process.stdout.write(JSON.stringify({
+  initial_style: initialStyle,
   fit_style: fitStyle,
   guarded_style: guardedStyle,
   pan_style: panStyle,

@@ -282,11 +282,13 @@ async fn graph_content(
     let _zoom_style = viewport_state.zoom.clone();
     let _pan_x_style = viewport_state.pan_x.clone();
     let _pan_y_style = viewport_state.pan_y.clone();
+    let _transition_style = viewport_state.transition_ms.clone();
     let _initial_x = viewport_state.pan_x.get_untracked();
     let _initial_y = viewport_state.pan_y.get_untracked();
+    let _initial_transition = viewport_state.transition_ms.get_untracked();
     let transform_initial = format!(
-        "width:{_graph_width}px;height:{_graph_height}px;transform-origin:0 0;transform:translate({_initial_x}px,{_initial_y}px) scale({})",
-        _zoom_style.get_untracked(),
+        "width:{_graph_width}px;height:{_graph_height}px;transform-origin:0 0;translate:{_initial_x}px {_initial_y}px;scale:{};transition:translate 0ms,scale {_initial_transition}ms ease-out",
+        _zoom_style.get_untracked()
     );
     let menu_header = if menu_kind.get() == "edge" {
         "Manage relation"
@@ -493,8 +495,9 @@ async fn graph_content(
                                     let _current_zoom = _zoom_style.get();
                                     let _current_x = _pan_x_style.get();
                                     let _current_y = _pan_y_style.get();
+                                    let _transition_ms = _transition_style.get();
                                     raw!(
-                                        "cx.hydrate('width:'+${_graph_width}.toString()+'px;height:'+${_graph_height}.toString()+'px;transform-origin:0 0;transform:translate('+${_current_x}.toString()+'px,'+${_current_y}.toString()+'px) scale('+${_current_zoom}.toString()+')')",
+                                        "cx.hydrate('width:'+${_graph_width}.toString()+'px;height:'+${_graph_height}.toString()+'px;transform-origin:0 0;translate:'+${_current_x}.toString()+'px '+${_current_y}.toString()+'px;scale:'+${_current_zoom}.toString()+';transition:translate 0ms,scale '+${_transition_ms}.toString()+'ms ease-out')",
                                         transform_initial.clone(),
                                     )
                                 })
