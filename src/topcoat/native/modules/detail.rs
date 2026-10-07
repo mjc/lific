@@ -730,3 +730,7 @@ async fn delete_module(
             .await,
     )
 }
+
+#[cfg(test)]
+#[path = "detail_interactions.rs"]
+mod interaction_tests;
