@@ -258,10 +258,17 @@ impl State {
         let persist = expr!(|_event: Event| {
             stored.set(encoded.clone());
         });
-        view! { cx =>
-            <span data-native-home-activity-rate="" hidden=(!ready) @mount=(persist)
-                title="Websocket activity rate; the day fallback includes the last 24 hours">
-                (rate.value.to_string()) " " (rate.unit)
+        view! {
+            cx =>
+            <span
+                data-native-home-activity-rate=""
+                hidden=(!ready)
+                @mount=(persist)
+                title="Websocket activity rate; the day fallback includes the last 24 hours"
+            >
+                (rate.value.to_string())
+                " "
+                (rate.unit)
             </span>
         }
         .boxed()

@@ -152,11 +152,7 @@ pub(crate) fn requests_runtime_protocol(headers: &HeaderMap) -> bool {
 }
 
 /// Opens the socket, optionally applying the standalone framework run limit.
-pub(super) async fn accept(
-    cx: &Cx,
-    body: Body,
-    max_runs: Option<usize>,
-) -> Result<Response> {
+pub(super) async fn accept(cx: &Cx, body: Body, max_runs: Option<usize>) -> Result<Response> {
     let upgrade = WebSocketUpgrade::from_request(cx, body).await?;
     let retirement = try_request_context::<SocketLifetime>(cx)
         .and_then(SocketLifetime::take)

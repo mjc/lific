@@ -57,21 +57,54 @@ pub(super) async fn choices(
     } else {
         "display:grid;grid-template-columns:repeat(8,1fr);gap:2px;padding:8px".into()
     };
-    Ok(view! { cx =>
-        <div data-native-project-picker-results="" style=(container_style) @mount=$(|_event: Event| {
-                raw!("document.getElementById('native-project-icon-scroll').style.height=${viewport}.toString()+'px';", ());
-            })>
-            if total == 0 {<p>(empty_label) " “" (query) "”"</p>}
+    Ok(view! {
+        cx =>
+        <div
+            data-native-project-picker-results=""
+            style=(container_style)
+            @mount=$(|_event: Event| {
+                raw!(
+                    "document.getElementById('native-project-icon-scroll').style.height=${viewport}.toString()+'px';",
+                    (),
+                );
+            })
+        >
+            if total == 0 {
+                <p>
+                    (empty_label)
+                    " “"
+                    (query)
+                    "”"
+                </p>
+            }
             <div style=(grid_style)>
                 #[key(value.clone())]
                 for (value, label) in visible {
-                    <button type="button" aria-label=(label.clone()) title=(label) class="native-project-picker-choice" :aria-pressed=$(selected.get() == value)
+                    <button
+                        type="button"
+                        aria-label=(label.clone())
+                        title=(label)
+                        class="native-project-picker-choice"
+                        :aria-pressed=$(selected.get() == value)
                         @click=$(|_event: Event| {
-                            selected.set(value.clone()); open.set(false); search.set("".to_owned());
-                            raw!("document.getElementById('native-project-icon-trigger')?.dispatchEvent(new Event('native-project-icon-change',{bubbles:true}));",());
-                            raw!("queueMicrotask(() => document.getElementById('native-project-icon-trigger')?.focus());", ());
-                        })>
-                        (super::super::icons::picker_choice_icon(cx, Some(&value), if value == "lific:logo" { 20 } else { 18 }))
+                            selected.set(value.clone());
+                            open.set(false);
+                            search.set("".to_owned());
+                            raw!(
+                                "document.getElementById('native-project-icon-trigger')?.dispatchEvent(new Event('native-project-icon-change',{bubbles:true}));",
+                                (),
+                            );
+                            raw!(
+                                "queueMicrotask(() => document.getElementById('native-project-icon-trigger')?.focus());",
+                                (),
+                            );
+                        })
+                    >
+                        (super::super::icons::picker_choice_icon(
+                            cx,
+                            Some(&value),
+                            if value == "lific:logo" { 20 } else { 18 },
+                        ))
                     </button>
                 }
             </div>

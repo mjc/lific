@@ -11,7 +11,34 @@ use topcoat::{
 pub(super) fn content<'a>(cx: &'a Cx, data: &InsightsPayload) -> BoxView<'a> {
     if data.status_counts.total == 0 {
         let mascot = transport::mounted_url(cx, "/__native_home/mascot.png");
-        return view! { cx => <div class="native-insights h-full min-h-0 overflow-y-auto leading-[1.6] text-[var(--tc-text)]"><div class="native-insights__empty flex flex-col items-center py-20 gap-4 px-6 max-w-[480px] mx-auto text-center"><div class="native-insights__mascot shrink-0 w-[250px] h-[105px] opacity-50 bg-[var(--tc-faint)]" aria-hidden="true" style=(format!("mask:url({mascot}) center / contain no-repeat;-webkit-mask:url({mascot}) center / contain no-repeat"))></div><div class="flex flex-col items-center gap-1.5"><p class="text-heading font-medium text-[var(--tc-text)] m-0">"Nothing to chart yet"</p><p class="text-body-sm text-[var(--tc-muted)] leading-relaxed m-0">"Insights fills in once this project has issues to measure — creation trends, closures, and who's been doing the work."</p></div></div></div> }.boxed();
+        return view! {
+            cx =>
+            <div
+                class="native-insights h-full min-h-0 overflow-y-auto leading-[1.6] text-[var(--tc-text)]"
+            >
+                <div
+                    class="native-insights__empty flex flex-col items-center py-20 gap-4 px-6 max-w-[480px] mx-auto text-center"
+                >
+                    <div
+                        class="native-insights__mascot shrink-0 w-[250px] h-[105px] opacity-50 bg-[var(--tc-faint)]"
+                        aria-hidden="true"
+                        style=(format!(
+                            "mask:url({mascot}) center / contain no-repeat;-webkit-mask:url({mascot}) center / contain no-repeat",
+                        ))
+                    ></div>
+                    <div class="flex flex-col items-center gap-1.5">
+                        <p class="text-heading font-medium text-[var(--tc-text)] m-0">
+                            "Nothing to chart yet"
+                        </p>
+                        <p
+                            class="text-body-sm text-[var(--tc-muted)] leading-relaxed m-0"
+                        >
+                            "Insights fills in once this project has issues to measure — creation trends, closures, and who's been doing the work."
+                        </p>
+                    </div>
+                </div>
+            </div>
+        }.boxed();
     }
     let s = &data.status_counts;
     let p = &data.priority_counts;
@@ -87,7 +114,18 @@ pub(super) fn content<'a>(cx: &'a Cx, data: &InsightsPayload) -> BoxView<'a> {
         "No modules yet",
     );
     let overflow = data.module_counts.len().saturating_sub(6);
-    let module_body = view! { cx => (modules) if overflow>0 {<p class="native-insights__overflow text-micro text-[var(--tc-faint)] mt-2 mb-0">(format!("+{overflow} more"))</p>} }.boxed();
+    let module_body = view! {
+        cx =>
+        (modules)
+        if overflow > 0 {
+            <p
+                class="native-insights__overflow text-micro text-[var(--tc-faint)] mt-2 mb-0"
+            >
+                (format!("+{overflow} more"))
+            </p>
+        }
+    }
+    .boxed();
     let status = distribution_card(cx, "Status", status);
     let priority = distribution_card(cx, "Priority", priority);
     let modules = distribution_card(cx, "Module", module_body);
@@ -96,15 +134,81 @@ pub(super) fn content<'a>(cx: &'a Cx, data: &InsightsPayload) -> BoxView<'a> {
     let clock = signal(cx, || chrono::Utc::now().timestamp_millis() as f64);
     let clock_mount = dates::clock_mount(cx, clock.clone());
     let actors = actor_list(cx, &data.top_actors, clock);
-    view! { cx => <div class="native-insights h-full min-h-0 overflow-y-auto leading-[1.6] text-[var(--tc-text)]" (clock_mount)><div class="native-insights__content max-w-[1100px] mx-auto px-6 py-6 flex flex-col gap-5">
-        <section class="native-insights__card native-insights__hero rounded-xl bg-[var(--tc-surface)] shadow-[0_1px_2px_rgba(0,0,0,0.06)] p-5"><div class="native-insights__heading flex items-center gap-2 mb-4 text-[var(--tc-muted)]">(icons::ui_icon(cx,UiIcon::Insights,15))<h2 class="text-body-lg font-semibold text-[var(--tc-text)] m-0 leading-[1.2] tracking-[-0.02em]">"Created vs. closed"</h2><span class="text-micro text-[var(--tc-faint)] tabular-nums ml-auto">(window.clone())</span></div>(chart)</section>
-        <div class="native-insights__distributions grid grid-cols-1 md:grid-cols-3 gap-4 items-stretch">(status)(priority)(modules)</div>
-        <section class="native-insights__card native-insights__actors rounded-xl bg-[var(--tc-surface)] shadow-[0_1px_2px_rgba(0,0,0,0.06)] p-4"><div class="native-insights__heading flex items-center gap-2 mb-2 text-[var(--tc-muted)]">(icons::ui_icon(cx,UiIcon::Members,14))<h3 class="text-micro font-semibold uppercase tracking-widest text-[var(--tc-faint)] m-0 leading-[1.2]">"Top actors"</h3><span class="text-micro text-[var(--tc-faint)] tabular-nums ml-auto">(window)</span></div>(actors)</section>
-    </div></div> }.boxed()
+    view! {
+        cx =>
+        <div
+            class="native-insights h-full min-h-0 overflow-y-auto leading-[1.6] text-[var(--tc-text)]"
+            (clock_mount)
+        >
+            <div
+                class="native-insights__content max-w-[1100px] mx-auto px-6 py-6 flex flex-col gap-5"
+            >
+                <section
+                    class="native-insights__card native-insights__hero rounded-xl bg-[var(--tc-surface)] shadow-[0_1px_2px_rgba(0,0,0,0.06)] p-5"
+                >
+                    <div
+                        class="native-insights__heading flex items-center gap-2 mb-4 text-[var(--tc-muted)]"
+                    >
+                        (icons::ui_icon(cx, UiIcon::Insights, 15))
+                        <h2
+                            class="text-body-lg font-semibold text-[var(--tc-text)] m-0 leading-[1.2] tracking-[-0.02em]"
+                        >
+                            "Created vs. closed"
+                        </h2>
+                        <span
+                            class="text-micro text-[var(--tc-faint)] tabular-nums ml-auto"
+                        >
+                            (window.clone())
+                        </span>
+                    </div>
+                    (chart)
+                </section>
+                <div
+                    class="native-insights__distributions grid grid-cols-1 md:grid-cols-3 gap-4 items-stretch"
+                >
+                    (status)
+                    (priority)
+                    (modules)
+                </div>
+                <section
+                    class="native-insights__card native-insights__actors rounded-xl bg-[var(--tc-surface)] shadow-[0_1px_2px_rgba(0,0,0,0.06)] p-4"
+                >
+                    <div
+                        class="native-insights__heading flex items-center gap-2 mb-2 text-[var(--tc-muted)]"
+                    >
+                        (icons::ui_icon(cx, UiIcon::Members, 14))
+                        <h3
+                            class="text-micro font-semibold uppercase tracking-widest text-[var(--tc-faint)] m-0 leading-[1.2]"
+                        >
+                            "Top actors"
+                        </h3>
+                        <span
+                            class="text-micro text-[var(--tc-faint)] tabular-nums ml-auto"
+                        >
+                            (window)
+                        </span>
+                    </div>
+                    (actors)
+                </section>
+            </div>
+        </div>
+    }.boxed()
 }
 
 fn distribution_card<'a>(cx: &'a Cx, title: &'static str, body: BoxView<'a>) -> BoxView<'a> {
-    view! { cx => <section class="native-insights__card rounded-xl bg-[var(--tc-surface)] shadow-[0_1px_2px_rgba(0,0,0,0.06)] p-4 flex flex-col"><h3 class="text-micro font-semibold uppercase tracking-widest text-[var(--tc-faint)] mt-0 mb-3 leading-[1.2]">(title)</h3>(body)</section> }.boxed()
+    view! {
+        cx =>
+        <section
+            class="native-insights__card rounded-xl bg-[var(--tc-surface)] shadow-[0_1px_2px_rgba(0,0,0,0.06)] p-4 flex flex-col"
+        >
+            <h3
+                class="text-micro font-semibold uppercase tracking-widest text-[var(--tc-faint)] mt-0 mb-3 leading-[1.2]"
+            >
+                (title)
+            </h3>
+            (body)
+        </section>
+    }.boxed()
 }
 
 fn distribution<'a>(
@@ -129,7 +233,51 @@ fn distribution<'a>(
             (label, count, icon, format!("width:{width}%"))
         })
         .collect::<Vec<_>>();
-    view! { cx => if rows.is_empty() {<p class="native-insights__list-empty text-body-sm text-[var(--tc-faint)] py-2 m-0">(empty)</p>}else {<div class="native-insights__distribution flex flex-col gap-2">for (label,count,icon,width) in rows {<div class="native-insights__distribution-row flex items-center gap-2.5">if let Some(icon)=icon {<span class="native-insights__distribution-icon shrink-0 w-3.5 flex items-center justify-center">(icon)</span>}<span class="native-insights__distribution-label text-body-sm text-[var(--tc-muted)] w-[92px] truncate shrink-0" title=(label.clone())>(label)</span><div class="native-insights__bar flex-1 h-2 rounded-full bg-[var(--tc-bg-subtle)] overflow-hidden min-w-0"><div class="h-full rounded-full transition-[width] duration-300 bg-[var(--tc-accent)]" style=(width)></div></div><span class="native-insights__count text-caption tabular-nums text-[var(--tc-faint)] w-7 text-right shrink-0">(count)</span></div>}</div>} }.boxed()
+    view! {
+        cx =>
+        if rows.is_empty() {
+            <p
+                class="native-insights__list-empty text-body-sm text-[var(--tc-faint)] py-2 m-0"
+            >
+                (empty)
+            </p>
+        } else {
+            <div class="native-insights__distribution flex flex-col gap-2">
+                for (label, count, icon, width) in rows {
+                    <div
+                        class="native-insights__distribution-row flex items-center gap-2.5"
+                    >
+                        if let Some(icon) = icon {
+                            <span
+                                class="native-insights__distribution-icon shrink-0 w-3.5 flex items-center justify-center"
+                            >
+                                (icon)
+                            </span>
+                        }
+                        <span
+                            class="native-insights__distribution-label text-body-sm text-[var(--tc-muted)] w-[92px] truncate shrink-0"
+                            title=(label.clone())
+                        >
+                            (label)
+                        </span>
+                        <div
+                            class="native-insights__bar flex-1 h-2 rounded-full bg-[var(--tc-bg-subtle)] overflow-hidden min-w-0"
+                        >
+                            <div
+                                class="h-full rounded-full transition-[width] duration-300 bg-[var(--tc-accent)]"
+                                style=(width)
+                            ></div>
+                        </div>
+                        <span
+                            class="native-insights__count text-caption tabular-nums text-[var(--tc-faint)] w-7 text-right shrink-0"
+                        >
+                            (count)
+                        </span>
+                    </div>
+                }
+            </div>
+        }
+    }.boxed()
 }
 
 fn actor_list<'a>(cx: &'a Cx, actors: &[ActorStat], clock: Signal<f64>) -> BoxView<'a> {
@@ -146,7 +294,60 @@ fn actor_list<'a>(cx: &'a Cx, actors: &[ActorStat], clock: Signal<f64>) -> BoxVi
         let volume = format!("width:calc({}% - 0.5rem)",(actor.actions as f64/max as f64*100.0).max(4.0));
         (name,initials,class,actor.is_bot,super::super::numbers::count(cx,actor.actions),dates::relative_time_view(cx,&actor.last_ts,clock.clone()),volume)
     }).collect::<Vec<_>>();
-    view! { cx => if rows.is_empty() {<p class="native-insights__list-empty text-body-sm text-[var(--tc-faint)] py-2 m-0">"No activity in this window"</p>}else {<div class="native-insights__actor-list flex flex-col gap-1">for (name,initials,class,bot,actions,last_seen,volume) in rows {<div class="native-insights__actor relative flex items-center gap-2.5 px-1 py-1.5 rounded-md overflow-hidden"><span class=(class)>(initials)</span><div class="native-insights__actor-detail flex-1 min-w-0"><div class="native-insights__actor-name flex items-center gap-1.5"><span class="text-body-sm text-[var(--tc-text)] truncate font-medium">(name)</span>if bot {<span class="native-insights__agent text-micro font-semibold uppercase tracking-wider px-1 py-px rounded bg-[var(--tc-accent-subtle)] text-[var(--tc-accent)] shrink-0">"agent"</span>}</div><div class="native-insights__last-seen text-micro text-[var(--tc-faint)]">"last seen "(last_seen)</div></div><span class="native-insights__actions text-caption text-[var(--tc-muted)] tabular-nums shrink-0">(actions)</span><span class="native-insights__actor-volume absolute bottom-0 left-1 h-[2px] rounded-full bg-[var(--tc-accent)] opacity-30" aria-hidden="true" style=(volume)></span></div>}</div>} }.boxed()
+    view! {
+        cx =>
+        if rows.is_empty() {
+            <p
+                class="native-insights__list-empty text-body-sm text-[var(--tc-faint)] py-2 m-0"
+            >
+                "No activity in this window"
+            </p>
+        } else {
+            <div class="native-insights__actor-list flex flex-col gap-1">
+                for (name, initials, class, bot, actions, last_seen, volume) in rows {
+                    <div
+                        class="native-insights__actor relative flex items-center gap-2.5 px-1 py-1.5 rounded-md overflow-hidden"
+                    >
+                        <span class=(class)>(initials)</span>
+                        <div class="native-insights__actor-detail flex-1 min-w-0">
+                            <div
+                                class="native-insights__actor-name flex items-center gap-1.5"
+                            >
+                                <span
+                                    class="text-body-sm text-[var(--tc-text)] truncate font-medium"
+                                >
+                                    (name)
+                                </span>
+                                if bot {
+                                    <span
+                                        class="native-insights__agent text-micro font-semibold uppercase tracking-wider px-1 py-px rounded bg-[var(--tc-accent-subtle)] text-[var(--tc-accent)] shrink-0"
+                                    >
+                                        "agent"
+                                    </span>
+                                }
+                            </div>
+                            <div
+                                class="native-insights__last-seen text-micro text-[var(--tc-faint)]"
+                            >
+                                "last seen "
+                                (last_seen)
+                            </div>
+                        </div>
+                        <span
+                            class="native-insights__actions text-caption text-[var(--tc-muted)] tabular-nums shrink-0"
+                        >
+                            (actions)
+                        </span>
+                        <span
+                            class="native-insights__actor-volume absolute bottom-0 left-1 h-[2px] rounded-full bg-[var(--tc-accent)] opacity-30"
+                            aria-hidden="true"
+                            style=(volume)
+                        ></span>
+                    </div>
+                }
+            </div>
+        }
+    }.boxed()
 }
 
 #[cfg(test)]

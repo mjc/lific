@@ -38,9 +38,22 @@ pub(crate) fn absolute<'a>(cx: &'a Cx, timestamp: &str) -> BoxView<'a> {
     let datetime = timestamp.to_owned();
     let timestamp = timestamp.to_owned();
     let text = signal(cx, || timestamp.clone());
-    view! { cx => <time datetime=(datetime) @mount=$(|_event: Event| {
-        text.set(raw!("cx.hydrate(new Date(${timestamp}.toString()+'Z').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'}))", String::new()));
-    })>$(text.get())</time> }.boxed()
+    view! {
+        cx =>
+        <time
+            datetime=(datetime)
+            @mount=$(|_event: Event| {
+                text.set(
+                    raw!(
+                        "cx.hydrate(new Date(${timestamp}.toString()+'Z').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'}))",
+                        String::new(),
+                    ),
+                );
+            })
+        >
+            $(text.get())
+        </time>
+    }.boxed()
 }
 
 pub(crate) fn relative<'a>(
@@ -55,16 +68,69 @@ pub(crate) fn relative<'a>(
     let full = signal(cx, || timestamp.clone());
     let fallback = signal(cx, || timestamp.clone());
     let local_full = full.clone();
-    let time = view! { cx => <time datetime=(datetime) :title=$(full.get()) @mount=$(|_event: Event| {
-        full.set(raw!("cx.hydrate(new Date(${timestamp}.toString()+'Z').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'}))", String::new()));
-        fallback.set(raw!("cx.hydrate(new Date(${timestamp}.toString()+'Z').toLocaleDateString('en-US',{month:'short',day:'numeric'}))", String::new()));
-    })>
-    $(if (now.get() - date) < 60000.0 { "just now".to_owned() }
-        else { if (now.get() - date) < 3600000.0 { let epoch = now.get(); let minutes = raw!("cx.hydrate(Math.floor((Number(${epoch}.toString())-Number(${date}.toString()))/60000))", ((epoch-date)/60000.0).floor()); raw!("cx.hydrate(${minutes}.toString()+'m ago')",format!("{minutes}m ago")) }
-        else { if (now.get() - date) < 86400000.0 { let epoch = now.get(); let hours = raw!("cx.hydrate(Math.floor((Number(${epoch}.toString())-Number(${date}.toString()))/3600000))", ((epoch-date)/3600000.0).floor()); raw!("cx.hydrate(${hours}.toString()+'h ago')",format!("{hours}h ago")) }
-        else { if (now.get() - date) < 604800000.0 { let epoch = now.get(); let days = raw!("cx.hydrate(Math.floor((Number(${epoch}.toString())-Number(${date}.toString()))/86400000))", ((epoch-date)/86400000.0).floor()); raw!("cx.hydrate(${days}.toString()+'d ago')",format!("{days}d ago")) }
-        else { fallback.get() } } } })
-    </time> }.boxed();
+    let time = view! {
+        cx =>
+        <time
+            datetime=(datetime)
+            :title=$(full.get())
+            @mount=$(|_event: Event| {
+                full.set(
+                    raw!(
+                        "cx.hydrate(new Date(${timestamp}.toString()+'Z').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'}))",
+                        String::new(),
+                    ),
+                );
+                fallback.set(
+                    raw!(
+                        "cx.hydrate(new Date(${timestamp}.toString()+'Z').toLocaleDateString('en-US',{month:'short',day:'numeric'}))",
+                        String::new(),
+                    ),
+                );
+            })
+        >
+            $(if (now.get() - date) < 60000.0 {
+                "just now".to_owned()
+            } else {
+                if (now.get() - date) < 3600000.0 {
+                    let epoch = now.get();
+                    let minutes = raw!(
+                        "cx.hydrate(Math.floor((Number(${epoch}.toString())-Number(${date}.toString()))/60000))",
+                        ((epoch - date) / 60000.0).floor(),
+                    );
+                    raw!(
+                        "cx.hydrate(${minutes}.toString()+'m ago')",
+                        format!("{minutes}m ago"),
+                    )
+                } else {
+                    if (now.get() - date) < 86400000.0 {
+                        let epoch = now.get();
+                        let hours = raw!(
+                            "cx.hydrate(Math.floor((Number(${epoch}.toString())-Number(${date}.toString()))/3600000))",
+                            ((epoch - date) / 3600000.0).floor(),
+                        );
+                        raw!(
+                            "cx.hydrate(${hours}.toString()+'h ago')",
+                            format!("{hours}h ago"),
+                        )
+                    } else {
+                        if (now.get() - date) < 604800000.0 {
+                            let epoch = now.get();
+                            let days = raw!(
+                                "cx.hydrate(Math.floor((Number(${epoch}.toString())-Number(${date}.toString()))/86400000))",
+                                ((epoch - date) / 86400000.0).floor(),
+                            );
+                            raw!(
+                                "cx.hydrate(${days}.toString()+'d ago')",
+                                format!("{days}d ago"),
+                            )
+                        } else {
+                            fallback.get()
+                        }
+                    }
+                }
+            })
+        </time>
+    }.boxed();
     (time, local_full)
 }
 
@@ -72,7 +138,7 @@ pub(crate) fn relative<'a>(
 pub(crate) fn relative_time_view<'a>(cx: &'a Cx, timestamp: &str, now: Signal<f64>) -> BoxView<'a> {
     let timestamp = timestamp.to_owned();
     let scoped = cx.keyed(&timestamp);
-    view! {scoped=>scoped_relative_time(timestamp:timestamp,now:now)}.boxed()
+    view! { scoped => scoped_relative_time(timestamp: timestamp, now: now) }.boxed()
 }
 #[component]
 async fn scoped_relative_time(
@@ -85,7 +151,7 @@ async fn scoped_relative_time(
 pub(crate) fn absolute_time_view<'a>(cx: &'a Cx, timestamp: &str) -> BoxView<'a> {
     let timestamp = timestamp.to_owned();
     let scoped = cx.keyed(&timestamp);
-    view! {scoped=>scoped_absolute_time(timestamp:timestamp)}.boxed()
+    view! { scoped => scoped_absolute_time(timestamp: timestamp) }.boxed()
 }
 #[component]
 async fn scoped_absolute_time(cx: &Cx, timestamp: String) -> topcoat::Result<impl View> {

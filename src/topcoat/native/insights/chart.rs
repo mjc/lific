@@ -164,60 +164,203 @@ pub(super) fn chart<'a>(cx: &'a Cx, created: &[WeekPoint], closed: &[WeekPoint])
         })
         .collect::<Vec<_>>();
     let accessible_rows = columns.clone();
-    view! { cx =>
-        <div class="native-insights-chart relative select-none" data-native-insights-chart="">
-            <svg class="w-full h-auto block" viewBox="0 0 680 220" role="img" aria-label="Issues created vs closed per week">
+    view! {
+        cx =>
+        <div
+            class="native-insights-chart relative select-none"
+            data-native-insights-chart=""
+        >
+            <svg
+                class="w-full h-auto block"
+                viewBox="0 0 680 220"
+                role="img"
+                aria-label="Issues created vs closed per week"
+            >
                 for tick in ticks {
-                    <line x1="28" x2="672" y1=(y_at(tick,axis_max).to_string()) y2=(y_at(tick,axis_max).to_string()) stroke="var(--border)" stroke-width="1" stroke-dasharray=(if tick==0 { "" } else { "2 3" })></line>
-                    <text x="22" y=((y_at(tick,axis_max)+3.0).to_string()) text-anchor="end" fill="var(--text-faint)" font-size="9">(tick.to_string())</text>
+                    <line
+                        x1="28"
+                        x2="672"
+                        y1=(y_at(tick, axis_max).to_string())
+                        y2=(y_at(tick, axis_max).to_string())
+                        stroke="var(--border)"
+                        stroke-width="1"
+                        stroke-dasharray=(if tick == 0 { "" } else { "2 3" })
+                    ></line>
+                    <text
+                        x="22"
+                        y=((y_at(tick, axis_max) + 3.0).to_string())
+                        text-anchor="end"
+                        fill="var(--text-faint)"
+                        font-size="9"
+                    >
+                        (tick.to_string())
+                    </text>
                 }
-                for (x,label) in labels {
-                    <text x=(x.to_string()) y="214" text-anchor="middle" fill="var(--text-faint)" font-size="9">(label)</text>
+                for (x, label) in labels {
+                    <text
+                        x=(x.to_string())
+                        y="214"
+                        text-anchor="middle"
+                        fill="var(--text-faint)"
+                        font-size="9"
+                    >
+                        (label)
+                    </text>
                 }
                 if maximum > 0 {
                     <path d=(created_area) fill="var(--accent)" opacity="0.10"></path>
                     <path d=(closed_area) fill="var(--success)" opacity="0.10"></path>
-                    <path d=(created_line) fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
-                    <path d=(closed_line) fill="none" stroke="var(--success)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+                    <path
+                        d=(created_line)
+                        fill="none"
+                        stroke="var(--accent)"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                    ></path>
+                    <path
+                        d=(closed_line)
+                        fill="none"
+                        stroke="var(--success)"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                    ></path>
                     for index in 0..count {
-                        <line class="[&[hidden]]:hidden" data-trend-cursor=(index.to_string()) x1=(x_at(index,count).to_string()) x2=(x_at(index,count).to_string()) y1="14" y2="198" stroke="var(--text-faint)" stroke-width="1" stroke-dasharray="2 3" :hidden=$(if hover.get().is_none() { true } else { hover.get().unwrap()!=index })></line>
+                        <line
+                            class="[&[hidden]]:hidden"
+                            data-trend-cursor=(index.to_string())
+                            x1=(x_at(index, count).to_string())
+                            x2=(x_at(index, count).to_string())
+                            y1="14"
+                            y2="198"
+                            stroke="var(--text-faint)"
+                            stroke-width="1"
+                            stroke-dasharray="2 3"
+                            :hidden=$(if hover.get().is_none() {
+                                true
+                            } else {
+                                hover.get().unwrap() != index
+                            })
+                        ></line>
                     }
-                    for (index,point) in created_points.into_iter().enumerate() {
-                        <circle cx=(point.x.to_string()) cy=(point.y.to_string()) :r=$(if hover.get().is_none() {2.0} else {if hover.get().unwrap()==index {3.5}else{2.0}}) fill="var(--accent)"></circle>
+                    for (index, point) in created_points.into_iter().enumerate() {
+                        <circle
+                            cx=(point.x.to_string())
+                            cy=(point.y.to_string())
+                            :r=$(if hover.get().is_none() {
+                                2.0
+                            } else {
+                                if hover.get().unwrap() == index { 3.5 } else { 2.0 }
+                            })
+                            fill="var(--accent)"
+                        ></circle>
                     }
-                    for (index,point) in closed_points.into_iter().enumerate() {
-                        <circle cx=(point.x.to_string()) cy=(point.y.to_string()) :r=$(if hover.get().is_none() {2.0} else {if hover.get().unwrap()==index {3.5}else{2.0}}) fill="var(--success)"></circle>
+                    for (index, point) in closed_points.into_iter().enumerate() {
+                        <circle
+                            cx=(point.x.to_string())
+                            cy=(point.y.to_string())
+                            :r=$(if hover.get().is_none() {
+                                2.0
+                            } else {
+                                if hover.get().unwrap() == index { 3.5 } else { 2.0 }
+                            })
+                            fill="var(--success)"
+                        ></circle>
                     }
                 }
             </svg>
             if maximum > 0 {
-                <div class="native-insights-chart__overlay absolute inset-0 flex" style=(format!("left:{}%;right:{}%",28.0/WIDTH*100.0,8.0/WIDTH*100.0))>
+                <div
+                    class="native-insights-chart__overlay absolute inset-0 flex"
+                    style=(format!(
+                        "left:{}%;right:{}%",
+                        28.0 / WIDTH * 100.0,
+                        8.0 / WIDTH * 100.0,
+                    ))
+                >
                     for index in 0..count {
-                        <div class="native-insights-chart__column flex-1 h-full cursor-default" role="presentation" data-trend-week=(index.to_string())
-                            @mouseenter=$(|_event: Event| hover.set(raw!(r#"cx.some(${index})"#, Some(index)))) @mouseleave=$(|_event: Event| hover.set(raw!(r#"cx.hydrate({t:"Option",v:null})"#, None::<usize>)))></div>
+                        <div
+                            class="native-insights-chart__column flex-1 h-full cursor-default"
+                            role="presentation"
+                            data-trend-week=(index.to_string())
+                            @mouseenter=$(|_event: Event| hover.set(
+                                    raw!(r#"cx.some(${index})"#, Some(index)),
+                                ))
+                            @mouseleave=$(|_event: Event| hover.set(
+                                    raw!(r#"cx.hydrate({t:"Option",v:null})"#, None::<usize>),
+                                ))
+                        ></div>
                     }
                 </div>
-                for (index,x,label,created_count,closed_count) in columns {
-                    <div class="native-insights-chart__tooltip absolute top-[2px] z-10 pointer-events-none px-2.5 py-1.5 rounded-md bg-[var(--surface)] border border-solid border-[var(--border)] shadow-[0_4px_12px_rgba(0,0,0,0.18)] whitespace-nowrap -translate-x-1/2 [&[hidden]]:hidden" data-trend-tooltip=(index.to_string()) style=(format!("left:{}%",(x/WIDTH*100.0).clamp(8.0,92.0))) :hidden=$(if hover.get().is_none() { true } else { hover.get().unwrap()!=index })>
-                        <p class="text-caption font-medium text-[var(--text)] mt-0 mb-0.5">(label)</p>
-                        <p class="text-micro text-[var(--accent)] m-0">"Created "<span class="tabular-nums font-semibold">(created_count.to_string())</span></p>
-                        <p class="text-micro text-[var(--success)] m-0">"Closed "<span class="tabular-nums font-semibold">(closed_count.to_string())</span></p>
+                for (index, x, label, created_count, closed_count) in columns {
+                    <div
+                        class="native-insights-chart__tooltip absolute top-[2px] z-10 pointer-events-none px-2.5 py-1.5 rounded-md bg-[var(--surface)] border border-solid border-[var(--border)] shadow-[0_4px_12px_rgba(0,0,0,0.18)] whitespace-nowrap -translate-x-1/2 [&[hidden]]:hidden"
+                        data-trend-tooltip=(index.to_string())
+                        style=(format!("left:{}%", (x / WIDTH * 100.0).clamp(8.0, 92.0)))
+                        :hidden=$(if hover.get().is_none() {
+                            true
+                        } else {
+                            hover.get().unwrap() != index
+                        })
+                    >
+                        <p
+                            class="text-caption font-medium text-[var(--text)] mt-0 mb-0.5"
+                        >
+                            (label)
+                        </p>
+                        <p class="text-micro text-[var(--accent)] m-0">
+                            "Created "
+                            <span class="tabular-nums font-semibold">
+                                (created_count.to_string())
+                            </span>
+                        </p>
+                        <p class="text-micro text-[var(--success)] m-0">
+                            "Closed "
+                            <span class="tabular-nums font-semibold">
+                                (closed_count.to_string())
+                            </span>
+                        </p>
                     </div>
                 }
             }
         </div>
         <table class="native-insights-chart__sr-only sr-only">
             <caption>"Issues created vs closed per week"</caption>
-            <thead><tr><th scope="col">"Week"</th><th scope="col">"Created"</th><th scope="col">"Closed"</th></tr></thead>
+            <thead>
+                <tr>
+                    <th scope="col">"Week"</th>
+                    <th scope="col">"Created"</th>
+                    <th scope="col">"Closed"</th>
+                </tr>
+            </thead>
             <tbody>
-                for (_,_,label,created_count,closed_count) in accessible_rows {
-                    <tr><th scope="row">(label)</th><td>(created_count.to_string())</td><td>(closed_count.to_string())</td></tr>
+                for (_, _, label, created_count, closed_count) in accessible_rows {
+                    <tr>
+                        <th scope="row">(label)</th>
+                        <td>(created_count.to_string())</td>
+                        <td>(closed_count.to_string())</td>
+                    </tr>
                 }
             </tbody>
         </table>
         <div class="native-insights-chart__legend flex items-center gap-4 mt-1 px-1">
-            <span class="flex items-center gap-1.5 text-caption text-[var(--text-muted)]"><span class="native-insights-chart__legend-dot size-2 rounded-full shrink-0 bg-[var(--accent)]"></span>"Created"</span>
-            <span class="flex items-center gap-1.5 text-caption text-[var(--text-muted)]"><span class="native-insights-chart__legend-dot size-2 rounded-full shrink-0 bg-[var(--success)]"></span>"Closed"</span>
+            <span
+                class="flex items-center gap-1.5 text-caption text-[var(--text-muted)]"
+            >
+                <span
+                    class="native-insights-chart__legend-dot size-2 rounded-full shrink-0 bg-[var(--accent)]"
+                ></span>
+                "Created"
+            </span>
+            <span
+                class="flex items-center gap-1.5 text-caption text-[var(--text-muted)]"
+            >
+                <span
+                    class="native-insights-chart__legend-dot size-2 rounded-full shrink-0 bg-[var(--success)]"
+                ></span>
+                "Closed"
+            </span>
         </div>
     }.boxed()
 }

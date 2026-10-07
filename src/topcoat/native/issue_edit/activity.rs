@@ -151,25 +151,58 @@ async fn timeline_component(cx: &Cx, items: Vec<Activity>) -> topcoat::Result<im
     let expanded = signal(cx, || false);
     let now = signal(cx, || chrono::Utc::now().timestamp_millis() as f64);
     let mounted = dates::clock_mount(cx, now.clone());
-    Ok(view! { cx =>
+    Ok(view! {
+        cx =>
         if count > 0 {
-            <section class="native-issue-activity" data-native-issue-activity="" (mounted)>
+            <section
+                class="native-issue-activity"
+                data-native-issue-activity=""
+                (mounted)
+            >
                 <div class="native-issue-activity__header">
                     (icons::ui_icon(cx, UiIcon::History, 13))
-                    <h2>"Activity"</h2><span class="native-issue-activity__count">(count.to_string())</span>
+                    <h2>"Activity"</h2>
+                    <span class="native-issue-activity__count">
+                        (count.to_string())
+                    </span>
                 </div>
-                <ol><div class="native-issue-activity__rail" aria-hidden="true"></div>
+                <ol>
+                    <div class="native-issue-activity__rail" aria-hidden="true"></div>
                     for (index, item) in items.into_iter().enumerate() {
-                        <li data-activity-id=(item.id.to_string()) :hidden=$(if index >= 6 { !expanded.get() } else { false }) :style=$(if index == 5 { if !expanded.get() { "padding-bottom:0" } else { "" } } else { "" })>
+                        <li
+                            data-activity-id=(item.id.to_string())
+                            :hidden=$(if index >= 6 { !expanded.get() } else { false })
+                            :style=$(if index == 5 {
+                                if !expanded.get() { "padding-bottom:0" } else { "" }
+                            } else {
+                                ""
+                            })
+                        >
                             <span class="native-issue-activity__dot" aria-hidden="true"></span>
                             (keyed_row(cx, item, now.clone()))
                         </li>
                     }
                 </ol>
                 if count > 6 {
-                    <button type="button" class="native-issue-activity__all" @click=$(|_event: Event| { expanded.set(!expanded.get()); })>
-                        <span :style=$(if expanded.get() { "display:inline-flex;transition:transform .15s;transform:rotate(180deg)" } else { "display:inline-flex;transition:transform .15s" })>(icons::ui_icon(cx, UiIcon::Expand, 12))</span>
-                        <span :hidden=$(expanded.get())>(format!("Show all {count} entries"))</span>
+                    <button
+                        type="button"
+                        class="native-issue-activity__all"
+                        @click=$(|_event: Event| {
+                            expanded.set(!expanded.get());
+                        })
+                    >
+                        <span
+                            :style=$(if expanded.get() {
+                                "display:inline-flex;transition:transform .15s;transform:rotate(180deg)"
+                            } else {
+                                "display:inline-flex;transition:transform .15s"
+                            })
+                        >
+                            (icons::ui_icon(cx, UiIcon::Expand, 12))
+                        </span>
+                        <span :hidden=$(expanded.get())>
+                            (format!("Show all {count} entries"))
+                        </span>
                         <span :hidden=$(!expanded.get())>"Show recent only"</span>
                     </button>
                 }
@@ -204,23 +237,50 @@ async fn activity_row(cx: &Cx, item: Activity, now: Signal<f64>) -> topcoat::Res
     let old = item.old_value.clone().unwrap_or_default();
     let new = item.new_value.clone().unwrap_or_default();
     let values = value_view(cx, &item, title);
-    Ok(view! { cx =>
+    Ok(view! {
+        cx =>
         <div class="native-issue-activity__line">
-            <span class="native-issue-activity__actor">(actor)</span>" "
-            if item.actor_is_bot { <span class="native-issue-activity__agent">"agent"</span>" " }
-            (description)" "
+            <span class="native-issue-activity__actor">(actor)</span>
+            " "
+            if item.actor_is_bot {
+                <span class="native-issue-activity__agent">"agent"</span>
+                " "
+            }
+            (description)
+            " "
             if long {
-                <button type="button" @click=$(|_event: Event| { open.set(!open.get()); })>
-                    <span :hidden=$(open.get())>"show change"</span><span :hidden=$(!open.get())>"hide change"</span>
-                    <span :style=$(if open.get() { "display:inline-flex;transition:transform .15s;transform:rotate(180deg)" } else { "display:inline-flex;transition:transform .15s" })>(icons::ui_icon(cx, UiIcon::Expand, 11))</span>
+                <button
+                    type="button"
+                    @click=$(|_event: Event| {
+                        open.set(!open.get());
+                    })
+                >
+                    <span :hidden=$(open.get())>"show change"</span>
+                    <span :hidden=$(!open.get())>"hide change"</span>
+                    <span
+                        :style=$(if open.get() {
+                            "display:inline-flex;transition:transform .15s;transform:rotate(180deg)"
+                        } else {
+                            "display:inline-flex;transition:transform .15s"
+                        })
+                    >
+                        (icons::ui_icon(cx, UiIcon::Expand, 11))
+                    </span>
                 </button>
-            } else { (values) }
-            " "(time_view(cx, &item.ts, &item.transport, now))
+            } else {
+                (values)
+            }
+            " "
+            (time_view(cx, &item.ts, &item.transport, now))
         </div>
         if long {
             <div class="native-issue-activity__values" :hidden=$(!open.get())>
-                <div class="native-issue-activity__values-old">(if old.is_empty() { "(empty)".to_owned() } else { old })</div>
-                <div class="native-issue-activity__values-new">(if new.is_empty() { "(empty)".to_owned() } else { new })</div>
+                <div class="native-issue-activity__values-old">
+                    (if old.is_empty() { "(empty)".to_owned() } else { old })
+                </div>
+                <div class="native-issue-activity__values-new">
+                    (if new.is_empty() { "(empty)".to_owned() } else { new })
+                </div>
             </div>
         }
     })
@@ -228,8 +288,15 @@ async fn activity_row(cx: &Cx, item: Activity, now: Signal<f64>) -> topcoat::Res
 
 fn value_view<'a>(cx: &'a Cx, item: &Activity, title: Option<String>) -> BoxView<'a> {
     if let Some(title) = title {
-        return view! { cx => <span class="native-issue-activity__quoted">"“"(title)"”"</span> }
-            .boxed();
+        return view! {
+            cx =>
+            <span class="native-issue-activity__quoted">
+                "“"
+                (title)
+                "”"
+            </span>
+        }
+        .boxed();
     }
     let old = item.old_value.clone().unwrap_or_default();
     let new = item.new_value.clone().unwrap_or_default();
@@ -237,18 +304,62 @@ fn value_view<'a>(cx: &'a Cx, item: &Activity, title: Option<String>) -> BoxView
     if item.action == "update" {
         match field {
             Some("done" | "description" | "content") => view! { cx => "" }.boxed(),
-            Some("issue" | "anchor_issue") => { let value = item.new_value.clone().or_else(|| item.old_value.clone()).unwrap_or_default(); view! { cx => <span class="native-issue-activity__identifier">(value)</span> }.boxed() },
-            Some("status") if item.entity_type == "plan" => view! { cx => <span class="native-issue-activity__new" style="text-transform:capitalize">(new)</span> }.boxed(),
+            Some("issue" | "anchor_issue") => {
+                let value = item
+                    .new_value
+                    .clone()
+                    .or_else(|| item.old_value.clone())
+                    .unwrap_or_default();
+                view! {
+                    cx =>
+                    <span class="native-issue-activity__identifier">(value)</span>
+                }
+                .boxed()
+            }
+            Some("status") if item.entity_type == "plan" => view! {
+                cx =>
+                <span
+                    class="native-issue-activity__new"
+                    style="text-transform:capitalize"
+                >
+                    (new)
+                </span>
+            }
+            .boxed(),
             Some("status" | "priority") => {
                 let old_icon = value_icon(cx, field.unwrap(), &old);
                 let new_icon = value_icon(cx, field.unwrap(), &new);
-                view! { cx =>
-                    <span class="native-issue-activity__icon-value">(old_icon)(old)</span>" "
-                    <span class="native-issue-activity__arrow">"→"</span>" "
-                    <span class="native-issue-activity__icon-value native-issue-activity__new">(new_icon)(new)</span>
-                }.boxed()
-            },
-            _ => { let old = short_value(item.old_value.as_deref(), 40); let new = short_value(item.new_value.as_deref(), 40); view! { cx => <span class="native-issue-activity__old">(old)</span>" "<span class="native-issue-activity__arrow">"→"</span>" "<span class="native-issue-activity__new">(new)</span> }.boxed() },
+                view! {
+                    cx =>
+                    <span class="native-issue-activity__icon-value">
+                        (old_icon)
+                        (old)
+                    </span>
+                    " "
+                    <span class="native-issue-activity__arrow">"→"</span>
+                    " "
+                    <span
+                        class="native-issue-activity__icon-value native-issue-activity__new"
+                    >
+                        (new_icon)
+                        (new)
+                    </span>
+                }
+                .boxed()
+            }
+            _ => {
+                let old = short_value(item.old_value.as_deref(), 40);
+                let new = short_value(item.new_value.as_deref(), 40);
+                view! {
+                    cx =>
+                    <span class="native-issue-activity__old">(old)</span>
+                    " "
+                    <span class="native-issue-activity__arrow">"→"</span>
+                    " "
+                    <span class="native-issue-activity__new">(new)</span>
+                }
+                .boxed()
+            }
         }
     } else {
         let value = match item.action.as_str() {
@@ -259,18 +370,26 @@ fn value_view<'a>(cx: &'a Cx, item: &Activity, title: Option<String>) -> BoxView
             "attach" | "detach" => {
                 view! { cx => <span class="native-issue-activity__label">(value)</span> }.boxed()
             }
-            "link" | "unlink" => {
-                view! { cx => <span class="native-issue-activity__identifier">(value)</span> }
-                    .boxed()
+            "link" | "unlink" => view! {
+                cx =>
+                <span class="native-issue-activity__identifier">(value)</span>
             }
+            .boxed(),
             "wait" | "unwait" => {
                 let value = short_value(Some(&value), 60);
                 view! { cx => <span class="native-issue-activity__new">(value)</span> }.boxed()
             }
             "create" if item.entity_type == "comment" => {
                 let value = short_value(Some(&value), 60);
-                view! { cx => <span class="native-issue-activity__quoted">"“"(value)"”"</span> }
-                    .boxed()
+                view! {
+                    cx =>
+                    <span class="native-issue-activity__quoted">
+                        "“"
+                        (value)
+                        "”"
+                    </span>
+                }
+                .boxed()
             }
             _ => view! { cx => "" }.boxed(),
         }
@@ -282,7 +401,13 @@ fn value_icon<'a>(cx: &'a Cx, field: &str, value: &str) -> BoxView<'a> {
         match value.parse::<Status>() {
             Ok(status) => icons::status_icon(cx, status, 12),
             // Unknown historical statuses use Circle with the source's faint color.
-            Err(_) => view! { cx => <span style="color:var(--tc-faint);display:inline-flex">(icons::ui_icon(cx, UiIcon::Issue, 12))</span> }.boxed(),
+            Err(_) => view! {
+                cx =>
+                <span style="color:var(--tc-faint);display:inline-flex">
+                    (icons::ui_icon(cx, UiIcon::Issue, 12))
+                </span>
+            }
+            .boxed(),
         }
     } else {
         icons::priority_icon(cx, value.parse().unwrap_or(Priority::None), 12)
@@ -292,10 +417,25 @@ fn value_icon<'a>(cx: &'a Cx, field: &str, value: &str) -> BoxView<'a> {
 fn time_view<'a>(cx: &'a Cx, timestamp: &str, transport: &str, now: Signal<f64>) -> BoxView<'a> {
     let transport = transport.to_owned();
     let (time, full) = dates::relative(cx, timestamp, now);
-    view! { cx => <span class="native-issue-activity__time" :title=$({
-        let local = full.get();
-        raw!("cx.hydrate(${local}.toString()+' · via '+${transport}.toString())",format!("{local} · via {transport}"))
-    })>"· "(time)" via "(transport)</span> }.boxed()
+    view! {
+        cx =>
+        <span
+            class="native-issue-activity__time"
+            :title=$({
+                let local = full.get();
+                raw!(
+                    "cx.hydrate(${local}.toString()+' · via '+${transport}.toString())",
+                    format!("{local} · via {transport}"),
+                )
+            })
+        >
+            "· "
+            (time)
+            " via "
+            (transport)
+        </span>
+    }
+    .boxed()
 }
 
 #[cfg(test)]

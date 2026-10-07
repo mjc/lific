@@ -213,28 +213,70 @@ pub(super) fn select_scoped<'a>(
     trigger_interaction.insert(cx, "data-topcoat-on:keydown", interaction.clone());
     let mut menu_interaction = Attributes::with_capacity(1);
     menu_interaction.insert(cx, "data-topcoat-on:keydown", interaction);
-    view! { cx =>
+    view! {
+        cx =>
         <div id=(id.clone()) class="native-project-select" @mount=(mounted)>
-            <button id=(format!("{id}-trigger")) type="button" :disabled=$(disabled.get()) class="native-project-select__trigger"
-                aria-haspopup="listbox" :aria-expanded=$(open.get()) aria-controls=(format!("{id}-menu"))
-                (trigger_interaction)>
+            <button
+                id=(format!("{id}-trigger"))
+                type="button"
+                :disabled=$(disabled.get())
+                class="native-project-select__trigger"
+                aria-haspopup="listbox"
+                :aria-expanded=$(open.get())
+                aria-controls=(format!("{id}-menu"))
+                (trigger_interaction)
+            >
                 <span class="native-project-select__selected">
-                    <span class="native-project-select__avatar" :hidden=$(marks.index(selected.get()).is_empty())>$(marks.index(selected.get()).to_owned())</span>
+                    <span
+                        class="native-project-select__avatar"
+                        :hidden=$(marks.index(selected.get()).is_empty())
+                    >
+                        $(marks.index(selected.get()).to_owned())
+                    </span>
                     <span>$(labels.index(selected.get()).to_owned())</span>
                 </span>
-                <span class="native-project-select__chevron" aria-hidden="true">(super::super::icons::ui_icon(cx,UiIcon::Expand,12))</span>
+                <span class="native-project-select__chevron" aria-hidden="true">
+                    (super::super::icons::ui_icon(cx, UiIcon::Expand, 12))
+                </span>
             </button>
-            <div id=(format!("{id}-menu")) class="native-project-select__options" role="listbox" :hidden=$(!open.get())
-                @click=$(|event: Event| event.stop_propagation()) (menu_interaction)>
+            <div
+                id=(format!("{id}-menu"))
+                class="native-project-select__options"
+                role="listbox"
+                :hidden=$(!open.get())
+                @click=$(|event: Event| event.stop_propagation())
+                (menu_interaction)
+            >
                 for (index, row) in rows.into_iter().enumerate() {
-                    if row.value.is_some() {<button type="button" role="option" :aria-selected=$(selected.get() == index)
-                        @click=$(|_event: Event| {
-                            selected.set(index); value.set(values.index(index).clone()); open.set(false);
-                            raw!("document.getElementById(${dispatch_root}.toString())?.dispatchEvent(new Event('native-overview-selection',{bubbles:true}));",());
-                            raw!("document.getElementById(${trigger}.toString())?.focus();", ());
-                        })>
-                        <span class="native-overview__select-option"><span>(row.label)</span>if !row.username.is_empty(){<span class="native-overview__select-username">(format!("@{}",row.username))</span>}</span>
-                    </button>}
+                    if row.value.is_some() {
+                        <button
+                            type="button"
+                            role="option"
+                            :aria-selected=$(selected.get() == index)
+                            @click=$(|_event: Event| {
+                                selected.set(index);
+                                value.set(values.index(index).clone());
+                                open.set(false);
+                                raw!(
+                                    "document.getElementById(${dispatch_root}.toString())?.dispatchEvent(new Event('native-overview-selection',{bubbles:true}));",
+                                    (),
+                                );
+                                raw!(
+                                    "document.getElementById(${trigger}.toString())?.focus();",
+                                    (),
+                                );
+                            })
+                        >
+                            <span class="native-overview__select-option">
+                                <span>(row.label)</span>
+                                if !row.username.is_empty() {
+                                    <span class="native-overview__select-username">
+                                        (format!("@{}", row.username))
+                                    </span>
+                                }
+                            </span>
+                        </button>
+                    }
                 }
             </div>
         </div>

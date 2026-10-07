@@ -138,24 +138,73 @@ pub(super) fn content(cx: &Cx, auto: bool) -> BoxView<'_> {
         None,
         password_attributes,
     );
-    view! {cx =>
-        if let Some(mount)=automatic_mount {<span hidden="hidden" (mount)></span>}
+    view! {
+        cx =>
+        if let Some(mount) = automatic_mount {
+            <span hidden="hidden" (mount)></span>
+        }
         <form class="flex flex-col gap-5" novalidate="novalidate" (command)>
-            <div aria-live="polite"><div role="alert" :hidden=$(error.get().is_empty()) class="[&[hidden]]:hidden flex items-start gap-2.5 text-body-sm text-[var(--error)] bg-[var(--tc-error-bg)] px-3.5 py-3 rounded-lg">(icons::ui_icon(cx,UiIcon::Warning,15))<span>$(error.get())</span></div></div>
-            <div class="flex flex-col gap-1.5">
-                <label for="login-identity" class="text-micro font-semibold uppercase tracking-widest text-[var(--text-faint)]">"Username or email"</label>
-                <input id="login-identity" type="text" placeholder="jane" autocomplete="username" autocapitalize="none" spellcheck="false" class=(INPUT)
-                    :value=$(identity.get()) @input=$(|event:Event| identity.set(event.target.value)) @blur=$(|_event:Event| touched.set(true))
-                    :aria-invalid=$(if invalid {"true"}else{"false"})
-                    :aria-describedby=$(if invalid {"login-identity-err"}else{""})/>
-                <p id="login-identity-err" class="text-caption text-[var(--error)]" :hidden=$(!invalid)>"Enter your username or email."</p>
+            <div aria-live="polite">
+                <div
+                    role="alert"
+                    :hidden=$(error.get().is_empty())
+                    class="[&[hidden]]:hidden flex items-start gap-2.5 text-body-sm text-[var(--error)] bg-[var(--tc-error-bg)] px-3.5 py-3 rounded-lg"
+                >
+                    (icons::ui_icon(cx, UiIcon::Warning, 15))
+                    <span>$(error.get())</span>
+                </div>
             </div>
             <div class="flex flex-col gap-1.5">
-                <label for="login-password" class="text-micro font-semibold uppercase tracking-widest text-[var(--text-faint)]">"Password"</label>
+                <label
+                    for="login-identity"
+                    class="text-micro font-semibold uppercase tracking-widest text-[var(--text-faint)]"
+                >
+                    "Username or email"
+                </label>
+                <input
+                    id="login-identity"
+                    type="text"
+                    placeholder="jane"
+                    autocomplete="username"
+                    autocapitalize="none"
+                    spellcheck="false"
+                    class=(INPUT)
+                    :value=$(identity.get())
+                    @input=$(|event: Event| identity.set(event.target.value))
+                    @blur=$(|_event: Event| touched.set(true))
+                    :aria-invalid=$(if invalid { "true" } else { "false" })
+                    :aria-describedby=$(if invalid { "login-identity-err" } else { "" })
+                />
+                <p
+                    id="login-identity-err"
+                    class="text-caption text-[var(--error)]"
+                    :hidden=$(!invalid)
+                >
+                    "Enter your username or email."
+                </p>
+            </div>
+            <div class="flex flex-col gap-1.5">
+                <label
+                    for="login-password"
+                    class="text-micro font-semibold uppercase tracking-widest text-[var(--text-faint)]"
+                >
+                    "Password"
+                </label>
                 (password_field)
             </div>
-            <button type="submit" :disabled=$(if loading.get(){true}else if identity.get().trim_ecmascript().is_empty(){true}else{password.get().is_empty()})
-                class=(format!("mt-1 {BUTTON}"))>$(if loading.get(){"Signing in…"}else{"Sign in"})</button>
+            <button
+                type="submit"
+                :disabled=$(if loading.get() {
+                    true
+                } else if identity.get().trim_ecmascript().is_empty() {
+                    true
+                } else {
+                    password.get().is_empty()
+                })
+                class=(format!("mt-1 {BUTTON}"))
+            >
+                $(if loading.get() { "Signing in…" } else { "Sign in" })
+            </button>
         </form>
     }.boxed()
 }

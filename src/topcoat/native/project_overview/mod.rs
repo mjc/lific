@@ -134,7 +134,19 @@ pub(super) fn region<'a>(
     let revision = signal(cx, || 0_usize);
     let identifier = identifier.to_owned();
     let topbar = view::topbar(cx, &identifier);
-    let content = view!{cx => native_overview_body(account:account, project:entry.project, identifier:identifier, revision:$(revision.get()), owner_revision:revision, notice:entry.notice, continuation:entry.continuation)}.boxed();
+    let content = view! {
+        cx =>
+        native_overview_body(
+            account: account,
+            project: entry.project,
+            identifier: identifier,
+            revision: $(revision.get()),
+            owner_revision: revision,
+            notice: entry.notice,
+            continuation: entry.continuation
+        )
+    }
+    .boxed();
     Ok(home_shell::page_region(
         cx,
         content,
@@ -180,7 +192,30 @@ fn failed_region(cx: &Cx, error: LificError) -> BoxView<'_> {
         }
     };
     let back = super::transport::mounted_url(cx, "/settings");
-    view! {cx => <div class="native-overview"><div class="native-overview__column"><section class="native-overview__load-error" role="alert"><h1>"Couldn't load this project"</h1><p>(message)</p><div><button type="button" class="toolbar-pill" @click=$(|_event: Event| {raw!("window.location.reload();",());})>"Try again"</button><a href=(back)>"Back to home"</a></div></section></div></div>}.boxed()
+    view! {
+        cx =>
+        <div class="native-overview">
+            <div class="native-overview__column">
+                <section class="native-overview__load-error" role="alert">
+                    <h1>"Couldn't load this project"</h1>
+                    <p>(message)</p>
+                    <div>
+                        <button
+                            type="button"
+                            class="toolbar-pill"
+                            @click=$(|_event: Event| {
+                                raw!("window.location.reload();", ());
+                            })
+                        >
+                            "Try again"
+                        </button>
+                        <a href=(back)>"Back to home"</a>
+                    </div>
+                </section>
+            </div>
+        </div>
+    }
+    .boxed()
 }
 
 // Only an actual GitHub import that creates issues refreshes the parent body.

@@ -74,13 +74,55 @@ pub(super) fn panel<'a>(
     let frozen_kind = pending.kind_for_rows();
     let frozen_user = pending.user_for_rows();
     let frozen_role = pending.role_for_rows();
-    view!{cx=><section class="native-overview__members"><div class="native-overview__heading">(icons::ui_icon(cx,UiIcon::ProjectMembers,14))<h2>"Members"</h2><span :hidden=$(count.get()==0_usize)>$(count.get())</span></div>
-        <div class="native-overview__member-card">
-            native_overview_member_body(account:account,project:project,revision:$(revision.get()),owner_revision:revision.clone(),chosen_user:chosen_user,chosen_role:chosen_role,owner_error:error.clone(),owner_error_target:error_target.clone(),confirming:confirming,count:count,grant_state:(locked,busy,open,frozen_kind,frozen_user,frozen_role,pending.automatic_note.clone(),pending.error.clone(),pending.previous_for_rows(),pending.label_for_rows()))
-            (prompt)
-            <p role="alert" class="native-overview__member-error" :hidden=$(if error.get().is_empty(){true}else{error_target.get()!=0_i64})>$(error.get())</p>
-        </div>
-    </section>}.boxed()
+    view! {
+        cx =>
+        <section class="native-overview__members">
+            <div class="native-overview__heading">
+                (icons::ui_icon(cx, UiIcon::ProjectMembers, 14))
+                <h2>"Members"</h2>
+                <span :hidden=$(count.get() == 0_usize)>$(count.get())</span>
+            </div>
+            <div class="native-overview__member-card">
+                native_overview_member_body(
+                    account: account,
+                    project: project,
+                    revision: $(revision.get()),
+                    owner_revision: revision.clone(),
+                    chosen_user: chosen_user,
+                    chosen_role: chosen_role,
+                    owner_error: error.clone(),
+                    owner_error_target: error_target.clone(),
+                    confirming: confirming,
+                    count: count,
+                    grant_state: (
+                        locked,
+                        busy,
+                        open,
+                        frozen_kind,
+                        frozen_user,
+                        frozen_role,
+                        pending.automatic_note.clone(),
+                        pending.error.clone(),
+                        pending.previous_for_rows(),
+                        pending.label_for_rows(),
+                    )
+                )
+                (prompt)
+                <p
+                    role="alert"
+                    class="native-overview__member-error"
+                    :hidden=$(if error.get().is_empty() {
+                        true
+                    } else {
+                        error_target.get() != 0_i64
+                    })
+                >
+                    $(error.get())
+                </p>
+            </div>
+        </section>
+    }
+    .boxed()
 }
 use shards::native_overview_member_body;
 
@@ -195,14 +237,73 @@ mod shards {
             "click",
         );
         let member_count = members.len();
-        Ok(
-            view! {cx=><div @mount=$(|_event:Event|{count.set(member_count);confirming.set(0_i64);})>
-                if can_manage{<div class="native-overview__member-add">(select::select_scoped(cx,&controls_cx,format!("native-overview-member-person-{project}"),options,chosen_user.clone(),locked.clone()))(select::select_scoped(cx,&controls_cx,format!("native-overview-member-role-{project}"),roles(),chosen_role.clone(),locked.clone()))<button type="button" class="native-overview__success" :disabled=$(if locked.get(){true}else{chosen_user.get().is_none()}) (add)>(icons::ui_icon(cx,UiIcon::AddMember,14))$(if busy.get(){"Adding…"}else{"Add"})</button></div>}
-                if members.is_empty(){<p class="native-overview__empty">"No members yet."</p>}
-                else{for member in members{(row(cx,&controls_cx,account,project,&member,can_manage,&pending,owner_revision.clone(),owner_error.clone(),owner_error_target.clone(),confirming.clone()))}}
-                if !can_manage{<p class="native-overview__member-readonly">"Read-only — only a project lead can add, change, or remove members."</p>}
-            </div>},
-        )
+        Ok(view! {
+            cx =>
+            <div
+                @mount=$(|_event: Event| {
+                    count.set(member_count);
+                    confirming.set(0_i64);
+                })
+            >
+                if can_manage {
+                    <div class="native-overview__member-add">
+                        (select::select_scoped(
+                            cx,
+                            &controls_cx,
+                            format!("native-overview-member-person-{project}"),
+                            options,
+                            chosen_user.clone(),
+                            locked.clone(),
+                        ))
+                        (select::select_scoped(
+                            cx,
+                            &controls_cx,
+                            format!("native-overview-member-role-{project}"),
+                            roles(),
+                            chosen_role.clone(),
+                            locked.clone(),
+                        ))
+                        <button
+                            type="button"
+                            class="native-overview__success"
+                            :disabled=$(if locked.get() {
+                                true
+                            } else {
+                                chosen_user.get().is_none()
+                            })
+                            (add)
+                        >
+                            (icons::ui_icon(cx, UiIcon::AddMember, 14))
+                            $(if busy.get() { "Adding…" } else { "Add" })
+                        </button>
+                    </div>
+                }
+                if members.is_empty() {
+                    <p class="native-overview__empty">"No members yet."</p>
+                } else {
+                    for member in members {
+                        (row(
+                            cx,
+                            &controls_cx,
+                            account,
+                            project,
+                            &member,
+                            can_manage,
+                            &pending,
+                            owner_revision.clone(),
+                            owner_error.clone(),
+                            owner_error_target.clone(),
+                            confirming.clone(),
+                        ))
+                    }
+                }
+                if !can_manage {
+                    <p class="native-overview__member-readonly">
+                        "Read-only — only a project lead can add, change, or remove members."
+                    </p>
+                }
+            </div>
+        })
     }
 }
 
@@ -277,10 +378,81 @@ fn row<'a>(
         Role::Viewer => "Viewer",
     };
     let since = super::super::dates::absolute(cx, &member.created_at);
-    view!{cx=><div class="native-overview__member-row"><span class="native-overview__member-avatar">(avatar::initials(&display))</span><div class="native-overview__member-name"><p>(display.clone())if user==account{<span>" (you)"</span>}</p><p>(label)</p></div>
-        if can_manage{<div class="native-overview__member-role" data-role=(badge) (change)>(select::select_scoped(cx,&row_cx,format!("native-overview-member-{project}-{user}"),roles(),selected,locked.clone()))</div>}
-        else{<span class="native-overview__member-badge" data-role=(badge)>(role_label)</span>}
-        <span class="native-overview__member-since">(since)</span>
-        if can_manage{<button type="button" aria-label=(format!("Remove {display}")) class="native-overview__member-trash" :hidden=$(confirming.get()==user) :disabled=$(locked.get()) @click=$(|_event:Event|confirming.set(user))>(icons::ui_icon(cx,UiIcon::Delete,14))</button><div class="native-overview__member-remove" :hidden=$(confirming.get()!=user)><button type="button" class="native-overview__destructive" :disabled=$(busy.get()) (remove)>$(if busy.get(){"…"}else{"Remove"})</button><button type="button" @click=$(|_event:Event|confirming.set(0_i64))>"Cancel"</button></div>}
-    </div><p class="native-overview__member-row-error" role="alert" :hidden=$(if error.get().is_empty(){true}else{error_target.get()!=user})>$(error.get())</p>}.boxed()
+    view! {
+        cx =>
+        <div class="native-overview__member-row">
+            <span class="native-overview__member-avatar">
+                (avatar::initials(&display))
+            </span>
+            <div class="native-overview__member-name">
+                <p>
+                    (display.clone())
+                    if user == account {
+                        <span>" (you)"</span>
+                    }
+                </p>
+                <p>(label)</p>
+            </div>
+            if can_manage {
+                <div class="native-overview__member-role" data-role=(badge) (change)>
+                    (select::select_scoped(
+                        cx,
+                        &row_cx,
+                        format!("native-overview-member-{project}-{user}"),
+                        roles(),
+                        selected,
+                        locked.clone(),
+                    ))
+                </div>
+            } else {
+                <span class="native-overview__member-badge" data-role=(badge)>
+                    (role_label)
+                </span>
+            }
+            <span class="native-overview__member-since">(since)</span>
+            if can_manage {
+                <button
+                    type="button"
+                    aria-label=(format!("Remove {display}"))
+                    class="native-overview__member-trash"
+                    :hidden=$(confirming.get() == user)
+                    :disabled=$(locked.get())
+                    @click=$(|_event: Event| confirming.set(user))
+                >
+                    (icons::ui_icon(cx, UiIcon::Delete, 14))
+                </button>
+                <div
+                    class="native-overview__member-remove"
+                    :hidden=$(confirming.get() != user)
+                >
+                    <button
+                        type="button"
+                        class="native-overview__destructive"
+                        :disabled=$(busy.get())
+                        (remove)
+                    >
+                        $(if busy.get() { "…" } else { "Remove" })
+                    </button>
+                    <button
+                        type="button"
+                        @click=$(|_event: Event| confirming.set(0_i64))
+                    >
+                        "Cancel"
+                    </button>
+                </div>
+            }
+        </div>
+        <p
+            class="native-overview__member-row-error"
+            role="alert"
+            :hidden=$(if error.get().is_empty() {
+                true
+            } else {
+                error_target.get() != user
+            })
+        >
+            $(error.get())
+        </p>
+    }
+    .boxed()
 }
