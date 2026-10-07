@@ -685,7 +685,8 @@ pub(super) fn detail<'a>(
             can_edit: can_edit,
             list_path: list_path
         )
-    }.boxed())
+    }
+    .boxed())
 }
 
 #[shard("/__native_pages/markdown")]
@@ -711,18 +712,16 @@ async fn native_page_markdown(
     )?;
     let rendered =
         super::super::markdown::render(cx, &source, super::super::markdown::Scope::Private, &[]);
-    Ok(
-        view! {
-            cx =>
-            if source.trim().is_empty() {
-                <p class="text-body-sm italic text-[var(--text-muted)]">"Empty page"</p>
-            } else {
-                <article class="markdown-body prose max-w-none">
-                    (Unescaped::new_unchecked(rendered))
-                </article>
-            }
-        },
-    )
+    Ok(view! {
+        cx =>
+        if source.trim().is_empty() {
+            <p class="text-body-sm italic text-[var(--text-muted)]">"Empty page"</p>
+        } else {
+            <article class="markdown-body prose max-w-none">
+                (Unescaped::new_unchecked(rendered))
+            </article>
+        }
+    })
 }
 
 #[component]
