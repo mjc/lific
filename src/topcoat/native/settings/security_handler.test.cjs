@@ -10,7 +10,7 @@ const bootstrap = 'var et=new ye;et.start(document);et.page.listenForDevRefresh(
 assert.equal(source.split(bootstrap).length - 1, 1);
 const settle = async () => {for (let i = 0; i < 40; i++) await Promise.resolve();};
 
-async function run(authorityLost, check = input.check) {
+async function run(authorityLost, check = input.check, disposed = false) {
   const requests = [], sockets = [], redirects = [], timers = [];
   let runtime, finish, startedPaused = false;
   const context = {
@@ -58,16 +58,27 @@ async function run(authorityLost, check = input.check) {
   await settle();
   assert.equal(startedPaused, true, 'password rotation pauses the old-cookie transport before the procedure');
   assert.equal(sockets.length, 1);
+  if (disposed) owner.abort();
   finish();
   await settle();
-  assert.ok(requests.some(url => url.endsWith('/profile_session')), 'a successful reply needs fresh account authority');
+  assert.equal(requests.some(url => url.endsWith('/profile_session')), !disposed,
+    'only a live owner checks fresh authority after the password reply');
   assert.equal(runtime.page.contentScope, scope, 'canonical state is published without replacing the owner');
   assert.equal(sockets.length, authorityLost ? 1 : 2, 'only a current owner resumes its connection');
   const values = Object.keys(input.signals).map(id => cx.signal(id).dehydrate().v);
-  assert.ok(!values.includes('testpassword1') && !values.includes('replacement-password'), 'success clears both password drafts');
+  const invalidation = input.invalidation;
+  if (invalidation) {
+    const revision = cx.signal(invalidation).dehydrate().v;
+    assert.equal(typeof revision === 'object' ? revision.v : String(revision),
+      authorityLost || disposed ? '0' : '1',
+      'connected tools refresh exactly once after password success with fresh authority');
+  }
+  if (!disposed) {
+    assert.ok(!values.includes('testpassword1') && !values.includes('replacement-password'), 'success clears both password drafts');
+  }
   if (authorityLost) {
     assert.deepEqual(redirects, ['/app/'], 'a replaced account returns to fresh cookie authority');
-  } else {
+  } else if (!disposed) {
     assert.deepEqual(redirects, [], 'success keeps the current page');
     if (check === 'validation_reset') {
       const success = Object.keys(input.signals).find(id => input.signals[id] === false && cx.signal(id).dehydrate().v === true);
@@ -97,5 +108,6 @@ async function run(authorityLost, check = input.check) {
   await run(true);
   await run('missing');
   await run('network');
+  await run(false, 'expiry', true);
   process.stdout.write(JSON.stringify({safe_rotation: true}));
 })().catch(error => {console.error(error); process.exitCode = 1;});

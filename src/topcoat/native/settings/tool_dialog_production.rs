@@ -17,6 +17,16 @@ fn connect_handler(html: &str, id: &str) -> String {
         .to_owned()
 }
 
+fn launch_handler(html: &str) -> String {
+    let document = scraper::Html::parse_document(html);
+    document
+        .select(&scraper::Selector::parse("button[data-native-tool-launch]").unwrap())
+        .next()
+        .and_then(|button| button.value().attr("data-topcoat-on:click"))
+        .expect("the static parent owns the asynchronous connection handler")
+        .to_owned()
+}
+
 fn evaluate_connection_flow(
     html: &str,
     handler: &str,
@@ -28,6 +38,7 @@ fn evaluate_connection_flow(
         "src/topcoat/native/settings/tool_dialog_handler.test.cjs",
         &serde_json::json!({
             "handler": handler,
+            "launch_handler": launch_handler(html),
             "tool_id": "codex",
             "signals": home_fixture::page_signals(html),
             "responses": responses,
@@ -86,6 +97,7 @@ async fn native_tool_dialog_connect_trigger_captures_the_selected_identity() {
         "src/topcoat/native/settings/tool_dialog_handler.test.cjs",
         &serde_json::json!({
             "handler": handler,
+            "launch_handler": launch_handler(&html),
             "tool_id": "codex",
             "signals": home_fixture::page_signals(&html),
             "expected_arguments": serde_json::to_value((
@@ -155,6 +167,7 @@ async fn native_tool_dialog_manually_confirms_and_clears_recent_auth_error() {
         "src/topcoat/native/settings/tool_dialog_handler.test.cjs",
         &serde_json::json!({
             "handler": connect_handler(&html, "codex"),
+            "launch_handler": launch_handler(&html),
             "confirm_handler": confirm.value().attr("data-topcoat-on:click").unwrap(),
             "confirmation_binding": confirm.value().attr("data-topcoat-bind:hidden").unwrap(),
             "password_input_handler": password.value().attr("data-topcoat-on:input").unwrap(),
@@ -207,6 +220,27 @@ async fn native_tool_dialog_disposal_blocks_late_one_time_key_publication() {
 }
 
 #[tokio::test]
+async fn native_tool_card_disposal_does_not_cancel_parent_owned_connect() {
+    let fixture = home_fixture::fixture();
+    let (status, html) = home_fixture::document(&fixture, "/app", "/settings", true, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let key = "lific_test_parent_owned_key";
+    let responses = serde_json::json!({
+        "connect": [serde_json::to_value(Result::<String, ConnectFailure>::Ok(key.into()).into_surrogate()).unwrap()],
+        "profile_session": [serde_json::to_value(Result::<Option<String>, String>::Ok(Some("live-session".into())).into_surrogate()).unwrap()],
+    });
+    let result = evaluate_connection_flow(
+        &html,
+        &connect_handler(&html, "codex"),
+        "card_disposed",
+        responses,
+        key,
+    );
+    assert_eq!(result["requests"], 2);
+    assert_eq!(result["key_published"], true);
+}
+
+#[tokio::test]
 async fn native_tool_dialog_keeps_setup_hidden_before_a_key_is_returned() {
     let fixture = home_fixture::fixture();
     let (status, html) = home_fixture::document(&fixture, "/app", "/settings", true, None).await;
@@ -227,6 +261,7 @@ async fn native_tool_dialog_keeps_setup_hidden_before_a_key_is_returned() {
         "src/topcoat/native/settings/tool_dialog_handler.test.cjs",
         &serde_json::json!({
             "handler": connect_handler(&html, "codex"),
+            "launch_handler": launch_handler(&html),
             "tool_id": "codex",
             "signals": home_fixture::page_signals(&html),
             "scenario": "setup_before_key",
@@ -254,6 +289,7 @@ async fn native_tool_dialog_detects_the_browser_operating_system_on_mount() {
         "src/topcoat/native/settings/tool_dialog_handler.test.cjs",
         &serde_json::json!({
             "handler": connect_handler(&html, "codex"),
+            "launch_handler": launch_handler(&html),
             "tool_id": "codex",
             "signals": home_fixture::page_signals(&html),
             "scenario": "platform_detection",
@@ -377,6 +413,106 @@ async fn native_tool_dialog_unknown_reconnect_uses_generic_setup_template() {
 }
 
 #[tokio::test]
+async fn native_tool_cards_merge_known_connections_and_keep_custom_identities() {
+    let fixture = home_fixture::fixture();
+    let account = queries::users::validate_session(&fixture.db.read().unwrap(), &fixture.token)
+        .unwrap()
+        .id;
+    {
+        let conn = fixture.db.write().unwrap();
+        queries::users::create_bot_user(
+            &conn,
+            account,
+            "codex-account",
+            "Codex account",
+            Some("codex"),
+        )
+        .unwrap();
+        queries::users::create_bot_user(
+            &conn,
+            account,
+            "codex-laptop-account",
+            "Codex laptop",
+            Some("codex-laptop"),
+        )
+        .unwrap();
+        queries::users::create_bot_user(
+            &conn,
+            account,
+            "claude-code-legacy",
+            "Claude Code legacy",
+            None,
+        )
+        .unwrap();
+    }
+    let (status, html) = home_fixture::document(&fixture, "/app", "/settings", true, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let document = scraper::Html::parse_document(&html);
+    let codex_cards = document
+        .select(
+            &scraper::Selector::parse(
+                "[data-settings-tool-template='codex'], [data-connection-id='codex']",
+            )
+            .unwrap(),
+        )
+        .count();
+    assert_eq!(
+        codex_cards, 1,
+        "known template and exact connection share one card"
+    );
+    let known_card = document
+        .select(&scraper::Selector::parse("[data-connection-id='codex']").unwrap())
+        .next()
+        .expect("known template is represented by its connection card");
+    let known_text = known_card.text().collect::<String>();
+    assert!(known_text.contains("Disconnected"));
+    assert!(known_text.contains("Reconnect"));
+    let custom_cards = document
+        .select(&scraper::Selector::parse("[data-connection-id='codex-laptop']").unwrap())
+        .count();
+    assert_eq!(custom_cards, 1, "custom identities retain individual cards");
+    let custom = document
+        .select(&scraper::Selector::parse("[data-connection-id='codex-laptop']").unwrap())
+        .next()
+        .unwrap();
+    assert!(custom.text().collect::<String>().contains("Codex laptop"));
+    assert_eq!(
+        custom
+            .select(
+                &scraper::Selector::parse("button[data-native-tool-reconnect-template]").unwrap()
+            )
+            .next()
+            .unwrap()
+            .value()
+            .attr("data-native-tool-reconnect-template"),
+        Some("codex"),
+        "custom IDs retain the matching setup descriptor"
+    );
+    let legacy_cards = document
+        .select(
+            &scraper::Selector::parse(
+                "[data-connection-id='claude-code'], [data-connection-id='claude-code-legacy']",
+            )
+            .unwrap(),
+        )
+        .count();
+    assert_eq!(
+        legacy_cards, 1,
+        "legacy username prefixes map into their known template"
+    );
+    let legacy = document
+        .select(&scraper::Selector::parse("[data-connection-id='claude-code']").unwrap())
+        .next()
+        .unwrap();
+    assert!(
+        legacy
+            .text()
+            .collect::<String>()
+            .contains("Claude Code legacy")
+    );
+}
+
+#[tokio::test]
 async fn native_tool_dialog_named_connection_identity_is_frozen_during_async_connect() {
     let fixture = home_fixture::fixture();
     let account = queries::users::validate_session(&fixture.db.read().unwrap(), &fixture.token)
@@ -401,6 +537,7 @@ async fn native_tool_dialog_named_connection_identity_is_frozen_during_async_con
         "src/topcoat/native/settings/tool_dialog_handler.test.cjs",
         &serde_json::json!({
             "handler": trigger.value().attr("data-topcoat-on:click").unwrap(),
+            "launch_handler": launch_handler(&html),
             "custom_id_handler": custom_id.value().attr("data-topcoat-on:input").unwrap(),
             "custom_name_handler": custom_name.value().attr("data-topcoat-on:input").unwrap(),
             "tool_id": "codex",

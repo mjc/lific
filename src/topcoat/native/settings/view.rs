@@ -2,6 +2,7 @@
 
 use topcoat::{
     context::Cx,
+    runtime::signal,
     view::{BoxView, ViewExt, view},
 };
 
@@ -11,12 +12,13 @@ pub(super) fn content<'a>(
     is_admin: bool,
 ) -> BoxView<'a> {
     let account = profile_handles.0;
+    let tools_revision = signal(&cx.keyed((account, "tools-revision")), || 0_usize);
     let appearance = super::appearance::section(cx);
-    let tools = super::tools::section(cx, account);
+    let tools = super::tools::section(cx, account, tools_revision.clone());
     let profile = super::profile::section(cx, profile_handles.clone());
-    let security = super::security::section(cx, account);
-    let account_nav = super::super::navigation::attrs(cx, "/settings");
-    let instance_nav = super::super::navigation::attrs(cx, "/settings/instance");
+    let security = super::security::section(cx, account, tools_revision);
+    let settings_tabs =
+        super::super::settings_tabs::view(cx, super::super::settings_tabs::Tab::Account, is_admin);
     let account_header = super::super::account_profile::header(cx, profile_handles);
     view! {
         cx =>
@@ -25,25 +27,7 @@ pub(super) fn content<'a>(
                 class="mx-auto w-full max-w-[1000px] px-6 py-10 md:py-12"
                 data-native-settings="account"
             >
-                <nav
-                    class="mb-8 flex items-center gap-6 border-b border-[var(--border)]"
-                    aria-label="Settings sections"
-                >
-                    <a
-                        class="relative -mb-px border-b-2 border-[var(--accent)] px-0.5 pb-2.5 pt-1 text-body font-medium text-[var(--text)]"
-                        (account_nav)
-                    >
-                        "Account"
-                    </a>
-                    if is_admin {
-                        <a
-                            class="relative -mb-px border-b-2 border-transparent px-0.5 pb-2.5 pt-1 text-body font-medium text-[var(--text-muted)]"
-                            (instance_nav)
-                        >
-                            "Instance"
-                        </a>
-                    }
-                </nav>
+                (settings_tabs)
                 (account_header)
 
                 (appearance)
@@ -61,5 +45,6 @@ pub(super) fn content<'a>(
                 </section>
             </div>
         </div>
-    }.boxed()
+    }
+    .boxed()
 }

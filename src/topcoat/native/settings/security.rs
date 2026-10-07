@@ -6,14 +6,22 @@ use topcoat::{
     view::{Attributes, BoxView, View, ViewExt, view},
 };
 
-pub(super) fn section<'a>(cx: &'a Cx, account: i64) -> BoxView<'a> {
-    view! { cx => native_settings_security(account: account) }.boxed()
+pub(super) fn section<'a>(cx: &'a Cx, account: i64, tools_revision: Signal<usize>) -> BoxView<'a> {
+    view! {
+        cx =>
+        native_settings_security(account: account, tools_revision: tools_revision)
+    }
+    .boxed()
 }
 
 #[shard("/__native_settings/security")]
-async fn native_settings_security(cx: &Cx, account: i64) -> topcoat::Result<impl View> {
+async fn native_settings_security(
+    cx: &Cx,
+    account: i64,
+    tools_revision: Signal<usize>,
+) -> topcoat::Result<impl View> {
     let _caller = session::read(cx, super::actions::same_account(cx, account))?;
-    Ok(render_section(cx, account))
+    Ok(render_section(cx, account, tools_revision))
 }
 
 #[derive(Clone)]
@@ -30,12 +38,14 @@ fn password_attrs(
     busy: Signal<bool>,
     error: Signal<String>,
     feedback: PasswordFeedback,
+    tools_revision: Signal<usize>,
 ) -> Attributes {
     let success = feedback.visible;
     let generation = feedback.generation;
     let destination = super::super::transport::mounted_url(cx, "/");
     let unavailable: Result<Option<String>, String> =
         Err("Unable to verify the current session.".to_owned());
+    let refresh_tools = tools_revision;
     let failed_busy = busy.clone();
     let failed_error = error.clone();
     let handler = expr!(|_event: Event| {
@@ -81,6 +91,7 @@ fn password_attrs(
                         return;
                     }
                     if result.0 {
+                        refresh_tools.set(refresh_tools.get() + 1);
                         current.set("".to_owned());
                         next.set("".to_owned());
                         success.set(true);
@@ -169,7 +180,7 @@ fn signout_attrs(
     attrs
 }
 
-fn render_section(cx: &Cx, account: i64) -> BoxView<'_> {
+fn render_section(cx: &Cx, account: i64, tools_revision: Signal<usize>) -> BoxView<'_> {
     let state_cx = cx.keyed((account, "security"));
     let current = signal(&state_cx, String::new);
     let next = signal(&state_cx, String::new);
@@ -191,6 +202,7 @@ fn render_section(cx: &Cx, account: i64) -> BoxView<'_> {
         busy.clone(),
         error.clone(),
         feedback,
+        tools_revision,
     );
     let signout_everywhere = signout_attrs(
         cx,

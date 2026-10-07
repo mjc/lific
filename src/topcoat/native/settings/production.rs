@@ -108,6 +108,7 @@ async fn native_account_settings_overlapping_tool_actions_keep_the_one_time_key(
         &serde_json::json!({
             "bot_handler": parent.value().attr("data-topcoat-on:click").unwrap(),
             "connect_handler": connect.value().attr("data-topcoat-on:click").unwrap(),
+            "launch_handler": parent.select(&scraper::Selector::parse("button[data-native-tool-launch]").unwrap()).next().unwrap().value().attr("data-topcoat-on:click").unwrap(),
             "wire": bot.value().attr("data-native-bot-action").unwrap(),
             "signals": home_fixture::page_signals(&html),
             "responses": {
