@@ -7,12 +7,7 @@ use std::sync::Arc;
 
 use topcoat::{
     context::{Cx, app_context},
-    router::{
-        Body, Layer, LayerFuture, Method, Next, Path,
-        request::{headers, method, uri},
-        response::Response,
-    },
-    runtime::RUNTIME_PROTOCOL,
+    router::{Body, Layer, LayerFuture, Next, Path, request::uri, response::Response},
 };
 
 use crate::{error::LificError, realtime::RealtimeHub};
@@ -26,14 +21,7 @@ impl Layer for SocketAdmission {
 
     fn handle<'a>(&'a self, cx: &'a Cx, body: Body, next: Next<'a>) -> LayerFuture<'a> {
         Box::pin(async move {
-            let runtime_socket = *method(cx) == Method::GET
-                && headers(cx)
-                    .get_all("sec-websocket-protocol")
-                    .iter()
-                    .filter_map(|value| value.to_str().ok())
-                    .flat_map(|protocols| protocols.split(','))
-                    .any(|protocol| protocol.trim() == RUNTIME_PROTOCOL);
-            if !runtime_socket {
+            if !super::super::runtime::requests_runtime_socket(cx) {
                 return next.run(cx, body).await;
             }
             let hub = app_context::<RealtimeHub>(cx);
@@ -59,7 +47,10 @@ impl Layer for SocketAdmission {
                 let Some(permit) = hub.try_acquire_published_socket() else {
                     return connection_limit();
                 };
-                let socket_context = cx.with(Arc::new(permit));
+                let scope = super::super::runtime::SocketRunPolicy::new(|_, uri| {
+                    super::public_route::resolve(uri.path()).is_some()
+                });
+                let socket_context = cx.with(Arc::new(permit)).with(scope);
                 return next.run(&socket_context, body).await;
             }
 

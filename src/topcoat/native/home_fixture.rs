@@ -38,6 +38,29 @@ pub(crate) struct Fixture {
     _store: tempfile::TempDir,
 }
 
+pub(super) fn page_signals(html: &str) -> serde_json::Map<String, serde_json::Value> {
+    let document = scraper::Html::parse_document(html);
+    let mut signals = serde_json::Map::new();
+    for node in document.tree.nodes() {
+        if let scraper::Node::Comment(comment) = node.value()
+            && let Some(value) = comment
+                .strip_prefix("::topcoat::signal(")
+                .and_then(|value| value.strip_suffix(')'))
+        {
+            let text = scraper::Html::parse_fragment(&value.replace('<', "&lt;"))
+                .root_element()
+                .text()
+                .collect::<String>();
+            let declaration: serde_json::Value = serde_json::from_str(&text).unwrap();
+            signals.insert(
+                declaration["id"].as_str().unwrap().to_owned(),
+                declaration["v"].clone(),
+            );
+        }
+    }
+    signals
+}
+
 pub(crate) fn fixture() -> Fixture {
     fixture_with_auth(true)
 }

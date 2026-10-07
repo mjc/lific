@@ -8,7 +8,7 @@ test('native connection waits for every generated handler at every mount', async
   const browser = await launchBrowser();
   try {
     for (const prefix of ['', '/app', '/ACC']) {
-      for (const asset of ['__native-home-shell.js', '__native-workspace.js', '__native-sidebar.js']) {
+      for (const asset of ['__native-home-shell.js', '__native-sidebar.js']) {
         await t.test(`${prefix || 'root'} ${asset}`, async () => {
           const proxy = await mountedProxy(upstream, prefix);
           const context = await browser.newContext({viewport: {width: 1200, height: 850}, reducedMotion: 'reduce'});

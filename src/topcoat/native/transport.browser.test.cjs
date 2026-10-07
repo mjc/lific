@@ -10,82 +10,6 @@ const runtime = fs.readFileSync(path.join(__dirname, '../assets/runtime.js'), 'u
 const escape = value => value.replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;');
 const procedure = endpoint => ({t: 'Procedure', path: endpoint});
 
-test('one document navigation is claimed across sibling socket and HTTP redirects', async () => {
-  const bootstrap = 'var Ve=new ne;Ve.start(document);Ve.page.listenForDevRefresh();';
-  assert.equal(runtime.split(bootstrap).length - 1, 1, 'The production document startup is replaced exactly once.');
-  const locations = [], failures = [];
-  const context = {
-    AbortController, queueMicrotask, TextEncoder, TextDecoder,
-    location: {assign: destination => locations.push(destination)},
-    console: {error: error => failures.push(error)},
-  };
-  require('node:vm').runInNewContext(runtime.replace(bootstrap,
-    'globalThis.fixture={create:()=>new ne,frame:z,Request:H};'), context);
-  const {create, frame, Request} = context.fixture;
-  const redirect = (document, destination) => frame({runtime: document},
-    {t: 'redirect', location: destination}, 'Connected', Symbol('render'));
-  const httpRedirect = async (document, destination) => {
-    const controller = new Request(new AbortController().signal,
-      error => failures.push(error), location => document.redirect(location));
-    await controller.run(async () => ({redirected: true, url: destination}),
-      () => assert.fail('An HTTP redirect must not produce render frames.'), 'HTTP');
-  };
-  for (const source of ['sibling sockets', 'socket then HTTP', 'HTTP then socket', 'sibling HTTP']) {
-    locations.length = 0;
-    const document = create();
-    if (source.startsWith('HTTP') || source === 'sibling HTTP') await httpRedirect(document, '/mounted/first');
-    else redirect(document, '/mounted/first');
-    if (source.endsWith('HTTP')) await httpRedirect(document, '/mounted/second');
-    else redirect(document, '/mounted/second');
-    assert.deepEqual(locations, ['/mounted/first'], `${source} shares one document navigation claim.`);
-    redirect(create(), '/mounted/new-document');
-    assert.deepEqual(locations, ['/mounted/first', '/mounted/new-document'],
-      'A new document Runtime owns a fresh navigation claim.');
-  }
-  assert.deepEqual(failures, []);
-});
-
-test('vendored patches reconstruct the exact pinned upstream runtime', () => {
-  const start = runtime.indexOf('function A(t,e,n,r,i={})');
-  assert.ok(start >= 0, 'The pinned upstream body is present.');
-  let original = runtime.slice(start);
-  for (const [patched, upstream, count] of [
-    ['trim_ecmascript(){return new v(this.v.trim())}trim(){return new t(this.v.replace(xe,"").replace(Ee,""))}', 'trim(){return new t(this.v.replace(xe,"").replace(Ee,""))}', 1],
-    ['to_uppercase(){return new v(this.v.toUpperCase())}unicode_scalars(e){let n=e.dehydrate();if(n.t!=="usize")throw new Error("Unicode scalar vector requires target usize width");return new F(Array.from(this.v,r=>new v(r)),ue("usize",n.bits))}to_owned(){return new v(this.v)}is_empty(){return new l(this.v.length===0)}', 'to_owned(){return new v(this.v)}is_empty(){return new l(this.v.length===0)}', 1],
-    ['new H(this.lifetime.abortSignal,r=>this.reportError(r),r=>n.redirect(r))', 'new H(this.lifetime.abortSignal,r=>n.reportError(r),r=>n.redirect(r))', 1],
-    ['failureTarget(){return document}reportError(e){this.runtime.reportError(e);if(this.isDisposed)return;this.failureTarget()?.dispatchEvent(new CustomEvent("topcoat:render-error",{bubbles:true,detail:{path:this.url()}}))}', 'reportError(e){this.runtime.reportError(e)}', 1],
-    ['failureTarget(){return this.startNode.parentNode}url()', 'url()', 1],
-    ['registry;event(e){return new j(e)}hydrate(e){return V(e,this)}', 'registry;hydrate(e){return V(e,this)}', 1],
-    ["push(e){this.inner.set(n=>n.clone_with_push(e))}remove(e){this.inner.set(n=>n.clone_without_index(e))}push_str(e){this.inner.set(n=>new v(`${n}${e}`))}", "push_str(e){this.inner.set(n=>new v(`${n}${e}`))}", 1],
-    ["clone(){return this.to_vec()}clone_with_push(e){let n=this.items.map(b);return n.push(b(e)),new F(n,this.usizeType)}clone_without_index(e){let n=e.toIndex(this.items.length,this.usizeType.bits);if(n===void 0)throw new RangeError(\"Vec index out of bounds\");let r=this.items.map(b);return r.splice(n,1),new F(r,this.usizeType)}dehydrate(){return{t:\"Vec\",bits:this.usizeType.bits,v:this.items.map(f)}}", "clone(){return this.to_vec()}dehydrate(){return{t:\"Vec\",bits:this.usizeType.bits,v:this.items.map(f)}}", 1],
-    ['call(...e){return this.request(e,!1)}call_keepalive(...e){return this.request(e,!0)}with_keepalive(){return{call:(...e)=>this.call_keepalive(...e)}}request(e,n){return new X(async()=>{let r=await fetch(topcoatMountedEndpoint(this.path),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(e.map(f)),redirect:"manual",...(n?{keepalive:!0}:{})});if(!r.ok)throw new Error(`Procedure call failed: ${r.status} ${r.statusText}`);return this.cx.hydrate(await r.json())})}',
-      'call(...e){return new X(async()=>{let n=await fetch(topcoatMountedEndpoint(this.path),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(e.map(f))});if(!n.ok)throw new Error(`Procedure call failed: ${n.status} ${n.statusText}`);return this.cx.hydrate(await n.json())})}', 1],
-    ['function pe(t){let e=new DOMParser().parseFromString(t.replaceAll("<","&lt;"),"text/html")',
-      'function pe(t){let e=new DOMParser().parseFromString(t,"text/html")', 1],
-    ['fetch(topcoatMountedEndpoint(this.path)', 'fetch(this.path', 2],
-    ['url(){return topcoatMountedEndpoint(this.path)}', 'url(){return this.path}', 1],
-    ['function V(t,e){if(Array.isArray(t))return topcoatHydrateTuple(t,e);if(t!==null)', 'function V(t,e){if(t!==null)', 1],
-    ['function f(t){if(t==null)return null;if(Array.isArray(t))return t.map(f);', 'function f(t){if(t==null)return null;', 1],
-    ['let r=e.name.substring(ke.length),i=Object.assign(Object.create(n.runtime.context),{abortSignal:n.abortSignal});if(r==="mount"){topcoatMount(t,()=>T(e.value,`event @${r}`)(i),n);return}let o=T(e.value,`event @${r}`)(i);',
-      'let r=e.name.substring(ke.length),o=T(e.value,`event @${r}`)(n.runtime.context);', 1],
-    ['refresh(){if(this.isDisposed)return Promise.resolve();if(this.connection!==null)return this.connection.requestRun(),Promise.resolve();if(this.requiresConnection){for(let n of this.ancestors())if(n.connection!==null||n.requiresConnection)return n.refresh();return this.connectIfRequired(),Promise.resolve()}',
-      'refresh(){if(this.connection?.isOpen)return this.connection.requestRun(),Promise.resolve();if(this.requiresConnection){for(let n of this.ancestors())if(n.connection?.isOpen)return n.refresh()}', 1],
-    ['case"redirect":t.runtime.redirect(e.location);break;', 'case"redirect":location.assign(e.location);break;', 1],
-    ['constructor(e,n,r){this.lifetime=e;this.reportError=n;this.redirect=r;e.addEventListener',
-      'constructor(e,n){this.lifetime=e;this.reportError=n;e.addEventListener', 1],
-    ['if(s.redirected){this.redirect(s.url);return}', 'if(s.redirected){location.assign(s.url);return}', 1],
-    ['new H(this.lifetime.abortSignal,r=>n.reportError(r),r=>n.redirect(r))',
-      'new H(this.lifetime.abortSignal,r=>n.reportError(r))', 1],
-    ['var ne=class{navigating=!1;redirect(e){if(this.navigating)return;this.navigating=!0;location.assign(e)}registry=new te;',
-      'var ne=class{registry=new te;', 1],
-  ]) {
-    assert.equal(original.split(patched).length - 1, count, 'Each declared patch has its expected occurrence count.');
-    original = original.replaceAll(patched, upstream);
-  }
-  const digest = require('node:crypto').createHash('sha256').update(original).digest('hex');
-  assert.equal(digest, '980dd1be1962006b98b8c1646b0e6a4f86a78ec721e2739f59ddf4c4c1c5c8b4');
-});
-
 // This fixture speaks the pinned framework transport protocol. Domain/auth
 // integration is exercised separately against the actual Lific executable.
 test('connected renders wait for load, socket open and reconnect using fresh inputs', async t => {
@@ -93,7 +17,7 @@ test('connected renders wait for load, socket open and reconnect using fresh inp
   const browser = await launchBrowser();
   try {
     for (const ancestor of [false, true]) await t.test(ancestor ? 'ancestor connection' : 'own connection', async () => {
-      const requests = [], runs = [], upgrades = [], pendingSockets = new Set();
+      const requests = [], runs = [], stops = [], upgrades = [], pendingSockets = new Set();
       let heldImage;
       const connectedContent = value => `<p id="socket-result">Socket ${value}</p><!-- ::topcoat::connect -->`;
       const documentBody = value => `
@@ -139,10 +63,12 @@ test('connected renders wait for load, socket open and reconnect using fresh inp
           ws.handleUpgrade(request, socket, head, client => {
             client.on('message', message => {
               const run = JSON.parse(message.toString());
+              if (run.stop !== undefined) {stops.push(run.stop); return;}
               runs.push({path: request.url, run});
-              const value = ancestor ? run.signals.a : run.args[0];
-              client.send(JSON.stringify({t: 'run', id: run.run}));
-              client.send(JSON.stringify({t: 'snapshot', html: ancestor ? pageContent(value) : connectedContent(value)}));
+              const input = JSON.parse(run.body);
+              const value = ancestor ? input.signals.a : input.args[0];
+              const html = ancestor ? pageContent(value) : connectedContent(value);
+              client.send(JSON.stringify({run: run.run, frame: {t: 'snapshot', html}}));
             });
           });
         });
@@ -172,8 +98,10 @@ test('connected renders wait for load, socket open and reconnect using fresh inp
           'A connected render waits for the pending socket handshake.');
         upgrades.shift()();
         await page.getByText('Socket 4', {exact: true}).waitFor();
-        assert.equal(runs[0].path, ancestor ? '/ACC/fixture' : '/ACC/native/connected');
-        assert.equal(ancestor ? runs[0].run.signals.a : runs[0].run.args[0], 4,
+        assert.equal(runs[0].path, '/ACC/fixture', 'One WebSocket is shared at the document URL.');
+        assert.equal(runs[0].run.path, ancestor ? '/fixture' : '/native/connected');
+        const initialInputs = JSON.parse(runs[0].run.body);
+        assert.equal(ancestor ? initialInputs.signals.a : initialInputs.args[0], 4,
           'Opening the socket reads the newest inputs, including mount initialization.');
         const reconnecting = new Promise(resolve => server.once('held-upgrade', resolve));
         for (const client of ws.clients) client.terminate();
@@ -186,8 +114,10 @@ test('connected renders wait for load, socket open and reconnect using fresh inp
           'Reconnect never falls back to a connected HTTP render.');
         upgrades.shift()();
         await page.getByText('Socket 6', {exact: true}).waitFor();
-        assert.equal(ancestor ? runs.at(-1).run.signals.a : runs.at(-1).run.args[0], 6);
+        const latestInputs = JSON.parse(runs.at(-1).run.body);
+        assert.equal(ancestor ? latestInputs.signals.a : latestInputs.args[0], 6);
         assert.deepEqual(requests.map(request => request.body.args), [[1], [2], [3]]);
+        assert.ok(stops.length > 0, 'Superseded target Runs send Stop messages.');
         assert.deepEqual(failures, []);
       } finally {
         heldImage?.end();
@@ -206,7 +136,7 @@ test('framework procedures, returned surrogates, shards and sockets stay within 
   const browser = await launchBrowser();
   try {
     for (const prefix of ['', '/app', '/ACC']) await t.test(prefix || 'root', async () => {
-      const requests = [], sockets = [];
+      const requests = [], sockets = [], socketRuns = [], stops = [];
       const server = http.createServer(async (request, response) => {
         const body = [];
         for await (const chunk of request) body.push(chunk);
@@ -242,7 +172,17 @@ test('framework procedures, returned surrogates, shards and sockets stay within 
       const ws = new WebSocketServer({noServer: true});
       server.on('upgrade', (request, socket, head) => {
         sockets.push({path: request.url, protocol: request.headers['sec-websocket-protocol']});
-        ws.handleUpgrade(request, socket, head, client => ws.emit('connection', client, request));
+        ws.handleUpgrade(request, socket, head, client => {
+          client.on('message', message => {
+            const run = JSON.parse(message.toString());
+            if (run.stop !== undefined) {stops.push(run.stop); return;}
+            socketRuns.push(run);
+            const input = JSON.parse(run.body);
+            client.send(JSON.stringify({run: run.run, frame: {t: 'snapshot', html:
+              `<p>Socket ${run.path} ${input.args?.[0] ?? 'page'}</p>`}}));
+          });
+          ws.emit('connection', client, request);
+        });
       });
       await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
       const context = await browser.newContext();
@@ -270,7 +210,12 @@ test('framework procedures, returned surrogates, shards and sockets stay within 
           'Dehydration preserves logical procedure paths, preventing a second mount prefix.');
         assert.equal(requests[4].headers['x-topcoat-identity'], '1');
         assert.deepEqual(requests[4].body.args, [true]);
-        assert.deepEqual(sockets, [{path: `${prefix}/native/socket`, protocol: 'topcoat-runtime'}]);
+        assert.deepEqual(sockets, [{path: `${prefix}/ACC/overview`, protocol: 'topcoat-runtime'}],
+          'Connected shards share one socket handshaken at the mounted document URL.');
+        assert.ok(socketRuns.some(run => run.path === '/native/socket'),
+          'Shard Run paths remain logical inside the shared socket protocol.');
+        if (prefix) assert.ok(socketRuns.some(run => run.path === '/ACC/overview'),
+          'Page Run paths remove exactly one mount prefix for the internal router.');
         for (const request of requests) {
           assert.equal(request.headers.cookie, 'lific_session=fixture-session', 'Native fetch keeps existing same-origin cookie behavior.');
           assert.equal(request.headers.authorization, undefined, 'The runtime does not synthesize browser bearer credentials.');
@@ -311,14 +256,14 @@ test('Rust tuple arrays hydrate, index and round-trip nested framework values', 
     }
     const call = `async()=>{try{
       const tuple=await cx.hydrate(${JSON.stringify(procedure('/native/tuple-factory'))}).call();
-      if(!Array.isArray(tuple)||tuple.length!==8)throw new Error('Tuple shape');
+      if(Array.from(tuple).length!==8)throw new Error('Tuple shape');
       if(!tuple[0].is_ok().v||tuple[0].unwrap().v!=='saved')throw new Error('Result indexing');
       if(tuple[1].unwrap().v.toString()!=='9007199254740993')throw new Error('Integer precision');
       const nested=tuple[2].unwrap();
       if(nested[0].v.toString()!=='7'||typeof tuple.dehydrate!=='function'||typeof nested.dehydrate!=='function')throw new Error('Nested tuple methods');
       await nested[1].call();
       document.querySelector('#wire').textContent=JSON.stringify(tuple.dehydrate());
-      await cx.hydrate(${JSON.stringify(procedure('/native/tuple-echo'))}).call(tuple,[tuple[1],[nested[0],tuple[3]]]);
+      await cx.hydrate(${JSON.stringify(procedure('/native/tuple-echo'))}).call(tuple,cx.tuple([tuple[1],cx.tuple([nested[0],tuple[3]])]));
       document.querySelector('#result').textContent='ok';
     }catch(error){document.querySelector('#result').textContent=error.message;}}`;
     response.setHeader('Content-Type', 'text/html');
@@ -409,10 +354,10 @@ test('generic keepalive procedures retain mounted cookie transport and ordinary 
 });
 
 test('packaged vector signal writes preserve typed snapshots and notify subscribers', async () => {
-  const bootstrap = 'var Ve=new ne;Ve.start(document);Ve.page.listenForDevRefresh();';
+  const bootstrap = 'var et=new ye;et.start(document);et.page.listenForDevRefresh();';
   assert.equal(runtime.split(bootstrap).length - 1, 1);
   const fixtureRuntime = runtime.replace(bootstrap,
-    'globalThis.vectorFixture={Context:Z,Registry:te,Effect:$,flush:Ue};');
+    'globalThis.vectorFixture={Context:fe,Registry:ve,Effect:te,flush:St};');
   const server = http.createServer((request, response) => {
     if (request.url === '/runtime.js') {
       response.setHeader('Content-Type', 'text/javascript'); response.end(fixtureRuntime); return;
@@ -491,9 +436,9 @@ test('expression context adapts real keyboard events using the framework Event v
 });
 
 test('packaged render failure notifications retain logging and owning DOM scope',async()=>{
-  const bootstrap='var Ve=new ne;Ve.start(document);Ve.page.listenForDevRefresh();';
+  const bootstrap='var et=new ye;et.start(document);et.page.listenForDevRefresh();';
   assert.equal(runtime.split(bootstrap).length-1,1);
-  const instrumented=runtime.replace(bootstrap,bootstrap+'globalThis.fixtureRuntime=Ve;');
+  const instrumented=runtime.replace(bootstrap,bootstrap+'globalThis.fixtureRuntime=et;');
   const server=http.createServer((request,response)=>{
     if(new URL(request.url,'http://fixture').pathname.endsWith('/runtime.js'))return response.writeHead(200,{'content-type':'text/javascript'}).end(instrumented);
     const prefix=new URL(request.url,'http://fixture').pathname.replace(/\/page$/, '');

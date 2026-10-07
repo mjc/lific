@@ -5,12 +5,6 @@ use super::home_fixture;
 async fn native_session_expired_post_uses_303_and_get_keeps_307_across_auth_and_mounts() {
     for required in [false, true] {
         let fixture = home_fixture::fixture_with_auth(required);
-        let account = crate::db::queries::users::validate_session(
-            &fixture.db.read().unwrap(),
-            &fixture.token,
-        )
-        .unwrap()
-        .id;
         let (origin, server) = home_fixture::serve(&fixture).await;
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
@@ -18,30 +12,48 @@ async fn native_session_expired_post_uses_303_and_get_keeps_307_across_auth_and_
             .build()
             .unwrap();
         let cookie = format!("lific_token={}", fixture.token);
-        let args =
-            serde_json::json!(["/ACC/overview", "", {"t":"i64","bits":64,"v":account.to_string()}]);
-        let admitted = client
-            .post(format!("{origin}/__native_workspace/destination"))
+        let page = client
+            .get(format!("{origin}/ACC/overview"))
             .header("cookie", &cookie)
-            .json(&args)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(page.status(), 200);
+        let signals = home_fixture::page_signals(&page.text().await.unwrap());
+        let body = serde_json::json!({ "signals": signals });
+        let page_post = |url: String, prefix: &str| {
+            client
+                .post(url)
+                .header("cookie", &cookie)
+                .header("x-forwarded-prefix", prefix)
+                .header("content-type", "application/json")
+                .header("x-topcoat-runtime", "true")
+                .header("accept", "application/x-ndjson")
+                .json(&body)
+        };
+        let admitted = client
+            .post(format!("{origin}/ACC/overview"))
+            .header("cookie", &cookie)
+            .header("content-type", "application/json")
+            .header("x-topcoat-runtime", "true")
+            .header("accept", "application/x-ndjson")
+            .json(&body)
             .send()
             .await
             .unwrap();
         assert_eq!(
             admitted.status().as_u16(),
             200,
-            "Live actual cookie admits the real procedure"
+            "Live actual cookie admits a real Topcoat page render"
         );
+        let frames = admitted.text().await.unwrap();
+        assert!(frames.contains("\"t\":\"snapshot\""));
         crate::db::queries::users::delete_session(&fixture.db.write().unwrap(), &fixture.token)
             .unwrap();
         for prefix in ["", "/app", "/ACC"] {
             // Match the existing reverse proxy's upstream logical URL and
             // trusted forwarding header; outer middleware owns Location mounting.
-            let denied = client
-                .post(format!("{origin}/__native_workspace/destination"))
-                .header("cookie", &cookie)
-                .header("x-forwarded-prefix", prefix)
-                .json(&args)
+            let denied = page_post(format!("{origin}/ACC/overview"), prefix)
                 .send()
                 .await
                 .unwrap();
@@ -84,7 +96,7 @@ async fn native_session_expired_post_uses_303_and_get_keeps_307_across_auth_and_
             assert!(login.text().await.unwrap().contains("Welcome back."));
         }
         // Root mount additionally exercises an actual HTTP client's automatic
-        // redirect handling. Mounted browser cases cover typed RPC rejection and
+        // redirect handling. Mounted browser cases cover page-render rejection and
         // fresh-cookie document fallback through the real mounted proxy.
         let following = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::limited(3))
@@ -92,9 +104,12 @@ async fn native_session_expired_post_uses_303_and_get_keeps_307_across_auth_and_
             .build()
             .unwrap();
         let followed = following
-            .post(format!("{origin}/__native_workspace/destination"))
+            .post(format!("{origin}/ACC/overview"))
             .header("cookie", &cookie)
-            .json(&args)
+            .header("content-type", "application/json")
+            .header("x-topcoat-runtime", "true")
+            .header("accept", "application/x-ndjson")
+            .json(&body)
             .send()
             .await
             .unwrap();

@@ -28,18 +28,19 @@ async fn component_page(cx: &Cx) -> topcoat::Result<Response> {
         Err(error) => return Err(error.into()),
     };
     let snapshot = super::actions::snapshot(issue);
-    let runtime = transport::mounted_url(cx, super::super::super::assets::runtime_url());
     let stylesheet = transport::mounted_url(cx, super::super::super::assets::app_stylesheet_url());
     let mount = transport::trusted_mount(cx).unwrap_or("").to_owned();
     let favicon = transport::mounted_url(cx, "/favicon.png");
-    let html = view! { cx =>
+    let html = view! {
+        cx =>
         <!DOCTYPE html>
         <html lang="en" data-topcoat-runtime-prefix=(mount)>
             <head>
-                <meta charset="utf-8"><title>"Native issue editor component proof"</title>
+                <meta charset="utf-8">
+                <title>"Native issue editor component proof"</title>
                 <link rel="stylesheet" href=(stylesheet)>
                 <link rel="icon" href=(favicon)>
-                <script type="module" src=(runtime)></script>
+                (super::super::super::assets::runtime_script(cx))
             </head>
             <body>(super::view::editor(cx, &snapshot, can_edit))</body>
         </html>

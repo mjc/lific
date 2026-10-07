@@ -144,7 +144,7 @@ async function assertNativeHome(state, proxy, prefix) {
   assert.equal(proxy.requests.some(request => request.method === 'POST'), false,
     'Initial browser clock/storage collection does not invoke a procedure or HTTP render.');
   assertOutsideRest(state.requests);
-  assert.ok(proxy.sockets.some(url => url === `${prefix}/__native_home/content`), 'Browser-local initialization uses the real mounted content socket.');
+  assert.deepEqual(proxy.sockets, [`${prefix}/`], 'Browser-local initialization shares the mounted document socket.');
   const shell = page.locator('.native-home-shell');
   assert.equal(await shell.getAttribute('data-collapsed'), 'false');
   await page.locator('#native-home-collapse').click();

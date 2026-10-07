@@ -296,6 +296,10 @@ async fn native_home_production_initial_html_contains_visible_work_without_hybri
                     tag.contains("/__topcoat-runtime.js"),
                     "Home loaded a legacy controller: {tag}"
                 );
+                assert!(
+                    tag.contains(&format!("data-topcoat-usize-bits=\"{}\"", usize::BITS)),
+                    "the runtime must use the server's usize width: {tag}"
+                );
             }
         }
     }
@@ -328,11 +332,7 @@ async fn native_home_initial_mount_handlers_bind_shared_signal_handles_once() {
 async fn native_home_generated_handler_is_shared_immutable_and_free_of_account_data() {
     let fixture = fixture();
     let cookie = format!("lific_token={}", fixture.token);
-    for filename in [
-        "__native-home-shell.js",
-        "__native-workspace.js",
-        "__native-sidebar.js",
-    ] {
+    for filename in ["__native-home-shell.js", "__native-sidebar.js"] {
         let mut first = None;
         for prefix in ["", "/app", "/ACC"] {
             let response = get(&fixture, Some(&cookie), Some(prefix)).await;
@@ -418,11 +418,11 @@ async fn native_home_runtime_loads_shared_handlers_before_hydration() {
         .await
         .unwrap();
     let source = std::str::from_utf8(&body).unwrap();
-    for (line, filename) in source.lines().take(3).zip([
-        "__native-home-shell.js",
-        "__native-workspace.js",
-        "__native-sidebar.js",
-    ]) {
+    for (line, filename) in source
+        .lines()
+        .take(2)
+        .zip(["__native-home-shell.js", "__native-sidebar.js"])
+    {
         assert!(
             line.starts_with("import ") && line.contains(&format!("./{filename}?v=")),
             "Runtime must finish loading generated handlers before it hydrates controls: {line}"

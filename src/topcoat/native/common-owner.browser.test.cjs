@@ -15,8 +15,8 @@ async function owner(page,seen,count){assert.ok(await page.evaluate(()=>document
 async function hold(page,url,fetchFirst){
   let enter,release,finish;const entered=new Promise(r=>enter=r),blocked=new Promise(r=>release=r),done=new Promise(r=>finish=r);
   await page.route(url,async route=>{
-    try{const request=route.request();assert.equal(request.method(),'POST');assert.equal(await request.headerValue('authorization'),null);
-      const args=JSON.parse(request.postData());assert.equal(args[0],'/ACC/overview');assert.deepEqual(args[2],{t:'i64',bits:64,v:String(seed.account)});
+    try{const request=route.request();assert.equal(request.method(),'POST');assert.equal(await request.headerValue('authorization'),null);assert.equal(await request.headerValue('x-topcoat-runtime'),'true');
+      const body=JSON.parse(request.postData());assert.ok(body.signals&&Object.keys(body.signals).length>0,'Topcoat page POST carries the current document signal state.');
       const response=fetchFirst?await route.fetch({maxRedirects:0}):undefined;if(response)assert.equal(response.status(),200);
       enter({response});await blocked;const actual=response||await route.fetch({maxRedirects:0});await route.fulfill({response:actual});finish({status:actual.status()});
     }catch(error){enter({error});finish({error});try{await route.abort('failed');}catch{}}
@@ -55,7 +55,7 @@ test(`native common owner ${scenario}; auth ${seed.auth_required?'required':'opt
       const currentToken=(scenario==='held'||scenario==='redirect')?(await control('renew')).token:token;await cookie(context,proxy.origin,currentToken);
       if(kind==='foreign_pop')await context.addInitScript(()=>{const original=history.go;history.go=function(delta){if(window.holdNativeHistoryTraversal){window.heldNativeHistoryDelta=Number(delta);return;}return original.call(this,delta);};});
       if(scenario==='scroll')await context.addInitScript(()=>{window.sidebarScrollCalls=[];const original=Element.prototype.scrollIntoView;Element.prototype.scrollIntoView=function(options){const id=this.getAttribute('data-ns-link');if(id)window.sidebarScrollCalls.push({id,options});return original.call(this,options);};});
-      if(scenario==='notice')await context.addInitScript(()=>{const send=WebSocket.prototype.send;window.noticePaletteSockets=[];WebSocket.prototype.send=function(value){if(new URL(this.url).pathname.endsWith('/__native_home/palette')&&!window.noticePaletteSockets.includes(this))window.noticePaletteSockets.push(this);return send.call(this,value);};});
+      if(scenario==='notice')await context.addInitScript(()=>{const send=WebSocket.prototype.send;window.noticePaletteSockets=[];WebSocket.prototype.send=function(value){let request;try{request=JSON.parse(value);}catch{}if(request?.path==='/__native_home/palette'&&!window.noticePaletteSockets.includes(this))window.noticePaletteSockets.push(this);return send.call(this,value);};});
       const page=await context.newPage();page.setDefaultTimeout(5000);const seen=observations(page),responses=[],consoleErrors=[];
       page.on('response',response=>responses.push({url:response.url(),method:response.request().method(),status:response.status(),location:response.headers().location,from:response.request().redirectedFrom()?.url()}));
       page.on('console',message=>{if(message.type()==='error')consoleErrors.push({text:message.text(),location:message.location()});});
@@ -132,7 +132,7 @@ test(`native common owner ${scenario}; auth ${seed.auth_required?'required':'opt
         assert.deepEqual(await page.evaluate(()=>history.state.lificNativeHomeNav),record,'Closing the menu preserves the exact owned phone entry.');
         assert.equal(await trigger.evaluate(n=>n===document.activeElement),true);await owner(page,seen,documents);
       }else if(kind==='held_back'){
-        const nav=await openProject(page,'One'),gate=await hold(page,`${proxy.origin}${prefix}/__native_workspace/destination`,true);gates.push(gate);
+        const nav=await openProject(page,'One'),gate=await hold(page,`${proxy.origin}${prefix}/ACC/overview`,true);gates.push(gate);
         await nav.getByRole('link',{name:'Overview',exact:true}).click();const entered=await bounded(gate.entered,2000,'Genuine phone destination reply');if(entered.error)throw entered.error;
         await page.goBack();await nav.waitFor();await attr(page.locator('[data-native-mobile-root]'),'hidden',null);assert.equal((await page.evaluate(()=>history.state.lificNativeHomeNav)).pane,'root');
         gate.release();const result=await bounded(gate.done,5000,'Phone reply after newer genuine Back');if(result.error)throw result.error;
@@ -160,7 +160,7 @@ test(`native common owner ${scenario}; auth ${seed.auth_required?'required':'opt
         await adopted(page,seen);assert.equal(page.url(),`${proxy.origin}${prefix}/`,'Main cancels the queued destination at a non-base real pop.');assert.equal(await page.locator('.native-overview').count(),0);await page.locator('[data-native-home]').waitFor();
         await page.evaluate(()=>{window.holdNativeHistoryTraversal=false;window.heldNativeHistoryDelta=undefined;});await owner(page,seen,documents);
       }else if(kind==='newer'||kind==='hash'||kind==='account'){
-        const url=`${proxy.origin}${prefix}/__native_workspace/destination`,gate=await hold(page,url,kind!=='account');gates.push(gate);
+        const url=`${proxy.origin}${prefix}/ACC/overview`,gate=await hold(page,url,kind!=='account');gates.push(gate);
         const aside=page.getByRole('complementary',{name:'Workspace sidebar',exact:true});await aside.locator('a[title="One"]').click();const entered=await bounded(gate.entered,2000,'Actual destination request');if(entered.error)throw entered.error;
         if(kind==='newer'){
           await aside.locator('a[title="Two"]').click();await overview(page,proxy.origin,prefix,'TWO');gate.release();const result=await bounded(gate.done,5000,'Genuine held destination delivery');if(result.error)throw result.error;
@@ -171,7 +171,7 @@ test(`native common owner ${scenario}; auth ${seed.auth_required?'required':'opt
           await adopted(page,seen);assert.equal(page.url(),`${proxy.origin}${prefix}/#main-content`,'Main cancels a pending destination when newer genuine hash navigation wins.');assert.equal(await page.locator('.native-overview').count(),0);await page.locator('[data-native-home]').waitFor();await owner(page,seen,documents);
         }else{
           await cookie(context,proxy.origin,seed.other_token);assert.equal((await control('expire')).expired,true);gate.release();const result=await bounded(gate.done,5000,'Stale current-cookie dispatch');if(result.error)throw result.error;assert.ok(result.status>=300,'The real server rejects the held expired credential.');
-          if(scenario==='redirect')assert.equal(result.status,303,'The genuine authentication redirect exercises the typed RPC policy.');
+          if(scenario==='redirect')assert.equal(result.status,303,'The genuine Topcoat page POST uses the GET-safe authentication redirect.');
           await page.getByRole('heading',{name:"Couldn't load this project",exact:true}).waitFor();await page.locator('.native-home-account').getByText('non_member',{exact:true}).waitFor();
           // Chromium emits a provisional redirect request even when manual Fetch cancels it; observe real HTTP arrivals.
           if(scenario==='redirect')assert.equal(proxy.requests.some(request=>request.method==='GET'&&request.path===`${prefix}/login`),false,'Typed procedure rejection does not fetch a login HTML document.');

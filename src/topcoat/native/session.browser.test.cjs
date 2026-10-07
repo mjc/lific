@@ -267,7 +267,7 @@ test('native session discovers account replacements under the current cookie and
               clearTimeout(heldTimer);
               await page.waitForURL(`${proxy.origin}${prefix}/login`);
               await page.waitForLoadState('domcontentloaded');
-              assert.ok(state.frames.some(frame => frame.t === 'redirect' && frame.location === `${prefix}/login`),
+              assert.ok(state.frames.some(envelope => envelope.frame?.t === 'redirect' && envelope.frame.location === `${prefix}/login`),
                 'The real framework socket carries a mounted login redirect.');
               assert.equal(await page.locator('[data-native-home]').count(), 0);
               assert.equal(await page.getByText('Visible active initial work', {exact: true}).count(), 0);
