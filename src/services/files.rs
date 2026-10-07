@@ -18,11 +18,9 @@ use crate::{
 #[derive(Debug)]
 pub(crate) struct Snapshot {
     pub(crate) user: AuthUser,
-    pub(crate) projects: Vec<Project>,
     pub(crate) project: Project,
     pub(crate) authority: crate::services::project_authority::Snapshot,
     pub(crate) page: ProjectAttachmentPage,
-    pub(crate) orphans: PendingOrphanList,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -153,16 +151,13 @@ pub(crate) fn snapshot(
         .ok_or_else(|| LificError::NotFound(format!("Project {identifier} not found")))?;
     let authority = crate::services::project_authority::load_conn(&tx, &current, project.id)?;
     let page = queries::attachments::list_project_attachments(&tx, project.id, query)?;
-    let orphans = orphan_list_conn(&tx, project.id)?;
     let user = crate::auth::fresh_auth_user(&crate::auth::fresh_caller(&tx, user.id)?);
     tx.commit()?;
     Ok(Snapshot {
         user,
-        projects,
         project,
         authority,
         page,
-        orphans,
     })
 }
 
@@ -593,7 +588,7 @@ mod tests {
             .unwrap();
             let owner_upload = queries::attachments::create_attachment(
                 &conn,
-                &"g".repeat(64),
+                &"7".repeat(64),
                 "owner-upload.txt",
                 "text/plain",
                 6,
@@ -630,7 +625,7 @@ mod tests {
             .unwrap();
             let owner_upload = queries::attachments::create_attachment(
                 &conn,
-                &"h".repeat(64),
+                &"8".repeat(64),
                 "admin-owner-upload.txt",
                 "text/plain",
                 6,

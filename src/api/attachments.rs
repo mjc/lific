@@ -1020,34 +1020,6 @@ pub(crate) fn linked_entity_event(
     }
 }
 
-/// Snapshot all affected issue/page entities before an attachment's link rows
-/// cascade away. A single attachment can affect multiple projects.
-fn linked_attachment_events(
-    conn: &rusqlite::Connection,
-    attachment_id: i64,
-) -> Result<Vec<RealtimeEvent>, LificError> {
-    let mut stmt = conn.prepare_cached(
-        "SELECT entity_type, entity_id FROM attachment_links WHERE attachment_id = ?1",
-    )?;
-    let links: Vec<(String, i64)> = stmt
-        .query_map([attachment_id], |row| Ok((row.get(0)?, row.get(1)?)))?
-        .collect::<Result<Vec<_>, _>>()?;
-
-    let mut events = Vec::new();
-    for (entity_type, entity_id) in links {
-        let event = match entity_type.parse::<AttachmentEntity>() {
-            Ok(entity) => linked_entity_event(conn, entity, entity_id)?,
-            Err(_) => None,
-        };
-        if let Some(event) = event
-            && !events.contains(&event)
-        {
-            events.push(event);
-        }
-    }
-    Ok(events)
-}
-
 // ── Authorization helpers ────────────────────────────────────
 
 /// Resolve every distinct project id an attachment is linked into (via its
