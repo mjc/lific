@@ -23,7 +23,7 @@ use tower::ServiceExt;
 
 use super::super::home_fixture::{self, Fixture};
 use crate::db::{
-    models::{Issue, Priority, Role, UpdateIssue},
+    models::{CreateLabel, Issue, Priority, Role, UpdateIssue},
     queries,
 };
 
@@ -324,6 +324,160 @@ async fn native_issue_production_priority_labels_match_main_for_both_roles() {
                 "edit controls follow {role:?} role"
             );
         }
+    }
+}
+
+#[tokio::test]
+async fn native_issue_production_label_chips_preserve_case_and_safe_colors_for_both_roles() {
+    let fixture = fixture();
+    let labels = [
+        ("MiXeD API", "#aBc123"),
+        ("Malformed color", "red;position:fixed"),
+        ("Detached label", "#2563EB"),
+    ];
+    let issue = {
+        let conn = fixture.db.write().unwrap();
+        let issue_id = queries::resolve_identifier(&conn, "ACC-1").unwrap();
+        let issue = queries::get_issue(&conn, issue_id).unwrap();
+        for (name, color) in labels {
+            queries::create_label(
+                &conn,
+                &CreateLabel {
+                    project_id: issue.project_id,
+                    name: name.into(),
+                    color: color.into(),
+                },
+            )
+            .unwrap();
+        }
+        queries::update_issue(
+            &conn,
+            issue_id,
+            &UpdateIssue {
+                labels: Some(labels.iter().map(|(name, _)| (*name).into()).collect()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        // Keep an attached label whose row is outside this project's label
+        // catalog, exercising the same fallback as a legacy/orphaned label.
+        let detached_id: i64 = conn
+            .query_row(
+                "SELECT id FROM labels WHERE project_id = ?1 AND name = 'Detached label'",
+                [issue.project_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let other_project: i64 = conn
+            .query_row(
+                "SELECT id FROM projects WHERE id != ?1 LIMIT 1",
+                [issue.project_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        conn.execute(
+            "UPDATE labels SET project_id = ?1 WHERE id = ?2",
+            rusqlite::params![other_project, detached_id],
+        )
+        .unwrap();
+        queries::get_issue(&conn, issue_id).unwrap()
+    };
+    let cookie = format!("lific_token={}", fixture.token);
+    let label_heading_selector = Selector::parse("section > h2").unwrap();
+    let spans_selector = Selector::parse("span").unwrap();
+
+    for role in [Role::Viewer, Role::Maintainer] {
+        {
+            let conn = fixture.db.write().unwrap();
+            let actor = queries::users::validate_session(&conn, &fixture.token).unwrap();
+            queries::members::upsert_member(&conn, issue.project_id, actor.id, role).unwrap();
+        }
+        let response = get(&fixture, "/ACC/issues/ACC-1", Some(&cookie), "").await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let document = Html::parse_document(&html(response).await);
+        let labels_heading = document
+            .select(&label_heading_selector)
+            .find(|heading| heading.text().collect::<String>() == "Labels")
+            .expect("rendered Labels heading");
+        let labels_section = labels_heading
+            .parent()
+            .and_then(scraper::ElementRef::wrap)
+            .expect("Labels heading parent");
+
+        for (name, expected_color) in [("MiXeD API", "#aBc123"), ("Malformed color", "#6B7280")] {
+            let chip = labels_section
+                .select(&spans_selector)
+                .find(|span| span.text().collect::<String>() == name)
+                .unwrap_or_else(|| panic!("rendered chip for {name}"));
+            let classes = chip.value().attr("class").unwrap_or_default();
+            for class in [
+                "native-label-chip",
+                "normal-case",
+                "rounded-full",
+                "border",
+                "px-2",
+                "py-0.5",
+            ] {
+                assert!(
+                    classes.split_whitespace().any(|value| value == class),
+                    "{role:?} missing {class}: {classes}"
+                );
+            }
+            let style = chip.value().attr("style").unwrap_or_default();
+            assert!(
+                style.contains(&format!("color:{expected_color}")),
+                "{style}"
+            );
+            assert!(
+                style.contains(&format!("border-color:{expected_color}40")),
+                "{style}"
+            );
+            assert!(
+                style.contains(&format!("background:{expected_color}10")),
+                "{style}"
+            );
+        }
+
+        let detached = labels_section
+            .select(&spans_selector)
+            .find(|span| span.text().collect::<String>() == "Detached label")
+            .expect("rendered chip for label outside the project catalog");
+        let classes = detached.value().attr("class").unwrap_or_default();
+        assert!(
+            classes
+                .split_whitespace()
+                .any(|value| value == "normal-case"),
+            "{classes}"
+        );
+        assert!(
+            classes
+                .split_whitespace()
+                .any(|value| value == "rounded-full"),
+            "{classes}"
+        );
+        let style = detached.value().attr("style").unwrap_or_default();
+        let declarations = style.split(';').map(str::trim).collect::<Vec<_>>();
+        assert!(
+            declarations
+                .iter()
+                .any(|declaration| declaration.starts_with("border-color:")),
+            "{style}"
+        );
+        assert!(
+            declarations
+                .iter()
+                .all(|declaration| !declaration.starts_with("color:")),
+            "unknown label uses neutral text: {style}"
+        );
+        assert!(
+            declarations
+                .iter()
+                .all(|declaration| !declaration.starts_with("background:")),
+            "unknown label uses no fill: {style}"
+        );
+
+        assert!(issue.labels.iter().any(|name| name == "MiXeD API"));
     }
 }
 
