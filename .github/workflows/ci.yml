@@ -112,8 +112,8 @@ jobs:
           cache-workspace-crates: true
       - name: Install original frontend reference dependencies
         run: devenv --profile topcoat shell -- bun install --cwd "$LIFIC_SVELTE_SNAPSHOT" --frozen-lockfile
-      - name: Check the packaged application
-        run: devenv shell -- cargo package --locked
+      - name: Build the pinned application
+        run: devenv shell -- cargo build --locked
       - name: Run project, hook, and documentation checks
         run: devenv tasks run lific:check devenv:git-hooks:run lific:docs:check
 
