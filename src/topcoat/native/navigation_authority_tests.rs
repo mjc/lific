@@ -92,12 +92,30 @@ async fn verdict(
     account: i64,
     admin: bool,
 ) -> String {
+    verdict_with_authority(fixture, mount, token, logical_path, account, admin, "").await
+}
+
+async fn verdict_with_authority(
+    fixture: &home_fixture::Fixture,
+    mount: &str,
+    token: &str,
+    logical_path: &str,
+    account: i64,
+    admin: bool,
+    authority: &str,
+) -> String {
     let app = if mount.is_empty() {
         fixture.app.clone()
     } else {
         Router::new().nest(mount, fixture.app.clone())
     };
-    let arguments = (format!("{mount}{logical_path}"), account, admin).into_surrogate();
+    let arguments = (
+        format!("{mount}{logical_path}"),
+        account,
+        admin,
+        authority.to_owned(),
+    )
+        .into_surrogate();
     let mut request = Request::builder()
         .method("POST")
         .uri(format!("{mount}/__native_workspace/authorize_navigation"))
@@ -131,6 +149,192 @@ fn account_and_project(fixture: &home_fixture::Fixture) -> (i64, i64) {
             .id,
         queries::resolve_project_identifier(&conn, "ACC").unwrap(),
     )
+}
+
+fn project_authority(fixture: &home_fixture::Fixture, project: i64) -> String {
+    let user =
+        queries::users::validate_session(&fixture.db.read().unwrap(), &fixture.token).unwrap();
+    let identity = Some(crate::auth::fresh_identity(
+        &user,
+        crate::actor::Transport::Web,
+    ));
+    super::project_authority::load(&fixture.db, &identity, project)
+        .unwrap()
+        .encoded()
+}
+
+#[tokio::test]
+async fn navigation_authority_refreshes_new_page_controls_after_promotion_and_demotion() {
+    let fixture = home_fixture::fixture();
+    let (account, project) = account_and_project(&fixture);
+    let paths = ["/ACC/issues/new?status=active", "/ACC/modules?tab=all"];
+    let mut baseline = project_authority(&fixture, project);
+    for role in [Role::Maintainer, Role::Viewer] {
+        for mount in ["", "/app", "/ACC"] {
+            for path in paths {
+                assert_eq!(
+                    verdict_with_authority(
+                        &fixture,
+                        mount,
+                        &fixture.token,
+                        path,
+                        account,
+                        false,
+                        &baseline
+                    )
+                    .await,
+                    "allow",
+                    "fresh readonly or editable page at {mount}{path}",
+                );
+            }
+        }
+        queries::members::upsert_member(&fixture.db.write().unwrap(), project, account, role)
+            .unwrap();
+        for mount in ["", "/app", "/ACC"] {
+            for path in paths {
+                assert_eq!(
+                    verdict_with_authority(
+                        &fixture,
+                        mount,
+                        &fixture.token,
+                        path,
+                        account,
+                        false,
+                        &baseline
+                    )
+                    .await,
+                    "authority-changed",
+                    "stale controls at {mount}{path}",
+                );
+            }
+        }
+        baseline = project_authority(&fixture, project);
+    }
+    assert_eq!(
+        verdict_with_authority(
+            &fixture,
+            "",
+            &fixture.token,
+            paths[0],
+            account,
+            false,
+            &baseline
+        )
+        .await,
+        "allow",
+    );
+}
+
+#[tokio::test]
+async fn navigation_authority_rejects_missing_malformed_and_other_project_snapshots() {
+    let fixture = home_fixture::fixture();
+    let (account, project) = account_and_project(&fixture);
+    let mut wrong_project: serde_json::Value =
+        serde_json::from_str(&project_authority(&fixture, project)).unwrap();
+    wrong_project["project_id"] = (project + 1).into();
+    for baseline in [
+        String::new(),
+        "invalid-json".into(),
+        wrong_project.to_string(),
+    ] {
+        for path in ["/ACC/issues/new", "/ACC/modules"] {
+            assert_eq!(
+                verdict_with_authority(
+                    &fixture,
+                    "/ACC",
+                    &fixture.token,
+                    path,
+                    account,
+                    false,
+                    &baseline
+                )
+                .await,
+                "authority-changed",
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn navigation_authority_rechecks_module_location_and_deletion_with_valid_snapshot() {
+    let fixture = home_fixture::fixture();
+    let (account, project) = account_and_project(&fixture);
+    let (module, other) = {
+        let conn = fixture.db.write().unwrap();
+        let other = queries::resolve_project_identifier(&conn, "HIDE").unwrap();
+        queries::members::upsert_member(&conn, other, account, Role::Viewer).unwrap();
+        let module = queries::create_module(
+            &conn,
+            &crate::db::models::CreateModule {
+                project_id: project,
+                name: "Cached module".into(),
+                description: String::new(),
+                status: "active".into(),
+                emoji: None,
+            },
+        )
+        .unwrap();
+        (module.id, other)
+    };
+    let path = format!("/ACC/modules/{module}");
+    let baseline = project_authority(&fixture, project);
+    assert_eq!(
+        verdict_with_authority(
+            &fixture,
+            "/ACC",
+            &fixture.token,
+            &path,
+            account,
+            false,
+            &baseline
+        )
+        .await,
+        "allow",
+    );
+    fixture
+        .db
+        .write()
+        .unwrap()
+        .execute(
+            "UPDATE modules SET project_id = ?1 WHERE id = ?2",
+            [other, module],
+        )
+        .unwrap();
+    assert_eq!(
+        verdict_with_authority(
+            &fixture,
+            "/ACC",
+            &fixture.token,
+            &path,
+            account,
+            false,
+            &baseline
+        )
+        .await,
+        "denied",
+    );
+    {
+        let conn = fixture.db.write().unwrap();
+        conn.execute(
+            "UPDATE modules SET project_id = ?1 WHERE id = ?2",
+            [project, module],
+        )
+        .unwrap();
+        queries::delete_module(&conn, module).unwrap();
+    }
+    assert_eq!(
+        verdict_with_authority(
+            &fixture,
+            "/ACC",
+            &fixture.token,
+            &path,
+            account,
+            false,
+            &baseline
+        )
+        .await,
+        "denied",
+    );
 }
 
 async fn deferred_owner_factory(fixture: &home_fixture::Fixture, path: &str) -> String {
