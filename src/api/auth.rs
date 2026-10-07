@@ -391,7 +391,7 @@ pub(crate) async fn auth_auto_login(
     ))
 }
 
-pub(super) async fn auth_logout(
+pub(crate) async fn auth_logout(
     State(db): State<DbPool>,
     Extension(auth_cfg): Extension<crate::config::AuthConfig>,
     headers: axum::http::HeaderMap,
@@ -614,9 +614,9 @@ pub(super) async fn update_me(
 }
 
 #[derive(serde::Deserialize)]
-pub(super) struct ChangePasswordRequest {
-    current_password: String,
-    new_password: String,
+pub(crate) struct ChangePasswordRequest {
+    pub(crate) current_password: String,
+    pub(crate) new_password: String,
 }
 
 #[derive(serde::Deserialize)]
@@ -725,7 +725,7 @@ pub(super) async fn refresh_session(
 // Axum handlers take their dependencies as extractors; the count is the
 // dependency list, not a design smell.
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn change_password(
+pub(crate) async fn change_password(
     State(db): State<DbPool>,
     Extension(auth_cfg): Extension<crate::config::AuthConfig>,
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
@@ -857,7 +857,7 @@ pub(super) async fn change_password(
 /// approved device grant for this user and their bots is gone when this
 /// returns, this browser's session included. The cookie is cleared so the
 /// current browser drops to logged-out. LIF-190.
-pub(super) async fn revoke_all_sessions(
+pub(crate) async fn revoke_all_sessions(
     State(db): State<DbPool>,
     Extension(auth_cfg): Extension<crate::config::AuthConfig>,
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
@@ -972,11 +972,11 @@ pub(super) async fn list_bots(
 }
 
 #[derive(serde::Deserialize)]
-pub(super) struct CreateBotRequest {
+pub(crate) struct CreateBotRequest {
     /// Tool identifier (e.g. "opencode", "cursor", "claude", "codex", "pi",
     /// "vscode", "zed")
-    tool: String,
-    display_name: Option<String>,
+    pub(crate) tool: String,
+    pub(crate) display_name: Option<String>,
 }
 
 /// POST /api/auth/bots: connect a tool. Finds or creates the caller's bot for
@@ -987,7 +987,7 @@ pub(super) struct CreateBotRequest {
 /// already-connected check and the key insert are one transaction, so a failure
 /// anywhere leaves neither a half-created identity nor a credential without an
 /// identity.
-pub(super) async fn create_bot(
+pub(crate) async fn create_bot(
     State(db): State<DbPool>,
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
     headers: HeaderMap,
