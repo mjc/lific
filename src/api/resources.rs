@@ -14,20 +14,10 @@ use super::{require_structure_role, with_read, with_write};
 
 // ── Shared structure CRUD ────────────────────────────────────
 //
-// LIF-382: modules, labels and folders are one resource shape wearing three
-// names. Each is a project-scoped row whose list/create/update/delete
-// endpoints do the same four things: authorize against the owning project,
-// read or write through the pool, and broadcast `ProjectUpdated`. That shape
-// lives once, in the generic handlers below; a resource only supplies its
-// query functions through `Structure`.
-//
-// Generic functions rather than a macro, deliberately: every line here stays
-// ordinary Rust, so go-to-definition lands on a real `impl` block, types show
-// up in hover and inlay hints, and a mistake in one resource is a normal
-// trait mismatch pointing at the offending line instead of an error inside a
-// macro expansion nobody can step through.
+// Labels and folders share these handlers. Modules use the same domain
+// service as the native views, with authorization inside each transaction.
 
-/// One project-scoped structure resource (a module, label, or folder).
+/// One project-scoped label or folder.
 pub(super) trait Structure: 'static {
     /// Row type handed back to the client.
     type Model: serde::Serialize + Send + 'static;
@@ -46,36 +36,6 @@ pub(super) trait Structure: 'static {
     fn create(conn: &Connection, input: &Self::Create) -> Result<Self::Model, LificError>;
     fn update(conn: &Connection, id: i64, input: &Self::Update) -> Result<Self::Model, LificError>;
     fn delete(conn: &Connection, id: i64) -> Result<(), LificError>;
-}
-
-pub(super) struct Modules;
-
-impl Structure for Modules {
-    type Model = Module;
-    type Create = CreateModule;
-    type Update = UpdateModule;
-
-    const TABLE: ResourceTable = ResourceTable::Modules;
-
-    fn create_project_id(input: &CreateModule) -> i64 {
-        input.project_id
-    }
-
-    fn list(conn: &Connection, project_id: i64) -> Result<Vec<Module>, LificError> {
-        crate::db::queries::list_modules(conn, project_id)
-    }
-
-    fn create(conn: &Connection, input: &CreateModule) -> Result<Module, LificError> {
-        crate::db::queries::create_module(conn, input)
-    }
-
-    fn update(conn: &Connection, id: i64, input: &UpdateModule) -> Result<Module, LificError> {
-        crate::db::queries::update_module(conn, id, input)
-    }
-
-    fn delete(conn: &Connection, id: i64) -> Result<(), LificError> {
-        crate::db::queries::delete_module(conn, id)
-    }
 }
 
 pub(super) struct Labels;
@@ -208,14 +168,56 @@ pub(super) async fn delete_structure<R: Structure>(
 
 // ── Module endpoints ─────────────────────────────────────────
 
+pub(super) async fn list_modules(
+    State(db): State<DbPool>,
+    Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
+    Query(q): Query<ProjectQuery>,
+) -> Result<Json<Vec<Module>>, LificError> {
+    let listing = crate::services::modules::list(&db, &identity, q.project_id)?;
+    Ok(Json(
+        listing
+            .modules
+            .into_iter()
+            .map(|entry| entry.module)
+            .collect(),
+    ))
+}
+
+pub(super) async fn create_module(
+    State(db): State<DbPool>,
+    Extension(realtime): Extension<RealtimeHub>,
+    Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
+    Json(input): Json<CreateModule>,
+) -> Result<Json<Module>, LificError> {
+    crate::services::modules::create(&db, &realtime, &identity, input).map(Json)
+}
+
+pub(super) async fn update_module(
+    State(db): State<DbPool>,
+    Extension(realtime): Extension<RealtimeHub>,
+    Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
+    Path(id): Path<i64>,
+    Json(input): Json<UpdateModule>,
+) -> Result<Json<Module>, LificError> {
+    crate::services::modules::update(&db, &realtime, &identity, id, input).map(Json)
+}
+
+pub(super) async fn delete_module(
+    State(db): State<DbPool>,
+    Extension(realtime): Extension<RealtimeHub>,
+    Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
+    Path(id): Path<i64>,
+) -> Result<Json<serde_json::Value>, LificError> {
+    crate::services::modules::delete(&db, &realtime, &identity, id)?;
+    Ok(Json(serde_json::json!({"deleted": true})))
+}
+
 pub(super) async fn get_module(
     State(db): State<DbPool>,
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
     Path(id): Path<i64>,
 ) -> Result<Json<Module>, LificError> {
-    let module = with_read(&db, |conn| crate::db::queries::get_module(conn, id))?;
-    authz::require_role(&db, &identity, module.project_id, Role::Viewer)?;
-    Ok(Json(module))
+    crate::services::modules::get(&db, &identity, id).map(Json)
 }
 
 // ── Label endpoints ──────────────────────────────────────────

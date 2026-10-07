@@ -281,11 +281,21 @@ pub fn require_structure_role(
     identity: &Option<ResolvedIdentity>,
     project_id: i64,
 ) -> Result<(), LificError> {
-    if authz_enforced(db)? {
-        require_role(db, identity, project_id, Role::Maintainer)
+    let conn = db.read()?;
+    require_structure_role_conn(&conn, identity, project_id)
+}
+
+pub(crate) fn require_structure_role_conn(
+    conn: &Connection,
+    identity: &Option<ResolvedIdentity>,
+    project_id: i64,
+) -> Result<(), LificError> {
+    let minimum = if authz_enforced_conn(conn)? {
+        Role::Maintainer
     } else {
-        require_role(db, identity, project_id, Role::Lead)
-    }
+        Role::Lead
+    };
+    require_role_conn(conn, identity, project_id, minimum)
 }
 
 /// LIF-197: gate for `DELETE /api/projects/{id}`. Pre-LIF-194 this was
