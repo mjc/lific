@@ -1,69 +1,12 @@
 //! New issue and module pages through the authenticated production router.
 
-use axum::{
-    body::Body,
-    http::{Request, StatusCode},
-};
-use tower::ServiceExt;
+use axum::http::StatusCode;
 
-use super::home_fixture;
+use super::home_fixture::{self, document, procedure};
 use crate::db::{
     models::{CreateModule, Role},
     queries,
 };
-
-async fn document(
-    fixture: &home_fixture::Fixture,
-    mount: &str,
-    path: &str,
-    authenticated: bool,
-    signals: Option<serde_json::Map<String, serde_json::Value>>,
-) -> (StatusCode, String) {
-    let mut request = Request::builder()
-        .method(if signals.is_some() { "POST" } else { "GET" })
-        .uri(format!("{mount}{path}"))
-        .header("host", "localhost")
-        .header("origin", "http://localhost")
-        .header("x-forwarded-prefix", mount);
-    if authenticated {
-        request = request.header("cookie", format!("lific_token={}", fixture.token));
-    }
-    let runtime = signals.is_some();
-    let body = if let Some(signals) = signals {
-        request = request
-            .header("content-type", "application/json")
-            .header("x-topcoat-runtime", "true")
-            .header("accept", "application/x-ndjson");
-        Body::from(serde_json::json!({"signals": signals}).to_string())
-    } else {
-        Body::empty()
-    };
-    let mut request = request.body(body).unwrap();
-    request.extensions_mut().insert(axum::extract::ConnectInfo(
-        "127.0.0.1:3000".parse::<std::net::SocketAddr>().unwrap(),
-    ));
-    let app = if mount.is_empty() {
-        fixture.app.clone()
-    } else {
-        super::admission_contract::mounted(fixture.app.clone())
-    };
-    let response = app.oneshot(request).await.unwrap();
-    let status = response.status();
-    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let body = String::from_utf8(bytes.to_vec()).unwrap();
-    let html =
-        if runtime && status == StatusCode::OK {
-            body.lines().map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
-            .find(|frame| frame["t"] == "snapshot")
-            .unwrap_or_else(|| panic!("missing native snapshot at {mount}{path}: {body}"))
-            ["html"].as_str().unwrap().to_owned()
-        } else {
-            body
-        };
-    (status, html)
-}
 
 fn module(fixture: &home_fixture::Fixture, identifier: &str) -> i64 {
     let conn = fixture.db.write().unwrap();
@@ -80,34 +23,6 @@ fn module(fixture: &home_fixture::Fixture, identifier: &str) -> i64 {
     )
     .unwrap()
     .id
-}
-
-async fn procedure(
-    fixture: &home_fixture::Fixture,
-    path: &str,
-    arguments: serde_json::Value,
-) -> (StatusCode, serde_json::Value) {
-    let mut request = Request::builder()
-        .method("POST")
-        .uri(path)
-        .header("host", "localhost")
-        .header("origin", "http://localhost")
-        .header("content-type", "application/json")
-        .header("cookie", format!("lific_token={}", fixture.token))
-        .body(Body::from(arguments.to_string()))
-        .unwrap();
-    request.extensions_mut().insert(axum::extract::ConnectInfo(
-        "127.0.0.1:3000".parse::<std::net::SocketAddr>().unwrap(),
-    ));
-    let response = fixture.app.clone().oneshot(request).await.unwrap();
-    let status = response.status();
-    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let value = serde_json::from_slice(&bytes).unwrap_or_else(|_| {
-        serde_json::Value::String(String::from_utf8_lossy(&bytes).into_owned())
-    });
-    (status, value)
 }
 
 #[tokio::test]

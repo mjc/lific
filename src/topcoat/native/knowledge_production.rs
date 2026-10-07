@@ -27,28 +27,7 @@ async fn mounted_document(
     authenticated: bool,
     prefix: &str,
 ) -> (StatusCode, String) {
-    let app = if prefix.is_empty() {
-        fixture.app.clone()
-    } else {
-        Router::new().nest(prefix, fixture.app.clone())
-    };
-    let mut request = Request::builder().uri(format!("{prefix}{path}"));
-    if authenticated {
-        request = request.header("cookie", format!("lific_token={}", fixture.token));
-    }
-    if !prefix.is_empty() {
-        request = request.header("x-forwarded-prefix", prefix);
-    }
-    let mut request = request.body(Body::empty()).unwrap();
-    request.extensions_mut().insert(axum::extract::ConnectInfo(
-        "127.0.0.1:3000".parse::<std::net::SocketAddr>().unwrap(),
-    ));
-    let response = app.oneshot(request).await.unwrap();
-    let status = response.status();
-    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    (status, String::from_utf8(bytes.to_vec()).unwrap())
+    home_fixture::document(fixture, prefix, path, authenticated, None).await
 }
 
 #[tokio::test]
