@@ -31,6 +31,22 @@ mod route_tests {
     use super::*;
 
     #[test]
+    fn files_and_graph_routes_remain_excluded_until_native_views_are_ready() {
+        for path in ["/ACC/files", "/ACC/graph"] {
+            assert!(
+                native_route(&ParsedRoute::parse(path), false).is_none(),
+                "{path}"
+            );
+        }
+        for path in ["/public/ACC/files", "/public/ACC/graph"] {
+            assert!(
+                native_route(&ParsedRoute::parse(path), false).is_none(),
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
     fn native_issue_create_and_module_routes_admit_private_pages_with_queries() {
         for path in [
             "/ACC/issues/new",

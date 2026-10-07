@@ -39,6 +39,11 @@ files, dependency graphs, and public readers have no intermediate
 fallback. Their canonical routes return 404 until native ports are implemented.
 Existing backend REST/MCP interfaces remain available.
 
+Files and dependency graph work starts with shared authorized read services and
+pure Rust models for file controls, graph filtering, and graph layout. These
+foundations do not enable either page; routing waits for the native views and
+interaction contracts.
+
 Pages still needs folder management, metadata editing, autosave, comments,
 attachments, and realtime recovery. Plans still needs step reordering, activity,
 the full metadata/editor workflow, and realtime recovery. Keep the family
