@@ -215,11 +215,38 @@ pub(super) fn clipboard(cx: &Cx, identifier: &str) -> Attributes {
 
 pub(super) fn dismiss(cx: &Cx, close: Signal<String>) -> Attributes {
     let handler = expr!(|_event: Event| {
+        raw!(
+            r#"const panel = ${_event}.inner.target;
+            const previous = document.activeElement;
+            (panel.querySelector('[aria-label="Close preview"]') ?? panel).focus({preventScroll:true});
+            cx.abortSignal.addEventListener('abort', () => {
+                if (previous?.isConnected && (panel.contains(document.activeElement) || document.activeElement === document.body)) {
+                    previous.focus({preventScroll:true});
+                }
+            }, {once:true});"#,
+            ()
+        );
         let _key = |event: Event| {
             let key = raw!("cx.hydrate(${event}.inner.key)", String::new());
             if key == "Escape" {
                 event.prevent_default();
                 close.set("".to_owned());
+            } else {
+                if key == "Tab" {
+                    raw!(
+                        r#"const controls = Array.from(panel.querySelectorAll('a[href],button,input,select,textarea,[tabindex]'))
+                            .filter(node => !node.disabled && node.tabIndex !== -1 && !node.closest('[hidden],[inert]') && node.getClientRects().length);
+                        const first = controls[0] ?? panel;
+                        const last = controls.at(-1) ?? panel;
+                        const active = document.activeElement;
+                        const backwards = ${event}.inner.shiftKey;
+                        if (!panel.contains(active) || active === panel || (backwards ? active === first : active === last)) {
+                            ${event}.inner.preventDefault();
+                            (backwards ? last : first).focus({preventScroll:true});
+                        }"#,
+                        ()
+                    );
+                }
             }
         };
         raw!(
@@ -227,7 +254,7 @@ pub(super) fn dismiss(cx: &Cx, close: Signal<String>) -> Attributes {
             ()
         );
         raw!(
-            "const panel=${_event}.inner.target; const reduced=matchMedia('(prefers-reduced-motion: reduce)').matches; const mobile=innerWidth<768; if(!reduced)panel.animate([{transform:mobile?'translateY(480px)':'translateX(480px)'},{transform:'none'}],{duration:240,easing:'ease-out'});",
+            "const reduced=matchMedia('(prefers-reduced-motion: reduce)').matches; const mobile=innerWidth<768; if(!reduced)panel.animate([{transform:mobile?'translateY(480px)':'translateX(480px)'},{transform:'none'}],{duration:240,easing:'ease-out'});",
             ()
         );
     });

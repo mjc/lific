@@ -309,7 +309,12 @@ async fn workspace_owner(
         }
         .boxed()
     };
-    let region = page;
+    let region = view! {
+        cx =>
+        (page)
+        (super::issue_peek::shared_owner(cx, user.id))
+    }
+    .boxed();
     home_shell::shell_with_owner(
         cx,
         &user,

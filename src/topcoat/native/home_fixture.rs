@@ -125,6 +125,32 @@ pub(super) async fn procedure(
     (status, value)
 }
 
+pub(super) fn evaluate_handler(script: &str, input: &serde_json::Value) -> serde_json::Value {
+    use std::{io::Write, process::Stdio};
+
+    let mut child = std::process::Command::new("node")
+        .arg(script)
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.to_string().as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "emitted handler {script}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
 pub(super) fn page_signals(html: &str) -> serde_json::Map<String, serde_json::Value> {
     let document = scraper::Html::parse_document(html);
     let mut signals = serde_json::Map::new();
