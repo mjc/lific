@@ -281,11 +281,11 @@ async fn files_body(
         page_offset,
         expanded_id,
         revision_value,
-        orphan_revision_value,
+        _orphan_revision_value,
         confirming_id,
         orphans_open,
         collation_wire,
-        deleting_value,
+        _deleting_value,
         links_cache_wire,
     ) = input;
     if !["created_at", "size", "filename"].contains(&selected_sort.as_str()) {
@@ -572,7 +572,6 @@ fn files_page<'a>(
             file_row(
                 cx,
                 account,
-                project_id,
                 project,
                 viewer_id,
                 is_admin,
@@ -732,7 +731,6 @@ fn files_page<'a>(
 fn file_row<'a>(
     cx: &'a Cx,
     account: i64,
-    project_id: i64,
     project: &str,
     viewer_id: i64,
     is_admin: bool,
@@ -771,7 +769,6 @@ fn file_row<'a>(
     let row_mime = row.mime.clone();
     let time = dates::relative_time_view(cx, &row.created_at, now);
     let deleting_value = deleting.get();
-    let expanded_signal = expanded.clone();
     let confirming_signal = confirming.clone();
     let busy_signal = deleting.clone();
     let error_signal = delete_error.clone();
@@ -823,6 +820,7 @@ fn file_row<'a>(
         }).collect::<Vec<_>>()).unwrap_or_default();
     let has_duplicates = !duplicates.is_empty();
     let is_confirming = confirming_id == Some(id);
+    let delete_confirmation_message = model::delete_confirm_message(entities.len());
     view! { cx =>
         <div class="mt-2 ml-8 flex flex-col gap-2">
             if expanded_value {
@@ -837,7 +835,7 @@ fn file_row<'a>(
             }
             if is_confirming {
             <div class="flex flex-wrap items-center gap-2 mt-2 ml-8 pl-3 border-l-2 border-[var(--error)]">
-                <span class="text-caption text-[var(--text-muted)]">(model::delete_confirm_message(entities.len()))</span>
+                <span class="text-caption text-[var(--text-muted)]">(delete_confirmation_message)</span>
                 <button type="button" class="text-caption font-medium px-2 py-1 rounded-md text-[var(--error-text)] bg-[var(--error)] hover:opacity-90"
                     :disabled=$(deleting_value)
                     (delete_handler_attrs)>
