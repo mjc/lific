@@ -5,7 +5,7 @@ use super::templates::{
 };
 use topcoat::{
     context::Cx,
-    runtime::{Event, Js, Signal, expr, signal},
+    runtime::{Event, Expr, Js, Signal, expr, signal},
     view::{Attributes, BoxView, ViewExt, view},
 };
 
@@ -23,9 +23,20 @@ pub(super) fn copy_action(
     copied: Signal<bool>,
     failed: Signal<bool>,
 ) -> Js {
+    let source = expr!(source.get());
+    copy_action_with_source(cx, source, key, copied, failed)
+}
+
+fn copy_action_with_source(
+    cx: &Cx,
+    source: Expr<String>,
+    key: Signal<String>,
+    copied: Signal<bool>,
+    failed: Signal<bool>,
+) -> Js {
     let mounted = super::super::transport::mounted_url(cx, "/mcp");
     expr!(|_event: Event| {
-        let _source = source.get();
+        let _source = raw!("${source}", String::new());
         let _key = key.get();
         let _copy = async || {
             raw!(
@@ -93,50 +104,24 @@ fn copy_button_with_handler<'a>(
 }
 
 fn export_copy_action(
+    cx: &Cx,
     commands: [String; 3],
     selected_os: Signal<String>,
     key: Signal<String>,
     copied: Signal<bool>,
     failed: Signal<bool>,
 ) -> Js {
-    expr!(|_event: Event| {
+    let source = expr!({
         let current_os = selected_os.get();
-        let _source = if current_os == "windows" {
+        if current_os == "windows" {
             commands[2].clone()
         } else if current_os == "linux" {
             commands[0].clone()
         } else {
             commands[1].clone()
-        };
-        let _key = key.get();
-        let _copy = async || {
-            raw!(
-                r#"const value=${_source}.toString().replaceAll(${API_KEY_MARKER}.toString(), ${_key}.toString());
-                try {
-                    if (navigator.clipboard && navigator.clipboard.writeText) {
-                        await navigator.clipboard.writeText(value);
-                    } else {
-                        const field=document.createElement('textarea');
-                        field.value=value;field.setAttribute('readonly','');
-                        field.style.position='fixed';field.style.opacity='0';
-                        document.body.appendChild(field);field.select();
-                        const ok=document.execCommand('copy');field.remove();
-                        if(!ok)throw new Error('copy failed');
-                    }
-                    if(cx.abortSignal.aborted)return;
-                    ${copied}.set(cx.hydrate(true));${failed}.set(cx.hydrate(false));
-                    setTimeout(()=>{if(!cx.abortSignal.aborted)${copied}.set(cx.hydrate(false))},1500);
-                } catch {
-                    if(cx.abortSignal.aborted)return;
-                    ${failed}.set(cx.hydrate(true));${copied}.set(cx.hydrate(false));
-                }"#,
-                ()
-            );
-        };
-        raw!("${_copy}();", ());
-    })
-    .into_evaluated_and_js()
-    .1
+        }
+    });
+    copy_action_with_source(cx, source, key, copied, failed)
 }
 
 pub(super) fn view<'a>(
@@ -180,6 +165,7 @@ pub(super) fn view<'a>(
         let copied_text = copied.clone();
         let failed_text = failed.clone();
         let copy_handler = export_copy_action(
+            cx,
             export_templates.clone(),
             export_active_os.clone(),
             export_key.clone(),
