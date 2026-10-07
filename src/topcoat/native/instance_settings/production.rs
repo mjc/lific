@@ -216,6 +216,14 @@ async fn native_instance_settings_admin_name_blur_saves_trimmed_value() {
     )
     .await;
     assert_eq!(queued_status, StatusCode::OK);
+    let (revert_status, revert_reply) = home_fixture::procedure(
+        &fixture,
+        "/__native_instance_settings/save_text",
+        serde_json::to_value((account, "name".to_owned(), "Old name".to_owned()).into_surrogate())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(revert_status, StatusCode::OK);
     let (clear_status, clear_reply) = home_fixture::procedure(
         &fixture,
         "/__native_instance_settings/save_text",
@@ -274,11 +282,13 @@ async fn native_instance_settings_admin_name_blur_saves_trimmed_value() {
             "save_reply": save_reply,
             "clear_reply": clear_reply,
             "queued_reply": queued_reply,
+            "revert_reply": revert_reply,
             "error_reply": error_reply,
             "ordinary_reply": ordinary_reply,
             "expected_save_args": serde_json::to_value((account, "name".to_owned(), "New name".to_owned()).into_surrogate()).unwrap(),
             "expected_clear_args": serde_json::to_value((account, "name".to_owned(), String::new()).into_surrogate()).unwrap(),
             "expected_queued_args": serde_json::to_value((account, "name".to_owned(), "Latest name".to_owned()).into_surrogate()).unwrap(),
+            "expected_revert_args": serde_json::to_value((account, "name".to_owned(), "Old name".to_owned()).into_surrogate()).unwrap(),
         }),
     );
     assert_eq!(result["trimmed_save"], true);

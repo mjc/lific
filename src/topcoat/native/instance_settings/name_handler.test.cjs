@@ -91,6 +91,7 @@ async function run() {
     'the delayed first request matches its real procedure reply');
   queued.fireInput('  Latest name  ');
   queued.blur();
+  queued.fireInput('Unblurred C');
   await settle();
   assert.equal(queued.requests.length, 1, 'blur while the save is pending queues the latest value');
   queued.releaseFirst();
@@ -98,7 +99,22 @@ async function run() {
   assert.equal(queued.requests.length, 2, 'the queued blur sends a second serialized mutation');
   assert.deepEqual(queued.requests[1], input.expected_queued_args,
     'the queued save sends the latest trimmed draft');
-  assert.equal(queued.current(), 'Latest name', 'the first response cannot erase the newer draft');
+  assert.equal(queued.current(), 'Unblurred C',
+    'saving the queued blur snapshot does not erase a newer unblurred draft');
+
+  const reverted = makeFixture([input.save_reply, input.revert_reply], true);
+  reverted.fireInput('New name');
+  reverted.blur();
+  await settle();
+  reverted.fireInput('Old name');
+  reverted.blur();
+  reverted.releaseFirst();
+  await settle();
+  assert.equal(reverted.requests.length, 2,
+    'a blur back to the old baseline is queued while the first save is in flight');
+  assert.deepEqual(reverted.requests[1], input.expected_revert_args,
+    'the queued revert is compared with the updated baseline after the first save');
+  assert.equal(reverted.current(), 'Old name');
 
   const changed = makeFixture([input.save_reply, input.clear_reply]);
   changed.fireInput('  New name  ');
@@ -114,6 +130,7 @@ async function run() {
   changed.blur();
   await settle();
   assert.equal(changed.requests.length, 1, 'normalized unchanged values are a no-op');
+  assert.equal(changed.current(), 'New name', 'unchanged blur still normalizes the visible field');
 
   changed.fireInput('');
   changed.blur();
@@ -160,6 +177,7 @@ async function run() {
     'ordinary refusals remain visible as an error');
   process.stdout.write(JSON.stringify({
     trimmed_save: true, unchanged_noop: true, blank_clears: true, queued_latest: true,
+    queued_revert: true,
     disposed_no_request: true, disposed_pending_unchanged: true,
     draft_kept_on_error: true, ordinary_failure_restores: true,
   }));
