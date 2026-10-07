@@ -89,16 +89,15 @@ async fn graph_content(
     );
     let linked_view = view! {
         cx =>
-        <button type="button" data-native-graph-view="linked" aria-label="Show linked issues" :aria-pressed=$(linked_selected.get() == "linked") class="rounded-md px-3 py-1.5 text-body-sm font-medium border border-[var(--border)]" @click=$(|_event: Event| linked_activate.set("linked".to_owned()))>(linked_label)</button>
+        <button type="button" data-native-graph-view="linked" aria-label="Show linked issues" :aria-pressed=$(if linked_selected.get() == "linked" { "true" } else { "false" }) class="rounded-md px-3 py-1.5 text-body-sm font-medium border border-[var(--border)]" @click=$(|_event: Event| linked_activate.set("linked".to_owned()))>(linked_label)</button>
     }.boxed();
     let unlinked_view = view! {
         cx =>
-        <button type="button" data-native-graph-view="unlinked" aria-label="Show unlinked issues" :aria-pressed=$(unlinked_selected.get() == "unlinked") class="rounded-md px-3 py-1.5 text-body-sm font-medium border border-[var(--border)]" @click=$(|_event: Event| unlinked_activate.set("unlinked".to_owned()))>(unlinked_label)</button>
+        <button type="button" data-native-graph-view="unlinked" aria-label="Show unlinked issues" :aria-pressed=$(if unlinked_selected.get() == "unlinked" { "true" } else { "false" }) class="rounded-md px-3 py-1.5 text-body-sm font-medium border border-[var(--border)]" @click=$(|_event: Event| unlinked_activate.set("unlinked".to_owned()))>(unlinked_label)</button>
     }.boxed();
-    let close_filter = close_filter.clone();
     let close_button = view! {
         cx =>
-        <button type="button" data-native-graph-closed="" :aria-pressed=$(closed_toggle.get()) class="inline-flex items-center gap-2 text-body-sm text-[var(--text-muted)]" @click=$(|_event: Event| close_filter.set(!close_filter.get()))>
+        <button type="button" data-native-graph-closed="" :aria-pressed=$(if closed_toggle.get() { "true" } else { "false" }) class="inline-flex items-center gap-2 text-body-sm text-[var(--text-muted)]" @click=$(|_event: Event| close_filter.set(!close_filter.get()))>
             <span class="inline-flex size-4 items-center justify-center rounded border border-[var(--border)]">$(if closed_text.get() { "✓" } else { "" })</span>
             "Show closed"
         </button>
@@ -168,8 +167,8 @@ async fn graph_content(
             Some(edge(
                 cx,
                 relation,
-                *source_issue,
-                *target_issue,
+                source_issue,
+                target_issue,
                 source,
                 target,
                 editable,
@@ -312,9 +311,9 @@ async fn graph_content(
         menu_source.clone(),
         menu_target.clone(),
         "remove",
-        busy.clone(),
+        busy,
         error.clone(),
-        revision.clone(),
+        revision,
         menu_kind.clone(),
     );
     Ok(view! {
@@ -416,6 +415,7 @@ fn node<'a>(
     }.boxed()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn edge<'a>(
     cx: &'a Cx,
     relation: &ProjectRelation,
@@ -463,6 +463,7 @@ fn edge<'a>(
     }.boxed()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn action_button<'a>(
     cx: &'a Cx,
     aria: &'static str,
@@ -482,13 +483,13 @@ fn action_button<'a>(
     let target_disabled = target.clone();
     let busy_action = busy.clone();
     let busy_success = busy.clone();
-    let busy_failure = busy.clone();
+    let busy_failure = busy;
     let error_action = error.clone();
-    let error_failure = error.clone();
-    let revision_action = revision.clone();
-    let menu_action = menu.clone();
-    let source_action = source.clone();
-    let target_action = target.clone();
+    let error_failure = error;
+    let revision_action = revision;
+    let menu_action = menu;
+    let source_action = source;
+    let target_action = target;
     view! { cx =>
         <button type="button" aria-label=(aria) class="rounded-md border border-[var(--border)] bg-[var(--surface)] px-2.5 py-1.5 text-body-sm disabled:opacity-50" :disabled=$(if busy_disabled.get() { true } else { if source_disabled.get().is_empty() { true } else { target_disabled.get().is_empty() } }) @click=$(async |_event: Event| {
             busy_action.set(true); error_action.set("".to_owned());

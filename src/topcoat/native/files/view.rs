@@ -47,6 +47,20 @@ type Controls = (
     Signal<bool>,
     (Signal<String>, Signal<bool>, Signal<String>, Signal<String>),
 );
+type FilesInput = (
+    Option<String>,
+    String,
+    String,
+    i64,
+    Option<i64>,
+    usize,
+    usize,
+    Option<i64>,
+    bool,
+    String,
+    bool,
+    String,
+);
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct CachedEntity {
@@ -171,7 +185,7 @@ pub(super) fn content<'a>(
         r#"{"locale":"en-US","usage":"sort","sensitivity":"variant","ignorePunctuation":false,"collation":"default","numeric":false,"caseFirst":"false"}"#.to_owned()
     });
     let clock = signal(&owner, || chrono::Utc::now().timestamp_millis() as f64);
-    let clock_attrs = dates::clock_mount(cx, clock.clone());
+    let clock_attrs = dates::clock_mount(cx, clock);
     let live = live_refresh(
         cx,
         account,
@@ -181,12 +195,12 @@ pub(super) fn content<'a>(
         deleting.clone(),
     );
     let mount = mount_refresh(cx, revision.clone(), offset.clone(), deleting.clone());
-    let target_for_body = target.clone();
+    let target_for_body = target;
     let history = (
-        history_rows.clone(),
-        history_key.clone(),
+        history_rows,
+        history_key,
         signal(&owner, || 0_usize),
-        has_more.clone(),
+        has_more,
         total_count.clone(),
         total_bytes.clone(),
     );
@@ -204,7 +218,7 @@ pub(super) fn content<'a>(
             collation.clone(),
             deleting.clone(),
             links_cache.clone(),
-            delete_error.clone(),
+            delete_error,
         ),
     );
     view! {
@@ -253,20 +267,7 @@ async fn files_body(
     target: (i64, i64, String, i64, bool, bool),
     history: History,
     controls: Controls,
-    input: (
-        Option<String>,
-        String,
-        String,
-        i64,
-        Option<i64>,
-        usize,
-        usize,
-        Option<i64>,
-        bool,
-        String,
-        bool,
-        String,
-    ),
+    input: FilesInput,
 ) -> topcoat::Result<impl View> {
     let (account, project_id, identifier, _viewer_id, _is_admin, _can_edit) = target;
     let caller = session::read(cx, context::caller(cx))?;
@@ -317,12 +318,7 @@ async fn files_body(
     ) {
         Ok(page) => page,
         Err(error) => {
-            return Ok(error_state(
-                cx,
-                &identifier,
-                &error.to_string(),
-                controls.5.clone(),
-            ));
+            return Ok(error_state(cx, &identifier, &error.to_string(), controls.5));
         }
     };
     let mut rows = if append { previous_rows } else { Vec::new() };
@@ -373,7 +369,7 @@ async fn files_body(
         .filter(|name| !name.is_empty())
         .collect::<Vec<_>>();
     uploaders.sort_by(|left, right| match &collator {
-        Ok(collator) => collator.compare(left, right).into(),
+        Ok(collator) => collator.compare(left, right),
         Err(_) => left.cmp(right),
     });
     uploaders.dedup();
@@ -384,12 +380,7 @@ async fn files_body(
     ) {
         Ok(authority) => authority,
         Err(error) => {
-            return Ok(error_state(
-                cx,
-                &identifier,
-                &error.to_string(),
-                controls.5.clone(),
-            ));
+            return Ok(error_state(cx, &identifier, &error.to_string(), controls.5));
         }
     };
     let now = signal(cx, || chrono::Utc::now().timestamp_millis() as f64);
@@ -416,7 +407,7 @@ async fn files_body(
         controls.2.clone(),
         controls.3.clone(),
         controls.4.clone(),
-        controls.5.clone(),
+        controls.5,
         controls.6.clone(),
         controls.7.clone(),
         controls.8.clone(),
@@ -503,6 +494,7 @@ fn parse_rows(value: &str) -> Vec<ProjectAttachment> {
         .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn files_page<'a>(
     cx: &'a Cx,
     account: i64,
@@ -545,7 +537,7 @@ fn files_page<'a>(
             "text-caption px-2.5 py-1 rounded-full border border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--bg-subtle)]"
         };
         view! { cx =>
-            <button type="button" class=(class) :aria-pressed=$(active)
+            <button type="button" class=(class) :aria-pressed=$(if active { "true" } else { "false" })
                 @click=$(move |_event: Event| {
                     selected.set(if value.is_empty() { None } else { Some(value.clone()) });
                     chip_offset.set(0_i64);
@@ -628,10 +620,10 @@ fn files_page<'a>(
     let current_sort = sort.get();
     let current_uploader = uploader.get();
     let expanded_class = if orphans_open { "block" } else { "hidden" };
-    let orphan_count = orphans.map(|value| value.items.len()).unwrap_or(0);
-    let orphan_bytes = orphans.map(|value| value.total_bytes).unwrap_or(0);
+    let orphan_count = orphans.map_or(0, |value| value.items.len());
+    let orphan_bytes = orphans.map_or(0, |value| value.total_bytes);
     let orphan_error = orphans.is_none();
-    let cache_signal = collation.clone();
+    let cache_signal = collation;
     let delete_error_text = delete_error.get();
     let sort_options = SORT_OPTIONS
         .iter()
@@ -692,7 +684,7 @@ fn files_page<'a>(
                     }
                     <section class="mt-10 border-t border-[var(--border)] pt-4">
                         <button class="w-full flex items-center gap-2 text-left" type="button"
-                            :aria-expanded=$(orphans_open)
+                            :aria-expanded=$(if orphans_open { "true" } else { "false" })
                             @click=$(move |_event: Event| orphan_open.set(!orphans_open))>
                             (icons::ui_icon(cx, if orphans_open { icons::UiIcon::Expand } else { icons::UiIcon::Next }, 14))
                             (icons::ui_icon(cx, icons::UiIcon::Warning, 14))
@@ -752,9 +744,7 @@ fn file_row<'a>(
     let filename = row.filename.clone();
     let expanded_value = expanded_id == Some(id);
     let destination = transport::mounted_url(cx, &format!("/__native_files/download/{id}"));
-    let entities = detail
-        .map(|detail| detail.entities.as_slice())
-        .unwrap_or(row.entities.as_slice());
+    let entities = detail.map_or(row.entities.as_slice(), |detail| detail.entities.as_slice());
     let row_entity_chips = entity_chips(cx, project, entities);
     let expanded_entity_chips = entity_chips(cx, project, entities);
     let can_delete = model::can_delete(row.uploader_id, Some(viewer_id), is_admin, can_edit);
@@ -774,13 +764,13 @@ fn file_row<'a>(
     let error_signal = delete_error.clone();
     let failed_busy = deleting.clone();
     let failed_confirming = confirming.clone();
-    let failed_error = delete_error.clone();
-    let success_busy = deleting.clone();
+    let failed_error = delete_error;
+    let success_busy = deleting;
     let success_confirming = confirming.clone();
     let success_expanded = expanded.clone();
-    let success_offset = offset.clone();
-    let success_revision = revision.clone();
-    let success_orphan_revision = orphan_revision.clone();
+    let success_offset = offset;
+    let success_revision = revision;
+    let success_orphan_revision = orphan_revision;
     let delete_handler = expr!(|_event: Event| {
         if !busy_signal.get() {
             busy_signal.set(true);
@@ -848,7 +838,7 @@ fn file_row<'a>(
         <div class="py-2" data-native-files-row=(id.to_string())>
             <div class="flex items-center gap-3">
                 <button type="button" class="size-5 flex items-center justify-center rounded text-[var(--text-faint)] hover:text-[var(--text)] hover:bg-[var(--bg-subtle)] transition-colors shrink-0"
-                    title=(label) :aria-expanded=$(expanded_value)
+                    title=(label) :aria-expanded=$(if expanded_value { "true" } else { "false" })
                     @click=$(move |_event: Event| {
                         expanded.set(if expanded_value { None } else { Some(id) });
                     })>
@@ -893,6 +883,7 @@ fn entity_chips<'a>(
     }).collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn orphan_row<'a>(
     cx: &'a Cx,
     account: i64,
@@ -922,12 +913,12 @@ fn orphan_row<'a>(
     let error_signal = delete_error.clone();
     let failed_busy = deleting.clone();
     let failed_confirming = confirming.clone();
-    let failed_error = delete_error.clone();
-    let success_busy = deleting.clone();
+    let failed_error = delete_error;
+    let success_busy = deleting;
     let success_confirming = confirming.clone();
-    let success_offset = offset.clone();
-    let success_revision = revision.clone();
-    let success_orphan_revision = orphan_revision.clone();
+    let success_offset = offset;
+    let success_revision = revision;
+    let success_orphan_revision = orphan_revision;
     let delete_handler = expr!(|_event: Event| {
         if !delete_busy.get() {
             delete_busy.set(true);
@@ -988,13 +979,12 @@ fn orphan_row<'a>(
 }
 
 fn mime_icon<'a>(cx: &'a Cx, mime_class: &str) -> BoxView<'a> {
-    let icon = match mime_class {
+    match mime_class {
         "image" | "video" | "audio" => icons::ui_icon(cx, icons::UiIcon::Files, 16),
         "text" | "pdf" => icons::ui_icon(cx, icons::UiIcon::Page, 16),
         "archive" => icons::ui_icon(cx, icons::UiIcon::Module, 16),
         _ => icons::ui_icon(cx, icons::UiIcon::Entity, 16),
-    };
-    icon
+    }
 }
 
 fn format_bytes(bytes: i64) -> String {

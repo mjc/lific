@@ -23,7 +23,7 @@ async fn download(cx: &Cx) -> topcoat::Result<Response> {
             &store,
             &caller.identity,
             attachment_id,
-            &headers(cx),
+            headers(cx),
         ),
     )?;
     Ok(response.map(Body::new))
