@@ -11,7 +11,8 @@ const flush = async()=>{for(let i=0;i<8;i++)await Promise.resolve();};
 const tick = async(f,amount)=>{f.advance(amount);await flush();};
 const runtime = fs.readFileSync(path.join(process.cwd(), 'src/topcoat/assets/runtime.js'), 'utf8');
 const decode = text => text.replace(/&(?:quot|apos|amp|lt|gt|#39);/g, value => ({'&quot;':'"','&apos;':"'",'&#39;':"'",'&amp;':'&','&lt;':'<','&gt;':'>'})[value]);
-const tag = html.match(/<div id="native-deferred-delete-owner"[^>]*>/)?.[0];
+const tag = [...html.matchAll(/<div\b(?:[^"'>]|"[^"]*"|'[^']*')*>/g)]
+  .map(match=>match[0]).find(tag=>/\bid="native-deferred-delete-owner"/.test(tag));
 assert.ok(tag, 'The actual Rust-rendered owner is provided.');
 const source = decode(tag.match(/data-topcoat-on:mount="([^"]*)"/)[1]);
 const ownerKey = decode(tag.match(/data-native-delete-owner="([^"]*)"/)?.[1] || '7:ACC');

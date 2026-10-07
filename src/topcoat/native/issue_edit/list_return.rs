@@ -54,9 +54,8 @@ fn breadcrumb_id(identifier: &str) -> String {
 
 pub(crate) fn breadcrumb<'a>(cx: &'a Cx, project: &str, identifier: &str) -> BoxView<'a> {
     let id = breadcrumb_id(identifier);
-    let href = signal(cx, || {
-        super::super::transport::mounted_url(cx, &format!("/{project}/issues"))
-    });
+    let list = format!("/{project}/issues");
+    let href = signal(cx, || super::super::transport::mounted_url(cx, &list));
     let label = signal(cx, || "Issues".to_owned());
     let mount = super::super::transport::trusted_mount(cx)
         .unwrap_or_default()
@@ -73,7 +72,8 @@ pub(crate) fn breadcrumb<'a>(cx: &'a Cx, project: &str, identifier: &str) -> Box
         update_href.set(mount.clone());
         update_href.push_str(destination.clone());
     });
-    let mut attributes = Attributes::with_capacity(1);
+    let mut attributes = super::super::navigation::attrs(cx, &list);
+    let _ = attributes.remove("href");
     attributes.insert(cx, "data-topcoat-on:mount", handler(project, &update));
     view! {
         cx =>
@@ -96,8 +96,8 @@ pub(crate) fn keyboard_mount(
         .unwrap_or_default()
         .to_owned();
     let navigate = expr!(|_destination: StringSurrogate| {
-        // Activate the real breadcrumb so the existing workspace classifier
-        // and fresh destination authorization own the actual navigation.
+        // Activate the real breadcrumb so native navigation and fresh
+        // destination authorization own the transition.
         raw!(
             "const link=document.getElementById(${id}.toString()); if (link) { link.href=${mount}.toString()+${_destination}.toString(); link.click(); }",
             ()

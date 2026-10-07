@@ -1973,6 +1973,7 @@ async fn native_home_palette_results(
             for (index, (destination, title, identifier, project_name, icon)) in rows
                 .into_iter()
                 .enumerate() {
+                let mounted_destination = super::transport::mounted_url(cx, &destination);
                 <a
                     class="native-home-destination"
                     (super::navigation::attrs(cx, &destination))
@@ -1985,7 +1986,7 @@ async fn native_home_palette_results(
                     @mouseenter=$(|_event: Event| {
                         if hover_revision.get() == revision {
                             hover_selected.set(index);
-                            hover_href.set(destination.clone());
+                            hover_href.set(mounted_destination.clone());
                             hover_cursor.set(true);
                         }
                     })
