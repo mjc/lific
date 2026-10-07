@@ -2147,36 +2147,75 @@ mod tests {
             .build()
     }
 
-    async fn palette_markup(mount: &str, query: &str, previous_href: &str) -> serde_json::Value {
-        let cx = shell_context_mounted(false, mount);
+    #[topcoat::view::component]
+    async fn palette_fixture(
+        cx: &Cx,
+        query: String,
+        previous_href: String,
+    ) -> topcoat::Result<impl View> {
         let state: PaletteSignals = (
-            signal(&cx, || 0),
-            signal(&cx, || 0),
-            signal(&cx, || previous_href.to_owned()),
-            signal(&cx, || true),
-            signal(&cx, || 0),
-            signal(&cx, || 0),
-            signal(&cx, || false),
-            signal(&cx, || false),
-            signal(&cx, || false),
-            signal(&cx, || true),
-            signal(&cx, || "/".to_owned()),
+            signal(cx, || 0_usize),
+            signal(cx, || 0_usize),
+            signal(cx, || previous_href),
+            signal(cx, || true),
+            signal(cx, || 0_usize),
+            signal(cx, || 0_usize),
+            signal(cx, || false),
+            signal(cx, || false),
+            signal(cx, || false),
+            signal(cx, || true),
+            signal(cx, || "/".to_owned()),
         );
-        let outer = view! { cx => native_home_palette_results(
-            query: query.to_owned(), open: true, revision: 0, authorized: 0, state: state.clone()
-        ) };
-        let html = outer.single().await.unwrap().render(&cx);
-        serde_json::json!({
-            "html":html,
-            "state": (
-                (&state.0).into_surrogate(), (&state.1).into_surrogate(),
-                (&state.2).into_surrogate(), (&state.3).into_surrogate(),
-                (&state.4).into_surrogate(), (&state.5).into_surrogate(),
-                (&state.6).into_surrogate(), (&state.7).into_surrogate(),
-                (&state.8).into_surrogate(), (&state.9).into_surrogate(),
-                (&state.10).into_surrogate(),
+        let handles = serde_json::json!((
+            (&state.0).into_surrogate(),
+            (&state.1).into_surrogate(),
+            (&state.2).into_surrogate(),
+            (&state.3).into_surrogate(),
+            (&state.4).into_surrogate(),
+            (&state.5).into_surrogate(),
+            (&state.6).into_surrogate(),
+            (&state.7).into_surrogate(),
+            (&state.8).into_surrogate(),
+            (&state.9).into_surrogate(),
+            (&state.10).into_surrogate(),
+        ))
+        .to_string();
+        Ok(view! {
+            cx =>
+            <span id="palette-fixture-state" data-state=(handles)></span>
+            native_home_palette_results(
+                query: query,
+                open: true,
+                revision: 0,
+                authorized: 0,
+                state: state
             )
         })
+    }
+
+    async fn palette_markup(mount: &str, query: &str, previous_href: &str) -> serde_json::Value {
+        let cx = shell_context_mounted(false, mount);
+        let outer = view! {
+            cx =>
+            palette_fixture(
+                query: query.to_owned(),
+                previous_href: previous_href.to_owned()
+            )
+        };
+        let html = outer.single().await.unwrap().render(&cx);
+        let document = scraper::Html::parse_document(&html);
+        let selector = scraper::Selector::parse("#palette-fixture-state").unwrap();
+        let state: serde_json::Value = serde_json::from_str(
+            document
+                .select(&selector)
+                .next()
+                .unwrap()
+                .value()
+                .attr("data-state")
+                .unwrap(),
+        )
+        .unwrap();
+        serde_json::json!({"html":html,"state":state})
     }
 
     #[tokio::test]

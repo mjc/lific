@@ -36,7 +36,7 @@ function fixture() {
   const status=[signal(false),signal(''),signal('')];
   const request=[hydrate('|"ACC"|'),hydrate(`${mount}/login`),hydrate({t:'i64',bits:64,v:'7'}),hydrate(false)];
   vm.runInNewContext(source.replace(/export const (\w+)=/g,'globalThis.$1='),context);
-  context.handler(cx,{},cx.tuple(chrome),cx.tuple(palette),cx.tuple(status),cx.tuple(request));
+  context.mount(cx,{},cx.tuple(chrome),cx.tuple(palette),cx.tuple(status),cx.tuple(request));
   const open=(pane='root')=>{
     chrome[3].set(hydrate(true));chrome[4].set(hydrate(pane));chrome[5].set(hydrate(pane==='root'?'':'ACC'));
     history.state={lificNativeHomeNav:{version:'1',owner:'fixture-owner',href:base,pane,project:pane==='root'?'':'ACC'}};

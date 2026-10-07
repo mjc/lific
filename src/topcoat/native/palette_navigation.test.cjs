@@ -45,7 +45,7 @@ function fixture(markup) {
   const chrome=[signal(false),signal('system'),signal(false),signal(false),signal('root'),signal(''),signal(''),signal(location.href),signal(false),signal(''),signal(false),signal('')];
   const palette=[state[9],signal(''),signal(''),state[0],signal(usize(0)),state[5],state[1],state[2],state[3],state[4],state[6],state[7]];
   vm.runInNewContext(source.replace(/export const (\w+)=/g,'globalThis.$1='),context);
-  context.handler(cx,{},cx.tuple(chrome),cx.tuple(palette),cx.tuple([state[8],signal(''),signal('')]),
+  context.mount(cx,{},cx.tuple(chrome),cx.tuple(palette),cx.tuple([state[8],signal(''),signal('')]),
     cx.tuple([cx.hydrate('|"ACC"|"DCS"|'),cx.hydrate(`${mount}/login`),cx.hydrate({t:'i64',bits:64,v:'1'}),cx.hydrate(false)]));
   const invoke=code=>vm.runInNewContext(`cx=>(${code})`,context)(cx)({});
   const hover=()=>invoke(rows.find(row=>row.href===`${mount}/DCS/overview`)['data-topcoat-on:mouseenter']);

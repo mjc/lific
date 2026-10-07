@@ -150,13 +150,14 @@ async fn deferred_owner_factory(fixture: &home_fixture::Fixture, path: &str) -> 
     let html = std::str::from_utf8(&body).unwrap();
     let document = scraper::Html::parse_document(html);
     let selector = scraper::Selector::parse("#native-deferred-delete-owner").unwrap();
-    document
+    let owner = document
         .select(&selector)
         .next()
-        .unwrap()
+        .unwrap_or_else(|| panic!("deferred owner missing at {path}: {html}"));
+    owner
         .value()
         .attr("data-topcoat-on:mount")
-        .unwrap()
+        .unwrap_or_else(|| panic!("deferred mount missing at {path}: {}", owner.html()))
         .to_owned()
 }
 
@@ -458,7 +459,11 @@ async fn navigation_mobile_header_uses_destination_label_with_preserved_signals(
                 "127.0.0.1:3000".parse::<std::net::SocketAddr>().unwrap(),
             ));
             let response = app.clone().oneshot(request).await.unwrap();
-            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "navigation request {mount}{path} (runtime={runtime})"
+            );
             let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
                 .await
                 .unwrap();
