@@ -95,9 +95,16 @@ fn copy_button_with_handler<'a>(
     let mut attrs = Attributes::with_capacity(2);
     attrs.insert(cx, "data-topcoat-on:click", handler);
     attrs.insert(cx, marker, "");
-    view! { cx =>
+    view! {
+        cx =>
         <button type="button" class=(COPY_BUTTON) (attrs)>
-            $(if failed.get() { "Copy failed" } else if copied.get() { "Copied" } else { label })
+            $(if failed.get() {
+                "Copy failed"
+            } else if copied.get() {
+                "Copied"
+            } else {
+                label
+            })
         </button>
     }
     .boxed()
@@ -180,22 +187,58 @@ pub(super) fn view<'a>(
             failed_for_copy,
             "data-native-tool-export-copy",
         );
-        view! { cx =>
-            <div class="mt-4 rounded-lg border border-[var(--border)] bg-[var(--bg-subtle)] p-3">
+        view! {
+            cx =>
+            <div
+                class="mt-4 rounded-lg border border-[var(--border)] bg-[var(--bg-subtle)] p-3"
+            >
                 <div class="mb-2 flex items-center justify-between gap-2">
-                    <h4 class="text-caption font-medium text-[var(--text)]">"Set the API key"</h4>
+                    <h4 class="text-caption font-medium text-[var(--text)]">
+                        "Set the API key"
+                    </h4>
                     (copy)
                 </div>
                 <code class="block break-all font-mono text-caption text-[var(--text)]">
                     $({
                         let current_os = export_active_os.get();
-                        let _command = if current_os == "windows" { export_templates[2].clone() } else if current_os == "linux" { export_templates[0].clone() } else { export_templates[1].clone() };
-                        let _shown = if export_revealed.get() { export_key.get() } else { "••••••••••••••••".to_owned() };
-                        raw!("cx.hydrate(${_command}.toString().replaceAll(${API_KEY_MARKER}.toString(), ${_shown}.toString()))", String::new())
+                        let _command = if current_os == "windows" {
+                            export_templates[2].clone()
+                        } else if current_os == "linux" {
+                            export_templates[0].clone()
+                        } else {
+                            export_templates[1].clone()
+                        };
+                        let _shown = if export_revealed.get() {
+                            export_key.get()
+                        } else {
+                            "••••••••••••••••".to_owned()
+                        };
+                        raw!(
+                            "cx.hydrate(${_command}.toString().replaceAll(${API_KEY_MARKER}.toString(), ${_shown}.toString()))",
+                            String::new(),
+                        )
                     })
                 </code>
-                <p class="mt-1 text-caption text-[var(--text-muted)]">$(if export_active_os.get() == "windows" { os_hints[2].clone() } else if export_active_os.get() == "macos" { os_hints[1].clone() } else if export_active_os.get() == "mac" { os_hints[1].clone() } else { os_hints[0].clone() })</p>
-                <p class="mt-1 text-caption text-[var(--error)]" role="status">$(if failed_text.get() { "Could not copy the command." } else if copied_text.get() { "Command copied." } else { "" })</p>
+                <p class="mt-1 text-caption text-[var(--text-muted)]">
+                    $(if export_active_os.get() == "windows" {
+                        os_hints[2].clone()
+                    } else if export_active_os.get() == "macos" {
+                        os_hints[1].clone()
+                    } else if export_active_os.get() == "mac" {
+                        os_hints[1].clone()
+                    } else {
+                        os_hints[0].clone()
+                    })
+                </p>
+                <p class="mt-1 text-caption text-[var(--error)]" role="status">
+                    $(if failed_text.get() {
+                        "Could not copy the command."
+                    } else if copied_text.get() {
+                        "Command copied."
+                    } else {
+                        ""
+                    })
+                </p>
             </div>
         }.boxed()
     });
@@ -213,35 +256,90 @@ pub(super) fn view<'a>(
         "data-native-tool-config-copy",
     );
 
-    view! { cx =>
-        <section class="mt-4" data-native-tool-setup="" data-native-tool-setup-client=(template.id)>
-            <h3 class="text-body-sm font-semibold text-[var(--text)]">"Set up " (template.name)</h3>
-            <p class="mt-1 text-caption text-[var(--text-muted)]">(template.description)</p>
+    view! {
+        cx =>
+        <section
+            class="mt-4"
+            data-native-tool-setup=""
+            data-native-tool-setup-client=(template.id)
+        >
+            <h3 class="text-body-sm font-semibold text-[var(--text)]">
+                "Set up "
+                (template.name)
+            </h3>
+            <p class="mt-1 text-caption text-[var(--text-muted)]">
+                (template.description)
+            </p>
             if !groups.is_empty() {
-                <div class="mt-3 inline-flex rounded-lg bg-[var(--bg-subtle)] p-1" role="group" aria-label="Operating system">
-                    for button in os_buttons { (button) }
+                <div
+                    class="mt-3 inline-flex rounded-lg bg-[var(--bg-subtle)] p-1"
+                    role="group"
+                    aria-label="Operating system"
+                >
+                    for button in os_buttons {
+                        (button)
+                    }
                 </div>
-                <p class="mt-2 break-all font-mono text-caption text-[var(--text-muted)]">
-                    $(if active_os.get() == "windows" { os_paths[2].clone() } else if active_os.get() == "macos" { os_paths[1].clone() } else if active_os.get() == "mac" { os_paths[1].clone() } else { os_paths[0].clone() })
+                <p
+                    class="mt-2 break-all font-mono text-caption text-[var(--text-muted)]"
+                >
+                    $(if active_os.get() == "windows" {
+                        os_paths[2].clone()
+                    } else if active_os.get() == "macos" {
+                        os_paths[1].clone()
+                    } else if active_os.get() == "mac" {
+                        os_paths[1].clone()
+                    } else {
+                        os_paths[0].clone()
+                    })
                 </p>
             }
-            for note in notes { (note) }
-            <div class="mt-4 rounded-lg border border-[var(--border)] bg-[var(--bg-subtle)] p-3">
+            for note in notes {
+                (note)
+            }
+            <div
+                class="mt-4 rounded-lg border border-[var(--border)] bg-[var(--bg-subtle)] p-3"
+            >
                 <div class="mb-2 flex items-center justify-between gap-2">
-                    <h4 class="text-caption font-medium text-[var(--text)]">"Configuration"</h4>
+                    <h4 class="text-caption font-medium text-[var(--text)]">
+                        "Configuration"
+                    </h4>
                     (config_copy)
                 </div>
-                <pre class="overflow-x-auto whitespace-pre-wrap break-all font-mono text-caption text-[var(--text)]"><code>
-                    $({
-                        let _source = config.to_owned();
-                        let secret = key.get();
-                        let _shown = if revealed.get() { secret } else { "••••••••••••••••".to_owned() };
-                        raw!("cx.hydrate(${_source}.toString().replaceAll(${MCP_URL_MARKER}.toString(), window.location.origin + ${mounted}.toString()).replaceAll(${API_KEY_MARKER}.toString(), ${_shown}.toString()))", String::new())
+                <pre
+                    class="overflow-x-auto whitespace-pre-wrap break-all font-mono text-caption text-[var(--text)]"
+                >
+                    <code>
+                        $({
+                            let _source = config.to_owned();
+                            let secret = key.get();
+                            let _shown = if revealed.get() {
+                                secret
+                            } else {
+                                "••••••••••••••••".to_owned(
+
+                                )
+                            };
+                            raw!(
+                                "cx.hydrate(${_source}.toString().replaceAll(${MCP_URL_MARKER}.toString(), window.location.origin + ${mounted}.toString()).replaceAll(${API_KEY_MARKER}.toString(), ${_shown}.toString()))",
+                                String::new(),
+                            )
+                        })
+                    </code>
+                </pre>
+                <p class="mt-1 text-caption text-[var(--error)]" role="status">
+                    $(if config_failed.get() {
+                        "Could not copy the configuration."
+                    } else if config_copied.get() {
+                        "Configuration copied."
+                    } else {
+                        ""
                     })
-                </code></pre>
-                <p class="mt-1 text-caption text-[var(--error)]" role="status">$(if config_failed.get() { "Could not copy the configuration." } else if config_copied.get() { "Configuration copied." } else { "" })</p>
+                </p>
             </div>
-            if let Some(export_view) = export_view { (export_view) }
+            if let Some(export_view) = export_view {
+                (export_view)
+            }
         </section>
     }
     .boxed()
@@ -250,7 +348,7 @@ pub(super) fn view<'a>(
 fn os_button<'a>(cx: &'a Cx, group: &OsPathGroup, selected: Signal<String>) -> BoxView<'a> {
     let value = group.key.to_owned();
     let choice = selected.clone();
-    let selected_key = selected.clone();
+    let selected_key = selected;
     let mac_in_group = group.oses.contains(&"mac");
     let label = group.label.clone();
     let handler = expr!(|_event: Event| {
@@ -263,27 +361,70 @@ fn os_button<'a>(cx: &'a Cx, group: &OsPathGroup, selected: Signal<String>) -> B
         handler.into_evaluated_and_js().1,
     );
     attrs.insert(cx, "data-native-tool-os", value.clone());
-    view! { cx =>
-        <button type="button"
-            :class=$(if selected_key.get() == value { OS_SELECTED } else if selected_key.get() == "macos" { if mac_in_group { OS_SELECTED } else { OS_UNSELECTED } } else if selected_key.get() == "mac" { if mac_in_group { OS_SELECTED } else { OS_UNSELECTED } } else { OS_UNSELECTED })
-            :aria-pressed=$(if selected_key.get() == value { "true" } else if selected_key.get() == "macos" { if mac_in_group { "true" } else { "false" } } else if selected_key.get() == "mac" { if mac_in_group { "true" } else { "false" } } else { "false" })
-            (attrs)>(label)</button>
+    view! {
+        cx =>
+        <button
+            type="button"
+            :class=$(if selected_key.get() == value {
+                OS_SELECTED
+            } else if selected_key.get() == "macos" {
+                if mac_in_group { OS_SELECTED } else { OS_UNSELECTED }
+            } else if selected_key.get() == "mac" {
+                if mac_in_group { OS_SELECTED } else { OS_UNSELECTED }
+            } else {
+                OS_UNSELECTED
+            })
+            :aria-pressed=$(if selected_key.get() == value {
+                "true"
+            } else if selected_key.get() == "macos" {
+                if mac_in_group { "true" } else { "false" }
+            } else if selected_key.get() == "mac" {
+                if mac_in_group { "true" } else { "false" }
+            } else {
+                "false"
+            })
+            (attrs)
+        >
+            (label)
+        </button>
     }
     .boxed()
 }
 
 fn note_view<'a>(cx: &'a Cx, step: SetupStep, key: Signal<String>, mounted: String) -> BoxView<'a> {
     match step {
-        SetupStep::Text(text) => view! { cx => <p class="mt-3 text-caption leading-relaxed text-[var(--text-muted)]">(text)</p> }.boxed(),
+        SetupStep::Text(text) => view! {
+            cx =>
+            <p class="mt-3 text-caption leading-relaxed text-[var(--text-muted)]">
+                (text)
+            </p>
+        }
+        .boxed(),
         SetupStep::Command(command) => {
             let source = signal(cx, || command.to_owned());
             let copied = signal(cx, || false);
             let failed = signal(cx, || false);
-            let copy = copy_button(cx, "Copy", source, key, copied, failed, "data-native-tool-command-copy");
-            view! { cx =>
-                <div class="mt-2 flex items-center justify-between gap-2 rounded-lg bg-[var(--bg-subtle)] p-2">
-                    <code class="min-w-0 break-all font-mono text-caption text-[var(--text)]">
-                        $(raw!("cx.hydrate(${command}.toString().replaceAll(${MCP_URL_MARKER}.toString(), window.location.origin + ${mounted}.toString()))", String::new()))
+            let copy = copy_button(
+                cx,
+                "Copy",
+                source,
+                key,
+                copied,
+                failed,
+                "data-native-tool-command-copy",
+            );
+            view! {
+                cx =>
+                <div
+                    class="mt-2 flex items-center justify-between gap-2 rounded-lg bg-[var(--bg-subtle)] p-2"
+                >
+                    <code
+                        class="min-w-0 break-all font-mono text-caption text-[var(--text)]"
+                    >
+                        $(raw!(
+                            "cx.hydrate(${command}.toString().replaceAll(${MCP_URL_MARKER}.toString(), window.location.origin + ${mounted}.toString()))",
+                            String::new(),
+                        ))
                     </code>
                     (copy)
                 </div>

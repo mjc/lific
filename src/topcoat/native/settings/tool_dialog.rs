@@ -61,15 +61,40 @@ pub(super) fn template_card<'a>(
         None,
         state,
     );
-    view! { cx =>
-        <div class="flex min-w-0 items-center gap-3 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3" data-settings-tool-template=(template.id)>
-            <div class="grid size-9 shrink-0 place-items-center rounded-md bg-[var(--bg-subtle)] text-[var(--text-muted)]">(super::super::icons::ui_icon(cx, super::super::icons::UiIcon::OpenExternal, 17))</div>
-            <div class="min-w-0 flex-1">
-                <div class="text-body-sm font-medium text-[var(--text)]">(template.name)</div>
-                <p class="truncate text-caption text-[var(--text-muted)]">(template.description)</p>
+    view! {
+        cx =>
+        <div
+            class="flex min-w-0 items-center gap-3 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3"
+            data-settings-tool-template=(template.id)
+        >
+            <div
+                class="grid size-9 shrink-0 place-items-center rounded-md bg-[var(--bg-subtle)] text-[var(--text-muted)]"
+            >
+                (super::super::icons::ui_icon(
+                    cx,
+                    super::super::icons::UiIcon::OpenExternal,
+                    17,
+                ))
             </div>
-            <button type="button" class=(format!("{} border border-[var(--border)] text-[var(--text)] hover:bg-[var(--bg-subtle)]", super::BUTTON))
-                data-native-tool-connect=(template.id) (attrs)>"Connect"</button>
+            <div class="min-w-0 flex-1">
+                <div class="text-body-sm font-medium text-[var(--text)]">
+                    (template.name)
+                </div>
+                <p class="truncate text-caption text-[var(--text-muted)]">
+                    (template.description)
+                </p>
+            </div>
+            <button
+                type="button"
+                class=(format!(
+                    "{} border border-[var(--border)] text-[var(--text)] hover:bg-[var(--bg-subtle)]",
+                    super::BUTTON,
+                ))
+                data-native-tool-connect=(template.id)
+                (attrs)
+            >
+                "Connect"
+            </button>
         </div>
     }.boxed()
 }
@@ -97,9 +122,12 @@ pub(super) fn custom_trigger<'a>(
     } else {
         "mt-3 bg-[var(--btn-success)] text-[var(--btn-success-text)] hover:bg-[var(--btn-success-hover)]"
     };
-    view! { cx =>
+    view! {
+        cx =>
         <button type="button" class=(format!("{} {class}", super::BUTTON)) (attrs)>
-            if !reconnect_trigger { "Connect custom tool" }
+            if !reconnect_trigger {
+                "Connect custom tool"
+            }
         </button>
     }
     .boxed()
@@ -322,7 +350,7 @@ pub(super) fn view<'a>(cx: &'a Cx, account: i64, state: &ToolDialogState) -> Box
         "Copy key",
         key_source,
         key.clone(),
-        copied.clone(),
+        copied,
         copy_failed,
         "data-native-tool-key-copy",
     );
@@ -356,39 +384,105 @@ pub(super) fn view<'a>(cx: &'a Cx, account: i64, state: &ToolDialogState) -> Box
     });
     let mut mount_attrs = Attributes::with_capacity(1);
     mount_attrs.insert(cx, "data-topcoat-on:mount", mount.into_evaluated_and_js().1);
-    view! { cx =>
-        <div class="fixed inset-0 z-50 grid place-items-center bg-black/50 p-4" (mount_attrs) :hidden=$(!open.get()) data-native-tool-dialog="" role="dialog" aria-modal="true" aria-labelledby="native-tool-dialog-title">
-            <div class="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-xl bg-[var(--surface)] p-5 shadow-xl">
+    view! {
+        cx =>
+        <div
+            class="fixed inset-0 z-50 grid place-items-center bg-black/50 p-4"
+            (mount_attrs)
+            :hidden=$(!open.get())
+            data-native-tool-dialog=""
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="native-tool-dialog-title"
+        >
+            <div
+                class="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-xl bg-[var(--surface)] p-5 shadow-xl"
+            >
                 <div class="flex items-center justify-between">
-                    <h2 id="native-tool-dialog-title" class="text-body font-semibold text-[var(--text)]">"Connect tool"</h2>
-                    <button type="button" (close_attrs) :disabled=$(busy.get()) aria-label="Close">"×"</button>
+                    <h2
+                        id="native-tool-dialog-title"
+                        class="text-body font-semibold text-[var(--text)]"
+                    >
+                        "Connect tool"
+                    </h2>
+                    <button
+                        type="button"
+                        (close_attrs)
+                        :disabled=$(busy.get())
+                        aria-label="Close"
+                    >
+                        "×"
+                    </button>
                 </div>
-                <p class="mt-2 text-caption text-[var(--error)]" role="alert">$(error.get())</p>
-                <label class="mt-3 block text-body-sm" :hidden=$(!needs_password.get())>"Current password"
-                    <input type="password" autocomplete="current-password" class=(super::INPUT) :value=$(password.get())
-                        @input=$(|event: Event| password.set(event.target.value.to_owned())) />
+                <p class="mt-2 text-caption text-[var(--error)]" role="alert">
+                    $(error.get())
+                </p>
+                <label class="mt-3 block text-body-sm" :hidden=$(!needs_password.get())>
+                    "Current password"
+                    <input
+                        type="password"
+                        autocomplete="current-password"
+                        class=(super::INPUT)
+                        :value=$(password.get())
+                        @input=$(|event: Event| password.set(
+                                event.target.value.to_owned(),
+                            ))
+                    />
                 </label>
-                <button type="button" class=(format!("{} mt-2", super::BUTTON)) data-native-tool-confirm="" (confirm) :hidden=$(!needs_password.get()) :disabled=$(busy.get())>
+                <button
+                    type="button"
+                    class=(format!("{} mt-2", super::BUTTON))
+                    data-native-tool-confirm=""
+                    (confirm)
+                    :hidden=$(!needs_password.get())
+                    :disabled=$(busy.get())
+                >
                     $(if busy.get() { "Confirming…" } else { "Confirm and connect" })
                 </button>
-                <label class="mt-3 block text-body-sm">"Setup instructions"
-                    <select class=(super::INPUT) data-native-tool-template-choice="" :value=$(setup_template.get())
-                        @change=$(|event: Event| setup_template.set(event.target.value.to_owned()))>
-                        <option value=(GENERIC_TEMPLATE.id)>(GENERIC_TEMPLATE.name)</option>
-                        for template in TOOL_TEMPLATES { <option value=(template.id)>(template.name)</option> }
+                <label class="mt-3 block text-body-sm">
+                    "Setup instructions"
+                    <select
+                        class=(super::INPUT)
+                        data-native-tool-template-choice=""
+                        :value=$(setup_template.get())
+                        @change=$(|event: Event| setup_template.set(
+                                event.target.value.to_owned(),
+                            ))
+                    >
+                        <option value=(GENERIC_TEMPLATE.id)>
+                            (GENERIC_TEMPLATE.name)
+                        </option>
+                        for template in TOOL_TEMPLATES {
+                            <option value=(template.id)>(template.name)</option>
+                        }
                     </select>
                 </label>
                 <div class="mt-3" :hidden=$(key.get().is_empty())>
-                    <p class="font-medium text-[var(--text)]">"Copy your API key now"</p>
-                    <code class="block break-all font-mono text-caption text-[var(--text)]">
-                        $(if revealed.get() { key.get() } else { "••••••••••••••••".to_owned() })
+                    <p class="font-medium text-[var(--text)]">
+                        "Copy your API key now"
+                    </p>
+                    <code
+                        class="block break-all font-mono text-caption text-[var(--text)]"
+                    >
+                        $(if revealed.get() {
+                            key.get()
+                        } else {
+                            "••••••••••••••••".to_owned()
+                        })
                     </code>
-                    <button type="button" class=(super::BUTTON) data-native-tool-key-reveal="" (reveal_attrs)>
+                    <button
+                        type="button"
+                        class=(super::BUTTON)
+                        data-native-tool-key-reveal=""
+                        (reveal_attrs)
+                    >
                         $(if revealed.get() { "Hide key" } else { "Reveal key" })
                     </button>
                     (key_copy)
                 </div>
-                for panel in panels { (panel) }
+                for panel in panels {
+                    (panel)
+                }
                 (generic_panel)
             </div>
         </div>
@@ -409,7 +503,23 @@ fn setup_panel<'a>(
     let visible = open.clone();
     let key = key.clone();
     let setup = tool_setup::view(cx, template, key.clone(), revealed.clone(), os.clone());
-    view! { cx => <div class="mt-4" data-native-tool-setup="" :hidden=$(if !visible.get() { true } else if key.get().is_empty() { true } else { active.get() != id })>(setup)</div> }.boxed()
+    view! {
+        cx =>
+        <div
+            class="mt-4"
+            data-native-tool-setup=""
+            :hidden=$(if !visible.get() {
+                true
+            } else if key.get().is_empty() {
+                true
+            } else {
+                active.get() != id
+            })
+        >
+            (setup)
+        </div>
+    }
+    .boxed()
 }
 
 fn confirm_attrs(cx: &Cx, account: i64, state: &ToolDialogState) -> Attributes {
