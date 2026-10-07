@@ -157,7 +157,7 @@ jobs:
       - name: Test
         id: windows_test
         timeout-minutes: 20
-        run: cargo test --all-targets -- --test-threads=2
+        run: cargo test --all-targets
       - name: Diagnose failed native Windows stopped-reader boundary
         if: failure() && steps.windows_test.outcome == 'failure'
         timeout-minutes: 3
