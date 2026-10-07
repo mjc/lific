@@ -167,7 +167,12 @@ fn project_authority(fixture: &home_fixture::Fixture, project: i64) -> String {
 async fn navigation_authority_refreshes_new_page_controls_after_promotion_and_demotion() {
     let fixture = home_fixture::fixture();
     let (account, project) = account_and_project(&fixture);
-    let paths = ["/ACC/issues/new?status=active", "/ACC/modules?tab=all"];
+    let paths = [
+        "/ACC/issues/new?status=active",
+        "/ACC/modules?tab=all",
+        "/ACC/files?mime=image",
+        "/ACC/graph?source=navigation",
+    ];
     let mut baseline = project_authority(&fixture, project);
     for role in [Role::Maintainer, Role::Viewer] {
         for mount in ["", "/app", "/ACC"] {

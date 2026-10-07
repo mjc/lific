@@ -35,14 +35,22 @@ JavaScript assets are Topcoat's framework runtime and Rust-generated bindings.
 ## Unfinished features
 
 Settings, archive import, filtered issue lists and boards,
-files, dependency graphs, and public readers have no intermediate
+and public readers have no intermediate
 fallback. Their canonical routes return 404 until native ports are implemented.
 Existing backend REST/MCP interfaces remain available.
 
-Files and dependency graph work starts with shared authorized read services and
-pure Rust models for file controls, graph filtering, and graph layout. These
-foundations do not enable either page; routing waits for the native views and
-interaction contracts.
+Files and dependency graphs now have native private routes and reuse the
+workspace/sidebar. Files includes pagination, filters, sorting, downloads,
+where-used details, duplicate references, deletion, and pending cleanup.
+Dependency graphs render nodes and relations and expose authorized relation
+actions. Shared services enforce current permissions for downloads, deletion,
+and both relation endpoints. These are partial ports: graph pan, zoom, fit,
+drag/connect gestures, reactive refresh, and hover/touch integration remain
+unfinished. Files still needs complete interaction and visual parity checks.
+
+The shared Rust issue preview provides hover content and a touch panel with
+authorized edits. Loading/error recovery, close transitions, global undo toasts,
+and full gesture parity remain unfinished. It is not yet wired into graph nodes.
 
 Pages still needs folder management, metadata editing, autosave, comments,
 attachments, and realtime recovery. Plans still needs step reordering, activity,
