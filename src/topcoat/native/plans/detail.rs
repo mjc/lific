@@ -1588,6 +1588,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn native_plan_step_tree_renders_collapse_control_for_viewers() {
+        let fixture = super::super::super::home_fixture::fixture();
+        let plan = {
+            let conn = fixture.db.write().unwrap();
+            let project_id = crate::db::queries::resolve_project_identifier(&conn, "ACC").unwrap();
+            crate::db::queries::plans::create_plan(
+                &conn,
+                &crate::db::models::CreatePlan {
+                    project_id,
+                    title: "Nested checklist".into(),
+                    issue_id: None,
+                    steps: vec![crate::db::models::CreatePlanStep {
+                        title: "Parent step".into(),
+                        description: String::new(),
+                        issue_id: None,
+                        done: false,
+                        steps: vec![crate::db::models::CreatePlanStep {
+                            title: "Nested child".into(),
+                            description: String::new(),
+                            issue_id: None,
+                            done: false,
+                            steps: vec![],
+                        }],
+                    }],
+                },
+            )
+            .unwrap()
+        };
+        let (status, html) = super::super::super::home_fixture::document(
+            &fixture,
+            "",
+            &format!("/ACC/plans/{}", plan.id),
+            true,
+            None,
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let document = scraper::Html::parse_document(&html);
+        let parent = document
+            .select(
+                &scraper::Selector::parse(&format!(
+                    "article[data-plan-step='{}']",
+                    plan.steps[0].id
+                ))
+                .unwrap(),
+            )
+            .next()
+            .expect("parent step rendered");
+        assert!(
+            parent
+                .select(&scraper::Selector::parse("button[title='Collapse']").unwrap())
+                .next()
+                .is_some(),
+            "viewers can collapse expanded plan steps",
+        );
+        assert!(
+            document
+                .select(
+                    &scraper::Selector::parse(&format!(
+                        "article[data-plan-step='{}']",
+                        plan.steps[0].children[0].id
+                    ))
+                    .unwrap(),
+                )
+                .next()
+                .is_some(),
+            "nested steps are expanded by default",
+        );
+    }
+
+    #[tokio::test]
     async fn native_plan_step_issue_unlink_uses_production_mutation_and_preserves_state() {
         let fixture = super::super::super::home_fixture::fixture();
         let (plan, account, issue_id) = {
