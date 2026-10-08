@@ -125,6 +125,28 @@ function run(phase) {
       'Enter uses the current filtered option or create request');
     assert.equal(read(bindingId(phase.query_binding)), phase.query, 'Enter preserves the filter draft');
     output.enter_request = plain(events[0].detail.dehydrate());
+  } else if (phase.name === 'stale_query_enter') {
+    fixture.handler(phase.query_handler)(textInput(phase.next_query));
+    assert.equal(read(bindingId(phase.query_binding)), phase.next_query);
+    enterThroughProjectedAction(
+      phase.filter_keydown_handler,
+      phase.old_enter_action_handler,
+      '[data-native-issue-label-picker]',
+      '[data-native-label-enter="true"]',
+    );
+    assert.equal(events.length, 0,
+      'an old Enter action cannot submit after the actual filter input changes its query');
+  } else if (phase.name === 'stale_color_create') {
+    fixture.handler(phase.palette_handler)(click());
+    assert.equal(read(signalIds(phase.palette_handler)[0]), phase.palette_color);
+    fixture.handler(phase.create_handler)(click());
+    assert.equal(events.length, 1, 'Create remains available after a palette choice');
+    assert.equal(plain(events[0].detail.dehydrate()).v.color, phase.palette_color,
+      'Create reads the selected palette color before the projection refreshes');
+  } else if (phase.name === 'emit_option') {
+    fixture.handler(phase.option_handler)(click());
+    assert.equal(events.length, 1);
+    output.request = plain(events[0].detail.dehydrate());
   } else if (phase.name === 'hex_enter') {
     enterThroughProjectedAction(
       phase.hex_keydown_handler,

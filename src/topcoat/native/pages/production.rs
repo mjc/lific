@@ -418,6 +418,8 @@ async fn native_pages_move_picker_matches_main_and_runs_emitted_handlers() {
         .into_surrogate(),
     )
     .unwrap();
+    let mut canonical_move = None;
+    let mut moved_signals = None;
     for mount in ["", "/app", "/ACC"] {
         let (status, initial_html) = home_fixture::document(
             &fixture,
@@ -433,13 +435,36 @@ async fn native_pages_move_picker_matches_main_and_runs_emitted_handlers() {
             .select(&scraper::Selector::parse("[data-native-pages-list]").unwrap())
             .next()
             .unwrap();
-        let expanded = run_folder_tree_handler(&serde_json::json!({
-            "signals": home_fixture::page_signals(&initial_html),
-            "toggle_handler": list.value().attr("data-topcoat-on:click").unwrap(),
-            "target_kind": "toggle",
-            "folder_id": folder_id,
-        }));
-        let expanded_signals = serde_json::from_value(expanded["signals"].clone()).unwrap();
+        let destination_row = initial_document
+            .select(
+                &scraper::Selector::parse(&format!(
+                    "[data-native-page-folder-toggle='{destination_folder}']"
+                ))
+                .unwrap(),
+            )
+            .next()
+            .expect("the move destination has a tree row");
+        let source_is_expanded = initial_document
+            .select(
+                &scraper::Selector::parse(&format!(
+                    "[data-native-page-folder-toggle='{folder_id}']"
+                ))
+                .unwrap(),
+            )
+            .next()
+            .and_then(|row| row.value().attr("aria-expanded"))
+            == Some("true");
+        let expanded_signals = if source_is_expanded {
+            home_fixture::page_signals(&initial_html)
+        } else {
+            let expanded = run_folder_tree_handler(&serde_json::json!({
+                "signals": home_fixture::page_signals(&initial_html),
+                "toggle_handler": list.value().attr("data-topcoat-on:click").unwrap(),
+                "target_kind": "toggle",
+                "folder_id": folder_id,
+            }));
+            serde_json::from_value(expanded["signals"].clone()).unwrap()
+        };
         let (status, html) = home_fixture::document(
             &fixture,
             mount,
@@ -633,6 +658,10 @@ async fn native_pages_move_picker_matches_main_and_runs_emitted_handlers() {
                 "current_folder_id": folder_id,
                 "account": account,
                 "page_id": page_id,
+                "tree_toggle_handler": list.value().attr("data-topcoat-on:click").unwrap(),
+                "tree_revision": 0,
+                "tree_folder_id": destination_folder,
+                "expanded_binding": destination_row.value().attr("data-topcoat-bind:aria-expanded").unwrap(),
             }));
             if scenario == "success" {
                 let expected = (account, page_id, destination_folder.to_string()).into_surrogate();
@@ -644,6 +673,8 @@ async fn native_pages_move_picker_matches_main_and_runs_emitted_handlers() {
                         .unwrap()
                         .ends_with("/__native_pages/move")
                 );
+                canonical_move = Some(result["arguments"].clone());
+                moved_signals = Some(serde_json::from_value(result["signals"].clone()).unwrap());
             }
             if scenario == "failure" {
                 let error_signals = serde_json::from_value(result["signals"].clone()).unwrap();
@@ -668,6 +699,38 @@ async fn native_pages_move_picker_matches_main_and_runs_emitted_handlers() {
             }
         }
     }
+    let (status, outcome) = home_fixture::procedure(
+        &fixture,
+        "/__native_pages/move",
+        canonical_move.expect("the emitted success handler produced a move request"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(outcome["v"]["status"]["ok"], "saved");
+    let (status, moved_html) =
+        home_fixture::document(&fixture, "", "/ACC/pages", true, moved_signals).await;
+    assert_eq!(status, StatusCode::OK);
+    let moved_document = scraper::Html::parse_document(&moved_html);
+    let destination_row = moved_document
+        .select(
+            &scraper::Selector::parse(&format!(
+                "[data-native-page-folder-toggle='{destination_folder}']"
+            ))
+            .unwrap(),
+        )
+        .next()
+        .expect("the destination remains in the tree after a move");
+    assert_eq!(destination_row.value().attr("aria-expanded"), Some("true"));
+    assert!(
+        moved_document
+            .select(
+                &scraper::Selector::parse(&format!("[data-native-folder-page='{page_id}']"))
+                    .unwrap()
+            )
+            .next()
+            .is_some(),
+        "a successful move expands its destination so the page remains visible",
+    );
 }
 
 #[tokio::test]
@@ -782,13 +845,25 @@ async fn native_pages_move_action_is_read_only_for_viewers() {
         .select(&scraper::Selector::parse("[data-native-pages-list]").unwrap())
         .next()
         .unwrap();
-    let expanded = run_folder_tree_handler(&serde_json::json!({
-        "signals": home_fixture::page_signals(&initial_html),
-        "toggle_handler": list.value().attr("data-topcoat-on:click").unwrap(),
-        "target_kind": "toggle",
-        "folder_id": folder_id,
-    }));
-    let expanded_signals = serde_json::from_value(expanded["signals"].clone()).unwrap();
+    let source_is_expanded = initial_document
+        .select(
+            &scraper::Selector::parse(&format!("[data-native-page-folder-toggle='{folder_id}']"))
+                .unwrap(),
+        )
+        .next()
+        .and_then(|row| row.value().attr("aria-expanded"))
+        == Some("true");
+    let expanded_signals = if source_is_expanded {
+        home_fixture::page_signals(&initial_html)
+    } else {
+        let expanded = run_folder_tree_handler(&serde_json::json!({
+            "signals": home_fixture::page_signals(&initial_html),
+            "toggle_handler": list.value().attr("data-topcoat-on:click").unwrap(),
+            "target_kind": "toggle",
+            "folder_id": folder_id,
+        }));
+        serde_json::from_value(expanded["signals"].clone()).unwrap()
+    };
     let (status, html) =
         home_fixture::document(&fixture, "", "/ACC/pages", true, Some(expanded_signals)).await;
     assert_eq!(status, StatusCode::OK);
@@ -1128,7 +1203,59 @@ async fn native_pages_folder_tree_expands_nested_rows_from_emitted_handlers() {
         grandchild_folder,
         great_grandchild_folder,
     ) = seed_nested_folder_page(&fixture, true);
-    let (status, html) = home_fixture::document(&fixture, "", "/ACC/pages", true, None).await;
+    let (status, initial_html) =
+        home_fixture::document(&fixture, "", "/ACC/pages", true, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let initial_document = scraper::Html::parse_document(&initial_html);
+    for folder_id in [
+        root_folder,
+        child_folder,
+        grandchild_folder,
+        great_grandchild_folder,
+    ] {
+        let row = initial_document
+            .select(
+                &scraper::Selector::parse(&format!(
+                    "[data-native-page-folder-toggle='{folder_id}']"
+                ))
+                .unwrap(),
+            )
+            .next()
+            .expect("newly loaded folders are initially visible");
+        assert_eq!(row.value().attr("aria-expanded"), Some("true"));
+    }
+    let initial_root = initial_document
+        .select(
+            &scraper::Selector::parse(&format!("[data-native-page-folder-toggle='{root_folder}']"))
+                .unwrap(),
+        )
+        .next()
+        .unwrap();
+    let initial_list = initial_document
+        .select(&scraper::Selector::parse("[data-native-pages-list]").unwrap())
+        .next()
+        .unwrap();
+    let initial_binding = initial_root
+        .value()
+        .attr("data-topcoat-bind:aria-expanded")
+        .unwrap();
+    let initially_expanded = run_folder_tree_handler(&serde_json::json!({
+        "signals": home_fixture::page_signals(&initial_html),
+        "expanded_binding": initial_binding,
+    }));
+    assert_eq!(initially_expanded["expanded_before"], true);
+    let collapsed = run_folder_tree_handler(&serde_json::json!({
+        "signals": home_fixture::page_signals(&initial_html),
+        "toggle_handler": initial_list.value().attr("data-topcoat-on:click").unwrap(),
+        "target_kind": "toggle",
+        "folder_id": root_folder,
+        "expanded_binding": initial_binding,
+    }));
+    assert_eq!(collapsed["expanded_before"], true);
+    assert_eq!(collapsed["expanded_after"], false);
+    let collapsed_signals = serde_json::from_value(collapsed["signals"].clone()).unwrap();
+    let (status, html) =
+        home_fixture::document(&fixture, "", "/ACC/pages", true, Some(collapsed_signals)).await;
     assert_eq!(status, StatusCode::OK);
     let document = scraper::Html::parse_document(&html);
     let root_row = document
@@ -1708,6 +1835,100 @@ async fn native_pages_folder_tree_is_visible_but_read_only_for_viewers() {
             .iter()
             .any(|folder| folder.id == root_folder),
         "the server also denies folder deletion to viewers",
+    );
+}
+
+#[tokio::test]
+async fn native_pages_delete_folder_returns_client_safe_canonical_errors() {
+    use topcoat::runtime::Surrogated;
+
+    let fixture = home_fixture::fixture();
+    let (_, account, project_id, root_folder, _, _, _) = seed_nested_folder_page(&fixture, true);
+
+    let missing = (account, project_id, i64::MAX).into_surrogate();
+    let (status, missing_outcome) = home_fixture::procedure(
+        &fixture,
+        "/__native_pages/delete-folder",
+        serde_json::to_value(missing).unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        missing_outcome["v"]["status"]["err"],
+        format!("folders {} not found", i64::MAX),
+        "missing folders retain the canonical client message",
+    );
+
+    {
+        let conn = fixture.db.write().unwrap();
+        conn.execute(
+            "UPDATE instance_settings SET authz_enforced = 1 WHERE id = 1",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE project_members SET role = 'viewer' WHERE project_id = ?1 AND user_id = ?2",
+            rusqlite::params![project_id, account],
+        )
+        .unwrap();
+    }
+    let revoked = (account, project_id, root_folder).into_surrogate();
+    let (status, revoked_outcome) = home_fixture::procedure(
+        &fixture,
+        "/__native_pages/delete-folder",
+        serde_json::to_value(revoked).unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        revoked_outcome["v"]["status"]["err"],
+        "requires at least 'maintainer' access to this project",
+        "revoked structure authority is reported with the canonical reason",
+    );
+    assert!(
+        queries::list_folders(&fixture.db.read().unwrap(), project_id)
+            .unwrap()
+            .iter()
+            .any(|folder| folder.id == root_folder),
+        "revoked authority leaves the folder tree untouched",
+    );
+
+    {
+        let conn = fixture.db.write().unwrap();
+        conn.execute(
+            "UPDATE project_members SET role = 'maintainer' WHERE project_id = ?1 AND user_id = ?2",
+            rusqlite::params![project_id, account],
+        )
+        .unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER reject_folder_delete BEFORE DELETE ON folders
+             BEGIN SELECT RAISE(ABORT, 'private database diagnostic'); END;",
+        )
+        .unwrap();
+    }
+    let db_failure = (account, project_id, root_folder).into_surrogate();
+    let (status, db_outcome) = home_fixture::procedure(
+        &fixture,
+        "/__native_pages/delete-folder",
+        serde_json::to_value(db_failure).unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        db_outcome["v"]["status"]["err"], "internal server error",
+        "database failures expose only the shared client-safe message",
+    );
+    assert!(
+        !db_outcome
+            .to_string()
+            .contains("private database diagnostic")
+    );
+    assert!(
+        queries::list_folders(&fixture.db.read().unwrap(), project_id)
+            .unwrap()
+            .iter()
+            .any(|folder| folder.id == root_folder),
+        "a failed database delete does not remove the folder",
     );
 }
 
