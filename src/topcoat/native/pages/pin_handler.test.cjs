@@ -19,11 +19,8 @@ const fixture = handlerFixture(input.signals, (url, options) => {
   }
   if (input.scenario === 'transport_failure') return Promise.reject(new Error('offline'));
   return Promise.resolve({ok: true, json: async () => input.reply});
-});
+}, input.browser_source);
 const {cx, context, controller} = fixture;
-context.cx = cx;
-vm.runInNewContext(input.browser_source.replace(/export const (\w+)=/g, 'globalThis.$1='), context);
-context.__lificNativeMounts = {browser: owner => context.browser(owner)};
 const referencedSignals = new Set();
 const signal = cx.signal.bind(cx);
 cx.signal = id => {
@@ -39,7 +36,7 @@ const pinSignal = (() => {
 })();
 const sequenceSignal = () => {
   const candidates = [...referencedSignals].filter(id => id !== pinSignal &&
-    String(unbox(cx.signal(id).dehydrate())) === String(input.expected_seq));
+    String(unbox(input.signals[id])) === String(input.expected_seq));
   assert.equal(candidates.length, 1, 'the emitted pin handler shares the page sequence signal');
   return candidates[0];
 };
@@ -83,13 +80,15 @@ async function run() {
       .map(id => [id, value(id)])), stateBeforeDispose,
     'a retired page owner ignores the late pin response');
   } else if (input.scenario === 'success') {
-    assert.equal(value(pinSignal), true, 'the successful server value is published');
+    assert.equal(String(value(pinSignal)), String(unbox(input.reply.v.pinned)),
+      'the successful server value is published');
     assert.equal(value(sequenceSignal()), unbox(input.reply.v.seq),
       'success adopts the sequence from the typed production reply');
     assert.equal(value(titleSignal), 'Unsaved title draft');
     assert.equal(value(bodySignal), 'Unsaved body draft');
   } else if (input.scenario === 'conflict') {
-    assert.equal(value(pinSignal), false, 'a conflict restores the current local pin value');
+    assert.equal(String(value(pinSignal)), 'false',
+      'a conflict restores the current local pin value');
     assert.equal(value(sequenceSignal()), String(input.expected_seq),
       'a conflict never adopts the unseen remote sequence');
     assert.ok([...referencedSignals].some(id => {
@@ -97,7 +96,8 @@ async function run() {
       return typeof current === 'string' && current.includes('changed elsewhere');
     }), 'the conflict is visible while the editor is closed');
   } else if (input.scenario === 'transport_failure') {
-    assert.equal(value(pinSignal), false, 'a transport failure restores the local pin value');
+    assert.equal(String(value(pinSignal)), 'false',
+      'a transport failure restores the local pin value');
     assert.equal(value(sequenceSignal()), String(input.expected_seq),
       'a transport failure cannot advance the sequence');
     assert.ok([...referencedSignals].some(id => {

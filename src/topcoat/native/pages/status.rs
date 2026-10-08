@@ -1,7 +1,7 @@
 //! Lifecycle status controls for native page details.
 
 use super::super::browser;
-use super::actions::set_status;
+use super::{actions::set_status, metadata};
 use topcoat::{
     context::Cx,
     runtime::{Event, Signal, expr, signal},
@@ -54,7 +54,7 @@ pub(super) fn detail<'a>(cx: &'a Cx, initial_status: String, state: State) -> Bo
     );
     view! {
         cx =>
-        <div class="mb-6 flex flex-wrap items-center gap-3">
+        <div class="flex flex-wrap items-center gap-3">
             if editable {
                 <select
                     aria-label="Page status"
@@ -101,6 +101,12 @@ fn status_attributes(
     let failed_selected = selected.clone();
     let failed_message = message.clone();
     let browser = browser::bindings();
+    let failure_messages = metadata::failure_messages(
+        "This page changed elsewhere. Reload before changing its status.",
+    );
+    let conflict_message = failure_messages.conflict;
+    let reauth_message = failure_messages.reauth;
+    let forbidden_message = failure_messages.forbidden;
     let handler = expr!(async |event: Event| {
         if !busy.get() {
             let next_status = event.target.value.to_owned();
@@ -143,12 +149,11 @@ fn status_attributes(
                                 selected.set(previous_status.clone());
                             }
                             message.set(if reason == "conflict" {
-                                "This page changed elsewhere. Reload before changing its status."
-                                    .to_owned()
+                                conflict_message.clone()
                             } else if reason == "reauth" {
-                                "Please sign in again.".to_owned()
+                                reauth_message.clone()
                             } else if reason == "forbidden" {
-                                "You can no longer edit this page.".to_owned()
+                                forbidden_message.clone()
                             } else {
                                 reason
                             });

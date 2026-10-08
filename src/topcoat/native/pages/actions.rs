@@ -29,6 +29,15 @@ pub(super) struct StatusOutcome {
     pub seq: Option<i64>,
 }
 
+#[record]
+#[derive(Clone)]
+pub(super) struct MetadataOutcome {
+    pub status: Result<String, String>,
+    pub page_status: Option<String>,
+    pub pinned: Option<bool>,
+    pub seq: Option<i64>,
+}
+
 #[procedure("/__native_pages/create")]
 pub(super) async fn create(
     cx: &Cx,
@@ -118,21 +127,80 @@ pub(super) async fn set_status(
     status: String,
     expected_seq: i64,
 ) -> topcoat::Result<StatusOutcome> {
+    let outcome = update_metadata(
+        cx,
+        account,
+        page_id,
+        expected_seq,
+        PageMetadata::Status(status),
+    )
+    .await?;
+    Ok(StatusOutcome {
+        status: outcome.status,
+        page_status: outcome.page_status,
+        seq: outcome.seq,
+    })
+}
+
+#[procedure("/__native_pages/pin")]
+pub(super) async fn set_pinned(
+    cx: &Cx,
+    account: i64,
+    page_id: i64,
+    pinned: bool,
+    expected_seq: i64,
+) -> topcoat::Result<MetadataOutcome> {
+    update_metadata(
+        cx,
+        account,
+        page_id,
+        expected_seq,
+        PageMetadata::Pinned(pinned),
+    )
+    .await
+}
+
+enum PageMetadata {
+    Status(String),
+    Pinned(bool),
+}
+
+async fn update_metadata(
+    cx: &Cx,
+    account: i64,
+    page_id: i64,
+    expected_seq: i64,
+    metadata: PageMetadata,
+) -> topcoat::Result<MetadataOutcome> {
     let caller = session::read(cx, context::caller(cx))?;
     match crate::api::require_user(&caller.identity) {
         Ok(user) if user.id == account => {}
-        Ok(_) => return Ok(failed_status("forbidden")),
+        Ok(_) => return Ok(failed_metadata("forbidden")),
         Err(LificError::Forbidden(message)) if message == "authentication required" => {
-            return Ok(failed_status("reauth"));
+            return Ok(failed_metadata("reauth"));
         }
-        Err(error) => return Ok(classify_status(error)),
+        Err(error) => return Ok(classify_metadata(error)),
     }
-    if !matches!(
-        status.as_str(),
-        "draft" | "active" | "complete" | "archived"
-    ) {
-        return Ok(failed_status("Invalid page status."));
-    }
+    let update = match metadata {
+        PageMetadata::Status(status)
+            if matches!(
+                status.as_str(),
+                "draft" | "active" | "complete" | "archived"
+            ) =>
+        {
+            UpdatePage {
+                status: Some(status),
+                expected_seq: Some(expected_seq),
+                ..Default::default()
+            }
+        }
+        PageMetadata::Status(_) => return Ok(failed_metadata("Invalid page status.")),
+        PageMetadata::Pinned(pinned) => UpdatePage {
+            pinned: Some(pinned),
+            expected_seq: Some(expected_seq),
+            ..Default::default()
+        },
+    };
     let result = caller
         .scope(async {
             crate::services::pages::commit_update(
@@ -140,31 +208,19 @@ pub(super) async fn set_status(
                 app_context::<RealtimeHub>(cx),
                 &caller.identity,
                 page_id,
-                UpdatePage {
-                    status: Some(status),
-                    expected_seq: Some(expected_seq),
-                    ..Default::default()
-                },
+                update,
             )
         })
         .await;
     Ok(match result {
-        Ok(page) => StatusOutcome {
-            status: Ok("saved".into()),
-            page_status: Some(page.status),
-            seq: Some(page.seq),
-        },
+        Ok(page) => metadata_outcome(Ok("saved".into()), page),
         Err(LificError::UpdateConflict { current, .. }) => {
             match serde_json::from_value::<Page>(*current) {
-                Ok(page) => StatusOutcome {
-                    status: Err("conflict".into()),
-                    page_status: Some(page.status),
-                    seq: Some(page.seq),
-                },
-                Err(error) => failed_status(&format!("Couldn't read conflicting page: {error}")),
+                Ok(page) => metadata_outcome(Err("conflict".into()), page),
+                Err(error) => failed_metadata(&format!("Couldn't read conflicting page: {error}")),
             }
         }
-        Err(error) => classify_status(error),
+        Err(error) => classify_metadata(error),
     })
 }
 
@@ -221,19 +277,30 @@ fn failed(message: &str) -> Outcome {
     }
 }
 
-fn failed_status(message: &str) -> StatusOutcome {
-    StatusOutcome {
+fn failed_metadata(message: &str) -> MetadataOutcome {
+    MetadataOutcome {
         status: Err(message.into()),
         page_status: None,
+        pinned: None,
         seq: None,
     }
 }
 
-fn classify_status(error: LificError) -> StatusOutcome {
+fn metadata_outcome(status: Result<String, String>, page: Page) -> MetadataOutcome {
+    MetadataOutcome {
+        status,
+        page_status: Some(page.status),
+        pinned: Some(page.pinned),
+        seq: Some(page.seq),
+    }
+}
+
+fn classify_metadata(error: LificError) -> MetadataOutcome {
     let outcome = classify(error);
-    StatusOutcome {
+    MetadataOutcome {
         status: outcome.status,
         page_status: None,
+        pinned: None,
         seq: None,
     }
 }
