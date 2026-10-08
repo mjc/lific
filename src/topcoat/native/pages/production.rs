@@ -1658,7 +1658,7 @@ async fn native_pages_folder_delete_uses_emitted_row_and_canonical_procedure() {
     let (status, outcome) =
         home_fixture::procedure(&fixture, "/__native_pages/delete-folder", arguments).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(outcome["v"]["status"]["ok"], "saved");
+    assert_eq!(outcome["v"]["status"]["ok"], "deleted");
     let folders = queries::list_folders(&fixture.db.read().unwrap(), project_id).unwrap();
     assert!(folders.iter().all(|folder| folder.id != root_folder));
     assert!(folders.iter().all(|folder| folder.id != child_folder));
