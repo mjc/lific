@@ -1,7 +1,7 @@
 //! Native IssueDetail label catalog and sparse attachment writes.
 
 use super::super::super::runtime::whitespace::trim_ecmascript;
-use super::super::{browser, context, session};
+use super::super::{browser, context, label_editor, session};
 use super::module_assignment::ModuleAssignmentSnapshot;
 use crate::{db::models::CreateLabel, error::LificError, realtime::RealtimeHub, services};
 use topcoat::{
@@ -163,7 +163,6 @@ pub(crate) fn picker<'a>(cx: &'a Cx, props: PickerProps<'_>) -> BoxView<'a> {
         )
     }
     .boxed();
-    let chips_empty = chips.is_empty();
     let chip_views = chips
         .into_iter()
         .map(|(name, tint)| {
@@ -171,73 +170,68 @@ pub(crate) fn picker<'a>(cx: &'a Cx, props: PickerProps<'_>) -> BoxView<'a> {
             super::super::label_chip::render_with_action(cx, name, tint.as_deref(), action)
         })
         .collect::<Vec<_>>();
+    let empty = view! {
+        cx =>
+        <span class="native-issue-detail__empty-value">"None"</span>
+    }
+    .boxed();
+    let add = can_edit.then(|| label_editor::add_button(cx, open_attrs));
+    let strip = label_editor::strip(cx, chip_views, Some(empty), add);
+    let popover = if can_edit {
+        let attrs = topcoat::view::attributes! {
+            cx =>
+            :hidden=$(!open.get())
+            data-native-issue-label-picker=""
+            @click=$(|event: Event| event.stop_propagation())
+            @keydown=$(|event: Event| event.stop_propagation())
+        };
+        let children = view! {
+            cx =>
+            <div class="px-2 pt-1 pb-1.5">
+                <input
+                    id=(input_id)
+                    type="text"
+                    placeholder="Filter or create…"
+                    :value=$(query.get())
+                    class="w-full rounded border border-[var(--border)] bg-[var(--bg)] px-2 py-1 text-sm text-[var(--text)] outline-none placeholder:text-[var(--text-faint)] focus:border-[var(--accent)]"
+                    @keydown=$(|event: Event| {
+                        if !browser.is_disposed() {
+                            if event.key == "Enter" {
+                                event.prevent_default();
+                                raw!(
+                                    "${event}.inner.target?.closest('[data-native-issue-label-picker]')?.querySelector('[data-native-label-enter=\"true\"]')?.click()",
+                                    (),
+                                );
+                            } else if event.key == "Escape" {
+                                event.prevent_default();
+                                event.stop_propagation();
+                                open.set(false);
+                                color_open.set(false);
+                            }
+                        }
+                    })
+                    (query_attrs)
+                />
+            </div>
+            (options)
+            <p class="text-xs text-[var(--danger)]" :hidden=$(error.get().is_empty())>
+                $(error.get())
+            </p>
+        }.boxed();
+        Some(label_editor::popover(cx, "w-[240px]", attrs, children))
+    } else {
+        None
+    };
     view! {
         cx =>
         <section class="relative space-y-2" data-native-issue-labels="">
-            <div class="flex flex-wrap items-center gap-1.5">
-                if chips_empty {
-                    <span class="native-issue-detail__empty-value">"None"</span>
-                }
-                for chip in chip_views {
-                    (chip)
-                }
-                if can_edit {
-                    <button
-                        type="button"
-                        title="Add label"
-                        aria-label="Add label"
-                        class="touch-target flex size-5 items-center justify-center rounded border border-dashed border-[var(--border)] text-[var(--text-faint)] transition-colors hover:border-[var(--accent)] hover:text-[var(--accent)]"
-                        (open_attrs)
-                    >
-                        "+"
-                    </button>
-                }
-            </div>
-            if can_edit {
-                <div
-                    class="absolute left-0 top-full z-20 mt-1 w-[240px] max-w-[calc(100vw-2rem)] rounded-md border border-[var(--border)] bg-[var(--surface)] py-1 shadow-lg"
-                    :hidden=$(!open.get())
-                    data-native-issue-label-picker=""
-                    @click=$(|event: Event| event.stop_propagation())
-                    @keydown=$(|event: Event| event.stop_propagation())
-                >
-                    <div class="px-2 pt-1 pb-1.5">
-                        <input
-                            id=(input_id)
-                            type="text"
-                            placeholder="Filter or create…"
-                            :value=$(query.get())
-                            class="w-full rounded border border-[var(--border)] bg-[var(--bg)] px-2 py-1 text-sm text-[var(--text)] outline-none placeholder:text-[var(--text-faint)] focus:border-[var(--accent)]"
-                            @keydown=$(|event: Event| {
-                                if !browser.is_disposed() {
-                                    if event.key == "Enter" {
-                                        event.prevent_default();
-                                        raw!(
-                                            "${event}.inner.target?.closest('[data-native-issue-label-picker]')?.querySelector('[data-native-label-enter=\"true\"]')?.click()",
-                                            (),
-                                        );
-                                    } else if event.key == "Escape" {
-                                        event.prevent_default();
-                                        event.stop_propagation();
-                                        open.set(false);
-                                        color_open.set(false);
-                                    }
-                                }
-                            })
-                            (query_attrs)
-                        />
-                    </div>
-                    (options)
-                    <p
-                        class="text-xs text-[var(--danger)]"
-                        :hidden=$(error.get().is_empty())
-                    >
-                        $(error.get())
-                    </p>
-                </div>
+            (strip)
+            if let Some(popover) = popover {
+                (popover)
             }
         </section>
-    }.boxed()
+    }
+    .boxed()
 }
 
 #[shard("/__native_issue_edit/label_options")]
@@ -596,27 +590,12 @@ fn option<'a>(
         "data-topcoat-on:click",
         handler.into_evaluated_and_js().1,
     );
-    let name = name.to_owned();
-    let style = format!(
-        "background-color: {}",
-        super::super::project_overview::label_color(color)
+    attrs.insert(
+        cx,
+        "data-native-label-enter",
+        if keyboard_default { "true" } else { "false" },
     );
-    view! {
-        cx =>
-        <button
-            type="button"
-            role="option"
-            :aria-selected=$(if selected { "true" } else { "false" })
-            data-label-name=(name.clone())
-            data-native-label-enter=(if keyboard_default { "true" } else { "false" })
-            class="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-sm hover:bg-[var(--bg-subtle)]"
-            (attrs)
-        >
-            <span class="size-2.5 rounded-full" style=(style)></span>
-            <span>(name)</span>
-            <span class="ml-auto" :hidden=$(!selected)>"✓"</span>
-        </button>
-    }.boxed()
+    label_editor::option(cx, name.to_owned(), Some(color), selected, attrs)
 }
 
 fn remove_button<'a>(cx: &'a Cx, identity: (i64, i64, String), name: &str) -> BoxView<'a> {
@@ -645,20 +624,7 @@ fn remove_button<'a>(cx: &'a Cx, identity: (i64, i64, String), name: &str) -> Bo
         "data-topcoat-on:click",
         handler.into_evaluated_and_js().1,
     );
-    let remove_label = format!("Remove {name}");
-    view! {
-        cx =>
-        <button
-            type="button"
-            title="Remove label"
-            aria-label=(remove_label)
-            class="inline-flex size-3 items-center justify-center rounded-full opacity-60 transition-opacity hover:bg-[var(--bg-subtle)] hover:opacity-100"
-            (attrs)
-        >
-            "×"
-        </button>
-    }
-    .boxed()
+    label_editor::remove_button(cx, name.to_owned(), attrs)
 }
 
 fn palette_button<'a>(
