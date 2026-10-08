@@ -291,6 +291,11 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "audit issue identifier lookup",
         include_str!("../../migrations/059_audit_issue_identifier.sql"),
     ),
+    (
+        60,
+        "page label sync sequence",
+        include_str!("../../migrations/060_page_label_sync_seq.sql"),
+    ),
 ];
 
 /// Migrations that rebuild a table other tables reference by foreign key.
