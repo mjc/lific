@@ -669,7 +669,7 @@ mod row_shards {
                     folders: &tree_catalog,
                     page_rows: grouped_page_rows,
                     expanded: &expanded_folders,
-                    expanded_signal: tree_state.0.clone(),
+                    expanded_signal: tree_state.0,
                     can_edit,
                     revision: folder_revision,
                     parent: (folder > 0).then_some(folder),
