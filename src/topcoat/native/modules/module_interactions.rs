@@ -113,7 +113,7 @@ async fn module_tabs_persist_per_project_and_run_through_emitted_browser_handler
         let project_id = queries::resolve_project_identifier(&conn, "ACC").unwrap();
         let user = queries::users::validate_session(&conn, &fixture.token).unwrap();
         queries::members::upsert_member(&conn, project_id, user.id, Role::Maintainer).unwrap();
-        let modules = ["active", "backlog", "done"].map(|status| {
+        ["active", "backlog", "done"].map(|status| {
             queries::create_module(
                 &conn,
                 &CreateModule {
@@ -125,8 +125,7 @@ async fn module_tabs_persist_per_project_and_run_through_emitted_browser_handler
                 },
             )
             .unwrap()
-        });
-        modules
+        })
     };
     let (status, html) = home_fixture::document(&fixture, "/app", "/ACC/modules", true, None).await;
     assert_eq!(status, StatusCode::OK);

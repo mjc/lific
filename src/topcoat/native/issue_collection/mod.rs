@@ -86,6 +86,7 @@ async fn issue_collection_owner(
     ))
 }
 
+#[allow(clippy::too_many_arguments)]
 #[shard("/__native_issues/rows")]
 async fn native_issue_collection_rows(
     cx: &Cx,
