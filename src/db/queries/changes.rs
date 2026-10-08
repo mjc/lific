@@ -53,7 +53,7 @@ pub const PREVIEW_CHARS: usize = 200;
 /// The first non-empty line of `text`, trimmed and truncated to
 /// [`PREVIEW_CHARS`] characters. Empty when `text` has no non-blank line,
 /// which covers both an empty body and one that is only whitespace.
-fn preview_of(text: &str) -> String {
+pub(crate) fn preview_of(text: &str) -> String {
     text.lines()
         .map(str::trim)
         .find(|line| !line.is_empty())
