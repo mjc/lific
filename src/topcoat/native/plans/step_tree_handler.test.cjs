@@ -7,6 +7,11 @@ const {handlerFixture} = require('../handler_fixture.cjs');
 
 const input = JSON.parse(fs.readFileSync(0, 'utf8'));
 const requests = [];
+if (input.mode === 'busy') {
+  for (const [id, value] of Object.entries(input.signals)) {
+    if (typeof value === 'boolean') input.signals[id] = true;
+  }
+}
 const {cx, handler: emit} = handlerFixture(input.signals, async (url, options) => {
   const path = new URL(url, 'http://localhost').pathname;
   requests.push({path, method: options.method});
@@ -24,7 +29,11 @@ async function run() {
     'expanding or collapsing a step does not call the mutation procedure',
   );
   const signals = Object.fromEntries(Object.keys(input.signals).map(id => [id, cx.signal(id).dehydrate().v]));
-  assert.notDeepEqual(signals, before, 'the click updates the rendered expansion state');
+  if (input.mode === 'busy') {
+    assert.deepEqual(signals, before, 'expansion is ignored while a plan action is busy');
+  } else {
+    assert.notDeepEqual(signals, before, 'the click updates the rendered expansion state');
+  }
   process.stdout.write(JSON.stringify({signals, requests}));
 }
 
