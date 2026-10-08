@@ -191,12 +191,12 @@ pub(super) fn content<'a>(
         .collect::<Vec<_>>();
     let delete_menu = delete_menu(
         cx,
-        account,
-        project.id,
-        module.id,
+        ModuleMutation {
+            destination: transport::mounted_url(cx, &format!("/{project_identifier}/modules")),
+            ..mutation
+        },
         issues.len(),
         module.name.clone(),
-        project_identifier.clone(),
         DeleteMenuState {
             menu_open: signal(&owner, || false),
             confirming: signal(&owner, || false),
@@ -799,15 +799,17 @@ fn status_choice_attributes(
 
 fn delete_menu<'a>(
     cx: &'a Cx,
-    account: i64,
-    project_id: i64,
-    module_id: i64,
+    mutation: ModuleMutation,
     issue_count: usize,
     name: String,
-    project: String,
     state: DeleteMenuState,
 ) -> BoxView<'a> {
-    let destination = transport::mounted_url(cx, &format!("/{project}/modules"));
+    let ModuleMutation {
+        account,
+        project_id,
+        module_id,
+        destination,
+    } = mutation;
     let confirm_body = module_delete_body(issue_count);
     let owner_id = format!("native-module-delete-{module_id}");
     let DeleteMenuState {
