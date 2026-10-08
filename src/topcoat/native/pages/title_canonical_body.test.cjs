@@ -12,6 +12,7 @@ const fixture = handlerFixture(input.signals, (url, options) => {
   return new Promise(resolve => { settle = () => resolve({ok: true, json: async () => input.saved}); });
 }, input.browser_source);
 const {cx, context, controller, handler} = fixture;
+  context.CustomEvent = class { constructor(type, options = {}) { this.type = type; Object.assign(this, options); } };
 context.document.documentElement.getAttribute = name => name === 'data-topcoat-runtime-prefix' ? input.mount : '';
 context.document.getElementById = () => ({focus() {}});
 const fire = (source, event) => handler(source)(cx.event(event));

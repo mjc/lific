@@ -16,7 +16,8 @@ const fixtureFor = mode => {
       : resolve({ok: true, json: async () => input[mode]}); });
   }, input.browser_source);
   const {cx, context, controller, handler} = fixture;
-  context.document.documentElement.getAttribute = name => name === 'data-topcoat-runtime-prefix' ? input.mount : '';
+  context.CustomEvent = class { constructor(type, options = {}) { this.type = type; Object.assign(this, options); } };
+context.document.documentElement.getAttribute = name => name === 'data-topcoat-runtime-prefix' ? input.mount : '';
   context.document.getElementById = () => ({focus() { focuses++; }});
   context.window.dispatchEvent = event => { if (event.type === 'lific:native-toast-error') toasts.push(event); return true; };
   const signalIds = new Set();

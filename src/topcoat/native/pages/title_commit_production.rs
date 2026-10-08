@@ -273,7 +273,9 @@ async fn native_page_title_handler_guards_disposal_and_newer_conflict_drafts() {
         .next()
         .unwrap();
     let body = document
-        .select(&scraper::Selector::parse("textarea[aria-label='Page content in Markdown']").unwrap())
+        .select(
+            &scraper::Selector::parse("textarea[aria-label='Page content in Markdown']").unwrap(),
+        )
         .next()
         .unwrap();
     let input = serde_json::json!({
@@ -299,7 +301,6 @@ async fn native_page_title_handler_guards_disposal_and_newer_conflict_drafts() {
     );
     assert_eq!(output["passed"], true);
 }
-
 
 #[tokio::test]
 async fn native_page_title_reply_advances_canonical_body_while_preserving_dirty_draft() {
@@ -337,7 +338,9 @@ async fn native_page_title_reply_advances_canonical_body_while_preserving_dirty_
         .next()
         .unwrap();
     let body = document
-        .select(&scraper::Selector::parse("textarea[aria-label='Page content in Markdown']").unwrap())
+        .select(
+            &scraper::Selector::parse("textarea[aria-label='Page content in Markdown']").unwrap(),
+        )
         .next()
         .unwrap();
     let input = serde_json::json!({
@@ -375,4 +378,78 @@ fn replace_json_string(value: &mut serde_json::Value, before: &str, after: &str)
         }
         _ => {}
     }
+}
+
+#[tokio::test]
+async fn native_page_title_ignores_older_success_snapshot_after_newer_sequence() {
+    use topcoat::runtime::Surrogated;
+
+    let fixture = home_fixture::fixture();
+    let (page_id, account, seq) = seed_page(&fixture, true);
+    let (status, html) = home_fixture::document(
+        &fixture,
+        "/app",
+        &format!("/ACC/pages/{page_id}"),
+        true,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let args = (account, page_id, "Sent title".to_owned(), seq).into_surrogate();
+    let (reply_status, saved) = home_fixture::procedure(
+        &fixture,
+        "/__native_pages/save_title",
+        serde_json::to_value(args).unwrap(),
+    )
+    .await;
+    assert_eq!(reply_status, StatusCode::OK);
+    assert_eq!(saved["v"]["status"]["ok"], "saved");
+    let saved_seq = wire_i64(&saved["v"]["seq"]);
+
+    let document = scraper::Html::parse_document(&html);
+    let title = document
+        .select(&scraper::Selector::parse("input[aria-label='Page title']").unwrap())
+        .next()
+        .unwrap();
+    let trigger = document
+        .select(&scraper::Selector::parse(".native-pages__detail h1 button").unwrap())
+        .next()
+        .unwrap();
+    let body = document
+        .select(
+            &scraper::Selector::parse("textarea[aria-label='Page content in Markdown']").unwrap(),
+        )
+        .next()
+        .unwrap();
+    let saving = document
+        .select(&scraper::Selector::parse("[data-native-page-save-feedback='saving']").unwrap())
+        .next()
+        .unwrap();
+    let save_button = document
+        .select(&scraper::Selector::parse("button").unwrap())
+        .find(|button| button.text().collect::<String>().trim() == "Save changes")
+        .unwrap();
+    let input = serde_json::json!({
+        "signals": home_fixture::page_signals(&html),
+        "mount": "/app",
+        "initial_seq": seq,
+        "newer_seq": (saved_seq + 1).into_surrogate(),
+        "saved": saved,
+        "trigger": trigger.value().attr("data-topcoat-on:click").unwrap(),
+        "editor": {
+            "input": title.value().attr("data-topcoat-on:input").unwrap(),
+            "keydown": title.value().attr("data-topcoat-on:keydown").unwrap(),
+        },
+        "title_binding": title.value().attr("data-topcoat-bind:value").unwrap(),
+        "title_hidden_binding": title.value().attr("data-topcoat-bind:hidden").unwrap(),
+        "body_binding": body.value().attr("data-topcoat-bind:value").unwrap(),
+        "body_input": body.value().attr("data-topcoat-on:input").unwrap(),
+        "saving_binding": saving.value().attr("data-topcoat-bind:hidden").unwrap(),
+        "save_disabled_binding": save_button.value().attr("data-topcoat-bind:disabled").unwrap(),
+    });
+    let output = home_fixture::evaluate_handler(
+        "src/topcoat/native/pages/title_stale_success.test.cjs",
+        &input,
+    );
+    assert_eq!(output["passed"], true);
 }
