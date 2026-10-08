@@ -4,6 +4,7 @@ use crate::db::{
     models::{CreateModule, Role},
     queries,
 };
+use topcoat::runtime::Surrogated;
 
 #[test]
 fn module_delete_confirmation_copy_matches_main_issue_counts() {
@@ -250,4 +251,340 @@ async fn native_module_detail_emitted_handlers_commit_once_cancel_and_save_statu
     assert_eq!(output["status_arguments"][3], "status");
     assert_eq!(output["status_arguments"][4], "planned");
     assert_eq!(output["navigations"], 2);
+}
+
+#[tokio::test]
+async fn native_module_detail_description_matches_main_read_edit_empty_and_viewer_states() {
+    let fixture = home_fixture::fixture();
+    let (description_id, empty_id) = {
+        let conn = fixture.db.write().unwrap();
+        let project_id = queries::resolve_project_identifier(&conn, "ACC").unwrap();
+        let user = queries::users::validate_session(&conn, &fixture.token).unwrap();
+        queries::members::upsert_member(&conn, project_id, user.id, Role::Maintainer).unwrap();
+        let description_id = queries::create_module(
+            &conn,
+            &CreateModule {
+                project_id,
+                name: "Description modes".into(),
+                description: "A **formatted** module description".into(),
+                status: "active".into(),
+                emoji: None,
+            },
+        )
+        .unwrap()
+        .id;
+        let empty_id = queries::create_module(
+            &conn,
+            &CreateModule {
+                project_id,
+                name: "Empty description".into(),
+                description: String::new(),
+                status: "active".into(),
+                emoji: None,
+            },
+        )
+        .unwrap()
+        .id;
+        (description_id, empty_id)
+    };
+
+    let (status, html) = home_fixture::document(
+        &fixture,
+        "",
+        &format!("/ACC/modules/{description_id}"),
+        true,
+        None,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    let document = scraper::Html::parse_document(&html);
+    let markdown = document
+        .select(&scraper::Selector::parse("[data-native-module-detail] .markdown-body").unwrap())
+        .next()
+        .expect("nonempty description starts in read mode");
+    assert!(
+        markdown
+            .select(&scraper::Selector::parse("strong").unwrap())
+            .next()
+            .is_some(),
+        "the read pane renders markdown rather than source text"
+    );
+    let mode = document
+        .select(
+            &scraper::Selector::parse("[role='radiogroup'][aria-label='Content view mode']")
+                .unwrap(),
+        )
+        .next()
+        .expect("Main's Content view mode toggle is present for a nonempty editable description");
+    assert!(
+        mode.select(&scraper::Selector::parse("button[aria-label='Edit']").unwrap())
+            .next()
+            .is_some()
+    );
+    assert!(
+        mode.select(&scraper::Selector::parse("button[aria-label='Preview']").unwrap())
+            .next()
+            .is_some()
+    );
+    assert!(
+        document
+            .select(&scraper::Selector::parse("[data-native-module-description-editor]").unwrap())
+            .next()
+            .is_none(),
+        "Main mounts the editor only after entering Edit"
+    );
+
+    let (status, empty_html) = home_fixture::document(
+        &fixture,
+        "",
+        &format!("/ACC/modules/{empty_id}"),
+        true,
+        None,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    let empty_document = scraper::Html::parse_document(&empty_html);
+    assert!(
+        empty_document
+            .root_element()
+            .text()
+            .collect::<String>()
+            .contains("Click to describe this module...")
+    );
+    let empty_cta = empty_document
+        .select(&scraper::Selector::parse("button").unwrap())
+        .find(|button| {
+            button.text().collect::<String>().trim() == "Click to describe this module..."
+        })
+        .expect("the empty editable description is an edit CTA");
+    assert!(empty_cta.value().attr("data-topcoat-on:click").is_some());
+    assert!(
+        empty_document
+            .select(&scraper::Selector::parse("[aria-label='Content view mode']").unwrap())
+            .next()
+            .is_none()
+    );
+
+    {
+        let conn = fixture.db.write().unwrap();
+        let user = queries::users::validate_session(&conn, &fixture.token).unwrap();
+        let project_id = queries::resolve_project_identifier(&conn, "ACC").unwrap();
+        queries::members::upsert_member(&conn, project_id, user.id, Role::Viewer).unwrap();
+    }
+    let (status, viewer_html) = home_fixture::document(
+        &fixture,
+        "",
+        &format!("/ACC/modules/{empty_id}"),
+        true,
+        None,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    let viewer_document = scraper::Html::parse_document(&viewer_html);
+    assert!(
+        viewer_document
+            .root_element()
+            .text()
+            .collect::<String>()
+            .contains("No description")
+    );
+    assert!(!viewer_html.contains("Click to describe this module..."));
+    assert!(
+        viewer_document
+            .select(&scraper::Selector::parse("[aria-label='Content view mode']").unwrap())
+            .next()
+            .is_none()
+    );
+    assert!(
+        viewer_document
+            .select(&scraper::Selector::parse("[data-native-module-description-editor]").unwrap())
+            .next()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn native_module_detail_description_emitted_handlers_cancel_preview_save_and_failure() {
+    let fixture = home_fixture::fixture();
+    let (module_id, project_id, account) = {
+        let conn = fixture.db.write().unwrap();
+        let project_id = queries::resolve_project_identifier(&conn, "ACC").unwrap();
+        let user = queries::users::validate_session(&conn, &fixture.token).unwrap();
+        queries::members::upsert_member(&conn, project_id, user.id, Role::Maintainer).unwrap();
+        let module = queries::create_module(
+            &conn,
+            &CreateModule {
+                project_id,
+                name: "Description handler".into(),
+                description: "Original module body with marker".into(),
+                status: "active".into(),
+                emoji: None,
+            },
+        )
+        .unwrap();
+        (module.id, project_id, user.id)
+    };
+    let path = format!("/ACC/modules/{module_id}");
+    let (status, read_html) = home_fixture::document(&fixture, "/app", &path, true, None).await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    let read_document = scraper::Html::parse_document(&read_html);
+    assert!(
+        read_document
+            .select(
+                &scraper::Selector::parse("[data-native-module-detail] .markdown-body").unwrap()
+            )
+            .next()
+            .is_some()
+    );
+    let edit = read_document
+        .select(
+            &scraper::Selector::parse("[aria-label='Content view mode'] button[aria-label='Edit']")
+                .unwrap(),
+        )
+        .next()
+        .expect("Edit control is emitted in read mode")
+        .value()
+        .attr("data-topcoat-on:click")
+        .expect("Edit handler is emitted");
+    let edit_state = home_fixture::evaluate_handler(
+        "src/topcoat/native/modules/description_handlers.test.cjs",
+        &serde_json::json!({
+            "phase": "enter_edit",
+            "mount": "/app",
+            "signals": home_fixture::page_signals(&read_html),
+            "edit": edit,
+        }),
+    );
+    let edit_signals = edit_state["signals"]
+        .as_object()
+        .expect("Edit replay returns the live signal state")
+        .clone();
+    let (status, edit_html) =
+        home_fixture::document(&fixture, "/app", &path, true, Some(edit_signals)).await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    let edit_document = scraper::Html::parse_document(&edit_html);
+    let editor = edit_document
+        .select(&scraper::Selector::parse("[data-native-module-description-editor]").unwrap())
+        .next()
+        .expect("the production Edit transition mounts the editor");
+    let input_handler = editor
+        .value()
+        .attr("data-topcoat-on:input")
+        .expect("description input handler is emitted");
+    let cancel = edit_document
+        .select(&scraper::Selector::parse("[data-native-module-description-cancel]").unwrap())
+        .next()
+        .expect("explicit Cancel is present in edit mode")
+        .value()
+        .attr("data-topcoat-on:click")
+        .expect("Cancel handler is emitted");
+    let save = edit_document
+        .select(&scraper::Selector::parse("[data-native-module-description-save]").unwrap())
+        .next()
+        .expect("explicit Save is present in edit mode")
+        .value()
+        .attr("data-topcoat-on:click")
+        .expect("Save handler is emitted");
+    let preview = edit_document
+        .select(
+            &scraper::Selector::parse(
+                "[aria-label='Content view mode'] button[aria-label='Preview']",
+            )
+            .unwrap(),
+        )
+        .next()
+        .expect("Preview control is emitted in edit mode")
+        .value()
+        .attr("data-topcoat-on:click")
+        .expect("Preview handler is emitted");
+    let edit_args = serde_json::json!({
+        "phase": "exercise_editors",
+        "mount": "/app",
+        "signals": home_fixture::page_signals(&edit_html),
+        "initial_description": "Original module body with marker",
+        "edit": edit,
+        "input": input_handler,
+        "cancel": cancel,
+        "save": save,
+        "preview": preview,
+    });
+    let output = home_fixture::evaluate_handler(
+        "src/topcoat/native/modules/description_handlers.test.cjs",
+        &edit_args,
+    );
+    assert_eq!(
+        output["cancel_requests"], 0,
+        "Edit and Cancel do not call the update procedure"
+    );
+    assert_eq!(output["failed_save_requests"], 1);
+    assert_eq!(output["failed_save_requests"], 1);
+    assert_eq!(
+        output["failed_save_arguments"],
+        serde_json::to_value(
+            (
+                account,
+                project_id,
+                module_id,
+                "description".to_owned(),
+                "Failed module body".to_owned()
+            )
+                .into_surrogate(),
+        )
+        .unwrap()
+    );
+    assert_eq!(output["failed_save_navigations"], 0);
+    assert!(
+        output["canonical_after_failure"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("Original module body with marker"))
+    );
+    assert_eq!(
+        output["preview_save_requests"], 1,
+        "Preview commits a changed draft once"
+    );
+    assert_eq!(
+        output["preview_save_arguments"],
+        serde_json::to_value(
+            (
+                account,
+                project_id,
+                module_id,
+                "description".to_owned(),
+                "Preview committed body".to_owned()
+            )
+                .into_surrogate(),
+        )
+        .unwrap()
+    );
+    assert_eq!(output["explicit_save_requests"], 1);
+    assert_eq!(output["explicit_save_url"], "/app/__native_modules/update");
+    let expected_save = serde_json::to_value(
+        (
+            account,
+            project_id,
+            module_id,
+            "description".to_owned(),
+            "Saved module body".to_owned(),
+        )
+            .into_surrogate(),
+    )
+    .unwrap();
+    assert_eq!(output["explicit_save_arguments"], expected_save);
+    let (procedure_status, _) = home_fixture::procedure(
+        &fixture,
+        "/__native_modules/update",
+        output["explicit_save_arguments"].clone(),
+    )
+    .await;
+    assert_eq!(procedure_status, axum::http::StatusCode::OK);
+    let conn = fixture.db.write().unwrap();
+    let saved_description: String = conn
+        .query_row(
+            "SELECT description FROM modules WHERE id = ?1",
+            [module_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(saved_description, "Saved module body");
 }
