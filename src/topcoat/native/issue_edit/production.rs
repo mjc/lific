@@ -942,12 +942,15 @@ async fn native_issue_label_handlers_emit_sparse_attach_and_remove_requests_at_e
             vec![label.name.clone()]
         };
         let request = super::labels::LabelRequest {
-            mode: "update".into(),
+            mode: if before.labels.iter().any(|name| name == &label.name) {
+                "remove".into()
+            } else {
+                "attach".into()
+            },
             account_id: account,
             issue_id: issue.id,
             identifier: issue.identifier.clone(),
-            labels: next_labels.clone(),
-            name: String::new(),
+            name: label.name.clone(),
             color: String::new(),
         };
         let output = home_fixture::evaluate_handler(
@@ -1181,7 +1184,6 @@ async fn native_issue_label_handlers_emit_sparse_attach_and_remove_requests_at_e
                 account_id: account,
                 issue_id: issue.id,
                 identifier: issue.identifier.clone(),
-                labels: before.labels.clone(),
                 name: "New runtime label".into(),
                 color: "#aabbcc".into(),
             };
@@ -1558,7 +1560,6 @@ async fn native_issue_label_procedures_create_attach_and_recheck_current_authori
         account_id: account,
         issue_id: issue.id,
         identifier: issue.identifier.clone(),
-        labels: issue.labels.clone(),
         name: "Picker-created label".into(),
         color: "#aabbcc".into(),
     };
@@ -1637,9 +1638,8 @@ async fn native_issue_label_procedures_create_attach_and_recheck_current_authori
         queries::members::upsert_member(&conn, issue.project_id, account, Role::Viewer).unwrap();
     }
     let denied_update = super::labels::LabelRequest {
-        mode: "update".into(),
-        labels: vec!["Denied label".into()],
-        name: String::new(),
+        mode: "attach".into(),
+        name: "Denied label".into(),
         color: String::new(),
         ..create.clone()
     };
@@ -1770,7 +1770,6 @@ async fn native_issue_label_create_keeps_catalog_entry_when_attachment_fails() {
         account_id: account,
         issue_id: issue.id,
         identifier: issue.identifier.clone(),
-        labels: issue.labels.clone(),
         name: "Catalog survives attach failure".into(),
         color: "#123abc".into(),
     };
