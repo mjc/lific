@@ -114,7 +114,7 @@ async function run() {
     assert.equal(value(bodySignal), 'Unsaved body draft');
     if (input.shard_marker) {
       const activity = emittedShard(input.shard_marker, context, cx, plain);
-      assert.deepEqual(activity.args[1], input.reply.v.seq,
+      assert.deepEqual(activity.args[1], input.reply.v.seq.v,
         'the emitted activity shard dependency reads the committed shared editor sequence');
       process.stdout.write(JSON.stringify({requests: requests.length, activity_shard: activity}));
       return;

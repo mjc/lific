@@ -94,7 +94,7 @@ async function run() {
     settleRequest('success');
     await flush();
     const activity = emittedShard(input.shard_marker, context, cx, plain);
-    assert.deepEqual(activity.args[1], input.reply.v.seq,
+    assert.deepEqual(activity.args[1], input.reply.v.seq.v,
       'the activity shard reads the sequence adopted from the committed Save reply');
     process.stdout.write(JSON.stringify({
       passed: true,
