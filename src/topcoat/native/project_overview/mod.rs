@@ -269,6 +269,6 @@ mod shards {
 }
 
 #[cfg(test)]
-mod production;
-#[cfg(test)]
 mod identifier_production;
+#[cfg(test)]
+mod production;

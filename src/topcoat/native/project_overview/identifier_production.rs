@@ -20,14 +20,8 @@ async fn native_overview_identifier_rename_emits_main_normalized_value_at_every_
                 .token
         };
         fixture.token = token;
-        let (status, html) = home_fixture::document(
-            &fixture,
-            mount,
-            "/ACC/overview",
-            true,
-            None,
-        )
-        .await;
+        let (status, html) =
+            home_fixture::document(&fixture, mount, "/ACC/overview", true, None).await;
         assert_eq!(status, axum::http::StatusCode::OK, "{mount}");
         let document = Html::parse_document(&html);
         let input = document
