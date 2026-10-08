@@ -1005,6 +1005,25 @@ mod tests {
                                 message:"Couldn't copy to clipboard".into(),
                             }.into_surrogate(),
                         )).collect::<std::collections::BTreeMap<_,_>>()),
+                        "page_label_requests": (["attach", "remove", "wrong_account", "invalid_page"].into_iter().map(|mode| (
+                            mode,
+                            super::super::pages::labels_action::Request {
+                                account_id: if mode == "wrong_account" { 8 } else { 7 },
+                                page_id: if mode == "invalid_page" { 0 } else { 42 },
+                                identifier: "ACC-P42".into(), label: "bug".into(), attach: mode != "remove",
+                            }.into_surrogate(),
+                        )).collect::<std::collections::BTreeMap<_,_>>()),
+                        "page_label_replies": ([true, false].into_iter().map(|success| (
+                            if success { "saved" } else { "failed" },
+                            super::super::pages::labels_action::Reply {
+                                status: if success { Ok("saved".into()) } else { Err("Forbidden: insufficient project role".into()) },
+                                account_id: 7, page_id: 42,
+                                canonical: success.then(|| super::super::pages::labels_action::Snapshot {
+                                    identifier: "ACC-P42".into(), title: "Latest title".into(), content: "Latest body".into(), seq: 13,
+                                    page_status: "published".into(), pinned: true, labels: vec!["bug".into()],
+                                }),
+                            }.into_surrogate(),
+                        )).collect::<std::collections::BTreeMap<_,_>>()),
                         "module_requests": ([42_i64, 43].into_iter().flat_map(|issue_id| {
                             [None, Some(9_i64)].into_iter().flat_map(move |next| {
                                 [None, Some(9_i64)].into_iter().map(move |previous| {

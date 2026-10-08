@@ -109,6 +109,12 @@ function fixture() {
     window.dispatchEvent(event);
     assert.equal(event.defaultPrevented,accepted,'Only the current account owner accepts the error toast.');
   };
+  const updatePageLabels=(mode='attach',accepted=true)=>{
+    const event=new Event('lific:native-page-label-request',{cancelable:true});
+    event.detail=base.hydrate(input.page_label_requests[mode]);
+    window.dispatchEvent(event);
+    assert.equal(event.defaultPrevented,accepted,'The account owner acknowledges valid Page label writes.');
+  };
   const advance=amount=>{
     const target=now+amount;
     while(true){const next=[...timers].filter(([,timer])=>timer.at<=target).sort((a,b)=>a[1].at-b[1].at)[0];if(!next)break;timers.delete(next[0]);now=next[1].at;next[1].callback();}
@@ -131,9 +137,10 @@ function fixture() {
   const failNetwork=async()=>{pending.shift().reject(new TypeError('offline'));await flush();};
   const failModule=async()=>{pending.shift().resolve({ok:true,json:async()=>input.module_failure});await flush();};
   const finishLabels=async(outcome='saved')=>{pending.shift().resolve({ok:true,json:async()=>input.label_replies[outcome]});await flush();};
+  const finishPageLabels=async(outcome='saved')=>{pending.shift().resolve({ok:true,json:async()=>input.page_label_replies[outcome]});await flush();};
   const texts=()=>signalIds.map(id=>base.signal(id).get().toString());
   const snapshot=()=>Object.fromEntries(signalIds.map(id=>[id,base.signal(id).get().dehydrate()]));
-  return {schedule,assignModule,updateLabels,errorToast,advance,replace,finish,finishModule,finishLabels,failNetwork,failModule,texts,snapshot,click,calls,navigations,legacy,timers,window,get owner(){return owner;}};
+  return {schedule,assignModule,updateLabels,updatePageLabels,errorToast,advance,replace,finish,finishModule,finishLabels,finishPageLabels,failNetwork,failModule,texts,snapshot,click,calls,navigations,legacy,timers,window,get owner(){return owner;}};
 }
 if(input.probe_only){
   process.stdout.write(JSON.stringify(fixture().snapshot()));
@@ -173,6 +180,49 @@ test('Label writes start immediately without an Undo action',async()=>{
   assert.ok(f.owner.toasts.every(toast=>toast.dataset.nativeToastId==='0'));
   f.click(f.owner.toasts[0].undo);await tick(f,10000);assert.equal(f.calls.length,1);
   assert.deepEqual(f.navigations,[]);
+});
+test('Page label writes carry individual intent through a mounted keepalive procedure',async()=>{
+  for(const mode of ['attach','remove']){
+    const f=fixture();f.updatePageLabels(mode);await flush();
+    assert.equal(f.calls.length,1);
+    assert.equal(f.calls[0].url,mount+'/__native_pages/labels');
+    assert.equal(f.calls[0].options.keepalive,true);
+    assert.deepEqual(JSON.parse(f.calls[0].options.body),[input.page_label_requests[mode]]);
+    await f.finishPageLabels();
+    assert.ok(f.owner.toasts.every(toast=>toast.dataset.nativeToastId==='0'));
+    assert.deepEqual(f.navigations,[]);
+  }
+});
+test('Page label writes reject foreign accounts, invalid pages, and duplicate inflight work',async()=>{
+  const f=fixture();f.updatePageLabels('wrong_account',false);f.updatePageLabels('invalid_page',false);
+  assert.equal(f.calls.length,0);f.updatePageLabels();f.updatePageLabels('remove',false);
+  assert.equal(f.calls.length,1);await f.finishPageLabels();f.updatePageLabels('remove');assert.equal(f.calls.length,2);
+});
+test('Page label canonical results and errors follow the transferred account owner',async()=>{
+  for(const outcome of ['saved','failed','network']){
+    const f=fixture(),applied=[];
+    f.window.addEventListener('lific:native-page-label-applied',event=>applied.push(event.detail.dehydrate()));
+    f.updatePageLabels();f.replace({key:'7:'});
+    if(outcome==='network')await f.failNetwork();else await f.finishPageLabels(outcome);
+    assert.equal(applied.length,1);
+    if(outcome!=='network')assert.deepEqual(JSON.parse(JSON.stringify(applied)),[input.page_label_replies[outcome]]);
+    if(outcome!=='saved'){
+      const error=outcome==='network'?"Couldn't reach the server. Check your connection and try again.":'Forbidden: insufficient project role';
+      assert.ok(f.texts().includes("Couldn't save ACC-P42: "+error));
+      assert.equal(f.owner.toasts[0].undo.hidden,true);
+      await tick(f,8000);assert.ok(f.owner.toasts.every(toast=>toast.dataset.nativeToastId==='0'));
+    }
+    f.updatePageLabels('remove');assert.equal(f.calls.length,2);assert.deepEqual(f.navigations,[]);
+  }
+});
+test('Retired account owners suppress late Page label successes and failures',async()=>{
+  for(const outcome of ['saved','failed','network']){
+    const f=fixture();let applied=0;
+    f.window.addEventListener('lific:native-page-label-applied',()=>applied++);
+    f.updatePageLabels();f.replace({key:'8:ACC',mount:false});
+    if(outcome==='network')await f.failNetwork();else await f.finishPageLabels(outcome);
+    assert.equal(applied,0);assert.equal(f.timers.size,0);
+  }
 });
 test('Label removals send an individual target through the durable procedure',async()=>{
   const f=fixture();f.updateLabels('remove');await flush();
