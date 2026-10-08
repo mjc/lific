@@ -127,7 +127,7 @@ async fn native_page_save_success_refreshes_the_real_activity_shard_from_committ
     assert_eq!(output["arguments"], setup.input["expected_arguments"]);
     let shard = &output["activity_shard"];
     assert_eq!(shard["path"], "/__native_pages/activity");
-    assert_eq!(shard["args"][1], setup.input["reply"]["v"]["seq"]);
+    assert_eq!(shard["args"][1], setup.input["reply"]["v"]["seq"]["v"]);
     let (status, feed_html) = super::production::replay_activity_shard(
         &setup.fixture,
         shard["identity"].as_str().unwrap(),
@@ -154,7 +154,7 @@ async fn native_page_save_keeps_newer_drafts_and_refreshes_activity_from_committ
     );
     assert_eq!(output["arguments"], setup.input["expected_arguments"]);
     let shard = &output["activity_shard"];
-    assert_eq!(shard["args"][1], setup.input["reply"]["v"]["seq"]);
+    assert_eq!(shard["args"][1], setup.input["reply"]["v"]["seq"]["v"]);
     let (status, feed_html) = super::production::replay_activity_shard(
         &setup.fixture,
         shard["identity"].as_str().unwrap(),

@@ -98,7 +98,7 @@ async function run() {
     if (input.shard_marker) {
       const activity = emittedShard(input.shard_marker, context, cx, plain);
       assert.equal(activity.path, '/__native_pages/activity');
-      assert.deepEqual(activity.args[1], input.reply.v.seq,
+      assert.deepEqual(activity.args[1], input.reply.v.seq.v,
         'the emitted activity shard dependency reads the committed shared editor sequence');
       output.activity_shard = activity;
     }

@@ -14,10 +14,13 @@ fn label_text(chip: scraper::ElementRef<'_>) -> String {
 }
 
 fn serialized_i64(value: &serde_json::Value) -> i64 {
+    let mut value = value;
+    while let Some(inner) = value.get("v") {
+        value = inner;
+    }
     value
         .as_i64()
         .or_else(|| value.as_str()?.parse().ok())
-        .or_else(|| value["v"].as_str()?.parse().ok())
         .expect("the serialized value is an integer")
 }
 
@@ -3734,7 +3737,7 @@ async fn native_page_activity_shard_rechecks_account_role_and_page_scope() {
 async fn native_page_activity_shared_timeline_replays_emitted_recent_and_diff_handlers() {
     for mount in ["", "/app", "/ACC"] {
         let fixture = home_fixture::fixture();
-        let (page_id, account, _) = seed_page(&fixture, true);
+        let (page_id, _, _) = seed_page(&fixture, true);
         {
             let conn = fixture.db.write().unwrap();
             conn.execute("DELETE FROM audit_log WHERE page_id=?1", [page_id])
