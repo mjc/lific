@@ -14,6 +14,8 @@ mod view;
 
 #[cfg(test)]
 mod production;
+#[cfg(test)]
+mod save_lifecycle_production;
 
 use super::super::shell::{Page, ParsedRoute};
 use super::{context, home_shell, session};
