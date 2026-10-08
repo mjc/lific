@@ -3,7 +3,7 @@ use super::super::super::runtime::whitespace::{StrEcmaTrimExt, trim_ecmascript};
 use super::super::fuzzy::score as fuzzy_score;
 use super::super::{context, icons, mascot, navigation, session, transport};
 use super::actions::{create as create_page, delete as delete_page, save as save_page};
-use super::{folder_create, move_picker, pin, status};
+use super::{folder_create, folder_tree, move_picker, pin, status};
 use crate::{db::models::Page as PageModel, error::LificError};
 use topcoat::{
     context::Cx,
@@ -66,6 +66,8 @@ async fn pages_list(
     let error = signal(cx, || "".to_owned());
     let revision = signal(cx, || 0_usize);
     let folder_revision = signal(cx, || 0_usize);
+    let folder_tree_state = folder_tree::state(cx, folder_revision.clone());
+    let folder_tree_handlers = folder_tree::handlers(cx, account, project_id, &folder_tree_state);
     let folder_create_state = folder_create::State::new(cx);
     let move_open = signal(cx, || false);
     let move_page_id = signal(cx, || 0_i64);
@@ -124,6 +126,7 @@ async fn pages_list(
         project_id,
         folder.clone(),
         folder_revision.clone(),
+        folder_tree_state.0.clone(),
         folder_create_state,
     );
     let label_options = label_names
@@ -151,7 +154,11 @@ async fn pages_list(
         <div
             class="native-pages h-full min-h-0 overflow-y-auto leading-[1.6] text-[var(--text)]"
         >
-            <main class="native-pages__content max-w-[1100px] mx-auto px-6 py-6">
+            <main
+                data-native-pages-list=""
+                class="native-pages__content max-w-[1100px] mx-auto px-6 py-6"
+                (folder_tree_handlers)
+            >
                 <header class="flex items-center gap-4 mb-4">
                     <h1 class="text-heading font-semibold m-0">"Pages"</h1>
                     <span class="ml-auto"></span>
@@ -257,6 +264,7 @@ async fn pages_list(
                 >
                     $(error.get())
                 </div>
+                (folder_tree::empty_error(cx, &folder_tree_state))
                 native_pages_rows(
                     account: account,
                     project_id: project_id,
@@ -268,7 +276,8 @@ async fn pages_list(
                     tab: $(tab.get()),
                     folder: $(folder.get()),
                     revision: $(revision.get()),
-                    move_state: move_signals.clone()
+                    owner_state: (move_signals.clone(), folder_tree_state.clone()),
+                    tree_values: $((folder_revision.get(), folder_tree_state.0.get()))
                 )
                 (move_dialog)
             </main>
@@ -460,9 +469,12 @@ mod row_shards {
         tab: String,
         folder: String,
         revision: usize,
-        move_state: move_picker::Signals,
+        owner_state: (move_picker::Signals, folder_tree::State),
+        tree_values: (usize, Vec<i64>),
     ) -> topcoat::Result<impl View> {
         let _ = revision;
+        let (move_state, tree_state) = owner_state;
+        let (folder_revision, expanded_folders) = tree_values;
         let (
             move_open,
             move_page_id,
@@ -486,6 +498,10 @@ mod row_shards {
         let folder = folder.parse::<i64>().unwrap_or(0);
         let query_empty = trim_ecmascript(&query).is_empty();
         let searching = !query_empty;
+        let tree_mode = query_empty && tab == "browse";
+        // A focused tree chooses its root at render time. Keep descendant pages
+        // available so expanding a nested folder can reveal its own rows.
+        let filter_folder = if tree_mode { 0 } else { folder };
         let show_move = can_edit && !searching && tab == "browse";
         let rows = session::read(
             cx,
@@ -495,10 +511,20 @@ mod row_shards {
                 project_id,
             ),
         )?;
+        let structure = session::read(
+            cx,
+            crate::services::pages::project_structure(
+                context::db(cx),
+                &caller.identity,
+                project_id,
+            ),
+        )?;
         let is_true_empty = rows.is_empty();
         let mut hits = rows
             .into_iter()
-            .filter(|page| page_matches_filters(page, &tab, &status, &label, folder, searching))
+            .filter(|page| {
+                page_matches_filters(page, &tab, &status, &label, filter_folder, searching)
+            })
             .filter_map(|page| {
                 let (score, _) = search_hit(&query, &page);
                 score.map(|score| (score, page))
@@ -526,6 +552,7 @@ mod row_shards {
         let page_rows = pages
             .into_iter()
             .map(|(page, href, preview)| {
+                let folder_id = page.folder_id;
                 let action = move_picker::row_action(
                     cx,
                     page.id,
@@ -544,10 +571,11 @@ mod row_shards {
                     },
                     can_edit,
                 );
-                view! {
+                let row = view! {
                     cx =>
                     <li
                         data-native-page-row=(page.id.to_string())
+                        data-native-folder-page=(page.id.to_string())
                         class="border-b border-solid border-[var(--border)] last:border-b-0"
                     >
                         <div class="group flex items-center gap-2">
@@ -610,12 +638,48 @@ mod row_shards {
                         </div>
                     </li>
                 }
-                .boxed()
+                .boxed();
+                (folder_id, row)
             })
             .collect::<Vec<_>>();
+        let tree_catalog = structure.folders;
+        let has_tree = !tree_catalog.is_empty() || has_pages;
+        let rows_view = if tree_mode && has_tree {
+            let mut grouped_page_rows = std::collections::HashMap::new();
+            for (folder_id, row) in page_rows {
+                grouped_page_rows
+                    .entry(folder_id)
+                    .or_insert_with(Vec::new)
+                    .push(row);
+            }
+            folder_tree::render(
+                cx,
+                folder_tree::Render {
+                    folders: &tree_catalog,
+                    page_rows: grouped_page_rows,
+                    expanded: &expanded_folders,
+                    expanded_signal: tree_state.0.clone(),
+                    can_edit,
+                    revision: folder_revision,
+                    parent: (folder > 0).then_some(folder),
+                },
+            )
+        } else {
+            view! {
+                cx =>
+                <ul class="native-pages__rows list-none p-0 m-0" aria-label="Pages">
+                    for (_folder_id, row) in page_rows {
+                        (row)
+                    }
+                </ul>
+            }
+            .boxed()
+        };
         Ok(view! {
             cx =>
-            if !has_pages {
+            if tree_mode && has_tree {
+                (rows_view)
+            } else if !has_pages {
                 if is_true_empty {
                     if query_empty {
                         if tab == "browse" {
@@ -676,11 +740,7 @@ mod row_shards {
                     </div>
                 }
             } else {
-                <ul class="native-pages__rows list-none p-0 m-0" aria-label="Pages">
-                    for row in page_rows {
-                        (row)
-                    }
-                </ul>
+                (rows_view)
             }
         })
     }
