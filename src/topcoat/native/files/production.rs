@@ -193,107 +193,489 @@ async fn native_files_route_activates_the_shared_owner_after_home_navigation() {
 
 #[tokio::test]
 async fn native_files_delete_success_reports_reference_count() {
-    let fixture = super::super::home_fixture::fixture();
-    let (account, _project_id, attachment_id) = seed(&fixture);
-    let (status, initial_html) = document(&fixture, "/app", "/ACC/files", true, None).await;
-    assert_eq!(status, StatusCode::OK);
-    super::super::deferred_delete::activated_snapshot(&initial_html);
+    for mount in ["", "/app", "/ACC"] {
+        let fixture = super::super::home_fixture::fixture();
+        let (account, id, signals, root_handler, button_id, success_text) =
+            capture_delete_handler(&fixture, mount, false).await;
+        let arguments = serde_json::to_value((account, id).into_surrogate()).unwrap();
+        let expected_arguments = serde_json::json!([account.into_surrogate(), id.into_surrogate()]);
+        let (status, reply) =
+            procedure(&fixture, "/__native_files/delete", arguments.clone()).await;
+        assert_eq!(status, StatusCode::OK, "mount {mount}");
+        let success_request = serde_json::to_value(
+            ToastErrorRequest {
+                account_id: account,
+                message: success_text.clone(),
+            }
+            .into_surrogate(),
+        )
+        .unwrap();
+        let completed = super::super::home_fixture::evaluate_handler(
+            "src/topcoat/native/files/delete_feedback.test.cjs",
+            &serde_json::json!({
+                "phase":"delete", "mount":mount, "signals":signals,
+                "root_handler":root_handler,
+                "button":{"id":button_id,"success":success_text},
+                "expected_arguments":expected_arguments, "nested_icon":true,
+                "reply":reply, "success_request":success_request,
+            }),
+        );
+        assert_eq!(
+            completed["notifications"][0]["type"],
+            "lific:native-toast-success"
+        );
+        assert_eq!(completed["notifications"][0]["detail"], success_request);
+        let (status, after_html) = document(
+            &fixture,
+            mount,
+            "/ACC/files",
+            true,
+            Some(completed["signals"].as_object().unwrap().clone()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "mount {mount}");
+        assert!(
+            !after_html.contains("a-screen.png"),
+            "successful deletion refreshes the attachment list"
+        );
+        let after = scraper::Html::parse_document(&after_html);
+        let owner = after
+            .select(&scraper::Selector::parse("#native-deferred-delete-owner").unwrap())
+            .next()
+            .expect("authenticated shell mounts the shared toast owner");
+        assert_eq!(
+            owner.value().attr("data-native-action-account").unwrap(),
+            account.to_string()
+        );
+        super::super::deferred_delete::activated_snapshot(&after_html);
+    }
+}
+
+async fn capture_delete_handler(
+    fixture: &super::super::home_fixture::Fixture,
+    mount: &str,
+    orphan: bool,
+) -> (
+    i64,
+    i64,
+    serde_json::Map<String, serde_json::Value>,
+    String,
+    String,
+    String,
+) {
+    let (account, _project_id, linked_id) = seed(fixture);
+    let id = if orphan {
+        let conn = fixture.db.write().unwrap();
+        let user = queries::users::validate_session(&conn, &fixture.token).unwrap();
+        queries::attachments::create_attachment(
+            &conn,
+            &"c".repeat(64),
+            "orphan.png",
+            "image/png",
+            314,
+            Some(user.id),
+        )
+        .unwrap()
+        .id
+    } else {
+        linked_id
+    };
+    let (status, initial_html) = document(fixture, mount, "/ACC/files", true, None).await;
+    assert_eq!(status, StatusCode::OK, "mount {mount}");
+    let buttons = scraper::Selector::parse("button").unwrap();
     let initial = scraper::Html::parse_document(&initial_html);
-    let delete_toggle = scraper::Selector::parse("button[title='Delete a-screen.png']").unwrap();
-    let open_handler = initial
-        .select(&delete_toggle)
-        .next()
-        .and_then(|button| button.value().attr("data-topcoat-on:click"))
-        .expect("the file row exposes its actual delete confirmation control");
+    let opener = if orphan {
+        initial
+            .select(&buttons)
+            .find(|button| {
+                button
+                    .text()
+                    .collect::<String>()
+                    .contains("Pending cleanup")
+            })
+            .and_then(|button| button.value().attr("data-topcoat-on:click"))
+            .expect("Pending cleanup section has an emitted toggle")
+    } else {
+        initial
+            .select(&scraper::Selector::parse("button[title='Delete a-screen.png']").unwrap())
+            .next()
+            .and_then(|button| button.value().attr("data-topcoat-on:click"))
+            .expect("normal row has an emitted confirmation toggle")
+    };
     let opened = super::super::home_fixture::evaluate_handler(
         "src/topcoat/native/files/delete_feedback.test.cjs",
-        &serde_json::json!({
-            "phase": "open",
-            "signals": super::super::home_fixture::page_signals(&initial_html),
-            "handler": open_handler,
-        }),
+        &serde_json::json!({"phase":"open", "mount":mount,
+            "signals":super::super::home_fixture::page_signals(&initial_html), "handler":opener}),
     );
-    let opened_signals = opened["signals"].as_object().unwrap().clone();
-    let (status, confirmed_html) = document(
-        &fixture,
-        "/app",
-        "/ACC/files",
-        true,
-        Some(opened_signals.clone()),
-    )
-    .await;
+    let mut signals = opened["signals"].as_object().unwrap().clone();
+    if orphan {
+        let (status, expanded_html) =
+            document(fixture, mount, "/ACC/files", true, Some(signals)).await;
+        assert_eq!(status, StatusCode::OK);
+        let expanded = scraper::Html::parse_document(&expanded_html);
+        let toggle = expanded
+            .select(&buttons)
+            .find(|button| button.value().attr("title") == Some("Delete orphan.png now"))
+            .and_then(|button| button.value().attr("data-topcoat-on:click"))
+            .expect("orphan row has an emitted confirmation toggle");
+        let output = super::super::home_fixture::evaluate_handler(
+            "src/topcoat/native/files/delete_feedback.test.cjs",
+            &serde_json::json!({"phase":"open", "mount":mount,
+                "signals":super::super::home_fixture::page_signals(&expanded_html), "handler":toggle}),
+        );
+        signals = output["signals"].as_object().unwrap().clone();
+    }
+    let (status, confirmed_html) =
+        document(fixture, mount, "/ACC/files", true, Some(signals)).await;
     assert_eq!(status, StatusCode::OK);
     let confirmed = scraper::Html::parse_document(&confirmed_html);
-    let delete_button = scraper::Selector::parse("button").unwrap();
-    let delete_handler = confirmed
-        .select(&delete_button)
+    let button = confirmed
+        .select(&buttons)
         .find(|button| button.text().collect::<String>().trim() == "Delete")
-        .and_then(|button| button.value().attr("data-topcoat-on:click"))
-        .expect("the open inline confirmation exposes its emitted Delete action");
+        .expect("confirmation exposes a native Delete button");
+    let id_attr = button
+        .value()
+        .attr("data-native-files-confirm-delete")
+        .expect("Delete button carries its exact attachment intent")
+        .to_owned();
+    let success = button
+        .value()
+        .attr("data-native-files-delete-success")
+        .expect("Delete button carries its precomputed Main success copy")
+        .to_owned();
+    let root_selector = scraper::Selector::parse("[data-native-files]").unwrap();
+    let root_handler = confirmed
+        .select(&root_selector)
+        .next()
+        .and_then(|root| root.value().attr("data-topcoat-on:click"))
+        .expect("stable Files root owns the delegated emitted handler")
+        .to_owned();
+    (
+        account,
+        id,
+        super::super::home_fixture::page_signals(&confirmed_html),
+        root_handler,
+        id_attr,
+        success,
+    )
+}
+#[tokio::test]
+async fn native_files_normal_delete_service_error_uses_real_request_and_reply_at_each_mount() {
+    for mount in ["", "/app", "/ACC"] {
+        let fixture = super::super::home_fixture::fixture();
+        let (account, id, signals, root_handler, button_id, success_text) =
+            capture_delete_handler(&fixture, mount, false).await;
+        let conn = fixture.db.write().unwrap();
+        queries::attachments::delete_attachment(&conn, id).unwrap();
+        drop(conn);
+        let args = serde_json::to_value((account, id).into_surrogate()).unwrap();
+        let expected_arguments = serde_json::json!([account.into_surrogate(), id.into_surrogate()]);
+        let (status, reply) = procedure(&fixture, "/__native_files/delete", args.clone()).await;
+        assert_eq!(status, StatusCode::OK);
+        let error = serde_json::to_value(
+            ToastErrorRequest {
+                account_id: account,
+                message: format!("Couldn't delete the file: attachment {id} not found"),
+            }
+            .into_surrogate(),
+        )
+        .unwrap();
+        let failed = super::super::home_fixture::evaluate_handler(
+            "src/topcoat/native/files/delete_feedback.test.cjs",
+            &serde_json::json!({ "phase":"service_error", "mount":mount,
+                "signals":signals, "root_handler":root_handler, "button":{"id":button_id,"success":success_text}, "reply":reply,
+                "expected_arguments":expected_arguments, "error_request":error }),
+        );
+        assert_eq!(
+            failed["notifications"][0]["type"],
+            "lific:native-toast-error"
+        );
+        assert_eq!(failed["notifications"][0]["detail"], error);
+    }
+}
 
-    let success_request = serde_json::to_value(
+#[tokio::test]
+async fn native_files_orphan_delete_service_error_uses_real_request_and_reply_at_each_mount() {
+    for mount in ["", "/app", "/ACC"] {
+        let fixture = super::super::home_fixture::fixture();
+        let (account, id, signals, root_handler, button_id, success_text) =
+            capture_delete_handler(&fixture, mount, true).await;
+        let conn = fixture.db.write().unwrap();
+        queries::attachments::delete_attachment(&conn, id).unwrap();
+        drop(conn);
+        let args = serde_json::to_value((account, id).into_surrogate()).unwrap();
+        let expected_arguments = serde_json::json!([account.into_surrogate(), id.into_surrogate()]);
+        let (status, reply) = procedure(&fixture, "/__native_files/delete", args.clone()).await;
+        assert_eq!(status, StatusCode::OK);
+        let error = serde_json::to_value(
+            ToastErrorRequest {
+                account_id: account,
+                message: format!("Couldn't delete the file: attachment {id} not found"),
+            }
+            .into_surrogate(),
+        )
+        .unwrap();
+        let failed = super::super::home_fixture::evaluate_handler(
+            "src/topcoat/native/files/delete_feedback.test.cjs",
+            &serde_json::json!({ "phase":"service_error", "mount":mount,
+                "signals":signals, "root_handler":root_handler, "button":{"id":button_id,"success":success_text}, "reply":reply,
+                "expected_arguments":expected_arguments, "error_request":error }),
+        );
+        assert_eq!(
+            failed["notifications"][0]["type"],
+            "lific:native-toast-error"
+        );
+        assert_eq!(failed["notifications"][0]["detail"], error);
+    }
+}
+
+#[tokio::test]
+async fn native_files_delete_transport_failures_are_distinct_and_preserve_revisions() {
+    for mount in ["", "/app", "/ACC"] {
+        for orphan in [false, true] {
+            let fixture = super::super::home_fixture::fixture();
+            let (account, id, signals, root_handler, button_id, success_text) =
+                capture_delete_handler(&fixture, mount, orphan).await;
+            let expected_arguments =
+                serde_json::json!([account.into_surrogate(), id.into_surrogate()]);
+            let error = serde_json::to_value(ToastErrorRequest {
+                account_id: account,
+                message: "Couldn't delete the file: Couldn't reach the server. Check your connection and try again.".to_owned(),
+            }.into_surrogate()).unwrap();
+            for phase in ["transport_rejection", "http_rejection"] {
+                let failed = super::super::home_fixture::evaluate_handler(
+                    "src/topcoat/native/files/delete_feedback.test.cjs",
+                    &serde_json::json!({ "phase":phase, "mount":mount,
+                        "signals":signals.clone(), "root_handler":root_handler, "button":{"id":button_id,"success":success_text},
+                        "expected_arguments":expected_arguments, "error_request":error }),
+                );
+                assert_eq!(
+                    failed["notifications"][0]["type"],
+                    "lific:native-toast-error"
+                );
+                assert_eq!(failed["notifications"][0]["detail"], error);
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn native_files_delete_disposal_is_separate_from_same_page_completion() {
+    for mount in ["", "/app", "/ACC"] {
+        for orphan in [false, true] {
+            let fixture = super::super::home_fixture::fixture();
+            let (account, id, signals, root_handler, button_id, success_text) =
+                capture_delete_handler(&fixture, mount, orphan).await;
+            let expected_arguments =
+                serde_json::json!([account.into_surrogate(), id.into_surrogate()]);
+            let mut late_success_reply = serde_json::Value::Null;
+            for phase in [
+                "parent_disposed",
+                "queued_dispose",
+                "detached",
+                "late_success",
+                "late_rejection",
+            ] {
+                if phase == "late_success" {
+                    let real_args = serde_json::to_value((account, id).into_surrogate()).unwrap();
+                    let (status, reply) =
+                        procedure(&fixture, "/__native_files/delete", real_args).await;
+                    assert_eq!(status, StatusCode::OK);
+                    late_success_reply = reply;
+                }
+                let output = super::super::home_fixture::evaluate_handler(
+                    "src/topcoat/native/files/delete_feedback.test.cjs",
+                    &serde_json::json!({ "phase":phase, "mount":mount,
+                        "signals":signals.clone(), "root_handler":root_handler, "button":{"id":button_id,"success":success_text},
+                        "expected_arguments":expected_arguments, "reply":late_success_reply, "detached":phase == "detached" }),
+                );
+                assert!(output["notifications"].as_array().unwrap().is_empty());
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn native_files_orphan_delete_success_refreshes_at_each_mount() {
+    for mount in ["", "/app", "/ACC"] {
+        let fixture = super::super::home_fixture::fixture();
+        let (account, id, signals, root_handler, button_id, success_text) =
+            capture_delete_handler(&fixture, mount, true).await;
+        let args = serde_json::to_value((account, id).into_surrogate()).unwrap();
+        let expected_arguments = serde_json::json!([account.into_surrogate(), id.into_surrogate()]);
+        let (status, reply) = procedure(&fixture, "/__native_files/delete", args.clone()).await;
+        assert_eq!(status, StatusCode::OK);
+        let success = serde_json::to_value(
+            ToastErrorRequest {
+                account_id: account,
+                message: success_text.clone(),
+            }
+            .into_surrogate(),
+        )
+        .unwrap();
+        let output = super::super::home_fixture::evaluate_handler(
+            "src/topcoat/native/files/delete_feedback.test.cjs",
+            &serde_json::json!({ "phase":"delete", "mount":mount,
+                "signals":signals, "root_handler":root_handler, "button":{"id":button_id,"success":success_text}, "reply":reply,
+                "expected_arguments":expected_arguments, "success_request":success }),
+        );
+        assert_eq!(
+            output["notifications"][0]["type"],
+            "lific:native-toast-success"
+        );
+        let after = document(
+            &fixture,
+            mount,
+            "/ACC/files",
+            true,
+            Some(output["signals"].as_object().unwrap().clone()),
+        )
+        .await
+        .1;
+        assert!(
+            !after.contains("orphan.png"),
+            "successful orphan removal refreshes the list"
+        );
+    }
+}
+
+#[tokio::test]
+async fn native_files_delete_completion_survives_actual_busy_body_shard_replacement() {
+    let mount = "/app";
+    let fixture = super::super::home_fixture::fixture();
+    let (account, id, signals, root_handler, button_id, success_text) =
+        capture_delete_handler(&fixture, mount, false).await;
+    let arguments = serde_json::to_value((account, id).into_surrogate()).unwrap();
+    let expected_arguments = serde_json::json!([account.into_surrogate(), id.into_surrogate()]);
+    let error_request = serde_json::to_value(
         ToastErrorRequest {
             account_id: account,
-            message: "File deleted, along with 1 reference.".to_owned(),
+            message: format!("Couldn't delete the file: attachment {id} not found"),
         }
         .into_surrogate(),
     )
     .unwrap();
-    let failed = super::super::home_fixture::evaluate_handler(
-        "src/topcoat/native/files/delete_feedback.test.cjs",
-        &serde_json::json!({
-            "phase": "failure",
-            "fail": true,
-            "signals": opened_signals.clone(),
-            "handler": delete_handler,
-            "reply": serde_json::Value::Null,
-            "success_request": success_request.clone(),
-        }),
-    );
-    assert!(failed["notifications"].as_array().unwrap().is_empty());
-
-    let arguments = serde_json::to_value((account, attachment_id).into_surrogate()).unwrap();
-    let (procedure_status, reply) = procedure(&fixture, "/__native_files/delete", arguments).await;
-    assert_eq!(procedure_status, StatusCode::OK);
-    let completed = super::super::home_fixture::evaluate_handler(
-        "src/topcoat/native/files/delete_feedback.test.cjs",
-        &serde_json::json!({
-            "phase": "delete",
-            "signals": opened_signals,
-            "handler": delete_handler,
-            "reply": reply,
-            "success_request": success_request,
-        }),
-    );
-    let completed_signals = completed["signals"].as_object().unwrap().clone();
-    let (status, after_html) = document(
+    let input = serde_json::json!({
+        "signals":signals,
+        "root_handler":root_handler,
+        "button":{"id":button_id,"success":success_text},
+        "mount":mount,
+        "expected_arguments":expected_arguments.clone(),
+        "error_request":error_request,
+        "browser_source":super::super::shell_handlers::source_named(
+            "browser", super::super::browser::factory(),
+        ),
+    });
+    let mut child = std::process::Command::new("node")
+        .arg("src/topcoat/native/files/delete_busy_rerender.test.cjs")
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut child_input = child.stdin.take().unwrap();
+    use std::io::{BufRead, BufReader, Write};
+    let mut child_output = BufReader::new(child.stdout.take().unwrap());
+    writeln!(child_input, "{input}").unwrap();
+    child_input.flush().unwrap();
+    let mut line = String::new();
+    child_output.read_line(&mut line).unwrap();
+    let pending: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(pending["stage"], "pending");
+    let (status, busy_html) = document(
         &fixture,
-        "/app",
+        mount,
         "/ACC/files",
         true,
-        Some(completed_signals),
+        Some(pending["signals"].as_object().unwrap().clone()),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(
-        completed["notifications"][0]["type"], "lific:native-toast-success",
-        "successful deletion dispatches the account-owned success toast request"
-    );
-    assert_eq!(completed["notifications"][0]["detail"], success_request);
-    let after = scraper::Html::parse_document(&after_html);
-    let toast_owner = scraper::Selector::parse("#native-deferred-delete-owner").unwrap();
-    let owner = after
-        .select(&toast_owner)
-        .next()
-        .expect("the authenticated shell mounts its real toast owner");
-    assert_eq!(
-        owner.value().attr("data-native-action-account").unwrap(),
-        account.to_string()
-    );
-    super::super::deferred_delete::activated_snapshot(&after_html);
     assert!(
-        !after_html.contains("a-screen.png"),
-        "the real procedure deleted the file"
+        busy_html.contains("Deleting…"),
+        "the real mounted runtime POST rerenders the body shard with the confirmation busy"
+    );
+    let conn = fixture.db.write().unwrap();
+    queries::attachments::delete_attachment(&conn, id).unwrap();
+    drop(conn);
+    let (status, reply) = procedure(&fixture, "/__native_files/delete", arguments).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "same captured request receives its canonical service outcome"
+    );
+    writeln!(child_input, "{}", serde_json::json!({"reply":reply})).unwrap();
+    child_input.flush().unwrap();
+    line.clear();
+    child_output.read_line(&mut line).unwrap();
+    let completed: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(completed["stage"], "complete");
+    drop(child_input);
+    drop(child_output);
+    assert!(child.wait().unwrap().success());
+}
+#[tokio::test]
+async fn native_files_delete_rechecks_account_and_current_project_authority() {
+    let fixture = super::super::home_fixture::fixture();
+    let (account, project_id, attachment_id) = seed(&fixture);
+    let wrong_account =
+        serde_json::to_value((account + 1000, attachment_id).into_surrogate()).unwrap();
+    let (status, _) = procedure(&fixture, "/__native_files/delete", wrong_account).await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "forged account cannot invoke native delete"
+    );
+    {
+        let conn = fixture.db.write().unwrap();
+        assert!(queries::attachments::get_attachment(&conn, attachment_id).is_ok());
+        let uploader = queries::users::create_user(
+            &conn,
+            &crate::db::models::CreateUser {
+                username: "files-delete-uploader".into(),
+                email: "files-delete-uploader@test.com".into(),
+                password: "testpassword1".into(),
+                display_name: None,
+                is_admin: false,
+                is_bot: false,
+            },
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE attachments SET uploader_id=?1 WHERE id=?2",
+            [uploader.id, attachment_id],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE project_members SET role='viewer' WHERE project_id=?1 AND user_id=?2",
+            [project_id, account],
+        )
+        .unwrap();
+    }
+    let viewer_args = serde_json::to_value((account, attachment_id).into_surrogate()).unwrap();
+    let (status, reply) = procedure(&fixture, "/__native_files/delete", viewer_args).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "ordinary service authorization denial uses the typed error outcome"
+    );
+    assert!(
+        reply
+            .to_string()
+            .contains("only the uploader, a project maintainer, or an admin"),
+        "the safe service failure remains distinguishable from success"
+    );
+    let conn = fixture.db.write().unwrap();
+    assert!(queries::attachments::get_attachment(&conn, attachment_id).is_ok());
+    queries::users::delete_session(&conn, &fixture.token).unwrap();
+    drop(conn);
+    let revoked_args = serde_json::to_value((account, attachment_id).into_surrogate()).unwrap();
+    let (status, _) = procedure(&fixture, "/__native_files/delete", revoked_args).await;
+    assert_eq!(
+        status,
+        StatusCode::SEE_OTHER,
+        "revoked credentials preserve the session redirect"
     );
 }
 
