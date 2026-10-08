@@ -2,7 +2,7 @@
 use super::super::super::runtime::whitespace::{StrEcmaTrimExt, trim_ecmascript};
 use super::super::breadcrumbs::{self, Segment};
 use super::super::fuzzy::score as fuzzy_score;
-use super::super::{context, icons, mascot, navigation, session, transport};
+use super::super::{browser, context, icons, mascot, navigation, session, transport};
 use super::actions::{create as create_page, delete as delete_page, save as save_page};
 use super::{
     activity, editor_state::EditorState, folder_create, folder_tree, labels, move_picker, pin,
@@ -1247,7 +1247,11 @@ fn save_attributes(
 ) -> Attributes {
     let failed_busy = busy.clone();
     let failed_message = message.clone();
+    let browser = browser::bindings();
     let handler = expr!(async |_event: Event| {
+        if browser.is_disposed() {
+            return;
+        }
         if !busy.get() {
             let sent_title = title_draft.get();
             let next_title = sent_title.trim_ecmascript().to_owned();
@@ -1258,13 +1262,21 @@ fn save_attributes(
                 let sent_seq = seq.get();
                 let sent_body = next_body.clone();
                 let _failed = || {
-                    failed_busy.set(false);
-                    failed_message
-                        .set("Couldn't save the page. Your draft is still here.".to_owned());
+                    if !browser.is_disposed() {
+                        failed_busy.set(false);
+                        failed_message
+                            .set("Couldn't save the page. Your draft is still here.".to_owned());
+                    }
                 };
                 let _save = async || {
+                    if browser.is_disposed() {
+                        return;
+                    }
                     let outcome =
                         save_page(account, page_id, next_title, next_body, sent_seq).await;
+                    if browser.is_disposed() {
+                        return;
+                    }
                     busy.set(false);
                     if outcome.status.is_ok() {
                         let saved_title = outcome.title.clone().unwrap();
