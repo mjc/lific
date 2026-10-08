@@ -3,6 +3,7 @@ use super::super::{
     browser, context, dates, icons, markdown, mascot, navigation, project_authority, session,
     transport,
 };
+use super::icon;
 use crate::{
     db::models::{Module, Project, Role, UpdateModule},
     services::modules::ModuleDetail,
@@ -183,15 +184,18 @@ pub(super) fn content<'a>(
         name_editing.clone(),
         name_error.clone(),
     );
-    let save_icon = update_attributes(
-        cx,
-        account,
-        project.id,
-        module.id,
-        "emoji",
-        icon.clone(),
-        route,
-    );
+    let module_icon_picker = if can_edit {
+        Some(icon::detail_picker(
+            cx,
+            &owner,
+            account,
+            project.id,
+            module.id,
+            icon.clone(),
+        ))
+    } else {
+        None
+    };
     let status_trigger = status_trigger_attributes(cx, status_controls.open.clone());
     let status_choices = MODULE_STATUSES
         .into_iter()
@@ -255,22 +259,9 @@ pub(super) fn content<'a>(
                 <div class="flex-1 min-w-0 px-4 py-5 sm:px-8 sm:py-6">
                     <div class="flex items-center gap-3 mb-3">
                         if can_edit {
-                            <form class="shrink-0 flex items-center gap-1" (save_icon)>
-                                <input
-                                    data-native-module-icon=""
-                                    aria-label="Module icon"
-                                    class="w-10 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-2 text-center"
-                                    maxlength="12"
-                                    :value=$(icon.get())
-                                    @input=$(|event: Event| icon.set(event.target.value))
-                                />
-                                <button
-                                    class="text-caption text-[var(--text-muted)]"
-                                    type="submit"
-                                >
-                                    "Save icon"
-                                </button>
-                            </form>
+                            if let Some(picker) = module_icon_picker {
+                                (picker)
+                            }
                             <div class="flex-1 min-w-0">
                                 <button
                                     type="button"
@@ -952,35 +943,6 @@ fn progress_view<'a>(cx: &'a Cx, fraction: f64, done: usize, total: usize) -> Bo
     .boxed()
 }
 
-#[allow(clippy::too_many_arguments)]
-fn update_attributes(
-    cx: &Cx,
-    account: i64,
-    project_id: i64,
-    module_id: i64,
-    field: &'static str,
-    value: Signal<String>,
-    destination: String,
-) -> Attributes {
-    let field = field.to_owned();
-    let handler = expr!(|event: Event| {
-        event.prevent_default();
-        let value = value.get();
-        let _run = async || {
-            update_module(account, project_id, module_id, field, value).await;
-            raw!("cx.navigate(${destination}.toString());", ());
-        };
-        raw!("Promise.resolve().then(()=>${_run}());", ());
-    });
-    let mut attrs = Attributes::with_capacity(1);
-    attrs.insert(
-        cx,
-        "data-topcoat-on:submit",
-        handler.into_evaluated_and_js().1,
-    );
-    attrs
-}
-
 fn name_trigger_attributes(
     cx: &Cx,
     title: Signal<String>,
@@ -1438,7 +1400,7 @@ fn shortcut_attributes(
 }
 
 #[procedure("/__native_modules/update")]
-async fn update_module(
+pub(super) async fn update_module(
     cx: &Cx,
     account: i64,
     project_id: i64,

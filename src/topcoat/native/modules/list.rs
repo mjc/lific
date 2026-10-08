@@ -3,6 +3,7 @@ use super::super::mascot::Mascot;
 use super::super::{
     browser, context, icons, mascot, navigation, project_authority, session, transport,
 };
+use super::icon;
 use crate::{
     db::models::{CreateModule, Project},
     services::modules::{ModuleList, ModuleSummary},
@@ -187,6 +188,7 @@ pub(super) fn content<'a>(
     let archive_url = tab_attributes(cx, &project_name, Tab::Archive);
     let all_url = tab_attributes(cx, &project_name, Tab::All);
     let tabs_mount = tab_restore_attributes(cx, &project_name, tab, query);
+    let module_icon_picker = icon::list_picker(cx, emoji.clone());
     let active_modules = data.active_modules.to_string();
     let issue_total = data.total_issues.to_string();
     let done_total = data.done_issues.to_string();
@@ -301,14 +303,7 @@ pub(super) fn content<'a>(
                         :hidden=$(if creating.get() { false } else { true })
                         (submit)
                     >
-                        <input
-                            class="w-10 bg-transparent text-center outline-none"
-                            maxlength="12"
-                            placeholder="Icon"
-                            aria-label="Module icon"
-                            :value=$(emoji.get())
-                            @input=$(|event: Event| emoji.set(event.target.value))
-                        />
+                        (module_icon_picker)
                         <input
                             class="flex-1 bg-transparent outline-none text-body text-[var(--text)]"
                             placeholder="Module name (e.g. Q1 Launch, Auth, Search rework)"

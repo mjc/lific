@@ -341,7 +341,7 @@ async fn native_creation_and_modules_render_readonly_then_editable_at_every_moun
 
 #[tokio::test]
 async fn native_module_save_handlers_keep_the_mounted_destination() {
-    use std::{io::Write, process::Stdio};
+    use topcoat::runtime::Surrogated;
 
     let fixture = home_fixture::fixture();
     let module = module(&fixture, "ACC");
@@ -351,59 +351,60 @@ async fn native_module_save_handlers_keep_the_mounted_destination() {
         let project = queries::resolve_project_identifier(&conn, "ACC").unwrap();
         queries::members::upsert_member(&conn, project, user.id, Role::Maintainer).unwrap();
     }
+    let (account, project_id) = {
+        let conn = fixture.db.read().unwrap();
+        (
+            queries::users::validate_session(&conn, &fixture.token)
+                .unwrap()
+                .id,
+            queries::resolve_project_identifier(&conn, "ACC").unwrap(),
+        )
+    };
     for mount in ["", "/app", "/ACC"] {
         let path = format!("/ACC/modules/{module}");
         let (status, html) = document(&fixture, mount, &path, true, None).await;
         assert_eq!(status, StatusCode::OK);
         let document = scraper::Html::parse_document(&html);
-        let forms = scraper::Selector::parse("[data-native-module-detail] form").unwrap();
-        let handlers = document.select(&forms).map(|form| {
-            let field = if form.select(&scraper::Selector::parse("[data-native-module-icon]").unwrap()).next().is_some() {
-                "emoji"
-            } else if form.select(&scraper::Selector::parse("textarea").unwrap()).next().is_some() {
-                "description"
-            } else if form.select(&scraper::Selector::parse("select").unwrap()).next().is_some() {
-                "status"
-            } else {
-                "name"
-            };
-            serde_json::json!({"field":field,"source":form.value().attr("data-topcoat-on:submit").unwrap()})
-        }).collect::<Vec<_>>();
         assert_eq!(
-            handlers
-                .iter()
-                .map(|handler| handler["field"].as_str().unwrap())
-                .collect::<Vec<_>>(),
-            ["emoji"],
-            "description now uses the separately owned read/edit/preview workflow",
+            document
+                .select(&scraper::Selector::parse("[data-native-module-detail] form").unwrap())
+                .count(),
+            0,
+            "module fields no longer use generic submit forms",
         );
-        let mut child = std::process::Command::new("node")
-            .arg("src/topcoat/native/module_mutations.test.cjs")
-            .current_dir(env!("CARGO_MANIFEST_DIR"))
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        child
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(
-                serde_json::json!({
-                    "mount":mount,"destination":format!("{mount}{path}"),"handlers":handlers,
-                    "signals":home_fixture::page_signals(&html),
-                })
-                .to_string()
-                .as_bytes(),
+        let picker = document
+            .select(
+                &scraper::Selector::parse(
+                    "[data-native-module-detail] [data-native-project-picker]",
+                )
+                .unwrap(),
             )
-            .unwrap();
-        let output = child.wait_with_output().unwrap();
-        assert!(
-            output.status.success(),
-            "module handlers at {mount}:\n{}\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
+            .next()
+            .expect("the editable module icon uses the shared picker");
+        let choice = picker
+            .select(&scraper::Selector::parse(".native-project-picker-choice").unwrap())
+            .next()
+            .expect("the picker renders a real icon choice");
+        let icon_value = format!("lucide:{}", choice.value().attr("title").unwrap());
+        let expected_arguments = serde_json::to_value(
+            (account, project_id, module, "emoji".to_owned(), icon_value).into_surrogate(),
+        )
+        .unwrap();
+        let emitted = home_fixture::evaluate_handler(
+            "src/topcoat/native/modules/module_icon_picker.test.cjs",
+            &serde_json::json!({
+                "phase":"mounted_detail_save",
+                "mount":mount,
+                "signals":home_fixture::page_signals(&html),
+                "choice":choice.value().attr("data-topcoat-on:click").unwrap(),
+                "change":picker.value().attr("data-topcoat-on:native-project-icon-change").unwrap(),
+                "expected_arguments":expected_arguments,
+            }),
+        );
+        assert_eq!(
+            emitted["requests"].as_array().unwrap().len(),
+            1,
+            "the emitted icon update runs at mount {mount}"
         );
 
         let description_owner = document
