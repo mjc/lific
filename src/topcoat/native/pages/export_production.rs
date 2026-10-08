@@ -306,10 +306,7 @@ async fn native_workspace_page_export_requires_workspace_admin() {
     }
     let allowed = get(&setup.fixture, &path, Some(&cookie), "").await;
     assert_eq!(allowed.status(), StatusCode::OK);
-    assert_eq!(
-        response_body(allowed).await.contains("workspace-page-body"),
-        true
-    );
+    assert!(response_body(allowed).await.contains("workspace-page-body"));
 }
 
 #[tokio::test]
