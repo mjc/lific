@@ -256,6 +256,8 @@ async fn native_module_list_picker_keeps_icon_local_until_authenticated_create()
             .into_surrogate(),
     )
     .unwrap();
+    let create_response = serde_json::to_value(123_i64.into_surrogate()).unwrap();
+    let expected_destination = "/app/ACC/modules/123";
     let emitted = home_fixture::evaluate_handler(
         "src/topcoat/native/modules/module_icon_picker.test.cjs",
         &serde_json::json!({
@@ -268,6 +270,8 @@ async fn native_module_list_picker_keeps_icon_local_until_authenticated_create()
             "name_input":name_input,
             "submit":submit,
             "expected_arguments":expected_arguments,
+            "create_response":create_response,
+            "expected_destination":expected_destination,
         }),
     );
     assert_eq!(emitted["requests"].as_array().unwrap().len(), 1);
@@ -386,6 +390,7 @@ async fn native_module_detail_picker_saves_immediately_clears_and_respects_viewe
             "expected_arguments":expected_arguments,
             "failure_arguments":failure_arguments,
             "remove_arguments":remove_arguments,
+            "selected_icon":icon_value,
         }),
     );
     assert_eq!(emitted["requests"].as_array().unwrap().len(), 2);
@@ -400,21 +405,36 @@ async fn native_module_detail_picker_saves_immediately_clears_and_respects_viewe
     .await;
     assert_eq!(status, StatusCode::OK);
     let failed_document = Html::parse_document(&failed_html);
+    let alert = failed_document
+        .select(&Selector::parse("[role='alert']").unwrap())
+        .find(|node| {
+            node.text().collect::<String>().trim()
+                == "Couldn't save module: Couldn't reach the server. Check your connection and try again."
+        })
+        .expect("Main surfaces an icon update failure to the maintainer");
     assert!(
-        failed_document
-            .select(&Selector::parse("[role='alert']").unwrap())
-            .any(|node| node
-                .text()
-                .collect::<String>()
-                .contains("Couldn't save module")),
-        "Main surfaces an icon update failure to the maintainer"
+        alert.html().contains("::topcoat::expr::start("),
+        "failure feedback has a reactive text binding, not just a server-rendered value"
     );
     assert!(
         failed_document
-            .select(&Selector::parse("[data-native-project-picker] [data-icon='Folder']").unwrap())
+            .select(&Selector::parse("#native-project-icon-trigger [data-icon='Folder']").unwrap())
             .next()
             .is_some(),
         "a failed icon update leaves the canonical icon visible"
+    );
+    let attempted_icon_name = icon_value.strip_prefix("lucide:").unwrap();
+    assert!(
+        failed_document
+            .select(
+                &Selector::parse(&format!(
+                    "#native-project-icon-trigger [data-icon='{attempted_icon_name}']"
+                ))
+                .unwrap()
+            )
+            .next()
+            .is_none(),
+        "the failed icon is not shown as the canonical trigger value"
     );
 
     let (status, _) = home_fixture::procedure(

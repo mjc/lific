@@ -1,5 +1,6 @@
 //! Native modules list and detail pages.
 mod detail;
+mod icon;
 mod list;
 
 #[cfg(test)]

@@ -67,6 +67,23 @@ async function createWithSelectedIcon() {
   return {requests, signals: snapshot(runtime.cx), navigations};
 }
 
+async function mountedDetailSave() {
+  const requests = [];
+  const runtime = fixture(async (url, options) => {
+    requests.push({url: String(url), arguments: JSON.parse(options.body)});
+    return {ok: true, json: async () => null};
+  });
+  const pane = paneContext(runtime);
+  fire(runtime, input.choice, 'click', {}, pane.cx);
+  await flush();
+  assert.equal(requests.length, 1, 'the mounted picker emits one icon update');
+  assert.ok(requests[0].url.endsWith('/__native_modules/update'));
+  assert.deepEqual(requests[0].arguments, input.expected_arguments,
+    'the mounted picker update preserves account, project, module, field, and icon');
+  pane.controller.abort();
+  return {requests};
+}
+
 async function saveDetailIcon() {
   const requests = [];
   let releaseSave;
@@ -75,16 +92,29 @@ async function saveDetailIcon() {
     return new Promise(resolve => { releaseSave = resolve; });
   });
   const pane = paneContext(runtime);
+  const iconSignalIds = Object.keys(input.signals)
+    .filter(id => runtime.cx.signal(id).dehydrate().v === 'lucide:Folder');
+  assert.ok(iconSignalIds.length >= 2,
+    'the picker draft and canonical module icon signals are present');
   fire(runtime, input.trigger, 'click');
   fire(runtime, input.choice, 'click', {}, pane.cx);
   await flush();
   assert.equal(requests.length, 1, 'selecting a picker item dispatches an immediate save');
+  assert.ok(iconSignalIds.every(id => snapshot(runtime.cx)[id] === 'lucide:Folder'),
+    'the persisted icon stays canonical while the request is pending');
+  fire(runtime, input.choice, 'click', {}, pane.cx);
+  await flush();
+  assert.equal(requests.length, 1, 'a second choice is ignored while the first save is pending');
+  assert.ok(iconSignalIds.every(id => snapshot(runtime.cx)[id] === 'lucide:Folder'),
+    'a pending second choice cannot replace the canonical trigger');
   assert.ok(requests[0].url.endsWith('/__native_modules/update'));
   assert.deepEqual(requests[0].arguments, input.expected_arguments,
     'the update procedure receives the selected icon');
   pane.controller.abort();
   releaseSave({ok: true, json: async () => null});
   await flush();
+  assert.ok(iconSignalIds.every(id => snapshot(runtime.cx)[id] === input.selected_icon),
+    'the first successful response publishes the selected canonical icon');
   fire(runtime, input.remove, 'click');
   await flush();
   assert.equal(requests.length, 2, 'Remove icon dispatches one immediate save');
@@ -151,6 +181,8 @@ async function parentDisposalIgnoresLateResult() {
 (async () => {
   const result = input.phase === 'create'
     ? await createWithSelectedIcon()
+    : input.phase === 'mounted_detail_save'
+      ? await mountedDetailSave()
     : input.phase === 'detail'
       ? await saveDetailIcon()
       : input.phase === 'failure'
