@@ -28,7 +28,10 @@ Pages and Plans have native private list and detail routes. Pages supports
 search, tabs and filters, creation, Markdown editing, lifecycle status changes,
 pinning, folder moves from Browse, explicit save with sequence conflicts, and
 confirmed deletion. Folder moves use a single list-owned picker and update only
-the selected page's folder. Metadata changes share the editor's sequence and busy
+the selected page's folder. The New menu creates folders through the same
+authorized transaction as the API. The inline composer captures its parent,
+keeps the current folder filter, and refreshes both filter and move destinations.
+Metadata changes share the editor's sequence and busy
 state and preserve unsaved title/body drafts.
 Plans supports status tabs, creation, nested steps, title and description edits,
 done toggles, step issue linking and detaching, anchor assignment and clearing,
@@ -50,6 +53,16 @@ the saved icon on failure. Lifecycle tabs persist under Main's project-identifie
 storage key. Both use shared Rust services and the workspace/sidebar. Viewers
 receive read-only content. Cached navigation checks the destination's rendered
 project permissions against current records.
+
+Issue detail supports module assignment and clearing, including inactive modules
+and a separate module navigation link for viewers. The account-owned four-toast
+stack shares presentation with deferred deletion, while Module Undo performs an
+immediate inverse update. Captured actions survive native route changes; Undo is
+claimed once before transport. Canonical saved fields and sequence update
+together without replacing dirty title or description drafts.
+The handlers use the shared generated asset. Fresh common pages carry only an
+activation marker; after a project mounts the stack, its state stays available
+on common pages without changing signal identities.
 
 The intermediate JavaScript frontend is deleted, including controllers,
 frontend API clients, vendor libraries used by those controllers, generated
@@ -88,10 +101,10 @@ The shared Rust issue preview provides hover content and a touch panel with
 authorized edits. Loading/error recovery, close transitions, global undo toasts,
 and full gesture parity remain unfinished. It is not yet wired into graph nodes.
 
-Pages still needs folder management, other metadata editing, autosave, comments,
-attachments, and realtime recovery. Plans still needs the full metadata/editor
-workflow and realtime recovery. Keep the family
-tickets open until their remaining main assertions and visual parity are met.
+Pages still needs the full folder tree and remaining folder management, other
+metadata editing, autosave, comments, attachments, and realtime recovery. Plans
+still needs the full metadata/editor workflow and realtime recovery. Keep the
+family tickets open until their remaining main assertions and visual parity are met.
 
 Issue creation still needs the attachment composer and Main's picker and input
 interactions. Modules still needs the full Markdown editor, realtime updates,
@@ -127,6 +140,19 @@ check the current folder and root choice, and cover immediate saves, same-folder
 no-ops, pending cancellation, failure feedback, and owner disposal. Real writes
 preserve unrelated page fields and reject changed accounts, revoked roles, and
 folders outside the page's project. Search and other tabs omit the action.
+
+Folder-creation tests replay the emitted menu, composer and submit handlers,
+including captured parents, trimming, cancellation, delayed replies and disposal.
+Focus waits for the visible composer and is suppressed after cancellation or disposal.
+Real procedure tests check current write access and insertion. Shared structure
+tests check fresh authorization, parent scope and publication after commit.
+
+Issue-module tests cover the complete catalog, viewer links, unchanged choices,
+typed request payloads, real writes, denied scope, canonical saved state and dirty
+drafts. Shared toast tests exercise navigation during forward and inverse writes,
+one-shot Undo, nullable inverses, errors, expiration, pause/resume and eviction.
+Production documents verify the same four slot signal identities across common
+and project routes at each mount prefix.
 
 Issue creation and Modules tests cover fresh permissions, account changes,
 module ownership, complete scalar payloads, Web audit attribution, post-commit
