@@ -41,6 +41,39 @@ async fn native_instance_settings_admin_route_loads_authorized_settings_and_rost
 }
 
 #[tokio::test]
+async fn native_instance_settings_admin_route_exposes_member_roster_actions() {
+    let fixture = home_fixture::fixture();
+    {
+        let conn = fixture.db.write().unwrap();
+        let viewer = crate::db::queries::users::validate_session(&conn, &fixture.token).unwrap();
+        conn.execute("UPDATE users SET is_admin = 1 WHERE id = ?1", [viewer.id])
+            .unwrap();
+        crate::db::queries::users::create_user(
+            &conn,
+            &crate::db::models::CreateUser {
+                username: "roster-member".into(),
+                email: "roster-member@local".into(),
+                password: "testpassword1".into(),
+                display_name: Some("Roster member".into()),
+                is_admin: false,
+                is_bot: false,
+            },
+        )
+        .unwrap();
+    }
+
+    let (status, html) =
+        home_fixture::document(&fixture, "", "/settings/instance", true, None).await;
+    assert_eq!(status, StatusCode::OK);
+    for action in [
+        "Make Roster member an instance admin",
+        "Deactivate Roster member",
+    ] {
+        assert!(html.contains(action), "missing {action} on the member row");
+    }
+}
+
+#[tokio::test]
 async fn native_instance_settings_exposes_password_confirmation_for_recent_auth_refusal() {
     let fixture = home_fixture::fixture();
     let account = {
