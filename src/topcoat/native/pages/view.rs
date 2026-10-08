@@ -6,7 +6,7 @@ use super::super::{browser, context, icons, mascot, navigation, session, transpo
 use super::actions::{create as create_page, delete as delete_page, save as save_page};
 use super::{
     activity, detail_presentation, editor_state::EditorState, folder_create, folder_tree, labels,
-    move_picker, pin, status,
+    move_picker, pin, status, title_editor,
 };
 use crate::{db::models::Page as PageModel, error::LificError};
 use topcoat::{
@@ -1015,6 +1015,19 @@ async fn page_detail(
         None
     };
     let activity_identity = (account, page.id);
+    let title_revision = signal(cx, || 0_usize);
+    let title_controls = title_editor::Controls {
+        editing: title_editing.clone(),
+        revision: title_revision.clone(),
+        busy: busy.clone(),
+        save_busy: save_busy.clone(),
+        message: message.clone(),
+        last_saved: last_saved.clone(),
+    };
+    let title_input_id = format!("native-page-title-{}-{}", account, page.id);
+    let title_trigger =
+        title_editor::trigger_attributes(cx, &state, &title_controls, title_input_id.clone());
+    let title_input = title_editor::input_attributes(cx, account, page.id, &state, &title_controls);
     let save_feedback = detail_presentation::save_feedback(cx, save_busy, last_saved);
     let (export_error, export_button) = super::super::document_export::toolbar_fragments(
         cx,
@@ -1055,23 +1068,18 @@ async fn page_detail(
                             <button
                                 type="button"
                                 class="p-0 border-0 bg-transparent text-left text-[var(--text)] font-semibold"
-                                @click=$(|_event: Event| {
-                                    title_draft.set(title.get());
-                                    title_editing.set(true);
-                                })
+                                (title_trigger)
                             >
                                 $(title.get())
                             </button>
                         </h1>
                         <input
+                            id=(title_input_id)
                             aria-label="Page title"
                             class="text-title font-semibold w-full mt-1 px-0 py-1 border-0 border-b border-solid border-[var(--border)] bg-transparent text-[var(--text)]"
                             :hidden=$(if title_editing.get() { false } else { true })
                             :value=$(title_draft.get())
-                            @input=$(|event: Event| {
-                                title_draft.set(event.target.value.to_owned());
-                                title_editing.set(true);
-                            })
+                            (title_input)
                         />
                     } else {
                         <h1 class="text-title font-semibold mt-1 mb-0">

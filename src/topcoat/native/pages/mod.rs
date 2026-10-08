@@ -12,6 +12,7 @@ mod metadata;
 mod move_picker;
 mod pin;
 mod status;
+mod title_editor;
 mod view;
 
 #[cfg(test)]
