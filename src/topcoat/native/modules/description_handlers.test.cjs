@@ -154,7 +154,7 @@ async function runLifecycle() {
 (async () => {
   if (input.phase === 'enter_edit') {
     dispatch(fixture, input.owner, 'edit');
-    process.stdout.write(JSON.stringify({signals: snapshot(fixture.cx)}));
+    process.stdout.write(JSON.stringify({signals: snapshot(fixture.cx), requests: requests.length}));
     return;
   }
   if (input.phase === 'shortcut') {
@@ -200,7 +200,7 @@ async function runLifecycle() {
 
   const beforeSaveAs = snapshot(fixture.cx);
   fixture.handler(input.owner)(fixture.cx.event({
-    type: 'keydown', key: 's', ctrlKey: true, ctrl_key: true, shiftKey: true,
+    type: 'keydown', key: 'S', ctrlKey: true, ctrl_key: true, shiftKey: true,
     target: {closest: selector => selector.includes('data-native-module-description-editor')
       ? {} : null}, preventDefault() {},
   }));
@@ -209,19 +209,25 @@ async function runLifecycle() {
   assert.deepEqual(snapshot(fixture.cx), beforeSaveAs,
     'Save As does not mutate the description');
 
-  fixture.handler(input.input)(fixture.cx.event({type: 'input', target: {value: 'Alt save body'}}));
+  const altRequests = [];
+  const altFixture = handlerFixture(input.signals, async (url, options) => {
+    altRequests.push({url: String(url), arguments: JSON.parse(options.body)});
+    return {ok: true, json: async () => null};
+  }, input.browser_source);
+  altFixture.context.document.documentElement.getAttribute = () => input.mount;
+  dispatch(altFixture, input.owner, 'edit');
+  altFixture.handler(input.input)(altFixture.cx.event({type: 'input', target: {value: 'Alt save body'}}));
   let altSavePrevented = false;
-  fixture.handler(input.owner)(fixture.cx.event({
+  altFixture.handler(input.owner)(altFixture.cx.event({
     type: 'keydown', key: 's', ctrlKey: true, altKey: true,
     target: {closest: selector => selector.includes('data-native-module-description-editor')
       ? {} : null},
     preventDefault() { altSavePrevented = true; },
   }));
   await flush();
-  assert.equal(requests.length, 1, 'Ctrl+Alt+S in the textarea follows Main and saves');
-  assert.equal(requests[0].arguments[4], 'Alt save body');
+  assert.equal(altRequests.length, 1, 'Ctrl+Alt+S in the textarea follows Main and saves');
+  assert.equal(altRequests[0].arguments[4], 'Alt save body');
   assert.equal(altSavePrevented, true, 'handled Ctrl+Alt+S prevents the browser default');
-  requests.length = 0;
 
   const beforeUnrelatedClick = snapshot(fixture.cx);
   let unrelatedClickPrevented = false;
