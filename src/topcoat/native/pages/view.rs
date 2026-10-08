@@ -1,11 +1,9 @@
 //! Native Pages list and editor, populated from the authorized shared service.
 use super::super::super::runtime::whitespace::{StrEcmaTrimExt, trim_ecmascript};
 use super::super::fuzzy::score as fuzzy_score;
-use super::super::{browser, context, icons, mascot, navigation, session, transport};
-use super::actions::{
-    create as create_page, create_folder, delete as delete_page, save as save_page,
-};
-use super::{move_picker, pin, status};
+use super::super::{context, icons, mascot, navigation, session, transport};
+use super::actions::{create as create_page, delete as delete_page, save as save_page};
+use super::{folder_create, move_picker, pin, status};
 use crate::{db::models::Page as PageModel, error::LificError};
 use topcoat::{
     context::Cx,
@@ -68,12 +66,7 @@ async fn pages_list(
     let error = signal(cx, || "".to_owned());
     let revision = signal(cx, || 0_usize);
     let folder_revision = signal(cx, || 0_usize);
-    let new_menu_open = signal(cx, || false);
-    let folder_name = signal(cx, String::new);
-    let folder_composer_open = signal(cx, || false);
-    let folder_parent = signal(cx, String::new);
-    let folder_busy = signal(cx, || false);
-    let folder_error = signal(cx, String::new);
+    let folder_create_state = folder_create::State::new(cx);
     let move_open = signal(cx, || false);
     let move_page_id = signal(cx, || 0_i64);
     let move_page_title = signal(cx, String::new);
@@ -121,42 +114,17 @@ async fn pages_list(
         },
     );
     let focus_create = focus_create_attributes(cx);
-    let folder_create = folder_create_attributes(
+    let folder_create::Views {
+        menu: folder_menu,
+        composer: folder_composer,
+        error: folder_create_error,
+    } = folder_create::views(
         cx,
         account,
         project_id,
-        FolderCreateState {
-            name: folder_name.clone(),
-            composer_open: folder_composer_open.clone(),
-            busy: folder_busy.clone(),
-            error: folder_error.clone(),
-            folder: folder.clone(),
-            parent_folder: folder_parent.clone(),
-            revision: folder_revision.clone(),
-        },
-    );
-    let folder_menu_toggle = folder_menu_toggle_attributes(cx, new_menu_open.clone());
-    let folder_menu_item = folder_menu_item_attributes(
-        cx,
-        new_menu_open.clone(),
-        folder_name.clone(),
         folder.clone(),
-        folder_parent,
-        folder_composer_open.clone(),
-        folder_error.clone(),
-    );
-    let folder_keydown = folder_keydown_attributes(
-        cx,
-        folder_name.clone(),
-        folder_composer_open.clone(),
-        folder_error.clone(),
-        folder_busy.clone(),
-    );
-    let folder_blur = folder_blur_attributes(
-        cx,
-        folder_name.clone(),
-        folder_composer_open.clone(),
-        folder_busy.clone(),
+        folder_revision.clone(),
+        folder_create_state,
     );
     let label_options = label_names
         .map(|name| view! { cx => <option value=(name.clone())>(name)</option> }.boxed())
@@ -219,82 +187,11 @@ async fn pages_list(
                         >
                             $(if busy.get() { "Creating…" } else { "New page" })
                         </button>
-                        <div class="relative">
-                            <button
-                                type="button"
-                                aria-haspopup="menu"
-                                :aria-expanded=$(if new_menu_open.get() {
-                                    "true"
-                                } else {
-                                    "false"
-                                })
-                                class="text-body-sm px-3 py-1.5 rounded-md border border-solid border-[var(--border)] bg-[var(--bg)] text-[var(--text)]"
-                                (folder_menu_toggle)
-                            >
-                                "New"
-                            </button>
-                            <div
-                                role="menu"
-                                aria-label="New page item"
-                                class="absolute right-0 top-full z-10 mt-1 min-w-40 rounded-md border border-solid border-[var(--border)] bg-[var(--bg)] p-1 shadow-lg"
-                                :hidden=$(!new_menu_open.get())
-                            >
-                                <button
-                                    type="button"
-                                    role="menuitem"
-                                    class="w-full rounded px-2 py-1.5 text-left text-body-sm hover:bg-[var(--bg-subtle)]"
-                                    (folder_menu_item)
-                                >
-                                    "New folder"
-                                </button>
-                            </div>
-                        </div>
+                        (folder_menu)
                     }
                 </header>
-                <div
-                    data-native-folder-create=""
-                    class="flex items-center gap-2 mb-4"
-                    :hidden=$(!folder_composer_open.get())
-                >
-                    <input
-                        aria-label="Folder name"
-                        placeholder="Folder name"
-                        autofocus=""
-                        class="text-body-sm px-2.5 py-1.5 rounded-md border border-solid border-[var(--border)] bg-[var(--bg)] text-[var(--text)]"
-                        :value=$(folder_name.get())
-                        @input=$(|event: Event| {
-                            folder_name.set(event.target.value.to_owned());
-                            folder_error.set("".to_owned());
-                        })
-                        (folder_keydown)
-                        (folder_blur)
-                    />
-                    <button
-                        id="native-pages-create-folder-button"
-                        type="button"
-                        class="text-body-sm px-3 py-1.5 rounded-md border-0 bg-[var(--accent)] text-[var(--accent-text)] disabled:opacity-50"
-                        :disabled=$(if folder_busy.get() {
-                            true
-                        } else {
-                            folder_name.get().trim().is_empty()
-                        })
-                        (folder_create)
-                    >
-                        $(if folder_busy.get() {
-                            "Creating…"
-                        } else {
-                            "Create folder"
-                        })
-                    </button>
-                </div>
-                <div
-                    data-native-folder-create-error=""
-                    role="alert"
-                    class="text-body-sm text-[var(--error)] mb-3"
-                    :hidden=$(folder_error.get().is_empty())
-                >
-                    $(folder_error.get())
-                </div>
+                (folder_composer)
+                (folder_create_error)
                 <div class="flex flex-wrap items-center gap-2 mb-4">
                     <div
                         class="inline-flex gap-1 p-0.5 rounded-lg bg-[var(--bg-subtle)]"
@@ -384,194 +281,6 @@ struct PageCreateState {
     busy: Signal<bool>,
     error: Signal<String>,
     revision: Signal<usize>,
-}
-
-struct FolderCreateState {
-    name: Signal<String>,
-    composer_open: Signal<bool>,
-    busy: Signal<bool>,
-    error: Signal<String>,
-    folder: Signal<String>,
-    parent_folder: Signal<String>,
-    revision: Signal<usize>,
-}
-
-fn folder_menu_toggle_attributes(cx: &Cx, open: Signal<bool>) -> Attributes {
-    let handler = expr!(|_event: Event| open.set(!open.get()));
-    let mut attrs = Attributes::with_capacity(1);
-    attrs.insert(
-        cx,
-        "data-topcoat-on:click",
-        handler.into_evaluated_and_js().1,
-    );
-    attrs
-}
-
-fn folder_menu_item_attributes(
-    cx: &Cx,
-    menu_open: Signal<bool>,
-    name: Signal<String>,
-    current_folder: Signal<String>,
-    parent_folder: Signal<String>,
-    composer_open: Signal<bool>,
-    error: Signal<String>,
-) -> Attributes {
-    let browser = browser::bindings();
-    let focus_open = composer_open.clone();
-    let handler = expr!(|_event: Event| {
-        if !browser.is_disposed() {
-            menu_open.set(false);
-            name.set("".to_owned());
-            error.set("".to_owned());
-            parent_folder.set(current_folder.get());
-            composer_open.set(true);
-            let _focus = || {
-                if !browser.is_disposed() {
-                    if focus_open.get() {
-                        raw!(
-                            "document.querySelector(\"input[placeholder='Folder name']\")?.focus()",
-                            ()
-                        );
-                    }
-                }
-            };
-            raw!("requestAnimationFrame(()=>${_focus}());", ());
-        }
-    });
-    let mut attrs = Attributes::with_capacity(1);
-    attrs.insert(
-        cx,
-        "data-topcoat-on:click",
-        handler.into_evaluated_and_js().1,
-    );
-    attrs
-}
-
-fn folder_create_attributes(
-    cx: &Cx,
-    account: i64,
-    project_id: i64,
-    state: FolderCreateState,
-) -> Attributes {
-    let FolderCreateState {
-        name,
-        composer_open,
-        busy,
-        error,
-        folder: _,
-        parent_folder,
-        revision,
-    } = state;
-    let failed_busy = busy.clone();
-    let failed_error = error.clone();
-    let browser = browser::bindings();
-    let handler = expr!(async |_event: Event| {
-        if !browser.is_disposed() {
-            if !busy.get() {
-                let trimmed = name.get().trim_ecmascript().to_owned();
-                if !trimmed.is_empty() {
-                    busy.set(true);
-                    composer_open.set(false);
-                    error.set("".to_owned());
-                    let _failed = || {
-                        if !browser.is_disposed() {
-                            failed_busy.set(false);
-                            failed_error.set("Couldn't create the folder. Try again.".to_owned());
-                        }
-                    };
-                    let _save = async || {
-                        if !browser.is_disposed() {
-                            let outcome =
-                                create_folder(account, project_id, trimmed, parent_folder.get())
-                                    .await;
-                            if !browser.is_disposed() {
-                                busy.set(false);
-                                name.set("".to_owned());
-                                if outcome.status.is_ok() {
-                                    revision.increment();
-                                } else {
-                                    error.set(outcome.status.unwrap_err());
-                                }
-                            }
-                        }
-                    };
-                    raw!(
-                        "Promise.resolve().then(() => ${_save}()).catch(() => ${_failed}());",
-                        ()
-                    );
-                }
-            }
-        }
-    });
-    let mut attrs = Attributes::with_capacity(1);
-    attrs.insert(
-        cx,
-        "data-topcoat-on:click",
-        handler.into_evaluated_and_js().1,
-    );
-    attrs
-}
-
-fn folder_keydown_attributes(
-    cx: &Cx,
-    name: Signal<String>,
-    composer_open: Signal<bool>,
-    error: Signal<String>,
-    busy: Signal<bool>,
-) -> Attributes {
-    let browser = browser::bindings();
-    let cancel_name = name;
-    let handler = expr!(|event: Event| {
-        if !browser.is_disposed() {
-            if event.key == "Escape" {
-                event.prevent_default();
-                if !busy.get() {
-                    composer_open.set(false);
-                    cancel_name.set("".to_owned());
-                    error.set("".to_owned());
-                }
-            } else if event.key == "Enter" {
-                event.prevent_default();
-                raw!(
-                    "document.querySelector('#native-pages-create-folder-button')?.click()",
-                    ()
-                );
-            }
-        }
-    });
-    let mut attrs = Attributes::with_capacity(1);
-    attrs.insert(
-        cx,
-        "data-topcoat-on:keydown",
-        handler.into_evaluated_and_js().1,
-    );
-    attrs
-}
-
-fn folder_blur_attributes(
-    cx: &Cx,
-    name: Signal<String>,
-    composer_open: Signal<bool>,
-    busy: Signal<bool>,
-) -> Attributes {
-    let browser = browser::bindings();
-    let handler = expr!(|_event: Event| {
-        if !browser.is_disposed() {
-            if !busy.get() {
-                if name.get().trim_ecmascript().is_empty() {
-                    composer_open.set(false);
-                    name.set("".to_owned());
-                }
-            }
-        }
-    });
-    let mut attrs = Attributes::with_capacity(1);
-    attrs.insert(
-        cx,
-        "data-topcoat-on:blur",
-        handler.into_evaluated_and_js().1,
-    );
-    attrs
 }
 
 #[shard("/__native_pages/folder_options")]
