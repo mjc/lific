@@ -288,52 +288,58 @@ async fn capture_delete_handler(
     };
     let (status, initial_html) = document(fixture, mount, "/ACC/files", true, None).await;
     assert_eq!(status, StatusCode::OK, "mount {mount}");
-    let buttons = scraper::Selector::parse("button").unwrap();
-    let initial = scraper::Html::parse_document(&initial_html);
-    let opener = if orphan {
-        initial
-            .select(&buttons)
-            .find(|button| {
-                button
-                    .text()
-                    .collect::<String>()
-                    .contains("Pending cleanup")
-            })
-            .and_then(|button| button.value().attr("data-topcoat-on:click"))
-            .expect("Pending cleanup section has an emitted toggle")
-    } else {
-        initial
-            .select(&scraper::Selector::parse("button[title='Delete a-screen.png']").unwrap())
-            .next()
-            .and_then(|button| button.value().attr("data-topcoat-on:click"))
-            .expect("normal row has an emitted confirmation toggle")
-    };
-    let opened = super::super::home_fixture::evaluate_handler(
-        "src/topcoat/native/files/delete_feedback.test.cjs",
-        &serde_json::json!({"phase":"open", "mount":mount,
+    let mut signals = {
+        let buttons = scraper::Selector::parse("button").unwrap();
+        let initial = scraper::Html::parse_document(&initial_html);
+        let opener = if orphan {
+            initial
+                .select(&buttons)
+                .find(|button| {
+                    button
+                        .text()
+                        .collect::<String>()
+                        .contains("Pending cleanup")
+                })
+                .and_then(|button| button.value().attr("data-topcoat-on:click"))
+                .expect("Pending cleanup section has an emitted toggle")
+        } else {
+            initial
+                .select(&scraper::Selector::parse("button[title='Delete a-screen.png']").unwrap())
+                .next()
+                .and_then(|button| button.value().attr("data-topcoat-on:click"))
+                .expect("normal row has an emitted confirmation toggle")
+        };
+        let opened = super::super::home_fixture::evaluate_handler(
+            "src/topcoat/native/files/delete_feedback.test.cjs",
+            &serde_json::json!({"phase":"open", "mount":mount,
             "signals":super::super::home_fixture::page_signals(&initial_html), "handler":opener}),
-    );
-    let mut signals = opened["signals"].as_object().unwrap().clone();
+        );
+        opened["signals"].as_object().unwrap().clone()
+    };
     if orphan {
         let (status, expanded_html) =
             document(fixture, mount, "/ACC/files", true, Some(signals)).await;
         assert_eq!(status, StatusCode::OK);
-        let expanded = scraper::Html::parse_document(&expanded_html);
-        let toggle = expanded
-            .select(&buttons)
-            .find(|button| button.value().attr("title") == Some("Delete orphan.png now"))
-            .and_then(|button| button.value().attr("data-topcoat-on:click"))
-            .expect("orphan row has an emitted confirmation toggle");
-        let output = super::super::home_fixture::evaluate_handler(
-            "src/topcoat/native/files/delete_feedback.test.cjs",
-            &serde_json::json!({"phase":"open", "mount":mount,
+        signals = {
+            let buttons = scraper::Selector::parse("button").unwrap();
+            let expanded = scraper::Html::parse_document(&expanded_html);
+            let toggle = expanded
+                .select(&buttons)
+                .find(|button| button.value().attr("title") == Some("Delete orphan.png now"))
+                .and_then(|button| button.value().attr("data-topcoat-on:click"))
+                .expect("orphan row has an emitted confirmation toggle");
+            let output = super::super::home_fixture::evaluate_handler(
+                "src/topcoat/native/files/delete_feedback.test.cjs",
+                &serde_json::json!({"phase":"open", "mount":mount,
                 "signals":super::super::home_fixture::page_signals(&expanded_html), "handler":toggle}),
-        );
-        signals = output["signals"].as_object().unwrap().clone();
+            );
+            output["signals"].as_object().unwrap().clone()
+        };
     }
     let (status, confirmed_html) =
         document(fixture, mount, "/ACC/files", true, Some(signals)).await;
     assert_eq!(status, StatusCode::OK);
+    let buttons = scraper::Selector::parse("button").unwrap();
     let confirmed = scraper::Html::parse_document(&confirmed_html);
     let button = confirmed
         .select(&buttons)
@@ -372,9 +378,10 @@ async fn native_files_normal_delete_service_error_uses_real_request_and_reply_at
         let fixture = super::super::home_fixture::fixture();
         let (account, id, signals, root_handler, button_id) =
             capture_delete_handler(&fixture, mount, false).await;
-        let conn = fixture.db.write().unwrap();
-        queries::attachments::delete_attachment(&conn, id).unwrap();
-        drop(conn);
+        {
+            let conn = fixture.db.write().unwrap();
+            queries::attachments::delete_attachment(&conn, id).unwrap();
+        }
         let args = serde_json::to_value((account, id).into_surrogate()).unwrap();
         let expected_arguments = serde_json::json!([account.into_surrogate(), id.into_surrogate()]);
         let (status, reply) = procedure(&fixture, "/__native_files/delete", args.clone()).await;
@@ -416,9 +423,10 @@ async fn native_files_orphan_delete_service_error_uses_real_request_and_reply_at
         let fixture = super::super::home_fixture::fixture();
         let (account, id, signals, root_handler, button_id) =
             capture_delete_handler(&fixture, mount, true).await;
-        let conn = fixture.db.write().unwrap();
-        queries::attachments::delete_attachment(&conn, id).unwrap();
-        drop(conn);
+        {
+            let conn = fixture.db.write().unwrap();
+            queries::attachments::delete_attachment(&conn, id).unwrap();
+        }
         let args = serde_json::to_value((account, id).into_surrogate()).unwrap();
         let expected_arguments = serde_json::json!([account.into_surrogate(), id.into_surrogate()]);
         let (status, reply) = procedure(&fixture, "/__native_files/delete", args.clone()).await;
@@ -663,9 +671,10 @@ async fn native_files_delete_completion_returns_canonical_outcome_while_body_is_
         busy_html.contains("Deleting…"),
         "the server-rendered Files body reflects the pending confirmation state"
     );
-    let conn = fixture.db.write().unwrap();
-    queries::attachments::delete_attachment(&conn, id).unwrap();
-    drop(conn);
+    {
+        let conn = fixture.db.write().unwrap();
+        queries::attachments::delete_attachment(&conn, id).unwrap();
+    }
     let (status, reply) = procedure(&fixture, "/__native_files/delete", arguments).await;
     assert_eq!(
         status,
@@ -799,10 +808,11 @@ async fn native_files_delete_rechecks_account_and_current_project_authority() {
             .contains("only the uploader, a project maintainer, or an admin"),
         "the safe service failure remains distinguishable from success"
     );
-    let conn = fixture.db.write().unwrap();
-    assert!(queries::attachments::get_attachment(&conn, attachment_id).is_ok());
-    queries::users::delete_session(&conn, &fixture.token).unwrap();
-    drop(conn);
+    {
+        let conn = fixture.db.write().unwrap();
+        assert!(queries::attachments::get_attachment(&conn, attachment_id).is_ok());
+        queries::users::delete_session(&conn, &fixture.token).unwrap();
+    }
     let revoked_args = serde_json::to_value((account, attachment_id).into_surrogate()).unwrap();
     let (status, _) = procedure(&fixture, "/__native_files/delete", revoked_args).await;
     assert_eq!(
