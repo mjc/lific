@@ -21,6 +21,14 @@ pub(super) struct Outcome {
     pub seq: Option<i64>,
 }
 
+#[record]
+#[derive(Clone)]
+pub(super) struct StatusOutcome {
+    pub status: Result<String, String>,
+    pub page_status: Option<String>,
+    pub seq: Option<i64>,
+}
+
 #[procedure("/__native_pages/create")]
 pub(super) async fn create(
     cx: &Cx,
@@ -102,6 +110,64 @@ pub(super) async fn save(
     })
 }
 
+#[procedure("/__native_pages/status")]
+pub(super) async fn set_status(
+    cx: &Cx,
+    account: i64,
+    page_id: i64,
+    status: String,
+    expected_seq: i64,
+) -> topcoat::Result<StatusOutcome> {
+    let caller = session::read(cx, context::caller(cx))?;
+    match crate::api::require_user(&caller.identity) {
+        Ok(user) if user.id == account => {}
+        Ok(_) => return Ok(failed_status("forbidden")),
+        Err(LificError::Forbidden(message)) if message == "authentication required" => {
+            return Ok(failed_status("reauth"));
+        }
+        Err(error) => return Ok(classify_status(error)),
+    }
+    if !matches!(
+        status.as_str(),
+        "draft" | "active" | "complete" | "archived"
+    ) {
+        return Ok(failed_status("Invalid page status."));
+    }
+    let result = caller
+        .scope(async {
+            crate::services::pages::commit_update(
+                context::db(cx),
+                app_context::<RealtimeHub>(cx),
+                &caller.identity,
+                page_id,
+                UpdatePage {
+                    status: Some(status),
+                    expected_seq: Some(expected_seq),
+                    ..Default::default()
+                },
+            )
+        })
+        .await;
+    Ok(match result {
+        Ok(page) => StatusOutcome {
+            status: Ok("saved".into()),
+            page_status: Some(page.status),
+            seq: Some(page.seq),
+        },
+        Err(LificError::UpdateConflict { current, .. }) => {
+            match serde_json::from_value::<Page>(*current) {
+                Ok(page) => StatusOutcome {
+                    status: Err("conflict".into()),
+                    page_status: Some(page.status),
+                    seq: Some(page.seq),
+                },
+                Err(error) => failed_status(&format!("Couldn't read conflicting page: {error}")),
+            }
+        }
+        Err(error) => classify_status(error),
+    })
+}
+
 #[procedure("/__native_pages/delete")]
 pub(super) async fn delete(cx: &Cx, account: i64, page_id: i64) -> topcoat::Result<Outcome> {
     let caller = session::read(cx, context::caller(cx))?;
@@ -151,6 +217,23 @@ fn failed(message: &str) -> Outcome {
         identifier: None,
         title: None,
         content: None,
+        seq: None,
+    }
+}
+
+fn failed_status(message: &str) -> StatusOutcome {
+    StatusOutcome {
+        status: Err(message.into()),
+        page_status: None,
+        seq: None,
+    }
+}
+
+fn classify_status(error: LificError) -> StatusOutcome {
+    let outcome = classify(error);
+    StatusOutcome {
+        status: outcome.status,
+        page_status: None,
         seq: None,
     }
 }

@@ -4,6 +4,7 @@ use super::super::super::runtime::whitespace::{
 };
 use super::super::{context, mascot, navigation, session, transport};
 use super::actions::{create as create_page, delete as delete_page, save as save_page};
+use super::status;
 use crate::{db::models::Page as PageModel, error::LificError};
 use topcoat::{
     context::Cx,
@@ -541,7 +542,7 @@ fn page_matches_filters(
     status.is_empty() || status == "__active" && page.status != "archived" || page.status == status
 }
 
-fn status_label(status: &str) -> &'static str {
+pub(super) fn status_label(status: &str) -> &'static str {
     match status {
         "draft" => "Draft",
         "active" => "Active",
@@ -752,7 +753,7 @@ async fn page_detail(
         body.clone(),
         title_draft.clone(),
         body_draft.clone(),
-        seq,
+        seq.clone(),
         title_editing.clone(),
         body_editing.clone(),
         busy.clone(),
@@ -818,6 +819,17 @@ async fn page_detail(
                         </h1>
                     }
                 </div>
+                (status::detail(
+                    cx,
+                    page.status.clone(),
+                    status::State::new(
+                        account,
+                        page.id,
+                        seq.clone(),
+                        busy.clone(),
+                        can_edit,
+                    ),
+                ))
                 if can_edit {
                     <button
                         type="button"
