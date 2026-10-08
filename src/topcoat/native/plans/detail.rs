@@ -924,7 +924,7 @@ fn description_form<'a>(
                     :value=$(draft.get())
                     @input=$(move |event: Event| draft.set(event.target.value))
                     placeholder="Describe this step… (markdown supported)"
-                />
+                ></textarea>
                 <div class="flex items-center gap-2 mt-1">
                     <button
                         class="text-caption font-medium text-[var(--accent-text)] bg-[var(--accent)] px-2 py-1 rounded-md"
@@ -1615,9 +1615,20 @@ mod tests {
             (project_id, role, plan)
         };
         let clear = document.select(&selector).next();
+        let labels = document
+            .select(&scraper::Selector::parse("button[aria-label]").unwrap())
+            .filter_map(|button| button.value().attr("aria-label"))
+            .collect::<Vec<_>>();
+        assert!(
+            document
+                .select(&scraper::Selector::parse("textarea + div").unwrap())
+                .next()
+                .is_some(),
+            "step description textarea closes before following controls",
+        );
         assert!(
             clear.is_some(),
-            "maintainer clear control missing: project_id={project_id}, role={role}, plan.issue_id={:?}, anchor_identifier={:?}; HTML={html}",
+            "maintainer clear control missing: project_id={project_id}, role={role}, plan.issue_id={:?}, anchor_identifier={:?}, button labels={labels:?}",
             current_plan.issue_id,
             current_plan.anchor_identifier,
         );
