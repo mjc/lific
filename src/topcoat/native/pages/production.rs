@@ -13,6 +13,17 @@ fn label_text(chip: scraper::ElementRef<'_>) -> String {
         .collect()
 }
 
+fn serialized_i64(value: &serde_json::Value) -> i64 {
+    value
+        .as_i64()
+        .or_else(|| value.as_str()?.parse().ok())
+        .expect("the serialized value is an integer")
+}
+
+fn shard_revision(shard: &serde_json::Value) -> i64 {
+    serialized_i64(&shard["args"][1])
+}
+
 #[tokio::test]
 async fn native_page_detail_hydrates_status_and_emits_status_write() {
     use topcoat::runtime::Surrogated;
@@ -47,6 +58,7 @@ async fn native_page_detail_hydrates_status_and_emits_status_write() {
         .value()
         .attr("data-topcoat-on:change")
         .expect("status changes have an emitted Topcoat handler");
+    let activity_marker = shard_marker(&html, "/__native_pages/activity");
     let title_input = document
         .select(&scraper::Selector::parse("input[aria-label='Page title']").unwrap())
         .next()
@@ -90,9 +102,27 @@ async fn native_page_detail_hydrates_status_and_emits_status_write() {
         "body_binding": body_binding,
         "expected_seq": expected_seq,
         "status": "active",
+        "shard_marker": activity_marker,
         "reply": outcome,
     }));
     assert_eq!(completion["requests"], 1);
+    let activity_shard = &completion["activity_shard"];
+    assert_eq!(activity_shard["path"], "/__native_pages/activity");
+    assert_eq!(
+        shard_revision(activity_shard),
+        serialized_i64(&outcome["v"]["seq"])
+    );
+    let (activity_status, activity_html) = replay_activity_shard(
+        &fixture,
+        activity_shard["identity"].as_str().unwrap(),
+        activity_shard["args"].clone(),
+    )
+    .await;
+    assert_eq!(activity_status, StatusCode::OK);
+    assert!(
+        activity_html.to_lowercase().contains("active"),
+        "the refreshed activity shard contains the committed status event: {activity_html}",
+    );
     let page = queries::get_page(&fixture.db.read().unwrap(), page_id).unwrap();
     assert_eq!(page.status, "active");
     assert_eq!(page.title, "Page metadata test");
@@ -124,6 +154,7 @@ async fn native_page_detail_hydrates_status_and_emits_status_write() {
         "body_binding": body_binding,
         "expected_seq": expected_seq,
         "status": "complete",
+        "shard_marker": activity_marker,
         "reply": conflict,
     }));
     run_status_handler(&serde_json::json!({
@@ -136,6 +167,7 @@ async fn native_page_detail_hydrates_status_and_emits_status_write() {
         "body_binding": body_binding,
         "expected_seq": expected_seq,
         "status": "archived",
+        "shard_marker": activity_marker,
     }));
     run_status_handler(&serde_json::json!({
         "scenario": "retired",
@@ -147,6 +179,7 @@ async fn native_page_detail_hydrates_status_and_emits_status_write() {
         "body_binding": body_binding,
         "expected_seq": expected_seq,
         "status": "active",
+        "shard_marker": activity_marker,
         "reply": outcome,
     }));
 }
@@ -720,6 +753,7 @@ async fn native_page_label_handlers_reconcile_real_owner_replies_at_every_mount(
         .await;
         assert_eq!(status, StatusCode::OK);
         let document = scraper::Html::parse_document(&html);
+        let activity_marker = shard_marker(&html, "/__native_pages/activity");
         let labels = document
             .select(&scraper::Selector::parse("[data-native-page-labels]").unwrap())
             .next()
@@ -879,9 +913,21 @@ async fn native_page_label_handlers_reconcile_real_owner_replies_at_every_mount(
                     "wrong_account_reply": make_reply(account + 1, page_id),
                     "wrong_page_reply": make_reply(account, page_id + 1),
                     "reply": reply,
+                    "shard_marker": activity_marker,
+                    "activity_seq": saved.seq,
                 }],
             }),
         );
+        let activity_shard = &applied["activity_shard"];
+        assert_eq!(shard_revision(activity_shard), saved.seq);
+        let (activity_status, activity_html) = replay_activity_shard(
+            &fixture,
+            activity_shard["identity"].as_str().unwrap(),
+            activity_shard["args"].clone(),
+        )
+        .await;
+        assert_eq!(activity_status, StatusCode::OK);
+        assert!(activity_html.contains("Available"));
         let applied_signals: serde_json::Map<String, serde_json::Value> =
             serde_json::from_value(applied["signals"].clone()).expect("applied page signals");
         let (status, refreshed_html) = home_fixture::document(
@@ -1094,6 +1140,7 @@ async fn native_page_detail_pins_and_unpins_through_the_production_route() {
         .attr("data-topcoat-bind:aria-pressed")
         .expect("the pin control reflects its owned value");
     let signals = home_fixture::page_signals(&html);
+    let activity_marker = shard_marker(&html, "/__native_pages/activity");
 
     let emitted = run_pin_handler(&serde_json::json!({
         "scenario": "capture",
@@ -1104,6 +1151,7 @@ async fn native_page_detail_pins_and_unpins_through_the_production_route() {
         "body_binding": body_binding,
         "expected_seq": expected_seq,
         "pinned": true,
+        "shard_marker": activity_marker,
     }));
     let arguments = emitted["arguments"].clone();
     let expected_arguments = (account, page_id, true, expected_seq).into_surrogate();
@@ -1134,9 +1182,23 @@ async fn native_page_detail_pins_and_unpins_through_the_production_route() {
         "body_binding": body_binding,
         "expected_seq": expected_seq,
         "pinned": true,
+        "shard_marker": activity_marker,
         "reply": outcome,
     }));
     assert_eq!(completion["requests"], 1);
+    let activity_shard = &completion["activity_shard"];
+    assert_eq!(
+        shard_revision(activity_shard),
+        serialized_i64(&outcome["v"]["seq"])
+    );
+    let (activity_status, activity_html) = replay_activity_shard(
+        &fixture,
+        activity_shard["identity"].as_str().unwrap(),
+        activity_shard["args"].clone(),
+    )
+    .await;
+    assert_eq!(activity_status, StatusCode::OK);
+    assert!(activity_html.to_lowercase().contains("pin"));
     let page = queries::get_page(&fixture.db.read().unwrap(), page_id).unwrap();
     assert!(page.pinned);
     assert_eq!(page.title, "Page metadata test");
@@ -1172,6 +1234,7 @@ async fn native_page_detail_pins_and_unpins_through_the_production_route() {
         "title_binding": title_binding,
         "body_binding": body_binding,
         "expected_seq": expected_seq,
+        "shard_marker": activity_marker,
         "reply": conflict,
     }));
     run_pin_handler(&serde_json::json!({
@@ -1182,6 +1245,7 @@ async fn native_page_detail_pins_and_unpins_through_the_production_route() {
         "title_binding": title_binding,
         "body_binding": body_binding,
         "expected_seq": expected_seq,
+        "shard_marker": activity_marker,
     }));
     run_pin_handler(&serde_json::json!({
         "scenario": "retired",
@@ -3122,6 +3186,54 @@ fn run_status_handler(input: &serde_json::Value) -> serde_json::Value {
     home_fixture::evaluate_handler("src/topcoat/native/pages/status_handler.test.cjs", input)
 }
 
+pub(super) fn shard_marker(html: &str, path: &str) -> String {
+    let document = scraper::Html::parse_document(html);
+    document
+        .tree
+        .nodes()
+        .find_map(|node| match node.value() {
+            scraper::Node::Comment(comment)
+                if comment.starts_with("::topcoat::shard::start(") && comment.contains(path) =>
+            {
+                Some(comment.to_owned())
+            }
+            _ => None,
+        })
+        .expect("the authenticated Page SSR emits its activity shard marker")
+}
+
+pub(super) async fn replay_activity_shard(
+    fixture: &home_fixture::Fixture,
+    identity: &str,
+    arguments: serde_json::Value,
+) -> (StatusCode, String) {
+    use axum::{body::Body, http::Request};
+    use topcoat::router::request::IDENTITY_HEADER;
+    use tower::ServiceExt;
+
+    let mut request = Request::builder()
+        .method("POST")
+        .uri("/__native_pages/activity")
+        .header("host", "localhost")
+        .header("origin", "http://localhost")
+        .header("content-type", "application/json")
+        .header("cookie", format!("lific_token={}", fixture.token))
+        .header(IDENTITY_HEADER, identity)
+        .body(Body::from(
+            serde_json::json!({"args": arguments, "signals": {}}).to_string(),
+        ))
+        .unwrap();
+    request.extensions_mut().insert(axum::extract::ConnectInfo(
+        "127.0.0.1:3000".parse::<std::net::SocketAddr>().unwrap(),
+    ));
+    let response = fixture.app.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (status, String::from_utf8(bytes.to_vec()).unwrap())
+}
+
 fn pin_control(document: &scraper::Html) -> scraper::ElementRef<'_> {
     document
         .select(&scraper::Selector::parse("button[data-native-page-pin]").unwrap())
@@ -3294,7 +3406,21 @@ async fn assert_remounted_label_reply_preserves_current_state(
 async fn native_page_detail_renders_latest_100_authorized_activity_before_page_metadata() {
     let fixture = home_fixture::fixture();
     let (page_id, account, _) = seed_page(&fixture, true);
-    let (other_id, _, _) = seed_page(&fixture, true);
+    let other_id = {
+        let conn = fixture.db.write().unwrap();
+        let private_project = queries::resolve_project_identifier(&conn, "HIDE").unwrap();
+        queries::create_page(
+            &conn,
+            &CreatePage {
+                project_id: Some(private_project),
+                title: "Foreign page activity sentinel".into(),
+                content: "Private foreign page".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .id
+    };
     {
         let conn = fixture.db.write().unwrap();
         for index in 0..101 {
@@ -3422,6 +3548,143 @@ async fn native_page_activity_omits_an_empty_feed() {
 }
 
 #[tokio::test]
+async fn native_page_activity_shard_rechecks_account_role_and_page_scope() {
+    let fixture = home_fixture::fixture();
+    let (page_id, account, _) = seed_page(&fixture, true);
+    let foreign_page_id = {
+        let conn = fixture.db.write().unwrap();
+        let private_project = queries::resolve_project_identifier(&conn, "HIDE").unwrap();
+        let foreign = queries::create_page(
+            &conn,
+            &CreatePage {
+                project_id: Some(private_project),
+                title: "Foreign page activity sentinel".into(),
+                content: "Private foreign page".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        queries::update_page(
+            &conn,
+            foreign.id,
+            &UpdatePage {
+                content: Some("Foreign page activity sentinel".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        foreign.id
+    };
+    {
+        let conn = fixture.db.write().unwrap();
+        queries::update_page(
+            &conn,
+            page_id,
+            &UpdatePage {
+                content: Some("Owner scoped activity marker".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    }
+    let (status, html) =
+        home_fixture::document(&fixture, "", &format!("/ACC/pages/{page_id}"), true, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let document = scraper::Html::parse_document(&html);
+    let status_control = document
+        .select(&scraper::Selector::parse("select[data-native-page-status]").unwrap())
+        .next()
+        .unwrap();
+    let title = document
+        .select(&scraper::Selector::parse("input[aria-label='Page title']").unwrap())
+        .next()
+        .unwrap();
+    let body = document
+        .select(
+            &scraper::Selector::parse("textarea[aria-label='Page content in Markdown']").unwrap(),
+        )
+        .next()
+        .unwrap();
+    let marker = shard_marker(&html, "/__native_pages/activity");
+    let emitted = run_status_handler(&serde_json::json!({
+        "scenario": "capture_shard",
+        "handler": status_control.value().attr("data-topcoat-on:change").unwrap(),
+        "signals": home_fixture::page_signals(&html),
+        "title_binding": title.value().attr("data-topcoat-bind:value").unwrap(),
+        "body_binding": body.value().attr("data-topcoat-bind:value").unwrap(),
+        "shard_marker": marker,
+    }));
+    let shard = &emitted["activity_shard"];
+    assert_eq!(shard["path"], "/__native_pages/activity");
+    assert_eq!(shard["args"][0], serde_json::json!([account, page_id]));
+    let expected_seq = queries::get_page(&fixture.db.read().unwrap(), page_id)
+        .unwrap()
+        .seq;
+    assert_eq!(shard_revision(shard), expected_seq);
+
+    // Page activity is available at Viewer role. The same SSR shard marker is
+    // replayed after demotion, so authorization is checked when the shard runs.
+    {
+        let conn = fixture.db.write().unwrap();
+        let project_id = queries::resolve_project_identifier(&conn, "ACC").unwrap();
+        conn.execute(
+            "UPDATE project_members SET role='viewer' WHERE project_id=?1 AND user_id=?2",
+            rusqlite::params![project_id, account],
+        )
+        .unwrap();
+    }
+    let (status, feed) = replay_activity_shard(
+        &fixture,
+        shard["identity"].as_str().unwrap(),
+        shard["args"].clone(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(feed.contains("Owner scoped activity marker"));
+    assert!(!feed.contains("Foreign page activity sentinel"));
+
+    let mut wrong_account_args = shard["args"].clone();
+    wrong_account_args[0][0] = serde_json::json!(account + 100);
+    let (status, body) = replay_activity_shard(
+        &fixture,
+        shard["identity"].as_str().unwrap(),
+        wrong_account_args,
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK);
+    assert!(!body.contains("Owner scoped activity marker"));
+
+    let mut foreign_page_args = shard["args"].clone();
+    foreign_page_args[0][1] = serde_json::json!(foreign_page_id);
+    let (status, body) = replay_activity_shard(
+        &fixture,
+        shard["identity"].as_str().unwrap(),
+        foreign_page_args,
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK);
+    assert!(!body.contains("Foreign page activity sentinel"));
+
+    {
+        let conn = fixture.db.write().unwrap();
+        let project_id = queries::resolve_project_identifier(&conn, "ACC").unwrap();
+        conn.execute(
+            "DELETE FROM project_members WHERE project_id=?1 AND user_id=?2",
+            rusqlite::params![project_id, account],
+        )
+        .unwrap();
+    }
+    let (status, body) = replay_activity_shard(
+        &fixture,
+        shard["identity"].as_str().unwrap(),
+        shard["args"].clone(),
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK);
+    assert!(!body.contains("Owner scoped activity marker"));
+}
+
+#[tokio::test]
 async fn native_page_activity_shared_timeline_replays_emitted_recent_and_diff_handlers() {
     let fixture = home_fixture::fixture();
     let (page_id, _, _) = seed_page(&fixture, true);
@@ -3453,7 +3716,7 @@ async fn native_page_activity_shared_timeline_replays_emitted_recent_and_diff_ha
         let activity = document
             .select(&scraper::Selector::parse("[data-native-issue-activity]").unwrap())
             .next()
-            .unwrap();
+            .expect("real PageDetail SSR includes the shared timeline for seeded history");
         let rows = activity
             .select(&scraper::Selector::parse("li[data-activity-id]").unwrap())
             .collect::<Vec<_>>();

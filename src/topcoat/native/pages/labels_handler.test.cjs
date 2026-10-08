@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const {handlerFixture} = require('../handler_fixture.cjs');
+const {emittedShard} = require('./activity_shard_fixture.cjs');
 
 const input = JSON.parse(fs.readFileSync(0, 'utf8'));
 const output = {};
@@ -142,6 +143,12 @@ async function run(phase) {
     }
     output.request = plain(requests[0].detail);
     output.signals = signalValues();
+    if (phase.shard_marker) {
+      const activity = emittedShard(phase.shard_marker, context, cx, plain);
+      assert.equal(String(activity.args[1]), String(phase.activity_seq),
+        'the emitted activity shard dependency reads the canonical sequence after label success');
+      output.activity_shard = activity;
+    }
   } else if (phase.mode === 'applied') {
     const before = signalValues();
     dispatchReply(phase.wrong_account_reply);

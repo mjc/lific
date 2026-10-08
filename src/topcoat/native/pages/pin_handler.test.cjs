@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const {handlerFixture} = require('../handler_fixture.cjs');
+const {emittedShard} = require('./activity_shard_fixture.cjs');
 
 const input = JSON.parse(fs.readFileSync(0, 'utf8'));
 const requests = [];
@@ -21,6 +22,10 @@ const fixture = handlerFixture(input.signals, (url, options) => {
   return Promise.resolve({ok: true, json: async () => input.reply});
 }, input.browser_source);
 const {cx, context, controller} = fixture;
+const plain = value => {
+  if (value && typeof value.dehydrate === 'function') value = value.dehydrate();
+  return JSON.parse(JSON.stringify(value));
+};
 const referencedSignals = new Set();
 const signal = cx.signal.bind(cx);
 cx.signal = id => {
@@ -60,9 +65,13 @@ if (input.scenario !== 'capture') {
   cx.signal(titleSignal).set(cx.hydrate('Unsaved title draft'));
   cx.signal(bodySignal).set(cx.hydrate('Unsaved body draft'));
 }
-handler(cx.event({type: 'click', target: {}}));
+if (input.scenario !== 'capture_shard') handler(cx.event({type: 'click', target: {}}));
 
 async function run() {
+  if (input.scenario === 'capture_shard') {
+    process.stdout.write(JSON.stringify({activity_shard: emittedShard(input.shard_marker, context, cx, plain)}));
+    return;
+  }
   const disposed = handlerFixture(input.signals, () => {
     assert.fail('a disposed pin control must not submit a request');
   }, input.browser_source);
@@ -76,7 +85,14 @@ async function run() {
   for (let attempt = 0; attempt < 60; attempt += 1) await Promise.resolve();
   assert.equal(requests.length, 1, 'one pin click sends one typed procedure request');
   if (input.scenario === 'capture') {
-    process.stdout.write(JSON.stringify({arguments: requests[0]}));
+    const captured = {arguments: requests[0]};
+    if (input.shard_marker) {
+      const activity = emittedShard(input.shard_marker, context, cx, plain);
+      assert.equal(String(activity.args[1]), String(input.expected_seq),
+        'an optimistic pin change does not advance the emitted activity shard dependency');
+      captured.activity_shard = activity;
+    }
+    process.stdout.write(JSON.stringify(captured));
     return;
   }
   if (input.scenario === 'retired') {
@@ -96,6 +112,13 @@ async function run() {
       'success adopts the sequence from the typed production reply');
     assert.equal(value(titleSignal), 'Unsaved title draft');
     assert.equal(value(bodySignal), 'Unsaved body draft');
+    if (input.shard_marker) {
+      const activity = emittedShard(input.shard_marker, context, cx, plain);
+      assert.equal(String(activity.args[1]), String(unbox(input.reply.v.seq)),
+        'the emitted activity shard dependency reads the committed shared editor sequence');
+      process.stdout.write(JSON.stringify({requests: requests.length, activity_shard: activity}));
+      return;
+    }
   } else if (input.scenario === 'conflict') {
     assert.equal(String(value(pinSignal)), 'false',
       'a conflict restores the current local pin value');
@@ -105,6 +128,11 @@ async function run() {
       const current = value(id);
       return typeof current === 'string' && current.includes('changed elsewhere');
     }), 'the conflict is visible while the editor is closed');
+    if (input.shard_marker) {
+      const activity = emittedShard(input.shard_marker, context, cx, plain);
+      assert.equal(String(activity.args[1]), String(input.expected_seq),
+        'a conflict does not advance the emitted activity shard dependency');
+    }
   } else if (input.scenario === 'transport_failure') {
     assert.equal(String(value(pinSignal)), 'false',
       'a transport failure restores the local pin value');
@@ -114,6 +142,11 @@ async function run() {
       const current = value(id);
       return typeof current === 'string' && current.includes("Couldn't save");
     }), 'the transport failure remains visible');
+    if (input.shard_marker) {
+      const activity = emittedShard(input.shard_marker, context, cx, plain);
+      assert.equal(String(activity.args[1]), String(input.expected_seq),
+        'a transport failure does not advance the emitted activity shard dependency');
+    }
   }
   process.stdout.write(JSON.stringify({requests: requests.length}));
 }

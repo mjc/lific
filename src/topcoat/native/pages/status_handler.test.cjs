@@ -7,9 +7,11 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const {handlerFixture} = require('../handler_fixture.cjs');
+const {emittedShard} = require('./activity_shard_fixture.cjs');
 
 const input = JSON.parse(fs.readFileSync(0, 'utf8'));
 const requests = [];
+const output = {};
 let finishRequest;
 const fixture = handlerFixture(input.signals, (url, options) => {
     const path = new URL(url, 'http://localhost').pathname;
@@ -39,10 +41,13 @@ const bindingSignal = source => {
 const handler = fixture.handler(input.handler);
 const titleSignal = bindingSignal(input.title_binding);
 const bodySignal = bindingSignal(input.body_binding);
-
 const unbox = value => {
   while (value !== null && typeof value === 'object' && Object.hasOwn(value, 'v')) value = value.v;
   return value;
+};
+const plain = value => {
+  if (value && typeof value.dehydrate === 'function') value = value.dehydrate();
+  return JSON.parse(JSON.stringify(value));
 };
 const signalValues = () => Object.keys(input.signals).map(id => unbox(cx.signal(id).dehydrate()));
 const referencedValues = () => [...referencedSignals].map(id => unbox(cx.signal(id).dehydrate()));
@@ -52,13 +57,19 @@ const sequenceSignal = () => {
   assert.equal(candidates.length, 1, 'the emitted handler references one page sequence signal');
   return candidates[0];
 };
-if (input.scenario !== 'capture') {
+if (input.scenario !== 'capture' && input.scenario !== 'capture_shard') {
   cx.signal(titleSignal).set(cx.hydrate('Unsaved title draft'));
   cx.signal(bodySignal).set(cx.hydrate('Unsaved body draft'));
 }
-handler(cx.event({type: 'change', target: {value: input.status}}));
+if (input.scenario !== 'capture_shard') {
+  handler(cx.event({type: 'change', target: {value: input.status}}));
+}
 
 async function run() {
+  if (input.scenario === 'capture_shard') {
+    process.stdout.write(JSON.stringify({activity_shard: emittedShard(input.shard_marker, context, cx, plain)}));
+    return;
+  }
   for (let attempt = 0; attempt < 60; attempt += 1) await Promise.resolve();
   assert.equal(requests.length, 1, 'one status selection sends one typed procedure request');
   if (input.scenario === 'capture') {
@@ -82,6 +93,13 @@ async function run() {
       'success adopts the sequence from the typed production reply');
     assert.equal(unbox(cx.signal(titleSignal).dehydrate()), 'Unsaved title draft');
     assert.equal(unbox(cx.signal(bodySignal).dehydrate()), 'Unsaved body draft');
+    if (input.shard_marker) {
+      const activity = emittedShard(input.shard_marker, context, cx, plain);
+      assert.equal(activity.path, '/__native_pages/activity');
+      assert.equal(String(activity.args[1]), String(unbox(input.reply.v.seq)),
+        'the emitted activity shard dependency reads the committed shared editor sequence');
+      output.activity_shard = activity;
+    }
   } else if (input.scenario === 'conflict') {
     assert.ok(referencedValues().includes('draft'),
       'a conflict restores the locally selected status');
@@ -89,6 +107,12 @@ async function run() {
       'a conflict never adopts the unseen remote sequence');
     assert.ok(referencedValues().some(value => typeof value === 'string' && value.includes('changed elsewhere')),
       'the conflict is visible while the editor is closed');
+    if (input.shard_marker) {
+      const activity = emittedShard(input.shard_marker, context, cx, plain);
+      assert.equal(String(activity.args[1]), String(input.expected_seq),
+        'a conflict does not advance the emitted activity shard dependency');
+      output.activity_shard = activity;
+    }
   } else if (input.scenario === 'transport_failure') {
     assert.ok(referencedValues().includes('draft'),
       'a transport failure restores the locally selected status');
@@ -96,7 +120,15 @@ async function run() {
       'a transport failure cannot advance the sequence');
     assert.ok(referencedValues().some(value => typeof value === 'string' && value.includes("Couldn't save")),
       'the transport failure remains visible');
+    if (input.shard_marker) {
+      const activity = emittedShard(input.shard_marker, context, cx, plain);
+      assert.equal(String(activity.args[1]), String(input.expected_seq),
+        'a transport failure does not advance the emitted activity shard dependency');
+      output.activity_shard = activity;
+    }
   }
-  process.stdout.write(JSON.stringify({requests: requests.length, signals: signalValues()}));
+  output.requests = requests.length;
+  output.signals = signalValues();
+  process.stdout.write(JSON.stringify(output));
 }
 run().catch(error => { process.stderr.write(`${error.stack}\n`); process.exitCode = 1; });
