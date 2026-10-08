@@ -197,7 +197,10 @@ async fn native_page_detail_pins_and_unpins_through_the_production_route() {
     let document = scraper::Html::parse_document(&html);
     let control = pin_control(&document);
     assert_eq!(control.text().collect::<String>(), "Pin");
-    assert_eq!(control.value().attr("title"), Some("Pin to top of the page list"));
+    assert_eq!(
+        control.value().attr("title"),
+        Some("Pin to top of the page list")
+    );
     let handler = control
         .value()
         .attr("data-topcoat-on:click")
@@ -210,7 +213,9 @@ async fn native_page_detail_pins_and_unpins_through_the_production_route() {
         .attr("data-topcoat-bind:value")
         .unwrap();
     let body_binding = document
-        .select(&scraper::Selector::parse("textarea[aria-label='Page content in Markdown']").unwrap())
+        .select(
+            &scraper::Selector::parse("textarea[aria-label='Page content in Markdown']").unwrap(),
+        )
         .next()
         .unwrap()
         .value()
@@ -238,9 +243,20 @@ async fn native_page_detail_pins_and_unpins_through_the_production_route() {
     let (status, outcome) =
         home_fixture::procedure(&fixture, "/__native_pages/pin", arguments.clone()).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(outcome["t"], "Record");
-    assert_eq!(outcome["v"]["status"]["ok"], "saved");
-    assert_eq!(outcome["v"]["pinned"]["v"], true);
+    let saved = queries::get_page(&fixture.db.read().unwrap(), page_id).unwrap();
+    assert_eq!(
+        outcome,
+        serde_json::to_value(
+            super::actions::MetadataOutcome {
+                status: Ok("saved".into()),
+                page_status: Some(saved.status.clone()),
+                pinned: Some(true),
+                seq: Some(saved.seq),
+            }
+            .into_surrogate(),
+        )
+        .unwrap(),
+    );
     let completion = run_pin_handler(&serde_json::json!({
         "scenario": "success",
         "handler": handler,
@@ -257,6 +273,58 @@ async fn native_page_detail_pins_and_unpins_through_the_production_route() {
     assert!(page.pinned);
     assert_eq!(page.title, "Page metadata test");
     assert_eq!(page.content, "Original body");
+
+    let stale = (account, page_id, false, expected_seq).into_surrogate();
+    let (status, conflict) = home_fixture::procedure(
+        &fixture,
+        "/__native_pages/pin",
+        serde_json::to_value(stale).unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let conflict_page = queries::get_page(&fixture.db.read().unwrap(), page_id).unwrap();
+    assert_eq!(
+        conflict,
+        serde_json::to_value(
+            super::actions::MetadataOutcome {
+                status: Err("conflict".into()),
+                page_status: Some(conflict_page.status.clone()),
+                pinned: Some(conflict_page.pinned),
+                seq: Some(conflict_page.seq),
+            }
+            .into_surrogate(),
+        )
+        .unwrap(),
+    );
+    run_pin_handler(&serde_json::json!({
+        "scenario": "conflict",
+        "handler": handler,
+        "signals": home_fixture::page_signals(&html),
+        "pin_binding": pin_binding,
+        "title_binding": title_binding,
+        "body_binding": body_binding,
+        "expected_seq": expected_seq,
+        "reply": conflict,
+    }));
+    run_pin_handler(&serde_json::json!({
+        "scenario": "transport_failure",
+        "handler": handler,
+        "signals": home_fixture::page_signals(&html),
+        "pin_binding": pin_binding,
+        "title_binding": title_binding,
+        "body_binding": body_binding,
+        "expected_seq": expected_seq,
+    }));
+    run_pin_handler(&serde_json::json!({
+        "scenario": "retired",
+        "handler": handler,
+        "signals": home_fixture::page_signals(&html),
+        "pin_binding": pin_binding,
+        "title_binding": title_binding,
+        "body_binding": body_binding,
+        "expected_seq": expected_seq,
+        "reply": conflict,
+    }));
 
     let (status, pinned_html) =
         home_fixture::document(&fixture, "", &format!("/ACC/pages/{page_id}"), true, None).await;
@@ -284,9 +352,21 @@ async fn native_page_detail_pins_and_unpins_through_the_production_route() {
     let (status, unpinned) =
         home_fixture::procedure(&fixture, "/__native_pages/pin", unpin_args).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(unpinned["v"]["status"]["ok"], "saved");
-    assert_eq!(unpinned["v"]["pinned"]["v"], false);
-    assert!(!queries::get_page(&fixture.db.read().unwrap(), page_id).unwrap().pinned);
+    let saved = queries::get_page(&fixture.db.read().unwrap(), page_id).unwrap();
+    assert_eq!(
+        unpinned,
+        serde_json::to_value(
+            super::actions::MetadataOutcome {
+                status: Ok("saved".into()),
+                page_status: Some(saved.status.clone()),
+                pinned: Some(false),
+                seq: Some(saved.seq),
+            }
+            .into_surrogate(),
+        )
+        .unwrap(),
+    );
+    assert!(!saved.pinned);
 }
 
 #[tokio::test]
@@ -299,10 +379,12 @@ async fn native_page_pin_write_checks_account_and_role_and_viewers_have_no_contr
         home_fixture::document(&fixture, "", &format!("/ACC/pages/{page_id}"), true, None).await;
     assert_eq!(status, StatusCode::OK);
     let document = scraper::Html::parse_document(&html);
-    assert!(document
-        .select(&scraper::Selector::parse("button[data-native-page-pin]").unwrap())
-        .next()
-        .is_none());
+    assert!(
+        document
+            .select(&scraper::Selector::parse("button[data-native-page-pin]").unwrap())
+            .next()
+            .is_none()
+    );
 
     for caller_account in [account + 100, account] {
         let arguments = (caller_account, page_id, true, expected_seq).into_surrogate();
@@ -315,9 +397,11 @@ async fn native_page_pin_write_checks_account_and_role_and_viewers_have_no_contr
         assert_eq!(status, StatusCode::OK);
         assert_eq!(outcome["v"]["status"]["err"], "forbidden");
     }
-    assert!(!queries::get_page(&fixture.db.read().unwrap(), page_id)
-        .unwrap()
-        .pinned);
+    assert!(
+        !queries::get_page(&fixture.db.read().unwrap(), page_id)
+            .unwrap()
+            .pinned
+    );
 }
 
 fn seed_page(fixture: &home_fixture::Fixture, editable: bool) -> (i64, i64, i64) {
@@ -352,12 +436,7 @@ fn seed_page(fixture: &home_fixture::Fixture, editable: bool) -> (i64, i64, i64)
 }
 
 fn run_status_handler(input: &serde_json::Value) -> serde_json::Value {
-    let mut input = input.clone();
-    input["browser_source"] = serde_json::json!(super::super::shell_handlers::source_named(
-        "browser",
-        super::super::browser::factory(),
-    ));
-    home_fixture::evaluate_handler("src/topcoat/native/pages/status_handler.test.cjs", &input)
+    home_fixture::evaluate_handler("src/topcoat/native/pages/status_handler.test.cjs", input)
 }
 
 fn pin_control(document: &scraper::Html) -> scraper::ElementRef<'_> {
@@ -368,12 +447,7 @@ fn pin_control(document: &scraper::Html) -> scraper::ElementRef<'_> {
 }
 
 fn run_pin_handler(input: &serde_json::Value) -> serde_json::Value {
-    let mut input = input.clone();
-    input["browser_source"] = serde_json::json!(super::super::shell_handlers::source_named(
-        "browser",
-        super::super::browser::factory(),
-    ));
-    home_fixture::evaluate_handler("src/topcoat/native/pages/pin_handler.test.cjs", &input)
+    home_fixture::evaluate_handler("src/topcoat/native/pages/pin_handler.test.cjs", input)
 }
 
 fn seed_page_sequence(fixture: &home_fixture::Fixture, page_id: i64) -> (i64, i64) {

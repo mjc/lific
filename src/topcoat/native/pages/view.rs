@@ -819,17 +819,28 @@ async fn page_detail(
                         </h1>
                     }
                 </div>
-                (status::detail(
-                    cx,
-                    page.status.clone(),
-                    status::State::new(
+                <div class="mb-6 flex flex-wrap items-center gap-4">
+                    (pin::detail(
+                        cx,
+                        page.pinned,
                         account,
                         page.id,
                         seq.clone(),
                         busy.clone(),
                         can_edit,
-                    ),
-                ))
+                    ))
+                    (status::detail(
+                        cx,
+                        page.status.clone(),
+                        status::State::new(
+                            account,
+                            page.id,
+                            seq.clone(),
+                            busy.clone(),
+                            can_edit,
+                        ),
+                    ))
+                </div>
                 if can_edit {
                     <button
                         type="button"

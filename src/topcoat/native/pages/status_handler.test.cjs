@@ -21,11 +21,8 @@ const fixture = handlerFixture(input.signals, (url, options) => {
     }
     if (input.scenario === 'transport_failure') return Promise.reject(new Error('offline'));
     return Promise.resolve({ok: true, json: async () => input.reply});
-});
+}, input.browser_source);
 const {cx, context, controller} = fixture;
-context.cx = cx;
-vm.runInNewContext(input.browser_source.replace(/export const (\w+)=/g, 'globalThis.$1='), context);
-context.__lificNativeMounts = {browser: owner => context.browser(owner)};
 const referencedSignals = new Set();
 const signal = cx.signal.bind(cx);
 cx.signal = id => {
