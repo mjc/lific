@@ -1215,13 +1215,15 @@ pub(super) async fn promote_user(
     headers: HeaderMap,
 ) -> Result<Json<UserListItem>, LificError> {
     require_admin(&identity)?;
-    let admin = require_user(&identity)?;
     let session_token = crate::auth::recent_session_token(&headers)?;
-    let user = db.transaction(|tx| {
-        let fresh = crate::auth::revalidate_recent_session(tx, &session_token, admin.id)?;
-        crate::auth::require_fresh_admin(&fresh)?;
-        crate::db::queries::users::set_admin_guarded(tx, id, true)
-    })?;
+    let user = crate::services::instance_admin::mutate(
+        &db,
+        None,
+        &identity,
+        id,
+        crate::services::instance_admin::Action::Promote,
+        Some(&session_token),
+    )?;
     Ok(Json(user.into()))
 }
 
@@ -1233,15 +1235,14 @@ pub(super) async fn demote_user(
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
 ) -> Result<Json<UserListItem>, LificError> {
     require_admin(&identity)?;
-    let caller = require_user(&identity)?;
-    // Ungated on recency (this reduces access), but the admin check is
-    // re-run inside the transaction: a caller demoted since the request
-    // arrived must not be able to demote anyone else on the way out.
-    let user = db.transaction(|tx| {
-        let fresh = crate::auth::fresh_caller(tx, caller.id)?;
-        crate::auth::require_fresh_admin(&fresh)?;
-        crate::db::queries::users::set_admin_guarded(tx, id, false)
-    })?;
+    let user = crate::services::instance_admin::mutate(
+        &db,
+        None,
+        &identity,
+        id,
+        crate::services::instance_admin::Action::Demote,
+        None,
+    )?;
     Ok(Json(user.into()))
 }
 
@@ -1255,26 +1256,14 @@ pub(super) async fn deactivate_user(
     Extension(realtime): Extension<crate::realtime::RealtimeHub>,
 ) -> Result<Json<UserListItem>, LificError> {
     require_admin(&identity)?;
-    let caller = require_user(&identity)?;
-    // Ungated on recency, admin re-checked inside the transaction. The scoped
-    // ids are collected there too: `set_active` deletes the sessions of the
-    // account *and* of every bot it owns, and a live websocket for any of them
-    // has to be told, not left to notice on its next periodic revalidation.
-    let (user, scoped) = db.transaction(|tx| {
-        let fresh = crate::auth::fresh_caller(tx, caller.id)?;
-        crate::auth::require_fresh_admin(&fresh)?;
-        let user = crate::db::queries::users::set_active(tx, id, false)?;
-        let scoped = crate::db::queries::users::owned_bot_ids(tx, user.id)?;
-        Ok((user, scoped))
-    })?;
-
-    // After commit, so a socket that revalidates on the nudge reads the
-    // deactivated state rather than racing it. The periodic check remains as
-    // the fallback for anything that misses this.
-    realtime.revoke_user(user.id);
-    for bot_id in scoped {
-        realtime.revoke_user(bot_id);
-    }
+    let user = crate::services::instance_admin::mutate(
+        &db,
+        Some(&realtime),
+        &identity,
+        id,
+        crate::services::instance_admin::Action::Deactivate,
+        None,
+    )?;
     Ok(Json(user.into()))
 }
 
@@ -1298,13 +1287,15 @@ pub(super) async fn reactivate_user(
     headers: HeaderMap,
 ) -> Result<Json<UserListItem>, LificError> {
     require_admin(&identity)?;
-    let admin = require_user(&identity)?;
     let session_token = crate::auth::recent_session_token(&headers)?;
-    let user = db.transaction(|tx| {
-        let fresh = crate::auth::revalidate_recent_session(tx, &session_token, admin.id)?;
-        crate::auth::require_fresh_admin(&fresh)?;
-        crate::db::queries::users::set_active(tx, id, true)
-    })?;
+    let user = crate::services::instance_admin::mutate(
+        &db,
+        None,
+        &identity,
+        id,
+        crate::services::instance_admin::Action::Reactivate,
+        Some(&session_token),
+    )?;
     Ok(Json(user.into()))
 }
 

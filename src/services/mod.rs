@@ -10,6 +10,8 @@ pub(crate) mod project_form;
 pub(crate) mod projects;
 pub(crate) mod sessions;
 
+pub(crate) mod instance_admin;
+
 pub(crate) mod project_overview;
 
 pub(crate) mod export_project;
