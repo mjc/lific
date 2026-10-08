@@ -198,14 +198,34 @@ pub(super) async fn delete_folder(
     ))
 }
 
-#[procedure("/__native_pages/save")]
-pub(super) async fn save(
+#[derive(Clone, Copy)]
+enum PageSaveField {
+    Title,
+    Content,
+}
+
+impl PageSaveField {
+    fn update(self, value: String, expected_seq: i64) -> UpdatePage {
+        match self {
+            Self::Title => UpdatePage {
+                title: Some(value),
+                expected_seq: Some(expected_seq),
+                ..Default::default()
+            },
+            Self::Content => UpdatePage {
+                content: Some(value),
+                expected_seq: Some(expected_seq),
+                ..Default::default()
+            },
+        }
+    }
+}
+
+async fn commit_page_save(
     cx: &Cx,
     account: i64,
     page_id: i64,
-    title: String,
-    content: String,
-    expected_seq: i64,
+    update: UpdatePage,
 ) -> topcoat::Result<Outcome> {
     let caller = session::read(cx, context::caller(cx))?;
     match crate::api::require_user(&caller.identity) {
@@ -223,12 +243,7 @@ pub(super) async fn save(
                 app_context::<RealtimeHub>(cx),
                 &caller.identity,
                 page_id,
-                UpdatePage {
-                    title: Some(title),
-                    content: Some(content),
-                    expected_seq: Some(expected_seq),
-                    ..Default::default()
-                },
+                update,
             )
         })
         .await;
@@ -244,6 +259,78 @@ pub(super) async fn save(
         },
         Err(error) => classify(error),
     })
+}
+
+async fn save_field(
+    cx: &Cx,
+    account: i64,
+    page_id: i64,
+    value: String,
+    expected_seq: i64,
+    field: PageSaveField,
+) -> topcoat::Result<Outcome> {
+    commit_page_save(cx, account, page_id, field.update(value, expected_seq)).await
+}
+
+#[procedure("/__native_pages/save_title")]
+pub(super) async fn save_title(
+    cx: &Cx,
+    account: i64,
+    page_id: i64,
+    title: String,
+    expected_seq: i64,
+) -> topcoat::Result<Outcome> {
+    save_field(
+        cx,
+        account,
+        page_id,
+        title,
+        expected_seq,
+        PageSaveField::Title,
+    )
+    .await
+}
+
+#[procedure("/__native_pages/save_content")]
+pub(super) async fn save_content(
+    cx: &Cx,
+    account: i64,
+    page_id: i64,
+    content: String,
+    expected_seq: i64,
+) -> topcoat::Result<Outcome> {
+    save_field(
+        cx,
+        account,
+        page_id,
+        content,
+        expected_seq,
+        PageSaveField::Content,
+    )
+    .await
+}
+
+#[procedure("/__native_pages/save")]
+pub(super) async fn save(
+    cx: &Cx,
+    account: i64,
+    page_id: i64,
+    title: String,
+    content: String,
+    expected_seq: i64,
+) -> topcoat::Result<Outcome> {
+    commit_page_save(
+        cx,
+        account,
+        page_id,
+        UpdatePage {
+            title: Some(title),
+            content: Some(content),
+            expected_seq: Some(expected_seq),
+            ..Default::default()
+        },
+    )
+    .await
 }
 
 #[procedure("/__native_pages/status")]
