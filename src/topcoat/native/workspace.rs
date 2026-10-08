@@ -53,7 +53,7 @@ mod route_tests {
         {
             let element = control.value();
             let id = element.attr("data-native-issue-control").unwrap();
-            for event in ["click", "input", "keydown"] {
+            for event in ["click", "input", "keydown", "blur"] {
                 if let Some(handler) = element.attr(&format!("data-topcoat-on:{event}")) {
                     handlers.insert(format!("{id}:{event}"), serde_json::json!(handler));
                 }
@@ -68,6 +68,116 @@ mod route_tests {
             }),
         );
         assert_eq!(result["checked"], true);
+        let search_signals = serde_json::from_value(result["search_signals"].clone()).unwrap();
+        let (_, expanded) = super::super::home_fixture::document(
+            &fixture,
+            "/app",
+            "/ACC/issues",
+            true,
+            Some(search_signals),
+        )
+        .await;
+        let expanded = scraper::Html::parse_document(&expanded);
+        let search_selector = scraper::Selector::parse("#native-issue-search").unwrap();
+        assert!(
+            expanded
+                .select(&search_selector)
+                .next()
+                .unwrap()
+                .value()
+                .attr("hidden")
+                .is_none(),
+            "nonempty search remains expanded on blur"
+        );
+        let signals = serde_json::from_value(result["active_signals"].clone()).unwrap();
+        let (status, filtered) = super::super::home_fixture::document(
+            &fixture,
+            "/app",
+            "/ACC/issues",
+            true,
+            Some(signals),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert!(filtered.contains("Visible active initial work"));
+        assert!(!filtered.contains("Visible todo initial work"));
+        assert!(filtered.contains("1 of 2"));
+        let filtered = scraper::Html::parse_document(&filtered);
+        assert!(
+            filtered
+                .select(&search_selector)
+                .next()
+                .unwrap()
+                .value()
+                .attr("hidden")
+                .is_some(),
+            "Escape collapses search"
+        );
+    }
+
+    #[tokio::test]
+    async fn board_hidden_status_preferences_restore_visible_columns_and_cards() {
+        let fixture = super::super::home_fixture::fixture();
+        let (status, html) =
+            super::super::home_fixture::document(&fixture, "/app", "/ACC/board", true, None).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let document = scraper::Html::parse_document(&html);
+        let owner_selector = scraper::Selector::parse("[data-native-issue-controls]").unwrap();
+        let owner = document
+            .select(&owner_selector)
+            .next()
+            .expect("board owns its status visibility preferences");
+        let mount_handler = owner
+            .value()
+            .attr("data-topcoat-on:mount")
+            .expect("board visibility mounts from project storage");
+        let control_selector = scraper::Selector::parse("[data-native-issue-control]").unwrap();
+        let mut handlers = serde_json::Map::new();
+        for control in owner.select(&control_selector) {
+            let element = control.value();
+            let id = element.attr("data-native-issue-control").unwrap();
+            if id.starts_with("column:") {
+                handlers.insert(
+                    id.to_owned(),
+                    serde_json::json!(element.attr("data-topcoat-on:click").unwrap()),
+                );
+            }
+        }
+        let result = super::super::home_fixture::evaluate_handler(
+            "src/topcoat/native/issue_collection/visibility.test.cjs",
+            &serde_json::json!({
+                "signals": super::super::home_fixture::page_signals(&html),
+                "mount_handler": mount_handler,
+                "handlers": handlers,
+            }),
+        );
+        let recovered = serde_json::from_value(result["recovered_signals"].clone()).unwrap();
+        let (status, restored) = super::super::home_fixture::document(
+            &fixture,
+            "/app",
+            "/ACC/board",
+            true,
+            Some(recovered),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let restored = scraper::Html::parse_document(&restored);
+        let active = scraper::Selector::parse("[data-native-board-status='active']").unwrap();
+        let todo = scraper::Selector::parse("[data-native-board-status='todo']").unwrap();
+        assert!(restored.select(&active).next().is_some());
+        assert!(restored.select(&todo).next().is_none());
+        assert!(
+            restored
+                .root_element()
+                .text()
+                .any(|text| text == "Visible active initial work")
+        );
+        assert!(
+            !restored
+                .root_element()
+                .text()
+                .any(|text| text == "Visible todo initial work")
+        );
     }
 
     #[test]
@@ -114,16 +224,10 @@ mod route_tests {
             "/ACC/graph?source=production-contract",
         ] {
             let route = ParsedRoute::parse(path);
-            assert!(
-                native_route(&route).is_some(),
-                "{path}"
-            );
+            assert!(native_route(&route).is_some(), "{path}");
         }
         for path in ["/public/ACC/files", "/public/ACC/graph"] {
-            assert!(
-                native_route(&ParsedRoute::parse(path)).is_none(),
-                "{path}"
-            );
+            assert!(native_route(&ParsedRoute::parse(path)).is_none(), "{path}");
         }
     }
 
@@ -137,10 +241,7 @@ mod route_tests {
             "/ACC/modules/42",
         ] {
             let route = ParsedRoute::parse(path);
-            assert!(
-                native_route(&route).is_some(),
-                "{path}"
-            );
+            assert!(native_route(&route).is_some(), "{path}");
         }
         for path in [
             "/public/ACC/issues/new",
@@ -163,10 +264,7 @@ mod route_tests {
             "/ACC/plans?status=active",
         ] {
             let route = ParsedRoute::parse(path);
-            assert!(
-                native_route(&route).is_some(),
-                "{path}"
-            );
+            assert!(native_route(&route).is_some(), "{path}");
         }
     }
 }
@@ -192,9 +290,7 @@ pub(crate) fn native_route(route: &ParsedRoute<'_>) -> Option<NativeRoute> {
             Some(NativeRoute::Modules)
         }
         (Layout::Private, Some(_), Page::IssueDetail(_)) => Some(NativeRoute::Workspace),
-        (Layout::Private, Some(_), Page::Issues | Page::Board) => {
-            Some(NativeRoute::Workspace)
-        }
+        (Layout::Private, Some(_), Page::Issues | Page::Board) => Some(NativeRoute::Workspace),
         _ => None,
     }
 }

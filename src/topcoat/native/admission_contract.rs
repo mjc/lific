@@ -324,7 +324,7 @@ pub(super) fn mounted(app: Router) -> Router {
     Router::new().fallback(move |mut request: Request<Body>| {
         let app = app.clone();
         async move {
-            for prefix in ["/app", "/ACC"] {
+            for prefix in ["/app", "/ACC", "/team/lific"] {
                 if let Some(path) = request.uri().path().strip_prefix(prefix)
                     && path.starts_with('/')
                 {
