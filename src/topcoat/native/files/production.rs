@@ -207,22 +207,24 @@ async fn native_files_delete_success_reports_reference_count() {
         let (status, reply) =
             procedure(&fixture, "/__native_files/delete", arguments.clone()).await;
         assert_eq!(status, StatusCode::OK, "mount {mount}");
-        let success_request = serde_json::to_value(
-            ToastErrorRequest {
-                account_id: account,
-                message: success_text.clone(),
-            }
-            .into_surrogate(),
-        )
-        .unwrap();
+        assert_delete_outcome(
+            &reply,
+            account,
+            true,
+            "File deleted, along with 1 reference.",
+        );
+        let success_request = reply["v"]["notification"].clone();
         let completed = super::super::home_fixture::evaluate_handler(
             "src/topcoat/native/files/delete_feedback.test.cjs",
             &serde_json::json!({
                 "phase":"delete", "mount":mount, "signals":signals,
                 "root_handler":root_handler,
-                "button":{"id":button_id,"success":success_text},
+                "button":{"id":button_id,"success":"untrusted DOM copy"},
                 "expected_arguments":expected_arguments, "nested_icon":true,
                 "reply":reply, "success_request":success_request,
+                "browser_source":super::super::shell_handlers::source_named(
+                    "browser", super::super::browser::factory(),
+                ),
             }),
         );
         assert_eq!(
@@ -385,11 +387,20 @@ async fn native_files_normal_delete_service_error_uses_real_request_and_reply_at
             .into_surrogate(),
         )
         .unwrap();
+        assert_delete_outcome(
+            &reply,
+            account,
+            false,
+            &format!("Couldn't delete the file: attachment {id} not found"),
+        );
         let failed = super::super::home_fixture::evaluate_handler(
             "src/topcoat/native/files/delete_feedback.test.cjs",
             &serde_json::json!({ "phase":"service_error", "mount":mount,
                 "signals":signals, "root_handler":root_handler, "button":{"id":button_id,"success":success_text}, "reply":reply,
-                "expected_arguments":expected_arguments, "error_request":error }),
+                "expected_arguments":expected_arguments, "error_request":error,
+                "browser_source":super::super::shell_handlers::source_named(
+                    "browser", super::super::browser::factory(),
+                ), }),
         );
         assert_eq!(
             failed["notifications"][0]["type"],
@@ -420,11 +431,20 @@ async fn native_files_orphan_delete_service_error_uses_real_request_and_reply_at
             .into_surrogate(),
         )
         .unwrap();
+        assert_delete_outcome(
+            &reply,
+            account,
+            false,
+            &format!("Couldn't delete the file: attachment {id} not found"),
+        );
         let failed = super::super::home_fixture::evaluate_handler(
             "src/topcoat/native/files/delete_feedback.test.cjs",
             &serde_json::json!({ "phase":"service_error", "mount":mount,
                 "signals":signals, "root_handler":root_handler, "button":{"id":button_id,"success":success_text}, "reply":reply,
-                "expected_arguments":expected_arguments, "error_request":error }),
+                "expected_arguments":expected_arguments, "error_request":error,
+                "browser_source":super::super::shell_handlers::source_named(
+                    "browser", super::super::browser::factory(),
+                ), }),
         );
         assert_eq!(
             failed["notifications"][0]["type"],
@@ -456,6 +476,12 @@ async fn native_files_delete_database_failure_returns_safe_error_and_preserves_r
             .to_string()
             .contains("private attachment delete diagnostic")
     );
+    assert_delete_outcome(
+        &reply,
+        account,
+        false,
+        "Couldn't delete the file: internal server error",
+    );
     assert!(queries::attachments::get_attachment(&fixture.db.read().unwrap(), id).is_ok());
 }
 
@@ -477,7 +503,10 @@ async fn native_files_delete_transport_failures_are_distinct_and_preserve_revisi
                     "src/topcoat/native/files/delete_feedback.test.cjs",
                     &serde_json::json!({ "phase":phase, "mount":mount,
                         "signals":signals.clone(), "root_handler":root_handler, "button":{"id":button_id,"success":success_text},
-                        "expected_arguments":expected_arguments, "error_request":error }),
+                        "expected_arguments":expected_arguments, "error_request":error,
+                "browser_source":super::super::shell_handlers::source_named(
+                    "browser", super::super::browser::factory(),
+                ), }),
                 );
                 assert_eq!(
                     failed["notifications"][0]["type"],
@@ -517,7 +546,10 @@ async fn native_files_delete_disposal_is_separate_from_same_page_completion() {
                     "src/topcoat/native/files/delete_feedback.test.cjs",
                     &serde_json::json!({ "phase":phase, "mount":mount,
                         "signals":signals.clone(), "root_handler":root_handler, "button":{"id":button_id,"success":success_text},
-                        "expected_arguments":expected_arguments, "reply":late_success_reply, "detached":phase == "detached" }),
+                        "expected_arguments":expected_arguments, "reply":late_success_reply, "detached":phase == "detached",
+                        "browser_source":super::super::shell_handlers::source_named(
+                            "browser", super::super::browser::factory(),
+                        ), }),
                 );
                 assert!(output["notifications"].as_array().unwrap().is_empty());
             }
@@ -535,19 +567,16 @@ async fn native_files_orphan_delete_success_refreshes_at_each_mount() {
         let expected_arguments = serde_json::json!([account.into_surrogate(), id.into_surrogate()]);
         let (status, reply) = procedure(&fixture, "/__native_files/delete", args.clone()).await;
         assert_eq!(status, StatusCode::OK);
-        let success = serde_json::to_value(
-            ToastErrorRequest {
-                account_id: account,
-                message: success_text.clone(),
-            }
-            .into_surrogate(),
-        )
-        .unwrap();
+        assert_delete_outcome(&reply, account, true, "File deleted.");
+        let success = reply["v"]["notification"].clone();
         let output = super::super::home_fixture::evaluate_handler(
             "src/topcoat/native/files/delete_feedback.test.cjs",
             &serde_json::json!({ "phase":"delete", "mount":mount,
-                "signals":signals, "root_handler":root_handler, "button":{"id":button_id,"success":success_text}, "reply":reply,
-                "expected_arguments":expected_arguments, "success_request":success }),
+                "signals":signals, "root_handler":root_handler, "button":{"id":button_id,"success":"untrusted DOM copy"}, "reply":reply,
+                "expected_arguments":expected_arguments, "success_request":success,
+                "browser_source":super::super::shell_handlers::source_named(
+                    "browser", super::super::browser::factory(),
+                ), }),
         );
         assert_eq!(
             output["notifications"][0]["type"],
@@ -668,6 +697,58 @@ async fn native_files_delete_completion_returns_canonical_outcome_while_body_is_
     );
 }
 #[tokio::test]
+async fn native_files_delete_procedure_returns_canonical_visible_reference_count() {
+    for (visible_references, expected_message) in [
+        (0, "File deleted."),
+        (1, "File deleted, along with 1 reference."),
+        (2, "File deleted, along with 2 references."),
+    ] {
+        let fixture = super::super::home_fixture::fixture();
+        let (account, _, linked_id) = seed(&fixture);
+        let attachment_id = if visible_references == 0 {
+            let conn = fixture.db.write().unwrap();
+            let user = queries::users::validate_session(&conn, &fixture.token).unwrap();
+            queries::attachments::create_attachment(
+                &conn,
+                &"d".repeat(64),
+                "unreferenced.png",
+                "image/png",
+                314,
+                Some(user.id),
+            )
+            .unwrap()
+            .id
+        } else {
+            if visible_references == 2 {
+                let conn = fixture.db.write().unwrap();
+                let second_visible_issue = queries::resolve_identifier(&conn, "ACC-2").unwrap();
+                let hidden_issue = queries::resolve_identifier(&conn, "HIDE-1").unwrap();
+                queries::attachments::link_attachment(
+                    &conn,
+                    linked_id,
+                    AttachmentEntity::Issue,
+                    second_visible_issue,
+                )
+                .unwrap();
+                queries::attachments::link_attachment(
+                    &conn,
+                    linked_id,
+                    AttachmentEntity::Issue,
+                    hidden_issue,
+                )
+                .unwrap();
+            }
+            linked_id
+        };
+
+        let arguments = serde_json::to_value((account, attachment_id).into_surrogate()).unwrap();
+        let (status, reply) = procedure(&fixture, "/__native_files/delete", arguments).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_delete_outcome(&reply, account, true, expected_message);
+    }
+}
+
+#[tokio::test]
 async fn native_files_delete_rechecks_account_and_current_project_authority() {
     let fixture = super::super::home_fixture::fixture();
     let (account, project_id, attachment_id) = seed(&fixture);
@@ -729,6 +810,19 @@ async fn native_files_delete_rechecks_account_and_current_project_authority() {
         StatusCode::SEE_OTHER,
         "revoked credentials preserve the session redirect"
     );
+}
+
+fn assert_delete_outcome(reply: &serde_json::Value, account: i64, succeeded: bool, message: &str) {
+    assert_eq!(reply["v"]["succeeded"], succeeded);
+    let expected = serde_json::to_value(
+        ToastErrorRequest {
+            account_id: account,
+            message: message.to_owned(),
+        }
+        .into_surrogate(),
+    )
+    .unwrap();
+    assert_eq!(reply["v"]["notification"], expected);
 }
 
 async fn run_lifecycle(input: &serde_json::Value) -> String {
