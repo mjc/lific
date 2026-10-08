@@ -39,6 +39,14 @@ only immutable functions; signal handles and request data stay in each owning
 mount scope. Home refresh, recents, mobile navigation, and account checks reuse
 those assets. Sidebar rows carry compact scalar event arguments, preserving
 exact 64-bit IDs and JSON encoding for arbitrary editor text.
+
+The Home shell composes separate palette, mobile navigation, and chrome
+components. Palette projections carry authorized destinations and their revision;
+selection and queued Enter do not read result counts or destinations from the
+DOM. Mobile history enters through one typed record. Shared browser bindings
+handle focus, storage, media queries, listeners, and disposal. Theme and collapse
+handlers are emitted once and reused by desktop and mobile controls.
+
 Lucide icons render their geometry inline. Shared styles supply SVG paint
 defaults, and each instance contains only its selected glyph. Sizes, colors,
 transforms and selectors remain valid. Sidebar controls use the same semantic

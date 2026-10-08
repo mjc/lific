@@ -13,6 +13,11 @@ Login, Signup, Home, the shared workspace/sidebar, query-free issue lists and
 boards, issue editing, project creation, Project Overview, Project Insights, and
 Project Activity have native implementations.
 
+Settings has native Profile, Security, Connected tools, Appearance, and initial
+Instance administration routes. Archive import uses a native form and streaming
+upload backed by the shared Rust service. These features still need the
+remaining Main interactions and parity checks recorded in their family tickets.
+
 Pages and Plans have native private list and detail routes. Pages supports
 search, tabs and filters, creation, Markdown editing, explicit save with sequence
 conflicts, and confirmed deletion. Plans supports status tabs, creation, nested
@@ -34,8 +39,7 @@ JavaScript assets are Topcoat's framework runtime and Rust-generated bindings.
 
 ## Unfinished features
 
-Settings, archive import, filtered issue lists and boards,
-and public readers have no intermediate
+Filtered issue lists and boards and public readers have no intermediate
 fallback. Their canonical routes return 404 until native ports are implemented.
 Existing backend REST/MCP interfaces remain available.
 
@@ -44,9 +48,10 @@ workspace/sidebar. Files includes pagination, filters, sorting, downloads,
 where-used details, duplicate references, deletion, and pending cleanup.
 Dependency graphs render nodes and relations and expose authorized relation
 actions. Shared services enforce current permissions for downloads, deletion,
-and both relation endpoints. These are partial ports: graph pan, zoom, fit,
-drag/connect gestures, reactive refresh, and hover/touch integration remain
-unfinished. Files still needs complete interaction and visual parity checks.
+and both relation endpoints. Graph pan, centered zoom, Fit, initial fitting,
+reduced motion, and account/project-scoped state are implemented. Drag/connect
+gestures, remaining refresh behavior, and hover/touch integration are unfinished.
+Files still needs complete interaction and visual parity checks.
 
 The shared Rust issue preview provides hover content and a touch panel with
 authorized edits. Loading/error recovery, close transitions, global undo toasts,
