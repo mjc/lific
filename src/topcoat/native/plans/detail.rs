@@ -682,7 +682,13 @@ fn issue_href(cx: &Cx, fallback_project: &str, identifier: &str) -> Attributes {
     let project = identifier
         .rsplit_once('-')
         .map_or(fallback_project, |(prefix, _)| prefix);
-    navigation::attrs(cx, &format!("/{project}/issues/{identifier}"))
+    let mut attributes = navigation::attrs(cx, &format!("/{project}/issues/{identifier}"));
+    attributes.insert(
+        cx,
+        "data-topcoat-on:click",
+        super::super::issue_peek::request_handler(identifier, true),
+    );
+    attributes
 }
 
 fn expansion_button<'a>(
@@ -1665,21 +1671,27 @@ mod tests {
         };
 
         let path = format!("/ACC/plans/{}", plan.id);
-        let (status, html) = super::super::super::home_fixture::document(
-            &fixture, "/app", &path, true, None,
-        ).await;
+        let (status, html) =
+            super::super::super::home_fixture::document(&fixture, "/app", &path, true, None).await;
         assert_eq!(status, axum::http::StatusCode::OK);
         let document = Html::parse_document(&html);
         let links = document
             .select(&Selector::parse(&format!("a[href*=\"/issues/{issue_identifier}\"]")).unwrap())
             .collect::<Vec<_>>();
-        assert_eq!(links.len(), 2, "plan and step issue links are both rendered");
-        let cases = links.iter().map(|link| {
-            serde_json::json!({
-                "href": link.value().attr("href").unwrap(),
-                "handler": link.value().attr("data-topcoat-on:click").unwrap(),
+        assert_eq!(
+            links.len(),
+            2,
+            "plan and step issue links are both rendered"
+        );
+        let cases = links
+            .iter()
+            .map(|link| {
+                serde_json::json!({
+                    "href": link.value().attr("href").unwrap(),
+                    "handler": link.value().attr("data-topcoat-on:click").unwrap(),
+                })
             })
-        }).collect::<Vec<_>>();
+            .collect::<Vec<_>>();
         let result = super::super::super::home_fixture::evaluate_handler(
             "src/topcoat/native/plans/issue_peek_handler.test.cjs",
             &serde_json::json!({
@@ -1688,10 +1700,13 @@ mod tests {
                 "identifier": issue_identifier,
             }),
         );
-        assert_eq!(result["peek_events"], serde_json::json!([
-            {"type":"lific:native-issue-peek-request", "identifier":issue_identifier},
-            {"type":"lific:native-issue-peek-request", "identifier":issue_identifier},
-        ]));
+        assert_eq!(
+            result["peek_events"],
+            serde_json::json!([
+                {"type":"lific:native-issue-peek-request", "identifier":issue_identifier},
+                {"type":"lific:native-issue-peek-request", "identifier":issue_identifier},
+            ])
+        );
         assert_eq!(result["normal_clicks"], 2);
     }
 

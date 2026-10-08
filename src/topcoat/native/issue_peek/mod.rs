@@ -7,7 +7,7 @@ mod preview;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use entry::{button, shared_owner};
+pub(crate) use entry::{button, request_handler, shared_owner};
 
 use super::{context, icons, markdown, navigation, session};
 use topcoat::{

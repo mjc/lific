@@ -7,19 +7,31 @@ use topcoat::{
     view::{Attributes, BoxView, View, ViewExt, component, view},
 };
 
+pub(crate) fn request_handler(identifier: &str, shift_only: bool) -> topcoat::runtime::Js {
+    let identifier = identifier.to_owned();
+    let handler = expr!(|event: Event| {
+        let should_open = if shift_only { event.shift_key } else { true };
+        if should_open {
+            event.prevent_default();
+            event.stop_propagation();
+            raw!(
+                "document.dispatchEvent(new CustomEvent('lific:native-issue-peek-request',{detail:{identifier:${identifier}.toString()}}));",
+                ()
+            );
+        }
+    });
+    handler.into_evaluated_and_js().1
+}
+
 pub(crate) fn button<'a>(cx: &'a Cx, identifier: &str) -> BoxView<'a> {
     let identifier = identifier.to_owned();
     let label = format!("Peek {identifier}");
-    let open = expr!(|event: Event| {
-        event.prevent_default();
-        event.stop_propagation();
-        raw!(
-            "document.dispatchEvent(new CustomEvent('lific:native-issue-peek-request',{detail:{identifier:${identifier}.toString()}}));",
-            ()
-        );
-    });
     let mut attrs = Attributes::with_capacity(1);
-    attrs.insert(cx, "data-topcoat-on:click", open.into_evaluated_and_js().1);
+    attrs.insert(
+        cx,
+        "data-topcoat-on:click",
+        request_handler(&identifier, false),
+    );
     view! {
         cx =>
         <button
