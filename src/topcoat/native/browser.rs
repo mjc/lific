@@ -223,6 +223,19 @@ impl Browser {
         panic!("browser bindings are only callable in client expressions")
     }
 
+    /// Inspect the current component click target and return a small string action payload.
+    pub(crate) fn markdown_image_action<F>(&self, _event: Event, _completed: F)
+    where
+        F: FnOnce(Event, StringSurrogate),
+    {
+        panic!("browser bindings are only callable in client expressions")
+    }
+
+    /// Attach an owner-scoped thumbnail fallback listener to the mounted Markdown root.
+    pub(crate) fn markdown_image_fallback(&self, _event: Event) {
+        panic!("browser bindings are only callable in client expressions")
+    }
+
     pub(crate) fn click_capture<F>(&self, _listener: F)
     where
         F: Fn(Event),
@@ -467,6 +480,46 @@ pub(crate) fn factory() -> Js {
                 click_capture: listener => window.addEventListener(
                     'click', event => listener(cx.event(event)), {capture:true,signal:cx.abortSignal}
                 ),
+                markdown_image_action: (event, completed) => {
+                    const root = event.inner.currentTarget;
+                    const target = event.inner.target;
+                    const element = target instanceof Element ? target : target?.parentElement;
+                    let action = '';
+                    if (root instanceof Element && element && root.contains(element)) {
+                        const image = element.closest('img[data-native-attachment-image][data-native-original-src]');
+                        if (image && root.contains(image)) {
+                            action = JSON.stringify({
+                                kind: 'open',
+                                original: image.getAttribute('data-native-original-src') || '',
+                                alt: image.getAttribute('alt') || ''
+                            });
+                        } else {
+                            const preview = element.closest('[data-native-markdown-preview]');
+                            if (preview && root.contains(preview)) action = JSON.stringify({kind: 'close'});
+                        }
+                    }
+                    completed(cx.event(event.inner), cx.hydrate(action));
+                },
+                markdown_image_fallback: event => {
+                    const root = event.inner.currentTarget || event.inner.target;
+                    if (!(root instanceof Element) || cx.abortSignal.aborted) return;
+                    const fallback = image => {
+                        if (!(image instanceof HTMLImageElement) ||
+                            !image.matches('img[data-native-attachment-image][data-native-original-src]') ||
+                            image.getAttribute('data-native-fallback-used') === 'true') return;
+                        const thumbnail = image.getAttribute('src');
+                        const original = image.getAttribute('data-native-original-src');
+                        if (!thumbnail || !original || thumbnail === original) return;
+                        image.setAttribute('data-native-fallback-used', 'true');
+                        image.setAttribute('src', original);
+                    };
+                    root.addEventListener('error', event => {
+                        if (!cx.abortSignal.aborted && root.contains(event.target)) fallback(event.target);
+                    }, {capture: true, signal: cx.abortSignal});
+                    for (const image of root.querySelectorAll('img[data-native-attachment-image][data-native-original-src]')) {
+                        if (image.complete && image.naturalWidth === 0) fallback(image);
+                    }
+                },
                 media_listener: (query, listener) => window.matchMedia(query.toString()).addEventListener(
                     'change', event => listener(cx.event(event)), {signal:cx.abortSignal}
                 ),

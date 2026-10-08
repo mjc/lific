@@ -8,6 +8,8 @@ use topcoat::context::Cx;
 
 use super::transport::mounted_url;
 
+pub(crate) mod images;
+
 static REFERENCES: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(concat!(
         r"(?-u:\b)[A-Z][A-Z0-9]{1,4}-[0-9]+#comment-[1-9][0-9]*(?-u:\b)|",
@@ -127,6 +129,84 @@ pub(crate) fn render(cx: &Cx, source: &str, scope: Scope, mentions: &[(&str, &st
     }
 
     sanitize(&document.root_element().inner_html(), scope)
+}
+
+/// Add trusted interactive metadata only after Markdown HTML has been sanitized.
+pub(crate) fn decorate_private_images(cx: &Cx, html: &str) -> String {
+    let mut document = Html::parse_fragment(html);
+    let images: Vec<_> = document
+        .select(&scraper::Selector::parse("img").expect("static image selector"))
+        .map(|image| image.id())
+        .collect();
+
+    for node_id in images {
+        let element = document
+            .tree
+            .get(node_id)
+            .and_then(ElementRef::wrap)
+            .expect("collected image node");
+        let Some(src) = element.value().attr("src") else {
+            continue;
+        };
+        let Some((_, suffix)) = src.rsplit_once("/api/attachments/") else {
+            continue;
+        };
+        let attachment_id = suffix.strip_suffix('/').unwrap_or(suffix);
+        if attachment_id.is_empty() || !attachment_id.bytes().all(|byte| byte.is_ascii_digit()) {
+            continue;
+        }
+        let original = mounted_url(cx, &format!("/api/attachments/{attachment_id}"));
+        if src != original {
+            continue;
+        }
+        let thumbnail = mounted_url(cx, &format!("/api/attachments/{attachment_id}/thumbnail"));
+        let replacement = element_with_attributes(
+            element,
+            &[
+                ("src", thumbnail.as_str()),
+                ("loading", "lazy"),
+                ("data-native-attachment-image", ""),
+                ("data-native-original-src", original.as_str()),
+                (
+                    "class",
+                    "max-w-full max-h-[32rem] h-auto border border-solid border-[var(--border)] rounded-lg cursor-zoom-in transition-[filter] duration-150 motion-reduce:transition-none hover:brightness-95",
+                ),
+            ],
+            &[
+                "src",
+                "loading",
+                "data-native-attachment-image",
+                "data-native-original-src",
+                "class",
+            ],
+        );
+        let fragment = Html::parse_fragment(&replacement);
+        let root = document.tree.extend_tree(fragment.tree).id();
+        let replacements: Vec<_> = document
+            .tree
+            .get(root)
+            .expect("inserted image fragment")
+            .children()
+            .find(|child| child.value().is_element())
+            .expect("inserted image fragment root")
+            .children()
+            .map(|child| child.id())
+            .collect();
+        for replacement in replacements {
+            document
+                .tree
+                .get_mut(node_id)
+                .expect("original image node")
+                .insert_id_before(replacement);
+        }
+        document
+            .tree
+            .get_mut(node_id)
+            .expect("original image node")
+            .detach();
+    }
+
+    document.root_element().inner_html()
 }
 
 fn application_url(cx: &Cx, path: &str, scope: Scope) -> String {
