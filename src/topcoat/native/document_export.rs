@@ -96,7 +96,10 @@ pub(crate) fn toolbar_fragments<'a>(
     let completed_error = error.clone();
     let completed_exporting = exporting.clone();
     let handler = expr!(|_event: Event| {
-        if !browser.is_disposed() && !exporting.get() {
+        if browser.is_disposed() {
+            return;
+        }
+        if !exporting.get() {
             exporting.set(true);
             error.set("".to_owned());
             let _completed = |failure: StringSurrogate| {

@@ -44,7 +44,7 @@ pub(super) fn save_feedback<'a>(
             </span>
             <span
                 data-native-page-save-feedback="saved"
-                :hidden=$(saving.get() || last_saved.get().is_empty())
+                :hidden=$(if saving.get() { true } else { last_saved.get().is_empty() })
                 :data-saved-at=$(last_saved.get())
                 role="status"
             >
