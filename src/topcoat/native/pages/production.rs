@@ -1213,7 +1213,16 @@ async fn native_page_detail_pins_and_unpins_through_the_production_route() {
     )
     .await;
     assert_eq!(activity_status, StatusCode::OK);
-    assert!(activity_html.to_lowercase().contains("pin"));
+    // Main does not audit pin changes. A committed pin still refreshes the
+    // timeline through the shared sequence without inventing a new event.
+    let activity_ids = |html: &str| {
+        scraper::Html::parse_fragment(html)
+            .select(&scraper::Selector::parse("li[data-activity-id]").unwrap())
+            .map(|row| row.value().attr("data-activity-id").unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+    assert!(!activity_ids(&html).is_empty());
+    assert_eq!(activity_ids(&activity_html), activity_ids(&html));
     let page = queries::get_page(&fixture.db.read().unwrap(), page_id).unwrap();
     assert!(page.pinned);
     assert_eq!(page.title, "Page metadata test");
