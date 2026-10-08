@@ -1,7 +1,7 @@
 //! Fresh-authority procedures for the Files manager.
 use topcoat::{
     context::{Cx, app_context},
-    runtime::procedure,
+    runtime::{procedure, record},
 };
 
 use super::super::{context, session};
@@ -196,8 +196,19 @@ fn attachment_wire(item: crate::db::models::ProjectAttachment) -> AttachmentWire
     )
 }
 
+#[record]
+#[derive(Clone)]
+pub(super) struct DeleteOutcome {
+    pub succeeded: bool,
+    pub notification: super::super::deferred_delete::ToastRequest,
+}
+
 #[procedure("/__native_files/delete")]
-pub(super) async fn delete(cx: &Cx, account: i64, attachment_id: i64) -> topcoat::Result<()> {
+pub(super) async fn delete(
+    cx: &Cx,
+    account: i64,
+    attachment_id: i64,
+) -> topcoat::Result<DeleteOutcome> {
     let caller = session::read(cx, context::caller(cx))?;
     let user = session::read(cx, crate::api::require_user(&caller.identity))?;
     if user.id != account {
@@ -212,12 +223,35 @@ pub(super) async fn delete(cx: &Cx, account: i64, attachment_id: i64) -> topcoat
     let hub = app_context::<crate::realtime::RealtimeHub>(cx).clone();
     let store = app_context::<crate::storage::AttachmentStore>(cx).clone();
     let identity = caller.identity.clone();
-    session::read(
-        cx,
-        caller
-            .scope(async move {
-                crate::services::files::delete(&db, &hub, &store, &identity, attachment_id)
+    match caller
+        .scope(async move {
+            crate::services::files::delete(&db, &hub, &store, &identity, attachment_id)
+        })
+        .await
+    {
+        Ok(reference_count) => Ok(DeleteOutcome {
+            succeeded: true,
+            notification: super::super::deferred_delete::ToastRequest {
+                account_id: user.id,
+                message: super::model::delete_success_message(reference_count),
+            },
+        }),
+        Err(error) => {
+            if matches!(
+                &error,
+                crate::error::LificError::Forbidden(message)
+                    if message == "authentication required"
+            ) {
+                return session::read(cx, Err(error));
+            }
+            tracing::error!(attachment_id, error=%error, "native Files delete failed");
+            Ok(DeleteOutcome {
+                succeeded: false,
+                notification: super::super::deferred_delete::ToastErrorRequest {
+                    account_id: user.id,
+                    message: format!("Couldn't delete the file: {}", error.client_message()),
+                },
             })
-            .await,
-    )
+        }
+    }
 }

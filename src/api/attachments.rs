@@ -770,7 +770,7 @@ pub(super) async fn delete_attachment(
     Extension(store): Extension<AttachmentStore>,
     Path(id): Path<i64>,
 ) -> Result<axum::Json<serde_json::Value>, LificError> {
-    crate::services::files::delete(&db, &realtime, &store, &identity, id)?;
+    let _reference_count = crate::services::files::delete(&db, &realtime, &store, &identity, id)?;
     Ok(axum::Json(serde_json::json!({ "deleted": true })))
 }
 
