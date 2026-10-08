@@ -15,31 +15,6 @@ async fn save_fixture() -> SaveFixture {
     let (status, html) =
         home_fixture::document(&fixture, "", &format!("/ACC/pages/{page_id}"), true, None).await;
     assert_eq!(status, StatusCode::OK);
-    let document = scraper::Html::parse_document(&html);
-    let title = document
-        .select(&scraper::Selector::parse("input[aria-label='Page title']").unwrap())
-        .next()
-        .unwrap();
-    let body = document
-        .select(
-            &scraper::Selector::parse("textarea[aria-label='Page content in Markdown']").unwrap(),
-        )
-        .next()
-        .unwrap();
-    let save = document
-        .select(&scraper::Selector::parse("button").unwrap())
-        .find(|button| button.text().collect::<String>().trim() == "Save changes")
-        .unwrap();
-    let pin = document
-        .select(&scraper::Selector::parse("button[data-native-page-pin]").unwrap())
-        .next()
-        .unwrap();
-    let title_handler = title.value().attr("data-topcoat-on:input").unwrap();
-    let body_handler = body.value().attr("data-topcoat-on:input").unwrap();
-    let save_handler = save.value().attr("data-topcoat-on:click").unwrap();
-    let busy_binding = pin.value().attr("data-topcoat-bind:disabled").unwrap();
-    let title_binding = title.value().attr("data-topcoat-bind:value").unwrap();
-    let body_binding = body.value().attr("data-topcoat-bind:value").unwrap();
     let expected_arguments = (
         account,
         page_id,
@@ -48,32 +23,52 @@ async fn save_fixture() -> SaveFixture {
         expected_seq,
     )
         .into_surrogate();
-    let reply = home_fixture::procedure(
-        &fixture,
-        "/__native_pages/save",
-        serde_json::to_value(expected_arguments.clone()).unwrap(),
-    )
-    .await;
-    assert_eq!(reply.0, StatusCode::OK);
-    assert_eq!(reply.1["v"]["status"]["ok"], "saved");
-    SaveFixture {
-        fixture,
-        input: serde_json::json!({
+    let mut input = {
+        let document = scraper::Html::parse_document(&html);
+        let title = document
+            .select(&scraper::Selector::parse("input[aria-label='Page title']").unwrap())
+            .next()
+            .unwrap();
+        let body = document
+            .select(
+                &scraper::Selector::parse("textarea[aria-label='Page content in Markdown']")
+                    .unwrap(),
+            )
+            .next()
+            .unwrap();
+        let save = document
+            .select(&scraper::Selector::parse("button").unwrap())
+            .find(|button| button.text().collect::<String>().trim() == "Save changes")
+            .unwrap();
+        let pin = document
+            .select(&scraper::Selector::parse("button[data-native-page-pin]").unwrap())
+            .next()
+            .unwrap();
+        serde_json::json!({
             "signals": home_fixture::page_signals(&html),
-            "title_handler": title_handler,
-            "body_handler": body_handler,
-            "save_handler": save_handler,
-            "busy_binding": busy_binding,
-            "title_binding": title_binding,
-            "body_binding": body_binding,
+            "title_handler": title.value().attr("data-topcoat-on:input").unwrap(),
+            "body_handler": body.value().attr("data-topcoat-on:input").unwrap(),
+            "save_handler": save.value().attr("data-topcoat-on:click").unwrap(),
+            "busy_binding": pin.value().attr("data-topcoat-bind:disabled").unwrap(),
+            "title_binding": title.value().attr("data-topcoat-bind:value").unwrap(),
+            "body_binding": body.value().attr("data-topcoat-bind:value").unwrap(),
             "shard_marker": super::production::shard_marker(
                 &html,
                 "/__native_pages/activity",
             ),
-            "expected_arguments": serde_json::to_value(expected_arguments).unwrap(),
-            "reply": reply.1,
-        }),
-    }
+            "expected_arguments": serde_json::to_value(expected_arguments.clone()).unwrap(),
+        })
+    };
+    let reply = home_fixture::procedure(
+        &fixture,
+        "/__native_pages/save",
+        serde_json::to_value(expected_arguments).unwrap(),
+    )
+    .await;
+    assert_eq!(reply.0, StatusCode::OK);
+    assert_eq!(reply.1["v"]["status"]["ok"], "saved");
+    input["reply"] = reply.1;
+    SaveFixture { fixture, input }
 }
 
 #[tokio::test]
