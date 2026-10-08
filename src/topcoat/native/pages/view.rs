@@ -852,19 +852,17 @@ pub(super) fn detail<'a>(
             return Err(topcoat::router::error::not_found().into());
         }
     }
-    let folder_name = if let Some(project_id) = page.project_id {
+    let folder_name = if let (Some(project_id), Some(folder_id)) = (page.project_id, page.folder_id)
+    {
         let structure = session::read(
             cx,
             crate::services::pages::project_structure(context::db(cx), identity, project_id),
         )?;
-        let folder_name = page.folder_id.and_then(|folder_id| {
-            structure
-                .folders
-                .iter()
-                .find(|folder| folder.id == folder_id)
-                .map(|folder| folder.name.clone())
-        });
-        folder_name
+        structure
+            .folders
+            .iter()
+            .find(|folder| folder.id == folder_id)
+            .map(|folder| folder.name.clone())
     } else {
         None
     };

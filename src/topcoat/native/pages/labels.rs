@@ -30,16 +30,14 @@ pub(super) fn detail<'a>(
         revision.clone(),
     );
     let labels = state.labels.clone();
-    let opened = open.clone();
     let busy = state.busy.clone();
-    let page_state = (opened.clone(), busy, pending_label, revision.clone());
+    let page_state = (open, busy, pending_label, revision.clone());
+    let identity = (account_id, page_id, identifier);
     view! {
         cx =>
         <section class="relative space-y-2" data-native-page-labels="" (mount)>
             native_page_label_controls(
-                account_id: account_id,
-                page_id: page_id,
-                identifier: identifier,
+                identity: identity.clone(),
                 attached: $(labels.get()),
                 catalog_revision: $(revision.get()),
                 state: page_state.clone()
@@ -67,14 +65,14 @@ fn mount_attributes(
     let pinned = state.pinned.clone();
     let labels = state.labels.clone();
     let busy = state.busy.clone();
-    let opened = open.clone();
-    let pending = pending_label.clone();
-    let revision_changed = revision.clone();
+    let opened = open;
+    let pending = pending_label;
+    let revision_changed = revision;
     let browser = browser::bindings();
     let mount = expr!(|_event: Event| {
-        let _applied = |event: Event| {
+        let _applied = |_event: Event| {
             let reply: ReplyValue = raw!(
-                "${event}.inner.detail",
+                "${_event}.inner.detail",
                 Reply {
                     status: Err("".to_owned()),
                     account_id: 0_i64,
@@ -121,9 +119,9 @@ fn mount_attributes(
                 }
             }
         };
-        let _outside = |event: Event| {
+        let _outside = |_event: Event| {
             let inside = raw!(
-                "cx.hydrate(Boolean(${event}.inner.target?.closest('[data-native-page-labels]')))",
+                "cx.hydrate(Boolean(${_event}.inner.target?.closest('[data-native-page-labels]')))",
                 false
             );
             if !inside {
@@ -143,13 +141,12 @@ type ControlsState = (Signal<bool>, Signal<bool>, Signal<bool>, Signal<usize>);
 #[shard("/__native_pages/label_controls")]
 async fn native_page_label_controls(
     cx: &Cx,
-    account_id: i64,
-    page_id: i64,
-    identifier: String,
+    identity: (i64, i64, String),
     attached: Vec<String>,
     catalog_revision: usize,
     state: ControlsState,
 ) -> topcoat::Result<impl topcoat::view::View> {
+    let (account_id, page_id, identifier) = identity;
     let (open_signal, busy, pending_label, revision) = state;
     let _catalog_revision = catalog_revision;
     let caller = session::read(cx, context::caller(cx))?;
@@ -236,13 +233,12 @@ async fn native_page_label_controls(
     let add = if can_edit {
         let mut attrs = Attributes::with_capacity(1);
         let open_handler = {
-            let next_open = open_signal.clone();
             let browser = browser::bindings();
             expr!(|event: Event| {
                 if !browser.is_disposed() {
                     event.prevent_default();
                     event.stop_propagation();
-                    next_open.set(!next_open.get());
+                    open_signal.set(!open_signal.get());
                 }
             })
         };
