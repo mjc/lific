@@ -23,6 +23,8 @@ mod production;
 mod save_lifecycle_production;
 #[cfg(test)]
 mod title_commit_production;
+#[cfg(test)]
+mod body_editor_production;
 
 use super::super::shell::{Page, ParsedRoute};
 use super::{context, home_shell, session};
