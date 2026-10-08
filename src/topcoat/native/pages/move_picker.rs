@@ -1,5 +1,5 @@
 //! Shared Pages list folder picker and its owner-scoped handlers.
-use super::super::super::runtime::signal_vec::VecPositionExt;
+use super::super::super::runtime::signal_vec::{SignalVecExt, VecPositionExt};
 use super::super::{browser, icons};
 use super::actions::move_to_folder as commit_move_page;
 use topcoat::{
@@ -305,6 +305,7 @@ pub(super) fn row_action(
         error,
         error_prefix,
         revision: _,
+        expanded: _,
     } = state;
     let click_open = open.clone();
     let click_page = selected_page.clone();
