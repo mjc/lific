@@ -160,9 +160,14 @@ pub(super) async fn delete_structure<R: Structure>(
     Path(id): Path<i64>,
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
 ) -> Result<Json<serde_json::Value>, LificError> {
-    let project_id = authorize_existing::<R>(&db, &identity, id)?;
-    with_write(&db, |conn| R::delete(conn, id))?;
-    realtime.send(RealtimeEvent::ProjectUpdated { project_id });
+    crate::services::structure::commit_delete(
+        &db,
+        &realtime,
+        &identity,
+        R::TABLE,
+        id,
+        |conn, _project_id| R::delete(conn, id),
+    )?;
     Ok(Json(serde_json::json!({"deleted": true})))
 }
 
@@ -520,9 +525,7 @@ mod tests {
             "stale admin snapshot must not authorize folder deletion"
         );
         assert_eq!(
-            crate::db::queries::list_folders(&db.read().unwrap(), project_id)
-                .unwrap()[0]
-                .id,
+            crate::db::queries::list_folders(&db.read().unwrap(), project_id).unwrap()[0].id,
             folder.id
         );
         assert!(events.try_recv().is_err());
