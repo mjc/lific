@@ -4,12 +4,12 @@ use super::super::{
     transport,
 };
 use crate::{
-    db::models::{Module, Project, UpdateModule},
+    db::models::{Module, Project, Role, UpdateModule},
     services::modules::ModuleDetail,
 };
 use topcoat::{
     context::{Cx, app_context},
-    runtime::{Event, Signal, expr, procedure, signal},
+    runtime::{Event, Signal, expr, procedure, shard, signal},
     view::{Attributes, BoxView, ViewExt, view},
 };
 
@@ -54,6 +54,15 @@ struct DeleteMenuState {
     error: Signal<String>,
 }
 
+#[derive(Clone)]
+struct DescriptionControls {
+    value: Signal<String>,
+    draft: Signal<String>,
+    editing: Signal<bool>,
+    saving: Signal<bool>,
+    error: Signal<String>,
+}
+
 pub(super) fn content<'a>(
     cx: &'a Cx,
     account: i64,
@@ -72,6 +81,13 @@ pub(super) fn content<'a>(
     let name_editing = signal(&owner, || false);
     let name_error = signal(&owner, String::new);
     let description = signal(&owner, || module.description.clone());
+    let description_controls = DescriptionControls {
+        value: description.clone(),
+        draft: signal(&owner, || module.description.clone()),
+        editing: signal(&owner, || false),
+        saving: signal(&owner, || false),
+        error: signal(&owner, String::new),
+    };
     let icon = signal(&owner, || module.emoji.clone().unwrap_or_default());
     let status = signal(&owner, || module.status.clone());
     let status_open = signal(&owner, || false);
@@ -87,8 +103,16 @@ pub(super) fn content<'a>(
         module_id: module.id,
         destination: route.clone(),
     };
+    let description_owner =
+        description_owner_attributes(cx, can_edit, mutation.clone(), description_controls.clone());
+    let project_id = project.id;
+    let module_id = module.id;
+    let description_value = description_controls.value.clone();
+    let description_editing = description_controls.editing.clone();
+    let description_draft = description_controls.draft.clone();
+    let description_saving = description_controls.saving.clone();
+    let description_error = description_controls.error.clone();
     let props_open = signal(&owner, || false);
-    let description_initial = module.description.clone();
     let issues = sorted_issues(data.issues);
     let progress_total = issues.len();
     let progress_done = issues
@@ -159,15 +183,6 @@ pub(super) fn content<'a>(
         name_editing.clone(),
         name_error.clone(),
     );
-    let save_description = update_attributes(
-        cx,
-        account,
-        project.id,
-        module.id,
-        "description",
-        description.clone(),
-        route.clone(),
-    );
     let save_icon = update_attributes(
         cx,
         account,
@@ -193,7 +208,7 @@ pub(super) fn content<'a>(
         cx,
         ModuleMutation {
             destination: transport::mounted_url(cx, &format!("/{project_identifier}/modules")),
-            ..mutation
+            ..mutation.clone()
         },
         issues.len(),
         module.name.clone(),
@@ -204,23 +219,20 @@ pub(super) fn content<'a>(
             error: signal(&owner, String::new),
         },
     );
-    let shortcut = shortcut_attributes(cx, can_edit, props_open.clone());
+    let shortcut = shortcut_attributes(
+        cx,
+        can_edit,
+        props_open.clone(),
+        description_controls.value.clone(),
+        description_controls.draft.clone(),
+        description_controls.editing.clone(),
+        description_controls.saving.clone(),
+    );
     let authority_marker = authority.encoded();
     let name = module.name.clone();
-    let description_html = if module.description.trim().is_empty() {
-        None
-    } else {
-        Some(markdown::render(
-            cx,
-            &module.description,
-            markdown::Scope::Private,
-            &[],
-        ))
-    };
     let created_at = module.created_at.clone();
     let updated_at = module.updated_at.clone();
     let module_icon = icons::project_icon(cx, module.emoji.as_deref(), 20);
-    let module_id = module.id;
     let issue_count = issues.len();
     let empty = issues.is_empty();
     let aside_status = status_sidebar(
@@ -297,43 +309,21 @@ pub(super) fn content<'a>(
                             (ring)
                         }
                     </div>
-                    <section class="mb-10">
-                        if can_edit {
-                            <form (save_description) class="flex flex-col gap-2">
-                                <textarea
-                                    data-native-module-description-editor=""
-                                    class="w-full min-h-[120px] rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3 text-body text-[var(--text)]"
-                                    placeholder="Describe this module... (markdown supported)"
-                                    :value=$(description.get())
-                                    @input=$(|event: Event| description.set(event.target.value))
-                                ></textarea>
-                                <div class="flex gap-2">
-                                    <button
-                                        type="submit"
-                                        class="text-body-sm text-[var(--accent)]"
-                                    >
-                                        "Save description"
-                                    </button>
-                                    <button
-                                        type="button"
-                                        class="text-body-sm text-[var(--text-muted)]"
-                                        @click=$(|_event: Event| description.set(
-                                                description_initial.clone(),
-                                            ))
-                                    >
-                                        "Cancel"
-                                    </button>
-                                </div>
-                            </form>
-                        } else if let Some(html) = description_html {
-                            <article class="markdown-body prose max-w-none">
-                                (topcoat::view::Unescaped::new_unchecked(html))
-                            </article>
-                        } else {
-                            <p class="text-body-sm italic text-[var(--text-muted)]">
-                                "No description"
-                            </p>
-                        }
+                    <section
+                        class="mb-10"
+                        data-native-module-description-owner=""
+                        (description_owner)
+                    >
+                        native_module_description(
+                            account: account,
+                            project_id: project_id,
+                            module_id: module_id,
+                            editing: $(description_editing.get()),
+                            source: $(description_value.get()),
+                            draft: description_draft,
+                            saving: description_saving,
+                            error: description_error
+                        )
                     </section>
                     <section>
                         <div class="flex items-baseline justify-between mb-3 pb-2">
@@ -530,6 +520,378 @@ fn status_sidebar<'a>(
             }
         </div>
     }.boxed()
+}
+
+use module_description::native_module_description;
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Topcoat adds the request context to the flat shard transport arguments"
+)]
+mod module_description {
+    use super::*;
+
+    #[shard("/__native_modules/description")]
+    pub(super) async fn native_module_description(
+        cx: &Cx,
+        account: i64,
+        project_id: i64,
+        module_id: i64,
+        editing: bool,
+        source: String,
+        draft: Signal<String>,
+        saving: Signal<bool>,
+        error: Signal<String>,
+    ) -> topcoat::Result<impl topcoat::view::View> {
+        let caller = session::read(cx, context::caller(cx))?;
+        let user = session::read(cx, crate::api::require_user(&caller.identity))?;
+        if user.id != account {
+            return session::read(
+                cx,
+                Err(crate::error::LificError::Forbidden(
+                    "Your account changed. Reload this page.".into(),
+                )),
+            );
+        }
+        let module = session::read(
+            cx,
+            crate::services::modules::get(context::db(cx), &caller.identity, module_id),
+        )?;
+        if module.project_id != project_id {
+            return session::read(
+                cx,
+                Err(crate::error::LificError::NotFound(
+                    "module not found".into(),
+                )),
+            );
+        }
+        let can_edit = match crate::authz::require_role(
+            context::db(cx),
+            &caller.identity,
+            project_id,
+            Role::Maintainer,
+        ) {
+            Ok(()) => true,
+            Err(crate::error::LificError::Forbidden(_)) => false,
+            Err(error) => return session::read(cx, Err(error)),
+        };
+
+        let markdown_html = if source.trim().is_empty() {
+            None
+        } else {
+            Some(markdown::render(cx, &source, markdown::Scope::Private, &[]))
+        };
+        let mode_toggle = if can_edit && !source.trim().is_empty() {
+            let toggle_saving = saving.clone();
+            Some(
+                view! {
+                    cx =>
+                    <div
+                        class="flex items-center gap-1 self-end p-0.5 rounded-lg bg-[var(--bg-subtle)]"
+                        role="radiogroup"
+                        aria-label="Content view mode"
+                    >
+                        <button
+                            type="button"
+                            role="radio"
+                            aria-label="Edit"
+                            data-native-module-description-action="edit"
+                            class="px-2.5 py-1 text-body-sm rounded-md"
+                            :aria-checked=$(if editing { "true" } else { "false" })
+                            :disabled=$(toggle_saving.get())
+                        >
+                            "Edit"
+                        </button>
+                        <button
+                            type="button"
+                            role="radio"
+                            aria-label="Preview"
+                            data-native-module-description-action="preview"
+                            class="px-2.5 py-1 text-body-sm rounded-md"
+                            :aria-checked=$(if editing { "false" } else { "true" })
+                            :disabled=$(toggle_saving.get())
+                        >
+                            "Preview"
+                        </button>
+                    </div>
+                }
+                .boxed(),
+            )
+        } else {
+            None
+        };
+        Ok(view! {
+            cx =>
+            <div
+                class="flex flex-col gap-2"
+                :aria-busy=$(if saving.get() { "true" } else { "false" })
+            >
+                <p
+                    class="text-body-sm text-[var(--error)]"
+                    role="status"
+                    :hidden=$(error.get().is_empty())
+                >
+                    $(error.get())
+                </p>
+                if let Some(toggle) = mode_toggle {
+                    (toggle)
+                }
+                if can_edit && editing {
+                    <textarea
+                        data-native-module-description-editor=""
+                        class="w-full min-h-[120px] rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3 text-body text-[var(--text)]"
+                        placeholder="Describe this module... (markdown supported)"
+                        autofocus="autofocus"
+                        :value=$(draft.get())
+                        :disabled=$(saving.get())
+                        (description_input_attributes(cx, draft.clone(), error.clone()))
+                    ></textarea>
+                    <div class="flex items-center gap-2">
+                        <button
+                            type="button"
+                            data-native-module-description-save=""
+                            data-native-module-description-action="save"
+                            class="text-body-sm text-[var(--accent)] disabled:opacity-50"
+                            :disabled=$(saving.get())
+                        >
+                            "Save"
+                        </button>
+                        <button
+                            type="button"
+                            data-native-module-description-cancel=""
+                            data-native-module-description-action="cancel"
+                            class="text-body-sm text-[var(--text-muted)] disabled:opacity-50"
+                            :disabled=$(saving.get())
+                        >
+                            "Cancel"
+                        </button>
+                    </div>
+                } else if let Some(html) = markdown_html {
+                    <article class="markdown-body prose max-w-none">
+                        (topcoat::view::Unescaped::new_unchecked(html))
+                    </article>
+                } else if can_edit {
+                    <button
+                        type="button"
+                        data-native-module-description-action="edit"
+                        class="text-left text-body-sm italic text-[var(--text-muted)] hover:text-[var(--text)]"
+                    >
+                        "Click to describe this module..."
+                    </button>
+                } else {
+                    <p class="text-body-sm italic text-[var(--text-muted)]">
+                        "No description"
+                    </p>
+                }
+            </div>
+        })
+    }
+}
+
+fn description_input_attributes(
+    cx: &Cx,
+    draft: Signal<String>,
+    error: Signal<String>,
+) -> Attributes {
+    let input = expr!(|event: Event| {
+        draft.set(event.target.value);
+        error.set("".to_owned());
+    });
+    let browser = browser::bindings();
+    let mount = expr!(|_event: Event| {
+        if !browser.is_disposed() {
+            browser.focus_selector("[data-native-module-description-editor]".to_owned());
+        }
+    });
+    let mut attrs = Attributes::with_capacity(2);
+    attrs.insert(cx, "data-topcoat-on:input", input.into_evaluated_and_js().1);
+    attrs.insert(cx, "data-topcoat-on:mount", mount.into_evaluated_and_js().1);
+    attrs
+}
+
+fn description_owner_attributes(
+    cx: &Cx,
+    can_edit: bool,
+    mutation: ModuleMutation,
+    controls: DescriptionControls,
+) -> Attributes {
+    let ModuleMutation {
+        account,
+        project_id,
+        module_id,
+        destination: _,
+    } = mutation;
+    let DescriptionControls {
+        value,
+        draft,
+        editing,
+        saving,
+        error,
+    } = controls;
+    let browser = browser::bindings();
+    let failed_saving = saving.clone();
+    let failed_error = error.clone();
+    let handler = expr!(async |event: Event| {
+        if browser.is_disposed() {
+            return;
+        }
+        let keydown = event.event_type == "keydown";
+        let escape = if keydown {
+            if event.key == "Escape" {
+                raw!(
+                    "cx.hydrate(Boolean(${event}.inner.target?.closest('[data-native-module-description-editor]'))) ",
+                    false
+                )
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        if escape {
+            if editing.get() {
+                event.prevent_default();
+                draft.set(value.get());
+                error.set("".to_owned());
+                editing.set(false);
+            }
+            return;
+        }
+        let save_shortcut = if keydown {
+            if event.key == "s" {
+                let editor_target = raw!(
+                    "cx.hydrate(Boolean(${event}.inner.target?.closest('[data-native-module-description-editor]'))) ",
+                    false
+                );
+                if editor_target {
+                    if event.alt_key {
+                        false
+                    } else if event.shift_key {
+                        false
+                    } else if event.ctrl_key {
+                        true
+                    } else {
+                        event.meta_key
+                    }
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        let action = if event.event_type == "click" {
+            raw!(
+                "cx.hydrate(${event}.inner.target?.closest('[data-native-module-description-action]')?.getAttribute('data-native-module-description-action') ?? '')",
+                "".to_owned()
+            )
+        } else {
+            "".to_owned()
+        };
+        if !save_shortcut {
+            if action != "edit" {
+                if action != "cancel" {
+                    if action != "save" {
+                        if action != "preview" {
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+        if !can_edit {
+            return;
+        }
+        if save_shortcut {
+            if !editing.get() {
+                return;
+            }
+        }
+        event.prevent_default();
+        if !save_shortcut {
+            if action == "edit" {
+                if saving.get() {
+                    return;
+                }
+                if editing.get() {
+                    return;
+                }
+                draft.set(value.get());
+                error.set("".to_owned());
+                editing.set(true);
+                return;
+            }
+            if action == "cancel" {
+                if !saving.get() {
+                    draft.set(value.get());
+                    error.set("".to_owned());
+                    editing.set(false);
+                }
+                return;
+            }
+            if action == "preview" {
+                if !editing.get() {
+                    return;
+                }
+            }
+            if action == "save" {
+                if !editing.get() {
+                    return;
+                }
+            }
+        }
+        if saving.get() {
+            return;
+        }
+        let previous = value.get();
+        let next = draft.get();
+        editing.set(false);
+        error.set("".to_owned());
+        if next == previous {
+            draft.set(previous);
+            return;
+        }
+        saving.set(true);
+        let _failed = || {
+            if !browser.is_disposed() {
+                failed_saving.set(false);
+                failed_error.set("Unable to save module description.".to_owned());
+            }
+        };
+        let _save = async || {
+            if browser.is_disposed() {
+                return;
+            }
+            update_module(
+                account,
+                project_id,
+                module_id,
+                "description".to_owned(),
+                next.clone(),
+            )
+            .await;
+            if !browser.is_disposed() {
+                value.set(next.clone());
+                draft.set(next.clone());
+                saving.set(false);
+            }
+        };
+        browser.microtask(|| {
+            if !browser.is_disposed() {
+                raw!(
+                    "Promise.resolve().then(()=>${_save}()).catch(()=>${_failed}());",
+                    ()
+                );
+            }
+        });
+    });
+    let mut attrs = Attributes::with_capacity(2);
+    let handler_js = handler.into_evaluated_and_js().1;
+    attrs.insert(cx, "data-topcoat-on:click", handler_js.clone());
+    attrs.insert(cx, "data-topcoat-on:keydown", handler_js);
+    attrs
 }
 
 fn sorted_issues(mut issues: Vec<crate::db::models::Issue>) -> Vec<crate::db::models::Issue> {
@@ -1030,21 +1392,45 @@ fn module_delete_body(issue_count: usize) -> String {
     }
 }
 
-fn shortcut_attributes(cx: &Cx, can_edit: bool, props_open: Signal<bool>) -> Attributes {
+fn shortcut_attributes(
+    cx: &Cx,
+    can_edit: bool,
+    props_open: Signal<bool>,
+    description: Signal<String>,
+    draft: Signal<String>,
+    editing: Signal<bool>,
+    saving: Signal<bool>,
+) -> Attributes {
     let handler = expr!(|event: Event| {
-        if raw!("${event}.key === 'Escape'", false) {
+        if event.key == "Escape" {
             props_open.set(false);
         } else if can_edit {
+            if event.key != "e" {
+                if event.key != "E" {
+                    return;
+                }
+            }
+            if event.ctrl_key {
+                return;
+            }
+            if event.meta_key {
+                return;
+            }
+            if event.alt_key {
+                return;
+            }
             if raw!(
-                "${event}.key.toLowerCase() !== 'e' || ${event}.ctrlKey || ${event}.metaKey || ${event}.altKey || ${event}.target.closest('input,textarea,select,[contenteditable=true],[role=dialog],[data-native-context-menu]')",
-                true
+                "cx.hydrate(Boolean(${event}.inner.target?.closest('input,textarea,select,[contenteditable=true],[role=dialog],[data-native-context-menu]'))) ",
+                false
             ) {
                 return;
             }
-            raw!(
-                "document.querySelector('[data-native-module-description-editor]')?.focus()",
-                ()
-            );
+            if !saving.get() {
+                if !editing.get() {
+                    draft.set(description.get());
+                    editing.set(true);
+                }
+            }
             event.prevent_default();
         } else {
             return;
