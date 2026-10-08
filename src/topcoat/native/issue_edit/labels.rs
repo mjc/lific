@@ -170,34 +170,24 @@ pub(crate) fn picker<'a>(cx: &'a Cx, props: PickerProps<'_>) -> BoxView<'a> {
         )
     }
     .boxed();
+    let chips_empty = chips.is_empty();
+    let chip_views = chips
+        .into_iter()
+        .map(|(name, tint)| {
+            let action =
+                can_edit.then(|| remove_button(cx, identity.clone(), &chip_attached, &name));
+            super::super::label_chip::render_with_action(cx, name, tint.as_deref(), action)
+        })
+        .collect::<Vec<_>>();
     view! {
         cx =>
         <section class="relative space-y-2" data-native-issue-labels="">
             <div class="flex flex-wrap items-center gap-1.5">
-                if chips.is_empty() {
+                if chips_empty {
                     <span class="native-issue-detail__empty-value">"None"</span>
                 }
-                for (name, tint) in chips {
-                    let style = tint
-                        .as_ref()
-                        .map_or_else(
-                            || "border-color:var(--border)".to_owned(),
-                            |hex| {
-                                let safe = super::super::project_overview::label_color(hex);
-                                format!(
-                                    "color:{safe};border-color:{safe}40;background:{safe}10",
-                                )
-                            },
-                        );
-                    <span
-                        class="native-label-chip normal-case inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium"
-                        style=(style)
-                    >
-                        (name.clone())
-                        if can_edit {
-                            (remove_button(cx, identity.clone(), &chip_attached, &name))
-                        }
-                    </span>
+                for chip in chip_views {
+                    (chip)
                 }
                 if can_edit {
                     <button
