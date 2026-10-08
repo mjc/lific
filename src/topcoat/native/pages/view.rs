@@ -5,8 +5,8 @@ use super::super::fuzzy::score as fuzzy_score;
 use super::super::{browser, context, icons, mascot, navigation, session, transport};
 use super::actions::{create as create_page, delete as delete_page, save as save_page};
 use super::{
-    activity, editor_state::EditorState, folder_create, folder_tree, labels, move_picker, pin,
-    status,
+    activity, detail_presentation, editor_state::EditorState, folder_create, folder_tree, labels,
+    move_picker, pin, status,
 };
 use crate::{db::models::Page as PageModel, error::LificError};
 use topcoat::{
@@ -976,6 +976,8 @@ async fn page_detail(
     let body_editing = signal(cx, || false);
     let confirming_delete = signal(cx, || false);
     let message = signal(cx, || "".to_owned());
+    let save_busy = signal(cx, || false);
+    let last_saved = signal(cx, String::new);
     let save = save_attributes(
         cx,
         account,
@@ -988,7 +990,9 @@ async fn page_detail(
         title_editing.clone(),
         body_editing.clone(),
         busy.clone(),
+        save_busy.clone(),
         message.clone(),
+        last_saved.clone(),
     );
     let delete = delete_attributes(
         cx,
@@ -1011,6 +1015,13 @@ async fn page_detail(
         None
     };
     let activity_identity = (account, page.id);
+    let save_feedback =
+        detail_presentation::save_feedback(cx, save_busy.clone(), last_saved.clone());
+    let (export_error, export_button) = super::super::document_export::toolbar_fragments(
+        cx,
+        super::super::document_export::DocumentKind::Page,
+        &page.identifier,
+    );
     let created_at = super::super::dates::absolute_time_view(cx, &page.created_at);
     let updated_at = super::super::dates::absolute_time_view(cx, &page.updated_at);
     Ok(view! {
@@ -1019,7 +1030,20 @@ async fn page_detail(
             class="native-pages h-full min-h-0 overflow-y-auto leading-[1.6] text-[var(--text)]"
         >
             <main class="native-pages__detail max-w-[860px] mx-auto px-6 py-6">
-                (breadcrumb)
+                <div class="flex flex-wrap items-center gap-3 mb-5">
+                    (breadcrumb)
+                    <div class="ml-auto flex flex-wrap items-center justify-end gap-2">
+                        if !can_edit {
+                            (detail_presentation::read_only_badge(
+                                cx,
+                                page.project_id.is_none(),
+                            ))
+                        }
+                        (export_error)
+                        (save_feedback)
+                        (export_button)
+                    </div>
+                </div>
                 <div class="mt-5 mb-6">
                     <div class="font-mono text-caption text-[var(--text-muted)]">
                         (page.identifier.clone())
@@ -1243,9 +1267,12 @@ fn save_attributes(
     title_editing: Signal<bool>,
     body_editing: Signal<bool>,
     busy: Signal<bool>,
+    save_busy: Signal<bool>,
     message: Signal<String>,
+    last_saved: Signal<String>,
 ) -> Attributes {
     let failed_busy = busy.clone();
+    let failed_save_busy = save_busy.clone();
     let failed_message = message.clone();
     let browser = browser::bindings();
     let handler = expr!(async |_event: Event| {
@@ -1258,12 +1285,14 @@ fn save_attributes(
             let next_body = body_draft.get();
             if !next_title.is_empty() {
                 busy.set(true);
+                save_busy.set(true);
                 message.set("".to_owned());
                 let sent_seq = seq.get();
                 let sent_body = next_body.clone();
                 let _failed = || {
                     if !browser.is_disposed() {
                         failed_busy.set(false);
+                        failed_save_busy.set(false);
                         failed_message
                             .set("Couldn't save the page. Your draft is still here.".to_owned());
                     }
@@ -1278,6 +1307,7 @@ fn save_attributes(
                         return;
                     }
                     busy.set(false);
+                    save_busy.set(false);
                     if outcome.status.is_ok() {
                         let saved_title = outcome.title.clone().unwrap();
                         let saved_body = outcome.content.clone().unwrap();
@@ -1286,6 +1316,7 @@ fn save_attributes(
                         title.set(saved_title.clone());
                         body.set(saved_body.clone());
                         seq.set(outcome.seq.unwrap());
+                        last_saved.set(browser.local_time_now());
                         if title_unchanged {
                             title_draft.set(saved_title);
                             title_editing.set(false);
