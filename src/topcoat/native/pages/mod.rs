@@ -1,7 +1,9 @@
 //! Native Pages browsing and project page detail.
 mod actions;
+mod editor_state;
 mod folder_create;
 mod folder_tree;
+mod labels;
 pub(crate) mod labels_action;
 mod metadata;
 mod move_picker;
