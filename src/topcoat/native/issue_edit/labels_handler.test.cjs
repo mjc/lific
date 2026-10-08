@@ -103,9 +103,11 @@ function run(phase) {
     assert.equal(events[0].defaultPrevented, true);
     assert.deepEqual(plain(events[0].detail.dehydrate()), phase.create_request,
       'the refreshed create handler emits the current query and color');
-    assert.equal(read(phase.creating_id), true);
-    assert.equal(read(phase.open_id), true, 'creation leaves the picker open while pending');
-    assert.equal(read(phase.query_id), phase.query, 'query remains until catalog creation succeeds');
+    assert.equal(read(bindingId(phase.creating_binding)), true);
+    assert.equal(read(bindingId(phase.open_binding)), true,
+      'creation leaves the picker open while pending');
+    assert.equal(read(bindingId(phase.query_binding)), phase.query,
+      'query remains until catalog creation succeeds');
     output.create_request = plain(events[0].detail.dehydrate());
   } else if (phase.name === 'filter_enter') {
     enterThroughProjectedAction(
