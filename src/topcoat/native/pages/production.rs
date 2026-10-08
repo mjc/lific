@@ -4078,3 +4078,274 @@ async fn native_page_detail_renders_viewer_cue_export_and_reactive_save_feedback
             .is_none()
     );
 }
+
+#[tokio::test]
+async fn native_page_markdown_attachment_images_render_for_viewer_and_maintainer() {
+    const ID: &str = "9007199254740999";
+
+    for mount in ["", "/app", "/ACC"] {
+        for editable in [false, true] {
+            let fixture = home_fixture::fixture();
+            let (page_id, _, _) = seed_page(&fixture, editable);
+            let body = format!(
+                "![alt <&](/api/attachments/{ID})\n\n[download](/api/attachments/7)\n\n<img src=\"https://foreign.test/image.png\" data-native-attachment-image=\"forged\" data-native-original-src=\"/api/attachments/8\" data-topcoat-on:click=\"forged()\" alt=\"foreign\">"
+            );
+            fixture
+                .db
+                .write()
+                .unwrap()
+                .execute(
+                    "UPDATE pages SET content = ?1 WHERE id = ?2",
+                    rusqlite::params![body, page_id],
+                )
+                .unwrap();
+            let (status, html) = home_fixture::document(
+                &fixture,
+                mount,
+                &format!("/ACC/pages/{page_id}"),
+                true,
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "mount {mount}");
+            let document = scraper::Html::parse_document(&html);
+            let article = document
+                .select(&scraper::Selector::parse("article.markdown-body").unwrap())
+                .next()
+                .expect("the Page Markdown region is rendered");
+            let markdown = article.inner_html();
+            assert!(
+                markdown.contains(&format!("src=\"{mount}/api/attachments/{ID}/thumbnail\"")),
+                "Page Markdown emits a mount-aware thumbnail: {markdown}"
+            );
+            assert!(
+                markdown.contains(&format!(
+                    "data-native-original-src=\"{mount}/api/attachments/{ID}\""
+                )),
+                "the image retains its separate original URL: {markdown}"
+            );
+            assert!(markdown.contains("loading=\"lazy\""), "{markdown}");
+            assert!(
+                markdown.contains("data-native-attachment-image=\"\""),
+                "{markdown}"
+            );
+            assert!(
+                markdown.contains("role=\"dialog\""),
+                "the owned dialog is in the Markdown region: {markdown}"
+            );
+            assert!(markdown.contains("aria-modal=\"true\""), "{markdown}");
+            assert!(
+                markdown.contains("aria-label=\"Image preview\""),
+                "{markdown}"
+            );
+            assert!(markdown.contains("tabindex=\"-1\""), "{markdown}");
+            assert!(markdown.contains("alt=\"alt &lt;&amp;\""), "{markdown}");
+            assert!(
+                markdown.contains(&format!("href=\"{mount}/api/attachments/7\"")),
+                "{markdown}"
+            );
+            let foreign = article
+                .select(&scraper::Selector::parse("img[src^='https://foreign.test']").unwrap())
+                .next()
+                .expect("the authored foreign image remains");
+            assert!(
+                foreign.attr("data-native-attachment-image").is_none(),
+                "{markdown}"
+            );
+            assert!(
+                foreign.attr("data-native-original-src").is_none(),
+                "{markdown}"
+            );
+            assert!(
+                foreign.attr("data-topcoat-on:click").is_none(),
+                "{markdown}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn native_page_markdown_replacement_response_contains_only_new_preview_content() {
+    let fixture = home_fixture::fixture();
+    let (page_id, _, _) = seed_page(&fixture, false);
+    for (id, content) in [
+        (31, "![Old image](/api/attachments/31)"),
+        (32, "![New image](/api/attachments/32)"),
+    ] {
+        fixture
+            .db
+            .write()
+            .unwrap()
+            .execute(
+                "UPDATE pages SET content = ?1 WHERE id = ?2",
+                rusqlite::params![content, page_id],
+            )
+            .unwrap();
+        let (status, html) = home_fixture::document(
+            &fixture,
+            "/app",
+            &format!("/ACC/pages/{page_id}"),
+            true,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let document = scraper::Html::parse_document(&html);
+        let article = document
+            .select(&scraper::Selector::parse("article.markdown-body").unwrap())
+            .next()
+            .expect("the updated authorized Page body is rendered");
+        let markdown = article.inner_html();
+        assert!(markdown.contains(&format!("/app/api/attachments/{id}/thumbnail")));
+        let unexpected = if id == 31 { 32 } else { 31 };
+        assert!(!markdown.contains(&format!(
+            "data-native-original-src=\"/app/api/attachments/{unexpected}\""
+        )));
+    }
+}
+
+#[tokio::test]
+async fn native_page_markdown_emitted_image_handlers_obey_owner_lifetime_and_fallback() {
+    let fixture = home_fixture::fixture();
+    let (page_id, _, _) = seed_page(&fixture, false);
+    fixture
+        .db
+        .write()
+        .unwrap()
+        .execute(
+            "UPDATE pages SET content = ?1 WHERE id = ?2",
+            rusqlite::params!["![Page image](/api/attachments/9007199254740999)", page_id],
+        )
+        .unwrap();
+    let mount = "/app";
+    let (status, html) = home_fixture::document(
+        &fixture,
+        mount,
+        &format!("/ACC/pages/{page_id}"),
+        true,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let document = scraper::Html::parse_document(&html);
+    let markdown = document
+        .select(&scraper::Selector::parse("article.markdown-body").unwrap())
+        .next()
+        .expect("the real authorized Page Markdown region");
+    let root = markdown
+        .select(&scraper::Selector::parse("[data-native-markdown-images]").unwrap())
+        .next()
+        .expect("the interactive view emits its actual root");
+    let preview = markdown
+        .select(&scraper::Selector::parse("[data-native-markdown-preview]").unwrap())
+        .next()
+        .expect("the dialog is retained in the emitted tree");
+    assert!(preview.value().attr("hidden").is_some());
+    let click_handler = root
+        .value()
+        .attr("data-topcoat-on:click")
+        .expect("emitted click handler");
+    let mount_handler = root
+        .value()
+        .attr("data-topcoat-on:mount")
+        .expect("emitted mount handler");
+    let hidden_binding = preview
+        .value()
+        .attr("data-topcoat-bind:hidden")
+        .expect("emitted reactive visibility binding");
+    let preview_image = preview
+        .select(&scraper::Selector::parse("img").unwrap())
+        .next()
+        .expect("the dialog keeps one reactive image element mounted");
+    let source_binding = preview_image
+        .value()
+        .attr("data-topcoat-bind:src")
+        .expect("original src remains a reactive optional binding");
+    let alt_binding = preview_image
+        .value()
+        .attr("data-topcoat-bind:alt")
+        .expect("the authored alt text remains reactive");
+    let class_binding = preview
+        .value()
+        .attr("data-topcoat-bind:class")
+        .expect("the full overlay class is reactive");
+    let markdown_marker = shard_marker(&html, "/__native_pages/markdown");
+    let result = home_fixture::evaluate_handler(
+        "src/topcoat/native/pages/markdown_images_handler.test.cjs",
+        &serde_json::json!({
+            "signals": home_fixture::page_signals(&html),
+            "click_handler": click_handler,
+            "mount_handler": mount_handler,
+            "hidden_binding": hidden_binding,
+            "source_binding": source_binding,
+            "alt_binding": alt_binding,
+            "class_binding": class_binding,
+            "markdown_marker": markdown_marker,
+            "mount": mount,
+        }),
+    );
+    assert_eq!(result["passed"], true);
+
+    use topcoat::runtime::Surrogated;
+    let shard = &result["markdown_shard"];
+    assert_eq!(shard["path"], "/app/__native_pages/markdown");
+    let mut arguments = shard["args"].as_array().unwrap().clone();
+    let replacement_source = "![Replacement image](/api/attachments/9007199254741000)";
+    fixture
+        .db
+        .write()
+        .unwrap()
+        .execute(
+            "UPDATE pages SET content = ?1 WHERE id = ?2",
+            rusqlite::params![replacement_source, page_id],
+        )
+        .unwrap();
+    arguments[2] = serde_json::to_value(replacement_source.to_owned().into_surrogate()).unwrap();
+    let (replacement_status, replacement_html) = replay_activity_shard_at(
+        &fixture,
+        mount,
+        shard["path"].as_str().unwrap(),
+        shard["identity"].as_str().unwrap(),
+        serde_json::Value::Array(arguments),
+        result["signals"].clone(),
+    )
+    .await;
+    assert_eq!(replacement_status, StatusCode::OK);
+    let replacement_document = scraper::Html::parse_document(&replacement_html);
+    let replacement_image = replacement_document
+        .select(&scraper::Selector::parse("img[data-native-original-src]").unwrap())
+        .next()
+        .expect("the actual Page Markdown shard response contains the replacement image");
+    assert_eq!(
+        replacement_image.value().attr("data-native-original-src"),
+        Some("/app/api/attachments/9007199254741000")
+    );
+    assert!(
+        replacement_document
+            .select(&scraper::Selector::parse("[data-native-markdown-preview][hidden]").unwrap())
+            .next()
+            .is_some(),
+        "replacement source starts with its own closed preview despite the old open signal snapshot"
+    );
+    assert!(
+        !replacement_html
+            .contains(r#"data-native-original-src="/app/api/attachments/9007199254740999""#),
+        "the shard response replaces old content"
+    );
+    let replacement_preview = replacement_document
+        .select(&scraper::Selector::parse("[data-native-markdown-preview]").unwrap())
+        .next()
+        .unwrap();
+    let replacement_img = replacement_preview
+        .select(&scraper::Selector::parse("img").unwrap())
+        .next()
+        .unwrap();
+    assert_ne!(
+        source_binding,
+        replacement_img
+            .value()
+            .attr("data-topcoat-bind:src")
+            .unwrap(),
+        "a different Markdown source owns fresh modal signals"
+    );
+}
