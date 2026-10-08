@@ -32,10 +32,11 @@ function fixture() {
   const signal=value=>{const id=`fixture-${++nextId}`;registry.insert(id,hydrate(value));return cx.signal(id);};
   const usize=value=>({t:'usize',bits:64,v:String(value)});
   const chrome=[signal(false),signal('system'),signal(false),signal(false),signal('root'),signal(''),signal('fixture-owner'),signal(base),signal(false),signal(''),signal(false),signal('')];
-  const palette=[signal(false),signal(''),signal(''),signal(usize(0)),signal(usize(0)),signal(usize(0)),signal(usize(0)),signal(''),signal(false),signal(usize(0)),signal(false),signal(false)];
+  const palette=[signal(false),signal(''),signal(''),signal(usize(0)),signal(usize(0)),signal(usize(0)),signal(usize(0)),signal(''),signal(false),signal(usize(0)),signal(false),signal(false),signal(false)];
   const status=[signal(false),signal(''),signal('')];
-  const request=[hydrate('|"ACC"|'),hydrate(`${mount}/login`),hydrate({t:'i64',bits:64,v:'7'}),hydrate(false)];
+  const request=[hydrate({t:'Vec',bits:64,v:[]}),hydrate(`${mount}/login`),hydrate({t:'i64',bits:64,v:'7'}),hydrate(false)];
   vm.runInNewContext(source.replace(/export const (\w+)=/g,'globalThis.$1='),context);
+  context.__lificNativeMounts={browser:cx=>context.browser(cx)};
   context.mount(cx,{},cx.tuple(chrome),cx.tuple(palette),cx.tuple(status),cx.tuple(request));
   const open=(pane='root')=>{
     chrome[3].set(hydrate(true));chrome[4].set(hydrate(pane));chrome[5].set(hydrate(pane==='root'?'':'ACC'));
