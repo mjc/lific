@@ -10,6 +10,40 @@ use crate::error::LificError;
 use crate::realtime::{RealtimeEvent, RealtimeHub};
 use crate::resolve_caller::ResolvedIdentity;
 
+#[derive(Debug)]
+pub(crate) struct IssueCollection {
+    pub project: crate::db::models::Project,
+    pub modules: Vec<Module>,
+    pub labels: Vec<Label>,
+    pub issues: Vec<Issue>,
+}
+
+pub(crate) fn list_project_collection(
+    db: &DbPool,
+    identity: &Option<ResolvedIdentity>,
+    project: &str,
+) -> Result<IssueCollection, LificError> {
+    let conn = db.read()?;
+    let id = crate::db::queries::resolve_project_identifier(&conn, project)?;
+    let project = crate::db::queries::get_project(&conn, id)?;
+    let (modules, labels) = issue_create_catalog_conn(&conn, identity, id)?;
+    drop(conn);
+    let issues = list_issues(
+        db,
+        identity,
+        &ListIssuesQuery {
+            project_id: Some(id),
+            ..Default::default()
+        },
+    )?;
+    Ok(IssueCollection {
+        project,
+        modules,
+        labels,
+        issues,
+    })
+}
+
 /// Private issue listing shared by REST and native views, retaining the
 /// existing project gate, cross-project filtering and relation visibility.
 pub(crate) fn list_issues(
