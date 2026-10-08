@@ -484,6 +484,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn folder_deletion_rechecks_current_admin_authority_before_removing() {
+        let (db, admin, _, _, _, _, project_id) = setup_membership_test();
+        let identity = Some(crate::auth::fresh_identity(
+            &admin,
+            crate::actor::Transport::Web,
+        ));
+        let folder = {
+            let conn = db.write().unwrap();
+            let folder = crate::db::queries::create_folder(
+                &conn,
+                &crate::db::models::CreateFolder {
+                    project_id,
+                    parent_id: None,
+                    name: "Keep".into(),
+                },
+            )
+            .unwrap();
+            conn.execute("UPDATE users SET is_admin=0 WHERE id=?1", [admin.id])
+                .unwrap();
+            folder
+        };
+        let realtime = crate::realtime::RealtimeHub::new();
+        let mut events = realtime.subscribe();
+        let result = super::delete_structure::<super::Folders>(
+            axum::extract::State(db.clone()),
+            axum::Extension(realtime),
+            axum::extract::Path(folder.id),
+            axum::Extension(identity),
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(crate::error::LificError::Forbidden(_))),
+            "stale admin snapshot must not authorize folder deletion"
+        );
+        assert_eq!(
+            crate::db::queries::list_folders(&db.read().unwrap(), project_id)
+                .unwrap()[0]
+                .id,
+            folder.id
+        );
+        assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test]
     async fn regular_cannot_create_folder() {
         let (db, _, _lead, regular, project_id) = setup_lead_test();
         let regular_app = app_as_user(db, &regular);
