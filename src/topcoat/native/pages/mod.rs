@@ -20,6 +20,8 @@ mod export_production;
 mod production;
 #[cfg(test)]
 mod save_lifecycle_production;
+#[cfg(test)]
+mod title_commit_production;
 
 use super::super::shell::{Page, ParsedRoute};
 use super::{context, home_shell, session};
