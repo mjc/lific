@@ -145,7 +145,7 @@ async function run(phase) {
     output.signals = signalValues();
     if (phase.shard_marker) {
       const activity = emittedShard(phase.shard_marker, context, cx, plain);
-      assert.equal(String(activity.args[1]), String(phase.activity_seq),
+      assert.deepEqual(activity.args[1], phase.activity_seq_wire,
         'the emitted activity shard dependency reads the canonical sequence after label success');
       output.activity_shard = activity;
     }

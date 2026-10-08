@@ -50,6 +50,8 @@ const plain = value => {
   return JSON.parse(JSON.stringify(value));
 };
 const signalValues = () => Object.keys(input.signals).map(id => unbox(cx.signal(id).dehydrate()));
+const signalSnapshot = () => Object.fromEntries(Object.keys(input.signals)
+  .map(id => [id, cx.signal(id).get().dehydrate()]));
 const referencedValues = () => [...referencedSignals].map(id => unbox(cx.signal(id).dehydrate()));
 const sequenceSignal = () => {
   const candidates = [...referencedSignals].filter(id => id !== titleSignal && id !== bodySignal &&
@@ -96,7 +98,7 @@ async function run() {
     if (input.shard_marker) {
       const activity = emittedShard(input.shard_marker, context, cx, plain);
       assert.equal(activity.path, '/__native_pages/activity');
-      assert.equal(String(activity.args[1]), String(unbox(input.reply.v.seq)),
+      assert.deepEqual(activity.args[1], input.reply.v.seq,
         'the emitted activity shard dependency reads the committed shared editor sequence');
       output.activity_shard = activity;
     }
@@ -109,7 +111,7 @@ async function run() {
       'the conflict is visible while the editor is closed');
     if (input.shard_marker) {
       const activity = emittedShard(input.shard_marker, context, cx, plain);
-      assert.equal(String(activity.args[1]), String(input.expected_seq),
+      assert.deepEqual(activity.args[1], input.expected_seq_wire,
         'a conflict does not advance the emitted activity shard dependency');
       output.activity_shard = activity;
     }
@@ -122,13 +124,14 @@ async function run() {
       'the transport failure remains visible');
     if (input.shard_marker) {
       const activity = emittedShard(input.shard_marker, context, cx, plain);
-      assert.equal(String(activity.args[1]), String(input.expected_seq),
+      assert.deepEqual(activity.args[1], input.expected_seq_wire,
         'a transport failure does not advance the emitted activity shard dependency');
       output.activity_shard = activity;
     }
   }
   output.requests = requests.length;
   output.signals = signalValues();
+  output.signal_snapshot = signalSnapshot();
   process.stdout.write(JSON.stringify(output));
 }
 run().catch(error => { process.stderr.write(`${error.stack}\n`); process.exitCode = 1; });
