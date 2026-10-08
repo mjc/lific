@@ -504,7 +504,7 @@ async fn workspace_owner(
         &action_cx,
         user.id,
         &project,
-        matches!(initial_route.page, Page::Record(_)),
+        matches!(initial_route.page, Page::Record(_) | Page::Files),
         pending_issues.clone(),
     );
     let page_path = path;
