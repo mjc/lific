@@ -1625,6 +1625,263 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn native_plan_detail_renders_the_latest_hundred_activity_rows_and_emitted_toggles() {
+        use crate::db::{models::CreatePlan, queries};
+        use scraper::{Html, Selector};
+
+        let fixture = super::super::super::home_fixture::fixture();
+        let (
+            plan,
+            foreign_plan,
+            account,
+            project_id,
+            oldest_id,
+            next_oldest_id,
+            description_id,
+            newest_id,
+        ) = {
+            let conn = fixture.db.write().unwrap();
+            let account = queries::users::validate_session(&conn, &fixture.token)
+                .unwrap()
+                .id;
+            let project_id = queries::resolve_project_identifier(&conn, "ACC").unwrap();
+            let plan = queries::plans::create_plan(
+                &conn,
+                &CreatePlan {
+                    project_id,
+                    title: "Activity integration plan".into(),
+                    issue_id: None,
+                    steps: Vec::new(),
+                },
+            )
+            .unwrap();
+            let foreign_plan = queries::plans::create_plan(
+                &conn,
+                &CreatePlan {
+                    project_id,
+                    title: "Different plan scope".into(),
+                    issue_id: None,
+                    steps: Vec::new(),
+                },
+            )
+            .unwrap();
+
+            // The Plan feed contains this sentinel plus the plan's create row.
+            // A 100-row limit must omit sentinel zero and retain the newest 100.
+            for index in 0..101 {
+                let description = index == 98;
+                let entity_type = if description { "plan_step" } else { "plan" };
+                let entity_id = if description { 50_000 + index } else { plan.id };
+                let field = if description { "description" } else { "title" };
+                let old = if description {
+                    "Old description line\nunchanged context"
+                } else {
+                    "Old title"
+                };
+                let new = if description {
+                    "New description line\nunchanged context"
+                } else {
+                    "Audit new {index}"
+                };
+                let new = new.replace("{index}", &index.to_string());
+                conn.execute(
+                    "INSERT INTO audit_log
+                     (transport, entity_type, entity_id, entity_label, project_id,
+                      action, field, old_value, new_value)
+                     VALUES ('system', ?1, ?2, ?3, ?4, 'update', ?5, ?6, ?7)",
+                    rusqlite::params![
+                        entity_type,
+                        entity_id,
+                        plan.identifier,
+                        project_id,
+                        field,
+                        old,
+                        new,
+                    ],
+                )
+                .unwrap();
+            }
+            conn.execute(
+                "INSERT INTO audit_log
+                 (transport, entity_type, entity_id, entity_label, project_id,
+                  action, field, old_value, new_value)
+                 VALUES ('system', 'plan', ?1, ?2, ?3, 'update', 'title',
+                         'Foreign old title', 'Foreign scope sentinel')",
+                rusqlite::params![foreign_plan.id, foreign_plan.identifier, project_id],
+            )
+            .unwrap();
+            let audit_id = |value: &str| {
+                conn.query_row(
+                    "SELECT id FROM audit_log WHERE new_value = ?1",
+                    [value],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap()
+            };
+            (
+                plan,
+                foreign_plan,
+                account,
+                project_id,
+                audit_id("Audit new 0"),
+                audit_id("Audit new 1"),
+                audit_id("New description line\nunchanged context"),
+                audit_id("Audit new 100"),
+            )
+        };
+
+        let path = format!("/ACC/plans/{}", plan.id);
+        let (status, html) =
+            super::super::super::home_fixture::document(&fixture, "/app", &path, true, None).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let document = Html::parse_document(&html);
+        let timeline = document
+            .select(&Selector::parse("[data-native-issue-activity]").unwrap())
+            .next()
+            .expect("Plan detail includes the shared activity timeline");
+        assert_eq!(
+            timeline
+                .select(&Selector::parse(".native-issue-activity__count").unwrap())
+                .next()
+                .unwrap()
+                .text()
+                .collect::<String>(),
+            "100",
+            "Plan detail matches Main's default 100-entry feed cap",
+        );
+        let rows = Selector::parse("li").unwrap();
+        let row_text = timeline
+            .select(&rows)
+            .map(|row| row.text().collect::<String>())
+            .collect::<Vec<_>>();
+        assert_eq!(row_text.len(), 100);
+        assert_eq!(
+            timeline
+                .select(&Selector::parse("li:not([hidden])").unwrap())
+                .count(),
+            6,
+            "only the six most recent entries start expanded in the feed",
+        );
+        let newest_selector =
+            Selector::parse(&format!("li[data-activity-id=\"{newest_id}\"]")).unwrap();
+        let retained_selector =
+            Selector::parse(&format!("li[data-activity-id=\"{next_oldest_id}\"]")).unwrap();
+        let excluded_selector =
+            Selector::parse(&format!("li[data-activity-id=\"{oldest_id}\"]")).unwrap();
+        let description_selector =
+            Selector::parse(&format!("li[data-activity-id=\"{description_id}\"]")).unwrap();
+        assert_eq!(
+            timeline.select(&newest_selector).count(),
+            1,
+            "newest row is present"
+        );
+        assert_eq!(
+            timeline
+                .select(&rows)
+                .next()
+                .unwrap()
+                .value()
+                .attr("data-activity-id"),
+            Some(newest_id.to_string().as_str()),
+            "entries are newest first"
+        );
+        assert_eq!(
+            timeline.select(&retained_selector).count(),
+            1,
+            "next-oldest row is retained"
+        );
+        assert_eq!(
+            timeline.select(&excluded_selector).count(),
+            0,
+            "oldest row is outside the 100-row cap"
+        );
+        let values_selector = Selector::parse(".native-issue-activity__values").unwrap();
+        let initial_description = timeline.select(&description_selector).next().unwrap();
+        let initial_values = initial_description.select(&values_selector).next().unwrap();
+        assert!(
+            initial_values.value().attr("hidden").is_some(),
+            "description values start collapsed"
+        );
+        assert!(!html.contains("Foreign scope sentinel"));
+
+        let button = Selector::parse("button[data-topcoat-on:click]").unwrap();
+        let mut show_all = None;
+        let mut show_change = None;
+        for control in timeline.select(&button) {
+            let label = control.text().collect::<String>();
+            let handler = control.value().attr("data-topcoat-on:click").unwrap();
+            if label.contains("Show all 100 entries") {
+                show_all = Some(handler);
+            }
+            if label.contains("show change") {
+                show_change = Some(handler);
+            }
+        }
+        let emitted = super::super::super::home_fixture::evaluate_handler(
+            "src/topcoat/native/plans/activity_handler.test.cjs",
+            &serde_json::json!({
+                "signals": super::super::super::home_fixture::page_signals(&html),
+                "show_all": show_all.expect("Show all uses an emitted handler"),
+                "show_change": show_change.expect("description expansion uses an emitted handler"),
+            }),
+        );
+        let recovered = serde_json::from_value(emitted["signals"].clone()).unwrap();
+        let (status, restored_html) = super::super::super::home_fixture::document(
+            &fixture,
+            "/app",
+            &path,
+            true,
+            Some(recovered),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let restored = Html::parse_document(&restored_html);
+        let restored_timeline = restored
+            .select(&Selector::parse("[data-native-issue-activity]").unwrap())
+            .next()
+            .unwrap();
+        assert_eq!(restored_timeline.select(&rows).count(), 100);
+        assert_eq!(
+            restored_timeline
+                .select(&Selector::parse("li:not([hidden])").unwrap())
+                .count(),
+            100,
+            "the emitted Show all handler reveals the remaining history",
+        );
+        let restored_description = restored_timeline
+            .select(&description_selector)
+            .next()
+            .unwrap();
+        let restored_values = restored_description
+            .select(&values_selector)
+            .next()
+            .unwrap();
+        assert!(
+            restored_values.value().attr("hidden").is_none(),
+            "emitted change handler reveals values"
+        );
+        let restored_text = restored_values.text().collect::<String>();
+        assert!(restored_text.contains("Old description line"));
+        assert!(restored_text.contains("New description line"));
+        assert!(!restored_html.contains("Foreign scope sentinel"));
+
+        // The fixture user is a viewer and can read the mounted Plan page.
+        fixture
+            .db
+            .write()
+            .unwrap()
+            .execute(
+                "DELETE FROM project_members WHERE project_id = ?1 AND user_id = ?2",
+                rusqlite::params![project_id, account],
+            )
+            .unwrap();
+        let (revoked_status, _) =
+            super::super::super::home_fixture::document(&fixture, "/app", &path, true, None).await;
+        assert_eq!(revoked_status, axum::http::StatusCode::FORBIDDEN);
+        assert_ne!(plan.id, foreign_plan.id);
+    }
+
+    #[tokio::test]
     async fn native_plan_step_tree_renders_collapse_control_for_viewers() {
         let fixture = super::super::super::home_fixture::fixture();
         let plan = {
