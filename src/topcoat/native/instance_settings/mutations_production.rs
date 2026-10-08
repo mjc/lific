@@ -75,7 +75,7 @@ async fn native_member_reactivation_keeps_its_target_through_recent_auth_confirm
     assert_eq!(refusal[0], false);
     assert_eq!(refusal[3], crate::auth::RECENT_AUTH_REQUIRED_MESSAGE);
     assert!(
-        !crate::db::queries::users::get_user_by_id(&*fixture.db.read().unwrap(), member_id)
+        !crate::db::queries::users::get_user_by_id(&fixture.db.read().unwrap(), member_id)
             .unwrap()
             .is_active
     );
@@ -99,12 +99,12 @@ async fn native_member_reactivation_keeps_its_target_through_recent_auth_confirm
     assert_eq!(wrong_password[0], false);
     assert_eq!(wrong_password[3], "incorrect password");
     assert!(
-        !crate::db::queries::users::get_user_by_id(&*fixture.db.read().unwrap(), member_id)
+        !crate::db::queries::users::get_user_by_id(&fixture.db.read().unwrap(), member_id)
             .unwrap()
             .is_active
     );
     assert!(
-        crate::db::queries::users::validate_session(&*fixture.db.read().unwrap(), &fixture.token)
+        crate::db::queries::users::validate_session(&fixture.db.read().unwrap(), &fixture.token)
             .is_ok()
     );
 
@@ -126,7 +126,7 @@ async fn native_member_reactivation_keeps_its_target_through_recent_auth_confirm
     assert_eq!(success_status, StatusCode::OK);
     assert_eq!(success, serde_json::json!([true, false, true, ""]));
     assert!(
-        crate::db::queries::users::get_user_by_id(&*fixture.db.read().unwrap(), member_id)
+        crate::db::queries::users::get_user_by_id(&fixture.db.read().unwrap(), member_id)
             .unwrap()
             .is_active
     );
