@@ -60,7 +60,6 @@ pub(super) fn dialog<'a>(
         busy,
         error,
         error_prefix,
-        expanded: _,
         ..
     } = state.clone();
     let browser = browser::bindings();

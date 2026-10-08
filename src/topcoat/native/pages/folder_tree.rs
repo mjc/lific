@@ -28,7 +28,7 @@ pub(super) struct Render<'data, 'view> {
 
 pub(super) fn state(cx: &Cx, revision: Signal<usize>, initially_expanded: Vec<i64>) -> State {
     (
-        topcoat::runtime::signal(cx, move || initially_expanded.clone()),
+        topcoat::runtime::signal(cx, move || initially_expanded),
         topcoat::runtime::signal(cx, || false),
         topcoat::runtime::signal(cx, String::new),
         revision,
@@ -252,14 +252,10 @@ fn level<'view, 'data>(
     parent: Option<i64>,
     state: &mut Render<'data, 'view>,
 ) -> Vec<BoxView<'view>> {
-    let folders = state
-        .folders
+    let folders = state.folders;
+    folders
         .iter()
         .filter(|folder| folder.parent_id == parent)
-        .cloned()
-        .collect::<Vec<_>>();
-    folders
-        .into_iter()
         .map(|folder| {
             let mut children = level(cx, Some(folder.id), state);
             if state.expanded.contains(&folder.id) {
