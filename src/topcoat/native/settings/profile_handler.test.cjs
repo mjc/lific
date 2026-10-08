@@ -116,6 +116,7 @@ async function run() {
     const phone = fixture();
     vm.runInNewContext(input.source.replace(/export const (\w+)=/g, 'globalThis.$1='), phone.context);
     phone.context.__lificNativeMounts = {
+      browser: cx => phone.context.browser(cx),
       [`${input.mount_url}#mobile-dispatch`]: phone.context.mobileDispatch,
     };
     const owner = {closest: selector => selector === '.native-home-shell' ? root : null};
