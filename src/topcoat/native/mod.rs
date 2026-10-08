@@ -20,6 +20,7 @@ pub(crate) mod deferred_delete;
 pub(crate) mod dependency_graph;
 pub(crate) mod error_state;
 pub(crate) mod files;
+pub(crate) mod fuzzy;
 pub(crate) mod handler_asset;
 pub(crate) mod home;
 pub(crate) mod home_activity;

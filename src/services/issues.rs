@@ -24,18 +24,38 @@ pub(crate) fn list_project_collection(
     project: &str,
 ) -> Result<IssueCollection, LificError> {
     let conn = db.read()?;
-    let id = crate::db::queries::resolve_project_identifier(&conn, project)?;
-    let project = crate::db::queries::get_project(&conn, id)?;
-    let (modules, labels) = issue_create_catalog_conn(&conn, identity, id)?;
-    drop(conn);
-    let issues = list_issues(
-        db,
-        identity,
-        &ListIssuesQuery {
-            project_id: Some(id),
-            ..Default::default()
-        },
-    )?;
+    let tx = conn.unchecked_transaction()?;
+    let identity = crate::auth::refresh_identity(&tx, identity.as_ref())?;
+    crate::api::require_user(&identity)?;
+    let id = crate::db::queries::resolve_project_identifier(&tx, project)?;
+    let (modules, labels) = issue_create_catalog_conn(&tx, &identity, id)?;
+    let project = crate::db::queries::get_project(&tx, id)?;
+    let mut issues = Vec::new();
+    let mut offset = 0;
+    loop {
+        let page = crate::db::queries::list_issues_page(
+            &tx,
+            &ListIssuesQuery {
+                project_id: Some(id),
+                limit: Some(500),
+                offset: Some(offset),
+                order_by: Some("sequence".into()),
+                ..Default::default()
+            },
+        )?;
+        issues.extend(page.items);
+        if !page.has_more {
+            break;
+        }
+        offset += 500;
+    }
+    // Main adapts the sync index, whose stable initial order is its seq.
+    // The description on that surface is the skinny first-line preview.
+    issues.sort_by_key(|issue| issue.seq);
+    for issue in &mut issues {
+        issue.description = crate::db::queries::changes::preview_of(&issue.description);
+    }
+    tx.commit()?;
     Ok(IssueCollection {
         project,
         modules,

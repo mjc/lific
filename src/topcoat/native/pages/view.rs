@@ -1,7 +1,6 @@
 //! Native Pages list and editor, populated from the authorized shared service.
-use super::super::super::runtime::whitespace::{
-    StrEcmaTrimExt, is_ecmascript_whitespace, trim_ecmascript,
-};
+use super::super::super::runtime::whitespace::{StrEcmaTrimExt, trim_ecmascript};
+use super::super::fuzzy::score as fuzzy_score;
 use super::super::{context, mascot, navigation, session, transport};
 use super::actions::{create as create_page, delete as delete_page, save as save_page};
 use super::{pin, status};
@@ -577,70 +576,6 @@ fn search_hit(
     let labels = fuzzy_score(query, &page.labels.join(" ")).unwrap_or(0.0) * 0.55;
     let best = title.max(identifier).max(content).max(labels);
     ((best >= THRESHOLD).then_some(best), None)
-}
-
-/// Port of the original two-tier case-insensitive PageList matcher.
-fn fuzzy_score(query: &str, text: &str) -> Option<f64> {
-    if query.is_empty() || text.is_empty() {
-        return None;
-    }
-    let q = query.to_lowercase();
-    let t = text.to_lowercase();
-    if let Some(start) = t.find(&q) {
-        let boundary = start == 0 || t[..start].chars().next_back().is_some_and(is_word_boundary);
-        return Some(if start == 0 {
-            0.95
-        } else if boundary {
-            0.9
-        } else {
-            0.8
-        });
-    }
-    let query_units = q.encode_utf16().collect::<Vec<_>>();
-    let text_units = t.encode_utf16().collect::<Vec<_>>();
-    let (mut query_index, mut first, mut last) = (0, None, None);
-    let (mut current, mut longest, mut boundaries) = (0_usize, 0_usize, 0_usize);
-    for (index, unit) in text_units.iter().copied().enumerate() {
-        if query_units.get(query_index) != Some(&unit) {
-            continue;
-        }
-        first.get_or_insert(index);
-        let consecutive = match last {
-            Some(previous) => index == previous + 1,
-            None => index == 0,
-        };
-        if consecutive {
-            current += 1;
-        } else {
-            current = 1;
-            if index == 0 || is_word_boundary_unit(text_units[index - 1]) {
-                boundaries += 1;
-            }
-        }
-        longest = longest.max(current);
-        last = Some(index);
-        query_index += 1;
-        if query_index == query_units.len() {
-            break;
-        }
-    }
-    if query_index != query_units.len() {
-        return None;
-    }
-    let span = last.unwrap().saturating_sub(first.unwrap_or(0)) + 1;
-    let size = query_units.len() as f64;
-    Some(
-        (0.4 * size / span as f64 + 0.4 * longest as f64 / size + 0.2 * boundaries as f64 / size)
-            .min(0.7),
-    )
-}
-
-fn is_word_boundary(character: char) -> bool {
-    is_ecmascript_whitespace(character) || "-_/.,()[]{}<>:;!?\"'`".contains(character)
-}
-
-fn is_word_boundary_unit(unit: u16) -> bool {
-    char::from_u32(u32::from(unit)).is_some_and(is_word_boundary)
 }
 
 pub(super) fn detail<'a>(
