@@ -86,24 +86,33 @@ async fn issue_collection_owner(
     ))
 }
 
-#[allow(clippy::too_many_arguments)]
-#[shard("/__native_issues/rows")]
-async fn native_issue_collection_rows(
-    cx: &Cx,
-    account: i64,
-    project: String,
-    pending: Vec<i64>,
-    layout: String,
-    wire: String,
-    tab: String,
-    lane: String,
-    slices: (String, String, String, String),
-    wire_owner: Signal<String>,
-    storage_key: String,
-) -> topcoat::Result<impl View> {
-    let collection = data::load(cx, account, &project, &pending)?;
-    let state = persistence::state(&wire, tab, lane, &[slices.0, slices.1, slices.2, slices.3]);
-    let selection = model::select(&collection, &state, &layout);
-    let clear = controls::clear_for(cx, wire_owner, storage_key);
-    Ok(view::region(cx, &collection, &selection, clear))
+use rows_shard::native_issue_collection_rows;
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Topcoat adds its request context to separate reactive owner inputs"
+)]
+mod rows_shard {
+    use super::*;
+
+    #[shard("/__native_issues/rows")]
+    pub(super) async fn native_issue_collection_rows(
+        cx: &Cx,
+        account: i64,
+        project: String,
+        pending: Vec<i64>,
+        layout: String,
+        wire: String,
+        tab: String,
+        lane: String,
+        slices: (String, String, String, String),
+        wire_owner: Signal<String>,
+        storage_key: String,
+    ) -> topcoat::Result<impl View> {
+        let collection = data::load(cx, account, &project, &pending)?;
+        let state = persistence::state(&wire, tab, lane, &[slices.0, slices.1, slices.2, slices.3]);
+        let selection = model::select(&collection, &state, &layout);
+        let clear = controls::clear_for(cx, wire_owner, storage_key);
+        Ok(view::region(cx, &collection, &selection, clear))
+    }
 }
