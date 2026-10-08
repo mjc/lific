@@ -172,11 +172,32 @@ async fn native_files_load_more_marks_busy_and_blocks_overlapping_focus_refresh(
 }
 
 #[tokio::test]
+async fn native_files_route_activates_the_shared_owner_after_home_navigation() {
+    let fixture = super::super::home_fixture::fixture();
+    let (status, home_html) =
+        super::super::home_fixture::document(&fixture, "/app", "/", true, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let home_signals = super::super::home_fixture::page_signals(&home_html);
+
+    let (status, files_html) = super::super::home_fixture::document(
+        &fixture,
+        "/app",
+        "/ACC/files",
+        true,
+        Some(home_signals),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    super::super::deferred_delete::activated_snapshot(&files_html);
+}
+
+#[tokio::test]
 async fn native_files_delete_success_reports_reference_count() {
     let fixture = super::super::home_fixture::fixture();
     let (account, _project_id, attachment_id) = seed(&fixture);
     let (status, initial_html) = document(&fixture, "/app", "/ACC/files", true, None).await;
     assert_eq!(status, StatusCode::OK);
+    super::super::deferred_delete::activated_snapshot(&initial_html);
     let initial = scraper::Html::parse_document(&initial_html);
     let delete_toggle = scraper::Selector::parse("button[title='Delete a-screen.png']").unwrap();
     let open_handler = initial
@@ -265,7 +286,11 @@ async fn native_files_delete_success_reports_reference_count() {
         .select(&toast_owner)
         .next()
         .expect("the authenticated shell mounts its real toast owner");
-    assert!(owner.value().attr("data-topcoat-on:mount").is_some());
+    assert_eq!(
+        owner.value().attr("data-native-action-account").unwrap(),
+        account.to_string()
+    );
+    super::super::deferred_delete::activated_snapshot(&after_html);
     assert!(
         !after_html.contains("a-screen.png"),
         "the real procedure deleted the file"
