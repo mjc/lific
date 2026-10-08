@@ -111,12 +111,10 @@ pub(crate) fn keyboard_mount(
             ()
         );
     });
+    let browser = super::super::browser::bindings();
     let keyboard = expr!(|event: Event| {
         if event.key == "Escape" {
-            let typing = raw!(
-                "cx.hydrate(['INPUT','TEXTAREA','SELECT'].includes(document.activeElement?.tagName) || Boolean(document.activeElement?.isContentEditable))",
-                false
-            );
+            let typing = browser.is_typing_context();
             let suppressed = if event.default_prevented {
                 true
             } else {

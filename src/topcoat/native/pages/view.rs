@@ -2,11 +2,11 @@
 use super::super::super::runtime::whitespace::{StrEcmaTrimExt, trim_ecmascript};
 use super::super::breadcrumbs::{self, Segment};
 use super::super::fuzzy::score as fuzzy_score;
-use super::super::{browser, context, icons, mascot, navigation, session, transport};
-use super::actions::{create as create_page, delete as delete_page, save as save_page};
+use super::super::{context, icons, mascot, navigation, session, transport};
+use super::actions::{create as create_page, delete as delete_page};
 use super::{
-    activity, detail_presentation, editor_state::EditorState, folder_create, folder_tree, labels,
-    move_picker, pin, status, title_editor,
+    activity, body_editor, detail_presentation, editor_save, editor_state::EditorState,
+    folder_create, folder_tree, labels, move_picker, pin, status, title_editor,
 };
 use crate::{db::models::Page as PageModel, error::LificError};
 use topcoat::{
@@ -978,22 +978,60 @@ async fn page_detail(
     let message = signal(cx, || "".to_owned());
     let save_busy = signal(cx, || false);
     let last_saved = signal(cx, String::new);
-    let save = save_attributes(
-        cx,
+    let body_controls = body_editor::Controls {
+        editing: body_editing.clone(),
+        revision: signal(cx, || 0_usize),
+        busy: busy.clone(),
+        save_busy: save_busy.clone(),
+        message: message.clone(),
+        last_saved: last_saved.clone(),
+    };
+    let body_input_id = format!("native-page-body-{}-{}", account, page.id);
+    let body_commit = editor_save::commit_callback(
         account,
         page.id,
-        title.clone(),
-        body.clone(),
-        title_draft.clone(),
-        body_draft.clone(),
-        seq.clone(),
-        title_editing.clone(),
-        body_editing.clone(),
-        busy.clone(),
-        save_busy.clone(),
-        message.clone(),
-        last_saved.clone(),
+        editor_save::Field::Content,
+        &state,
+        &body_controls,
     );
+    let body_edit_mode = body_editor::mode_attributes(
+        cx,
+        &state,
+        &body_controls,
+        body_input_id.clone(),
+        &body_commit,
+        true,
+    );
+    let body_empty_edit_mode = body_editor::mode_attributes(
+        cx,
+        &state,
+        &body_controls,
+        body_input_id.clone(),
+        &body_commit,
+        true,
+    );
+    let body_preview_mode = body_editor::mode_attributes(
+        cx,
+        &state,
+        &body_controls,
+        body_input_id.clone(),
+        &body_commit,
+        false,
+    );
+    let body_input = body_editor::input_attributes(cx, &state, &body_controls, &body_commit);
+    let body_save = body_editor::save_attributes(cx, &body_commit);
+    let body_cancel = body_editor::cancel_attributes(cx, &state, &body_controls);
+    let body_keyboard = if can_edit {
+        body_editor::keyboard_attributes(
+            cx,
+            &state,
+            &body_controls,
+            title_editing.clone(),
+            body_input_id.clone(),
+        )
+    } else {
+        Attributes::with_capacity(0)
+    };
     let delete = delete_attributes(
         cx,
         account,
@@ -1027,8 +1065,16 @@ async fn page_detail(
     let title_input_id = format!("native-page-title-{}-{}", account, page.id);
     let title_trigger =
         title_editor::trigger_attributes(cx, &state, &title_controls, title_input_id.clone());
-    let title_input = title_editor::input_attributes(cx, account, page.id, &state, &title_controls);
-    let save_feedback = detail_presentation::save_feedback(cx, save_busy, last_saved);
+    let title_commit = editor_save::commit_callback(
+        account,
+        page.id,
+        editor_save::Field::Title,
+        &state,
+        &title_controls,
+    );
+    let title_input = title_editor::input_attributes(cx, &state, &title_controls, &title_commit);
+    let save_feedback =
+        detail_presentation::save_feedback(cx, save_busy.clone(), last_saved.clone());
     let (export_error, export_button) = super::super::document_export::toolbar_fragments(
         cx,
         super::super::document_export::DocumentKind::Page,
@@ -1041,7 +1087,10 @@ async fn page_detail(
         <div
             class="native-pages h-full min-h-0 overflow-y-auto leading-[1.6] text-[var(--text)]"
         >
-            <main class="native-pages__detail max-w-[860px] mx-auto px-6 py-6">
+            <main
+                class="native-pages__detail max-w-[860px] mx-auto px-6 py-6"
+                (body_keyboard)
+            >
                 <div class="flex flex-wrap items-center gap-3 mb-5">
                     (breadcrumb)
                     <div class="ml-auto flex flex-wrap items-center justify-end gap-2">
@@ -1052,6 +1101,58 @@ async fn page_detail(
                             ))
                         }
                         (export_error)
+                        if can_edit {
+                            <div
+                                class="inline-flex items-center gap-0.5 rounded-full border border-solid border-[var(--border)] bg-[var(--surface)] p-0.5"
+                                data-native-page-body-mode-toggle=""
+                                :hidden=$(body.get().trim_ecmascript().is_empty())
+                                role="group"
+                                aria-label="Content view mode"
+                            >
+                                <button
+                                    type="button"
+                                    data-native-page-body-mode="edit"
+                                    aria-label="Edit"
+                                    class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-body-sm border-0 bg-transparent text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-subtle)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
+                                    :class=$(if body_editing.get() {
+                                        "bg-[var(--accent)] text-[var(--accent-text)]"
+                                    } else {
+                                        ""
+                                    })
+                                    :aria-pressed=$(if body_editing.get() {
+                                        "true"
+                                    } else {
+                                        "false"
+                                    })
+                                    :disabled=$(save_busy.get())
+                                    (body_edit_mode)
+                                >
+                                    (icons::ui_icon(cx, icons::UiIcon::Edit, 14))
+                                    <span class="hidden sm:inline">"Edit"</span>
+                                </button>
+                                <button
+                                    type="button"
+                                    data-native-page-body-mode="preview"
+                                    aria-label="Preview"
+                                    class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-body-sm border-0 bg-transparent text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-subtle)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
+                                    :class=$(if body_editing.get() {
+                                        ""
+                                    } else {
+                                        "bg-[var(--accent)] text-[var(--accent-text)]"
+                                    })
+                                    :aria-pressed=$(if body_editing.get() {
+                                        "false"
+                                    } else {
+                                        "true"
+                                    })
+                                    :disabled=$(save_busy.get())
+                                    (body_preview_mode)
+                                >
+                                    (icons::ui_icon(cx, icons::UiIcon::Preview, 14))
+                                    <span class="hidden sm:inline">"Preview"</span>
+                                </button>
+                            </div>
+                        }
                         (save_feedback)
                         (export_button)
                     </div>
@@ -1113,73 +1214,66 @@ async fn page_detail(
                     }
                 </div>
                 if can_edit {
-                    <button
-                        type="button"
-                        class="text-body-sm text-[var(--accent)] border-0 bg-transparent px-0 py-1"
-                        :hidden=$(body_editing.get())
-                        @click=$(|_event: Event| {
-                            if !title_editing.get() {
-                                title_draft.set(title.get());
-                                title_editing.set(true);
-                            }
-                            body_draft.set(body.get());
-                            body_editing.set(true);
-                            message.set("".to_owned());
+                    <div
+                        data-native-page-body-empty-cta=""
+                        :hidden=$(if body_editing.get() {
+                            true
+                        } else {
+                            !body.get().trim_ecmascript().is_empty()
+                        })
+                        class="my-4"
+                    >
+                        <button
+                            type="button"
+                            class="text-body-sm text-[var(--accent)] border-0 bg-transparent px-0 py-1"
+                            (body_empty_edit_mode)
+                        >
+                            "Click to start writing..."
+                        </button>
+                    </div>
+                    <div
+                        data-native-page-body-preview=""
+                        :hidden=$(if body_editing.get() {
+                            true
+                        } else {
+                            body.get().trim_ecmascript().is_empty()
                         })
                     >
-                        "Edit page"
-                    </button>
-                    native_page_markdown(
-                        account: account,
-                        page_id: page.id,
-                        source: $(body.get())
-                    )
+                        native_page_markdown(
+                            account: account,
+                            page_id: page.id,
+                            source: $(body.get())
+                        )
+                    </div>
                     <textarea
+                        id=(body_input_id)
                         aria-label="Page content in Markdown"
+                        data-native-page-body-input=""
                         class="native-pages__editor w-full min-h-[240px] resize-y p-3 rounded-md border border-solid border-[var(--border)] bg-[var(--bg)] text-[var(--text)] font-mono text-body-sm"
                         placeholder="Start writing... (markdown supported)"
-                        :hidden=$(if body_editing.get() { false } else { true })
+                        :hidden=$(!body_editing.get())
                         :value=$(body_draft.get())
-                        @input=$(|event: Event| {
-                            body_draft.set(event.target.value.to_owned());
-                            body_editing.set(true);
-                        })
+                        (body_input)
                     ></textarea>
                     <div
                         class="flex items-center gap-3 mt-2"
-                        :hidden=$(if body_editing.get() {
-                            false
-                        } else {
-                            if title_editing.get() { false } else { true }
-                        })
+                        :hidden=$(!body_editing.get())
                     >
                         <button
+                            id=(format!("native-page-body-save-{}-{}", account, page.id))
                             type="button"
+                            data-native-page-body-save=""
                             class="px-3 py-1.5 rounded-md bg-[var(--accent)] text-[var(--accent-text)] border-0 text-body-sm"
-                            :disabled=$(if busy.get() {
-                                true
-                            } else {
-                                if title_editing.get() {
-                                    false
-                                } else {
-                                    if body_editing.get() { false } else { true }
-                                }
-                            })
-                            (save)
+                            :disabled=$(busy.get())
+                            (body_save)
                         >
-                            $(if busy.get() { "Saving…" } else { "Save changes" })
+                            $(if save_busy.get() { "Saving..." } else { "Save" })
                         </button>
                         <button
                             type="button"
+                            data-native-page-body-cancel=""
                             class="px-2.5 py-1.5 rounded-md border border-solid border-[var(--border)] bg-transparent text-body-sm text-[var(--text)]"
-                            :disabled=$(busy.get())
-                            @click=$(|_event: Event| {
-                                title_draft.set(title.get());
-                                body_draft.set(body.get());
-                                title_editing.set(false);
-                                body_editing.set(false);
-                                message.set("".to_owned());
-                            })
+                            (body_cancel)
                         >
                             "Cancel"
                         </button>
@@ -1222,11 +1316,19 @@ async fn page_detail(
                         </span>
                     </div>
                 } else {
-                    native_page_markdown(
-                        account: account,
-                        page_id: page.id,
-                        source: $(body.get())
-                    )
+                    <div
+                        data-native-page-body-empty-readonly=""
+                        :hidden=$(!body.get().trim_ecmascript().is_empty())
+                    >
+                        "Empty page"
+                    </div>
+                    <div :hidden=$(body.get().trim_ecmascript().is_empty())>
+                        native_page_markdown(
+                            account: account,
+                            page_id: page.id,
+                            source: $(body.get())
+                        )
+                    </div>
                 }
                 activity::native_page_activity(
                     identity: activity_identity,
@@ -1259,107 +1361,6 @@ async fn page_detail(
             </main>
         </div>
     })
-}
-
-#[allow(clippy::too_many_arguments)]
-fn save_attributes(
-    cx: &Cx,
-    account: i64,
-    page_id: i64,
-    title: Signal<String>,
-    body: Signal<String>,
-    title_draft: Signal<String>,
-    body_draft: Signal<String>,
-    seq: Signal<i64>,
-    title_editing: Signal<bool>,
-    body_editing: Signal<bool>,
-    busy: Signal<bool>,
-    save_busy: Signal<bool>,
-    message: Signal<String>,
-    last_saved: Signal<String>,
-) -> Attributes {
-    let failed_busy = busy.clone();
-    let failed_save_busy = save_busy.clone();
-    let failed_message = message.clone();
-    let browser = browser::bindings();
-    let handler = expr!(async |_event: Event| {
-        if browser.is_disposed() {
-            return;
-        }
-        if !busy.get() {
-            let sent_title = title_draft.get();
-            let next_title = sent_title.trim_ecmascript().to_owned();
-            let next_body = body_draft.get();
-            if !next_title.is_empty() {
-                busy.set(true);
-                save_busy.set(true);
-                message.set("".to_owned());
-                let sent_seq = seq.get();
-                let sent_body = next_body.clone();
-                let _failed = || {
-                    if !browser.is_disposed() {
-                        failed_busy.set(false);
-                        failed_save_busy.set(false);
-                        failed_message
-                            .set("Couldn't save the page. Your draft is still here.".to_owned());
-                    }
-                };
-                let _save = async || {
-                    if browser.is_disposed() {
-                        return;
-                    }
-                    let outcome =
-                        save_page(account, page_id, next_title, next_body, sent_seq).await;
-                    if browser.is_disposed() {
-                        return;
-                    }
-                    busy.set(false);
-                    save_busy.set(false);
-                    if outcome.status.is_ok() {
-                        let saved_title = outcome.title.clone().unwrap();
-                        let saved_body = outcome.content.clone().unwrap();
-                        let title_unchanged = title_draft.get() == sent_title;
-                        let body_unchanged = body_draft.get() == sent_body;
-                        title.set(saved_title.clone());
-                        body.set(saved_body.clone());
-                        seq.set(outcome.seq.unwrap());
-                        last_saved.set(browser.local_time_now());
-                        if title_unchanged {
-                            title_draft.set(saved_title);
-                            title_editing.set(false);
-                        }
-                        if body_unchanged {
-                            body_draft.set(saved_body);
-                            body_editing.set(false);
-                        }
-                        message.set("Saved".to_owned());
-                    } else {
-                        let reason = outcome.status.unwrap_err();
-                        if reason == "conflict" {
-                            message.set("This page changed elsewhere. Reload before saving again; your draft is still here.".to_owned());
-                        } else if reason == "reauth" {
-                            message.set("Please sign in again.".to_owned());
-                        } else if reason == "forbidden" {
-                            message.set("You can no longer edit this page.".to_owned());
-                        } else {
-                            message.set(reason);
-                        }
-                    }
-                };
-                raw!(
-                    "Promise.resolve().then(()=>${_save}()).catch(()=>${_failed}());",
-                    ()
-                );
-            }
-        }
-    });
-    let mut attrs = Attributes::with_capacity(1);
-    attrs.insert(
-        cx,
-        "data-topcoat-on:click",
-        handler.into_evaluated_and_js().1,
-    );
-    attrs
 }
 
 fn delete_attributes(
