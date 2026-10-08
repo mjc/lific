@@ -1,7 +1,9 @@
 //! Native Pages browsing and project page detail.
 mod actions;
 mod activity;
+mod body_editor;
 mod detail_presentation;
+mod editor_save;
 mod editor_state;
 mod export;
 mod folder_create;
@@ -16,6 +18,8 @@ mod title_editor;
 mod view;
 
 #[cfg(test)]
+mod body_editor_production;
+#[cfg(test)]
 mod export_production;
 #[cfg(test)]
 mod production;
@@ -23,8 +27,6 @@ mod production;
 mod save_lifecycle_production;
 #[cfg(test)]
 mod title_commit_production;
-#[cfg(test)]
-mod body_editor_production;
 
 use super::super::shell::{Page, ParsedRoute};
 use super::{context, home_shell, session};

@@ -107,6 +107,14 @@ impl Browser {
         panic!("browser bindings are only callable in client expressions")
     }
 
+    pub(crate) fn has_visible_match(&self, _selector: StringSurrogate) -> BoolSurrogate {
+        panic!("browser bindings are only callable in client expressions")
+    }
+
+    pub(crate) fn is_typing_context(&self) -> BoolSurrogate {
+        panic!("browser bindings are only callable in client expressions")
+    }
+
     pub(crate) fn focus_project(&self, _project: StringSurrogate) {
         panic!("browser bindings are only callable in client expressions")
     }
@@ -202,7 +210,7 @@ impl Browser {
     /// Adapts a closure call through a facade method while expr! lowers calls.
     pub(crate) fn call0<F, R>(&self, _callback: F) -> R
     where
-        F: Fn() -> R,
+        F: FnOnce() -> R,
     {
         panic!("browser bindings are only callable in client expressions")
     }
@@ -309,6 +317,17 @@ pub(crate) fn factory() -> Js {
                     return cx.hydrate(Boolean(node));
                 },
                 focus_selector: selector => document.querySelector(selector.toString())?.focus(),
+                has_visible_match: selector => cx.hydrate(
+                    Array.from(document.querySelectorAll(selector.toString())).some(element =>
+                        !element.closest('[hidden]') &&
+                        element.getClientRects().length > 0 &&
+                        !['hidden', 'collapse'].includes(getComputedStyle(element).visibility)
+                    )
+                ),
+                is_typing_context: () => cx.hydrate(
+                    ['INPUT','TEXTAREA','SELECT'].includes(document.activeElement?.tagName) ||
+                    Boolean(document.activeElement?.isContentEditable)
+                ),
                 focus_project: project => {
                     const link = Array.from(document.querySelectorAll('[data-native-project-trigger]'))
                         .find(element => element.getAttribute('data-native-project-trigger') === project.toString());
