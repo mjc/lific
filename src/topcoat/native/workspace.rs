@@ -103,6 +103,21 @@ mod route_tests {
         assert!(!filtered.contains("Visible todo initial work"));
         assert!(filtered.contains("1 of 2"));
         let filtered = scraper::Html::parse_document(&filtered);
+        for (tab, count) in [("all", "2"), ("open", "2"), ("closed", "0")] {
+            let selector =
+                scraper::Selector::parse(&format!("[data-native-issue-tab-count='{tab}']"))
+                    .unwrap();
+            assert_eq!(
+                filtered
+                    .select(&selector)
+                    .next()
+                    .unwrap()
+                    .text()
+                    .collect::<String>(),
+                count,
+                "tab counts remain project-wide after filtering"
+            );
+        }
         assert!(
             filtered
                 .select(&search_selector)

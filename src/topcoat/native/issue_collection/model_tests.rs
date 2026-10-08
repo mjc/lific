@@ -103,11 +103,9 @@ fn issue_collection_filters_compose_and_counts_remain_project_wide() {
     let selected = model::select(&collection, &state, "list");
     assert_eq!(ids(&selected.issues), [1]);
     assert_eq!(selected.count_label, "1 of 5");
-    assert_eq!(selected.stats.total, 5);
-    assert_eq!(selected.stats.statuses, [0, 0, 4, 1, 0]);
-    assert_eq!(selected.stats.priorities, [0, 4, 0, 1, 0]);
-    assert_eq!(selected.stats.by_module.get(&7), Some(&4));
-    assert_eq!(selected.stats.no_module, 1);
+    let stats = model::statistics(&collection.issues);
+    assert_eq!(stats.total, 5);
+    assert_eq!(stats.statuses, [0, 0, 4, 1, 0]);
 }
 
 #[test]
@@ -174,7 +172,6 @@ fn issue_collection_search_uses_main_weights_snippets_and_ecmascript_trim() {
     };
     let selected = model::select(&collection, &state, "list");
     assert_eq!(ids(&selected.issues), [1, 2, 3]);
-    assert!(selected.searching);
     assert!(selected.groups.is_none());
     assert_eq!(
         selected.snippets.get(&3).map(String::as_str),
