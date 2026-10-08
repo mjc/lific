@@ -487,23 +487,26 @@ async fn workspace_owner(
     initial: (String, String),
 ) -> topcoat::Result<impl View> {
     let (initial_path, initial_entry) = initial;
+    let initial_route = ParsedRoute::parse(&initial_path);
     let common = project.is_empty();
     let profile = super::account_profile::load(cx, user.id)?;
     let route_cx = cx.keyed((user.id, initial_path.clone()));
     let path = signal(&route_cx, || initial_path.clone());
     let entry = signal(&route_cx, || initial_entry);
     let palette_open = signal(cx, || false);
-    let mut chrome = home_shell::LiveChrome::new_scoped(
-        cx,
-        &route_cx,
-        path.clone(),
-        &ParsedRoute::parse(&initial_path),
-    );
+    let mut chrome =
+        home_shell::LiveChrome::new_scoped(cx, &route_cx, path.clone(), &initial_route);
     chrome.profile = Some(profile.clone());
     let action_cx = cx.keyed(user.id);
     let pending_issues = signal(&action_cx, Vec::<i64>::new);
-    let action_owner =
-        super::deferred_delete::owner(cx, &action_cx, user.id, &project, pending_issues.clone());
+    let action_owner = super::deferred_delete::owner(
+        cx,
+        &action_cx,
+        user.id,
+        &project,
+        matches!(initial_route.page, Page::Record(_)),
+        pending_issues.clone(),
+    );
     let page_path = path;
     let page = if common {
         let page_palette = palette_open.clone();
@@ -538,7 +541,7 @@ async fn workspace_owner(
         cx,
         &user,
         &projects,
-        &ParsedRoute::parse(&initial_path),
+        &initial_route,
         region,
         palette_open,
         chrome,
