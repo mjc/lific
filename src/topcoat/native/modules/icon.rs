@@ -87,7 +87,7 @@ pub(super) fn detail_picker<'a>(
         "data-topcoat-on:native-project-icon-change",
         handler.into_evaluated_and_js().1,
     );
-    let picker = project_create::icon_picker(cx, selected.clone(), changed);
+    let picker = project_create::icon_picker(cx, selected, changed);
     view! {
         cx =>
         <div class="flex items-center gap-2" data-native-module-icon-picker="">

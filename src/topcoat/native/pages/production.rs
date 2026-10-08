@@ -511,13 +511,13 @@ async fn native_pages_move_picker_matches_main_and_runs_emitted_handlers() {
                 .is_some_and(|backdrop| backdrop.value().attr("hidden").is_none()),
             "replaying the row action opens the shared picker",
         );
-        let initial_dialogs = document
+        let initial_dialog_count = document
             .select(
                 &scraper::Selector::parse("[role=dialog][aria-label='Move page to folder']")
                     .unwrap(),
             )
-            .collect::<Vec<_>>();
-        assert!(initial_dialogs.len() <= 1, "the page list owns one picker");
+            .count();
+        assert!(initial_dialog_count <= 1, "the page list owns one picker");
         let initial_backdrop = document
             .select(&scraper::Selector::parse("[data-native-page-move-backdrop]").unwrap())
             .next()

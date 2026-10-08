@@ -78,13 +78,13 @@ async fn pages_list(
     let move_error = signal(cx, String::new);
     let move_error_prefix = signal(cx, String::new);
     let move_state = move_picker::State {
-        open: move_open.clone(),
-        page_id: move_page_id.clone(),
-        page_title: move_page_title.clone(),
-        folder: move_folder.clone(),
-        busy: move_busy.clone(),
-        error: move_error.clone(),
-        error_prefix: move_error_prefix.clone(),
+        open: move_open,
+        page_id: move_page_id,
+        page_title: move_page_title,
+        folder: move_folder,
+        busy: move_busy,
+        error: move_error,
+        error_prefix: move_error_prefix,
         revision: revision.clone(),
     };
     let move_dialog = if can_edit {
