@@ -608,6 +608,24 @@ async fn plan_step_component(
     } else {
         None
     };
+    let unlink = if can_edit && issue_identifier.is_some() {
+        Some(action_button(
+            cx,
+            account,
+            &project,
+            plan_id,
+            step_id,
+            PlanAction {
+                action: "unlink",
+                value: "",
+                label: "Detach issue",
+                class: "text-[var(--text-faint)] hover:text-[var(--text)]",
+            },
+            editor.clone(),
+        ))
+    } else {
+        None
+    };
     let remove = if can_edit {
         Some(action_button(
             cx,
@@ -658,6 +676,7 @@ async fn plan_step_component(
         title_editor,
         description_editor,
         link_editor,
+        unlink,
         remove,
         toggle,
         padding,
@@ -688,6 +707,7 @@ impl OkBox {
         title_editor: Option<BoxView<'a>>,
         description_editor: Option<BoxView<'a>>,
         link_editor: Option<BoxView<'a>>,
+        unlink: Option<BoxView<'a>>,
         remove: Option<BoxView<'a>>,
         toggle: Option<BoxView<'a>>,
         padding: usize,
@@ -754,6 +774,9 @@ impl OkBox {
                         }
                         if let Some(editor) = link_editor {
                             (editor)
+                        }
+                        if let Some(unlink) = unlink {
+                            (unlink)
                         }
                         if let Some(remove) = remove {
                             (remove)
@@ -1460,6 +1483,18 @@ async fn mutate_plan(
                         )
                         .map(|_| "saved".to_owned())
                     }
+                    "unlink" => crate::services::plans::update_step(
+                        &db,
+                        &hub,
+                        &identity,
+                        plan_id,
+                        target_id,
+                        &crate::services::plans::UpdateStep {
+                            issue_id: Some(None),
+                            ..Default::default()
+                        },
+                    )
+                    .map(|_| "saved".to_owned()),
                     "delete_step" => crate::services::plans::delete_step(
                         &db, &hub, &identity, plan_id, target_id,
                     )
@@ -1534,15 +1569,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn native_plan_linked_step_renders_detach_issue_control_for_maintainer() {
+    async fn native_plan_step_issue_unlink_uses_production_mutation_and_preserves_state() {
         let fixture = super::super::super::home_fixture::fixture();
-        let plan = {
+        let (plan, account, issue_id) = {
             let conn = fixture.db.write().unwrap();
             let account = crate::db::queries::users::validate_session(&conn, &fixture.token)
                 .unwrap()
                 .id;
             let project_id = crate::db::queries::resolve_project_identifier(&conn, "ACC").unwrap();
             let issue_id = crate::db::queries::resolve_identifier(&conn, "ACC-1").unwrap();
+            // This deliberately leaves a linked incomplete step beside a
+            // completed issue. Unlink must preserve both independent states.
+            conn.execute(
+                "UPDATE issues SET status = 'done' WHERE id = ?1",
+                [issue_id],
+            )
+            .unwrap();
             crate::db::queries::members::upsert_member(
                 &conn,
                 project_id,
@@ -1550,22 +1592,32 @@ mod tests {
                 Role::Maintainer,
             )
             .unwrap();
-            crate::db::queries::plans::create_plan(
+            let plan = crate::db::queries::plans::create_plan(
                 &conn,
                 &crate::db::models::CreatePlan {
                     project_id,
                     title: "Release checklist".into(),
                     issue_id: None,
-                    steps: vec![crate::db::models::CreatePlanStep {
-                        title: "Ship it".into(),
-                        description: "Ready".into(),
-                        issue_id: Some(issue_id),
-                        done: true,
-                        steps: vec![],
-                    }],
+                    steps: vec![
+                        crate::db::models::CreatePlanStep {
+                            title: "Linked incomplete".into(),
+                            description: "Still open".into(),
+                            issue_id: Some(issue_id),
+                            done: false,
+                            steps: vec![],
+                        },
+                        crate::db::models::CreatePlanStep {
+                            title: "Manual complete".into(),
+                            description: "Ready".into(),
+                            issue_id: None,
+                            done: true,
+                            steps: vec![],
+                        },
+                    ],
                 },
             )
-            .unwrap()
+            .unwrap();
+            (plan, account, issue_id)
         };
         let (status, html) = super::super::super::home_fixture::document(
             &fixture,
@@ -1577,12 +1629,202 @@ mod tests {
         .await;
         assert_eq!(status, axum::http::StatusCode::OK);
         let document = scraper::Html::parse_document(&html);
-        let detach = document
+        let linked = document
+            .select(
+                &scraper::Selector::parse(&format!(
+                    "article[data-plan-step='{}']",
+                    plan.steps[0].id
+                ))
+                .unwrap(),
+            )
+            .next()
+            .expect("linked step rendered");
+        let detach = linked
             .select(&scraper::Selector::parse("button[aria-label='Detach issue']").unwrap())
-            .next();
+            .next()
+            .expect("maintainers can detach a linked issue from a plan step");
         assert!(
-            detach.is_some(),
-            "maintainers can detach a linked issue from a plan step",
+            linked.text().collect::<String>().contains("ACC-1: done"),
+            "linked issue label stays visible alongside the detach action",
+        );
+        let manual = document
+            .select(
+                &scraper::Selector::parse(&format!(
+                    "article[data-plan-step='{}']",
+                    plan.steps[1].id
+                ))
+                .unwrap(),
+            )
+            .next()
+            .expect("unlinked step rendered");
+        assert!(
+            manual.text().collect::<String>().contains("Link an issue…"),
+            "maintainers can link an issue to an unlinked step",
+        );
+
+        let handler = detach
+            .value()
+            .attr("data-topcoat-on:click")
+            .expect("detach uses the native action handler");
+        let emitted = super::super::super::home_fixture::evaluate_handler(
+            "src/topcoat/native/plans/anchor_handler.test.cjs",
+            &serde_json::json!({
+                "handler": handler,
+                "signals": super::super::super::home_fixture::page_signals(&html),
+                "response": serde_json::to_value("saved".to_owned().into_surrogate()).unwrap(),
+            }),
+        );
+        assert_eq!(emitted["path"], "/__native_plans/mutate");
+        let arguments = emitted["arguments"].clone();
+        let expected_arguments = serde_json::to_value(
+            (
+                account,
+                "ACC".to_owned(),
+                plan.id,
+                plan.steps[0].id,
+                "unlink".to_owned(),
+                String::new(),
+            )
+                .into_surrogate(),
+        )
+        .unwrap();
+        assert_eq!(arguments, expected_arguments);
+
+        let before =
+            crate::db::queries::plans::get_plan(&fixture.db.read().unwrap(), plan.id).unwrap();
+        assert_eq!(before.steps[0].issue_id, Some(issue_id));
+        assert!(!before.steps[0].done);
+        assert!(before.steps[1].done);
+        assert_eq!(
+            crate::db::queries::issue_status(&fixture.db.read().unwrap(), issue_id).unwrap(),
+            "done",
+        );
+
+        let changed_account = serde_json::to_value(
+            (
+                account + 1,
+                "ACC".to_owned(),
+                plan.id,
+                plan.steps[0].id,
+                "unlink".to_owned(),
+                String::new(),
+            )
+                .into_surrogate(),
+        )
+        .unwrap();
+        let (status, _) = super::super::super::home_fixture::procedure(
+            &fixture,
+            "/__native_plans/mutate",
+            changed_account,
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::FORBIDDEN);
+
+        {
+            let conn = fixture.db.write().unwrap();
+            let hidden_project_id =
+                crate::db::queries::resolve_project_identifier(&conn, "HIDE").unwrap();
+            crate::db::queries::members::upsert_member(
+                &conn,
+                hidden_project_id,
+                account,
+                Role::Maintainer,
+            )
+            .unwrap();
+        }
+        let wrong_plan_project = serde_json::to_value(
+            (
+                account,
+                "HIDE".to_owned(),
+                plan.id,
+                plan.steps[0].id,
+                "unlink".to_owned(),
+                String::new(),
+            )
+                .into_surrogate(),
+        )
+        .unwrap();
+        let (status, _) = super::super::super::home_fixture::procedure(
+            &fixture,
+            "/__native_plans/mutate",
+            wrong_plan_project,
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::NOT_FOUND);
+
+        {
+            let conn = fixture.db.write().unwrap();
+            let project_id = crate::db::queries::resolve_project_identifier(&conn, "ACC").unwrap();
+            crate::db::queries::members::upsert_member(&conn, project_id, account, Role::Viewer)
+                .unwrap();
+        }
+        let (status, viewer_html) = super::super::super::home_fixture::document(
+            &fixture,
+            "",
+            &format!("/ACC/plans/{}", plan.id),
+            true,
+            None,
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let viewer_document = scraper::Html::parse_document(&viewer_html);
+        assert!(
+            viewer_document
+                .select(&scraper::Selector::parse("button[aria-label='Detach issue']").unwrap())
+                .next()
+                .is_none(),
+            "viewers cannot detach linked issues",
+        );
+        assert!(
+            !viewer_document
+                .select(&scraper::Selector::parse("summary").unwrap())
+                .any(|summary| summary.text().collect::<String>().contains("Link an issue")),
+            "viewers cannot link issues",
+        );
+        let (status, _) = super::super::super::home_fixture::procedure(
+            &fixture,
+            "/__native_plans/mutate",
+            arguments.clone(),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::FORBIDDEN);
+
+        {
+            let conn = fixture.db.write().unwrap();
+            let project_id = crate::db::queries::resolve_project_identifier(&conn, "ACC").unwrap();
+            crate::db::queries::members::upsert_member(
+                &conn,
+                project_id,
+                account,
+                Role::Maintainer,
+            )
+            .unwrap();
+        }
+        let (status, outcome) = super::super::super::home_fixture::procedure(
+            &fixture,
+            "/__native_plans/mutate",
+            arguments,
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(
+            outcome,
+            serde_json::to_value("saved".to_owned().into_surrogate()).unwrap(),
+        );
+        let after =
+            crate::db::queries::plans::get_plan(&fixture.db.read().unwrap(), plan.id).unwrap();
+        assert_eq!(after.steps[0].issue_id, None);
+        assert_eq!(after.steps[0].done, before.steps[0].done);
+        assert_eq!(
+            after.steps[0].reopened_via_issue_at,
+            before.steps[0].reopened_via_issue_at,
+        );
+        assert_eq!(after.steps[1].done, before.steps[1].done);
+        assert_eq!(after.done_count, before.done_count);
+        assert_eq!(after.step_count, before.step_count);
+        assert_eq!(
+            crate::db::queries::issue_status(&fixture.db.read().unwrap(), issue_id).unwrap(),
+            "done",
         );
     }
 
