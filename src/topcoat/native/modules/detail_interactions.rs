@@ -428,6 +428,55 @@ async fn native_module_detail_description_emitted_handlers_cancel_preview_save_a
     let (status, read_html) = home_fixture::document(&fixture, "/app", &path, true, None).await;
     assert_eq!(status, axum::http::StatusCode::OK);
     let read_document = scraper::Html::parse_document(&read_html);
+    let shortcut = read_document
+        .select(&scraper::Selector::parse("[data-native-module-detail]").unwrap())
+        .next()
+        .unwrap()
+        .value()
+        .attr("data-topcoat-on:keydown")
+        .expect("the module keyboard shortcut handler is emitted");
+    let shortcut_state = home_fixture::evaluate_handler(
+        "src/topcoat/native/modules/description_handlers.test.cjs",
+        &serde_json::json!({
+            "phase": "shortcut",
+            "mount": "/app",
+            "signals": home_fixture::page_signals(&read_html),
+            "shortcut": shortcut,
+        }),
+    );
+    let shortcut_signals = shortcut_state["signals"].as_object().unwrap().clone();
+    let (status, shortcut_html) =
+        home_fixture::document(&fixture, "/app", &path, true, Some(shortcut_signals)).await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    let shortcut_document = scraper::Html::parse_document(&shortcut_html);
+    assert!(
+        shortcut_document
+            .select(&scraper::Selector::parse("[data-native-module-description-editor]").unwrap())
+            .next()
+            .is_some(),
+        "the E shortcut enters the reactive edit pane"
+    );
+    let editor_mount = shortcut_document
+        .select(&scraper::Selector::parse("[data-native-module-description-editor]").unwrap())
+        .next()
+        .unwrap()
+        .value()
+        .attr("data-topcoat-on:mount")
+        .expect("the mounted editor focuses itself after its shard is inserted");
+    let focus = home_fixture::evaluate_handler(
+        "src/topcoat/native/modules/description_handlers.test.cjs",
+        &serde_json::json!({
+            "phase": "editor_mount",
+            "mount": "/app",
+            "signals": home_fixture::page_signals(&shortcut_html),
+            "mount_handler": editor_mount,
+        }),
+    );
+    assert_eq!(focus["focused"], "[data-native-module-description-editor]");
+    assert!(
+        shortcut_html.contains("autofocus"),
+        "the editor receives focus after its reactive pane mounts"
+    );
     assert!(
         read_document
             .select(
@@ -436,23 +485,20 @@ async fn native_module_detail_description_emitted_handlers_cancel_preview_save_a
             .next()
             .is_some()
     );
-    let edit = read_document
-        .select(
-            &scraper::Selector::parse("[aria-label='Content view mode'] button[aria-label='Edit']")
-                .unwrap(),
-        )
+    let owner = read_document
+        .select(&scraper::Selector::parse("[data-native-module-description-owner]").unwrap())
         .next()
-        .expect("Edit control is emitted in read mode")
+        .expect("the durable description event owner is emitted in read mode")
         .value()
         .attr("data-topcoat-on:click")
-        .expect("Edit handler is emitted");
+        .expect("the durable action handler is emitted");
     let edit_state = home_fixture::evaluate_handler(
         "src/topcoat/native/modules/description_handlers.test.cjs",
         &serde_json::json!({
             "phase": "enter_edit",
             "mount": "/app",
             "signals": home_fixture::page_signals(&read_html),
-            "edit": edit,
+            "owner": owner,
         }),
     );
     let edit_signals = edit_state["signals"]
@@ -463,6 +509,13 @@ async fn native_module_detail_description_emitted_handlers_cancel_preview_save_a
         home_fixture::document(&fixture, "/app", &path, true, Some(edit_signals)).await;
     assert_eq!(status, axum::http::StatusCode::OK);
     let edit_document = scraper::Html::parse_document(&edit_html);
+    let edit_owner = edit_document
+        .select(&scraper::Selector::parse("[data-native-module-description-owner]").unwrap())
+        .next()
+        .unwrap()
+        .value()
+        .attr("data-topcoat-on:click")
+        .unwrap();
     let editor = edit_document
         .select(&scraper::Selector::parse("[data-native-module-description-editor]").unwrap())
         .next()
@@ -476,15 +529,15 @@ async fn native_module_detail_description_emitted_handlers_cancel_preview_save_a
         .next()
         .expect("explicit Cancel is present in edit mode")
         .value()
-        .attr("data-topcoat-on:click")
-        .expect("Cancel handler is emitted");
+        .attr("data-native-module-description-action")
+        .expect("Cancel action is emitted");
     let save = edit_document
         .select(&scraper::Selector::parse("[data-native-module-description-save]").unwrap())
         .next()
         .expect("explicit Save is present in edit mode")
         .value()
-        .attr("data-topcoat-on:click")
-        .expect("Save handler is emitted");
+        .attr("data-native-module-description-action")
+        .expect("Save action is emitted");
     let preview = edit_document
         .select(
             &scraper::Selector::parse(
@@ -495,14 +548,14 @@ async fn native_module_detail_description_emitted_handlers_cancel_preview_save_a
         .next()
         .expect("Preview control is emitted in edit mode")
         .value()
-        .attr("data-topcoat-on:click")
-        .expect("Preview handler is emitted");
+        .attr("data-native-module-description-action")
+        .expect("Preview action is emitted");
     let edit_args = serde_json::json!({
         "phase": "exercise_editors",
         "mount": "/app",
         "signals": home_fixture::page_signals(&edit_html),
         "initial_description": "Original module body with marker",
-        "edit": edit,
+        "owner": edit_owner,
         "input": input_handler,
         "cancel": cancel,
         "save": save,
@@ -515,14 +568,45 @@ async fn native_module_detail_description_emitted_handlers_cancel_preview_save_a
             "mount": "/app",
             "signals": home_fixture::page_signals(&edit_html),
             "initial_description": "Original module body with marker",
-            "edit": edit,
+            "owner": edit_owner,
             "input": input_handler,
             "save": save,
         }),
     );
     assert_eq!(lifecycle["successRequests"], 1);
-    assert_eq!(lifecycle["failureRequests"], 1);
+    assert_eq!(lifecycle["failureRequests"], 2);
     assert_eq!(lifecycle["disposedRequests"], 1);
+    let success_signals = lifecycle["successSignals"].as_object().unwrap().clone();
+    let (status, success_html) =
+        home_fixture::document(&fixture, "/app", &path, true, Some(success_signals)).await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    let success_document = scraper::Html::parse_document(&success_html);
+    assert!(
+        success_document
+            .select(&scraper::Selector::parse(".markdown-body").unwrap())
+            .next()
+            .unwrap()
+            .text()
+            .collect::<String>()
+            .contains("Saved while pane closes"),
+        "a successful owner request publishes the canonical text after the editor pane closes"
+    );
+    let failure_signals = lifecycle["failureSignals"].as_object().unwrap().clone();
+    let (status, failure_html) =
+        home_fixture::document(&fixture, "/app", &path, true, Some(failure_signals)).await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    let failure_document = scraper::Html::parse_document(&failure_html);
+    assert!(
+        failure_document
+            .select(&scraper::Selector::parse(".markdown-body").unwrap())
+            .next()
+            .unwrap()
+            .text()
+            .collect::<String>()
+            .contains("Original module body with marker"),
+        "a failed owner request keeps the old canonical text"
+    );
+    assert!(failure_html.contains("Unable to save module description."));
 
     let output = home_fixture::evaluate_handler(
         "src/topcoat/native/modules/description_handlers.test.cjs",
@@ -532,7 +616,6 @@ async fn native_module_detail_description_emitted_handlers_cancel_preview_save_a
         output["cancel_requests"], 0,
         "Edit and Cancel do not call the update procedure"
     );
-    assert_eq!(output["failed_save_requests"], 1);
     assert_eq!(output["failed_save_requests"], 1);
     assert_eq!(
         output["failed_save_arguments"],
