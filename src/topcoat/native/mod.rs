@@ -10,7 +10,9 @@ mod auth_shell;
 pub(crate) mod avatar;
 pub(crate) mod board;
 pub(crate) mod bookmark;
+pub(crate) mod browser;
 pub(crate) mod browser_inputs;
+pub(crate) mod chrome_controls;
 pub(crate) mod collation;
 pub(crate) mod context;
 pub(crate) mod dates;
@@ -54,9 +56,11 @@ pub(crate) mod markdown;
 #[cfg(test)]
 mod markdown_edit;
 pub(crate) mod mascot;
+pub(crate) mod mobile_navigation;
 pub(crate) mod modules;
 pub(crate) mod numbers;
 pub(crate) mod pages;
+pub(crate) mod palette;
 pub(crate) mod palette_reference;
 #[cfg(test)]
 mod palette_reference_production;
@@ -74,6 +78,7 @@ mod session_idle;
 mod session_redirect_production;
 pub(crate) mod settings;
 pub(crate) mod settings_tabs;
+pub(crate) mod shell_handlers;
 pub(crate) mod signup;
 pub(crate) mod socket_admission;
 #[cfg(test)]
