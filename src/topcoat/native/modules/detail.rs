@@ -1,6 +1,7 @@
 use super::super::super::runtime::whitespace::StrEcmaTrimExt;
 use super::super::{
-    context, dates, icons, markdown, mascot, navigation, project_authority, session, transport,
+    browser, context, dates, icons, markdown, mascot, navigation, project_authority, session,
+    transport,
 };
 use crate::{
     db::models::{Module, Project, UpdateModule},
@@ -42,6 +43,14 @@ struct ModuleMutation {
 struct StatusControls {
     value: Signal<String>,
     open: Signal<bool>,
+    error: Signal<String>,
+}
+
+#[derive(Clone)]
+struct DeleteMenuState {
+    menu_open: Signal<bool>,
+    confirming: Signal<bool>,
+    deleting: Signal<bool>,
     error: Signal<String>,
 }
 
@@ -180,7 +189,7 @@ pub(super) fn content<'a>(
             )
         })
         .collect::<Vec<_>>();
-    let delete_attrs = delete_attributes(
+    let delete_menu = delete_menu(
         cx,
         account,
         project.id,
@@ -188,6 +197,12 @@ pub(super) fn content<'a>(
         issues.len(),
         module.name.clone(),
         project_identifier.clone(),
+        DeleteMenuState {
+            menu_open: signal(&owner, || false),
+            confirming: signal(&owner, || false),
+            deleting: signal(&owner, || false),
+            error: signal(&owner, String::new),
+        },
     );
     let shortcut = shortcut_attributes(cx, can_edit, props_open.clone());
     let authority_marker = authority.encoded();
@@ -434,13 +449,7 @@ pub(super) fn content<'a>(
                             </a>
                         }
                         if can_edit {
-                            <button
-                                type="button"
-                                class="text-body-sm text-[var(--error)] text-left"
-                                (delete_attrs)
-                            >
-                                "Delete module"
-                            </button>
+                            (delete_menu)
                         }
                     </div>
                 </aside>
@@ -788,37 +797,203 @@ fn status_choice_attributes(
     attrs
 }
 
-fn delete_attributes(
-    cx: &Cx,
+fn delete_menu<'a>(
+    cx: &'a Cx,
     account: i64,
     project_id: i64,
     module_id: i64,
     issue_count: usize,
     name: String,
     project: String,
-) -> Attributes {
+    state: DeleteMenuState,
+) -> BoxView<'a> {
     let destination = transport::mounted_url(cx, &format!("/{project}/modules"));
-    let prompt = if issue_count == 0 {
-        format!("Delete '{name}'? This module is empty.")
-    } else {
-        format!("Delete '{name}'? {issue_count} issue(s) will be unassigned, not deleted.")
-    };
-    let handler = expr!(|_event: Event| {
-        if raw!("window.confirm(${prompt}.toString())", false) {
-            let _run = async || {
-                delete_module(account, project_id, module_id).await;
-                raw!("cx.navigate(${destination}.toString());", ());
-            };
-            raw!("Promise.resolve().then(()=>${_run}());", ());
+    let confirm_body = module_delete_body(issue_count);
+    let owner_id = format!("native-module-delete-{module_id}");
+    let DeleteMenuState {
+        menu_open,
+        confirming,
+        deleting,
+        error,
+    } = state;
+    let browser = browser::bindings();
+    let toggle_confirming = confirming.clone();
+    let toggle_menu = menu_open.clone();
+    let toggle = expr!(|event: Event| {
+        event.stop_propagation();
+        if browser.is_disposed() {
+            return;
+        }
+        if !deleting.get() {
+            if confirming.get() {
+                toggle_confirming.set(false);
+                toggle_menu.set(false);
+            } else {
+                menu_open.set(!menu_open.get());
+            }
         }
     });
-    let mut attrs = Attributes::with_capacity(1);
-    attrs.insert(
+    let mut toggle_attrs = Attributes::with_capacity(1);
+    toggle_attrs.insert(cx, "data-native-module-delete-action", "toggle");
+    toggle_attrs.insert(
         cx,
         "data-topcoat-on:click",
-        handler.into_evaluated_and_js().1,
+        toggle.into_evaluated_and_js().1,
     );
-    attrs
+    let open_confirming = confirming.clone();
+    let open_menu = menu_open.clone();
+    let open = expr!(|event: Event| {
+        event.stop_propagation();
+        if !browser.is_disposed() {
+            if !deleting.get() {
+                open_confirming.set(true);
+                open_menu.set(true);
+            }
+        }
+    });
+    let mut open_attrs = Attributes::with_capacity(2);
+    open_attrs.insert(cx, "data-native-module-delete-action", "open-confirm");
+    open_attrs.insert(cx, "data-topcoat-on:click", open.into_evaluated_and_js().1);
+    let cancel_confirming = confirming.clone();
+    let cancel_menu = menu_open.clone();
+    let cancel = expr!(|event: Event| {
+        event.stop_propagation();
+        if !browser.is_disposed() {
+            if !deleting.get() {
+                cancel_confirming.set(false);
+                cancel_menu.set(false);
+            }
+        }
+    });
+    let mut cancel_attrs = Attributes::with_capacity(2);
+    cancel_attrs.insert(cx, "data-native-module-delete-action", "cancel");
+    cancel_attrs.insert(
+        cx,
+        "data-topcoat-on:click",
+        cancel.into_evaluated_and_js().1,
+    );
+
+    let failed_deleting = deleting.clone();
+    let failed_confirming = confirming.clone();
+    let failed_menu = menu_open.clone();
+    let failed_error = error.clone();
+    let delete = expr!(async |event: Event| {
+        event.stop_propagation();
+        if browser.is_disposed() {
+            return;
+        }
+        if !deleting.get() {
+            deleting.set(true);
+            error.set("".to_owned());
+            let _failed = || {
+                if !browser.is_disposed() {
+                    failed_deleting.set(false);
+                    failed_confirming.set(true);
+                    failed_menu.set(true);
+                    failed_error.set("Couldn't delete module. Try again.".to_owned());
+                }
+            };
+            let _run = async || {
+                if browser.is_disposed() {
+                    return;
+                }
+                delete_module(account, project_id, module_id).await;
+                if !browser.is_disposed() {
+                    browser.navigate(destination.clone());
+                }
+            };
+            browser.microtask(|| {
+                if !browser.is_disposed() {
+                    raw!(
+                        "Promise.resolve().then(()=>${_run}()).catch(()=>${_failed}());",
+                        ()
+                    );
+                }
+            });
+        }
+    });
+    let mut delete_attrs = Attributes::with_capacity(2);
+    delete_attrs.insert(cx, "data-native-module-delete-action", "confirm");
+    delete_attrs.insert(
+        cx,
+        "data-topcoat-on:click",
+        delete.into_evaluated_and_js().1,
+    );
+
+    let mount_menu = menu_open.clone();
+    let mount_confirming = confirming.clone();
+    let dismiss_browser = browser::bindings();
+    let dismiss_id = owner_id.clone();
+    let mounted = expr!(|_mount: Event| {
+        menu_open.set(false);
+        confirming.set(false);
+        deleting.set(false);
+        let _dismiss = |event: Event| {
+            if !dismiss_browser.is_disposed() {
+                let outside = raw!(
+                    "cx.hydrate(!document.getElementById(${dismiss_id}.toString())?.contains(${event}.inner.target))",
+                    false
+                );
+                if outside {
+                    mount_menu.set(false);
+                    mount_confirming.set(false);
+                }
+            }
+        };
+        dismiss_browser.window_listener("click".to_owned(), _dismiss);
+    });
+    let mut mount_attrs = Attributes::with_capacity(2);
+    mount_attrs.insert(cx, "data-native-module-delete", "");
+    mount_attrs.insert(
+        cx,
+        "data-topcoat-on:mount",
+        mounted.into_evaluated_and_js().1,
+    );
+    view! { cx =>
+        <div id=(owner_id) class="relative" (mount_attrs)>
+            <button type="button"
+                class="grid size-7 place-items-center rounded-md text-[var(--text-faint)] hover:bg-[var(--bg-subtle)] hover:text-[var(--text)]"
+                title="More actions" aria-label="More actions" data-native-module-delete-trigger="" (toggle_attrs)>
+                (icons::ui_icon(cx, icons::UiIcon::MoreActions, 14))
+            </button>
+            <div data-native-module-delete-menu-panel="" class="absolute right-0 top-full z-30 mt-1.5 w-[180px] rounded-md border border-[var(--border)] bg-[var(--surface)] py-1 shadow-lg"
+                :hidden=$(if menu_open.get() { confirming.get() } else { true })>
+                <button type="button"
+                    class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-body-sm text-[var(--error)] hover:bg-[var(--error-bg)]"
+                    (open_attrs)>
+                    (icons::ui_icon(cx, icons::UiIcon::Delete, 14)) "Delete module"
+                </button>
+            </div>
+            <div data-native-module-delete-confirm-panel="" class="absolute right-0 top-full z-30 mt-1.5 w-[260px] rounded-md border border-[var(--border)] bg-[var(--surface)] p-3 shadow-lg"
+                :hidden=$(!confirming.get())>
+                <p class="mb-1 text-body-sm font-medium text-[var(--text)]">"Delete " (name) "?"</p>
+                <p class="mb-3 text-caption text-[var(--text-muted)]">(confirm_body)</p>
+                <div class="flex items-center gap-2">
+                    <button type="button"
+                        class="rounded-md bg-[var(--error)] px-3 py-1.5 text-body-sm font-medium text-[var(--error-text)] hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                        :disabled=$(deleting.get()) (delete_attrs)>
+                        $(if deleting.get() { "Deleting..." } else { "Delete" })
+                    </button>
+                    <button type="button"
+                        class="rounded-md px-3 py-1.5 text-body-sm text-[var(--text-muted)] hover:bg-[var(--bg-subtle)]"
+                        (cancel_attrs)>"Cancel"</button>
+                </div>
+            </div>
+            <p data-native-module-delete-error="" class="mt-2 text-caption text-[var(--error)]" role="status"
+                :hidden=$(error.get().is_empty())>$(error.get())</p>
+        </div>
+    }
+    .boxed()
+}
+
+fn module_delete_body(issue_count: usize) -> String {
+    if issue_count == 0 {
+        "This module is empty. It will be removed.".to_owned()
+    } else if issue_count == 1 {
+        "1 issue will be unassigned from this module but not deleted.".to_owned()
+    } else {
+        format!("{issue_count} issues will be unassigned from this module but not deleted.")
+    }
 }
 
 fn shortcut_attributes(cx: &Cx, can_edit: bool, props_open: Signal<bool>) -> Attributes {
