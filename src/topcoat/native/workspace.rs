@@ -99,10 +99,16 @@ mod route_tests {
         )
         .await;
         assert_eq!(status, axum::http::StatusCode::OK);
-        assert!(filtered.contains("Visible active initial work"));
-        assert!(!filtered.contains("Visible todo initial work"));
-        assert!(filtered.contains("1 of 2"));
         let filtered = scraper::Html::parse_document(&filtered);
+        let rows = filtered
+            .select(&scraper::Selector::parse("[data-native-issue-list]").unwrap())
+            .next()
+            .unwrap()
+            .text()
+            .collect::<String>();
+        assert!(rows.contains("Visible active initial work"));
+        assert!(!rows.contains("Visible todo initial work"));
+        assert!(rows.contains("1 of 2"));
         for (tab, count) in [("all", "2"), ("open", "2"), ("closed", "0")] {
             let selector =
                 scraper::Selector::parse(&format!("[data-native-issue-tab-count='{tab}']"))

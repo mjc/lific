@@ -453,12 +453,18 @@ mod topcoat_app_tests {
 
     #[tokio::test]
     async fn unfinished_feature_routes_have_no_intermediate_fallback() {
+        let fixture = super::topcoat_frontend::native::home_fixture::fixture();
+        for path in ["/ACC/issues?status=started", "/ACC/board?assignee=me"] {
+            let (status, html) = super::topcoat_frontend::native::home_fixture::document(
+                &fixture, "", path, true, None,
+            )
+            .await;
+            assert_eq!(status, axum::http::StatusCode::OK, "{path}");
+            assert!(html.contains("Visible active initial work"));
+            assert!(!html.contains("Private hidden initial work"));
+        }
         let router = topcoat::router::tower::TowerService::new(topcoat_app::router());
-        for path in [
-            "/LIF/issues?status=started",
-            "/LIF/board?assignee=me",
-            "/public/LIF/issues",
-        ] {
+        for path in ["/public/LIF/issues", "/public/LIF/board"] {
             let response = router
                 .clone()
                 .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())

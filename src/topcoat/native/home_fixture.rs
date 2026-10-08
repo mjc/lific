@@ -44,7 +44,7 @@ pub(crate) struct Fixture {
     _store: tempfile::TempDir,
 }
 
-pub(super) async fn document(
+pub(crate) async fn document(
     fixture: &Fixture,
     mount: &str,
     path: &str,
