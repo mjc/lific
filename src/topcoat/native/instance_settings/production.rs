@@ -11,6 +11,11 @@ async fn native_instance_settings_admin_route_loads_authorized_settings_and_rost
         let viewer = crate::db::queries::users::validate_session(&conn, &fixture.token).unwrap();
         conn.execute("UPDATE users SET is_admin = 1 WHERE id = ?1", [viewer.id])
             .unwrap();
+        let own_display_name = if viewer.display_name.trim().is_empty() {
+            viewer.username.clone()
+        } else {
+            viewer.display_name.clone()
+        };
         crate::db::queries::settings::update(
             &conn,
             crate::db::queries::settings::InstanceSettingsPatch {
@@ -43,7 +48,7 @@ async fn native_instance_settings_admin_route_loads_authorized_settings_and_rost
 #[tokio::test]
 async fn native_instance_settings_admin_route_exposes_member_roster_actions() {
     let fixture = home_fixture::fixture();
-    {
+    let own_display_name = {
         let conn = fixture.db.write().unwrap();
         let viewer = crate::db::queries::users::validate_session(&conn, &fixture.token).unwrap();
         conn.execute("UPDATE users SET is_admin = 1 WHERE id = ?1", [viewer.id])
@@ -60,7 +65,8 @@ async fn native_instance_settings_admin_route_exposes_member_roster_actions() {
             },
         )
         .unwrap();
-    }
+        own_display_name
+    };
 
     let (status, html) =
         home_fixture::document(&fixture, "", "/settings/instance", true, None).await;
@@ -71,6 +77,8 @@ async fn native_instance_settings_admin_route_exposes_member_roster_actions() {
     ] {
         assert!(html.contains(action), "missing {action} on the member row");
     }
+    assert!(!html.contains(&format!("Make {own_display_name} an instance admin")));
+    assert!(!html.contains(&format!("Deactivate {own_display_name}")));
 }
 
 #[tokio::test]
