@@ -737,6 +737,7 @@ async fn native_page_label_handlers_reconcile_real_owner_replies_at_every_mount(
             .select(&scraper::Selector::parse("button[title='Add label']").unwrap())
             .next()
             .expect("Main's Add label control is present");
+        assert!(add_button.value().attr("disabled").is_none());
         let open_handler = add_button.value().attr("data-topcoat-on:click").unwrap();
         let choice = labels
             .select(
@@ -788,6 +789,7 @@ async fn native_page_label_handlers_reconcile_real_owner_replies_at_every_mount(
                     "mount_handler": mount_handler,
                     "hidden_binding": hidden_binding,
                     "open_handler": open_handler,
+                    "add_disabled_binding": add_button.value().attr("data-topcoat-bind:disabled"),
                     "choice_handler": choice_handler,
                     "event_type": "lific:native-page-label-request",
                     "expected_request": serde_json::to_value(request.clone().into_surrogate()).unwrap(),

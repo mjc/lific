@@ -93,6 +93,9 @@ async function run(phase) {
       'a delayed label completion preserves all newer canonical fields, drafts, sequence and local operation state');
     output.passed = true;
   } else if (phase.mode === 'request') {
+    if (phase.add_disabled_binding != null) {
+      assert.equal(readBinding(phase.add_disabled_binding), false, 'Add is initially enabled');
+    }
     if (phase.open_handler) {
       handler(phase.open_handler)(click());
       assert.equal(readBinding(phase.hidden_binding), false, 'Add opens the page label picker');
@@ -115,6 +118,9 @@ async function run(phase) {
     assert.equal(requests[0].defaultPrevented, true,
       'the durable owner accepts the label request');
     assert.equal(readBinding(phase.hidden_binding), false, 'choosing a label leaves the picker open');
+    if (phase.add_disabled_binding != null) {
+      assert.equal(readBinding(phase.add_disabled_binding), false, 'Add stays available during a write');
+    }
     for (const source of phase.busy_bindings || []) {
       assert.equal(readBinding(source), true,
         'pending label writes disable other page write controls');
