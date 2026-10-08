@@ -7,6 +7,12 @@ use crate::db::{
 };
 use axum::http::StatusCode;
 
+fn label_text(chip: scraper::ElementRef<'_>) -> String {
+    chip.children()
+        .filter_map(|child| child.value().as_text().map(ToString::to_string))
+        .collect()
+}
+
 #[tokio::test]
 async fn native_page_detail_hydrates_status_and_emits_status_write() {
     use topcoat::runtime::Surrogated;
@@ -562,11 +568,14 @@ async fn native_page_detail_renders_project_labels_for_viewers_and_editors() {
             .select(&chip_selector)
             .next()
             .expect("the authorized page label is rendered as a visible chip");
-        let chip_label = chip
-            .children()
-            .filter_map(|child| child.value().as_text())
-            .collect::<String>();
+        let chip_label = label_text(chip);
         assert_eq!(chip_label.trim(), "Critical");
+        assert!(
+            chip.select(&scraper::Selector::parse("button").unwrap())
+                .next()
+                .is_none(),
+            "viewers cannot remove an attached label",
+        );
         assert!(
             chip.value()
                 .attr("style")
@@ -626,10 +635,7 @@ async fn native_page_detail_renders_project_labels_for_viewers_and_editors() {
             .select(&chip_selector)
             .next()
             .expect("the maintainer sees the attached label chip");
-        let chip_label = chip
-            .children()
-            .filter_map(|child| child.value().as_text())
-            .collect::<String>();
+        let chip_label = label_text(chip);
         assert_eq!(chip_label.trim(), "Critical");
         assert!(
             chip.select(&scraper::Selector::parse("button[aria-label='Remove Critical']").unwrap())
@@ -879,13 +885,7 @@ async fn native_page_label_handlers_reconcile_real_owner_replies_at_every_mount(
             .unwrap();
         let mut chip_names = labels
             .select(&scraper::Selector::parse(".native-label-chip").unwrap())
-            .map(|chip| {
-                chip.children()
-                    .filter_map(|child| child.value().as_text())
-                    .collect::<String>()
-                    .trim()
-                    .to_owned()
-            })
+            .map(|chip| label_text(chip).trim().to_owned())
             .collect::<Vec<_>>();
         chip_names.sort();
         assert_eq!(chip_names, ["Available", "Critical"]);
@@ -1009,6 +1009,15 @@ async fn native_page_label_picker_matches_main_empty_catalog_without_search_or_c
         .select(&scraper::Selector::parse("[data-native-page-label-picker]").unwrap())
         .next()
         .expect("the label picker remains in the projection while closed");
+    assert!(
+        picker
+            .value()
+            .attr("class")
+            .unwrap()
+            .split_whitespace()
+            .any(|class| class == "w-[200px]"),
+        "PageDetail keeps Main's compact picker width",
+    );
     assert_eq!(
         picker.text().collect::<String>().trim(),
         "No labels defined in this project.",
