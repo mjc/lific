@@ -91,6 +91,9 @@ fn pin_attributes(
     let reauth_message = failure_messages.reauth;
     let forbidden_message = failure_messages.forbidden;
     let handler = expr!(async |_event: Event| {
+        if browser.is_disposed() {
+            return;
+        }
         if !busy.get() {
             let next_pinned = !pinned.get();
             let previous_pinned = pinned.get();
