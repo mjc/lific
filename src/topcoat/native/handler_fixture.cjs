@@ -7,7 +7,7 @@ const {TextEncoder, TextDecoder} = require('node:util');
 
 // Load the packaged runtime without starting its document or socket owners.
 // Tests supply browser I/O and execute the actual emitted event handler.
-function handlerFixture(signals, fetch) {
+function handlerFixture(signals, fetch, browserSource) {
   const runtime = fs.readFileSync('src/topcoat/assets/runtime.js', 'utf8');
   const bootstrap = 'var et=new ye;et.start(document);et.page.listenForDevRefresh();';
   assert.equal(runtime.split(bootstrap).length - 1, 1, 'packaged runtime bootstrap');
@@ -32,6 +32,10 @@ function handlerFixture(signals, fetch) {
     event: event => new context.fixture.Event(event),
   });
   for (const [id, value] of Object.entries(signals)) registry.insert(id, cx.hydrate(value));
+  if (browserSource) {
+    vm.runInNewContext(browserSource.replace(/export const (\w+)=/g, 'globalThis.$1='), context);
+    context.__lificNativeMounts = {browser: owner => context.browser(owner)};
+  }
   return {
     cx,
     context,

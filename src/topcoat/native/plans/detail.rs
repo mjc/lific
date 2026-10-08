@@ -1271,32 +1271,45 @@ fn action_button<'a>(
         label.as_str()
     }
     .to_owned();
+    let (label, text_case) = if action == "unlink" {
+        ("unlink".to_owned(), "")
+    } else {
+        (label, " capitalize")
+    };
     let failed_busy = busy.clone();
     let failed_message = message.clone();
+    let browser = super::super::browser::bindings();
     let handler = expr!(|_event: Event| {
-        let confirmed = if delete_action {
-            raw!(
-                "cx.hydrate(window.confirm('Delete this plan? This cannot be undone.'))",
-                false
-            )
-        } else {
-            true
-        };
-        if confirmed {
-            if !busy.get() {
+        if !browser.is_disposed() && !busy.get() {
+            let confirmed = if delete_action {
+                raw!(
+                    "cx.hydrate(window.confirm('Delete this plan? This cannot be undone.'))",
+                    false
+                )
+            } else {
+                true
+            };
+            if confirmed {
                 busy.set(true);
                 message.set("".to_owned());
                 let _failed = || {
-                    failed_busy.set(false);
-                    failed_message.set("Unable to update plan.".to_owned());
+                    if !browser.is_disposed() {
+                        failed_busy.set(false);
+                        failed_message.set("Unable to update plan.".to_owned());
+                    }
                 };
                 let _run = async || {
-                    mutate_plan(account, project, plan_id, target_id, request_action, value).await;
-                    busy.set(false);
-                    if delete_action {
-                        raw!("cx.navigate(${destination}.toString());", ());
-                    } else {
-                        revision.set(revision.get() + 1_i64);
+                    if !browser.is_disposed() {
+                        mutate_plan(account, project, plan_id, target_id, request_action, value)
+                            .await;
+                        if !browser.is_disposed() {
+                            busy.set(false);
+                            if delete_action {
+                                browser.navigate(destination);
+                            } else {
+                                revision.set(revision.get() + 1_i64);
+                            }
+                        }
                     }
                 };
                 raw!(
@@ -1306,7 +1319,10 @@ fn action_button<'a>(
             }
         }
     });
-    let mut attributes = Attributes::with_capacity(1);
+    let mut attributes = Attributes::with_capacity(2);
+    if action == "unlink" {
+        attributes.insert(cx, "title", aria.clone());
+    }
     attributes.insert(
         cx,
         "data-topcoat-on:click",
@@ -1318,7 +1334,7 @@ fn action_button<'a>(
             type="button"
             aria-label=(aria)
             class=(format!(
-                "w-full text-left px-2 py-1 rounded-md text-body-sm capitalize {class}",
+                "w-full text-left px-2 py-1 rounded-md text-body-sm{text_case} {class}",
             ))
             (attributes)
         >
@@ -1643,6 +1659,8 @@ mod tests {
             .select(&scraper::Selector::parse("button[aria-label='Detach issue']").unwrap())
             .next()
             .expect("maintainers can detach a linked issue from a plan step");
+        assert_eq!(detach.text().collect::<String>(), "unlink");
+        assert_eq!(detach.value().attr("title"), Some("Detach issue"));
         assert!(
             linked.text().collect::<String>().contains("ACC-1: done"),
             "linked issue label stays visible alongside the detach action",

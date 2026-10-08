@@ -128,6 +128,11 @@ pub(super) async fn procedure(
 pub(super) fn evaluate_handler(script: &str, input: &serde_json::Value) -> serde_json::Value {
     use std::{io::Write, process::Stdio};
 
+    let mut input = input.clone();
+    input["browser_source"] = serde_json::json!(super::shell_handlers::source_named(
+        "browser",
+        super::browser::factory(),
+    ));
     let mut child = std::process::Command::new("node")
         .arg(script)
         .current_dir(env!("CARGO_MANIFEST_DIR"))
