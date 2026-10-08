@@ -774,6 +774,88 @@ async fn native_issue_production_priority_labels_match_main_for_both_roles() {
 }
 
 #[tokio::test]
+async fn native_issue_label_picker_matches_main_for_both_roles() {
+    let fixture = fixture();
+    let (issue, attached) = {
+        let conn = fixture.db.write().unwrap();
+        let issue_id = queries::resolve_identifier(&conn, "ACC-1").unwrap();
+        let issue = queries::get_issue(&conn, issue_id).unwrap();
+        let attached = queries::create_label(
+            &conn,
+            &CreateLabel {
+                project_id: issue.project_id,
+                name: "Attached label".into(),
+                color: "#2563EB".into(),
+            },
+        )
+        .unwrap();
+        queries::create_label(
+            &conn,
+            &CreateLabel {
+                project_id: issue.project_id,
+                name: "Available label".into(),
+                color: "#16A34A".into(),
+            },
+        )
+        .unwrap();
+        queries::update_issue(
+            &conn,
+            issue_id,
+            &UpdateIssue {
+                labels: Some(vec![attached.name.clone()]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        (queries::get_issue(&conn, issue_id).unwrap(), attached)
+    };
+    let cookie = format!("lific_token={}", fixture.token);
+    let add_label = Selector::parse("button[title='Add label']").unwrap();
+    let remove_label = Selector::parse("button[title='Remove label']").unwrap();
+    let chips = Selector::parse("span.native-label-chip").unwrap();
+
+    for (role, editable) in [(Role::Viewer, false), (Role::Maintainer, true)] {
+        {
+            let conn = fixture.db.write().unwrap();
+            let actor = queries::users::validate_session(&conn, &fixture.token).unwrap();
+            queries::members::upsert_member(&conn, issue.project_id, actor.id, role).unwrap();
+        }
+        for prefix in MOUNTS {
+            let response = get(
+                &fixture,
+                "/ACC/issues/ACC-1",
+                Some(&cookie),
+                prefix,
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK);
+            let document = Html::parse_document(&html(response).await);
+            let section = named_section(&document, "Labels");
+            assert_eq!(
+                section.select(&add_label).count(),
+                if editable { 1 } else { 0 },
+                "Add label follows {role:?} authorization at mount {prefix}"
+            );
+            assert_eq!(
+                section.select(&remove_label).count(),
+                if editable { 1 } else { 0 },
+                "attached-label removal follows {role:?} authorization at mount {prefix}"
+            );
+            assert!(
+                section.text().collect::<String>().contains(&attached.name),
+                "the current label remains visible to {role:?}"
+            );
+            assert!(
+                section
+                    .select(&chips)
+                    .any(|chip| chip.text().collect::<String>() == attached.name.as_str()),
+                "the current label renders as a visible chip for {role:?}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn native_issue_production_label_chips_preserve_case_and_safe_colors_for_both_roles() {
     let fixture = fixture();
     let labels = [
