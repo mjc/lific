@@ -60,6 +60,11 @@ const unbox = value => {
   return value;
 };
 const value = id => unbox(cx.signal(id).dehydrate());
+const readBinding = source => {
+  const result = vm.runInNewContext(`cx => (${source})`, context)(cx);
+  const wire = result && typeof result.dehydrate === 'function' ? result.dehydrate() : result;
+  return unbox(wire);
+};
 const handler = fixture.handler(input.handler);
 if (input.scenario !== 'capture') {
   cx.signal(titleSignal).set(cx.hydrate('Unsaved title draft'));
@@ -84,6 +89,10 @@ async function run() {
   assert.deepEqual(snapshot(), before, 'a disposed pin control cannot change shared editor state');
   for (let attempt = 0; attempt < 60; attempt += 1) await Promise.resolve();
   assert.equal(requests.length, 1, 'one pin click sends one typed procedure request');
+  if (input.save_feedback_saving_binding) {
+    assert.equal(readBinding(input.save_feedback_saving_binding), true,
+      'a pin write never turns on Page Save progress');
+  }
   if (input.scenario === 'capture') {
     const captured = {arguments: requests[0]};
     if (input.shard_marker) {

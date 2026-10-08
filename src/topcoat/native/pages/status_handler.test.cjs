@@ -53,6 +53,11 @@ const signalValues = () => Object.keys(input.signals).map(id => unbox(cx.signal(
 const signalSnapshot = () => Object.fromEntries(Object.keys(input.signals)
   .map(id => [id, cx.signal(id).get().dehydrate()]));
 const referencedValues = () => [...referencedSignals].map(id => unbox(cx.signal(id).dehydrate()));
+const readBinding = source => {
+  const result = vm.runInNewContext(`cx => (${source})`, context)(cx);
+  const wire = result && typeof result.dehydrate === 'function' ? result.dehydrate() : result;
+  return unbox(wire);
+};
 const sequenceSignal = () => {
   const candidates = [...referencedSignals].filter(id => id !== titleSignal && id !== bodySignal &&
     String(unbox(input.signals[id])) === String(input.expected_seq));
@@ -128,6 +133,10 @@ async function run() {
         'a transport failure does not advance the emitted activity shard dependency');
       output.activity_shard = activity;
     }
+  }
+  if (input.save_feedback_saving_binding) {
+    assert.equal(readBinding(input.save_feedback_saving_binding), true,
+      'a status write never turns on Page Save progress');
   }
   output.requests = requests.length;
   output.signals = signalValues();

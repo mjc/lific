@@ -44,12 +44,22 @@ async fn save_fixture() -> SaveFixture {
             .select(&scraper::Selector::parse("button[data-native-page-pin]").unwrap())
             .next()
             .unwrap();
+        let saving_feedback = document
+            .select(&scraper::Selector::parse("[data-native-page-save-feedback='saving']").unwrap())
+            .next()
+            .unwrap();
+        let saved_feedback = document
+            .select(&scraper::Selector::parse("[data-native-page-save-feedback='saved']").unwrap())
+            .next()
+            .unwrap();
         serde_json::json!({
             "signals": home_fixture::page_signals(&html),
             "title_handler": title.value().attr("data-topcoat-on:input").unwrap(),
             "body_handler": body.value().attr("data-topcoat-on:input").unwrap(),
             "save_handler": save.value().attr("data-topcoat-on:click").unwrap(),
             "busy_binding": pin.value().attr("data-topcoat-bind:disabled").unwrap(),
+            "saving_binding": saving_feedback.value().attr("data-topcoat-bind:hidden").unwrap(),
+            "saved_at_binding": saved_feedback.value().attr("data-topcoat-bind:data-saved-at").unwrap(),
             "title_binding": title.value().attr("data-topcoat-bind:value").unwrap(),
             "body_binding": body.value().attr("data-topcoat-bind:value").unwrap(),
             "shard_marker": super::production::shard_marker(
@@ -68,6 +78,18 @@ async fn save_fixture() -> SaveFixture {
     assert_eq!(reply.0, StatusCode::OK);
     assert_eq!(reply.1["v"]["status"]["ok"], "saved");
     input["reply"] = reply.1;
+    input["error_reply"] = serde_json::to_value(
+        super::actions::Outcome {
+            status: Err("conflict".into()),
+            page_id: None,
+            identifier: None,
+            title: None,
+            content: None,
+            seq: None,
+        }
+        .into_surrogate(),
+    )
+    .unwrap();
     SaveFixture { fixture, input }
 }
 
@@ -83,6 +105,11 @@ async fn native_page_save_does_not_queue_a_procedure_after_disposal() {
         output["requests"], 0,
         "a retired Save handler sends no request"
     );
+    assert_eq!(
+        output["saving"], true,
+        "disposal prevents post-retirement Save signal writes"
+    );
+    assert_eq!(output["saved_at"], "");
 }
 
 #[tokio::test]
@@ -96,6 +123,11 @@ async fn native_page_save_ignores_late_success_after_owner_disposal() {
     assert_eq!(output["requests"], 1);
     assert_eq!(output["response"], "success");
     assert_eq!(output["arguments"], setup.input["expected_arguments"]);
+    assert_eq!(
+        output["saving"], true,
+        "late success cannot touch retired Save state"
+    );
+    assert_eq!(output["saved_at"], "");
 }
 
 #[tokio::test]
@@ -109,6 +141,11 @@ async fn native_page_save_ignores_late_rejection_after_owner_disposal() {
     assert_eq!(output["requests"], 1);
     assert_eq!(output["response"], "rejection");
     assert_eq!(output["arguments"], setup.input["expected_arguments"]);
+    assert_eq!(
+        output["saving"], true,
+        "late rejection cannot touch retired Save state"
+    );
+    assert_eq!(output["saved_at"], "");
 }
 
 #[tokio::test]
@@ -120,6 +157,15 @@ async fn native_page_save_success_refreshes_the_real_activity_shard_from_committ
     );
     assert_eq!(output["passed"], true);
     assert_eq!(output["arguments"], setup.input["expected_arguments"]);
+    assert_eq!(
+        output["saving"], false,
+        "a committed Save clears only its Save progress cue"
+    );
+    assert!(
+        output["saved_at"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty())
+    );
     let shard = &output["activity_shard"];
     assert_eq!(shard["path"], "/__native_pages/activity");
     assert_eq!(shard["args"][1], setup.input["reply"]["v"]["seq"]["v"]);
@@ -142,6 +188,12 @@ async fn native_page_save_keeps_newer_drafts_and_refreshes_activity_from_committ
         &with_scenario(&setup.input, "pending_edit_success"),
     );
     assert_eq!(output["passed"], true);
+    assert_eq!(output["saving"], false);
+    assert!(
+        output["saved_at"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty())
+    );
     assert_eq!(
         output["drafts"],
         serde_json::json!(["Newer title draft", "Newer body draft"]),
@@ -161,6 +213,50 @@ async fn native_page_save_keeps_newer_drafts_and_refreshes_activity_from_committ
     assert!(feed_html.contains("Retired body"));
     assert!(!feed_html.contains("Newer title draft"));
     assert!(!feed_html.contains("Newer body draft"));
+}
+
+#[tokio::test]
+async fn native_page_save_failure_clears_saving_and_preserves_newer_drafts() {
+    let setup = save_fixture().await;
+    let output = home_fixture::evaluate_handler(
+        "src/topcoat/native/pages/save_lifecycle_handler.test.cjs",
+        &with_scenario(&setup.input, "live_rejection"),
+    );
+    assert_eq!(output["passed"], true);
+    assert_eq!(output["saving"], false);
+    assert_eq!(output["saved_at"], "");
+    assert_eq!(
+        output["drafts"],
+        serde_json::json!(["Newer title draft", "Newer body draft"])
+    );
+    assert!(
+        output["message"]
+            .as_str()
+            .unwrap()
+            .contains("Your draft is still here")
+    );
+}
+
+#[tokio::test]
+async fn native_page_save_conflict_clears_saving_and_preserves_newer_drafts() {
+    let setup = save_fixture().await;
+    let output = home_fixture::evaluate_handler(
+        "src/topcoat/native/pages/save_lifecycle_handler.test.cjs",
+        &with_scenario(&setup.input, "live_conflict"),
+    );
+    assert_eq!(output["passed"], true);
+    assert_eq!(output["saving"], false);
+    assert_eq!(output["saved_at"], "");
+    assert_eq!(
+        output["drafts"],
+        serde_json::json!(["Newer title draft", "Newer body draft"])
+    );
+    assert!(
+        output["message"]
+            .as_str()
+            .unwrap()
+            .contains("changed elsewhere")
+    );
 }
 
 fn with_scenario(input: &serde_json::Value, scenario: &str) -> serde_json::Value {
