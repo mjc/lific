@@ -991,6 +991,193 @@ async fn native_issue_label_handlers_emit_sparse_attach_and_remove_requests_at_e
             "Enter invokes the real currently projected label action"
         );
 
+        if index == 0 {
+            let query_signals: serde_json::Map<String, serde_json::Value> =
+                serde_json::from_value(output["query_signals"].clone()).unwrap();
+            let (status, filtered_html) = home_fixture::document(
+                &fixture,
+                mount,
+                "/ACC/issues/ACC-1",
+                true,
+                Some(query_signals),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            let filtered = Html::parse_document(&filtered_html);
+            let filtered_section = named_section(&filtered, "Labels");
+            let create_button = filtered_section
+                .select(&Selector::parse("button[data-native-label-enter='true']").unwrap())
+                .next()
+                .expect("the authenticated query rerun renders Main's create action");
+            assert_eq!(
+                create_button.text().collect::<String>(),
+                "Create “New runtime label”"
+            );
+            let create_handler = create_button.value().attr("data-topcoat-on:click").unwrap();
+            let filtered_query = filtered_section
+                .select(&Selector::parse("input[placeholder='Filter or create…']").unwrap())
+                .next()
+                .unwrap();
+            let filtered_query_binding = filtered_query.value().attr("data-topcoat-bind:value").unwrap();
+            let open_binding = filtered_section
+                .select(&Selector::parse("[data-native-issue-label-picker]").unwrap())
+                .next()
+                .unwrap()
+                .value()
+                .attr("data-topcoat-bind:hidden")
+                .unwrap();
+            let color_area = filtered_section
+                .select(&Selector::parse("[data-native-label-color-area]").unwrap())
+                .next()
+                .expect("the fresh Create projection renders Main's color picker");
+            let color_trigger = color_area
+                .select(&Selector::parse("button[aria-label^='Color: ']").unwrap())
+                .next()
+                .unwrap();
+            let color_trigger_handler = color_trigger.value().attr("data-topcoat-on:click").unwrap();
+            let color_open_binding = color_area
+                .select(&Selector::parse("[data-topcoat-bind:hidden]").unwrap())
+                .next()
+                .unwrap()
+                .value()
+                .attr("data-topcoat-bind:hidden")
+                .unwrap();
+            let palette_handler = color_area
+                .select(&Selector::parse("button[aria-label='Red']").unwrap())
+                .next()
+                .unwrap()
+                .value()
+                .attr("data-topcoat-on:click")
+                .unwrap();
+            let hex_input = color_area
+                .select(&Selector::parse("input[placeholder='hex']").unwrap())
+                .next()
+                .unwrap();
+            let hex_input_handler = hex_input.value().attr("data-topcoat-on:input").unwrap();
+            let hex_binding = hex_input.value().attr("data-topcoat-bind:value").unwrap();
+            let palette_and_hex = home_fixture::evaluate_handler(
+                "src/topcoat/native/issue_edit/labels_handler.test.cjs",
+                &serde_json::json!({
+                    "browser_source": super::super::shell_handlers::source_named("browser", super::super::browser::factory()),
+                    "phases": [{
+                        "name": "palette",
+                        "signals": home_fixture::page_signals(&filtered_html),
+                        "open_binding": open_binding,
+                        "color_open_binding": color_open_binding,
+                        "color_trigger_handler": color_trigger_handler,
+                        "palette_handler": palette_handler,
+                        "palette_color": "#EF4444",
+                    }, {
+                        "name": "hex_input",
+                        "signals": home_fixture::page_signals(&filtered_html),
+                        "color_trigger_handler": color_trigger_handler,
+                        "hex_input_handler": hex_input_handler,
+                        "hex_binding": hex_binding,
+                    }],
+                }),
+            );
+
+            let hex_signals: serde_json::Map<String, serde_json::Value> =
+                serde_json::from_value(palette_and_hex["hex_signals"].clone()).unwrap();
+            let (status, hex_html) = home_fixture::document(
+                &fixture,
+                mount,
+                "/ACC/issues/ACC-1",
+                true,
+                Some(hex_signals),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            let hex_document = Html::parse_document(&hex_html);
+            let hex_area = named_section(&hex_document, "Labels")
+                .select(&Selector::parse("[data-native-label-color-area]").unwrap())
+                .next()
+                .unwrap();
+            let set_handler = hex_area
+                .select(&Selector::parse("button[data-native-label-hex-set]").unwrap())
+                .next()
+                .unwrap()
+                .value()
+                .attr("data-topcoat-on:click")
+                .unwrap();
+            let hex_palette_handler = hex_area
+                .select(&Selector::parse("button[aria-label='Red']").unwrap())
+                .next()
+                .unwrap()
+                .value()
+                .attr("data-topcoat-on:click")
+                .unwrap();
+            let color_open_binding = hex_area
+                .select(&Selector::parse("[data-topcoat-bind:hidden]").unwrap())
+                .next()
+                .unwrap()
+                .value()
+                .attr("data-topcoat-bind:hidden")
+                .unwrap();
+            let set_result = home_fixture::evaluate_handler(
+                "src/topcoat/native/issue_edit/labels_handler.test.cjs",
+                &serde_json::json!({
+                    "browser_source": super::super::shell_handlers::source_named("browser", super::super::browser::factory()),
+                    "phases": [{
+                        "name": "hex_set",
+                        "signals": home_fixture::page_signals(&hex_html),
+                        "hex_set_handler": set_handler,
+                        "palette_handler": hex_palette_handler,
+                        "color_open_binding": color_open_binding,
+                    }],
+                }),
+            );
+
+            let create_signals: serde_json::Map<String, serde_json::Value> =
+                serde_json::from_value(set_result["hex_set_signals"].clone()).unwrap();
+            let (status, create_html) = home_fixture::document(
+                &fixture,
+                mount,
+                "/ACC/issues/ACC-1",
+                true,
+                Some(create_signals),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            let create_document = Html::parse_document(&create_html);
+            let create_section = named_section(&create_document, "Labels");
+            let create_button = create_section
+                .select(&Selector::parse("button[data-native-label-enter='true']").unwrap())
+                .next()
+                .unwrap();
+            let creating_binding = create_button.value().attr("data-topcoat-bind:disabled").unwrap();
+            let create_request = super::labels::LabelRequest {
+                mode: "create".into(),
+                account_id: account,
+                issue_id: issue.id,
+                identifier: issue.identifier.clone(),
+                labels: before.labels.clone(),
+                name: "New runtime label".into(),
+                color: "#aabbcc".into(),
+            };
+            let create_result = home_fixture::evaluate_handler(
+                "src/topcoat/native/issue_edit/labels_handler.test.cjs",
+                &serde_json::json!({
+                    "browser_source": super::super::shell_handlers::source_named("browser", super::super::browser::factory()),
+                    "phases": [{
+                        "name": "create",
+                        "signals": home_fixture::page_signals(&create_html),
+                        "create_handler": create_button.value().attr("data-topcoat-on:click").unwrap(),
+                        "create_request": serde_json::to_value(create_request.clone().into_surrogate()).unwrap(),
+                        "creating_binding": creating_binding,
+                        "open_binding": create_section.select(&Selector::parse("[data-native-issue-label-picker]").unwrap()).next().unwrap().value().attr("data-topcoat-bind:hidden").unwrap(),
+                        "query_binding": create_section.select(&Selector::parse("input[placeholder='Filter or create…']").unwrap()).next().unwrap().value().attr("data-topcoat-bind:value").unwrap(),
+                        "query": "New runtime label",
+                    }],
+                }),
+            );
+            assert_eq!(
+                create_result["create_request"],
+                serde_json::to_value(create_request.into_surrogate()).unwrap(),
+                "the fresh handler submits the typed query and normalized custom color"
+            );
+        }
+
         // A concurrent title write must not conflict with a sparse label-only
         // commit or get overwritten by that commit.
         if index == 0 {
@@ -1128,7 +1315,15 @@ async fn native_issue_production_label_chips_preserve_case_and_safe_colors_for_b
         for (name, expected_color) in [("MiXeD API", "#aBc123"), ("Malformed color", "#6B7280")] {
             let chip = labels_section
                 .select(&spans_selector)
-                .find(|span| span.text().collect::<String>() == name)
+                .find(|span| {
+                    span.children()
+                        .filter_map(|child| match child.value() {
+                            scraper::Node::Text(text) => Some(text.to_string()),
+                            _ => None,
+                        })
+                        .collect::<String>()
+                        == name
+                })
                 .unwrap_or_else(|| panic!("rendered chip for {name}"));
             let classes = chip.value().attr("class").unwrap_or_default();
             for class in [
@@ -1156,6 +1351,12 @@ async fn native_issue_production_label_chips_preserve_case_and_safe_colors_for_b
             assert!(
                 style.contains(&format!("background:{expected_color}10")),
                 "{style}"
+            );
+            assert_eq!(
+                chip.select(&Selector::parse("button[title='Remove label']").unwrap())
+                    .count(),
+                usize::from(role == Role::Maintainer),
+                "the chip's destructive control follows {role:?} authorization"
             );
         }
 
